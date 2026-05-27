@@ -1,0 +1,45 @@
+fn add3(a: Int, b: Int, c: Int) -> Int {
+    return a + b + c
+}
+
+fn add4(a: Int, b: Int, c: Int, d: Int) -> Int {
+    return a + b + c + d
+}
+
+fn add5(a: Int, b: Int, c: Int, d: Int, e: Int) -> Int {
+    return a + b + c + d + e
+}
+
+fn nested_calls(x: Int) -> Int {
+    let r1 = add3(x, x + 1, x + 2)
+    let r2 = add4(r1, x, x + 1, x + 2)
+    let r3 = add5(r2, x, x + 1, x + 2, x + 3)
+    return r3
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (add3(1, 2, 3) != 6) {
+        return fail("three-argument call should sum correctly")
+    }
+
+    if (add4(1, 2, 3, 4) != 10) {
+        return fail("four-argument call should sum correctly")
+    }
+
+    if (add5(1, 2, 3, 4, 5) != 15) {
+        return fail("five-argument call should sum correctly")
+    }
+
+    if (nested_calls(5) != 62) {
+        return fail("nested multi-argument calls should preserve argument order")
+    }
+
+    println("PASS: multiple arguments")
+    return 0
+}

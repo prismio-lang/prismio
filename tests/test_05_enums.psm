@@ -1,0 +1,38 @@
+enum ExitCode {
+    Ok,
+    ParseError,
+    RuntimeError
+}
+
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (ExitCode.Ok != 0) {
+        return fail("first enum variant should be 0")
+    }
+
+    if (ExitCode.ParseError != 1) {
+        return fail("second enum variant should be 1")
+    }
+
+    if (ExitCode.RuntimeError != 2) {
+        return fail("third enum variant should be 2")
+    }
+
+    if (Color.Blue != 2) {
+        return fail("enum numbering should reset per enum")
+    }
+
+    println("PASS: enums")
+    return 0
+}

@@ -1,0 +1,34 @@
+extern fn str_equals(s1: String, s2: String) -> Int
+extern fn str_length(s: String) -> Int
+extern fn str_concat(s1: String, s2: String) -> String
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let hello = "Hello"
+    let world = "World"
+    let phrase = str_concat(str_concat(hello, ", "), world)
+
+    if (str_length(hello) != 5) {
+        return fail("string length should count characters")
+    }
+
+    if (str_equals(hello, "Hello") != 1) {
+        return fail("identical string literals should compare equal")
+    }
+
+    if (str_equals(hello, world) != 0) {
+        return fail("different string literals should not compare equal")
+    }
+
+    if (str_equals(phrase, "Hello, World") != 1) {
+        return fail("string concatenation should preserve order")
+    }
+
+    println("PASS: strings")
+    return 0
+}

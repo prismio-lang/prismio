@@ -1,0 +1,20 @@
+import utils
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (add(2, 4) != 6) {
+        return fail("imported add should be available")
+    }
+
+    if (multiply(4, 7) != 28) {
+        return fail("imported multiply should be available")
+    }
+
+    println("PASS: imports")
+    return 0
+}

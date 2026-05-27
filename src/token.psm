@@ -1,0 +1,49 @@
+enum TokenType {
+    STRING_LITERAL,
+    CHAR_LITERAL,
+    NUMBER_LITERAL,
+    BOOL_LITERAL,
+
+    IDENTIFIER,
+    SEPARATOR,
+
+    UNDERSCORE,
+
+    ARITHMETIC_OPERATOR,
+    RELATIONAL_OPERATOR,
+    NEGATION,
+    BITWISE_OR,
+    ASSIGNMENT_OPERATOR,
+    UNARY_OPERATOR,
+    AMPERSAND,
+
+    ARROW,
+    FAT_ARROW,
+
+    KEYWORD,
+    UNKNOWN,
+    EOF
+}
+
+struct Token {
+    type: TokenType,
+    value: String,
+    line: Int,
+    tok_next: String // Pointer to next Token
+}
+
+fn type_to_string(t: TokenType) -> String {
+    if (t == TokenType.STRING_LITERAL) { return "STRING" }
+    if (t == TokenType.CHAR_LITERAL) { return "CHAR" }
+    if (t == TokenType.NUMBER_LITERAL) { return "NUMBER" }
+    if (t == TokenType.BOOL_LITERAL) { return "BOOL" }
+    if (t == TokenType.IDENTIFIER) { return "IDENTIFIER" }
+    if (t == TokenType.KEYWORD) { return "KEYWORD" }
+    if (t == TokenType.SEPARATOR) { return "SEPARATOR" }
+    if (t == TokenType.ARITHMETIC_OPERATOR) { return "OPERATOR" }
+    if (t == TokenType.RELATIONAL_OPERATOR) { return "REL_OP" }
+    if (t == TokenType.ASSIGNMENT_OPERATOR) { return "ASSIGN_OP" }
+    if (t == TokenType.ARROW) { return "ARROW" }
+    if (t == TokenType.EOF) { return "EOF" }
+    return "TOKEN"
+}

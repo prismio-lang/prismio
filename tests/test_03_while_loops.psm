@@ -1,0 +1,48 @@
+fn sum_to_n(n: Int) -> Int {
+    let mut sum = 0
+    let mut i = 1
+    
+    while (i <= n) {
+        sum = sum + i
+        i = i + 1
+    }
+    
+    return sum
+}
+fn factorial(n: Int) -> Int {
+    let mut result = 1
+    let mut i = 1
+    
+    while (i <= n) {
+        result = result * i
+        i = i + 1
+    }
+    return result
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (sum_to_n(0) != 0) {
+        return fail("sum_to_n(0) should be 0")
+    }
+
+    if (sum_to_n(10) != 55) {
+        return fail("sum_to_n(10) should be 55")
+    }
+
+    if (factorial(0) != 1) {
+        return fail("factorial(0) should be 1")
+    }
+
+    if (factorial(7) != 5040) {
+        return fail("factorial(7) should be 5040")
+    }
+
+    println("PASS: while loops")
+    return 0
+}

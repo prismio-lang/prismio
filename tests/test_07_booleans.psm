@@ -1,0 +1,38 @@
+fn test_equal(a: Int, b: Int) -> Bool {
+    return a == b
+}
+
+fn is_between(n: Int) -> Bool {
+    return n > 3 and n < 8
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (test_equal(7, 7) == false) {
+        return fail("equality should return true for equal values")
+    }
+
+    if (test_equal(5, 10)) {
+        return fail("equality should return false for different values")
+    }
+
+    if (is_between(5) == false) {
+        return fail("and expression should keep true values")
+    }
+
+    if (is_between(9)) {
+        return fail("and expression should reject out-of-range values")
+    }
+
+    if ((false or true) == false) {
+        return fail("or expression should produce true")
+    }
+
+    println("PASS: booleans")
+    return 0
+}

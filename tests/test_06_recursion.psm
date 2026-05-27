@@ -1,0 +1,44 @@
+fn fibonacci(n: Int) -> Int {
+    if (n <= 1) {
+        return n
+    } else {
+        let a = fibonacci(n - 1)
+        let b = fibonacci(n - 2)
+        return a + b
+    }
+}
+
+fn gcd(a: Int, b: Int) -> Int {
+    if (b == 0) {
+        return a
+    } else {
+        return gcd(b, a % b)
+    }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (fibonacci(0) != 0) {
+        return fail("fibonacci(0) should be 0")
+    }
+
+    if (fibonacci(1) != 1) {
+        return fail("fibonacci(1) should be 1")
+    }
+
+    if (fibonacci(10) != 55) {
+        return fail("fibonacci(10) should be 55")
+    }
+
+    if (gcd(48, 18) != 6) {
+        return fail("gcd(48, 18) should be 6")
+    }
+
+    println("PASS: recursion")
+    return 0
+}

@@ -1,0 +1,316 @@
+// ---------------------------------------------------------
+// Statements
+// ---------------------------------------------------------
+
+fn parse_block(p: Parser) -> ASTNode {
+    parser_expect_val(p, TokenType.SEPARATOR, "{", "block")
+    let block_node = create_node(NodeKind.BLOCK)
+    
+    let last_stmt = ""
+    while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
+        let stmt = parse_statement(p)
+        if (str_equals(block_node.child1, "") == 1) {
+            block_node.child1 = node_to_ptr(stmt)
+        } else {
+            let last = ptr_to_node(last_stmt)
+            last.next = node_to_ptr(stmt)
+        }
+        last_stmt = node_to_ptr(stmt)
+    }
+    
+    parser_expect_val(p, TokenType.SEPARATOR, "}", "block")
+    return block_node
+}
+
+fn parse_if_statement(p: Parser) -> ASTNode {
+    parser_expect_val(p, TokenType.KEYWORD, "if", "if statement")
+    
+    let if_node = create_node(NodeKind.IF_STATEMENT)
+    
+    parser_expect_val(p, TokenType.SEPARATOR, "(", "if condition")
+    if_node.child1 = node_to_ptr(parse_expression(p, 0))
+    parser_expect_val(p, TokenType.SEPARATOR, ")", "if condition")
+    
+    if_node.child2 = node_to_ptr(parse_block(p))
+    
+    if (parser_match_val(p, TokenType.KEYWORD, "else")) {
+        if (parser_check_val(p, TokenType.KEYWORD, "if")) {
+            if_node.child3 = node_to_ptr(parse_if_statement(p))
+        } else {
+            if_node.child3 = node_to_ptr(parse_block(p))
+        }
+    }
+    
+    return if_node
+}
+
+fn parse_while_statement(p: Parser) -> ASTNode {
+    parser_expect_val(p, TokenType.KEYWORD, "while", "while statement")
+    
+    let while_node = create_node(NodeKind.WHILE_STATEMENT)
+    
+    parser_expect_val(p, TokenType.SEPARATOR, "(", "while condition")
+    while_node.child1 = node_to_ptr(parse_expression(p, 0))
+    parser_expect_val(p, TokenType.SEPARATOR, ")", "while condition")
+    
+    while_node.child2 = node_to_ptr(parse_block(p))
+    
+    return while_node
+}
+
+fn parse_statement(p: Parser) -> ASTNode {
+    if (parser_check_val(p, TokenType.KEYWORD, "if")) {
+        return parse_if_statement(p)
+    }
+    if (parser_check_val(p, TokenType.KEYWORD, "while")) {
+        return parse_while_statement(p)
+    }
+    if (parser_match_val(p, TokenType.KEYWORD, "return")) {
+        let ret_node = create_node(NodeKind.RETURN_STATEMENT)
+        let curr = parser_current(p)
+        if (curr.type != TokenType.SEPARATOR or str_equals(curr.value, "}") == 0) {
+            ret_node.child1 = node_to_ptr(parse_expression(p, 0))
+        }
+        return ret_node
+    }
+    if (parser_check_val(p, TokenType.KEYWORD, "let")) {
+        return parse_variable_decl(p)
+    }
+    
+    let expr = parse_expression(p, 0)
+    
+    if (parser_match_val(p, TokenType.ASSIGNMENT_OPERATOR, "=")) {
+        let assign_stmt = create_node(NodeKind.ASSIGNMENT_STATEMENT)
+        assign_stmt.child1 = node_to_ptr(expr)
+        assign_stmt.child2 = node_to_ptr(parse_expression(p, 0))
+        return assign_stmt
+    }
+    
+    let stmt = create_node(NodeKind.EXPRESSION_STATEMENT)
+    stmt.child1 = node_to_ptr(expr)
+    return stmt
+}
+
+// ---------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------
+
+fn get_operator_precedence(t: Token) -> Int {
+    if (str_equals(t.value, "or") == 1) { return 1 }
+    if (str_equals(t.value, "and") == 1) { return 2 }
+    if (t.type == TokenType.KEYWORD) { return 0 }
+    
+    if (str_equals(t.value, "==") == 1 or str_equals(t.value, "!=") == 1) { return 3 }
+    if (str_equals(t.value, "<") == 1 or str_equals(t.value, ">") == 1 or str_equals(t.value, "<=") == 1 or str_equals(t.value, ">=") == 1) { return 4 }
+    if (str_equals(t.value, "+") == 1 or str_equals(t.value, "-") == 1) { return 5 }
+    if (str_equals(t.value, "*") == 1 or str_equals(t.value, "/") == 1 or str_equals(t.value, "%") == 1) { return 6 }
+    
+    return 0
+}
+
+fn parse_expression(p: Parser, precedence: Int) -> ASTNode {
+    let left = parse_primary(p)
+    
+    let is_looping = true
+    while (is_looping) {
+        let curr = parser_current(p)
+        
+        let is_operator = curr.type == TokenType.ARITHMETIC_OPERATOR or curr.type == TokenType.RELATIONAL_OPERATOR or str_equals(curr.value, "and") == 1 or str_equals(curr.value, "or") == 1
+        
+        if (is_operator == false) {
+            is_looping = false
+        } else {
+            let current_precedence = get_operator_precedence(curr)
+            
+            if (current_precedence == 0 or current_precedence < precedence) {
+                is_looping = false
+            } else {
+                let op = curr.value
+                parser_advance(p)
+                
+                // Left associativity: pass current_precedence + 1
+                let right = parse_expression(p, current_precedence + 1)
+                
+                let bin_expr = create_node(NodeKind.BINARY_EXPR)
+                bin_expr.s1 = op
+                bin_expr.child1 = node_to_ptr(left)
+                bin_expr.child2 = node_to_ptr(right)
+                
+                left = bin_expr
+            }
+        }
+    }
+    
+    return left
+}
+
+fn parse_primary(p: Parser) -> ASTNode {
+    let curr = parser_current(p)
+    
+    if (curr.type == TokenType.NUMBER_LITERAL or curr.type == TokenType.STRING_LITERAL or curr.type == TokenType.BOOL_LITERAL or curr.type == TokenType.CHAR_LITERAL) {
+        let lit = create_node(NodeKind.LITERAL_EXPR)
+        lit.i1 = curr.type // literal type
+        lit.s1 = curr.value
+        parser_advance(p)
+        return lit
+    }
+    
+    if (curr.type == TokenType.IDENTIFIER) {
+        let next_tok = parser_peek(p)
+        if (next_tok.type == TokenType.SEPARATOR and str_equals(next_tok.value, "{") == 1) {
+            let struct_lit = create_node(NodeKind.STRUCT_LITERAL_EXPR)
+            struct_lit.s1 = curr.value
+            parser_advance(p)
+            parser_expect_val(p, TokenType.SEPARATOR, "{", "struct literal")
+            
+            let last_field = ""
+            while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
+                let field = create_node(NodeKind.STRUCT_FIELD)
+                let field_tok = parser_current(p)
+                field.s1 = field_tok.value
+                parser_expect(p, TokenType.IDENTIFIER, "struct literal field")
+                parser_expect_val(p, TokenType.SEPARATOR, ":", "struct literal")
+                field.child1 = node_to_ptr(parse_expression(p, 0))
+                
+                if (str_equals(struct_lit.child1, "") == 1) {
+                    struct_lit.child1 = node_to_ptr(field)
+                } else {
+                    let last = ptr_to_node(last_field)
+                    last.next = node_to_ptr(field)
+                }
+                last_field = node_to_ptr(field)
+                
+                parser_match_val(p, TokenType.SEPARATOR, ",")
+            }
+            
+            parser_expect_val(p, TokenType.SEPARATOR, "}", "struct literal")
+            return struct_lit
+        }
+    }
+    
+    if (curr.type == TokenType.IDENTIFIER) {
+        let ident = create_node(NodeKind.IDENTIFIER_EXPR)
+        ident.s1 = curr.value
+        parser_advance(p)
+        
+        let expr = ident
+        
+        let is_looping = true
+        while (is_looping) {
+            // Function call
+            if (parser_match_val(p, TokenType.SEPARATOR, "(")) {
+                let call = create_node(NodeKind.CALL_EXPR)
+                call.child1 = node_to_ptr(expr) // callee
+                
+                let last_arg = ""
+                if (parser_check_val(p, TokenType.SEPARATOR, ")") == false) {
+                    let is_arg_looping = true
+                    while (is_arg_looping) {
+                        let arg = parse_expression(p, 0)
+                        if (str_equals(call.child2, "") == 1) {
+                            call.child2 = node_to_ptr(arg)
+                        } else {
+                            let last = ptr_to_node(last_arg)
+                            last.next = node_to_ptr(arg)
+                        }
+                        last_arg = node_to_ptr(arg)
+                        
+                        if (parser_match_val(p, TokenType.SEPARATOR, ",") == false) {
+                            is_arg_looping = false
+                        }
+                    }
+                }
+                parser_expect_val(p, TokenType.SEPARATOR, ")", "function call")
+                expr = call
+            } else if (parser_match_val(p, TokenType.SEPARATOR, "[")) {
+                // Array indexing
+                let index_node = create_node(NodeKind.INDEX_EXPR)
+                index_node.child1 = node_to_ptr(expr)
+                index_node.child2 = node_to_ptr(parse_expression(p, 0))
+                parser_expect_val(p, TokenType.SEPARATOR, "]", "array index")
+                expr = index_node
+            } else if (parser_match_val(p, TokenType.SEPARATOR, ".")) {
+                // Member access
+                let member_node = create_node(NodeKind.MEMBER_ACCESS_EXPR)
+                member_node.child1 = node_to_ptr(expr)
+                let curr_mem = parser_current(p)
+                member_node.s1 = curr_mem.value
+                parser_expect(p, TokenType.IDENTIFIER, "member name")
+                expr = member_node
+            } else {
+                is_looping = false
+            }
+        }
+        
+        return expr
+    }
+    if (parser_match_val(p, TokenType.SEPARATOR, "(")) {
+        let expr_inner = parse_expression(p, 0)
+        parser_expect_val(p, TokenType.SEPARATOR, ")", "parenthesized expression")
+        return expr_inner
+    }
+    
+    // Array literals
+    if (parser_match_val(p, TokenType.SEPARATOR, "[")) {
+        let array_lit = create_node(NodeKind.ARRAY_LITERAL_EXPR)
+        
+        let last_elem = ""
+        if (parser_check_val(p, TokenType.SEPARATOR, "]") == false) {
+            let is_looping = true
+            while (is_looping) {
+                let elem = parse_expression(p, 0)
+                
+                if (str_equals(array_lit.child1, "") == 1) {
+                    array_lit.child1 = node_to_ptr(elem)
+                } else {
+                    let last = ptr_to_node(last_elem)
+                    last.next = node_to_ptr(elem)
+                }
+                last_elem = node_to_ptr(elem)
+                
+                if (parser_match_val(p, TokenType.SEPARATOR, ",") == false) {
+                    is_looping = false
+                }
+            }
+        }
+        
+        parser_expect_val(p, TokenType.SEPARATOR, "]", "array literal")
+        return array_lit
+    }
+    
+    print("Unexpected token in expression: ")
+    print(type_to_string(curr.type))
+    print(" '")
+    print(curr.value)
+    println("'")
+    exit(1)
+    return create_node(NodeKind.MODULE)
+}
+
+// ---------------------------------------------------------
+// Main Parse Function
+// ---------------------------------------------------------
+
+fn parse_module(p: Parser) -> ASTNode {
+    let module = create_node(NodeKind.MODULE)
+    let last_stmt = ""
+
+    let is_looping = true
+    while (is_looping) {
+        let curr = parser_current(p)
+        if (curr.type == TokenType.EOF) {
+            is_looping = false
+        } else {
+            let stmt = parse_declaration(p)
+            if (str_equals(module.child1, "") == 1) {
+                module.child1 = node_to_ptr(stmt)
+            } else {
+                let last = ptr_to_node(last_stmt)
+                last.next = node_to_ptr(stmt)
+            }
+            last_stmt = node_to_ptr(stmt)
+        }
+    }
+
+    return module
+}

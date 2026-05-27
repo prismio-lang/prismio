@@ -1,0 +1,27 @@
+let BUFFER_SIZE = 1024
+let MAX_TOKENS = 10000
+let mut global_counter = 0
+
+fn use_globals() -> Int {
+    global_counter = global_counter + 1
+    return BUFFER_SIZE + MAX_TOKENS + global_counter
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (use_globals() != 11025) {
+        return fail("first global read should include incremented counter")
+    }
+
+    if (use_globals() != 11026) {
+        return fail("second global read should preserve counter mutation")
+    }
+
+    println("PASS: globals")
+    return 0
+}

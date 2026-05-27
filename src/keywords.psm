@@ -1,0 +1,50 @@
+extern fn str_equals(s1: String, s2: String) -> Int
+
+fn is_keyword(s: String) -> Bool {
+    // Keywords from keywords.cpp
+    // import
+    if (str_equals(s, "import") == 1) { return true }
+    
+    // conditionals
+    if (str_equals(s, "match") == 1) { return true }
+    if (str_equals(s, "if") == 1) { return true }
+    if (str_equals(s, "else") == 1) { return true }
+    if (str_equals(s, "and") == 1) { return true }
+    if (str_equals(s, "or") == 1) { return true }
+    
+    // boolean
+    if (str_equals(s, "true") == 1) { return true }
+    if (str_equals(s, "false") == 1) { return true }
+    
+    // flowControl
+    if (str_equals(s, "break") == 1) { return true }
+    if (str_equals(s, "continue") == 1) { return true }
+    if (str_equals(s, "return") == 1) { return true }
+    if (str_equals(s, "throw") == 1) { return true }
+    
+    // loops
+    if (str_equals(s, "while") == 1) { return true }
+    if (str_equals(s, "loop") == 1) { return true }
+    if (str_equals(s, "for") == 1) { return true }
+    if (str_equals(s, "in") == 1) { return true }
+    
+    // declarations
+    if (str_equals(s, "let") == 1) { return true }
+    if (str_equals(s, "struct") == 1) { return true }
+    if (str_equals(s, "impl") == 1) { return true }
+    if (str_equals(s, "enum") == 1) { return true }
+    if (str_equals(s, "trait") == 1) { return true }
+    if (str_equals(s, "fn") == 1) { return true }
+    if (str_equals(s, "extern") == 1) { return true }
+    
+    // property
+    if (str_equals(s, "mut") == 1) { return true }
+    
+    return false
+}
+
+fn is_boolean(s: String) -> Bool {
+    if (str_equals(s, "true") == 1) { return true }
+    if (str_equals(s, "false") == 1) { return true }
+    return false
+}

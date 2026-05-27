@@ -1,0 +1,40 @@
+let x = 5
+let y = 10
+let mut z = 0
+
+fn test_arithmetic() -> Int {
+    let a = x + y
+    let b = x * y
+    let c = y - x
+    let d = y / x
+    let e = y % x
+    return a + b + c + d + e
+}
+
+fn bump_global(amount: Int) -> Int {
+    z = z + amount
+    return z
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (test_arithmetic() != 72) {
+        return fail("arithmetic result should be 72")
+    }
+
+    if (bump_global(3) != 3) {
+        return fail("mutable global should update from 0 to 3")
+    }
+
+    if (bump_global(4) != 7) {
+        return fail("mutable global should preserve prior value")
+    }
+
+    println("PASS: variables and arithmetic")
+    return 0
+}

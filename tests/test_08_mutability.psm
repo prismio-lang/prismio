@@ -1,0 +1,39 @@
+fn test_mutation() -> Int {
+    let mut counter = 0
+    
+    counter = counter + 1
+    counter = counter + 2
+    counter = counter + 3
+    
+    return counter
+}
+
+fn test_complex_mutation() -> Int {
+    let mut x = 10
+    let mut y = 20
+    
+    x = x + y
+    y = x - y
+    x = x - y
+    
+    return x + y
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (test_mutation() != 6) {
+        return fail("sequential mutation should produce 6")
+    }
+
+    if (test_complex_mutation() != 30) {
+        return fail("swap-style mutation should preserve x + y")
+    }
+
+    println("PASS: mutability")
+    return 0
+}

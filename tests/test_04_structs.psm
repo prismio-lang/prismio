@@ -1,0 +1,44 @@
+struct Point {
+    x: Int,
+    y: Int
+}
+
+struct Counter {
+    value: Int,
+    enabled: Bool
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let point = Point { x: 4, y: 9 }
+
+    if (point.x != 4) {
+        return fail("struct field x should be readable")
+    }
+
+    if (point.y != 9) {
+        return fail("struct field y should be readable")
+    }
+
+    point.x = point.x + 6
+    if (point.x + point.y != 19) {
+        return fail("struct field assignment should update stored value")
+    }
+
+    let counter = Counter { value: 3, enabled: true }
+    if (counter.enabled == false) {
+        return fail("bool struct fields should be stored and loaded")
+    }
+
+    if (counter.value != 3) {
+        return fail("second struct should keep independent field layout")
+    }
+
+    println("PASS: structs")
+    return 0
+}

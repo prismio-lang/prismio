@@ -1,0 +1,45 @@
+fn array_edges() -> Int {
+    let numbers: [Int] = [1, 2, 3, 4, 5]
+    return numbers[0] + numbers[4]
+}
+
+fn array_sum() -> Int {
+    let values: [Int] = [10, 20, 30, 40]
+    let mut i = 0
+    let mut total = 0
+
+    while (i < 4) {
+        total = total + values[i]
+        i = i + 1
+    }
+
+    return total
+}
+
+fn matrix_diagonal() -> Int {
+    let matrix: [[Int]] = [[1, 2], [3, 4]]
+    return matrix[0][0] + matrix[1][1]
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (array_edges() != 6) {
+        return fail("array indexing should read first and last elements")
+    }
+
+    if (array_sum() != 100) {
+        return fail("array indexing inside loops should be stable")
+    }
+
+    if (matrix_diagonal() != 5) {
+        return fail("nested array indexing should read 2D values")
+    }
+
+    println("PASS: arrays")
+    return 0
+}

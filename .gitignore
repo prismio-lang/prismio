@@ -1,0 +1,47 @@
+# IDE directories
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+
+# Compiled source #
+###################
+*.com
+*.class
+*.dll
+*.exe
+*.o
+*.so
+*.a
+*.lib
+*.la
+*.lo
+*.pid
+*.gz
+*.zip
+*.tar
+*.7z
+*.rar
+
+# Dependencies
+node_modules/
+*.jar
+*.war
+*.ear
+
+external/
+
+# Codeium
+*~
+=======
+configuration/
+package.tar.xz

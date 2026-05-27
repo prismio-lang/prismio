@@ -1,0 +1,59 @@
+extern fn str_equals(s1: String, s2: String) -> Int
+extern fn str_length(s: String) -> Int
+extern fn str_concat(s1: String, s2: String) -> String
+extern fn str_substring(s: String, start: Int, length: Int) -> String
+extern fn str_char_at(s: String, index: Int) -> Char
+extern fn str_contains(haystack: String, needle: String) -> Int
+extern fn str_starts_with(s: String, prefix: String) -> Int
+extern fn str_index_of(haystack: String, needle: String) -> Int
+extern fn int_to_str(n: Int) -> String
+extern fn str_to_int(s: String) -> Int
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let text = "Hello, World!"
+
+    if (str_length(text) != 13) {
+        return fail("str_length should count runtime string length")
+    }
+
+    if (str_equals(str_substring(text, 0, 5), "Hello") != 1) {
+        return fail("str_substring should extract the requested slice")
+    }
+
+    if (str_char_at(text, 7) != 'W') {
+        return fail("str_char_at should read the requested character")
+    }
+
+    if (str_contains(text, "World") != 1) {
+        return fail("str_contains should find an included substring")
+    }
+
+    if (str_starts_with(text, "Hello") != 1) {
+        return fail("str_starts_with should match prefixes")
+    }
+
+    if (str_index_of(text, "World") != 7) {
+        return fail("str_index_of should return the substring offset")
+    }
+
+    if (str_equals(str_concat("Hello, ", "World"), "Hello, World") != 1) {
+        return fail("str_concat should join strings")
+    }
+
+    if (str_equals(int_to_str(42), "42") != 1) {
+        return fail("int_to_str should format integers")
+    }
+
+    if (str_to_int("123") != 123) {
+        return fail("str_to_int should parse decimal integers")
+    }
+
+    println("PASS: string runtime")
+    return 0
+}

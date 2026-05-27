@@ -1,0 +1,40 @@
+fn eval_expression(x: Int, y: Int, z: Int) -> Int {
+    let result = x + y * z - x / y + z % x
+    return result
+}
+
+fn nested_expressions() -> Int {
+    let a = 5
+    let b = 10
+    let c = 15
+    
+    let result = (a + b) * (c - a) / (b - a)
+    return result
+}
+
+fn compare_expression(a: Int, b: Int, c: Int) -> Bool {
+    return a + b * c == 15 and (a + b) * c == 21
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (eval_expression(10, 5, 3) != 26) {
+        return fail("mixed arithmetic precedence should produce 26")
+    }
+
+    if (nested_expressions() != 30) {
+        return fail("parenthesized expression should produce 30")
+    }
+
+    if (compare_expression(3, 4, 3) == false) {
+        return fail("comparison and boolean expression should be true")
+    }
+
+    println("PASS: expressions")
+    return 0
+}

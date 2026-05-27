@@ -1,0 +1,1078 @@
+// IR Generator
+// Traverses the AST and emits LLVM IR via bridge.psm
+// Uses C-side global registry to avoid Prismio string globals
+
+let ir_string_counter = 0
+
+// Forward declarations for mutual recursion
+extern fn generate_statement(stmt: ASTNode)
+extern fn generate_block(block: ASTNode)
+extern fn collect_strings_stmt(stmt: ASTNode)
+extern fn collect_strings_block(block: ASTNode)
+
+fn map_type(t: String) -> String {
+    if (str_equals(t, "Int") == 1) { return "i32" }
+    if (str_equals(t, "Bool") == 1) { return "i1" }
+    if (str_equals(t, "String") == 1) { return "ptr" }
+    if (str_equals(t, "Char") == 1) { return "i8" }
+    if (str_equals(t, "") == 1) { return "void" }
+    return "i32"
+}
+
+fn struct_type_key(name: String) -> String {
+    return str_concat("struct:", name)
+}
+
+fn is_struct_type_key(t: String) -> Bool {
+    return str_starts_with(t, "struct:") == 1
+}
+
+fn struct_type_name(t: String) -> String {
+    return str_substring(t, 7, str_length(t) - 7)
+}
+
+fn llvm_type_name(t: String) -> String {
+    if (is_struct_type_key(t)) {
+        return str_concat("%", struct_type_name(t))
+    }
+    return t
+}
+
+fn map_type_node(tn: ASTNode) -> String {
+    if (tn.i1 == 1) {
+        if (str_equals(tn.child1, "") == 0) {
+            let elem = ptr_to_node(tn.child1)
+            if (elem.i1 == 1) {
+                return "ptrptr"
+            }
+        }
+        return "ptr"
+    }
+    if (ir_is_struct_type_name(tn.s1) == 1) {
+        return struct_type_key(tn.s1)
+    }
+    return map_type(tn.s1)
+}
+
+fn storage_type(t: String) -> String {
+    if (str_equals(t, "ptrptr") == 1) { return "ptr" }
+    if (is_struct_type_key(t)) { return "ptr" }
+    return t
+}
+
+fn count_list_nodes(first_ptr: String) -> Int {
+    let count = 0
+    let curr = first_ptr
+    while (str_equals(curr, "") == 0) {
+        let node = ptr_to_node(curr)
+        count = count + 1
+        curr = node.next
+    }
+    return count
+}
+
+fn fn_key(name: String) -> String {
+    return str_concat("$fn$", name)
+}
+
+fn get_declared_return_type(node: ASTNode, ret_child: String) -> String {
+    if (str_equals(ret_child, "") == 0) {
+        let ret_node = ptr_to_node(ret_child)
+        return map_type_node(ret_node)
+    }
+    return "void"
+}
+
+fn get_expr_type(expr: ASTNode) -> String {
+    if (expr.kind == NodeKind.LITERAL_EXPR) {
+        if (expr.i1 == TokenType.NUMBER_LITERAL) { return "i32" }
+        if (expr.i1 == TokenType.BOOL_LITERAL) { return "i1" }
+        if (expr.i1 == TokenType.CHAR_LITERAL) { return "i8" }
+        if (expr.i1 == TokenType.STRING_LITERAL) { return "ptr" }
+    }
+
+    if (expr.kind == NodeKind.IDENTIFIER_EXPR) {
+        return ir_get_var_type(expr.s1)
+    }
+
+    if (expr.kind == NodeKind.BINARY_EXPR) {
+        let op = expr.s1
+        if (str_equals(op, "==") == 1 or str_equals(op, "!=") == 1) { return "i1" }
+        if (str_equals(op, "<") == 1 or str_equals(op, "<=") == 1) { return "i1" }
+        if (str_equals(op, ">") == 1 or str_equals(op, ">=") == 1) { return "i1" }
+        if (str_equals(op, "and") == 1 or str_equals(op, "or") == 1) { return "i1" }
+        return get_expr_type(ptr_to_node(expr.child1))
+    }
+
+    if (expr.kind == NodeKind.CALL_EXPR) {
+        let callee = ptr_to_node(expr.child1)
+        let func_name = callee.s1
+        if (str_equals(func_name, "print") == 1 or str_equals(func_name, "println") == 1) {
+            return "void"
+        }
+        if (str_equals(func_name, "print_int") == 1 or str_equals(func_name, "println_int") == 1) {
+            return "void"
+        }
+        if (str_equals(func_name, "println_char") == 1 or str_equals(func_name, "print_char") == 1) {
+            return "void"
+        }
+        if (str_equals(func_name, "println_bool") == 1 or str_equals(func_name, "print_bool") == 1) {
+            return "void"
+        }
+        return ir_get_var_type(fn_key(func_name))
+    }
+
+    if (expr.kind == NodeKind.INDEX_EXPR) {
+        let obj_type = get_expr_type(ptr_to_node(expr.child1))
+        if (str_equals(obj_type, "ptrptr") == 1) {
+            return "ptr"
+        }
+        return "i32"
+    }
+
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let object_node = ptr_to_node(expr.child1)
+        if (object_node.kind == NodeKind.IDENTIFIER_EXPR) {
+            let enum_val = ir_get_enum_variant(object_node.s1, expr.s1)
+            if (enum_val >= 0) {
+                return "i32"
+            }
+        }
+        let object_type = get_expr_type(object_node)
+        if (is_struct_type_key(object_type)) {
+            return ir_get_struct_field_type(struct_type_name(object_type), expr.s1)
+        }
+        return "i32"
+    }
+
+    if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+        return "ptr"
+    }
+
+    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+        return struct_type_key(expr.s1)
+    }
+
+    return "i32"
+}
+
+fn generate_expression(expr: ASTNode) -> String {
+    if (expr.kind == NodeKind.LITERAL_EXPR) {
+        if (expr.i1 == TokenType.NUMBER_LITERAL) {
+            return expr.s1
+        }
+        if (expr.i1 == TokenType.BOOL_LITERAL) {
+            if (str_equals(expr.s1, "true") == 1) { return "1" }
+            return "0"
+        }
+        if (expr.i1 == TokenType.CHAR_LITERAL) {
+            return expr.s1
+        }
+        if (expr.i1 == TokenType.STRING_LITERAL) {
+            // String was tagged in pre-pass with name in s2
+            let str_name = expr.s2
+            let str_len = str_length(expr.s1)
+            let len_plus_one = str_len + 1
+            let temp = ir_get_temp()
+            let tname = ir_get_temp_name(temp)
+            ir_append("  ")
+            ir_append(tname)
+            ir_append(" = getelementptr inbounds [")
+            ir_append(int_to_str(len_plus_one))
+            ir_append(" x i8], ptr @")
+            ir_append(str_name)
+            ir_append_line(", i64 0, i64 0")
+            return tname
+        }
+    }
+
+    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+        let struct_name = expr.s1
+        let size_ptr_temp = ir_get_temp()
+        let size_ptr_name = ir_get_temp_name(size_ptr_temp)
+        ir_append("  ")
+        ir_append(size_ptr_name)
+        ir_append(" = getelementptr ")
+        ir_append(str_concat("%", struct_name))
+        ir_append_line(", ptr null, i32 1")
+
+        let size_temp = ir_get_temp()
+        let size_name = ir_get_temp_name(size_temp)
+        ir_append("  ")
+        ir_append(size_name)
+        ir_append(" = ptrtoint ptr ")
+        ir_append(size_ptr_name)
+        ir_append_line(" to i64")
+
+        let mem_temp = ir_get_temp()
+        let mem_name = ir_get_temp_name(mem_temp)
+        ir_append("  ")
+        ir_append(mem_name)
+        ir_append(" = call ptr @malloc(i64 ")
+        ir_append(size_name)
+        ir_append_line(")")
+
+        let field_ptr = expr.child1
+        while (str_equals(field_ptr, "") == 0) {
+            let field = ptr_to_node(field_ptr)
+            let field_val = generate_expression(ptr_to_node(field.child1))
+            let field_type = storage_type(ir_get_struct_field_type(struct_name, field.s1))
+            let field_index = ir_get_struct_field_index(struct_name, field.s1)
+            let gep_temp = ir_get_temp()
+            let gep_name = ir_get_temp_name(gep_temp)
+            ir_append("  ")
+            ir_append(gep_name)
+            ir_append(" = getelementptr inbounds ")
+            ir_append(str_concat("%", struct_name))
+            ir_append(", ptr ")
+            ir_append(mem_name)
+            ir_append(", i32 0, i32 ")
+            ir_append_line(int_to_str(field_index))
+            ir_append("  store ")
+            ir_append(field_type)
+            ir_append(" ")
+            ir_append(field_val)
+            ir_append(", ptr ")
+            ir_append_line(gep_name)
+            field_ptr = field.next
+        }
+
+        return mem_name
+    }
+    
+    if (expr.kind == NodeKind.IDENTIFIER_EXPR) {
+        let val_type = ir_get_var_type(expr.s1)
+        let load_type = storage_type(val_type)
+        if (ir_is_global_name(expr.s1) == 1) {
+            let temp_id = ir_load_global(load_type, expr.s1)
+            return ir_get_temp_name(temp_id)
+        } else {
+            let temp_id = ir_load(load_type, expr.s1)
+            return ir_get_temp_name(temp_id)
+        }
+    }
+
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let object_node = ptr_to_node(expr.child1)
+        if (object_node.kind == NodeKind.IDENTIFIER_EXPR) {
+            let enum_val = ir_get_enum_variant(object_node.s1, expr.s1)
+            if (enum_val >= 0) {
+                return int_to_str(enum_val)
+            }
+        }
+
+        let object_val = generate_expression(object_node)
+        let object_type = get_expr_type(object_node)
+        let struct_name = struct_type_name(object_type)
+        let field_index = ir_get_struct_field_index(struct_name, expr.s1)
+        let field_type = storage_type(ir_get_struct_field_type(struct_name, expr.s1))
+
+        let gep_temp = ir_get_temp()
+        let gep_name = ir_get_temp_name(gep_temp)
+        ir_append("  ")
+        ir_append(gep_name)
+        ir_append(" = getelementptr inbounds ")
+        ir_append(str_concat("%", struct_name))
+        ir_append(", ptr ")
+        ir_append(object_val)
+        ir_append(", i32 0, i32 ")
+        ir_append_line(int_to_str(field_index))
+
+        let load_temp = ir_get_temp()
+        let load_name = ir_get_temp_name(load_temp)
+        ir_append("  ")
+        ir_append(load_name)
+        ir_append(" = load ")
+        ir_append(field_type)
+        ir_append(", ptr ")
+        ir_append_line(gep_name)
+        return load_name
+    }
+
+    if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+        let elem_count = count_list_nodes(expr.child1)
+        let first_elem = ptr_to_node(expr.child1)
+        let is_nested = 0
+        if (first_elem.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+            is_nested = 1
+        }
+
+        if (is_nested == 1) {
+            let arr_temp = ir_get_temp()
+            let arr_name = ir_get_temp_name(arr_temp)
+            ir_append("  ")
+            ir_append(arr_name)
+            ir_append(" = alloca [")
+            ir_append(int_to_str(elem_count))
+            ir_append_line(" x ptr]")
+
+            let elem_ptr = expr.child1
+            let elem_index = 0
+            while (str_equals(elem_ptr, "") == 0) {
+                let elem_node = ptr_to_node(elem_ptr)
+                let inner_ptr = generate_expression(elem_node)
+                let slot_temp = ir_get_temp()
+                let slot_name = ir_get_temp_name(slot_temp)
+                ir_append("  ")
+                ir_append(slot_name)
+                ir_append(" = getelementptr inbounds [")
+                ir_append(int_to_str(elem_count))
+                ir_append(" x ptr], ptr ")
+                ir_append(arr_name)
+                ir_append(", i64 0, i64 ")
+                ir_append_line(int_to_str(elem_index))
+                ir_append("  store ptr ")
+                ir_append(inner_ptr)
+                ir_append(", ptr ")
+                ir_append_line(slot_name)
+                elem_index = elem_index + 1
+                elem_ptr = elem_node.next
+            }
+
+            let ret_temp = ir_get_temp()
+            let ret_name = ir_get_temp_name(ret_temp)
+            ir_append("  ")
+            ir_append(ret_name)
+            ir_append(" = getelementptr inbounds [")
+            ir_append(int_to_str(elem_count))
+            ir_append(" x ptr], ptr ")
+            ir_append(arr_name)
+            ir_append_line(", i64 0, i64 0")
+            return ret_name
+        }
+
+        let arr_temp2 = ir_get_temp()
+        let arr_name2 = ir_get_temp_name(arr_temp2)
+        ir_append("  ")
+        ir_append(arr_name2)
+        ir_append(" = alloca [")
+        ir_append(int_to_str(elem_count))
+        ir_append_line(" x i32]")
+
+        let elem_ptr2 = expr.child1
+        let elem_index2 = 0
+        while (str_equals(elem_ptr2, "") == 0) {
+            let elem_node2 = ptr_to_node(elem_ptr2)
+            let elem_val = generate_expression(elem_node2)
+            let elem_slot_temp = ir_get_temp()
+            let elem_slot_name = ir_get_temp_name(elem_slot_temp)
+            ir_append("  ")
+            ir_append(elem_slot_name)
+            ir_append(" = getelementptr inbounds [")
+            ir_append(int_to_str(elem_count))
+            ir_append(" x i32], ptr ")
+            ir_append(arr_name2)
+            ir_append(", i64 0, i64 ")
+            ir_append_line(int_to_str(elem_index2))
+            ir_append("  store i32 ")
+            ir_append(elem_val)
+            ir_append(", ptr ")
+            ir_append_line(elem_slot_name)
+            elem_index2 = elem_index2 + 1
+            elem_ptr2 = elem_node2.next
+        }
+
+        let ret_temp2 = ir_get_temp()
+        let ret_name2 = ir_get_temp_name(ret_temp2)
+        ir_append("  ")
+        ir_append(ret_name2)
+        ir_append(" = getelementptr inbounds [")
+        ir_append(int_to_str(elem_count))
+        ir_append(" x i32], ptr ")
+        ir_append(arr_name2)
+        ir_append_line(", i64 0, i64 0")
+        return ret_name2
+    }
+
+    if (expr.kind == NodeKind.INDEX_EXPR) {
+        let array_val = generate_expression(ptr_to_node(expr.child1))
+        let index_val = generate_expression(ptr_to_node(expr.child2))
+        let obj_type = get_expr_type(ptr_to_node(expr.child1))
+
+        let elem_type = "i32"
+        if (str_equals(obj_type, "ptrptr") == 1) {
+            elem_type = "ptr"
+        }
+
+        let ptr_temp = ir_get_temp()
+        let ptr_name = ir_get_temp_name(ptr_temp)
+        ir_append("  ")
+        ir_append(ptr_name)
+        ir_append(" = getelementptr inbounds ")
+        ir_append(elem_type)
+        ir_append(", ptr ")
+        ir_append(array_val)
+        ir_append(", i32 ")
+        ir_append_line(index_val)
+
+        let load_temp = ir_get_temp()
+        let load_name = ir_get_temp_name(load_temp)
+        ir_append("  ")
+        ir_append(load_name)
+        ir_append(" = load ")
+        ir_append(elem_type)
+        ir_append(", ptr ")
+        ir_append_line(ptr_name)
+        return load_name
+    }
+    
+    if (expr.kind == NodeKind.BINARY_EXPR) {
+        let left_val = generate_expression(ptr_to_node(expr.child1))
+        let right_val = generate_expression(ptr_to_node(expr.child2))
+        
+        let op = expr.s1
+        let temp_id = 0
+        let op_type = get_expr_type(ptr_to_node(expr.child1))
+        if (str_equals(op, "+") == 1) { temp_id = ir_add(op_type, left_val, right_val) }
+        if (str_equals(op, "-") == 1) { temp_id = ir_sub(op_type, left_val, right_val) }
+        if (str_equals(op, "*") == 1) { temp_id = ir_mul(op_type, left_val, right_val) }
+        if (str_equals(op, "/") == 1) { temp_id = ir_sdiv(op_type, left_val, right_val) }
+        if (str_equals(op, "%") == 1) { temp_id = ir_srem(op_type, left_val, right_val) }
+        if (str_equals(op, "==") == 1) { temp_id = ir_icmp_eq(op_type, left_val, right_val) }
+        if (str_equals(op, "!=") == 1) { temp_id = ir_icmp_ne(op_type, left_val, right_val) }
+        if (str_equals(op, "<") == 1) { temp_id = ir_icmp_slt(op_type, left_val, right_val) }
+        if (str_equals(op, "<=") == 1) { temp_id = ir_icmp_sle(op_type, left_val, right_val) }
+        if (str_equals(op, ">") == 1) { temp_id = ir_icmp_sgt(op_type, left_val, right_val) }
+        if (str_equals(op, ">=") == 1) { temp_id = ir_icmp_sge(op_type, left_val, right_val) }
+        if (str_equals(op, "and") == 1) { temp_id = ir_and("i1", left_val, right_val) }
+        if (str_equals(op, "or") == 1) { temp_id = ir_or("i1", left_val, right_val) }
+        
+        return ir_get_temp_name(temp_id)
+    }
+    
+    if (expr.kind == NodeKind.CALL_EXPR) {
+        let callee = ptr_to_node(expr.child1)
+        let func_name = callee.s1
+        
+        let is_print = 0
+        if (str_equals(func_name, "print") == 1) { is_print = 1 }
+        if (str_equals(func_name, "println") == 1) { is_print = 2 }
+        
+        if (is_print > 0) {
+            let arg_ptr = expr.child2
+            if (str_equals(arg_ptr, "") == 0) {
+                let arg_node = ptr_to_node(arg_ptr)
+                let arg_val = generate_expression(arg_node)
+                let arg_type = get_expr_type(arg_node)
+                
+                ir_call_begin()
+                if (str_equals(arg_type, "ptr") == 1) {
+                    ir_call_arg("ptr", arg_val)
+                    if (is_print == 1) {
+                        ir_call_end("void", "print")
+                    } else {
+                        ir_call_end("void", "println")
+                    }
+                } else {
+                    ir_call_arg(storage_type(arg_type), arg_val)
+                    if (is_print == 1) {
+                        ir_call_end("void", "print_int")
+                    } else {
+                        ir_call_end("void", "println_int")
+                    }
+                }
+            }
+            return ""
+        }
+        
+        // Regular function call
+        ir_call_begin()
+        let arg_ptr = expr.child2
+        while (str_equals(arg_ptr, "") == 0) {
+            let arg_node = ptr_to_node(arg_ptr)
+            let arg_val = generate_expression(arg_node)
+            ir_call_arg(storage_type(get_expr_type(arg_node)), arg_val)
+            arg_ptr = arg_node.next
+        }
+        
+        let ret_type = storage_type(get_expr_type(expr))
+        if (str_equals(ret_type, "void") == 1) {
+            ir_call_end("void", func_name)
+            return ""
+        }
+        let temp_id = ir_call_end(ret_type, func_name)
+        return ir_get_temp_name(temp_id)
+    }
+    
+    return "0"
+}
+
+fn generate_statement(stmt: ASTNode) {
+    if (stmt.kind == NodeKind.VARIABLE_DECL) {
+        let var_name = stmt.s1
+        let var_type = "i32"
+        if (str_equals(stmt.child1, "") == 0) {
+            let type_node = ptr_to_node(stmt.child1)
+            var_type = map_type_node(type_node)
+        } else {
+            if (str_equals(stmt.child2, "") == 0) {
+                var_type = get_expr_type(ptr_to_node(stmt.child2))
+            }
+        }
+        ir_set_var_type(var_name, var_type)
+        let store_type = storage_type(var_type)
+        ir_alloca(store_type, var_name)
+        
+        if (str_equals(stmt.child2, "") == 0) {
+            let init_val = generate_expression(ptr_to_node(stmt.child2))
+            ir_store(store_type, init_val, var_name)
+        }
+    }
+    
+    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        let target_node = ptr_to_node(stmt.child1)
+        if (target_node.kind == NodeKind.IDENTIFIER_EXPR) {
+            let var_name = target_node.s1
+            let var_type = ir_get_var_type(var_name)
+            let store_type = storage_type(var_type)
+            let val = generate_expression(ptr_to_node(stmt.child2))
+            if (ir_is_global_name(var_name) == 1) {
+                ir_store_global(store_type, val, var_name)
+            } else {
+                ir_store(store_type, val, var_name)
+            }
+        }
+        if (target_node.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+            let object_node = ptr_to_node(target_node.child1)
+            let object_val = generate_expression(object_node)
+            let object_type = get_expr_type(object_node)
+            let struct_name = struct_type_name(object_type)
+            let field_index = ir_get_struct_field_index(struct_name, target_node.s1)
+            let field_type = storage_type(ir_get_struct_field_type(struct_name, target_node.s1))
+            let val = generate_expression(ptr_to_node(stmt.child2))
+            
+            let gep_temp = ir_get_temp()
+            let gep_name = ir_get_temp_name(gep_temp)
+            ir_append("  ")
+            ir_append(gep_name)
+            ir_append(" = getelementptr inbounds ")
+            ir_append(str_concat("%", struct_name))
+            ir_append(", ptr ")
+            ir_append(object_val)
+            ir_append(", i32 0, i32 ")
+            ir_append_line(int_to_str(field_index))
+            ir_append("  store ")
+            ir_append(field_type)
+            ir_append(" ")
+            ir_append(val)
+            ir_append(", ptr ")
+            ir_append_line(gep_name)
+        }
+    }
+    
+    if (stmt.kind == NodeKind.RETURN_STATEMENT) {
+        if (str_equals(stmt.child1, "") == 0) {
+            let ret_val = generate_expression(ptr_to_node(stmt.child1))
+            ir_ret(storage_type(get_expr_type(ptr_to_node(stmt.child1))), ret_val)
+        } else {
+            ir_ret_void()
+        }
+        ir_set_returned()
+    }
+    
+    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
+        if (str_equals(stmt.child1, "") == 0) {
+            generate_expression(ptr_to_node(stmt.child1))
+        }
+    }
+    
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        let cond_val = generate_expression(ptr_to_node(stmt.child1))
+        
+        let then_label = ir_get_label()
+        let else_label = ir_get_label()
+        let end_label = ir_get_label()
+        
+        if (str_equals(stmt.child3, "") == 0) {
+            ir_cond_br_numbered(cond_val, then_label, else_label)
+        } else {
+            ir_cond_br_numbered(cond_val, then_label, end_label)
+        }
+        
+        ir_label_numbered(then_label)
+        generate_block(ptr_to_node(stmt.child2))
+        if (ir_has_returned() == 0) { ir_br_numbered(end_label) }
+        ir_clear_returned()
+        
+        if (str_equals(stmt.child3, "") == 0) {
+            ir_label_numbered(else_label)
+            
+            let else_node = ptr_to_node(stmt.child3)
+            if (else_node.kind == NodeKind.IF_STATEMENT) {
+                generate_statement(else_node)
+            } else {
+                generate_block(else_node)
+            }
+            if (ir_has_returned() == 0) { ir_br_numbered(end_label) }
+            ir_clear_returned()
+        }
+        
+        ir_label_numbered(end_label)
+    }
+    
+    if (stmt.kind == NodeKind.WHILE_STATEMENT) {
+        let cond_label = ir_get_label()
+        let body_label = ir_get_label()
+        let end_label = ir_get_label()
+        
+        ir_br_numbered(cond_label)
+        ir_label_numbered(cond_label)
+        
+        let cond_val = generate_expression(ptr_to_node(stmt.child1))
+        ir_cond_br_numbered(cond_val, body_label, end_label)
+        
+        ir_label_numbered(body_label)
+        generate_block(ptr_to_node(stmt.child2))
+        
+        if (ir_has_returned() == 0) { ir_br_numbered(cond_label) }
+        ir_clear_returned()
+        
+        ir_label_numbered(end_label)
+    }
+}
+
+fn generate_block(block: ASTNode) {
+    let stmt_ptr = block.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        generate_statement(stmt)
+        stmt_ptr = stmt.next
+    }
+}
+
+fn get_variable_decl_type(stmt: ASTNode) -> String {
+    let var_type = "i32"
+    if (str_equals(stmt.child1, "") == 0) {
+        let type_node = ptr_to_node(stmt.child1)
+        var_type = map_type_node(type_node)
+    } else {
+        if (str_equals(stmt.child2, "") == 0) {
+            var_type = get_expr_type(ptr_to_node(stmt.child2))
+        }
+    }
+    return var_type
+}
+
+fn predeclare_locals_stmt(stmt: ASTNode) {
+    if (stmt.kind == NodeKind.VARIABLE_DECL) {
+        let var_type = get_variable_decl_type(stmt)
+        ir_set_var_type(stmt.s1, var_type)
+        ir_alloca(storage_type(var_type), stmt.s1)
+    }
+
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        if (str_equals(stmt.child2, "") == 0) {
+            predeclare_locals_block(ptr_to_node(stmt.child2))
+        }
+        if (str_equals(stmt.child3, "") == 0) {
+            let else_node = ptr_to_node(stmt.child3)
+            if (else_node.kind == NodeKind.BLOCK) {
+                predeclare_locals_block(else_node)
+            } else {
+                predeclare_locals_stmt(else_node)
+            }
+        }
+    }
+
+    if (stmt.kind == NodeKind.WHILE_STATEMENT) {
+        if (str_equals(stmt.child2, "") == 0) {
+            predeclare_locals_block(ptr_to_node(stmt.child2))
+        }
+    }
+
+    if (stmt.kind == NodeKind.LOOP_STATEMENT) {
+        if (str_equals(stmt.child1, "") == 0) {
+            predeclare_locals_block(ptr_to_node(stmt.child1))
+        }
+    }
+}
+
+fn predeclare_locals_block(block: ASTNode) {
+    let stmt_ptr = block.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        predeclare_locals_stmt(stmt)
+        stmt_ptr = stmt.next
+    }
+}
+
+fn generate_function(func: ASTNode) {
+    let func_name = func.s1
+    
+    let ret_type = "void"
+    if (str_equals(func.child3, "") == 0) {
+        let ret_node = ptr_to_node(func.child3)
+        ret_type = map_type_node(ret_node)
+    }
+    
+    let is_main = 0
+    if (str_equals(func_name, "main") == 1) {
+        ret_type = "i32"
+        is_main = 1
+    }
+    
+    let ret_sig_type = storage_type(ret_type)
+    ir_function_begin(func_name, ret_sig_type)
+    
+    let param_ptr = func.child1
+    while (str_equals(param_ptr, "") == 0) {
+        let param_node = ptr_to_node(param_ptr)
+        let p_type_node = ptr_to_node(param_node.child1)
+        ir_function_param(storage_type(map_type_node(p_type_node)), str_concat("p_", param_node.s1))
+        param_ptr = param_node.next
+    }
+    
+    ir_function_body_start()
+    ir_clear_local_var_types()
+    ir_clear_returned()
+    
+    let param_ptr2 = func.child1
+    while (str_equals(param_ptr2, "") == 0) {
+        let param_node = ptr_to_node(param_ptr2)
+        let p_type_node = ptr_to_node(param_node.child1)
+        let p_type_str = map_type_node(p_type_node)
+        let p_store_type = storage_type(p_type_str)
+        
+        ir_set_var_type(param_node.s1, p_type_str)
+        ir_alloca(p_store_type, param_node.s1)
+        ir_store(p_store_type, str_concat("%p_", param_node.s1), param_node.s1)
+        
+        param_ptr2 = param_node.next
+    }
+
+    if (str_equals(func.child2, "") == 0) {
+        predeclare_locals_block(ptr_to_node(func.child2))
+    }
+    
+    if (str_equals(func.child2, "") == 0) {
+        generate_block(ptr_to_node(func.child2))
+    }
+    
+    if (ir_has_returned() == 0) {
+        if (str_equals(ret_sig_type, "void") == 1) {
+            ir_ret_void()
+        } else {
+            if (is_main == 1) {
+                ir_ret("i32", "0")
+            } else {
+                ir_ret(ret_sig_type, "0")
+            }
+        }
+    }
+    
+    ir_function_end()
+}
+
+// Pre-pass: collect string literals
+fn collect_strings_expr(expr: ASTNode) {
+    if (expr.kind == NodeKind.LITERAL_EXPR) {
+        if (expr.i1 == TokenType.STRING_LITERAL) {
+            let str_name = str_concat(".str.s", int_to_str(ir_string_counter))
+            ir_string_counter = ir_string_counter + 1
+            ir_global_string(str_name, expr.s1)
+            expr.s2 = str_name
+        }
+    }
+    if (expr.kind == NodeKind.BINARY_EXPR) {
+        if (str_equals(expr.child1, "") == 0) {
+            collect_strings_expr(ptr_to_node(expr.child1))
+        }
+        if (str_equals(expr.child2, "") == 0) {
+            collect_strings_expr(ptr_to_node(expr.child2))
+        }
+    }
+    if (expr.kind == NodeKind.CALL_EXPR) {
+        let arg_ptr = expr.child2
+        while (str_equals(arg_ptr, "") == 0) {
+            let arg_node = ptr_to_node(arg_ptr)
+            collect_strings_expr(arg_node)
+            arg_ptr = arg_node.next
+        }
+    }
+    if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+        let elem_ptr = expr.child1
+        while (str_equals(elem_ptr, "") == 0) {
+            let elem_node = ptr_to_node(elem_ptr)
+            collect_strings_expr(elem_node)
+            elem_ptr = elem_node.next
+        }
+    }
+    if (expr.kind == NodeKind.INDEX_EXPR) {
+        if (str_equals(expr.child1, "") == 0) {
+            collect_strings_expr(ptr_to_node(expr.child1))
+        }
+        if (str_equals(expr.child2, "") == 0) {
+            collect_strings_expr(ptr_to_node(expr.child2))
+        }
+    }
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        if (str_equals(expr.child1, "") == 0) {
+            collect_strings_expr(ptr_to_node(expr.child1))
+        }
+    }
+    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+        let field_ptr = expr.child1
+        while (str_equals(field_ptr, "") == 0) {
+            let field = ptr_to_node(field_ptr)
+            if (str_equals(field.child1, "") == 0) {
+                collect_strings_expr(ptr_to_node(field.child1))
+            }
+            field_ptr = field.next
+        }
+    }
+}
+
+fn declare_extern_function(ext: ASTNode) {
+    let ret_type = get_declared_return_type(ext, ext.child2)
+    ir_set_var_type(fn_key(ext.s1), ret_type)
+
+    ir_declare_function_begin(ext.s1, storage_type(ret_type))
+    let param_ptr = ext.child1
+    while (str_equals(param_ptr, "") == 0) {
+        let param_node = ptr_to_node(param_ptr)
+        let p_type_node = ptr_to_node(param_node.child1)
+        ir_declare_function_param(storage_type(map_type_node(p_type_node)))
+        param_ptr = param_node.next
+    }
+    ir_declare_function_end()
+}
+
+fn module_has_function(module: ASTNode, name: String) -> Bool {
+    let stmt_ptr = module.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        if (stmt.kind == NodeKind.FUNCTION and str_equals(stmt.s1, name) == 1) {
+            return true
+        }
+        stmt_ptr = stmt.next
+    }
+
+    return false
+}
+
+fn register_enum_decl(enum_node: ASTNode) {
+    let variant_ptr = enum_node.child1
+    let value = 0
+    while (str_equals(variant_ptr, "") == 0) {
+        let variant = ptr_to_node(variant_ptr)
+        ir_register_enum_variant(enum_node.s1, variant.s1, value)
+        value = value + 1
+        variant_ptr = variant.next
+    }
+}
+
+fn register_struct_name(struct_node: ASTNode) {
+    ir_register_struct(struct_node.s1)
+}
+
+fn generate_struct_decl(struct_node: ASTNode) {
+    let first_field_ptr = struct_node.child1
+    if (str_equals(first_field_ptr, "") == 0) {
+        let first_field = ptr_to_node(first_field_ptr)
+        if (ir_get_struct_field_index(struct_node.s1, first_field.s1) >= 0) {
+            return
+        }
+    }
+
+    ir_append("%")
+    ir_append(struct_node.s1)
+    ir_append(" = type { ")
+
+    let field_ptr = struct_node.child1
+    let field_count = 0
+    while (str_equals(field_ptr, "") == 0) {
+        let field = ptr_to_node(field_ptr)
+        let type_node = ptr_to_node(field.child1)
+        let field_type = storage_type(map_type_node(type_node))
+        ir_register_struct_field(struct_node.s1, field.s1, field_type)
+        if (field_count > 0) {
+            ir_append(", ")
+        }
+        ir_append(field_type)
+        field_count = field_count + 1
+        field_ptr = field.next
+    }
+
+    ir_append_line(" }")
+}
+
+fn collect_strings_stmt(stmt: ASTNode) {
+    if (stmt.kind == NodeKind.VARIABLE_DECL) {
+        if (str_equals(stmt.child2, "") == 0) {
+            collect_strings_expr(ptr_to_node(stmt.child2))
+        }
+    }
+    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
+        if (str_equals(stmt.child1, "") == 0) {
+            collect_strings_expr(ptr_to_node(stmt.child1))
+        }
+    }
+    if (stmt.kind == NodeKind.RETURN_STATEMENT) {
+        if (str_equals(stmt.child1, "") == 0) {
+            collect_strings_expr(ptr_to_node(stmt.child1))
+        }
+    }
+    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        if (str_equals(stmt.child2, "") == 0) {
+            collect_strings_expr(ptr_to_node(stmt.child2))
+        }
+    }
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        collect_strings_expr(ptr_to_node(stmt.child1))
+        collect_strings_block(ptr_to_node(stmt.child2))
+        if (str_equals(stmt.child3, "") == 0) {
+            let else_node = ptr_to_node(stmt.child3)
+            if (else_node.kind == NodeKind.IF_STATEMENT) {
+                collect_strings_stmt(else_node)
+            } else {
+                collect_strings_block(else_node)
+            }
+        }
+    }
+    if (stmt.kind == NodeKind.WHILE_STATEMENT) {
+        collect_strings_expr(ptr_to_node(stmt.child1))
+        collect_strings_block(ptr_to_node(stmt.child2))
+    }
+}
+
+fn collect_strings_block(block: ASTNode) {
+    let s_ptr = block.child1
+    while (str_equals(s_ptr, "") == 0) {
+        let s = ptr_to_node(s_ptr)
+        collect_strings_stmt(s)
+        s_ptr = s.next
+    }
+}
+
+fn collect_strings_function(func: ASTNode) {
+    if (str_equals(func.child2, "") == 0) {
+        collect_strings_block(ptr_to_node(func.child2))
+    }
+}
+
+fn generate_module(module: ASTNode) {
+    ir_reset_globals()
+    ir_reset_types()
+    ir_clear_var_types()
+    ir_module_start("self_hosted_module")
+
+    let type_stmt_ptr = module.child1
+    while (str_equals(type_stmt_ptr, "") == 0) {
+        let type_stmt = ptr_to_node(type_stmt_ptr)
+        if (type_stmt.kind == NodeKind.ENUM_DECL) {
+            register_enum_decl(type_stmt)
+        }
+        if (type_stmt.kind == NodeKind.STRUCT_DECL) {
+            register_struct_name(type_stmt)
+        }
+        type_stmt_ptr = type_stmt.next
+    }
+
+    let struct_stmt_ptr = module.child1
+    while (str_equals(struct_stmt_ptr, "") == 0) {
+        let struct_stmt = ptr_to_node(struct_stmt_ptr)
+        if (struct_stmt.kind == NodeKind.STRUCT_DECL) {
+            generate_struct_decl(struct_stmt)
+        }
+        struct_stmt_ptr = struct_stmt.next
+    }
+
+    ir_blank_line()
+    
+    // Declare runtime functions
+    ir_declare_function_begin("malloc", "ptr")
+    ir_declare_function_param("i64")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("println", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("print", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("println_int", "void")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("print_int", "void")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("println_bool", "void")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("print_bool", "void")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("println_char", "void")
+    ir_declare_function_param("i8")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("print_char", "void")
+    ir_declare_function_param("i8")
+    ir_declare_function_end()
+    
+    ir_blank_line()
+    
+    // First pass: global variables + collect string literals
+    let stmt_ptr = module.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        
+        if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            if (module_has_function(module, stmt.s1) == false) {
+                declare_extern_function(stmt)
+            }
+        }
+        
+        if (stmt.kind == NodeKind.VARIABLE_DECL) {
+            let init_val = "0"
+            let var_type = "i32"
+            if (str_equals(stmt.child1, "") == 0) {
+                let type_node = ptr_to_node(stmt.child1)
+                var_type = map_type_node(type_node)
+            }
+            if (str_equals(stmt.child2, "") == 0) {
+                let init_node = ptr_to_node(stmt.child2)
+                var_type = get_expr_type(init_node)
+                if (init_node.kind == NodeKind.LITERAL_EXPR) {
+                    init_val = init_node.s1
+                }
+            }
+            ir_global_var(stmt.s1, storage_type(var_type), init_val, 0)
+            ir_register_global_name(stmt.s1)
+            ir_set_var_type(stmt.s1, var_type)
+        }
+        
+        if (stmt.kind == NodeKind.FUNCTION) {
+            let ret_type = get_declared_return_type(stmt, stmt.child3)
+            if (str_equals(stmt.s1, "main") == 1) {
+                ret_type = "i32"
+            }
+            ir_set_var_type(fn_key(stmt.s1), ret_type)
+            collect_strings_function(stmt)
+        }
+        
+        stmt_ptr = stmt.next
+    }
+    
+    ir_blank_line()
+    
+    // Second pass: functions
+    let stmt_ptr2 = module.child1
+    while (str_equals(stmt_ptr2, "") == 0) {
+        let stmt2 = ptr_to_node(stmt_ptr2)
+        
+        if (stmt2.kind == NodeKind.FUNCTION) {
+            generate_function(stmt2)
+        }
+        
+        stmt_ptr2 = stmt2.next
+    }
+    
+    ir_module_end()
+}

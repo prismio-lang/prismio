@@ -1,0 +1,7 @@
+fn add(a: Int, b: Int) -> Int {
+    return a + b
+}
+
+fn multiply(x: Int, y: Int) -> Int {
+    return x * y
+}

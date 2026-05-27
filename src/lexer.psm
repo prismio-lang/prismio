@@ -1,0 +1,215 @@
+import token
+import utils
+import keywords
+
+struct Lexer {
+    input: String,
+    pos: Int,
+    line: Int,
+    col: Int
+}
+
+fn create_lexer(input: String) -> Lexer {
+    return Lexer {
+        input: input,
+        pos: 0,
+        line: 1,
+        col: 1
+    }
+}
+
+// Free functions instead of methods
+fn lexer_peek(lex: Lexer, offset: Int) -> Char {
+    return str_char_at(lex.input, lex.pos + offset)
+}
+
+fn lexer_current(lex: Lexer) -> Char {
+    return str_char_at(lex.input, lex.pos)
+}
+
+fn lexer_advance(lex: Lexer) {
+    lex.pos = lex.pos + 1
+    lex.col = lex.col + 1
+}
+
+fn lexer_skip_whitespace(lex: Lexer) {
+    let is_looping = true
+    while (is_looping) {
+        if (is_space(lexer_current(lex))) {
+            if (lexer_current(lex) == '\n') {
+                lex.line = lex.line + 1
+                lex.col = 0
+            }
+            lexer_advance(lex)
+        } else if (lexer_current(lex) == '/' and lexer_peek(lex, 1) == '/') {
+            while (lexer_current(lex) != '\n' and lexer_current(lex) != '\0') {
+                lexer_advance(lex)
+            }
+        } else {
+            is_looping = false
+        }
+    }
+}
+
+fn lexer_next_token(lex: Lexer) -> Token {
+    lexer_skip_whitespace(lex)
+
+    // Check EOF
+    if (lex.pos >= str_length(lex.input)) {
+        return Token {
+            type: TokenType.EOF,
+            value: "EOF",
+            line: lex.line,
+            tok_next: ""
+        }
+    }
+
+    let c = lexer_current(lex)
+
+    // Identifiers and Keywords
+    if (is_alpha(c)) {
+        let start = lex.pos
+        while (is_alnum(lexer_current(lex))) {
+            lexer_advance(lex)
+        }
+        let length = lex.pos - start
+        let value = str_substring(lex.input, start, length)
+        
+        if (is_keyword(value)) {
+            if (is_boolean(value)) {
+                return Token { type: TokenType.BOOL_LITERAL, value: value, line: lex.line, tok_next: "" }
+            }
+            return Token { type: TokenType.KEYWORD, value: value, line: lex.line, tok_next: "" }
+        }
+        
+        return Token { type: TokenType.IDENTIFIER, value: value, line: lex.line, tok_next: "" }
+    }
+
+    // Numbers
+    if (is_digit(c)) {
+        let start = lex.pos
+        while (is_digit(lexer_current(lex))) {
+            lexer_advance(lex)
+        }
+        // Float support
+        if (lexer_current(lex) == '.') {
+            lexer_advance(lex)
+            while (is_digit(lexer_current(lex))) {
+                lexer_advance(lex)
+            }
+        }
+        
+        let length = lex.pos - start
+        let value = str_substring(lex.input, start, length)
+        return Token { type: TokenType.NUMBER_LITERAL, value: value, line: lex.line, tok_next: "" }
+    }
+
+    // String Literal
+    if (c == '"') {
+        lexer_advance(lex) // Skip opening quote
+        let start = lex.pos
+        while (lexer_current(lex) != '"' and lex.pos < str_length(lex.input)) {
+            lexer_advance(lex)
+        }
+        
+        let length = lex.pos - start
+        let value = str_substring(lex.input, start, length)
+        
+        if (lexer_current(lex) == '"') {
+            lexer_advance(lex) // Skip closing quote
+        }
+        
+        return Token { type: TokenType.STRING_LITERAL, value: value, line: lex.line, tok_next: "" }
+    }
+
+    // Character Literal
+    if (c == '\'') {
+        lexer_advance(lex) // Skip opening quote
+        let value_char = lexer_current(lex)
+        
+        if (value_char == '\\') {
+            lexer_advance(lex)
+            let esc = lexer_current(lex)
+            if (esc == 'n') { value_char = '\n' }
+            if (esc == 't') { value_char = '\t' }
+            if (esc == 'r') { value_char = '\r' }
+            if (esc == '0') { value_char = '\0' }
+            if (esc == '\\') { value_char = '\\' }
+            if (esc == '\'') { value_char = '\'' }
+            if (esc == '"') { value_char = '"' }
+        }
+        
+        lexer_advance(lex)
+        if (lexer_current(lex) == '\'') {
+            lexer_advance(lex)
+        }
+        
+        return Token { type: TokenType.CHAR_LITERAL, value: int_to_str(char_code(value_char)), line: lex.line, tok_next: "" }
+    }
+
+    // Operators
+    if (is_operator(c)) {
+        let start = lex.pos
+        lexer_advance(lex)
+
+        // Check for 2-char operators
+        let next = lexer_current(lex)
+        if (c == '=' and next == '=') { lexer_advance(lex) }
+        if (c == '!' and next == '=') { lexer_advance(lex) }
+        if (c == '<' and next == '=') { lexer_advance(lex) }
+        if (c == '>' and next == '=') { lexer_advance(lex) }
+        if (c == '&' and next == '&') { lexer_advance(lex) }
+        if (c == '|' and next == '|') { lexer_advance(lex) }
+        if (c == '-' and next == '>') { lexer_advance(lex) }
+        if (c == '=' and next == '>') { lexer_advance(lex) }
+
+        let length = lex.pos - start
+        let value = str_substring(lex.input, start, length)
+        
+        // Refine type
+        let type = TokenType.ARITHMETIC_OPERATOR
+        if (length == 2) {
+            if (str_equals(value, "==") == 1 or str_equals(value, "!=") == 1 or str_equals(value, "<=") == 1 or str_equals(value, ">=") == 1) {
+                type = TokenType.RELATIONAL_OPERATOR
+            }
+            if (str_equals(value, "->") == 1 or str_equals(value, "=>") == 1) {
+                type = TokenType.ARROW 
+                if (str_equals(value, "=>") == 1) { type = TokenType.FAT_ARROW }
+            }
+        } else {
+            if (c == '<' or c == '>') { type = TokenType.RELATIONAL_OPERATOR }
+            if (c == '=') { type = TokenType.ASSIGNMENT_OPERATOR }
+            if (c == '!') { type = TokenType.NEGATION }
+        }
+        
+        return Token { type: type, value: value, line: lex.line, tok_next: "" }
+    }
+
+    // Separators
+    if (is_separator(c)) {
+        let val = str_substring(lex.input, lex.pos, 1)
+        lexer_advance(lex)
+        return Token { type: TokenType.SEPARATOR, value: val, line: lex.line, tok_next: "" }
+    }
+
+    // Unknown
+    lexer_advance(lex)
+    return Token { type: TokenType.UNKNOWN, value: "?", line: lex.line, tok_next: "" }
+}
+
+// Lexes all tokens and returns the head of a linked list of Tokens
+extern fn ptr_to_token(ptr: String) -> Token
+extern fn token_to_ptr(tok: Token) -> String
+
+fn lex_all_tokens(lex: Lexer) -> Token {
+    let head = lexer_next_token(lex)
+    let current = head
+
+    while (current.type != TokenType.EOF) {
+        let next_tok = lexer_next_token(lex)
+        current.tok_next = token_to_ptr(next_tok)
+        current = next_tok
+    }
+
+    return head
+}

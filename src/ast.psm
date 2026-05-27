@@ -1,0 +1,77 @@
+// AST Node Kinds
+// These must match the C++ compiler's NodeType enum for debugging
+enum NodeKind {
+    MODULE,
+
+    // Declarations
+    IMPORT_STATEMENT,
+    EXTERN_FUNCTION,
+    VARIABLE_DECL,
+    FUNCTION,
+    STRUCT_DECL,
+    ENUM_DECL,
+    TRAIT_DECL,
+    IMPL_DECL,
+
+    // Statements
+    BLOCK,
+    IF_STATEMENT,
+    MATCH_STATEMENT,
+    FOR_STATEMENT,
+    WHILE_STATEMENT,
+    LOOP_STATEMENT,
+    RETURN_STATEMENT,
+    ASSIGNMENT_STATEMENT,
+    EXPRESSION_STATEMENT,
+    BREAK_STATEMENT,
+    CONTINUE_STATEMENT,
+
+    // Expressions
+    BINARY_EXPR,
+    UNARY_EXPR,
+    LITERAL_EXPR,
+    IDENTIFIER_EXPR,
+    CALL_EXPR,
+    MEMBER_ACCESS_EXPR,
+    INDEX_EXPR,
+    ARRAY_LITERAL_EXPR,
+    STRUCT_LITERAL_EXPR,
+
+    // Other
+    FUNCTION_PARAMETER,
+    TYPE_ANNOTATION,
+    STRUCT_FIELD,
+    ENUM_VARIANT,
+    MATCH_ARM
+}
+
+// Flat AST Node using String for pointers (type punning)
+struct ASTNode {
+    kind: NodeKind,
+    s1: String,
+    s2: String,
+    i1: Int,
+    i2: Int,
+    child1: String, // ASTNode
+    child2: String, // ASTNode
+    child3: String, // ASTNode
+    next: String    // ASTNode (for linked lists)
+}
+
+extern fn ptr_to_node(ptr: String) -> ASTNode
+extern fn node_to_ptr(node: ASTNode) -> String
+
+// Helper to create an empty node
+fn create_node(kind: NodeKind) -> ASTNode {
+    return ASTNode {
+        kind: kind,
+        s1: "",
+        s2: "",
+        i1: 0,
+        i2: 0,
+        child1: "",
+        child2: "",
+        child3: "",
+        next: ""
+    }
+}

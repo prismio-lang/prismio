@@ -1,0 +1,7 @@
+Prismio successfully installed.
+
+Documentation:
+https://docs.prismio.org/
+
+GitHub:
+https://github.com/prismio-lang/prismio

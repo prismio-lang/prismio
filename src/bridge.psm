@@ -1,0 +1,102 @@
+// LLVM Bridge FFI for Prismio
+
+// Global state
+extern fn ir_reset()
+extern fn ir_print()
+extern fn ir_write_file(filename: String) -> Int
+extern fn ir_append(text: String)
+extern fn ir_append_line(text: String)
+extern fn ir_get_temp() -> Int
+
+// Module
+extern fn ir_module_start(module_name: String)
+extern fn ir_module_end()
+
+// Types
+extern fn ir_type_void() -> String
+extern fn ir_type_i1() -> String
+extern fn ir_type_i8() -> String
+extern fn ir_type_i32() -> String
+extern fn ir_type_i64() -> String
+extern fn ir_type_i8_ptr() -> String
+
+// Function Builders
+extern fn ir_declare_function_begin(name: String, ret_type: String)
+extern fn ir_declare_function_param(param_type: String)
+extern fn ir_declare_function_end()
+
+extern fn ir_function_begin(name: String, ret_type: String)
+extern fn ir_function_param(param_type: String, param_name: String)
+extern fn ir_function_body_start()
+extern fn ir_function_end()
+
+// Call Builder
+extern fn ir_call_begin()
+extern fn ir_call_arg(arg_type: String, arg_value: String)
+extern fn ir_call_end(ret_type: String, func_name: String) -> Int
+
+// Basic Blocks
+extern fn ir_get_label() -> Int
+extern fn ir_label(label_name: String)
+extern fn ir_label_numbered(label_num: Int)
+
+// Memory
+extern fn ir_alloca(type: String, name: String) -> Int
+extern fn ir_load(type: String, ptr_name: String) -> Int
+extern fn ir_store(type: String, value: String, ptr_name: String)
+extern fn ir_load_global(type: String, name: String) -> Int
+extern fn ir_store_global(type: String, value: String, name: String)
+
+// Arithmetic
+extern fn ir_add(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_sub(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_mul(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_sdiv(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_srem(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_neg(type: String, value: String) -> Int
+extern fn ir_and(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_or(type: String, lhs: String, rhs: String) -> Int
+
+// Comparisons
+extern fn ir_icmp_eq(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_icmp_ne(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_icmp_slt(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_icmp_sle(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_icmp_sgt(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_icmp_sge(type: String, lhs: String, rhs: String) -> Int
+
+// Control Flow
+extern fn ir_ret(type: String, value: String)
+extern fn ir_ret_void()
+extern fn ir_br(label: String)
+extern fn ir_br_numbered(label_num: Int)
+extern fn ir_cond_br(condition: String, true_label: String, false_label: String)
+extern fn ir_cond_br_numbered(condition: String, true_label: Int, false_label: Int)
+
+// Globals
+extern fn ir_global_string(name: String, str_content: String)
+extern fn ir_global_var(name: String, type: String, init_value: String, is_const: Int)
+
+// Helpers
+extern fn ir_get_temp_name(temp_num: Int) -> String
+extern fn ir_get_label_name(label_num: Int) -> String
+extern fn ir_register_global_name(name: String)
+extern fn ir_is_global_name(name: String) -> Int
+extern fn ir_reset_globals()
+extern fn ir_reset_types()
+extern fn ir_register_struct(name: String)
+extern fn ir_register_struct_field(struct_name: String, field_name: String, field_type: String)
+extern fn ir_is_struct_type_name(name: String) -> Int
+extern fn ir_get_struct_field_index(struct_name: String, field_name: String) -> Int
+extern fn ir_get_struct_field_type(struct_name: String, field_name: String) -> String
+extern fn ir_register_enum_variant(enum_name: String, variant_name: String, value: Int)
+extern fn ir_get_enum_variant(enum_name: String, variant_name: String) -> Int
+extern fn ir_set_var_type(name: String, var_type: String)
+extern fn ir_get_var_type(name: String) -> String
+extern fn ir_clear_var_types()
+extern fn ir_clear_local_var_types()
+extern fn ir_set_returned()
+extern fn ir_has_returned() -> Int
+extern fn ir_clear_returned()
+extern fn ir_comment(comment: String)
+extern fn ir_blank_line()

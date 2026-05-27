@@ -1,0 +1,70 @@
+struct Token {
+    type: Int,
+    value: Int,
+    line: Int
+}
+
+struct Parser {
+    position: Int,
+    token_count: Int
+}
+
+fn create_token(t: Int, v: Int, l: Int) -> Int {
+    return t + v + l
+}
+
+fn tokenize(input: Int) -> Int {
+    let mut count = 0
+    let mut pos = 0
+    
+    while (pos < input) {
+        let tok = create_token(1, pos, 1)
+        count = count + 1
+        pos = pos + 1
+    }
+    
+    return count
+}
+
+fn parse(token_count: Int) -> Int {
+    let mut parsed = 0
+    let mut i = 0
+    
+    while (i < token_count) {
+        if (i % 2 == 0) {
+            parsed = parsed + 1
+        }
+        i = i + 1
+    }
+    
+    return parsed
+}
+
+fn compile(input_size: Int) -> Int {
+    let tokens = tokenize(input_size)
+    let ast_nodes = parse(tokens)
+    return ast_nodes
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (compile(0) != 0) {
+        return fail("empty compiler simulation should produce zero nodes")
+    }
+
+    if (compile(1) != 1) {
+        return fail("single token should produce one parsed node")
+    }
+
+    if (compile(100) != 50) {
+        return fail("compiler simulation should parse every other token")
+    }
+
+    println("PASS: compiler simulation")
+    return 0
+}

@@ -1,0 +1,66 @@
+fn classify_number(n: Int) -> Int {
+    if (n < 0) {
+        return 0
+    } else {
+        if (n == 0) {
+            return 1
+        } else {
+            if (n < 10) {
+                return 2
+            } else {
+                return 3
+            }
+        }
+    }
+}
+
+fn early_return(x: Int) -> Int {
+    if (x < 0) {
+        return 0
+    }
+    
+    if (x == 0) {
+        return 1
+    }
+    
+    return x * 2
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (classify_number(0 - 3) != 0) {
+        return fail("negative numbers should classify as 0")
+    }
+
+    if (classify_number(0) != 1) {
+        return fail("zero should classify as 1")
+    }
+
+    if (classify_number(5) != 2) {
+        return fail("single-digit positives should classify as 2")
+    }
+
+    if (classify_number(12) != 3) {
+        return fail("larger positives should classify as 3")
+    }
+
+    if (early_return(0 - 1) != 0) {
+        return fail("early return should handle negatives")
+    }
+
+    if (early_return(0) != 1) {
+        return fail("early return should handle zero")
+    }
+
+    if (early_return(10) != 20) {
+        return fail("fallthrough return should double positives")
+    }
+
+    println("PASS: returns")
+    return 0
+}
