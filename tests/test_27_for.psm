@@ -1,0 +1,64 @@
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // 0..5 is exclusive of 5: 0+1+2+3+4 = 10
+    let mut sum = 0
+    for i in 0..5 {
+        sum = sum + i
+    }
+    if (sum != 10) {
+        return fail("for 0..5 should sum to 10")
+    }
+
+    // nested loops: 3 * 3 = 9 iterations
+    let mut count = 0
+    for a in 0..3 {
+        for b in 0..3 {
+            count = count + 1
+        }
+    }
+    if (count != 9) {
+        return fail("nested for should run 9 times")
+    }
+
+    // continue still advances the counter: odds 1+3+5+7+9 = 25
+    let mut odd = 0
+    for i in 0..10 {
+        if (i % 2 == 0) {
+            continue
+        }
+        odd = odd + i
+    }
+    if (odd != 25) {
+        return fail("for + continue should sum odds to 25")
+    }
+
+    // break exits early
+    let mut last = 0
+    for i in 0..100 {
+        if (i >= 5) {
+            break
+        }
+        last = i
+    }
+    if (last != 4) {
+        return fail("for + break should stop with last = 4")
+    }
+
+    // range bound can be a variable: 1*2*3 = 6
+    let n = 4
+    let mut prod = 1
+    for i in 1..n {
+        prod = prod * i
+    }
+    if (prod != 6) {
+        return fail("for 1..n product should be 6")
+    }
+
+    println("PASS: for loops")
+    return 0
+}

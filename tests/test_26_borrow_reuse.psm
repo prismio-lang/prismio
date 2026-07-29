@@ -1,0 +1,30 @@
+struct Res {
+    v: Int
+}
+
+fn read2(r: Res) -> Int {
+    return r.v
+}
+
+fn read1(r: Res) -> Int {
+    return read2(r) + r.v        // re-borrow r, then still use it
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let x = Res { v: 21 }
+    let total = read1(x)
+    if (total != 42) {
+        return fail("re-borrow should read the value twice")
+    }
+    if (x.v != 21) {
+        return fail("owner should retain a borrowed value")
+    }
+    println("PASS: borrow reuse")
+    return 0
+}

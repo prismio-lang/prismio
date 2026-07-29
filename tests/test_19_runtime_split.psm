@@ -1,0 +1,32 @@
+extern fn executable_directory() -> String
+extern fn join_path(directory: String, filename: String) -> String
+extern fn command_quote_arg(arg: String) -> String
+extern fn file_exists(path: String) -> Int
+extern fn str_length(s: String) -> Int
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let exe_dir = executable_directory()
+    let missing_path = join_path(exe_dir, "definitely_missing_prismio_runtime_split_file.tmp")
+    let quoted = command_quote_arg(missing_path)
+
+    if (str_length(exe_dir) <= 0) {
+        return fail("driver executable_directory should return a path")
+    }
+
+    if (str_length(quoted) <= str_length(missing_path)) {
+        return fail("driver command_quote_arg should wrap the path")
+    }
+
+    if (file_exists(missing_path) != 0) {
+        return fail("driver file_exists should report missing files")
+    }
+
+    println("PASS: runtime split")
+    return 0
+}

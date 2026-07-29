@@ -1,0 +1,43 @@
+// Diamond-shaped import graph:
+//
+//        test_30
+//        /     \
+//   diamond_left  diamond_right
+//        \     /
+//      diamond_shared
+//
+// diamond_shared is reachable through two distinct paths. Without memoized import
+// resolution its declarations are merged once per path, and the generated module
+// carries duplicate `define`/`declare` lines that llc rejects outright with
+// "invalid redefinition of function" -- so this test fails at compile time, not on
+// its assertions. str_length is additionally declared by all three modules, which
+// exercises the same-extern-in-several-modules case.
+import diamond_left
+import diamond_right
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (shared_double(4) != 8) {
+        return fail("shared_double should be merged exactly once and callable")
+    }
+
+    if (left_value(3) != 7) {
+        return fail("left_value should reach shared_double")
+    }
+
+    if (right_value(3) != 8) {
+        return fail("right_value should reach the same shared_double")
+    }
+
+    if (str_length("abcd") != 4) {
+        return fail("extern declared in three modules should collapse to one")
+    }
+
+    println("PASS: diamond imports")
+    return 0
+}

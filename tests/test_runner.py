@@ -101,6 +101,34 @@ def run_test(test_file):
     return success
 
 
+def run_negative_test(test_file):
+    test_name = Path(test_file).stem
+    exe_file = TEST_DIR / f"{test_name}.exe"
+
+    print(f"\n{BLUE}--- Running {test_name} ---{RESET}")
+    cleanup_files(exe_file)
+
+    print(f"  Compiling {test_file} (expected failure)...")
+    result = run_command([str(PRISMIO_EXE), "build", str(test_file), "-o", str(exe_file)])
+    cleanup_files(exe_file)
+
+    output = f"{result.stdout}\n{result.stderr}"
+    if result.returncode != 0 and "type error:" in output:
+        print(f"{GREEN}[PASS] Negative test rejected invalid program{RESET}")
+        if result.stdout.strip():
+            print(f"  Output: {result.stdout.strip()}")
+        if result.stderr.strip():
+            print(f"  Error: {result.stderr.strip()}")
+        return True
+
+    print(f"{RED}[FAIL] Negative test should fail with a type error{RESET}")
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr)
+    return False
+
+
 def main():
     print(f"{YELLOW}{'='*60}{RESET}")
     print(f"{YELLOW}Prismio Compiler Test Suite{RESET}")
@@ -111,19 +139,27 @@ def main():
         sys.exit(1)
 
     test_files = sorted(TEST_DIR.glob('test_*.psm'))
+    neg_test_files = sorted(TEST_DIR.glob('neg_*.psm'))
 
-    if not test_files:
+    if not test_files and not neg_test_files:
         print(f"{RED}[FAIL] No test files found!{RESET}")
-        print("Test files should be named test_XX_*.psm")
+        print("Test files should be named test_XX_*.psm or neg_XX_*.psm")
         sys.exit(1)
 
-    print(f"\nFound {len(test_files)} test(s)")
+    print(f"\nFound {len(test_files)} positive test(s)")
+    print(f"Found {len(neg_test_files)} negative test(s)")
 
     passed = 0
     failed = 0
 
     for test_file in test_files:
         if run_test(test_file):
+            passed += 1
+        else:
+            failed += 1
+
+    for test_file in neg_test_files:
+        if run_negative_test(test_file):
             passed += 1
         else:
             failed += 1

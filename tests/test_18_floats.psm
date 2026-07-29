@@ -1,0 +1,36 @@
+fn blended(offset: Float) -> Float {
+    let base: Float = 100.5
+    let total = ((base + offset) * 2.0) / 5.0 - 1.0
+    return total
+}
+
+fn comparisons(value: Float) -> Bool {
+    return value == 3.14 and value != 0.0 and value > 3.0 and value >= 3.14 and value < 4.0 and value <= 3.14
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let literal: Float = 0.0
+    let result = blended(4.5)
+
+    if (literal != 0.0) {
+        return fail("float literal should preserve zero")
+    }
+
+    if (result != 41.0) {
+        return fail("float arithmetic should use f64 operations")
+    }
+
+    if (comparisons(3.14) == false) {
+        return fail("float comparisons should use ordered fcmp predicates")
+    }
+
+    println_float(result)
+    println("PASS: floats")
+    return 0
+}

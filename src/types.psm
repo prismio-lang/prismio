@@ -1,0 +1,293 @@
+import ast
+import utils
+
+enum TypeKind {
+    INVALID,
+    VOID,
+    INT,
+    FLOAT,
+    BOOL,
+    CHAR,
+    STRING,
+    PTR,
+    STRUCT,
+    ENUM,
+    ARRAY,
+    LIST,
+    FUNCTION
+}
+
+struct TypeInfo {
+    kind: TypeKind,
+    name: String,
+    llvm: String,
+    child: String,
+    next: String
+}
+
+extern fn ptr_to_type(ptr: String) -> TypeInfo
+extern fn type_to_ptr(t: TypeInfo) -> String
+
+fn type_make(kind: TypeKind, name: String, llvm: String) -> TypeInfo {
+    return TypeInfo {
+        kind: kind,
+        name: name,
+        llvm: llvm,
+        child: "",
+        next: ""
+    }
+}
+
+// Structs are move-only, so binding one TypeInfo to another name (`a = b`) transfers
+// ownership and makes the original unusable. A TypeInfo is a descriptor, not an owned
+// resource: where the intent is "these two names describe the same type", take an
+// independent copy instead of aliasing.
+fn type_copy(t: TypeInfo) -> TypeInfo {
+    let dup = type_make(t.kind, t.name, t.llvm)
+    dup.child = t.child
+    dup.next = t.next
+    return dup
+}
+
+fn type_invalid() -> TypeInfo { return type_make(TypeKind.INVALID, "Invalid", "") }
+fn type_void() -> TypeInfo { return type_make(TypeKind.VOID, "Void", "void") }
+fn type_int() -> TypeInfo { return type_make(TypeKind.INT, "Int", "i32") }
+fn type_float() -> TypeInfo { return type_make(TypeKind.FLOAT, "Float", "double") }
+fn type_bool() -> TypeInfo { return type_make(TypeKind.BOOL, "Bool", "i1") }
+fn type_char() -> TypeInfo { return type_make(TypeKind.CHAR, "Char", "i8") }
+fn type_string() -> TypeInfo { return type_make(TypeKind.STRING, "String", "ptr") }
+fn type_ptr() -> TypeInfo { return type_make(TypeKind.PTR, "Ptr", "ptr") }
+
+// Sized integers. `Int` is the 32-bit signed default. Unsigned names start with "U";
+// usize/isize are pointer-width (i64 on native; the wasm target lowers these to i32).
+fn type_i8() -> TypeInfo { return type_make(TypeKind.INT, "I8", "i8") }
+fn type_i16() -> TypeInfo { return type_make(TypeKind.INT, "I16", "i16") }
+fn type_i64() -> TypeInfo { return type_make(TypeKind.INT, "I64", "i64") }
+fn type_isize() -> TypeInfo { return type_make(TypeKind.INT, "Isize", "i64") }
+fn type_u8() -> TypeInfo { return type_make(TypeKind.INT, "U8", "i8") }
+fn type_u16() -> TypeInfo { return type_make(TypeKind.INT, "U16", "i16") }
+fn type_u32() -> TypeInfo { return type_make(TypeKind.INT, "U32", "i32") }
+fn type_u64() -> TypeInfo { return type_make(TypeKind.INT, "U64", "i64") }
+fn type_usize() -> TypeInfo { return type_make(TypeKind.INT, "Usize", "i64") }
+
+fn type_int_is_unsigned(t: TypeInfo) -> Bool {
+    if (t.kind != TypeKind.INT) { return false }
+    return str_starts_with(t.name, "U") == 1
+}
+
+// Move-only types are owned, heap-backed values that transfer ownership on use.
+// Scalars/enums are Copyable (bit-copied) and never move. (String/Array become
+// move-only once borrows land; for now they stay copyable to avoid churn.)
+fn type_is_move_only(t: TypeInfo) -> Bool {
+    return t.kind == TypeKind.STRUCT
+}
+
+fn type_struct(name: String) -> TypeInfo {
+    return type_make(TypeKind.STRUCT, name, "ptr")
+}
+
+fn type_enum(name: String) -> TypeInfo {
+    return type_make(TypeKind.ENUM, name, "i32")
+}
+
+fn type_array(elem: TypeInfo) -> TypeInfo {
+    let t = type_make(TypeKind.ARRAY, "Array", "ptr")
+    t.child = type_to_ptr(elem)
+    return t
+}
+
+fn type_list(elem: TypeInfo) -> TypeInfo {
+    let t = type_make(TypeKind.LIST, "List", "ptr")
+    t.child = type_to_ptr(elem)
+    return t
+}
+
+fn type_is_valid(t: TypeInfo) -> Bool {
+    return t.kind != TypeKind.INVALID
+}
+
+fn type_display(t: TypeInfo) -> String {
+    if (t.kind == TypeKind.STRUCT) { return t.name }
+    if (t.kind == TypeKind.ENUM) { return t.name }
+    if (t.kind == TypeKind.ARRAY) {
+        if (str_equals(t.child, "") == 0) {
+            return str_concat(str_concat("[", type_display(ptr_to_type(t.child))), "]")
+        }
+        return "[Invalid]"
+    }
+    if (t.kind == TypeKind.LIST) {
+        if (str_equals(t.child, "") == 0) {
+            return str_concat(str_concat("List<", type_display(ptr_to_type(t.child))), ">")
+        }
+        return "List"
+    }
+    return t.name
+}
+
+fn type_equals(a: TypeInfo, b: TypeInfo) -> Bool {
+    if (a.kind != b.kind) { return false }
+    if (a.kind == TypeKind.STRUCT or a.kind == TypeKind.ENUM) {
+        return str_equals(a.name, b.name) == 1
+    }
+    if (a.kind == TypeKind.INT) {
+        return str_equals(a.name, b.name) == 1
+    }
+    if (a.kind == TypeKind.ARRAY) {
+        if (str_equals(a.child, "") == 1 or str_equals(b.child, "") == 1) {
+            return str_equals(a.child, b.child) == 1
+        }
+        return type_equals(ptr_to_type(a.child), ptr_to_type(b.child))
+    }
+    if (a.kind == TypeKind.LIST) {
+        // A list with an unknown element type (from list_new()) matches any list.
+        if (str_equals(a.child, "") == 1 or str_equals(b.child, "") == 1) { return true }
+        let ac = ptr_to_type(a.child)
+        let bc = ptr_to_type(b.child)
+        if (type_is_valid(ac) == false or type_is_valid(bc) == false) { return true }
+        return type_equals(ac, bc)
+    }
+    return true
+}
+
+fn type_is_numeric(t: TypeInfo) -> Bool {
+    return t.kind == TypeKind.INT or t.kind == TypeKind.FLOAT
+}
+
+fn type_ir_key(t: TypeInfo) -> String {
+    if (t.kind == TypeKind.VOID) { return "void" }
+    if (t.kind == TypeKind.INT) { return t.llvm }
+    if (t.kind == TypeKind.FLOAT) { return "double" }
+    if (t.kind == TypeKind.BOOL) { return "i1" }
+    if (t.kind == TypeKind.CHAR) { return "i8" }
+    if (t.kind == TypeKind.STRING) { return "ptr" }
+    if (t.kind == TypeKind.PTR) { return "ptr" }
+    if (t.kind == TypeKind.ENUM) { return "i32" }
+    if (t.kind == TypeKind.STRUCT) { return str_concat("struct:", t.name) }
+    if (t.kind == TypeKind.LIST) { return "ptr" }
+    if (t.kind == TypeKind.ARRAY) {
+        if (str_equals(t.child, "") == 0) {
+            let elem = ptr_to_type(t.child)
+            if (elem.kind == TypeKind.ARRAY) { return "ptrptr" }
+        }
+        return "ptr"
+    }
+    return ""
+}
+
+fn type_sem_key(t: TypeInfo) -> String {
+    if (t.kind == TypeKind.VOID) { return "Void" }
+    if (t.kind == TypeKind.INT) { return t.name }
+    if (t.kind == TypeKind.FLOAT) { return "Float" }
+    if (t.kind == TypeKind.BOOL) { return "Bool" }
+    if (t.kind == TypeKind.CHAR) { return "Char" }
+    if (t.kind == TypeKind.STRING) { return "String" }
+    if (t.kind == TypeKind.PTR) { return "Ptr" }
+    if (t.kind == TypeKind.STRUCT) { return str_concat("struct:", t.name) }
+    if (t.kind == TypeKind.ENUM) { return str_concat("enum:", t.name) }
+    if (t.kind == TypeKind.ARRAY) {
+        if (str_equals(t.child, "") == 0) {
+            return str_concat("array:", type_sem_key(ptr_to_type(t.child)))
+        }
+        return "array:Invalid"
+    }
+    if (t.kind == TypeKind.LIST) {
+        if (str_equals(t.child, "") == 0) {
+            return str_concat("list:", type_sem_key(ptr_to_type(t.child)))
+        }
+        return "list:Invalid"
+    }
+    return "Invalid"
+}
+
+fn type_storage_key(t: TypeInfo) -> String {
+    let key = type_ir_key(t)
+    if (str_equals(key, "ptrptr") == 1) { return "ptr" }
+    if (str_starts_with(key, "struct:") == 1) { return "ptr" }
+    return key
+}
+
+fn type_from_annotation(tn: ASTNode) -> TypeInfo {
+    if (tn.i1 == 1) {
+        if (str_equals(tn.child1, "") == 0) {
+            return type_array(type_from_annotation(ptr_to_node(tn.child1)))
+        }
+        return type_array(type_invalid())
+    }
+
+    if (str_equals(tn.s1, "Int") == 1) { return type_int() }
+    if (str_equals(tn.s1, "Float") == 1) { return type_float() }
+    if (str_equals(tn.s1, "Bool") == 1) { return type_bool() }
+    if (str_equals(tn.s1, "String") == 1) { return type_string() }
+    if (str_equals(tn.s1, "Char") == 1) { return type_char() }
+    if (str_equals(tn.s1, "I8") == 1) { return type_i8() }
+    if (str_equals(tn.s1, "I16") == 1) { return type_i16() }
+    if (str_equals(tn.s1, "I64") == 1) { return type_i64() }
+    if (str_equals(tn.s1, "Isize") == 1) { return type_isize() }
+    if (str_equals(tn.s1, "U8") == 1) { return type_u8() }
+    if (str_equals(tn.s1, "U16") == 1) { return type_u16() }
+    if (str_equals(tn.s1, "U32") == 1) { return type_u32() }
+    if (str_equals(tn.s1, "U64") == 1) { return type_u64() }
+    if (str_equals(tn.s1, "Usize") == 1) { return type_usize() }
+    if (str_equals(tn.s1, "") == 1) { return type_void() }
+    return type_struct(tn.s1)
+}
+
+fn type_from_ir_key(key: String) -> TypeInfo {
+    if (str_equals(key, "i32") == 1) { return type_int() }
+    if (str_equals(key, "double") == 1) { return type_float() }
+    if (str_equals(key, "i1") == 1) { return type_bool() }
+    if (str_equals(key, "i8") == 1) { return type_char() }
+    if (str_equals(key, "ptr") == 1) { return type_ptr() }
+    if (str_equals(key, "void") == 1) { return type_void() }
+    if (str_starts_with(key, "struct:") == 1) {
+        return type_struct(str_substring(key, 7, str_length(key) - 7))
+    }
+    return type_invalid()
+}
+
+fn type_from_sem_key(key: String) -> TypeInfo {
+    if (str_equals(key, "Int") == 1) { return type_int() }
+    if (str_equals(key, "Float") == 1) { return type_float() }
+    if (str_equals(key, "Bool") == 1) { return type_bool() }
+    if (str_equals(key, "Char") == 1) { return type_char() }
+    if (str_equals(key, "String") == 1) { return type_string() }
+    if (str_equals(key, "Ptr") == 1) { return type_ptr() }
+    if (str_equals(key, "Void") == 1) { return type_void() }
+    if (str_equals(key, "I8") == 1) { return type_i8() }
+    if (str_equals(key, "I16") == 1) { return type_i16() }
+    if (str_equals(key, "I64") == 1) { return type_i64() }
+    if (str_equals(key, "Isize") == 1) { return type_isize() }
+    if (str_equals(key, "U8") == 1) { return type_u8() }
+    if (str_equals(key, "U16") == 1) { return type_u16() }
+    if (str_equals(key, "U32") == 1) { return type_u32() }
+    if (str_equals(key, "U64") == 1) { return type_u64() }
+    if (str_equals(key, "Usize") == 1) { return type_usize() }
+    if (str_starts_with(key, "struct:") == 1) {
+        return type_struct(str_substring(key, 7, str_length(key) - 7))
+    }
+    if (str_starts_with(key, "enum:") == 1) {
+        return type_enum(str_substring(key, 5, str_length(key) - 5))
+    }
+    if (str_starts_with(key, "array:") == 1) {
+        return type_array(type_from_sem_key(str_substring(key, 6, str_length(key) - 6)))
+    }
+    if (str_starts_with(key, "list:") == 1) {
+        return type_list(type_from_sem_key(str_substring(key, 5, str_length(key) - 5)))
+    }
+    return type_invalid()
+}
+
+fn node_set_type(node: ASTNode, t: TypeInfo) {
+    node.type_info = type_to_ptr(t)
+}
+
+fn node_has_type(node: ASTNode) -> Bool {
+    return str_equals(node.type_info, "") == 0
+}
+
+fn node_get_type(node: ASTNode) -> TypeInfo {
+    if (node_has_type(node)) {
+        return ptr_to_type(node.type_info)
+    }
+    return type_invalid()
+}

@@ -1,7 +1,6 @@
 extern fn str_equals(s1: String, s2: String) -> Int
 
 fn is_keyword(s: String) -> Bool {
-    // Keywords from keywords.cpp
     // import
     if (str_equals(s, "import") == 1) { return true }
     
@@ -39,7 +38,11 @@ fn is_keyword(s: String) -> Bool {
     
     // property
     if (str_equals(s, "mut") == 1) { return true }
-    
+
+    // parameter conventions (ownership / borrows)
+    if (str_equals(s, "inout") == 1) { return true }
+    if (str_equals(s, "sink") == 1) { return true }
+
     return false
 }
 

@@ -81,22 +81,24 @@ prismio/
 │   ├── lexer.psm         # Tokenizer
 │   ├── token.psm         # Token type definitions
 │   ├── keywords.psm      # Keyword definitions
-│   ├── parser.psm        # Parser (top-level)
-│   ├── parser_decls.psm  # Declaration parsing
-│   ├── parser_expr.psm   # Expression parsing
+│   ├── parser.psm        # Parser (declarations, statements, expressions)
 │   ├── ast.psm           # AST node definitions
+│   ├── sema.psm          # Semantic analysis (type checking, move/borrow/drop)
+│   ├── types.psm         # Type system
 │   ├── ir.psm            # IR generator (AST → LLVM IR)
 │   ├── bridge.psm        # extern fn declarations for llvm-bridge
 │   └── utils.psm         # Shared utilities
 ├── tests/
 │   ├── test_runner.py    # Python test runner
-│   ├── test_*.psm        # Language test cases
+│   ├── test_*.psm        # Language test cases (positive)
+│   ├── neg_*.psm         # Language test cases (expected to fail compilation)
 │   └── utils.psm         # Shared test utilities
-├── runtime/              # Runtime library
-└── ums/                  # (excluded from source control)
+└── runtime/               # Runtime library
 ```
 
-The compiler currently performs no dedicated semantic analysis pass between parsing and IR generation — type information is resolved structurally during the IR walk. A dedicated analysis phase is planned.
+The compiler runs a dedicated semantic analysis pass (`src/sema.psm`) between parsing and IR
+generation — it performs type checking and enforces move/borrow/drop ownership rules before any IR
+is generated.
 
 ---
 
@@ -119,7 +121,7 @@ cd tests
 python test_runner.py
 ```
 
-To test against a **local build** of the compiler instead of the system-installed binary, update the `prismio` path at **line 18** of `test_runner.py` before running.
+The runner resolves `prismio` from your system `PATH` (via `find_prismio_exe()` in `test_runner.py`). To test against a **local build** instead, put that build first on `PATH` for the session, e.g. `PATH="/path/to/local/build:$PATH" python test_runner.py`.
 
 All tests must pass before a PR can be merged.
 

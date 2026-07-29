@@ -88,11 +88,12 @@ fn lexer_next_token(lex: Lexer) -> Token {
     // Numbers
     if (is_digit(c)) {
         let start = lex.pos
+        let is_float = 0
         while (is_digit(lexer_current(lex))) {
             lexer_advance(lex)
         }
-        // Float support
-        if (lexer_current(lex) == '.') {
+        if (lexer_current(lex) == '.' and is_digit(lexer_peek(lex, 1))) {
+            is_float = 1
             lexer_advance(lex)
             while (is_digit(lexer_current(lex))) {
                 lexer_advance(lex)
@@ -101,6 +102,9 @@ fn lexer_next_token(lex: Lexer) -> Token {
         
         let length = lex.pos - start
         let value = str_substring(lex.input, start, length)
+        if (is_float == 1) {
+            return Token { type: TokenType.FLOAT_LITERAL, value: value, line: lex.line, tok_next: "" }
+        }
         return Token { type: TokenType.NUMBER_LITERAL, value: value, line: lex.line, tok_next: "" }
     }
 
@@ -185,6 +189,13 @@ fn lexer_next_token(lex: Lexer) -> Token {
         return Token { type: type, value: value, line: lex.line, tok_next: "" }
     }
 
+    // Range operator '..'
+    if (c == '.' and lexer_peek(lex, 1) == '.') {
+        lexer_advance(lex)
+        lexer_advance(lex)
+        return Token { type: TokenType.RANGE, value: "..", line: lex.line, tok_next: "" }
+    }
+
     // Separators
     if (is_separator(c)) {
         let val = str_substring(lex.input, lex.pos, 1)
@@ -201,15 +212,25 @@ fn lexer_next_token(lex: Lexer) -> Token {
 extern fn ptr_to_token(ptr: String) -> Token
 extern fn token_to_ptr(tok: Token) -> String
 
+// Token is a struct and therefore move-only, so walking the list with a second
+// Token binding (`let current = head`) would move `head` and make the final
+// `return head` a use-after-move. Thread the list through pointers instead: the
+// bindings stay local to one iteration and the chain itself is built the same way.
 fn lex_all_tokens(lex: Lexer) -> Token {
-    let head = lexer_next_token(lex)
-    let current = head
+    let head_ptr = token_to_ptr(lexer_next_token(lex))
+    let current_ptr = head_ptr
 
-    while (current.type != TokenType.EOF) {
-        let next_tok = lexer_next_token(lex)
-        current.tok_next = token_to_ptr(next_tok)
-        current = next_tok
+    let scanning = true
+    while (scanning) {
+        let current = ptr_to_token(current_ptr)
+        if (current.type == TokenType.EOF) {
+            scanning = false
+        } else {
+            let next_ptr = token_to_ptr(lexer_next_token(lex))
+            current.tok_next = next_ptr
+            current_ptr = next_ptr
+        }
     }
 
-    return head
+    return ptr_to_token(head_ptr)
 }

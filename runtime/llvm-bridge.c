@@ -134,6 +134,18 @@ void ir_module_start(const char* module_name) {
     ir_append_line("");
 }
 
+void ir_module_start_wasm(const char* module_name) {
+    ir_reset();
+
+    ir_append("; ModuleID = '");
+    ir_append(module_name);
+    ir_append_line("'");
+    ir_append_line("source_filename = \"prismio_generated\"");
+    ir_append_line("target datalayout = \"e-m:e-p:32:32-i64:64-n32:64-S128\"");
+    ir_append_line("target triple = \"wasm32-unknown-unknown\"");
+    ir_append_line("");
+}
+
 void ir_module_end() {
     // Nothing special needed
 }
@@ -404,6 +416,54 @@ int ir_srem(const char* type, const char* lhs, const char* rhs) {
     return temp;
 }
 
+int ir_udiv(const char* type, const char* lhs, const char* rhs) {
+    int temp = ir_get_temp();
+    char buffer[256];
+    sprintf(buffer, "  %%t%d = udiv %s %s, %s", temp, type, lhs, rhs);
+    ir_append_line(buffer);
+    return temp;
+}
+
+int ir_urem(const char* type, const char* lhs, const char* rhs) {
+    int temp = ir_get_temp();
+    char buffer[256];
+    sprintf(buffer, "  %%t%d = urem %s %s, %s", temp, type, lhs, rhs);
+    ir_append_line(buffer);
+    return temp;
+}
+
+int ir_fadd(const char* type, const char* lhs, const char* rhs) {
+    int temp = ir_get_temp();
+    char buffer[256];
+    sprintf(buffer, "  %%t%d = fadd %s %s, %s", temp, type, lhs, rhs);
+    ir_append_line(buffer);
+    return temp;
+}
+
+int ir_fsub(const char* type, const char* lhs, const char* rhs) {
+    int temp = ir_get_temp();
+    char buffer[256];
+    sprintf(buffer, "  %%t%d = fsub %s %s, %s", temp, type, lhs, rhs);
+    ir_append_line(buffer);
+    return temp;
+}
+
+int ir_fmul(const char* type, const char* lhs, const char* rhs) {
+    int temp = ir_get_temp();
+    char buffer[256];
+    sprintf(buffer, "  %%t%d = fmul %s %s, %s", temp, type, lhs, rhs);
+    ir_append_line(buffer);
+    return temp;
+}
+
+int ir_fdiv(const char* type, const char* lhs, const char* rhs) {
+    int temp = ir_get_temp();
+    char buffer[256];
+    sprintf(buffer, "  %%t%d = fdiv %s %s, %s", temp, type, lhs, rhs);
+    ir_append_line(buffer);
+    return temp;
+}
+
 int ir_neg(const char* type, const char* value) {
     int temp = ir_get_temp();
     char buffer[256];
@@ -446,6 +506,79 @@ int ir_icmp_sgt(const char* type, const char* lhs, const char* rhs) {
 
 int ir_icmp_sge(const char* type, const char* lhs, const char* rhs) {
     return ir_icmp("sge", type, lhs, rhs);
+}
+
+int ir_icmp_ult(const char* type, const char* lhs, const char* rhs) {
+    return ir_icmp("ult", type, lhs, rhs);
+}
+
+int ir_icmp_ule(const char* type, const char* lhs, const char* rhs) {
+    return ir_icmp("ule", type, lhs, rhs);
+}
+
+int ir_icmp_ugt(const char* type, const char* lhs, const char* rhs) {
+    return ir_icmp("ugt", type, lhs, rhs);
+}
+
+int ir_icmp_uge(const char* type, const char* lhs, const char* rhs) {
+    return ir_icmp("uge", type, lhs, rhs);
+}
+
+// --- loop context stack: break/continue jump targets (supports nesting) ---
+static int loop_continue_stack[64];
+static int loop_break_stack[64];
+static int loop_depth = 0;
+
+void ir_loop_push(int continue_label, int break_label) {
+    if (loop_depth < 64) {
+        loop_continue_stack[loop_depth] = continue_label;
+        loop_break_stack[loop_depth] = break_label;
+        loop_depth++;
+    }
+}
+
+void ir_loop_pop() {
+    if (loop_depth > 0) loop_depth--;
+}
+
+int ir_loop_continue_label() {
+    return loop_depth > 0 ? loop_continue_stack[loop_depth - 1] : -1;
+}
+
+int ir_loop_break_label() {
+    return loop_depth > 0 ? loop_break_stack[loop_depth - 1] : -1;
+}
+
+int ir_fcmp(const char* predicate, const char* type, const char* lhs, const char* rhs) {
+    int temp = ir_get_temp();
+    char buffer[256];
+    sprintf(buffer, "  %%t%d = fcmp %s %s %s, %s", temp, predicate, type, lhs, rhs);
+    ir_append_line(buffer);
+    return temp;
+}
+
+int ir_fcmp_oeq(const char* type, const char* lhs, const char* rhs) {
+    return ir_fcmp("oeq", type, lhs, rhs);
+}
+
+int ir_fcmp_one(const char* type, const char* lhs, const char* rhs) {
+    return ir_fcmp("one", type, lhs, rhs);
+}
+
+int ir_fcmp_olt(const char* type, const char* lhs, const char* rhs) {
+    return ir_fcmp("olt", type, lhs, rhs);
+}
+
+int ir_fcmp_ole(const char* type, const char* lhs, const char* rhs) {
+    return ir_fcmp("ole", type, lhs, rhs);
+}
+
+int ir_fcmp_ogt(const char* type, const char* lhs, const char* rhs) {
+    return ir_fcmp("ogt", type, lhs, rhs);
+}
+
+int ir_fcmp_oge(const char* type, const char* lhs, const char* rhs) {
+    return ir_fcmp("oge", type, lhs, rhs);
 }
 
 // ============================================
@@ -791,6 +924,15 @@ const char* ir_get_var_type(const char* name) {
     return "i64"; // Default type if unknown
 }
 
+int ir_has_var_type(const char* name) {
+    for (int i = var_type_count - 1; i >= 0; i--) {
+        if (strcmp(var_types_names[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void ir_clear_var_types() {
     var_type_count = 0;
 }
@@ -809,6 +951,72 @@ void ir_clear_local_var_types() {
         }
     }
     var_type_count = write;
+}
+
+// --- move tracking (MVS): names of move-only values that have been moved-from ---
+#define MAX_MOVED 1024
+static char moved_names[MAX_MOVED][64];
+static int moved_count = 0;
+
+void ir_clear_moved() {
+    moved_count = 0;
+}
+
+int ir_is_moved(const char* name) {
+    for (int i = 0; i < moved_count; i++) {
+        if (strcmp(moved_names[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+void ir_mark_moved(const char* name) {
+    if (ir_is_moved(name)) return;
+    if (moved_count < MAX_MOVED) {
+        strncpy(moved_names[moved_count], name, 63);
+        moved_names[moved_count][63] = '\0';
+        moved_count++;
+    }
+}
+
+// Moved-from state is tracked per name, but a `let` binds a *fresh* value to that
+// name, so whatever was moved out of the previous binding no longer applies. Without
+// this, reusing an ordinary name (`let t = ...` twice in one function, in different
+// branches) makes every use after the first move a spurious "use of moved value".
+void ir_unmark_moved(const char* name) {
+    for (int i = 0; i < moved_count; i++) {
+        if (strcmp(moved_names[i], name) == 0) {
+            for (int j = i; j < moved_count - 1; j++) {
+                memcpy(moved_names[j], moved_names[j + 1], sizeof(moved_names[j]));
+            }
+            moved_count--;
+            return;
+        }
+    }
+}
+
+// --- borrow tracking (MVS): names bound to non-owning (let/inout) parameters ---
+#define MAX_BORROWED 1024
+static char borrowed_names[MAX_BORROWED][64];
+static int borrowed_count = 0;
+
+void ir_clear_borrowed() {
+    borrowed_count = 0;
+}
+
+int ir_is_borrowed(const char* name) {
+    for (int i = 0; i < borrowed_count; i++) {
+        if (strcmp(borrowed_names[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+void ir_mark_borrowed(const char* name) {
+    if (ir_is_borrowed(name)) return;
+    if (borrowed_count < MAX_BORROWED) {
+        strncpy(borrowed_names[borrowed_count], name, 63);
+        borrowed_names[borrowed_count][63] = '\0';
+        borrowed_count++;
+    }
 }
 
 // Return tracking

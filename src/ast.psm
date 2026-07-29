@@ -1,5 +1,4 @@
 // AST Node Kinds
-// These must match the C++ compiler's NodeType enum for debugging
 enum NodeKind {
     MODULE,
 
@@ -55,7 +54,8 @@ struct ASTNode {
     child1: String, // ASTNode
     child2: String, // ASTNode
     child3: String, // ASTNode
-    next: String    // ASTNode (for linked lists)
+    next: String,   // ASTNode (for linked lists)
+    type_info: String // TypeInfo assigned by sema
 }
 
 extern fn ptr_to_node(ptr: String) -> ASTNode
@@ -72,6 +72,7 @@ fn create_node(kind: NodeKind) -> ASTNode {
         child1: "",
         child2: "",
         child3: "",
-        next: ""
+        next: "",
+        type_info: ""
     }
 }

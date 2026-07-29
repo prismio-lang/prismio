@@ -20,6 +20,8 @@ Thumbs.db
 *.dll
 *.exe
 *.o
+*.obj
+*.ll
 *.so
 *.a
 *.lib
@@ -31,6 +33,9 @@ Thumbs.db
 *.tar
 *.7z
 *.rar
+
+# Build output (bootstrap generations and their intermediates)
+build/
 
 # Dependencies
 node_modules/

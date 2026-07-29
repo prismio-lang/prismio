@@ -7,6 +7,10 @@ struct Parser {
     current: String // Token pointer
 }
 
+// When 0, `ident {` is NOT parsed as a struct literal. Disabled while reading
+// for-range bounds so `for i in 0..n { ... }` doesn't read the body as a struct.
+let mut parser_allow_struct_lit = 1
+
 fn parser_create(tokens: Token) -> Parser {
     return Parser { current: token_to_ptr(tokens) }
 }
@@ -152,7 +156,14 @@ fn parse_type_annotation(p: Parser) -> ASTNode {
         println("Expected type name")
         exit(1)
     }
-    
+
+    // Generic list type: List<T>
+    if (str_equals(type_node.s1, "List") == 1 and parser_match_val(p, TokenType.RELATIONAL_OPERATOR, "<")) {
+        type_node.i2 = 1 // is_list
+        type_node.child1 = node_to_ptr(parse_type_annotation(p))
+        parser_expect_val(p, TokenType.RELATIONAL_OPERATOR, ">", "list type argument")
+    }
+
     return type_node
 }
 
@@ -238,12 +249,21 @@ fn parse_function_decl(p: Parser) -> ASTNode {
         let is_looping = true
         while (is_looping) {
             let param = create_node(NodeKind.FUNCTION_PARAMETER)
+            // Optional parameter convention: `sink` (move-in) or `inout` (mutable
+            // borrow). Default (none) is a shared read-only borrow.
+            if (parser_match_val(p, TokenType.KEYWORD, "sink")) {
+                param.s2 = "sink"
+            } else {
+                if (parser_match_val(p, TokenType.KEYWORD, "inout")) {
+                    param.s2 = "inout"
+                }
+            }
             let curr = parser_current(p)
             param.s1 = curr.value
             parser_expect(p, TokenType.IDENTIFIER, "parameter name")
             parser_expect_val(p, TokenType.SEPARATOR, ":", "parameter type")
             param.child1 = node_to_ptr(parse_type_annotation(p))
-            
+
             if (str_equals(fn_node.child1, "") == 1) {
                 fn_node.child1 = node_to_ptr(param)
             } else {
@@ -393,12 +413,91 @@ fn parse_while_statement(p: Parser) -> ASTNode {
     return while_node
 }
 
+fn parse_loop_statement(p: Parser) -> ASTNode {
+    parser_expect_val(p, TokenType.KEYWORD, "loop", "loop statement")
+    let loop_node = create_node(NodeKind.LOOP_STATEMENT)
+    loop_node.child1 = node_to_ptr(parse_block(p))
+    return loop_node
+}
+
+fn parse_for_statement(p: Parser) -> ASTNode {
+    parser_expect_val(p, TokenType.KEYWORD, "for", "for statement")
+    let for_node = create_node(NodeKind.FOR_STATEMENT)
+    let curr = parser_current(p)
+    for_node.s1 = curr.value
+    parser_expect(p, TokenType.IDENTIFIER, "for loop variable")
+    parser_expect_val(p, TokenType.KEYWORD, "in", "for ... in")
+    parser_allow_struct_lit = 0
+    for_node.child1 = node_to_ptr(parse_expression(p, 0))      // range start
+    parser_expect_val(p, TokenType.RANGE, "..", "for range")
+    for_node.child2 = node_to_ptr(parse_expression(p, 0))      // range end (exclusive)
+    parser_allow_struct_lit = 1
+    for_node.child3 = node_to_ptr(parse_block(p))
+    return for_node
+}
+
+fn parse_match_arm(p: Parser) -> ASTNode {
+    let arm = create_node(NodeKind.MATCH_ARM)
+    if (parser_match_val(p, TokenType.IDENTIFIER, "_")) {
+        arm.s1 = "_"
+    } else {
+        arm.child1 = node_to_ptr(parse_expression(p, 0))
+    }
+    parser_expect_val(p, TokenType.FAT_ARROW, "=>", "match arm")
+    arm.child2 = node_to_ptr(parse_block(p))
+    return arm
+}
+
+fn parse_match_statement(p: Parser) -> ASTNode {
+    parser_expect_val(p, TokenType.KEYWORD, "match", "match statement")
+    let match_node = create_node(NodeKind.MATCH_STATEMENT)
+
+    parser_expect_val(p, TokenType.SEPARATOR, "(", "match scrutinee")
+    match_node.child1 = node_to_ptr(parse_expression(p, 0))
+    parser_expect_val(p, TokenType.SEPARATOR, ")", "match scrutinee")
+
+    parser_expect_val(p, TokenType.SEPARATOR, "{", "match body")
+    let head = ""
+    let tail_ptr = ""
+    while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
+        let arm = parse_match_arm(p)
+        if (str_equals(head, "") == 1) {
+            head = node_to_ptr(arm)
+            tail_ptr = head
+        } else {
+            let tail = ptr_to_node(tail_ptr)
+            tail.next = node_to_ptr(arm)
+            tail_ptr = tail.next
+        }
+        parser_match_val(p, TokenType.SEPARATOR, ",")
+    }
+    parser_expect_val(p, TokenType.SEPARATOR, "}", "match body")
+
+    match_node.child2 = head
+    return match_node
+}
+
 fn parse_statement(p: Parser) -> ASTNode {
     if (parser_check_val(p, TokenType.KEYWORD, "if")) {
         return parse_if_statement(p)
     }
     if (parser_check_val(p, TokenType.KEYWORD, "while")) {
         return parse_while_statement(p)
+    }
+    if (parser_check_val(p, TokenType.KEYWORD, "loop")) {
+        return parse_loop_statement(p)
+    }
+    if (parser_check_val(p, TokenType.KEYWORD, "match")) {
+        return parse_match_statement(p)
+    }
+    if (parser_check_val(p, TokenType.KEYWORD, "for")) {
+        return parse_for_statement(p)
+    }
+    if (parser_match_val(p, TokenType.KEYWORD, "break")) {
+        return create_node(NodeKind.BREAK_STATEMENT)
+    }
+    if (parser_match_val(p, TokenType.KEYWORD, "continue")) {
+        return create_node(NodeKind.CONTINUE_STATEMENT)
     }
     if (parser_match_val(p, TokenType.KEYWORD, "return")) {
         let ret_node = create_node(NodeKind.RETURN_STATEMENT)
@@ -482,7 +581,7 @@ fn parse_expression(p: Parser, precedence: Int) -> ASTNode {
 fn parse_primary(p: Parser) -> ASTNode {
     let curr = parser_current(p)
     
-    if (curr.type == TokenType.NUMBER_LITERAL or curr.type == TokenType.STRING_LITERAL or curr.type == TokenType.BOOL_LITERAL or curr.type == TokenType.CHAR_LITERAL) {
+    if (curr.type == TokenType.NUMBER_LITERAL or curr.type == TokenType.FLOAT_LITERAL or curr.type == TokenType.STRING_LITERAL or curr.type == TokenType.BOOL_LITERAL or curr.type == TokenType.CHAR_LITERAL) {
         let lit = create_node(NodeKind.LITERAL_EXPR)
         lit.i1 = curr.type // literal type
         lit.s1 = curr.value
@@ -492,7 +591,7 @@ fn parse_primary(p: Parser) -> ASTNode {
     
     if (curr.type == TokenType.IDENTIFIER) {
         let next_tok = parser_peek(p)
-        if (next_tok.type == TokenType.SEPARATOR and str_equals(next_tok.value, "{") == 1) {
+        if (next_tok.type == TokenType.SEPARATOR and str_equals(next_tok.value, "{") == 1 and parser_allow_struct_lit == 1) {
             let struct_lit = create_node(NodeKind.STRUCT_LITERAL_EXPR)
             struct_lit.s1 = curr.value
             parser_advance(p)

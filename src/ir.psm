@@ -2,7 +2,10 @@
 // Traverses the AST and emits LLVM IR via bridge.psm
 // Uses C-side global registry to avoid Prismio string globals
 
+import types
+
 let ir_string_counter = 0
+let ir_target_wasm = false
 
 // Forward declarations for mutual recursion
 extern fn generate_statement(stmt: ASTNode)
@@ -10,11 +13,30 @@ extern fn generate_block(block: ASTNode)
 extern fn collect_strings_stmt(stmt: ASTNode)
 extern fn collect_strings_block(block: ASTNode)
 
+fn ir_set_target_wasm(enabled: Bool) {
+    ir_target_wasm = enabled
+}
+
+fn ir_ptr_int_type() -> String {
+    if (ir_target_wasm) { return "i32" }
+    return "i64"
+}
+
 fn map_type(t: String) -> String {
     if (str_equals(t, "Int") == 1) { return "i32" }
+    if (str_equals(t, "Float") == 1) { return "double" }
     if (str_equals(t, "Bool") == 1) { return "i1" }
     if (str_equals(t, "String") == 1) { return "ptr" }
     if (str_equals(t, "Char") == 1) { return "i8" }
+    if (str_equals(t, "I8") == 1) { return "i8" }
+    if (str_equals(t, "I16") == 1) { return "i16" }
+    if (str_equals(t, "I64") == 1) { return "i64" }
+    if (str_equals(t, "Isize") == 1) { return ir_ptr_int_type() }
+    if (str_equals(t, "U8") == 1) { return "i8" }
+    if (str_equals(t, "U16") == 1) { return "i16" }
+    if (str_equals(t, "U32") == 1) { return "i32" }
+    if (str_equals(t, "U64") == 1) { return "i64" }
+    if (str_equals(t, "Usize") == 1) { return ir_ptr_int_type() }
     if (str_equals(t, "") == 1) { return "void" }
     return "i32"
 }
@@ -39,6 +61,9 @@ fn llvm_type_name(t: String) -> String {
 }
 
 fn map_type_node(tn: ASTNode) -> String {
+    if (tn.i2 == 1) {
+        return "ptr"            // List<T>
+    }
     if (tn.i1 == 1) {
         if (str_equals(tn.child1, "") == 0) {
             let elem = ptr_to_node(tn.child1)
@@ -75,6 +100,13 @@ fn fn_key(name: String) -> String {
     return str_concat("$fn$", name)
 }
 
+fn function_symbol_name(func: ASTNode) -> String {
+    if (str_equals(func.s2, "") == 0) {
+        return func.s2
+    }
+    return func.s1
+}
+
 fn get_declared_return_type(node: ASTNode, ret_child: String) -> String {
     if (str_equals(ret_child, "") == 0) {
         let ret_node = ptr_to_node(ret_child)
@@ -84,8 +116,13 @@ fn get_declared_return_type(node: ASTNode, ret_child: String) -> String {
 }
 
 fn get_expr_type(expr: ASTNode) -> String {
+    if (node_has_type(expr)) {
+        return type_ir_key(node_get_type(expr))
+    }
+
     if (expr.kind == NodeKind.LITERAL_EXPR) {
         if (expr.i1 == TokenType.NUMBER_LITERAL) { return "i32" }
+        if (expr.i1 == TokenType.FLOAT_LITERAL) { return "double" }
         if (expr.i1 == TokenType.BOOL_LITERAL) { return "i1" }
         if (expr.i1 == TokenType.CHAR_LITERAL) { return "i8" }
         if (expr.i1 == TokenType.STRING_LITERAL) { return "ptr" }
@@ -113,11 +150,17 @@ fn get_expr_type(expr: ASTNode) -> String {
         if (str_equals(func_name, "print_int") == 1 or str_equals(func_name, "println_int") == 1) {
             return "void"
         }
+        if (str_equals(func_name, "print_float") == 1 or str_equals(func_name, "println_float") == 1) {
+            return "void"
+        }
         if (str_equals(func_name, "println_char") == 1 or str_equals(func_name, "print_char") == 1) {
             return "void"
         }
         if (str_equals(func_name, "println_bool") == 1 or str_equals(func_name, "print_bool") == 1) {
             return "void"
+        }
+        if (str_equals(expr.s2, "") == 0) {
+            return ir_get_var_type(fn_key(expr.s2))
         }
         return ir_get_var_type(fn_key(func_name))
     }
@@ -161,6 +204,9 @@ fn generate_expression(expr: ASTNode) -> String {
         if (expr.i1 == TokenType.NUMBER_LITERAL) {
             return expr.s1
         }
+        if (expr.i1 == TokenType.FLOAT_LITERAL) {
+            return expr.s1
+        }
         if (expr.i1 == TokenType.BOOL_LITERAL) {
             if (str_equals(expr.s1, "true") == 1) { return "1" }
             return "0"
@@ -181,7 +227,11 @@ fn generate_expression(expr: ASTNode) -> String {
             ir_append(int_to_str(len_plus_one))
             ir_append(" x i8], ptr @")
             ir_append(str_name)
-            ir_append_line(", i64 0, i64 0")
+            ir_append(", ")
+            ir_append(ir_ptr_int_type())
+            ir_append(" 0, ")
+            ir_append(ir_ptr_int_type())
+            ir_append_line(" 0")
             return tname
         }
     }
@@ -202,13 +252,16 @@ fn generate_expression(expr: ASTNode) -> String {
         ir_append(size_name)
         ir_append(" = ptrtoint ptr ")
         ir_append(size_ptr_name)
-        ir_append_line(" to i64")
+        ir_append(" to ")
+        ir_append_line(ir_ptr_int_type())
 
         let mem_temp = ir_get_temp()
         let mem_name = ir_get_temp_name(mem_temp)
         ir_append("  ")
         ir_append(mem_name)
-        ir_append(" = call ptr @malloc(i64 ")
+        ir_append(" = call ptr @malloc(")
+        ir_append(ir_ptr_int_type())
+        ir_append(" ")
         ir_append(size_name)
         ir_append_line(")")
 
@@ -319,7 +372,11 @@ fn generate_expression(expr: ASTNode) -> String {
                 ir_append(int_to_str(elem_count))
                 ir_append(" x ptr], ptr ")
                 ir_append(arr_name)
-                ir_append(", i64 0, i64 ")
+                ir_append(", ")
+                ir_append(ir_ptr_int_type())
+                ir_append(" 0, ")
+                ir_append(ir_ptr_int_type())
+                ir_append(" ")
                 ir_append_line(int_to_str(elem_index))
                 ir_append("  store ptr ")
                 ir_append(inner_ptr)
@@ -337,7 +394,11 @@ fn generate_expression(expr: ASTNode) -> String {
             ir_append(int_to_str(elem_count))
             ir_append(" x ptr], ptr ")
             ir_append(arr_name)
-            ir_append_line(", i64 0, i64 0")
+            ir_append(", ")
+            ir_append(ir_ptr_int_type())
+            ir_append(" 0, ")
+            ir_append(ir_ptr_int_type())
+            ir_append_line(" 0")
             return ret_name
         }
 
@@ -362,7 +423,11 @@ fn generate_expression(expr: ASTNode) -> String {
             ir_append(int_to_str(elem_count))
             ir_append(" x i32], ptr ")
             ir_append(arr_name2)
-            ir_append(", i64 0, i64 ")
+            ir_append(", ")
+            ir_append(ir_ptr_int_type())
+            ir_append(" 0, ")
+            ir_append(ir_ptr_int_type())
+            ir_append(" ")
             ir_append_line(int_to_str(elem_index2))
             ir_append("  store i32 ")
             ir_append(elem_val)
@@ -380,7 +445,11 @@ fn generate_expression(expr: ASTNode) -> String {
         ir_append(int_to_str(elem_count))
         ir_append(" x i32], ptr ")
         ir_append(arr_name2)
-        ir_append_line(", i64 0, i64 0")
+        ir_append(", ")
+        ir_append(ir_ptr_int_type())
+        ir_append(" 0, ")
+        ir_append(ir_ptr_int_type())
+        ir_append_line(" 0")
         return ret_name2
     }
 
@@ -422,18 +491,47 @@ fn generate_expression(expr: ASTNode) -> String {
         
         let op = expr.s1
         let temp_id = 0
-        let op_type = get_expr_type(ptr_to_node(expr.child1))
-        if (str_equals(op, "+") == 1) { temp_id = ir_add(op_type, left_val, right_val) }
-        if (str_equals(op, "-") == 1) { temp_id = ir_sub(op_type, left_val, right_val) }
-        if (str_equals(op, "*") == 1) { temp_id = ir_mul(op_type, left_val, right_val) }
-        if (str_equals(op, "/") == 1) { temp_id = ir_sdiv(op_type, left_val, right_val) }
-        if (str_equals(op, "%") == 1) { temp_id = ir_srem(op_type, left_val, right_val) }
-        if (str_equals(op, "==") == 1) { temp_id = ir_icmp_eq(op_type, left_val, right_val) }
-        if (str_equals(op, "!=") == 1) { temp_id = ir_icmp_ne(op_type, left_val, right_val) }
-        if (str_equals(op, "<") == 1) { temp_id = ir_icmp_slt(op_type, left_val, right_val) }
-        if (str_equals(op, "<=") == 1) { temp_id = ir_icmp_sle(op_type, left_val, right_val) }
-        if (str_equals(op, ">") == 1) { temp_id = ir_icmp_sgt(op_type, left_val, right_val) }
-        if (str_equals(op, ">=") == 1) { temp_id = ir_icmp_sge(op_type, left_val, right_val) }
+        let left_node = ptr_to_node(expr.child1)
+        let op_type = get_expr_type(left_node)
+        let is_unsigned = false
+        if (node_has_type(left_node)) {
+            is_unsigned = type_int_is_unsigned(node_get_type(left_node))
+        }
+        if (str_equals(op_type, "double") == 1) {
+            if (str_equals(op, "+") == 1) { temp_id = ir_fadd(op_type, left_val, right_val) }
+            if (str_equals(op, "-") == 1) { temp_id = ir_fsub(op_type, left_val, right_val) }
+            if (str_equals(op, "*") == 1) { temp_id = ir_fmul(op_type, left_val, right_val) }
+            if (str_equals(op, "/") == 1) { temp_id = ir_fdiv(op_type, left_val, right_val) }
+            if (str_equals(op, "==") == 1) { temp_id = ir_fcmp_oeq(op_type, left_val, right_val) }
+            if (str_equals(op, "!=") == 1) { temp_id = ir_fcmp_one(op_type, left_val, right_val) }
+            if (str_equals(op, "<") == 1) { temp_id = ir_fcmp_olt(op_type, left_val, right_val) }
+            if (str_equals(op, "<=") == 1) { temp_id = ir_fcmp_ole(op_type, left_val, right_val) }
+            if (str_equals(op, ">") == 1) { temp_id = ir_fcmp_ogt(op_type, left_val, right_val) }
+            if (str_equals(op, ">=") == 1) { temp_id = ir_fcmp_oge(op_type, left_val, right_val) }
+        } else {
+            if (str_equals(op, "+") == 1) { temp_id = ir_add(op_type, left_val, right_val) }
+            if (str_equals(op, "-") == 1) { temp_id = ir_sub(op_type, left_val, right_val) }
+            if (str_equals(op, "*") == 1) { temp_id = ir_mul(op_type, left_val, right_val) }
+            if (str_equals(op, "==") == 1) { temp_id = ir_icmp_eq(op_type, left_val, right_val) }
+            if (str_equals(op, "!=") == 1) { temp_id = ir_icmp_ne(op_type, left_val, right_val) }
+            if (is_unsigned) {
+                if (str_equals(op, "/") == 1) { temp_id = ir_udiv(op_type, left_val, right_val) }
+                if (str_equals(op, "<") == 1) { temp_id = ir_icmp_ult(op_type, left_val, right_val) }
+                if (str_equals(op, "<=") == 1) { temp_id = ir_icmp_ule(op_type, left_val, right_val) }
+                if (str_equals(op, ">") == 1) { temp_id = ir_icmp_ugt(op_type, left_val, right_val) }
+                if (str_equals(op, ">=") == 1) { temp_id = ir_icmp_uge(op_type, left_val, right_val) }
+            } else {
+                if (str_equals(op, "/") == 1) { temp_id = ir_sdiv(op_type, left_val, right_val) }
+                if (str_equals(op, "<") == 1) { temp_id = ir_icmp_slt(op_type, left_val, right_val) }
+                if (str_equals(op, "<=") == 1) { temp_id = ir_icmp_sle(op_type, left_val, right_val) }
+                if (str_equals(op, ">") == 1) { temp_id = ir_icmp_sgt(op_type, left_val, right_val) }
+                if (str_equals(op, ">=") == 1) { temp_id = ir_icmp_sge(op_type, left_val, right_val) }
+            }
+        }
+        if (str_equals(op, "%") == 1) {
+            if (is_unsigned) { temp_id = ir_urem(op_type, left_val, right_val) }
+            else { temp_id = ir_srem(op_type, left_val, right_val) }
+        }
         if (str_equals(op, "and") == 1) { temp_id = ir_and("i1", left_val, right_val) }
         if (str_equals(op, "or") == 1) { temp_id = ir_or("i1", left_val, right_val) }
         
@@ -443,7 +541,20 @@ fn generate_expression(expr: ASTNode) -> String {
     if (expr.kind == NodeKind.CALL_EXPR) {
         let callee = ptr_to_node(expr.child1)
         let func_name = callee.s1
-        
+
+        // drop(x): free the owned heap value. Ownership/move checking in sema
+        // guarantees this runs at most once per value.
+        if (str_equals(func_name, "drop") == 1) {
+            let drop_arg = expr.child2
+            if (str_equals(drop_arg, "") == 0) {
+                let drop_val = generate_expression(ptr_to_node(drop_arg))
+                ir_call_begin()
+                ir_call_arg("ptr", drop_val)
+                ir_call_end("void", "free")
+            }
+            return ""
+        }
+
         let is_print = 0
         if (str_equals(func_name, "print") == 1) { is_print = 1 }
         if (str_equals(func_name, "println") == 1) { is_print = 2 }
@@ -462,6 +573,13 @@ fn generate_expression(expr: ASTNode) -> String {
                         ir_call_end("void", "print")
                     } else {
                         ir_call_end("void", "println")
+                    }
+                } else if (str_equals(arg_type, "double") == 1) {
+                    ir_call_arg("double", arg_val)
+                    if (is_print == 1) {
+                        ir_call_end("void", "print_float")
+                    } else {
+                        ir_call_end("void", "println_float")
                     }
                 } else {
                     ir_call_arg(storage_type(arg_type), arg_val)
@@ -485,12 +603,17 @@ fn generate_expression(expr: ASTNode) -> String {
             arg_ptr = arg_node.next
         }
         
+        let call_name = func_name
+        if (str_equals(expr.s2, "") == 0) {
+            call_name = expr.s2
+        }
+
         let ret_type = storage_type(get_expr_type(expr))
         if (str_equals(ret_type, "void") == 1) {
-            ir_call_end("void", func_name)
+            ir_call_end("void", call_name)
             return ""
         }
-        let temp_id = ir_call_end(ret_type, func_name)
+        let temp_id = ir_call_end(ret_type, call_name)
         return ir_get_temp_name(temp_id)
     }
     
@@ -614,19 +737,123 @@ fn generate_statement(stmt: ASTNode) {
         let cond_label = ir_get_label()
         let body_label = ir_get_label()
         let end_label = ir_get_label()
-        
+
         ir_br_numbered(cond_label)
         ir_label_numbered(cond_label)
-        
+
         let cond_val = generate_expression(ptr_to_node(stmt.child1))
         ir_cond_br_numbered(cond_val, body_label, end_label)
-        
+
         ir_label_numbered(body_label)
+        ir_loop_push(cond_label, end_label)
         generate_block(ptr_to_node(stmt.child2))
-        
+        ir_loop_pop()
+
         if (ir_has_returned() == 0) { ir_br_numbered(cond_label) }
         ir_clear_returned()
-        
+
+        ir_label_numbered(end_label)
+    }
+
+    if (stmt.kind == NodeKind.LOOP_STATEMENT) {
+        let body_label = ir_get_label()
+        let end_label = ir_get_label()
+
+        ir_br_numbered(body_label)
+        ir_label_numbered(body_label)
+        ir_loop_push(body_label, end_label)
+        generate_block(ptr_to_node(stmt.child1))
+        ir_loop_pop()
+
+        if (ir_has_returned() == 0) { ir_br_numbered(body_label) }
+        ir_clear_returned()
+
+        ir_label_numbered(end_label)
+    }
+
+    if (stmt.kind == NodeKind.FOR_STATEMENT) {
+        let loop_var = stmt.s1
+        let start_val = generate_expression(ptr_to_node(stmt.child1))
+        ir_store("i32", start_val, loop_var)
+
+        let cond_label = ir_get_label()
+        let body_label = ir_get_label()
+        let incr_label = ir_get_label()
+        let end_label = ir_get_label()
+
+        ir_br_numbered(cond_label)
+        ir_label_numbered(cond_label)
+        let iv = ir_load("i32", loop_var)
+        let end_val = generate_expression(ptr_to_node(stmt.child2))
+        let cmp = ir_icmp_slt("i32", ir_get_temp_name(iv), end_val)
+        ir_cond_br_numbered(ir_get_temp_name(cmp), body_label, end_label)
+
+        ir_label_numbered(body_label)
+        ir_loop_push(incr_label, end_label)   // continue jumps to the increment step
+        generate_block(ptr_to_node(stmt.child3))
+        ir_loop_pop()
+        if (ir_has_returned() == 0) { ir_br_numbered(incr_label) }
+        ir_clear_returned()
+
+        ir_label_numbered(incr_label)
+        let iv2 = ir_load("i32", loop_var)
+        let next = ir_add("i32", ir_get_temp_name(iv2), "1")
+        ir_store("i32", ir_get_temp_name(next), loop_var)
+        ir_br_numbered(cond_label)
+
+        ir_label_numbered(end_label)
+    }
+
+    if (stmt.kind == NodeKind.BREAK_STATEMENT) {
+        let target = ir_loop_break_label()
+        if (target >= 0) {
+            ir_br_numbered(target)
+            ir_set_returned()
+        }
+    }
+
+    if (stmt.kind == NodeKind.CONTINUE_STATEMENT) {
+        let target = ir_loop_continue_label()
+        if (target >= 0) {
+            ir_br_numbered(target)
+            ir_set_returned()
+        }
+    }
+
+    if (stmt.kind == NodeKind.MATCH_STATEMENT) {
+        let scrut_val = generate_expression(ptr_to_node(stmt.child1))
+        let scrut_type = get_expr_type(ptr_to_node(stmt.child1))
+        let end_label = ir_get_label()
+        let needs_final_br = true
+
+        let arm_ptr = stmt.child2
+        while (str_equals(arm_ptr, "") == 0) {
+            let arm = ptr_to_node(arm_ptr)
+            if (str_equals(arm.s1, "_") == 1) {
+                // wildcard: runs in the current fall-through block
+                generate_block(ptr_to_node(arm.child2))
+                if (ir_has_returned() == 0) { ir_br_numbered(end_label) }
+                ir_clear_returned()
+                needs_final_br = false
+            } else {
+                let pat_val = generate_expression(ptr_to_node(arm.child1))
+                let cmp = ir_icmp_eq(scrut_type, scrut_val, pat_val)
+                let arm_label = ir_get_label()
+                let next_label = ir_get_label()
+                ir_cond_br_numbered(ir_get_temp_name(cmp), arm_label, next_label)
+
+                ir_label_numbered(arm_label)
+                generate_block(ptr_to_node(arm.child2))
+                if (ir_has_returned() == 0) { ir_br_numbered(end_label) }
+                ir_clear_returned()
+
+                ir_label_numbered(next_label)
+                needs_final_br = true
+            }
+            arm_ptr = arm.next
+        }
+
+        if (needs_final_br) { ir_br_numbered(end_label) }
         ir_label_numbered(end_label)
     }
 }
@@ -685,6 +912,25 @@ fn predeclare_locals_stmt(stmt: ASTNode) {
             predeclare_locals_block(ptr_to_node(stmt.child1))
         }
     }
+
+    if (stmt.kind == NodeKind.FOR_STATEMENT) {
+        ir_set_var_type(stmt.s1, "i32")
+        ir_alloca("i32", stmt.s1)
+        if (str_equals(stmt.child3, "") == 0) {
+            predeclare_locals_block(ptr_to_node(stmt.child3))
+        }
+    }
+
+    if (stmt.kind == NodeKind.MATCH_STATEMENT) {
+        let arm_ptr = stmt.child2
+        while (str_equals(arm_ptr, "") == 0) {
+            let arm = ptr_to_node(arm_ptr)
+            if (str_equals(arm.child2, "") == 0) {
+                predeclare_locals_block(ptr_to_node(arm.child2))
+            }
+            arm_ptr = arm.next
+        }
+    }
 }
 
 fn predeclare_locals_block(block: ASTNode) {
@@ -698,6 +944,7 @@ fn predeclare_locals_block(block: ASTNode) {
 
 fn generate_function(func: ASTNode) {
     let func_name = func.s1
+    let emitted_name = function_symbol_name(func)
     
     let ret_type = "void"
     if (str_equals(func.child3, "") == 0) {
@@ -712,8 +959,14 @@ fn generate_function(func: ASTNode) {
     }
     
     let ret_sig_type = storage_type(ret_type)
-    ir_function_begin(func_name, ret_sig_type)
-    
+    ir_function_begin(emitted_name, ret_sig_type)
+
+    if (is_main == 1) {
+        // Real OS argc/argv only reach the C `main` symbol; stash into globals for cli_arg().
+        ir_function_param("i32", "p_argc")
+        ir_function_param("ptr", "p_argv")
+    }
+
     let param_ptr = func.child1
     while (str_equals(param_ptr, "") == 0) {
         let param_node = ptr_to_node(param_ptr)
@@ -721,11 +974,16 @@ fn generate_function(func: ASTNode) {
         ir_function_param(storage_type(map_type_node(p_type_node)), str_concat("p_", param_node.s1))
         param_ptr = param_node.next
     }
-    
+
     ir_function_body_start()
     ir_clear_local_var_types()
     ir_clear_returned()
-    
+
+    if (is_main == 1) {
+        ir_store_global("i32", "%p_argc", "prismio_argc")
+        ir_store_global("ptr", "%p_argv", "prismio_argv")
+    }
+
     let param_ptr2 = func.child1
     while (str_equals(param_ptr2, "") == 0) {
         let param_node = ptr_to_node(param_ptr2)
@@ -824,9 +1082,9 @@ fn collect_strings_expr(expr: ASTNode) {
 
 fn declare_extern_function(ext: ASTNode) {
     let ret_type = get_declared_return_type(ext, ext.child2)
-    ir_set_var_type(fn_key(ext.s1), ret_type)
+    ir_set_var_type(fn_key(function_symbol_name(ext)), ret_type)
 
-    ir_declare_function_begin(ext.s1, storage_type(ret_type))
+    ir_declare_function_begin(function_symbol_name(ext), storage_type(ret_type))
     let param_ptr = ext.child1
     while (str_equals(param_ptr, "") == 0) {
         let param_node = ptr_to_node(param_ptr)
@@ -954,7 +1212,11 @@ fn generate_module(module: ASTNode) {
     ir_reset_globals()
     ir_reset_types()
     ir_clear_var_types()
-    ir_module_start("self_hosted_module")
+    if (ir_target_wasm) {
+        ir_module_start_wasm("self_hosted_module")
+    } else {
+        ir_module_start("self_hosted_module")
+    }
 
     let type_stmt_ptr = module.child1
     while (str_equals(type_stmt_ptr, "") == 0) {
@@ -978,10 +1240,42 @@ fn generate_module(module: ASTNode) {
     }
 
     ir_blank_line()
-    
+
+    // Populated from main's real argc/argv (see generate_function) so cli_arg()/
+    // cli_arg_count() in runtime/program_support.c work the same on every platform.
+    ir_global_var("prismio_argc", "i32", "0", 0)
+    ir_global_var("prismio_argv", "ptr", "null", 0)
+
     // Declare runtime functions
     ir_declare_function_begin("malloc", "ptr")
-    ir_declare_function_param("i64")
+    ir_declare_function_param(ir_ptr_int_type())
+    ir_declare_function_end()
+
+    ir_declare_function_begin("free", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_new", "ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_push", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_get", "ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_set", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_len", "i32")
+    ir_declare_function_param("ptr")
     ir_declare_function_end()
     
     ir_declare_function_begin("println", "void")
@@ -998,6 +1292,14 @@ fn generate_module(module: ASTNode) {
     
     ir_declare_function_begin("print_int", "void")
     ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("println_float", "void")
+    ir_declare_function_param("double")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("print_float", "void")
+    ir_declare_function_param("double")
     ir_declare_function_end()
 
     ir_declare_function_begin("println_bool", "void")
@@ -1053,7 +1355,7 @@ fn generate_module(module: ASTNode) {
             if (str_equals(stmt.s1, "main") == 1) {
                 ret_type = "i32"
             }
-            ir_set_var_type(fn_key(stmt.s1), ret_type)
+            ir_set_var_type(fn_key(function_symbol_name(stmt)), ret_type)
             collect_strings_function(stmt)
         }
         

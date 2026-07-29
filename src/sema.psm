@@ -1,0 +1,875 @@
+import ast
+import token
+import types
+import bridge
+
+extern fn exit(code: Int)
+
+// Forward declarations for recursive checking.
+extern fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo
+extern fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo)
+extern fn sema_block(module: ASTNode, block: ASTNode, expected_return: TypeInfo)
+
+fn sema_fn_key(name: String) -> String {
+    return str_concat("$fn$", name)
+}
+
+fn sema_mangle_type(t: TypeInfo) -> String {
+    if (t.kind == TypeKind.VOID) { return "Void" }
+    if (t.kind == TypeKind.INT) { return t.name }
+    if (t.kind == TypeKind.FLOAT) { return "Float" }
+    if (t.kind == TypeKind.BOOL) { return "Bool" }
+    if (t.kind == TypeKind.CHAR) { return "Char" }
+    if (t.kind == TypeKind.STRING) { return "String" }
+    if (t.kind == TypeKind.PTR) { return "Ptr" }
+    if (t.kind == TypeKind.STRUCT) { return str_concat("Struct_", t.name) }
+    if (t.kind == TypeKind.ENUM) { return str_concat("Enum_", t.name) }
+    if (t.kind == TypeKind.ARRAY) {
+        if (str_equals(t.child, "") == 0) {
+            return str_concat("Array_", sema_mangle_type(ptr_to_type(t.child)))
+        }
+        return "Array_Invalid"
+    }
+    if (t.kind == TypeKind.LIST) {
+        if (str_equals(t.child, "") == 0) {
+            return str_concat("List_", sema_mangle_type(ptr_to_type(t.child)))
+        }
+        return "List_Invalid"
+    }
+    return "Invalid"
+}
+
+fn sema_param_signature(module: ASTNode, param_ptr: String) -> String {
+    let sig = ""
+    let curr = param_ptr
+    while (str_equals(curr, "") == 0) {
+        let param = ptr_to_node(curr)
+        let param_t = sema_annotation_type(module, ptr_to_node(param.child1))
+        if (str_equals(sig, "") == 1) {
+            sig = sema_mangle_type(param_t)
+        } else {
+            sig = str_concat(str_concat(sig, "_"), sema_mangle_type(param_t))
+        }
+        curr = param.next
+    }
+    if (str_equals(sig, "") == 1) { return "Void" }
+    return sig
+}
+
+fn sema_function_symbol(module: ASTNode, fn_node: ASTNode) -> String {
+    if (fn_node.kind == NodeKind.EXTERN_FUNCTION) {
+        return fn_node.s1
+    }
+    if (str_equals(fn_node.s1, "main") == 1) {
+        return "main"
+    }
+    return str_concat(str_concat(fn_node.s1, "__"), sema_param_signature(module, fn_node.child1))
+}
+
+fn sema_function_symbol_count(module: ASTNode, symbol: String) -> Int {
+    let count = 0
+    let stmt_ptr = module.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            if (str_equals(sema_function_symbol(module, stmt), symbol) == 1) {
+                count = count + 1
+            }
+        }
+        stmt_ptr = stmt.next
+    }
+    return count
+}
+
+fn sema_overload_key(module: ASTNode, fn_node: ASTNode) -> String {
+    return sema_fn_key(sema_function_symbol(module, fn_node))
+}
+
+fn sema_error(message: String) {
+    print("type error: ")
+    println(message)
+    exit(1)
+}
+
+fn sema_type_error(context: String, expected: TypeInfo, actual: TypeInfo) {
+    print("type error: ")
+    print(context)
+    print(": expected ")
+    print(type_display(expected))
+    print(", got ")
+    println(type_display(actual))
+    exit(1)
+}
+
+fn sema_has_struct(module: ASTNode, name: String) -> Bool {
+    let stmt_ptr = module.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        if (stmt.kind == NodeKind.STRUCT_DECL and str_equals(stmt.s1, name) == 1) {
+            return true
+        }
+        stmt_ptr = stmt.next
+    }
+    return false
+}
+
+fn sema_has_enum(module: ASTNode, name: String) -> Bool {
+    let stmt_ptr = module.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        if (stmt.kind == NodeKind.ENUM_DECL and str_equals(stmt.s1, name) == 1) {
+            return true
+        }
+        stmt_ptr = stmt.next
+    }
+    return false
+}
+
+fn sema_annotation_type(module: ASTNode, tn: ASTNode) -> TypeInfo {
+    if (tn.i1 == 1) {
+        if (str_equals(tn.child1, "") == 0) {
+            return type_array(sema_annotation_type(module, ptr_to_node(tn.child1)))
+        }
+        return type_array(type_invalid())
+    }
+
+    if (tn.i2 == 1) {
+        if (str_equals(tn.child1, "") == 0) {
+            return type_list(sema_annotation_type(module, ptr_to_node(tn.child1)))
+        }
+        return type_list(type_invalid())
+    }
+
+    if (str_equals(tn.s1, "Int") == 1) { return type_int() }
+    if (str_equals(tn.s1, "Float") == 1) { return type_float() }
+    if (str_equals(tn.s1, "Bool") == 1) { return type_bool() }
+    if (str_equals(tn.s1, "String") == 1) { return type_string() }
+    if (str_equals(tn.s1, "Char") == 1) { return type_char() }
+    if (str_equals(tn.s1, "I8") == 1) { return type_i8() }
+    if (str_equals(tn.s1, "I16") == 1) { return type_i16() }
+    if (str_equals(tn.s1, "I64") == 1) { return type_i64() }
+    if (str_equals(tn.s1, "Isize") == 1) { return type_isize() }
+    if (str_equals(tn.s1, "U8") == 1) { return type_u8() }
+    if (str_equals(tn.s1, "U16") == 1) { return type_u16() }
+    if (str_equals(tn.s1, "U32") == 1) { return type_u32() }
+    if (str_equals(tn.s1, "U64") == 1) { return type_u64() }
+    if (str_equals(tn.s1, "Usize") == 1) { return type_usize() }
+    if (str_equals(tn.s1, "") == 1) { return type_void() }
+    if (sema_has_enum(module, tn.s1)) { return type_enum(tn.s1) }
+    if (sema_has_struct(module, tn.s1)) { return type_struct(tn.s1) }
+
+    sema_error(str_concat("unknown type ", tn.s1))
+    return type_invalid()
+}
+
+fn sema_declared_return_type(module: ASTNode, ret_child: String) -> TypeInfo {
+    if (str_equals(ret_child, "") == 0) {
+        return sema_annotation_type(module, ptr_to_node(ret_child))
+    }
+    return type_void()
+}
+
+// Enum values are i32-backed (see type_enum in types.psm), and an enum variant
+// expression such as `TokenType.EOF` types as plain Int (see MEMBER_ACCESS_EXPR in
+// sema_expr). So an enum-typed binding compared against one of its own variants
+// reads as Enum-vs-Int here, and the compiler's own AST does the mirror image:
+// it stores kinds in plain Int fields (ASTNode.i1) and compares them to variants.
+// Both directions are the intended, pervasive spelling, so treat Enum and Int as
+// interchangeable. Only the default 32-bit `Int` qualifies — a sized integer such
+// as I64 still has to match exactly.
+fn sema_enum_matches_int(a: TypeInfo, b: TypeInfo) -> Bool {
+    if (a.kind != TypeKind.ENUM) { return false }
+    if (b.kind != TypeKind.INT) { return false }
+    return str_equals(b.name, "Int") == 1
+}
+
+fn sema_types_match(expected: TypeInfo, actual: TypeInfo) -> Bool {
+    if (type_equals(expected, actual)) { return true }
+    if (sema_enum_matches_int(expected, actual)) { return true }
+    if (sema_enum_matches_int(actual, expected)) { return true }
+    return false
+}
+
+fn sema_expect_assignable(context: String, expected: TypeInfo, actual: TypeInfo) {
+    if (sema_types_match(expected, actual) == false) {
+        sema_type_error(context, expected, actual)
+    }
+}
+
+fn sema_is_int_literal(e: ASTNode) -> Bool {
+    return e.kind == NodeKind.LITERAL_EXPR and e.i1 == TokenType.NUMBER_LITERAL
+}
+
+// If `node` is a move-only value referenced by name, transfer ownership out of it:
+// any later use of that binding becomes a "use of moved value" error.
+fn sema_move_operand(node: ASTNode) {
+    if (node.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (type_is_move_only(node_get_type(node))) {
+            if (ir_is_borrowed(node.s1) == 1) {
+                sema_error(str_concat("cannot move out of borrowed value: ", node.s1))
+            }
+            ir_mark_moved(node.s1)
+        }
+    }
+}
+
+// Type-check a value against an expected type, allowing a bare integer literal to
+// take on any sized integer type (so `let x: U8 = 200` and `f(200)` type-check).
+fn sema_check_value(module: ASTNode, val_node: ASTNode, expected: TypeInfo, context: String) -> TypeInfo {
+    if (type_is_valid(expected) and expected.kind == TypeKind.INT and sema_is_int_literal(val_node)) {
+        node_set_type(val_node, expected)
+        return expected
+    }
+    let actual = sema_expr(module, val_node)
+    sema_expect_assignable(context, expected, actual)
+    return actual
+}
+
+fn sema_find_function(module: ASTNode, name: String) -> ASTNode {
+    let stmt_ptr = module.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        if ((stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) and str_equals(stmt.s1, name) == 1) {
+            return stmt
+        }
+        stmt_ptr = stmt.next
+    }
+    return create_node(NodeKind.MODULE)
+}
+
+fn sema_arg_matches_type(module: ASTNode, arg_node: ASTNode, expected: TypeInfo) -> Bool {
+    if (type_is_valid(expected) and expected.kind == TypeKind.INT and sema_is_int_literal(arg_node)) {
+        return true
+    }
+    let actual = sema_expr(module, arg_node)
+    return sema_types_match(expected, actual)
+}
+
+fn sema_signature_matches_call(module: ASTNode, fn_node: ASTNode, arg_ptr: String) -> Bool {
+    let arg = arg_ptr
+    let param = fn_node.child1
+    while (str_equals(arg, "") == 0 and str_equals(param, "") == 0) {
+        let arg_node = ptr_to_node(arg)
+        let param_node = ptr_to_node(param)
+        let param_t = sema_annotation_type(module, ptr_to_node(param_node.child1))
+        if (sema_arg_matches_type(module, arg_node, param_t) == false) {
+            return false
+        }
+        arg = arg_node.next
+        param = param_node.next
+    }
+    return str_equals(arg, "") == 1 and str_equals(param, "") == 1
+}
+
+// True when the module contains a real `fn` body for `name`, as opposed to only an
+// `extern fn` declaration of it.
+fn sema_has_function_definition(module: ASTNode, name: String) -> Bool {
+    let scan_ptr = module.child1
+    while (str_equals(scan_ptr, "") == 0) {
+        let scan = ptr_to_node(scan_ptr)
+        if (scan.kind == NodeKind.FUNCTION and str_equals(scan.s1, name) == 1) {
+            return true
+        }
+        scan_ptr = scan.next
+    }
+    return false
+}
+
+fn sema_find_function_overload(module: ASTNode, name: String, arg_ptr: String) -> ASTNode {
+    // Track the winner as a pointer, not an ASTNode binding: `best = stmt` would
+    // move the move-only struct out of `stmt`, and the loop still needs `stmt.next`.
+    let best_ptr = ""
+    let match_count = 0
+    let name_seen = false
+
+    // parser.psm, ir.psm and sema.psm all forward-declare their mutually recursive
+    // functions with `extern fn` and then define them with `fn` in the same file.
+    // Both nodes carry the same name and signature, so counting both would report
+    // every such call as an ambiguous overload. Once a real definition exists the
+    // extern is only its forward declaration, so skip it -- generate_module()
+    // applies the same rule when deciding whether to emit a `declare`.
+    let definition_exists = sema_has_function_definition(module, name)
+
+    let stmt_ptr = module.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        let is_candidate = stmt.kind == NodeKind.FUNCTION
+        if (stmt.kind == NodeKind.EXTERN_FUNCTION and definition_exists == false) {
+            is_candidate = true
+        }
+        if (is_candidate and str_equals(stmt.s1, name) == 1) {
+            name_seen = true
+            if (sema_signature_matches_call(module, stmt, arg_ptr)) {
+                best_ptr = stmt_ptr
+                match_count = match_count + 1
+            }
+        }
+        stmt_ptr = stmt.next
+    }
+
+    if (match_count > 1) {
+        sema_error(str_concat("ambiguous overloaded call to ", name))
+    }
+    if (match_count == 1) {
+        return ptr_to_node(best_ptr)
+    }
+    if (name_seen) {
+        sema_error(str_concat("no matching overload for ", name))
+    }
+    sema_error(str_concat("unknown function ", name))
+    return create_node(NodeKind.MODULE)
+}
+
+fn sema_find_struct_field_type(module: ASTNode, struct_name: String, field_name: String) -> TypeInfo {
+    let stmt_ptr = module.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        if (stmt.kind == NodeKind.STRUCT_DECL and str_equals(stmt.s1, struct_name) == 1) {
+            let field_ptr = stmt.child1
+            while (str_equals(field_ptr, "") == 0) {
+                let field = ptr_to_node(field_ptr)
+                if (str_equals(field.s1, field_name) == 1) {
+                    return sema_annotation_type(module, ptr_to_node(field.child1))
+                }
+                field_ptr = field.next
+            }
+        }
+        stmt_ptr = stmt.next
+    }
+
+    sema_error(str_concat(str_concat("unknown field ", field_name), str_concat(" on ", struct_name)))
+    return type_invalid()
+}
+
+fn sema_enum_has_variant(module: ASTNode, enum_name: String, variant_name: String) -> Bool {
+    let stmt_ptr = module.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        if (stmt.kind == NodeKind.ENUM_DECL and str_equals(stmt.s1, enum_name) == 1) {
+            let variant_ptr = stmt.child1
+            while (str_equals(variant_ptr, "") == 0) {
+                let variant = ptr_to_node(variant_ptr)
+                if (str_equals(variant.s1, variant_name) == 1) {
+                    return true
+                }
+                variant_ptr = variant.next
+            }
+        }
+        stmt_ptr = stmt.next
+    }
+    return false
+}
+
+fn sema_builtin_call_type(name: String, arg_ptr: String) -> TypeInfo {
+    if (str_equals(name, "print") == 1 or str_equals(name, "println") == 1) {
+        if (str_equals(arg_ptr, "") == 1) {
+            sema_error(str_concat(name, " expects one argument"))
+        }
+        return type_void()
+    }
+    if (str_equals(name, "print_int") == 1 or str_equals(name, "println_int") == 1) { return type_void() }
+    if (str_equals(name, "print_float") == 1 or str_equals(name, "println_float") == 1) { return type_void() }
+    if (str_equals(name, "print_bool") == 1 or str_equals(name, "println_bool") == 1) { return type_void() }
+    if (str_equals(name, "print_char") == 1 or str_equals(name, "println_char") == 1) { return type_void() }
+    if (str_equals(name, "drop") == 1) { return type_void() }
+
+    if (str_equals(name, "list_new") == 1) { return type_list(type_invalid()) }
+    if (str_equals(name, "list_len") == 1) { return type_int() }
+    if (str_equals(name, "list_push") == 1) { return type_void() }
+    if (str_equals(name, "list_set") == 1) { return type_void() }
+    if (str_equals(name, "list_get") == 1) {
+        if (str_equals(arg_ptr, "") == 0) {
+            let lt = node_get_type(ptr_to_node(arg_ptr))
+            if (lt.kind == TypeKind.LIST and str_equals(lt.child, "") == 0) {
+                return ptr_to_type(lt.child)
+            }
+        }
+        return type_invalid()
+    }
+    return type_invalid()
+}
+
+fn sema_check_builtin_call(module: ASTNode, name: String, arg_ptr: String) -> Bool {
+    if (str_equals(name, "print") == 1 or str_equals(name, "println") == 1) {
+        if (str_equals(arg_ptr, "") == 1 or str_equals(ptr_to_node(arg_ptr).next, "") == 0) {
+            sema_error(str_concat(name, " expects one argument"))
+        }
+        sema_expr(module, ptr_to_node(arg_ptr))
+        return true
+    }
+
+    // drop(x): deterministic, safe free. Consumes (moves) an owned value, so
+    // use-after-drop and double-drop are caught by move tracking.
+    if (str_equals(name, "drop") == 1) {
+        if (str_equals(arg_ptr, "") == 1 or str_equals(ptr_to_node(arg_ptr).next, "") == 0) {
+            sema_error("drop expects one argument")
+        }
+        let arg = ptr_to_node(arg_ptr)
+        let t = sema_expr(module, arg)
+        if (type_is_move_only(t) == false) {
+            sema_error("drop requires an owned (move-only) value")
+        }
+        sema_move_operand(arg)
+        return true
+    }
+
+    if (str_equals(name, "list_new") == 1) {
+        if (str_equals(arg_ptr, "") == 0) { sema_error("list_new takes no arguments") }
+        return true
+    }
+    if (str_equals(name, "list_len") == 1) {
+        if (str_equals(arg_ptr, "") == 1) { sema_error("list_len expects a List") }
+        let lt = sema_expr(module, ptr_to_node(arg_ptr))
+        if (lt.kind != TypeKind.LIST) { sema_error("list_len expects a List") }
+        return true
+    }
+    if (str_equals(name, "list_get") == 1) {
+        let a0 = ptr_to_node(arg_ptr)
+        let lt = sema_expr(module, a0)
+        if (lt.kind != TypeKind.LIST) { sema_error("list_get expects a List") }
+        sema_check_value(module, ptr_to_node(a0.next), type_int(), "list_get index")
+        return true
+    }
+    if (str_equals(name, "list_push") == 1) {
+        let a0 = ptr_to_node(arg_ptr)
+        let lt = sema_expr(module, a0)
+        if (lt.kind != TypeKind.LIST) { sema_error("list_push expects a List") }
+        sema_check_value(module, ptr_to_node(a0.next), ptr_to_type(lt.child), "list_push value")
+        return true
+    }
+    if (str_equals(name, "list_set") == 1) {
+        let a0 = ptr_to_node(arg_ptr)
+        let lt = sema_expr(module, a0)
+        if (lt.kind != TypeKind.LIST) { sema_error("list_set expects a List") }
+        let a1 = ptr_to_node(a0.next)
+        sema_check_value(module, a1, type_int(), "list_set index")
+        sema_check_value(module, ptr_to_node(a1.next), ptr_to_type(lt.child), "list_set value")
+        return true
+    }
+
+    let expected = type_invalid()
+    if (str_equals(name, "print_int") == 1 or str_equals(name, "println_int") == 1) { expected = type_int() }
+    if (str_equals(name, "print_float") == 1 or str_equals(name, "println_float") == 1) { expected = type_float() }
+    if (str_equals(name, "print_bool") == 1 or str_equals(name, "println_bool") == 1) { expected = type_bool() }
+    if (str_equals(name, "print_char") == 1 or str_equals(name, "println_char") == 1) { expected = type_char() }
+
+    if (type_is_valid(expected)) {
+        if (str_equals(arg_ptr, "") == 1 or str_equals(ptr_to_node(arg_ptr).next, "") == 0) {
+            sema_error(str_concat(name, " expects one argument"))
+        }
+        let actual = sema_expr(module, ptr_to_node(arg_ptr))
+        sema_expect_assignable(str_concat(name, " argument"), expected, actual)
+        return true
+    }
+
+    return false
+}
+
+fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    if (node_has_type(expr)) {
+        return node_get_type(expr)
+    }
+
+    if (expr.kind == NodeKind.LITERAL_EXPR) {
+        let t = type_invalid()
+        if (expr.i1 == TokenType.NUMBER_LITERAL) { t = type_int() }
+        if (expr.i1 == TokenType.FLOAT_LITERAL) { t = type_float() }
+        if (expr.i1 == TokenType.BOOL_LITERAL) { t = type_bool() }
+        if (expr.i1 == TokenType.CHAR_LITERAL) { t = type_char() }
+        if (expr.i1 == TokenType.STRING_LITERAL) { t = type_string() }
+        node_set_type(expr, t)
+        return t
+    }
+
+    if (expr.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (ir_has_var_type(expr.s1) == 0) {
+            sema_error(str_concat("unknown identifier ", expr.s1))
+        }
+        if (ir_is_moved(expr.s1) == 1) {
+            sema_error(str_concat("use of moved value: ", expr.s1))
+        }
+        let t = type_from_sem_key(ir_get_var_type(expr.s1))
+        node_set_type(expr, t)
+        return t
+    }
+
+    if (expr.kind == NodeKind.BINARY_EXPR) {
+        let left_node = ptr_to_node(expr.child1)
+        let right_node = ptr_to_node(expr.child2)
+        let left_t = sema_expr(module, left_node)
+        let right_t = sema_expr(module, right_node)
+
+        // Coerce a bare integer literal to the other operand's integer type so
+        // mixing a sized int with a literal (e.g. `n <= 0`, `u / 7`) type-checks.
+        if (left_t.kind == TypeKind.INT and right_t.kind == TypeKind.INT and type_equals(left_t, right_t) == false) {
+            if (sema_is_int_literal(right_node)) {
+                node_set_type(right_node, left_t)
+                right_t = type_copy(left_t)
+            } else if (sema_is_int_literal(left_node)) {
+                node_set_type(left_node, right_t)
+                left_t = type_copy(right_t)
+            }
+        }
+
+        let op = expr.s1
+
+        if (str_equals(op, "and") == 1 or str_equals(op, "or") == 1) {
+            sema_expect_assignable("boolean operator left operand", type_bool(), left_t)
+            sema_expect_assignable("boolean operator right operand", type_bool(), right_t)
+            node_set_type(expr, type_bool())
+            return type_bool()
+        }
+
+        if (str_equals(op, "+") == 1 or str_equals(op, "-") == 1 or str_equals(op, "*") == 1 or str_equals(op, "/") == 1) {
+            if (type_is_numeric(left_t) == false) {
+                sema_error(str_concat("operator requires numeric operands: ", op))
+            }
+            sema_expect_assignable(str_concat("operator ", op), left_t, right_t)
+            node_set_type(expr, left_t)
+            return left_t
+        }
+
+        if (str_equals(op, "%") == 1) {
+            sema_expect_assignable("modulo left operand", type_int(), left_t)
+            sema_expect_assignable("modulo right operand", type_int(), right_t)
+            node_set_type(expr, type_int())
+            return type_int()
+        }
+
+        if (str_equals(op, "==") == 1 or str_equals(op, "!=") == 1 or str_equals(op, "<") == 1 or str_equals(op, "<=") == 1 or str_equals(op, ">") == 1 or str_equals(op, ">=") == 1) {
+            sema_expect_assignable(str_concat("comparison ", op), left_t, right_t)
+            node_set_type(expr, type_bool())
+            return type_bool()
+        }
+
+        sema_error(str_concat("unknown operator ", op))
+    }
+
+    if (expr.kind == NodeKind.CALL_EXPR) {
+        let callee = ptr_to_node(expr.child1)
+        let name = callee.s1
+
+        if (sema_check_builtin_call(module, name, expr.child2)) {
+            let builtin_t = sema_builtin_call_type(name, expr.child2)
+            node_set_type(expr, builtin_t)
+            return builtin_t
+        }
+
+        let fn_node = sema_find_function_overload(module, name, expr.child2)
+
+        let arg_ptr = expr.child2
+        let param_ptr = fn_node.child1
+        while (str_equals(arg_ptr, "") == 0 and str_equals(param_ptr, "") == 0) {
+            let arg_node = ptr_to_node(arg_ptr)
+            let param_node = ptr_to_node(param_ptr)
+            let param_t = sema_annotation_type(module, ptr_to_node(param_node.child1))
+            sema_check_value(module, arg_node, param_t, str_concat(name, " argument"))
+            // Only `sink` parameters take ownership; `let`/`inout` borrow.
+            if (str_equals(param_node.s2, "sink") == 1) {
+                sema_move_operand(arg_node)
+            }
+            arg_ptr = arg_node.next
+            param_ptr = param_node.next
+        }
+
+        let ret_t = type_void()
+        if (fn_node.kind == NodeKind.FUNCTION) {
+            ret_t = sema_declared_return_type(module, fn_node.child3)
+            if (str_equals(name, "main") == 1) { ret_t = type_int() }
+        } else {
+            ret_t = sema_declared_return_type(module, fn_node.child2)
+        }
+        expr.s2 = sema_function_symbol(module, fn_node)
+        node_set_type(expr, ret_t)
+        return ret_t
+    }
+
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let object_node = ptr_to_node(expr.child1)
+        if (object_node.kind == NodeKind.IDENTIFIER_EXPR and sema_enum_has_variant(module, object_node.s1, expr.s1)) {
+            node_set_type(expr, type_int())
+            return type_int()
+        }
+
+        let object_t = sema_expr(module, object_node)
+        if (object_t.kind != TypeKind.STRUCT) {
+            sema_error("member access requires a struct value")
+        }
+        let field_t = sema_find_struct_field_type(module, object_t.name, expr.s1)
+        node_set_type(expr, field_t)
+        return field_t
+    }
+
+    if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+        let elem_ptr = expr.child1
+        if (str_equals(elem_ptr, "") == 1) {
+            let arr_t = type_array(type_invalid())
+            node_set_type(expr, arr_t)
+            return arr_t
+        }
+
+        let first_t = sema_expr(module, ptr_to_node(elem_ptr))
+        elem_ptr = ptr_to_node(elem_ptr).next
+        while (str_equals(elem_ptr, "") == 0) {
+            let elem = ptr_to_node(elem_ptr)
+            let elem_t = sema_expr(module, elem)
+            sema_expect_assignable("array literal element", first_t, elem_t)
+            elem_ptr = elem.next
+        }
+
+        let arr_t2 = type_array(first_t)
+        node_set_type(expr, arr_t2)
+        return arr_t2
+    }
+
+    if (expr.kind == NodeKind.INDEX_EXPR) {
+        let array_t = sema_expr(module, ptr_to_node(expr.child1))
+        let index_t = sema_expr(module, ptr_to_node(expr.child2))
+        sema_expect_assignable("array index", type_int(), index_t)
+        if (array_t.kind != TypeKind.ARRAY) {
+            sema_error("indexing requires an array")
+        }
+        let elem_t = ptr_to_type(array_t.child)
+        node_set_type(expr, elem_t)
+        return elem_t
+    }
+
+    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+        if (sema_has_struct(module, expr.s1) == false) {
+            sema_error(str_concat("unknown struct ", expr.s1))
+        }
+        let field_ptr = expr.child1
+        while (str_equals(field_ptr, "") == 0) {
+            let field = ptr_to_node(field_ptr)
+            let expected = sema_find_struct_field_type(module, expr.s1, field.s1)
+            sema_check_value(module, ptr_to_node(field.child1), expected, str_concat("struct field ", field.s1))
+            sema_move_operand(ptr_to_node(field.child1))
+            field_ptr = field.next
+        }
+        let struct_t = type_struct(expr.s1)
+        node_set_type(expr, struct_t)
+        return struct_t
+    }
+
+    sema_error("unsupported expression")
+    return type_invalid()
+}
+
+fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo) {
+    if (stmt.kind == NodeKind.VARIABLE_DECL) {
+        let var_t = type_invalid()
+        let has_annotation = str_equals(stmt.child1, "") == 0
+        let has_init = str_equals(stmt.child2, "") == 0
+
+        if (has_annotation) {
+            var_t = sema_annotation_type(module, ptr_to_node(stmt.child1))
+        }
+        if (has_init) {
+            if (has_annotation) {
+                sema_check_value(module, ptr_to_node(stmt.child2), var_t, str_concat("initializer for ", stmt.s1))
+            } else {
+                var_t = sema_expr(module, ptr_to_node(stmt.child2))
+            }
+            sema_move_operand(ptr_to_node(stmt.child2))
+        }
+        if (type_is_valid(var_t) == false) {
+            sema_error(str_concat("cannot infer type for ", stmt.s1))
+        }
+
+        // This `let` binds a fresh value, so drop any moved-from state left over
+        // from an earlier binding of the same name (see ir_unmark_moved).
+        ir_unmark_moved(stmt.s1)
+        ir_set_var_type(stmt.s1, type_sem_key(var_t))
+        node_set_type(stmt, var_t)
+    }
+
+    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        let target = ptr_to_node(stmt.child1)
+        let target_t = sema_expr(module, target)
+        let value_t = sema_expr(module, ptr_to_node(stmt.child2))
+        sema_expect_assignable("assignment", target_t, value_t)
+        sema_move_operand(ptr_to_node(stmt.child2))
+    }
+
+    if (stmt.kind == NodeKind.RETURN_STATEMENT) {
+        if (str_equals(stmt.child1, "") == 0) {
+            // Deliberately no sema_move_operand() here. Ownership does leave the
+            // function, but move state is tracked per name for the whole function
+            // body rather than per control-flow path, so marking the returned name
+            // moved poisons it for every *other* path: a function with `return x`
+            // in one branch and a use of `x` in another reports a bogus "use of
+            // moved value" (parse_type_annotation in parser.psm does exactly this).
+            // It also made `return expected` inside sema_check_value report "cannot
+            // move out of borrowed value" for an ordinary borrowed parameter.
+            // Nothing can use a value after it has been returned on the same path,
+            // so skipping the mark loses no real diagnostic.
+            sema_check_value(module, ptr_to_node(stmt.child1), expected_return, "return")
+        } else {
+            sema_expect_assignable("return", expected_return, type_void())
+        }
+    }
+
+    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
+        if (str_equals(stmt.child1, "") == 0) {
+            sema_expr(module, ptr_to_node(stmt.child1))
+        }
+    }
+
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        let cond_t = sema_expr(module, ptr_to_node(stmt.child1))
+        sema_expect_assignable("if condition", type_bool(), cond_t)
+        sema_block(module, ptr_to_node(stmt.child2), expected_return)
+        if (str_equals(stmt.child3, "") == 0) {
+            let else_node = ptr_to_node(stmt.child3)
+            if (else_node.kind == NodeKind.IF_STATEMENT) {
+                sema_statement(module, else_node, expected_return)
+            } else {
+                sema_block(module, else_node, expected_return)
+            }
+        }
+    }
+
+    if (stmt.kind == NodeKind.WHILE_STATEMENT) {
+        let cond_t2 = sema_expr(module, ptr_to_node(stmt.child1))
+        sema_expect_assignable("while condition", type_bool(), cond_t2)
+        sema_block(module, ptr_to_node(stmt.child2), expected_return)
+    }
+
+    if (stmt.kind == NodeKind.LOOP_STATEMENT) {
+        sema_block(module, ptr_to_node(stmt.child1), expected_return)
+    }
+
+    if (stmt.kind == NodeKind.FOR_STATEMENT) {
+        let start_t = sema_expr(module, ptr_to_node(stmt.child1))
+        sema_expect_assignable("for range start", type_int(), start_t)
+        let end_t = sema_expr(module, ptr_to_node(stmt.child2))
+        sema_expect_assignable("for range end", type_int(), end_t)
+        ir_set_var_type(stmt.s1, type_sem_key(type_int()))
+        sema_block(module, ptr_to_node(stmt.child3), expected_return)
+    }
+
+    if (stmt.kind == NodeKind.MATCH_STATEMENT) {
+        let scrut_t = sema_expr(module, ptr_to_node(stmt.child1))
+        if (scrut_t.kind != TypeKind.INT and scrut_t.kind != TypeKind.ENUM) {
+            sema_error("match scrutinee must be an integer or enum value")
+        }
+        let pat_expected = type_copy(scrut_t)
+        if (scrut_t.kind == TypeKind.ENUM) { pat_expected = type_int() }
+        let arm_ptr = stmt.child2
+        while (str_equals(arm_ptr, "") == 0) {
+            let arm = ptr_to_node(arm_ptr)
+            if (str_equals(arm.s1, "_") == 0) {
+                sema_check_value(module, ptr_to_node(arm.child1), pat_expected, "match pattern")
+            }
+            sema_block(module, ptr_to_node(arm.child2), expected_return)
+            arm_ptr = arm.next
+        }
+    }
+}
+
+fn sema_block(module: ASTNode, block: ASTNode, expected_return: TypeInfo) {
+    let stmt_ptr = block.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        sema_statement(module, stmt, expected_return)
+        stmt_ptr = stmt.next
+    }
+}
+
+fn sema_predeclare_function(module: ASTNode, fn_node: ASTNode) {
+    let ret_t = type_void()
+    if (fn_node.kind == NodeKind.FUNCTION) {
+        ret_t = sema_declared_return_type(module, fn_node.child3)
+        if (str_equals(fn_node.s1, "main") == 1) { ret_t = type_int() }
+    } else {
+        ret_t = sema_declared_return_type(module, fn_node.child2)
+    }
+    let symbol = sema_function_symbol(module, fn_node)
+    fn_node.s2 = symbol
+    let overload_key = sema_fn_key(symbol)
+    if (sema_function_symbol_count(module, symbol) > 1) {
+        sema_error(str_concat("duplicate function overload ", fn_node.s1))
+    }
+    ir_set_var_type(overload_key, type_sem_key(ret_t))
+}
+
+fn sema_predeclare_global(module: ASTNode, var_node: ASTNode) {
+    let var_t = type_invalid()
+    if (str_equals(var_node.child1, "") == 0) {
+        var_t = sema_annotation_type(module, ptr_to_node(var_node.child1))
+    }
+    if (str_equals(var_node.child2, "") == 0) {
+        if (type_is_valid(var_t)) {
+            sema_check_value(module, ptr_to_node(var_node.child2), var_t, str_concat("initializer for global ", var_node.s1))
+        } else {
+            var_t = sema_expr(module, ptr_to_node(var_node.child2))
+        }
+    }
+    if (type_is_valid(var_t) == false) {
+        sema_error(str_concat("cannot infer type for global ", var_node.s1))
+    }
+    ir_register_global_name(var_node.s1)
+    ir_set_var_type(var_node.s1, type_sem_key(var_t))
+    node_set_type(var_node, var_t)
+}
+
+fn sema_function(module: ASTNode, fn_node: ASTNode) {
+    ir_clear_local_var_types()
+    ir_clear_moved()
+    ir_clear_borrowed()
+
+    let expected_return = sema_declared_return_type(module, fn_node.child3)
+    if (str_equals(fn_node.s1, "main") == 1) { expected_return = type_int() }
+
+    let param_ptr = fn_node.child1
+    while (str_equals(param_ptr, "") == 0) {
+        let param = ptr_to_node(param_ptr)
+        let param_t = sema_annotation_type(module, ptr_to_node(param.child1))
+        if (str_equals(param.s2, "inout") == 1 and type_is_move_only(param_t) == false) {
+            sema_error(str_concat("inout parameter must be a struct (reference) type: ", param.s1))
+        }
+        // let/inout params are non-owning borrows; sink params own their value.
+        if (str_equals(param.s2, "sink") == 0) {
+            ir_mark_borrowed(param.s1)
+        }
+        ir_set_var_type(param.s1, type_sem_key(param_t))
+        node_set_type(param, param_t)
+        param_ptr = param.next
+    }
+
+    if (str_equals(fn_node.child2, "") == 0) {
+        sema_block(module, ptr_to_node(fn_node.child2), expected_return)
+    }
+}
+
+fn analyze_module(module: ASTNode) {
+    ir_clear_var_types()
+    ir_reset_globals()
+
+    let fn_ptr = module.child1
+    while (str_equals(fn_ptr, "") == 0) {
+        let stmt = ptr_to_node(fn_ptr)
+        if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            sema_predeclare_function(module, stmt)
+        }
+        fn_ptr = stmt.next
+    }
+
+    let global_ptr = module.child1
+    while (str_equals(global_ptr, "") == 0) {
+        let stmt2 = ptr_to_node(global_ptr)
+        if (stmt2.kind == NodeKind.VARIABLE_DECL) {
+            sema_predeclare_global(module, stmt2)
+        }
+        global_ptr = stmt2.next
+    }
+
+    let stmt_ptr = module.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt3 = ptr_to_node(stmt_ptr)
+        if (stmt3.kind == NodeKind.FUNCTION) {
+            sema_function(module, stmt3)
+        }
+        stmt_ptr = stmt3.next
+    }
+}

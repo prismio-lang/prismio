@@ -1,0 +1,30 @@
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let a = Point { x: 3, y: 4 }
+    let s = a.x + a.y
+    if (s != 7) {
+        return fail("struct fields readable before drop")
+    }
+    drop(a)
+
+    // allocate and free repeatedly: each iteration owns a fresh value
+    let mut i = 0
+    while (i < 5) {
+        let tmp = Point { x: i, y: i }
+        drop(tmp)
+        i = i + 1
+    }
+
+    println("PASS: drop")
+    return 0
+}

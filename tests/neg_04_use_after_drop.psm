@@ -1,0 +1,12 @@
+// Using a value after drop() must be rejected (drop consumes ownership).
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn main() -> Int {
+    let p = Point { x: 1, y: 2 }
+    drop(p)
+    let bad = p.x
+    return 0
+}

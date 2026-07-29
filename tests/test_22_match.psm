@@ -1,0 +1,57 @@
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+fn describe(c: Int) -> Int {
+    let mut result = 0
+    match (c) {
+        Color.Red => {
+            result = 100
+        }
+        Color.Green => {
+            result = 200
+        }
+        _ => {
+            result = 999
+        }
+    }
+    return result
+}
+
+fn classify(n: Int) -> Int {
+    let mut out = 0
+    match (n) {
+        0 => { out = 10 }
+        1 => { out = 10 }
+        _ => { out = 0 }
+    }
+    return out
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (describe(Color.Red) != 100) {
+        return fail("match enum Red should give 100")
+    }
+    if (describe(Color.Green) != 200) {
+        return fail("match enum Green should give 200")
+    }
+    if (describe(Color.Blue) != 999) {
+        return fail("match wildcard should give 999")
+    }
+    if (classify(0) != 10) {
+        return fail("match int literal 0")
+    }
+    if (classify(7) != 0) {
+        return fail("match int wildcard")
+    }
+    println("PASS: match")
+    return 0
+}

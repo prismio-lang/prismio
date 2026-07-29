@@ -1,0 +1,44 @@
+struct Counter {
+    value: Int
+}
+
+fn peek(c: Counter) -> Int {          // default: shared read-only borrow
+    return c.value
+}
+
+fn bump(inout c: Counter) {           // exclusive mutable borrow
+    c.value = c.value + 1
+}
+
+fn consume(sink c: Counter) -> Int {  // takes ownership
+    let v = c.value
+    drop(c)
+    return v
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let a = Counter { value: 10 }
+
+    // borrow (default): `a` stays usable across multiple calls
+    if (peek(a) != 10) { return fail("borrow should read 10") }
+    if (peek(a) != 10) { return fail("borrow must not consume the value") }
+
+    // inout: mutation is visible to the caller
+    bump(a)
+    if (a.value != 11) { return fail("inout should mutate caller to 11") }
+    bump(a)
+    if (a.value != 12) { return fail("inout mutation should persist to 12") }
+
+    // sink: takes ownership (a is consumed afterward)
+    let result = consume(a)
+    if (result != 12) { return fail("sink should read 12 before consuming") }
+
+    println("PASS: conventions")
+    return 0
+}

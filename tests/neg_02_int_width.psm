@@ -1,0 +1,7 @@
+// Mixing two differently-sized integer variables (neither a literal) must be rejected.
+fn main() -> Int {
+    let a: I64 = 10
+    let b: Int = 5
+    let c = a + b
+    return 0
+}

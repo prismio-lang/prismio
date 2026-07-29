@@ -5,16 +5,21 @@ import ast
 import parser
 import bridge
 import ir
+import sema
 
 extern fn read_file(path: String) -> String
 extern fn get_directory(path: String) -> String
+extern fn join_path(directory: String, filename: String) -> String
 extern fn cli_arg_count() -> Int
 extern fn cli_arg(index: Int) -> String
 extern fn str_ends_with(s: String, suffix: String) -> Int
 extern fn compiler_default_exe_path(source_path: String) -> String
 extern fn compiler_temp_ir_path(source_path: String) -> String
 extern fn compiler_build_executable(ir_file: String, exe_file: String) -> Int
+extern fn compiler_bootstrap_executable(ir_file: String, exe_file: String) -> Int
 extern fn compiler_run_executable(exe_file: String) -> Int
+extern fn compiler_runtime_source_hash() -> String
+extern fn compiler_installed_runtime_hash() -> String
 extern fn delete_file(path: String) -> Int
 
 fn is_named_top_level(stmt: ASTNode) -> Bool {
@@ -26,6 +31,30 @@ fn is_named_top_level(stmt: ASTNode) -> Bool {
     return false
 }
 
+// Two same-named top-level declarations of the same kind are duplicates, with one
+// exception: FUNCTION. Overloading means several `fn` nodes legitimately share a
+// name (tests/test_29_overloads.psm), and a genuinely duplicated overload has to
+// survive the merge so sema can reject it (tests/neg_06_duplicate_overload.psm).
+//
+// EXTERN_FUNCTION is deliberately *not* exempt. Modules each declare the externs
+// they use, so `str_equals` is declared by both utils.psm and keywords.psm, and
+// `exit` by both parser.psm and sema.psm; merging both copies makes sema report a
+// spurious "duplicate function overload". Keeping the first is correct.
+//
+// This does not disturb the forward-declaration idiom in ir.psm/parser.psm/
+// sema.psm, where an `extern fn` declares a function the same file also defines:
+// that pairs an EXTERN_FUNCTION with a FUNCTION, so the kind check above already
+// treats them as distinct (and generate_module skips the `declare` when a real
+// `define` exists).
+fn same_top_level_name(a: ASTNode, b: ASTNode) -> Bool {
+    if (a.kind != b.kind) { return false }
+    if (str_equals(a.s1, b.s1) == 0) { return false }
+    if (a.kind == NodeKind.FUNCTION) {
+        return false
+    }
+    return true
+}
+
 fn has_named_top_level(module: ASTNode, stmt: ASTNode) -> Bool {
     if (is_named_top_level(stmt) == false) {
         return false
@@ -34,7 +63,7 @@ fn has_named_top_level(module: ASTNode, stmt: ASTNode) -> Bool {
     let scan_ptr = module.child1
     while (str_equals(scan_ptr, "") == 0) {
         let scan = ptr_to_node(scan_ptr)
-        if (scan.kind == stmt.kind and str_equals(scan.s1, stmt.s1) == 1) {
+        if (same_top_level_name(scan, stmt)) {
             return true
         }
         scan_ptr = scan.next
@@ -73,29 +102,34 @@ fn append_statement(module: ASTNode, stmt: ASTNode) {
     }
 }
 
-fn append_non_imports(target: ASTNode, source: ASTNode) {
-    let stmt_ptr = source.child1
-    while (str_equals(stmt_ptr, "") == 0) {
-        let stmt = ptr_to_node(stmt_ptr)
-        let next_stmt = stmt.next
-        stmt.next = ""
-        if (stmt.kind != NodeKind.IMPORT_STATEMENT) {
-            append_statement(target, stmt)
-        }
-        stmt_ptr = next_stmt
-    }
-}
-
 fn join_import_path(base_dir: String, module_name: String) -> String {
     let module_file = str_concat(module_name, ".psm")
     if (str_equals(base_dir, ".") == 1) {
         return module_file
     }
-    return str_concat(str_concat(base_dir, "\\"), module_file)
+    return join_path(base_dir, module_file)
 }
 
-fn resolve_imports(module: ASTNode, base_dir: String) -> ASTNode {
-    let merged = create_node(NodeKind.MODULE)
+// Memo key for an already-resolved module. Paths are wrapped in "|" so that a
+// substring search can never match a partial path (e.g. "src\ir.psm" must not be
+// found inside "src\dir.psm").
+fn import_memo_key(import_path: String) -> String {
+    return str_concat(str_concat("|", import_path), "|")
+}
+
+// Walks `module`, appending its non-import declarations into the shared `merged`
+// accumulator and recursing into each import exactly once. `visited` carries the
+// set of already-resolved import paths through the recursion and is returned so
+// sibling imports see what earlier ones resolved.
+//
+// Resolving each path once is what keeps a diamond-shaped import graph correct:
+// src/main.psm reaches utils.psm through five distinct paths, and without this
+// every one of utils.psm's functions and extern declarations would be merged five
+// times, emitting duplicate LLVM `define`/`declare` lines that llc rejects
+// outright ("invalid redefinition of function"). Marking a path before recursing
+// into it also makes an import cycle terminate instead of recursing forever.
+fn merge_module_imports(merged: ASTNode, module: ASTNode, base_dir: String, visited: String) -> String {
+    let seen = visited
 
     let stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
@@ -105,15 +139,21 @@ fn resolve_imports(module: ASTNode, base_dir: String) -> ASTNode {
 
         if (stmt.kind == NodeKind.IMPORT_STATEMENT) {
             let import_path = join_import_path(base_dir, stmt.s1)
-            let import_content = read_file(import_path)
-            if (str_equals(import_content, "") == 1) {
-                print("ERROR: Could not import ")
-                println(import_path)
-                exit(1)
+            let key = import_memo_key(import_path)
+
+            if (str_contains(seen, key) == 0) {
+                seen = str_concat(seen, key)
+
+                let import_content = read_file(import_path)
+                if (str_equals(import_content, "") == 1) {
+                    print("ERROR: Could not import ")
+                    println(import_path)
+                    exit(1)
+                }
+
+                let imported_module = parse_source(import_content)
+                seen = merge_module_imports(merged, imported_module, base_dir, seen)
             }
-            let imported_module = parse_source(import_content)
-            let resolved_import = resolve_imports(imported_module, base_dir)
-            append_non_imports(merged, resolved_import)
         } else {
             append_statement(merged, stmt)
         }
@@ -121,6 +161,12 @@ fn resolve_imports(module: ASTNode, base_dir: String) -> ASTNode {
         stmt_ptr = next_stmt
     }
 
+    return seen
+}
+
+fn resolve_imports(module: ASTNode, base_dir: String) -> ASTNode {
+    let merged = create_node(NodeKind.MODULE)
+    merge_module_imports(merged, module, base_dir, "")
     return merged
 }
 
@@ -128,11 +174,53 @@ fn print_usage() {
     println("Usage:")
     println("  prismio build <source.psm> [-o output.exe]")
     println("  prismio run <source.psm> [-o output.exe]")
+    println("  prismio bootstrap [source.psm] [-o output.exe]")
+    println("  prismio runtime-hash")
+    println("")
+    println("build/run link against the installed Prismio runtime only.")
+    println("bootstrap builds the compiler itself from the repository sources,")
+    println("linking the compiler backend as well and ignoring installed libraries.")
 }
 
-fn compile_source(path: String, output_file: String, run_after_build: Bool) -> Int {
+// The installed runtime library carries the hash of the sources it was built from.
+// When both that and a source tree are present they must agree, otherwise the
+// program being compiled would silently link a runtime that no longer matches the
+// code in front of you. Content hashes rather than timestamps, so a fresh checkout
+// or a file copy does not read as a change.
+fn check_runtime_freshness() {
+    let installed = compiler_installed_runtime_hash()
+    if (str_equals(installed, "") == 1) {
+        return
+    }
+
+    let current = compiler_runtime_source_hash()
+    if (str_equals(current, "") == 1) {
+        return
+    }
+
+    if (str_equals(installed, current) == 1) {
+        return
+    }
+
+    println("ERROR: the installed Prismio runtime library is stale.")
+    print("  runtime library was built from sources hashing ")
+    println(installed)
+    print("  the runtime sources on disk now hash ")
+    println(current)
+    println("  Re-package the toolchain (tools/package.ps1) so lib/ matches runtime/,")
+    println("  or move away from the source tree to use the installed runtime as-is.")
+    exit(1)
+}
+
+fn compile_source(path: String, output_file: String, run_after_build: Bool, bootstrap_mode: Bool) -> Int {
     let out_file = ""
     let emit_ir_only = false
+
+    // Bootstrap deliberately skips this: it never consults the installed libraries
+    // at all, so their freshness cannot affect the result.
+    if (bootstrap_mode == false) {
+        check_runtime_freshness()
+    }
 
     if (str_ends_with(output_file, ".ll") == 1) {
         out_file = output_file
@@ -143,7 +231,13 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool) -> I
 
     let content = read_file(path)
     if (str_equals(content, "") == 1) {
-        println("ERROR: Could not read file")
+        print("ERROR: Could not read ")
+        println(path)
+        if (bootstrap_mode) {
+            println("  bootstrap compiles the Prismio compiler from a source checkout.")
+            println("  Run it from the repository root, or give the source path explicitly:")
+            println("      prismio bootstrap path/to/src/main.psm")
+        }
         return 1
     }
 
@@ -154,6 +248,8 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool) -> I
 
     let base_dir = get_directory(path)
     let merged_ast = resolve_imports(ast_root, base_dir)
+
+    analyze_module(merged_ast)
 
     ir_reset()
     generate_module(merged_ast)
@@ -169,7 +265,14 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool) -> I
         return 0
     }
 
-    if (compiler_build_executable(out_file, output_file) != 0) {
+    let build_failed = 0
+    if (bootstrap_mode) {
+        build_failed = compiler_bootstrap_executable(out_file, output_file)
+    } else {
+        build_failed = compiler_build_executable(out_file, output_file)
+    }
+
+    if (build_failed != 0) {
         delete_file(out_file)
         println("ERROR: Native build failed")
         return 1
@@ -195,6 +298,7 @@ fn main() -> Int {
     let output_file = ""
     let command = ""
     let run_after_build = false
+    let bootstrap_mode = false
     let arg_index = 0
 
     if (cli_arg_count() <= 1) {
@@ -203,6 +307,60 @@ fn main() -> Int {
     }
 
     let first = cli_arg(1)
+
+    // Reports the hash of the runtime sources on disk. tools/package.ps1 records it
+    // beside the packaged libraries so later builds can detect drift, and it keeps
+    // that hash defined in exactly one place -- here, in C -- rather than
+    // reimplemented in the packaging script.
+    if (str_equals(first, "runtime-hash") == 1) {
+        let source_hash = compiler_runtime_source_hash()
+        if (str_equals(source_hash, "") == 1) {
+            println("ERROR: could not find the Prismio runtime sources to hash")
+            return 1
+        }
+        println(source_hash)
+        return 0
+    }
+
+    // Compiler development. The command itself selects the build mode -- there is no
+    // flag and no environment variable -- so a single binary can build user programs
+    // against the installed runtime and still bootstrap against repository sources.
+    if (str_equals(first, "bootstrap") == 1) {
+        command = "bootstrap"
+        bootstrap_mode = true
+        run_after_build = false
+        path = "src/main.psm"
+        arg_index = 2
+
+        if (cli_arg_count() > 2) {
+            let candidate = cli_arg(2)
+            if (str_equals(candidate, "-o") == 0 and str_equals(candidate, "--target") == 0) {
+                path = candidate
+                arg_index = 3
+            }
+        }
+
+        output_file = compiler_default_exe_path(path)
+
+        while (arg_index < cli_arg_count()) {
+            let barg = cli_arg(arg_index)
+            if (str_equals(barg, "-o") == 1) {
+                if (arg_index + 1 >= cli_arg_count()) {
+                    println("ERROR: -o requires an output path")
+                    return 1
+                }
+                output_file = cli_arg(arg_index + 1)
+                arg_index = arg_index + 2
+            } else {
+                print("ERROR: Unknown argument ")
+                println(barg)
+                print_usage()
+                return 1
+            }
+        }
+
+        return compile_source(path, output_file, run_after_build, bootstrap_mode)
+    }
 
     if (str_equals(first, "build") == 1) {
         command = "build"
@@ -257,6 +415,15 @@ fn main() -> Int {
             }
             output_file = cli_arg(arg_index + 1)
             arg_index = arg_index + 2
+        } else if (str_equals(arg, "--target") == 1) {
+            if (arg_index + 1 >= cli_arg_count()) {
+                println("ERROR: --target requires a value (e.g. wasm32)")
+                return 1
+            }
+            if (str_equals(cli_arg(arg_index + 1), "wasm32") == 1) {
+                ir_set_target_wasm(true)
+            }
+            arg_index = arg_index + 2
         } else {
             if (str_equals(arg, "build") == 1 or str_equals(arg, "run") == 1) {
                 println("ERROR: Use either 'build' or 'run', not both")
@@ -275,5 +442,5 @@ fn main() -> Int {
         }
     }
 
-    return compile_source(path, output_file, run_after_build)
+    return compile_source(path, output_file, run_after_build, bootstrap_mode)
 }

@@ -1,0 +1,40 @@
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn sum(p: Point) -> Int {
+    return p.x + p.y
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // pass a struct by value (moves it); not used afterward -> OK
+    let a = Point { x: 3, y: 4 }
+    let total = sum(a)
+    if (total != 7) {
+        return fail("struct passed by value should sum fields")
+    }
+
+    // rebinding moves ownership; using the new binding is fine
+    let b = Point { x: 10, y: 20 }
+    let c = b
+    if (c.x + c.y != 30) {
+        return fail("moved struct usable via new binding")
+    }
+
+    // scalars are Copyable: used freely after binding to another name
+    let n = 5
+    let m = n
+    if (n + m != 10) {
+        return fail("scalars copy, not move")
+    }
+
+    println("PASS: move semantics")
+    return 0
+}

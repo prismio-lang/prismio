@@ -1,0 +1,8 @@
+fn bad_value() -> Int {
+    let count: Int = true
+    return count
+}
+
+fn main() -> Int {
+    return bad_value()
+}

@@ -1,0 +1,41 @@
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // 64-bit arithmetic (would truncate under i32)
+    let big: I64 = 5000000000
+    let half = big / 2
+    if (half != 2500000000) {
+        return fail("i64 arithmetic should not truncate")
+    }
+
+    // unsigned division must use udiv
+    let u: U32 = 200
+    if (u / 7 != 28) {
+        return fail("unsigned division 200/7 should be 28")
+    }
+
+    // unsigned comparison: a value above 2^31 is positive
+    let big_u: U32 = 4000000000
+    if (big_u <= 0) {
+        return fail("u32 above 2^31 should compare as positive")
+    }
+
+    // small width holds 200
+    let b: U8 = 200
+    if (b != 200) {
+        return fail("u8 should hold 200")
+    }
+
+    // pointer-width integer
+    let n: Usize = 64
+    if (n + 1 != 65) {
+        return fail("usize arithmetic")
+    }
+
+    println("PASS: integers")
+    return 0
+}

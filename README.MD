@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://www.prismio.org/icons/prismio-banner.png" width="80" alt="Prismio"/>
+  <img src="https://www.prismio.org/icons/prismio-banner.png" width="140" alt="Prismio"/>
 </p>
 
 <br/>
@@ -73,6 +73,9 @@ Source (.psm)
   Import Resolver         ← src/main.psm
      │  Flattens transitive imports into a single module AST
      ▼
+  Semantic Analysis        ← src/sema.psm
+     │  Type checking + move/borrow/drop ownership enforcement
+     ▼
   IR Generator            ← src/ir.psm
      │  AST walk → LLVM IR text (.ll)
      │  Delegates emission to llvm-bridge (C, via extern fn)
@@ -81,14 +84,14 @@ Source (.psm)
      │  Object file (.obj / .o)
      ▼
   Clang
-     │  Links with runtime.c
+     │  Links with the runtime (embedded in the compiler binary; see runtime/)
      ▼
   Native binary
 ```
 
 IR emission is handled by `llvm-bridge.c` — a C library that constructs LLVM IR as formatted text. The compiler calls into it exclusively via `extern fn` declarations in `src/bridge.psm`. There is no direct LLVM API dependency in the Prismio source.
 
-The compiler currently performs no semantic analysis pass between parsing and IR generation. Type information is resolved structurally during the IR walk. A dedicated analysis phase is planned.
+The compiler runs a dedicated semantic analysis pass (`src/sema.psm`) between parsing and IR generation, performing type checking and enforcing move/borrow/drop ownership rules before any IR is generated.
 
 For a full breakdown of compiler internals, see [Architecture](https://docs.prismio.org/architecture)
 
@@ -105,10 +108,11 @@ For a full breakdown of compiler internals, see [Architecture](https://docs.pris
 
 ### Using a Local Compiler Build
 
-By default, the test runner resolves `prismio` from the system `PATH`.
+By default, the test runner resolves `prismio` from the system `PATH` (via `find_prismio_exe()`
+in `test_runner.py`).
 
-To verify changes against a local compiler build, update the `prismio`
-path at **Line: 18** inside `test_runner.py` before running the test suite.
+To verify changes against a local compiler build, put that build first on `PATH` for the session,
+e.g. `PATH="/path/to/local/build:$PATH" python test_runner.py`.
 
 ### Run the Test Suite
 

@@ -1,0 +1,14 @@
+// A borrowed parameter is non-owning; dropping it would free the caller's value.
+struct Res {
+    v: Int
+}
+
+fn leak(r: Res) {
+    drop(r)
+}
+
+fn main() -> Int {
+    let x = Res { v: 1 }
+    leak(x)
+    return 0
+}

@@ -1,0 +1,7 @@
+// Reached from both diamond_left and diamond_right, i.e. via two distinct import
+// paths. Import resolution must parse and merge this module exactly once.
+extern fn str_length(s: String) -> Int
+
+fn shared_double(x: Int) -> Int {
+    return x * 2
+}

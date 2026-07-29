@@ -1,0 +1,12 @@
+// Using a struct value after it has been moved must be rejected.
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn main() -> Int {
+    let a = Point { x: 3, y: 4 }
+    let b = a
+    let bad = a.x
+    return 0
+}

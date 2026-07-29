@@ -1,0 +1,11 @@
+fn same(value: Int) -> Int {
+    return value
+}
+
+fn same(other: Int) -> Int {
+    return other + 1
+}
+
+fn main() -> Int {
+    return same(1)
+}

@@ -1,0 +1,51 @@
+extern fn str_equals(s1: String, s2: String) -> Int
+
+fn choose(value: Int) -> Int {
+    return value + 10
+}
+
+fn choose(value: String) -> Int {
+    if (str_equals(value, "x") == 1) {
+        return 20
+    }
+    return 0
+}
+
+fn choose(value: Float) -> Int {
+    if (value > 1.5) {
+        return 30
+    }
+    return 0
+}
+
+fn combine(value: Int) -> Int {
+    return value
+}
+
+fn combine(left: Int, right: Int) -> Int {
+    return left + right
+}
+
+fn fail(message: String) -> Int {
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (choose(5) != 15) {
+        return fail("Int overload should be selected")
+    }
+    if (choose("x") != 20) {
+        return fail("String overload should be selected")
+    }
+    if (choose(2.0) != 30) {
+        return fail("Float overload should be selected")
+    }
+    if (combine(7) != 7) {
+        return fail("single-argument overload should be selected")
+    }
+    if (combine(7, 8) != 15) {
+        return fail("two-argument overload should be selected")
+    }
+    return 0
+}

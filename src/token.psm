@@ -2,6 +2,7 @@ enum TokenType {
     STRING_LITERAL,
     CHAR_LITERAL,
     NUMBER_LITERAL,
+    FLOAT_LITERAL,
     BOOL_LITERAL,
 
     IDENTIFIER,
@@ -19,6 +20,7 @@ enum TokenType {
 
     ARROW,
     FAT_ARROW,
+    RANGE,
 
     KEYWORD,
     UNKNOWN,
@@ -36,6 +38,7 @@ fn type_to_string(t: TokenType) -> String {
     if (t == TokenType.STRING_LITERAL) { return "STRING" }
     if (t == TokenType.CHAR_LITERAL) { return "CHAR" }
     if (t == TokenType.NUMBER_LITERAL) { return "NUMBER" }
+    if (t == TokenType.FLOAT_LITERAL) { return "FLOAT" }
     if (t == TokenType.BOOL_LITERAL) { return "BOOL" }
     if (t == TokenType.IDENTIFIER) { return "IDENTIFIER" }
     if (t == TokenType.KEYWORD) { return "KEYWORD" }

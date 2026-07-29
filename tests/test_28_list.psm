@@ -1,0 +1,41 @@
+struct Item {
+    value: Int
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut items: List<Item> = list_new()
+    list_push(items, Item { value: 10 })
+    list_push(items, Item { value: 20 })
+    list_push(items, Item { value: 30 })
+
+    if (list_len(items) != 3) {
+        return fail("list should hold three items")
+    }
+
+    // iterate and sum
+    let mut sum = 0
+    let mut i = 0
+    while (i < list_len(items)) {
+        let it = list_get(items, i)
+        sum = sum + it.value
+        i = i + 1
+    }
+    if (sum != 60) {
+        return fail("sum of pushed values should be 60")
+    }
+
+    // random access returns the right element type
+    let second = list_get(items, 1)
+    if (second.value != 20) {
+        return fail("indexed get should return the second item")
+    }
+
+    println("PASS: list")
+    return 0
+}

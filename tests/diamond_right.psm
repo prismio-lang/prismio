@@ -1,0 +1,7 @@
+import diamond_shared
+
+extern fn str_length(s: String) -> Int
+
+fn right_value(x: Int) -> Int {
+    return shared_double(x) + 2
+}
