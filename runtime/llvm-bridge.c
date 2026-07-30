@@ -121,6 +121,26 @@ void ir_flush() {
 // Module Management
 // ============================================
 
+// Prismio compiles for the host, so the module targets whatever platform this
+// bridge was itself compiled for.
+//
+// No `target datalayout` line is emitted at all. LLVM derives the layout from the
+// triple, and a hardcoded string is a liability: it is version-sensitive (the arm64
+// macOS layout gained -Fn32 in LLVM 18) and a stale one is not diagnosed, it just
+// silently miscompiles. Letting llc supply it cannot drift.
+//
+// The triple is pinned only on Windows, where msvc and mingw are a real fork and
+// the msvc target is the configuration that is actually verified. Everywhere else
+// omitting it is strictly better than guessing: llc falls back to its own host
+// triple, which on macOS carries the matching darwin version and so avoids the
+// "object file was built for newer macOS version" warnings a version-less
+// arm64-apple-macosx would produce at link time.
+static void ir_emit_target_directives(void) {
+#ifdef _WIN32
+    ir_append_line("target triple = \"x86_64-pc-windows-msvc\"");
+#endif
+}
+
 void ir_module_start(const char* module_name) {
     ir_reset();
 
@@ -129,8 +149,7 @@ void ir_module_start(const char* module_name) {
     ir_append(module_name);
     ir_append_line("'");
     ir_append_line("source_filename = \"prismio_generated\"");
-    ir_append_line("target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"");
-    ir_append_line("target triple = \"x86_64-pc-windows-msvc\"");
+    ir_emit_target_directives();
     ir_append_line("");
 }
 

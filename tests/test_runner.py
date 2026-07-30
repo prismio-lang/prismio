@@ -14,6 +14,17 @@ TEST_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TEST_DIR.parent
 
 def find_prismio_exe():
+    # $PRISMIO wins, so a freshly bootstrapped compiler can be tested without
+    # installing it first. Without this the runner silently exercises whatever
+    # older prismio happens to be on PATH, and reports its failures as yours.
+    override = os.environ.get("PRISMIO")
+    if override:
+        path = Path(override)
+        if path.is_file():
+            return path
+        print(f"{RED}[FAIL] $PRISMIO is set but not a file: {override}{RESET}")
+        sys.exit(1)
+
     # Prismio Path
     prismio = which("prismio")
 
@@ -21,7 +32,7 @@ def find_prismio_exe():
         return Path(prismio)
 
     print(f"{RED}[FAIL] prismio not found in PATH{RESET}")
-    print("Make sure Prismio is installed and added to PATH.")
+    print("Make sure Prismio is installed, added to PATH, or set $PRISMIO.")
     sys.exit(1)
 
 

@@ -37,6 +37,11 @@ Thumbs.db
 # Build output (bootstrap generations and their intermediates)
 build/
 
+# ...but the bootstrap seed is a committed artifact, not build output. It is the
+# only way to build a first compiler on a host that has no prismio binary yet, so
+# the *.ll rule above must not swallow it.
+!bootstrap/prismio-seed.ll
+
 # Dependencies
 node_modules/
 *.jar

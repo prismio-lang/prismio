@@ -22,6 +22,11 @@ param(
 $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrEmpty($Repo)) { $Repo = Split-Path -Parent $PSScriptRoot }
 
+# Absolute, because the probe build below runs from $env:TEMP and a relative -Dist
+# would stop resolving the moment we Push-Location out of here.
+if (-not (Test-Path $Dist)) { Write-Host "no such directory: $Dist" -ForegroundColor Red; exit 1 }
+$Dist = (Resolve-Path $Dist).Path
+
 $failures = 0
 function Check([string]$label, [bool]$ok, [string]$detail) {
     if ($ok) {

@@ -29,6 +29,12 @@ $libraries = @(
     @{ Name = 'backend'; Sources = @('build_driver.c', 'llvm-bridge.c') }
 )
 
+# Absolute: the compiler is invoked from $Repo further down, and the final listing
+# slices $OutDir off full paths -- both of which mangle a relative -OutDir.
+New-Item -ItemType Directory -Force $OutDir | Out-Null
+$OutDir = (Resolve-Path $OutDir).Path
+$Compiler = (Resolve-Path $Compiler).Path
+
 $bin = Join-Path $OutDir 'bin'
 $lib = Join-Path $OutDir 'lib'
 $stdlib = Join-Path $OutDir 'stdlib'

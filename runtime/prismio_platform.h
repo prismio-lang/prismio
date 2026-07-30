@@ -9,6 +9,10 @@
 // compiler) -- so the two translation units cannot drift apart on things like the
 // path separator.
 
+// <stdint.h> is here for the uint32_t that _NSGetExecutablePath() takes on macOS.
+// Windows headers drag it in transitively, which is why its absence went unnoticed;
+// on Apple platforms nothing else includes it and program_support.c fails to build.
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
