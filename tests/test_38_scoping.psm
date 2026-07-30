@@ -1,0 +1,135 @@
+// Lexical scoping.
+//
+// Three defects shared one root cause -- there was no scope stack, only a flat
+// name table cleared once per function:
+//
+//   * a `let` inside a block stayed visible after the block ended;
+//   * a local sharing a global's name had its writes go to the local slot and
+//     its reads come from the global, silently returning the wrong value;
+//   * two `let x` in sibling blocks shared one stack slot, sized by whichever
+//     appeared first, so `let v: I8` in one branch and `let v: String` in the
+//     other wrote 8 bytes into a 1-byte allocation.
+//
+// The leak case cannot be tested from inside the language -- referring to an
+// out-of-scope name is now a compile error, which is the point -- so it lives in
+// neg_07_scope_leak.psm.
+
+extern fn str_equals(s1: String, s2: String) -> Int
+
+let counter = 100
+let label = "global"
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn reads_global() -> Int {
+    return counter
+}
+
+fn main() -> Int {
+    // A local shadows the global for the rest of this scope...
+    let counter = 7
+    if (counter != 7) {
+        return fail("local should shadow the global")
+    }
+    // ...but only here: another function still sees the global.
+    if (reads_global() != 100) {
+        return fail("the global should be unchanged elsewhere")
+    }
+
+    let label = "local"
+    if (str_equals(label, "local") == 0) {
+        return fail("string local should shadow the global")
+    }
+
+    // Sibling blocks may reuse a name at different types. These are separate
+    // bindings with separate slots; sharing one would corrupt the stack.
+    if (true) {
+        let v: I8 = 1
+        if (v as Int != 1) {
+            return fail("I8 binding in the then-branch")
+        }
+    } else {
+        let v: String = "unused"
+        if (str_equals(v, "unused") == 0) {
+            return fail("String binding in the else-branch")
+        }
+    }
+
+    // Shadowing inside a nested block, with the outer binding restored after.
+    let x = 1
+    if (true) {
+        let x = 2
+        if (x != 2) {
+            return fail("inner block should see its own x")
+        }
+        if (true) {
+            let x = 3
+            if (x != 3) {
+                return fail("doubly nested x")
+            }
+        }
+        if (x != 2) {
+            return fail("x should be restored after the inner block")
+        }
+    }
+    if (x != 1) {
+        return fail("outer x should be restored after the block")
+    }
+
+    // An initializer sees the outer binding, not the one being declared.
+    let y = 10
+    if (true) {
+        let y = y + 5
+        if (y != 15) {
+            return fail("initializer should read the outer binding")
+        }
+    }
+    if (y != 10) {
+        return fail("outer y unchanged")
+    }
+
+    // A loop body is a scope, and re-entering it rebinds rather than leaks.
+    let mut total = 0
+    let mut i = 0
+    while (i < 3) {
+        let step = i * 2
+        total = total + step
+        i = i + 1
+    }
+    if (total != 6) {
+        return fail("loop body bindings")
+    }
+
+    // The for-loop variable is scoped to the loop, and may shadow an outer name.
+    let n = 99
+    let mut sum = 0
+    for n in 0..4 {
+        sum = sum + n
+    }
+    if (sum != 6) {
+        return fail("for loop variable")
+    }
+    if (n != 99) {
+        return fail("for loop variable should not leak over the outer binding")
+    }
+
+    // A parameter can be shadowed by a body local.
+    if (shadows_param(5) != 20) {
+        return fail("body local should shadow a parameter")
+    }
+
+    println("PASS: scoping")
+    return 0
+}
+
+fn shadows_param(value: Int) -> Int {
+    if (value != 5) {
+        return 0
+    }
+    let value = 20
+    return value
+}

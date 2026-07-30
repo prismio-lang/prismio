@@ -1,0 +1,11 @@
+// Code after a statement control cannot continue past is an error.
+//
+// This used to be emitted anyway, putting instructions after a terminator in
+// the same basic block -- invalid IR that llc rejected with "expected
+// instruction opcode", pointing at generated output instead of at this line.
+
+fn main() -> Int {
+    println("before")
+    return 0
+    println("after the return")
+}

@@ -57,9 +57,42 @@ five tests added).
 | Unary `-` and `!` | **ADDED** — `tests/test_33_unary_operators.psm` |
 | String escape sequences | **ADDED** — `tests/test_34_string_escapes.psm` |
 
-Still open, unchanged: **1.3** (mutability), **1.4** (scoping — all three symptoms), **1.5**
-(arrays), **1.6** (missing return), **1.7** (dead code / match arm order), **1.8** (move checking
-in loops), **1.9** (`String ==`).
+**1.4 (scoping) is now FIXED** — all three symptoms, 2026-07-31. `runtime/ir_symbols.c` carries a
+scope stack, and every binding gets its own slot name:
+
+- bindings no longer leak past their block (`tests/neg_07_scope_leak.psm`);
+- a local shadowing a global reads and writes the same place (`tests/test_38_scoping.psm`);
+- sibling blocks reusing a name get separate, correctly-sized allocations — the `alloca i8`
+  written with an 8-byte pointer is now `%v.1 = alloca i8` and `%v.2 = alloca ptr`.
+
+The `predeclare_locals` pre-pass is gone; locals are created at their declaration and the backend
+hoists every alloca into the entry block, so a `let` inside a loop body still allocates once.
+
+**1.5, 1.6, 1.7, 1.8 and 1.9 are also FIXED** (2026-07-31):
+
+- **1.5** arrays take their element type from sema, so `["a","b"]`, `[1.5]` and `['A']` allocate
+  `[N x ptr]`, `[N x double]`, `[N x i8]` (`tests/test_39_typed_arrays.psm`);
+- **1.6** definite return — a value-returning function that can fall off its end is rejected
+  (`tests/neg_08_missing_return.psm`);
+- **1.7** unreachable code after `return`/`break`/`continue` is rejected
+  (`tests/neg_09_unreachable_code.psm`);
+- **1.8** moving out of a binding that predates the enclosing loop is rejected — the `drop(x)`
+  in a loop that used to be a runtime double free (`tests/neg_10_move_in_loop.psm`);
+- **1.9** `==` on `String`/struct is rejected with a message naming `str_equals`.
+
+1.6–1.8 are done by structured analysis over the AST rather than a CFG. Prismio's control flow is
+fully structured — no goto, no labeled break — so "can control continue past this statement?" is
+answerable directly, and the analysis is conservative in the safe direction: when unsure it
+reports that control *can* continue, which risks demanding an unreachable return rather than
+letting a function fall off its end.
+
+**1.3 (mutability) is FIXED** (2026-07-31). Assigning to a binding not declared `let mut` is
+rejected (`tests/neg_11_immutable_assign.psm`). Landing it needed the compiler's own source
+migrated — 159 `let mut` annotations across `src/*.psm`. The violations were collected in a single
+run by shipping the check as a warning first, then flipping it to an error once the tree was
+clean; one-error-per-build would have taken 75 rebuilds.
+
+**Every defect in this document is now closed.**
 
 Note on 1.2: the fix took two generations to take full effect. gen10 contains the new lowering but
 its *own* code was compiled by gen9 without it; gen11 is the first compiler whose own guards

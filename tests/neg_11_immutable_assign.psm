@@ -1,0 +1,12 @@
+// Assigning to a binding not declared `let mut` is an error.
+//
+// The parser has always recorded `mut`, but sema never read it, so explicit
+// mutability -- design principle #1 in the README -- was advertised and
+// completely unenforced. This program used to compile and print 6.
+
+fn main() -> Int {
+    let x = 5
+    x = 6
+    println_int(x)
+    return 0
+}

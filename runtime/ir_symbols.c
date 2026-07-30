@@ -20,6 +20,7 @@
 // sharing a long prefix would collide in the type table.
 // ============================================================================
 
+#include <stdio.h>  // snprintf, for building slot names
 #include <string.h>
 
 // ============================================================================
@@ -229,6 +230,7 @@ typedef struct {
     char type[64];
     char slot[SLOT_LEN];
     int is_global;
+    int is_mutable;
 } VarBinding;
 
 static VarBinding var_bindings[MAX_VAR_TYPES];
@@ -255,6 +257,35 @@ void ir_scope_pop(void) {
     }
 }
 
+// Loop barriers: the binding-table watermark on entry to each loop body.
+//
+// Move checking is per-name and runs over the AST in source order, so it sees a
+// `drop(x)` inside a loop exactly once and concludes the value is consumed once
+// -- while at run time the loop executes it repeatedly. That is a double free
+// the checker could not see. A binding that predates the innermost loop is one
+// the loop did not create, so moving out of it inside the loop is the case that
+// actually repeats.
+static int loop_barriers[64];
+static int loop_barrier_depth = 0;
+
+void ir_loop_barrier_push(void) {
+    if (loop_barrier_depth < 64) loop_barriers[loop_barrier_depth++] = var_type_count;
+}
+
+void ir_loop_barrier_pop(void) {
+    if (loop_barrier_depth > 0) loop_barrier_depth--;
+}
+
+static int find_binding(const char* name);
+
+// 1 when `name` is bound outside the innermost enclosing loop.
+int ir_binding_predates_loop(const char* name) {
+    if (loop_barrier_depth == 0) return 0;
+    int i = find_binding(name);
+    if (i < 0) return 0;
+    return i < loop_barriers[loop_barrier_depth - 1] ? 1 : 0;
+}
+
 static int find_binding(const char* name) {
     for (int i = var_type_count - 1; i >= 0; i--) {
         if (strcmp(var_bindings[i].name, name) == 0) return i;
@@ -271,6 +302,7 @@ static void add_binding(const char* name, const char* type, int is_global) {
     strncpy(b->type, type, 63);
     b->type[63] = '\0';
     b->is_global = is_global;
+    b->is_mutable = 0;
 
     if (is_global) {
         // Globals are addressed by their own name (@name), so no renaming.
@@ -315,6 +347,19 @@ int ir_var_is_global(const char* name) {
 
 int ir_has_var_type(const char* name) {
     return find_binding(name) >= 0;
+}
+
+// `let mut` marks the binding just declared. Assignment to anything not so
+// marked is rejected -- the parser has always recorded `mut`, but nothing read
+// it, so explicit mutability was advertised and unenforced.
+void ir_mark_mutable(const char* name) {
+    int i = find_binding(name);
+    if (i >= 0) var_bindings[i].is_mutable = 1;
+}
+
+int ir_var_is_mutable(const char* name) {
+    int i = find_binding(name);
+    return i >= 0 ? var_bindings[i].is_mutable : 1; // unknown names error elsewhere
 }
 
 void ir_clear_var_types(void) {

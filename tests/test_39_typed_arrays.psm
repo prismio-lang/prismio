@@ -1,0 +1,56 @@
+// Arrays of element types other than Int.
+//
+// Codegen used to hardcode the element type: an array literal always allocated
+// [N x i32] and indexing always loaded i32. So ["a","b"] stored 8-byte pointers
+// into 4-byte slots (llc rejected it outright) and [1.5, 2.5] silently stored
+// doubles into i32 slots. The element type now comes from sema.
+//
+// Known limitation, unrelated to this: an array literal does not take its
+// element type from an annotation, so `let x: [I64] = [1, 2]` is rejected --
+// bare integer literals default to Int. Write the elements' type explicitly or
+// leave the annotation off.
+
+extern fn str_equals(s1: String, s2: String) -> Int
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // pointers
+    let words = ["alpha", "beta", "gamma"]
+    if (str_equals(words[0], "alpha") == 0) { return fail("String array index 0") }
+    if (str_equals(words[1], "beta") == 0) { return fail("String array index 1") }
+    if (str_equals(words[2], "gamma") == 0) { return fail("String array index 2") }
+
+    // doubles
+    let reals = [1.5, 2.5, 3.5]
+    if (reals[0] != 1.5) { return fail("Float array index 0") }
+    if (reals[2] != 3.5) { return fail("Float array index 2") }
+
+    // the original i32 case still works
+    let nums = [10, 20, 30]
+    if (nums[1] != 20) { return fail("Int array") }
+
+    // bytes
+    let letters = ['A', 'B', 'C']
+    if (letters[1] as Int != 66) { return fail("Char array") }
+
+    // indexing with a computed value, not just a constant
+    let mut i = 0
+    let mut sum = 0
+    while (i < 3) {
+        sum = sum + nums[i]
+        i = i + 1
+    }
+    if (sum != 60) { return fail("indexing with a variable") }
+
+    // nested arrays still lower to an array of pointers
+    let grid = [[1, 2], [3, 4]]
+    if (grid[1][0] != 3) { return fail("nested array") }
+
+    println("PASS: typed arrays")
+    return 0
+}

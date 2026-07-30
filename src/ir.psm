@@ -4,9 +4,9 @@
 
 import types
 
-let ir_string_counter = 0
-let ir_target_wasm = false
-let ir_short_circuit_counter = 0
+let mut ir_string_counter = 0
+let mut ir_target_wasm = false
+let mut ir_short_circuit_counter = 0
 
 extern fn exit(code: Int)
 
@@ -90,8 +90,8 @@ fn storage_type(t: String) -> String {
 }
 
 fn count_list_nodes(first_ptr: String) -> Int {
-    let count = 0
-    let curr = first_ptr
+    let mut count = 0
+    let mut curr = first_ptr
     while (str_equals(curr, "") == 0) {
         let node = ptr_to_node(curr)
         count = count + 1
@@ -283,7 +283,7 @@ fn generate_expression(expr: ASTNode) -> String {
         // hand-written malloc, so the memory model is one place to change.
         let mem_name = ir_get_temp_name(ir_alloc_object(struct_name))
 
-        let field_ptr = expr.child1
+        let mut field_ptr = expr.child1
         while (str_equals(field_ptr, "") == 0) {
             let field = ptr_to_node(field_ptr)
             let field_val = generate_expression(ptr_to_node(field.child1))
@@ -300,13 +300,13 @@ fn generate_expression(expr: ASTNode) -> String {
     if (expr.kind == NodeKind.IDENTIFIER_EXPR) {
         let val_type = ir_get_var_type(expr.s1)
         let load_type = storage_type(val_type)
-        if (ir_is_global_name(expr.s1) == 1) {
-            let temp_id = ir_load_global(load_type, expr.s1)
-            return ir_get_temp_name(temp_id)
-        } else {
-            let temp_id = ir_load(load_type, expr.s1)
-            return ir_get_temp_name(temp_id)
+        // Shadowing-aware: a local named the same as a global must read from
+        // the local's slot. Asking a flat "is this name a global?" registry
+        // instead meant writes went to the local and reads came from the global.
+        if (ir_var_is_global(expr.s1) == 1) {
+            return ir_get_temp_name(ir_load_global(load_type, expr.s1))
         }
+        return ir_get_temp_name(ir_load(load_type, ir_get_var_slot(expr.s1)))
     }
 
     if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
@@ -332,17 +332,21 @@ fn generate_expression(expr: ASTNode) -> String {
         let elem_count = count_list_nodes(expr.child1)
         let first_elem = ptr_to_node(expr.child1)
 
-        // An array of arrays stores the inner pointers; anything else stores
-        // i32 values. The nested and flat cases only ever differed by this one
-        // type, so they share a single path now.
-        let elem_type = "i32"
-        if (first_elem.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+        // The element type comes from sema, which knows what the elements
+        // actually are. It used to be hardcoded to i32 (or ptr for an array of
+        // arrays), so ["a", "b"] stored pointers into i32 slots -- truncating
+        // them -- and [1.5, 2.5] stored doubles into i32 slots.
+        let arr_t = node_get_type(expr)
+        let mut elem_type = "i32"
+        if (str_equals(arr_t.child, "") == 0) {
+            elem_type = storage_type(type_ir_key(ptr_to_type(arr_t.child)))
+        } else if (first_elem.kind == NodeKind.ARRAY_LITERAL_EXPR) {
             elem_type = "ptr"
         }
 
         let base = ir_get_temp_name(ir_array_alloca(elem_type, elem_count))
 
-        let elem_ptr = expr.child1
+        let mut elem_ptr = expr.child1
         let mut elem_index = 0
         while (str_equals(elem_ptr, "") == 0) {
             let elem_node = ptr_to_node(elem_ptr)
@@ -359,11 +363,13 @@ fn generate_expression(expr: ASTNode) -> String {
     if (expr.kind == NodeKind.INDEX_EXPR) {
         let array_val = generate_expression(ptr_to_node(expr.child1))
         let index_val = generate_expression(ptr_to_node(expr.child2))
-        let obj_type = get_expr_type(ptr_to_node(expr.child1))
 
-        let elem_type = "i32"
-        if (str_equals(obj_type, "ptrptr") == 1) {
-            elem_type = "ptr"
+        // sema types the index expression as the array's element type, so this
+        // reads the right width and stride. Hardcoding i32 here loaded four
+        // bytes out of an array of pointers or doubles.
+        let mut elem_type = storage_type(get_expr_type(expr))
+        if (str_equals(elem_type, "") == 1) {
+            elem_type = "i32"
         }
 
         let slot = ir_elem_ptr(elem_type, array_val, index_val)
@@ -456,10 +462,10 @@ fn generate_expression(expr: ASTNode) -> String {
         let right_val = generate_expression(ptr_to_node(expr.child2))
 
         let op = expr.s1
-        let temp_id = 0
+        let mut temp_id = 0
         let left_node = ptr_to_node(expr.child1)
         let op_type = get_expr_type(left_node)
-        let is_unsigned = false
+        let mut is_unsigned = false
         if (node_has_type(left_node)) {
             is_unsigned = type_int_is_unsigned(node_get_type(left_node))
         }
@@ -536,7 +542,7 @@ fn generate_expression(expr: ASTNode) -> String {
         // module declares it as taking i32. Passing the i1 straight through left
         // the call disagreeing with its own declaration and the upper bits of the
         // argument register undefined -- it only worked by luck. Widen explicitly.
-        let is_print_bool = 0
+        let mut is_print_bool = 0
         if (str_equals(func_name, "print_bool") == 1) { is_print_bool = 1 }
         if (str_equals(func_name, "println_bool") == 1) { is_print_bool = 2 }
 
@@ -557,12 +563,12 @@ fn generate_expression(expr: ASTNode) -> String {
             return ""
         }
 
-        let is_print = 0
+        let mut is_print = 0
         if (str_equals(func_name, "print") == 1) { is_print = 1 }
         if (str_equals(func_name, "println") == 1) { is_print = 2 }
         
         if (is_print > 0) {
-            let arg_ptr = expr.child2
+            let mut arg_ptr = expr.child2
             if (str_equals(arg_ptr, "") == 0) {
                 let arg_node = ptr_to_node(arg_ptr)
                 let arg_val = generate_expression(arg_node)
@@ -597,7 +603,7 @@ fn generate_expression(expr: ASTNode) -> String {
         
         // Regular function call
         ir_call_begin()
-        let arg_ptr = expr.child2
+        let mut arg_ptr = expr.child2
         while (str_equals(arg_ptr, "") == 0) {
             let arg_node = ptr_to_node(arg_ptr)
             let arg_val = generate_expression(arg_node)
@@ -605,17 +611,17 @@ fn generate_expression(expr: ASTNode) -> String {
             arg_ptr = arg_node.next
         }
         
-        let call_name = func_name
+        let mut call_name = func_name
         if (str_equals(expr.s2, "") == 0) {
             call_name = expr.s2
         }
 
-        let ret_type = storage_type(get_expr_type(expr))
+        let mut ret_type = storage_type(get_expr_type(expr))
         if (str_equals(ret_type, "void") == 1) {
             ir_call_end("void", call_name)
             return ""
         }
-        let temp_id = ir_call_end(ret_type, call_name)
+        let mut temp_id = ir_call_end(ret_type, call_name)
         return ir_get_temp_name(temp_id)
     }
     
@@ -625,7 +631,7 @@ fn generate_expression(expr: ASTNode) -> String {
 fn generate_statement(stmt: ASTNode) {
     if (stmt.kind == NodeKind.VARIABLE_DECL) {
         let var_name = stmt.s1
-        let var_type = "i32"
+        let mut var_type = "i32"
         if (str_equals(stmt.child1, "") == 0) {
             let type_node = ptr_to_node(stmt.child1)
             var_type = map_type_node(type_node)
@@ -634,13 +640,25 @@ fn generate_statement(stmt: ASTNode) {
                 var_type = get_expr_type(ptr_to_node(stmt.child2))
             }
         }
+
+        // The initializer is generated before the binding is declared, so that
+        // `let x = x + 1` reads the *outer* x rather than the one being defined.
+        let mut init_val = ""
+        let has_init = str_equals(stmt.child2, "") == 0
+        if (has_init) {
+            init_val = generate_expression(ptr_to_node(stmt.child2))
+        }
+
+        // A fresh binding with its own slot. Two `let x` in sibling blocks get
+        // separate stack slots, so they can hold different types without one
+        // being written through a slot sized for the other.
         ir_set_var_type(var_name, var_type)
+        let slot = ir_get_var_slot(var_name)
         let store_type = storage_type(var_type)
-        ir_alloca(store_type, var_name)
-        
-        if (str_equals(stmt.child2, "") == 0) {
-            let init_val = generate_expression(ptr_to_node(stmt.child2))
-            ir_store(store_type, init_val, var_name)
+        ir_alloca(store_type, slot)
+
+        if (has_init) {
+            ir_store(store_type, init_val, slot)
         }
     }
     
@@ -648,13 +666,13 @@ fn generate_statement(stmt: ASTNode) {
         let target_node = ptr_to_node(stmt.child1)
         if (target_node.kind == NodeKind.IDENTIFIER_EXPR) {
             let var_name = target_node.s1
-            let var_type = ir_get_var_type(var_name)
+            let mut var_type = ir_get_var_type(var_name)
             let store_type = storage_type(var_type)
             let val = generate_expression(ptr_to_node(stmt.child2))
-            if (ir_is_global_name(var_name) == 1) {
+            if (ir_var_is_global(var_name) == 1) {
                 ir_store_global(store_type, val, var_name)
             } else {
-                ir_store(store_type, val, var_name)
+                ir_store(store_type, val, ir_get_var_slot(var_name))
             }
         }
         if (target_node.kind == NodeKind.MEMBER_ACCESS_EXPR) {
@@ -760,7 +778,12 @@ fn generate_statement(stmt: ASTNode) {
     }
 
     if (stmt.kind == NodeKind.FOR_STATEMENT) {
-        let loop_var = stmt.s1
+        // Scoped to the loop, matching sema.
+        ir_scope_push()
+        ir_set_var_type(stmt.s1, "i32")
+        let loop_var = ir_get_var_slot(stmt.s1)
+        ir_alloca("i32", loop_var)
+
         let start_val = generate_expression(ptr_to_node(stmt.child1))
         ir_store("i32", start_val, loop_var)
 
@@ -790,6 +813,7 @@ fn generate_statement(stmt: ASTNode) {
         ir_br_numbered(cond_label)
 
         ir_label_numbered(end_label)
+        ir_scope_pop()
     }
 
     if (stmt.kind == NodeKind.BREAK_STATEMENT) {
@@ -812,9 +836,9 @@ fn generate_statement(stmt: ASTNode) {
         let scrut_val = generate_expression(ptr_to_node(stmt.child1))
         let scrut_type = get_expr_type(ptr_to_node(stmt.child1))
         let end_label = ir_get_label()
-        let needs_final_br = true
+        let mut needs_final_br = true
 
-        let arm_ptr = stmt.child2
+        let mut arm_ptr = stmt.child2
         while (str_equals(arm_ptr, "") == 0) {
             let arm = ptr_to_node(arm_ptr)
             if (str_equals(arm.s1, "_") == 1) {
@@ -847,100 +871,32 @@ fn generate_statement(stmt: ASTNode) {
 }
 
 fn generate_block(block: ASTNode) {
-    let stmt_ptr = block.child1
+    // Mirrors sema_block: the same scopes must be pushed and popped in the same
+    // order, so that a name resolves to the same binding -- and therefore the
+    // same slot -- in both passes.
+    ir_scope_push()
+
+    let mut stmt_ptr = block.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
         generate_statement(stmt)
         stmt_ptr = stmt.next
     }
-}
 
-fn get_variable_decl_type(stmt: ASTNode) -> String {
-    let var_type = "i32"
-    if (str_equals(stmt.child1, "") == 0) {
-        let type_node = ptr_to_node(stmt.child1)
-        var_type = map_type_node(type_node)
-    } else {
-        if (str_equals(stmt.child2, "") == 0) {
-            var_type = get_expr_type(ptr_to_node(stmt.child2))
-        }
-    }
-    return var_type
-}
-
-fn predeclare_locals_stmt(stmt: ASTNode) {
-    if (stmt.kind == NodeKind.VARIABLE_DECL) {
-        let var_type = get_variable_decl_type(stmt)
-        ir_set_var_type(stmt.s1, var_type)
-        ir_alloca(storage_type(var_type), stmt.s1)
-    }
-
-    if (stmt.kind == NodeKind.IF_STATEMENT) {
-        if (str_equals(stmt.child2, "") == 0) {
-            predeclare_locals_block(ptr_to_node(stmt.child2))
-        }
-        if (str_equals(stmt.child3, "") == 0) {
-            let else_node = ptr_to_node(stmt.child3)
-            if (else_node.kind == NodeKind.BLOCK) {
-                predeclare_locals_block(else_node)
-            } else {
-                predeclare_locals_stmt(else_node)
-            }
-        }
-    }
-
-    if (stmt.kind == NodeKind.WHILE_STATEMENT) {
-        if (str_equals(stmt.child2, "") == 0) {
-            predeclare_locals_block(ptr_to_node(stmt.child2))
-        }
-    }
-
-    if (stmt.kind == NodeKind.LOOP_STATEMENT) {
-        if (str_equals(stmt.child1, "") == 0) {
-            predeclare_locals_block(ptr_to_node(stmt.child1))
-        }
-    }
-
-    if (stmt.kind == NodeKind.FOR_STATEMENT) {
-        ir_set_var_type(stmt.s1, "i32")
-        ir_alloca("i32", stmt.s1)
-        if (str_equals(stmt.child3, "") == 0) {
-            predeclare_locals_block(ptr_to_node(stmt.child3))
-        }
-    }
-
-    if (stmt.kind == NodeKind.MATCH_STATEMENT) {
-        let arm_ptr = stmt.child2
-        while (str_equals(arm_ptr, "") == 0) {
-            let arm = ptr_to_node(arm_ptr)
-            if (str_equals(arm.child2, "") == 0) {
-                predeclare_locals_block(ptr_to_node(arm.child2))
-            }
-            arm_ptr = arm.next
-        }
-    }
-}
-
-fn predeclare_locals_block(block: ASTNode) {
-    let stmt_ptr = block.child1
-    while (str_equals(stmt_ptr, "") == 0) {
-        let stmt = ptr_to_node(stmt_ptr)
-        predeclare_locals_stmt(stmt)
-        stmt_ptr = stmt.next
-    }
+    ir_scope_pop()
 }
 
 fn generate_function(func: ASTNode) {
     let func_name = func.s1
     let emitted_name = function_symbol_name(func)
     
-    let ret_type = "void"
+    let mut ret_type = "void"
     if (str_equals(func.child3, "") == 0) {
         let ret_node = ptr_to_node(func.child3)
         ret_type = map_type_node(ret_node)
     }
     
-    let is_main = 0
+    let mut is_main = 0
     if (str_equals(func_name, "main") == 1) {
         ret_type = "i32"
         is_main = 1
@@ -955,7 +911,7 @@ fn generate_function(func: ASTNode) {
         ir_function_param("ptr", "p_argv")
     }
 
-    let param_ptr = func.child1
+    let mut param_ptr = func.child1
     while (str_equals(param_ptr, "") == 0) {
         let param_node = ptr_to_node(param_ptr)
         let p_type_node = ptr_to_node(param_node.child1)
@@ -972,27 +928,34 @@ fn generate_function(func: ASTNode) {
         ir_store_global("ptr", "%p_argv", "prismio_argv")
     }
 
-    let param_ptr2 = func.child1
+    // Parameter scope, outside the body block, matching sema_function.
+    ir_scope_push()
+
+    let mut param_ptr2 = func.child1
     while (str_equals(param_ptr2, "") == 0) {
         let param_node = ptr_to_node(param_ptr2)
         let p_type_node = ptr_to_node(param_node.child1)
         let p_type_str = map_type_node(p_type_node)
         let p_store_type = storage_type(p_type_str)
-        
+
         ir_set_var_type(param_node.s1, p_type_str)
-        ir_alloca(p_store_type, param_node.s1)
-        ir_store(p_store_type, str_concat("%p_", param_node.s1), param_node.s1)
-        
+        let p_slot = ir_get_var_slot(param_node.s1)
+        ir_alloca(p_store_type, p_slot)
+        ir_store(p_store_type, str_concat("%p_", param_node.s1), p_slot)
+
         param_ptr2 = param_node.next
     }
 
-    if (str_equals(func.child2, "") == 0) {
-        predeclare_locals_block(ptr_to_node(func.child2))
-    }
-    
+    // Locals are created where they are declared now, rather than hoisted by a
+    // separate pre-pass. The backend still places every alloca in the entry
+    // block, so a `let` inside a loop body does not grow the stack per
+    // iteration -- and each declaration gets its own slot, which the old
+    // name-keyed pre-pass could not express.
     if (str_equals(func.child2, "") == 0) {
         generate_block(ptr_to_node(func.child2))
     }
+
+    ir_scope_pop()
     
     if (ir_has_returned() == 0) {
         if (str_equals(ret_sig_type, "void") == 1) {
@@ -1033,7 +996,7 @@ fn collect_strings_expr(expr: ASTNode) {
         }
     }
     if (expr.kind == NodeKind.CALL_EXPR) {
-        let arg_ptr = expr.child2
+        let mut arg_ptr = expr.child2
         while (str_equals(arg_ptr, "") == 0) {
             let arg_node = ptr_to_node(arg_ptr)
             collect_strings_expr(arg_node)
@@ -1041,7 +1004,7 @@ fn collect_strings_expr(expr: ASTNode) {
         }
     }
     if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
-        let elem_ptr = expr.child1
+        let mut elem_ptr = expr.child1
         while (str_equals(elem_ptr, "") == 0) {
             let elem_node = ptr_to_node(elem_ptr)
             collect_strings_expr(elem_node)
@@ -1062,7 +1025,7 @@ fn collect_strings_expr(expr: ASTNode) {
         }
     }
     if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
-        let field_ptr = expr.child1
+        let mut field_ptr = expr.child1
         while (str_equals(field_ptr, "") == 0) {
             let field = ptr_to_node(field_ptr)
             if (str_equals(field.child1, "") == 0) {
@@ -1074,11 +1037,11 @@ fn collect_strings_expr(expr: ASTNode) {
 }
 
 fn declare_extern_function(ext: ASTNode) {
-    let ret_type = get_declared_return_type(ext, ext.child2)
+    let mut ret_type = get_declared_return_type(ext, ext.child2)
     ir_set_var_type(fn_key(function_symbol_name(ext)), ret_type)
 
     ir_declare_function_begin(function_symbol_name(ext), storage_type(ret_type))
-    let param_ptr = ext.child1
+    let mut param_ptr = ext.child1
     while (str_equals(param_ptr, "") == 0) {
         let param_node = ptr_to_node(param_ptr)
         let p_type_node = ptr_to_node(param_node.child1)
@@ -1089,7 +1052,7 @@ fn declare_extern_function(ext: ASTNode) {
 }
 
 fn module_has_function(module: ASTNode, name: String) -> Bool {
-    let stmt_ptr = module.child1
+    let mut stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
         if (stmt.kind == NodeKind.FUNCTION and str_equals(stmt.s1, name) == 1) {
@@ -1102,8 +1065,8 @@ fn module_has_function(module: ASTNode, name: String) -> Bool {
 }
 
 fn register_enum_decl(enum_node: ASTNode) {
-    let variant_ptr = enum_node.child1
-    let value = 0
+    let mut variant_ptr = enum_node.child1
+    let mut value = 0
     while (str_equals(variant_ptr, "") == 0) {
         let variant = ptr_to_node(variant_ptr)
         ir_register_enum_variant(enum_node.s1, variant.s1, value)
@@ -1127,7 +1090,7 @@ fn generate_struct_decl(struct_node: ASTNode) {
 
     ir_struct_type_begin(struct_node.s1)
 
-    let field_ptr = struct_node.child1
+    let mut field_ptr = struct_node.child1
     while (str_equals(field_ptr, "") == 0) {
         let field = ptr_to_node(field_ptr)
         let type_node = ptr_to_node(field.child1)
@@ -1207,7 +1170,7 @@ fn collect_strings_stmt(stmt: ASTNode) {
     }
     if (stmt.kind == NodeKind.MATCH_STATEMENT) {
         collect_strings_child_expr(stmt.child1)
-        let arm_ptr = stmt.child2
+        let mut arm_ptr = stmt.child2
         while (str_equals(arm_ptr, "") == 0) {
             let arm = ptr_to_node(arm_ptr)
             // A non-wildcard arm's pattern is an ordinary expression.
@@ -1219,7 +1182,7 @@ fn collect_strings_stmt(stmt: ASTNode) {
 }
 
 fn collect_strings_block(block: ASTNode) {
-    let s_ptr = block.child1
+    let mut s_ptr = block.child1
     while (str_equals(s_ptr, "") == 0) {
         let s = ptr_to_node(s_ptr)
         collect_strings_stmt(s)
@@ -1246,7 +1209,7 @@ fn generate_module(module: ASTNode) {
         ir_module_start("self_hosted_module")
     }
 
-    let type_stmt_ptr = module.child1
+    let mut type_stmt_ptr = module.child1
     while (str_equals(type_stmt_ptr, "") == 0) {
         let type_stmt = ptr_to_node(type_stmt_ptr)
         if (type_stmt.kind == NodeKind.ENUM_DECL) {
@@ -1258,7 +1221,7 @@ fn generate_module(module: ASTNode) {
         type_stmt_ptr = type_stmt.next
     }
 
-    let struct_stmt_ptr = module.child1
+    let mut struct_stmt_ptr = module.child1
     while (str_equals(struct_stmt_ptr, "") == 0) {
         let struct_stmt = ptr_to_node(struct_stmt_ptr)
         if (struct_stmt.kind == NodeKind.STRUCT_DECL) {
@@ -1349,7 +1312,7 @@ fn generate_module(module: ASTNode) {
     ir_blank_line()
     
     // First pass: global variables + collect string literals
-    let stmt_ptr = module.child1
+    let mut stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
         
@@ -1360,8 +1323,8 @@ fn generate_module(module: ASTNode) {
         }
         
         if (stmt.kind == NodeKind.VARIABLE_DECL) {
-            let init_val = "0"
-            let var_type = "i32"
+            let mut init_val = "0"
+            let mut var_type = "i32"
             let has_annotation = str_equals(stmt.child1, "") == 0
             if (has_annotation) {
                 let type_node = ptr_to_node(stmt.child1)
@@ -1400,11 +1363,15 @@ fn generate_module(module: ASTNode) {
             }
             ir_global_var(stmt.s1, storage_type(var_type), init_val, 0)
             ir_register_global_name(stmt.s1)
-            ir_set_var_type(stmt.s1, var_type)
+            // Must be declared as a global, not a local: codegen asks
+            // ir_var_is_global() to choose between @name and a stack slot, and
+            // a global recorded as a local would be looked up as an alloca that
+            // does not exist.
+            ir_set_global_var_type(stmt.s1, var_type)
         }
         
         if (stmt.kind == NodeKind.FUNCTION) {
-            let ret_type = get_declared_return_type(stmt, stmt.child3)
+            let mut ret_type = get_declared_return_type(stmt, stmt.child3)
             if (str_equals(stmt.s1, "main") == 1) {
                 ret_type = "i32"
             }
@@ -1418,7 +1385,7 @@ fn generate_module(module: ASTNode) {
     ir_blank_line()
     
     // Second pass: functions
-    let stmt_ptr2 = module.child1
+    let mut stmt_ptr2 = module.child1
     while (str_equals(stmt_ptr2, "") == 0) {
         let stmt2 = ptr_to_node(stmt_ptr2)
         

@@ -13,9 +13,20 @@ struct Lexer {
 }
 
 fn create_lexer(input: String) -> Lexer {
+    // Skip a UTF-8 byte order mark. Most Windows editors write one by default
+    // (PowerShell's -Encoding utf8 among them), and without this the first
+    // token is garbage and the file fails with "Unknown declaration" -- a
+    // baffling error for a file that looks perfectly fine.
+    let mut start = 0
+    if (char_code(str_char_at(input, 0)) == 239) {
+        if (char_code(str_char_at(input, 1)) == 187 and char_code(str_char_at(input, 2)) == 191) {
+            start = 3
+        }
+    }
+
     return Lexer {
         input: input,
-        pos: 0,
+        pos: start,
         line: 1,
         col: 1
     }
@@ -36,7 +47,7 @@ fn lexer_advance(lex: Lexer) {
 }
 
 fn lexer_skip_whitespace(lex: Lexer) {
-    let is_looping = true
+    let mut is_looping = true
     while (is_looping) {
         if (is_space(lexer_current(lex))) {
             if (lexer_current(lex) == '\n') {
@@ -131,7 +142,7 @@ fn lexer_next_token(lex: Lexer) -> Token {
             lexer_advance(lex)
         }
         let length = lex.pos - start
-        let value = str_substring(lex.input, start, length)
+        let mut value = str_substring(lex.input, start, length)
         
         if (is_keyword(value)) {
             if (is_boolean(value)) {
@@ -146,7 +157,7 @@ fn lexer_next_token(lex: Lexer) -> Token {
     // Numbers
     if (is_digit(c)) {
         let start = lex.pos
-        let is_float = 0
+        let mut is_float = 0
         while (is_digit(lexer_current(lex))) {
             lexer_advance(lex)
         }
@@ -159,7 +170,7 @@ fn lexer_next_token(lex: Lexer) -> Token {
         }
         
         let length = lex.pos - start
-        let value = str_substring(lex.input, start, length)
+        let mut value = str_substring(lex.input, start, length)
         if (is_float == 1) {
             return Token { type: TokenType.FLOAT_LITERAL, value: value, line: lex.line, tok_next: "" }
         }
@@ -208,7 +219,7 @@ fn lexer_next_token(lex: Lexer) -> Token {
     // Character Literal
     if (c == '\'') {
         lexer_advance(lex) // Skip opening quote
-        let value_char = lexer_current(lex)
+        let mut value_char = lexer_current(lex)
         
         if (value_char == '\\') {
             lexer_advance(lex)
@@ -256,7 +267,7 @@ fn lexer_next_token(lex: Lexer) -> Token {
         }
 
         let length = lex.pos - start
-        let value = str_substring(lex.input, start, length)
+        let mut value = str_substring(lex.input, start, length)
 
         // Refine type
         let mut type = TokenType.ARITHMETIC_OPERATOR
@@ -314,9 +325,9 @@ extern fn token_to_ptr(tok: Token) -> String
 // bindings stay local to one iteration and the chain itself is built the same way.
 fn lex_all_tokens(lex: Lexer) -> Token {
     let head_ptr = token_to_ptr(lexer_next_token(lex))
-    let current_ptr = head_ptr
+    let mut current_ptr = head_ptr
 
-    let scanning = true
+    let mut scanning = true
     while (scanning) {
         let current = ptr_to_token(current_ptr)
         if (current.type == TokenType.EOF) {

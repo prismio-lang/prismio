@@ -20,24 +20,24 @@ fn parser_current(p: Parser) -> Token {
 }
 
 fn parser_peek(p: Parser) -> Token {
-    let curr = ptr_to_token(p.current)
+    let mut curr = ptr_to_token(p.current)
     return ptr_to_token(curr.tok_next)
 }
 
 fn parser_advance(p: Parser) {
-    let curr = ptr_to_token(p.current)
+    let mut curr = ptr_to_token(p.current)
     if (curr.type != TokenType.EOF) {
         p.current = curr.tok_next
     }
 }
 
 fn parser_check(p: Parser, t: TokenType) -> Bool {
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     return curr.type == t
 }
 
 fn parser_check_val(p: Parser, t: TokenType, val: String) -> Bool {
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     return curr.type == t and str_equals(curr.value, val) == 1
 }
 
@@ -101,7 +101,7 @@ fn parse_import_statement(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "import", "import statement")
     
     let import_node = create_node(NodeKind.IMPORT_STATEMENT)
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     import_node.s1 = curr.value
     
     if (curr.type == TokenType.IDENTIFIER or curr.type == TokenType.KEYWORD) {
@@ -150,7 +150,7 @@ fn parse_type_annotation(p: Parser) -> ASTNode {
         return type_node
     }
     
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     if (curr.type == TokenType.IDENTIFIER or curr.type == TokenType.KEYWORD) {
         type_node.s1 = curr.value
         parser_advance(p)
@@ -176,7 +176,7 @@ fn parse_type_annotation(p: Parser) -> ASTNode {
 // than requiring a space, split the token: rewrite it to a single '>' in place
 // and leave it for the enclosing type to consume.
 fn parser_expect_close_angle(p: Parser, context: String) {
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     if (str_equals(curr.value, ">>") == 1) {
         curr.value = ">"
         return
@@ -192,7 +192,7 @@ fn parse_variable_decl(p: Parser) -> ASTNode {
         var_node.i1 = 1 // is_mutable
     }
     
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     var_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "variable name")
     
@@ -212,18 +212,18 @@ fn parse_extern_fn_decl(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "fn", "extern fn")
     
     let ext_node = create_node(NodeKind.EXTERN_FUNCTION)
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     ext_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "function name")
     
     parser_expect_val(p, TokenType.SEPARATOR, "(", "params")
     
-    let last_param = ""
+    let mut last_param = ""
     if (parser_check_val(p, TokenType.SEPARATOR, ")") == false) {
-        let is_looping = true
+        let mut is_looping = true
         while (is_looping) {
-            let param = create_node(NodeKind.FUNCTION_PARAMETER)
-            let curr = parser_current(p)
+            let mut param = create_node(NodeKind.FUNCTION_PARAMETER)
+            let mut curr = parser_current(p)
             param.s1 = curr.value
             parser_expect(p, TokenType.IDENTIFIER, "parameter name")
             parser_expect_val(p, TokenType.SEPARATOR, ":", "parameter type")
@@ -255,17 +255,17 @@ fn parse_function_decl(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "fn", "function")
     
     let fn_node = create_node(NodeKind.FUNCTION)
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     fn_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "function name")
     
     parser_expect_val(p, TokenType.SEPARATOR, "(", "params")
     
-    let last_param = ""
+    let mut last_param = ""
     if (parser_check_val(p, TokenType.SEPARATOR, ")") == false) {
-        let is_looping = true
+        let mut is_looping = true
         while (is_looping) {
-            let param = create_node(NodeKind.FUNCTION_PARAMETER)
+            let mut param = create_node(NodeKind.FUNCTION_PARAMETER)
             // Optional parameter convention: `sink` (move-in) or `inout` (mutable
             // borrow). Default (none) is a shared read-only borrow.
             if (parser_match_val(p, TokenType.KEYWORD, "sink")) {
@@ -275,7 +275,7 @@ fn parse_function_decl(p: Parser) -> ASTNode {
                     param.s2 = "inout"
                 }
             }
-            let curr = parser_current(p)
+            let mut curr = parser_current(p)
             param.s1 = curr.value
             parser_expect(p, TokenType.IDENTIFIER, "parameter name")
             parser_expect_val(p, TokenType.SEPARATOR, ":", "parameter type")
@@ -309,16 +309,16 @@ fn parse_struct_decl(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "struct", "struct")
     
     let struct_node = create_node(NodeKind.STRUCT_DECL)
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     struct_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "struct name")
     
     parser_expect_val(p, TokenType.SEPARATOR, "{", "struct body")
     
-    let last_field = ""
+    let mut last_field = ""
     while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
         let field = create_node(NodeKind.STRUCT_FIELD)
-        let curr = parser_current(p)
+        let mut curr = parser_current(p)
         field.s1 = curr.value
         parser_expect(p, TokenType.IDENTIFIER, "field name")
         parser_expect_val(p, TokenType.SEPARATOR, ":", "field type")
@@ -343,16 +343,16 @@ fn parse_enum_decl(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "enum", "enum")
     
     let enum_node = create_node(NodeKind.ENUM_DECL)
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     enum_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "enum name")
     
     parser_expect_val(p, TokenType.SEPARATOR, "{", "enum body")
     
-    let last_var = ""
+    let mut last_var = ""
     while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
         let variant = create_node(NodeKind.ENUM_VARIANT)
-        let curr = parser_current(p)
+        let mut curr = parser_current(p)
         variant.s1 = curr.value
         parser_expect(p, TokenType.IDENTIFIER, "variant name")
         
@@ -378,7 +378,7 @@ fn parse_block(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.SEPARATOR, "{", "block")
     let block_node = create_node(NodeKind.BLOCK)
     
-    let last_stmt = ""
+    let mut last_stmt = ""
     while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
         let stmt = parse_statement(p)
         if (str_equals(block_node.child1, "") == 1) {
@@ -440,7 +440,7 @@ fn parse_loop_statement(p: Parser) -> ASTNode {
 fn parse_for_statement(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "for", "for statement")
     let for_node = create_node(NodeKind.FOR_STATEMENT)
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     for_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "for loop variable")
     parser_expect_val(p, TokenType.KEYWORD, "in", "for ... in")
@@ -474,8 +474,8 @@ fn parse_match_statement(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.SEPARATOR, ")", "match scrutinee")
 
     parser_expect_val(p, TokenType.SEPARATOR, "{", "match body")
-    let head = ""
-    let tail_ptr = ""
+    let mut head = ""
+    let mut tail_ptr = ""
     while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
         let arm = parse_match_arm(p)
         if (str_equals(head, "") == 1) {
@@ -518,7 +518,7 @@ fn parse_statement(p: Parser) -> ASTNode {
     }
     if (parser_match_val(p, TokenType.KEYWORD, "return")) {
         let ret_node = create_node(NodeKind.RETURN_STATEMENT)
-        let curr = parser_current(p)
+        let mut curr = parser_current(p)
         if (curr.type != TokenType.SEPARATOR or str_equals(curr.value, "}") == 0) {
             ret_node.child1 = node_to_ptr(parse_expression(p, 0))
         }
@@ -528,7 +528,7 @@ fn parse_statement(p: Parser) -> ASTNode {
         return parse_variable_decl(p)
     }
     
-    let expr = parse_expression(p, 0)
+    let mut expr = parse_expression(p, 0)
 
     if (parser_match_val(p, TokenType.ASSIGNMENT_OPERATOR, "=")) {
         let assign_stmt = create_node(NodeKind.ASSIGNMENT_STATEMENT)
@@ -605,7 +605,7 @@ fn get_operator_precedence(t: Token) -> Int {
 // parse_expression and parse_primary. Recursing into parse_unary rather than
 // parse_primary is what makes `--x` and `!!b` parse.
 fn parse_unary(p: Parser) -> ASTNode {
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
 
     let is_neg = curr.type == TokenType.ARITHMETIC_OPERATOR and str_equals(curr.value, "-") == 1
     let is_not = curr.type == TokenType.NEGATION and str_equals(curr.value, "!") == 1
@@ -661,11 +661,11 @@ fn parse_postfix(p: Parser) -> ASTNode {
 }
 
 fn parse_expression(p: Parser, precedence: Int) -> ASTNode {
-    let left = parse_unary(p)
+    let mut left = parse_unary(p)
     
-    let is_looping = true
+    let mut is_looping = true
     while (is_looping) {
-        let curr = parser_current(p)
+        let mut curr = parser_current(p)
         
         let is_operator = curr.type == TokenType.ARITHMETIC_OPERATOR or curr.type == TokenType.RELATIONAL_OPERATOR or str_equals(curr.value, "and") == 1 or str_equals(curr.value, "or") == 1
         
@@ -697,7 +697,7 @@ fn parse_expression(p: Parser, precedence: Int) -> ASTNode {
 }
 
 fn parse_primary(p: Parser) -> ASTNode {
-    let curr = parser_current(p)
+    let mut curr = parser_current(p)
     
     if (curr.type == TokenType.NUMBER_LITERAL or curr.type == TokenType.FLOAT_LITERAL or curr.type == TokenType.STRING_LITERAL or curr.type == TokenType.BOOL_LITERAL or curr.type == TokenType.CHAR_LITERAL) {
         let lit = create_node(NodeKind.LITERAL_EXPR)
@@ -715,7 +715,7 @@ fn parse_primary(p: Parser) -> ASTNode {
             parser_advance(p)
             parser_expect_val(p, TokenType.SEPARATOR, "{", "struct literal")
             
-            let last_field = ""
+            let mut last_field = ""
             while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
                 let field = create_node(NodeKind.STRUCT_FIELD)
                 let field_tok = parser_current(p)
@@ -745,20 +745,20 @@ fn parse_primary(p: Parser) -> ASTNode {
         ident.s1 = curr.value
         parser_advance(p)
         
-        let expr = ident
+        let mut expr = ident
         
-        let is_looping = true
+        let mut is_looping = true
         while (is_looping) {
             // Function call
             if (parser_match_val(p, TokenType.SEPARATOR, "(")) {
                 let call = create_node(NodeKind.CALL_EXPR)
                 call.child1 = node_to_ptr(expr) // callee
                 
-                let last_arg = ""
+                let mut last_arg = ""
                 if (parser_check_val(p, TokenType.SEPARATOR, ")") == false) {
-                    let is_arg_looping = true
+                    let mut is_arg_looping = true
                     while (is_arg_looping) {
-                        let arg = parse_expression(p, 0)
+                        let mut arg = parse_expression(p, 0)
                         if (str_equals(call.child2, "") == 1) {
                             call.child2 = node_to_ptr(arg)
                         } else {
@@ -806,9 +806,9 @@ fn parse_primary(p: Parser) -> ASTNode {
     if (parser_match_val(p, TokenType.SEPARATOR, "[")) {
         let array_lit = create_node(NodeKind.ARRAY_LITERAL_EXPR)
         
-        let last_elem = ""
+        let mut last_elem = ""
         if (parser_check_val(p, TokenType.SEPARATOR, "]") == false) {
-            let is_looping = true
+            let mut is_looping = true
             while (is_looping) {
                 let elem = parse_expression(p, 0)
                 
@@ -845,11 +845,11 @@ fn parse_primary(p: Parser) -> ASTNode {
 
 fn parse_module(p: Parser) -> ASTNode {
     let module = create_node(NodeKind.MODULE)
-    let last_stmt = ""
+    let mut last_stmt = ""
 
-    let is_looping = true
+    let mut is_looping = true
     while (is_looping) {
-        let curr = parser_current(p)
+        let mut curr = parser_current(p)
         if (curr.type == TokenType.EOF) {
             is_looping = false
         } else {

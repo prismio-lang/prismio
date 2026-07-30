@@ -48,8 +48,10 @@
 
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Core.h>
+#include <llvm-c/Error.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 
 #else
 
@@ -152,6 +154,7 @@ void LLVMSetUnnamedAddr(LLVMValueRef Global, LLVMBool HasUnnamedAddr);
 LLVMBasicBlockRef LLVMAppendBasicBlockInContext(LLVMContextRef C, LLVMValueRef Fn,
                                                 const char *Name);
 void LLVMPositionBuilderAtEnd(LLVMBuilderRef Builder, LLVMBasicBlockRef Block);
+void LLVMPositionBuilderBefore(LLVMBuilderRef Builder, LLVMValueRef Instr);
 LLVMBasicBlockRef LLVMGetInsertBlock(LLVMBuilderRef Builder);
 LLVMValueRef LLVMGetBasicBlockTerminator(LLVMBasicBlockRef BB);
 LLVMValueRef LLVMGetBasicBlockParent(LLVMBasicBlockRef BB);
@@ -226,6 +229,17 @@ LLVMBool LLVMPrintModuleToFile(LLVMModuleRef M, const char *Filename, char **Err
 char *LLVMPrintModuleToString(LLVMModuleRef M);
 void LLVMDisposeMessage(char *Message);
 void LLVMGetVersion(unsigned *Major, unsigned *Minor, unsigned *Patch);
+
+// --- optimization (new pass manager) ----------------------------------------
+typedef struct LLVMOpaqueError *LLVMErrorRef;
+typedef struct LLVMOpaqueTargetMachine *LLVMTargetMachineRef;
+typedef struct LLVMOpaquePassBuilderOptions *LLVMPassBuilderOptionsRef;
+
+LLVMPassBuilderOptionsRef LLVMCreatePassBuilderOptions(void);
+void LLVMDisposePassBuilderOptions(LLVMPassBuilderOptionsRef Options);
+LLVMErrorRef LLVMRunPasses(LLVMModuleRef M, const char *Passes,
+                           LLVMTargetMachineRef TM, LLVMPassBuilderOptionsRef Options);
+char *LLVMGetErrorMessage(LLVMErrorRef Err);
 
 #ifdef __cplusplus
 }

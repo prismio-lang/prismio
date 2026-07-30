@@ -68,6 +68,11 @@
 static LLVMContextRef g_ctx;
 static LLVMModuleRef g_module;
 static LLVMBuilderRef g_builder;
+// Second builder, used only for allocas. They must land in the entry block no
+// matter where codegen currently is, or a `let` inside a loop body would grow
+// the stack on every iteration.
+static LLVMBuilderRef g_alloca_builder;
+static LLVMBasicBlockRef g_entry_block;
 static int g_initialized;
 
 static LLVMValueRef g_values[MAX_VALUES];
@@ -149,6 +154,16 @@ void ir_set_free_function(const char *name) {
 
 const char *ir_get_alloc_function(void) { return g_alloc_fn; }
 const char *ir_get_free_function(void) { return g_free_fn; }
+
+// The LLVM actually loaded, for `prismio --version`. Reported rather than
+// hardcoded so a version mismatch is visible without having to trigger it.
+const char *ir_llvm_version(void) {
+    static char buf[32];
+    unsigned major = 0, minor = 0, patch = 0;
+    LLVMGetVersion(&major, &minor, &patch);
+    snprintf(buf, sizeof(buf), "%u.%u.%u", major, minor, patch);
+    return buf;
+}
 
 // ============================================================================
 // Diagnostics
@@ -355,6 +370,7 @@ static void ensure_context(void) {
     check_llvm_version();
     g_ctx = LLVMContextCreate();
     g_builder = LLVMCreateBuilderInContext(g_ctx);
+    g_alloca_builder = LLVMCreateBuilderInContext(g_ctx);
     g_initialized = 1;
 }
 
@@ -429,8 +445,8 @@ void ir_function_body_start(void) {
     g_param_count = 0;
     g_has_returned = 0;
 
-    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(g_ctx, g_function, "entry");
-    LLVMPositionBuilderAtEnd(g_builder, entry);
+    g_entry_block = LLVMAppendBasicBlockInContext(g_ctx, g_function, "entry");
+    LLVMPositionBuilderAtEnd(g_builder, g_entry_block);
 
     for (int i = 0; i < g_pending_param_count; i++) {
         if (!g_pending_param_names[i][0]) continue;
@@ -522,13 +538,18 @@ int ir_alloca(const char *type, const char *name) {
 
     LLVMTypeRef ty = type_from_key(type);
 
-    // Emitted wherever the builder currently sits. That is the entry block in
-    // practice: the frontend hoists every local of a function up front via
-    // predeclare_locals_block() before generating any body code, which is also
-    // what the dedupe above relies on. If that ever changes, allocas would need
-    // explicit hoisting here so a loop body does not grow the stack per
-    // iteration.
-    LLVMValueRef slot = LLVMBuildAlloca(g_builder, ty, name);
+    // Always emitted in the entry block, wherever codegen currently is. The
+    // frontend now creates each local at its declaration, which for a `let`
+    // inside a loop body would otherwise allocate again on every iteration.
+    // Inserted before the entry block's terminator once it has one, so the
+    // alloca cannot end up after a branch.
+    LLVMValueRef entry_term = LLVMGetBasicBlockTerminator(g_entry_block);
+    if (entry_term) {
+        LLVMPositionBuilderBefore(g_alloca_builder, entry_term);
+    } else {
+        LLVMPositionBuilderAtEnd(g_alloca_builder, g_entry_block);
+    }
+    LLVMValueRef slot = LLVMBuildAlloca(g_alloca_builder, ty, name);
 
     strncpy(g_allocas[g_alloca_count].name, name, NAME_LEN - 1);
     g_allocas[g_alloca_count].name[NAME_LEN - 1] = '\0';
@@ -891,8 +912,54 @@ void ir_blank_line(void) { /* formatting only */ }
 // Verifies before writing. This is the check the text backend never had: a
 // malformed module is reported here, against the code that built it, instead of
 // surfacing later as an llc parse error pointing at generated text.
+// -O level, 0 by default -- unoptimized, which is what shipped before this
+// existed: no pass pipeline was ever run over the generated module.
+static int g_opt_level = 0;
+
+void ir_set_opt_level(int level) {
+    if (level < 0) level = 0;
+    if (level > 3) level = 3;
+    g_opt_level = level;
+}
+
+// Runs LLVM's standard pipeline over the module before it is written.
+//
+// The frontend emits a load/store through a stack slot for every binding, so
+// even -O1 (which includes mem2reg/SROA) is a large improvement over the raw
+// output. No TargetMachine is passed: these are the target-independent passes,
+// and llc still does target-specific work afterwards.
+static int run_optimization(void) {
+    if (g_opt_level == 0) return 0;
+
+    char pipeline[32];
+    snprintf(pipeline, sizeof(pipeline), "default<O%d>", g_opt_level);
+
+    LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
+    LLVMErrorRef err = LLVMRunPasses(g_module, pipeline, NULL, options);
+    LLVMDisposePassBuilderOptions(options);
+
+    if (err) {
+        char *msg = LLVMGetErrorMessage(err);
+        fprintf(stderr, "error: optimization pipeline failed: %s\n", msg ? msg : "?");
+        return 1;
+    }
+    return 0;
+}
+
 int ir_write_file(const char *filename) {
     char *err = NULL;
+
+    // Verify first: optimizing an already-invalid module produces far worse
+    // diagnostics than reporting the original problem.
+    if (LLVMVerifyModule(g_module, LLVMReturnStatusAction, &err)) {
+        fprintf(stderr, "error: generated module failed verification\n");
+        if (err) fprintf(stderr, "%s\n", err);
+        if (err) LLVMDisposeMessage(err);
+        return 1;
+    }
+    if (err) { LLVMDisposeMessage(err); err = NULL; }
+
+    if (run_optimization() != 0) return 1;
     if (LLVMVerifyModule(g_module, LLVMReturnStatusAction, &err)) {
         fprintf(stderr, "error: generated module failed verification\n");
         if (err) fprintf(stderr, "%s\n", err);

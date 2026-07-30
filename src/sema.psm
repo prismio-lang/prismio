@@ -9,6 +9,114 @@ extern fn exit(code: Int)
 extern fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo
 extern fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo)
 extern fn sema_block(module: ASTNode, block: ASTNode, expected_return: TypeInfo)
+extern fn sema_stmt_diverges(stmt: ASTNode) -> Bool
+extern fn sema_block_diverges(block: ASTNode) -> Bool
+extern fn sema_block_has_break(block: ASTNode) -> Bool
+
+// --- structured control-flow analysis ---------------------------------------
+//
+// Prismio's control flow is fully structured -- no goto, no labeled break -- so
+// "can control fall out of the bottom of this statement?" is answerable from the
+// AST alone, without building a CFG. That is what definite-return and
+// unreachable-code checking need.
+//
+// Both answers are deliberately conservative in the safe direction: when in
+// doubt, report that control *can* fall through. That risks demanding a return
+// the programmer knows is unreachable, which is an annoyance; the opposite
+// error would let a function fall off its end, which is a miscompile.
+
+fn sema_block_has_break(block: ASTNode) -> Bool {
+    let mut stmt_ptr = block.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+
+        if (stmt.kind == NodeKind.BREAK_STATEMENT) { return true }
+
+        // Nested loops own their own breaks, but descending into them anyway
+        // only makes this more conservative, never less.
+        if (stmt.kind == NodeKind.IF_STATEMENT) {
+            if (sema_block_has_break(ptr_to_node(stmt.child2))) { return true }
+            if (str_equals(stmt.child3, "") == 0) {
+                let else_node = ptr_to_node(stmt.child3)
+                if (else_node.kind == NodeKind.IF_STATEMENT) {
+                    if (sema_stmt_has_break_wrapper(else_node)) { return true }
+                } else {
+                    if (sema_block_has_break(else_node)) { return true }
+                }
+            }
+        }
+        if (stmt.kind == NodeKind.WHILE_STATEMENT or stmt.kind == NodeKind.LOOP_STATEMENT) {
+            let mut body = ptr_to_node(stmt.child1)
+            if (stmt.kind == NodeKind.WHILE_STATEMENT) { body = ptr_to_node(stmt.child2) }
+            if (sema_block_has_break(body)) { return true }
+        }
+        if (stmt.kind == NodeKind.FOR_STATEMENT) {
+            if (sema_block_has_break(ptr_to_node(stmt.child3))) { return true }
+        }
+        if (stmt.kind == NodeKind.MATCH_STATEMENT) {
+            let mut arm_ptr = stmt.child2
+            while (str_equals(arm_ptr, "") == 0) {
+                let arm = ptr_to_node(arm_ptr)
+                if (sema_block_has_break(ptr_to_node(arm.child2))) { return true }
+                arm_ptr = arm.next
+            }
+        }
+
+        stmt_ptr = stmt.next
+    }
+    return false
+}
+
+// Wraps an else-if chain so the recursion above stays readable.
+fn sema_stmt_has_break_wrapper(stmt: ASTNode) -> Bool {
+    if (sema_block_has_break(ptr_to_node(stmt.child2))) { return true }
+    if (str_equals(stmt.child3, "") == 0) {
+        let else_node = ptr_to_node(stmt.child3)
+        if (else_node.kind == NodeKind.IF_STATEMENT) {
+            return sema_stmt_has_break_wrapper(else_node)
+        }
+        return sema_block_has_break(else_node)
+    }
+    return false
+}
+
+// True when control cannot continue past this statement.
+fn sema_stmt_diverges(stmt: ASTNode) -> Bool {
+    if (stmt.kind == NodeKind.RETURN_STATEMENT) { return true }
+    if (stmt.kind == NodeKind.BREAK_STATEMENT) { return true }
+    if (stmt.kind == NodeKind.CONTINUE_STATEMENT) { return true }
+
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        // Only when there is an else and *both* sides diverge.
+        if (str_equals(stmt.child3, "") == 1) { return false }
+        let else_node = ptr_to_node(stmt.child3)
+        let mut else_diverges = false
+        if (else_node.kind == NodeKind.IF_STATEMENT) {
+            else_diverges = sema_stmt_diverges(else_node)
+        } else {
+            else_diverges = sema_block_diverges(else_node)
+        }
+        return sema_block_diverges(ptr_to_node(stmt.child2)) and else_diverges
+    }
+
+    // A `loop` with no break never finishes. A `while` or `for` may run zero
+    // times, so neither ever counts as diverging.
+    if (stmt.kind == NodeKind.LOOP_STATEMENT) {
+        return sema_block_has_break(ptr_to_node(stmt.child1)) == false
+    }
+
+    return false
+}
+
+fn sema_block_diverges(block: ASTNode) -> Bool {
+    let mut stmt_ptr = block.child1
+    while (str_equals(stmt_ptr, "") == 0) {
+        let stmt = ptr_to_node(stmt_ptr)
+        if (sema_stmt_diverges(stmt)) { return true }
+        stmt_ptr = stmt.next
+    }
+    return false
+}
 
 fn sema_fn_key(name: String) -> String {
     return str_concat("$fn$", name)
@@ -40,10 +148,10 @@ fn sema_mangle_type(t: TypeInfo) -> String {
 }
 
 fn sema_param_signature(module: ASTNode, param_ptr: String) -> String {
-    let sig = ""
-    let curr = param_ptr
+    let mut sig = ""
+    let mut curr = param_ptr
     while (str_equals(curr, "") == 0) {
-        let param = ptr_to_node(curr)
+        let mut param = ptr_to_node(curr)
         let param_t = sema_annotation_type(module, ptr_to_node(param.child1))
         if (str_equals(sig, "") == 1) {
             sig = sema_mangle_type(param_t)
@@ -67,8 +175,8 @@ fn sema_function_symbol(module: ASTNode, fn_node: ASTNode) -> String {
 }
 
 fn sema_function_symbol_count(module: ASTNode, symbol: String) -> Int {
-    let count = 0
-    let stmt_ptr = module.child1
+    let mut count = 0
+    let mut stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
         if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
@@ -102,7 +210,7 @@ fn sema_type_error(context: String, expected: TypeInfo, actual: TypeInfo) {
 }
 
 fn sema_has_struct(module: ASTNode, name: String) -> Bool {
-    let stmt_ptr = module.child1
+    let mut stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
         if (stmt.kind == NodeKind.STRUCT_DECL and str_equals(stmt.s1, name) == 1) {
@@ -114,7 +222,7 @@ fn sema_has_struct(module: ASTNode, name: String) -> Bool {
 }
 
 fn sema_has_enum(module: ASTNode, name: String) -> Bool {
-    let stmt_ptr = module.child1
+    let mut stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
         if (stmt.kind == NodeKind.ENUM_DECL and str_equals(stmt.s1, name) == 1) {
@@ -208,6 +316,14 @@ fn sema_move_operand(node: ASTNode) {
             if (ir_is_borrowed(node.s1) == 1) {
                 sema_error(str_concat("cannot move out of borrowed value: ", node.s1))
             }
+            // Move state is tracked per name over the AST in source order, so a
+            // move inside a loop body is seen once but executes on every
+            // iteration. If the binding was created outside the loop, that is a
+            // use-after-move -- and for drop(), a double free that crashes at
+            // run time with nothing reported at compile time.
+            if (ir_binding_predates_loop(node.s1) == 1) {
+                sema_error(str_concat("value moved inside a loop, so the move would repeat: ", node.s1))
+            }
             ir_mark_moved(node.s1)
         }
     }
@@ -226,7 +342,7 @@ fn sema_check_value(module: ASTNode, val_node: ASTNode, expected: TypeInfo, cont
 }
 
 fn sema_find_function(module: ASTNode, name: String) -> ASTNode {
-    let stmt_ptr = module.child1
+    let mut stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
         if ((stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) and str_equals(stmt.s1, name) == 1) {
@@ -246,8 +362,8 @@ fn sema_arg_matches_type(module: ASTNode, arg_node: ASTNode, expected: TypeInfo)
 }
 
 fn sema_signature_matches_call(module: ASTNode, fn_node: ASTNode, arg_ptr: String) -> Bool {
-    let arg = arg_ptr
-    let param = fn_node.child1
+    let mut arg = arg_ptr
+    let mut param = fn_node.child1
     while (str_equals(arg, "") == 0 and str_equals(param, "") == 0) {
         let arg_node = ptr_to_node(arg)
         let param_node = ptr_to_node(param)
@@ -264,7 +380,7 @@ fn sema_signature_matches_call(module: ASTNode, fn_node: ASTNode, arg_ptr: Strin
 // True when the module contains a real `fn` body for `name`, as opposed to only an
 // `extern fn` declaration of it.
 fn sema_has_function_definition(module: ASTNode, name: String) -> Bool {
-    let scan_ptr = module.child1
+    let mut scan_ptr = module.child1
     while (str_equals(scan_ptr, "") == 0) {
         let scan = ptr_to_node(scan_ptr)
         if (scan.kind == NodeKind.FUNCTION and str_equals(scan.s1, name) == 1) {
@@ -278,9 +394,9 @@ fn sema_has_function_definition(module: ASTNode, name: String) -> Bool {
 fn sema_find_function_overload(module: ASTNode, name: String, arg_ptr: String) -> ASTNode {
     // Track the winner as a pointer, not an ASTNode binding: `best = stmt` would
     // move the move-only struct out of `stmt`, and the loop still needs `stmt.next`.
-    let best_ptr = ""
-    let match_count = 0
-    let name_seen = false
+    let mut best_ptr = ""
+    let mut match_count = 0
+    let mut name_seen = false
 
     // parser.psm, ir.psm and sema.psm all forward-declare their mutually recursive
     // functions with `extern fn` and then define them with `fn` in the same file.
@@ -290,10 +406,10 @@ fn sema_find_function_overload(module: ASTNode, name: String, arg_ptr: String) -
     // applies the same rule when deciding whether to emit a `declare`.
     let definition_exists = sema_has_function_definition(module, name)
 
-    let stmt_ptr = module.child1
+    let mut stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
-        let is_candidate = stmt.kind == NodeKind.FUNCTION
+        let mut is_candidate = stmt.kind == NodeKind.FUNCTION
         if (stmt.kind == NodeKind.EXTERN_FUNCTION and definition_exists == false) {
             is_candidate = true
         }
@@ -321,11 +437,11 @@ fn sema_find_function_overload(module: ASTNode, name: String, arg_ptr: String) -
 }
 
 fn sema_find_struct_field_type(module: ASTNode, struct_name: String, field_name: String) -> TypeInfo {
-    let stmt_ptr = module.child1
+    let mut stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
         if (stmt.kind == NodeKind.STRUCT_DECL and str_equals(stmt.s1, struct_name) == 1) {
-            let field_ptr = stmt.child1
+            let mut field_ptr = stmt.child1
             while (str_equals(field_ptr, "") == 0) {
                 let field = ptr_to_node(field_ptr)
                 if (str_equals(field.s1, field_name) == 1) {
@@ -342,11 +458,11 @@ fn sema_find_struct_field_type(module: ASTNode, struct_name: String, field_name:
 }
 
 fn sema_enum_has_variant(module: ASTNode, enum_name: String, variant_name: String) -> Bool {
-    let stmt_ptr = module.child1
+    let mut stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
         if (stmt.kind == NodeKind.ENUM_DECL and str_equals(stmt.s1, enum_name) == 1) {
-            let variant_ptr = stmt.child1
+            let mut variant_ptr = stmt.child1
             while (str_equals(variant_ptr, "") == 0) {
                 let variant = ptr_to_node(variant_ptr)
                 if (str_equals(variant.s1, variant_name) == 1) {
@@ -404,8 +520,8 @@ fn sema_check_builtin_call(module: ASTNode, name: String, arg_ptr: String) -> Bo
         if (str_equals(arg_ptr, "") == 1 or str_equals(ptr_to_node(arg_ptr).next, "") == 0) {
             sema_error("drop expects one argument")
         }
-        let arg = ptr_to_node(arg_ptr)
-        let t = sema_expr(module, arg)
+        let mut arg = ptr_to_node(arg_ptr)
+        let mut t = sema_expr(module, arg)
         if (type_is_move_only(t) == false) {
             sema_error("drop requires an owned (move-only) value")
         }
@@ -447,7 +563,7 @@ fn sema_check_builtin_call(module: ASTNode, name: String, arg_ptr: String) -> Bo
         return true
     }
 
-    let expected = type_invalid()
+    let mut expected = type_invalid()
     if (str_equals(name, "print_int") == 1 or str_equals(name, "println_int") == 1) { expected = type_int() }
     if (str_equals(name, "print_float") == 1 or str_equals(name, "println_float") == 1) { expected = type_float() }
     if (str_equals(name, "print_bool") == 1 or str_equals(name, "println_bool") == 1) { expected = type_bool() }
@@ -471,7 +587,7 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     if (expr.kind == NodeKind.LITERAL_EXPR) {
-        let t = type_invalid()
+        let mut t = type_invalid()
         if (expr.i1 == TokenType.NUMBER_LITERAL) { t = type_int() }
         if (expr.i1 == TokenType.FLOAT_LITERAL) { t = type_float() }
         if (expr.i1 == TokenType.BOOL_LITERAL) { t = type_bool() }
@@ -488,7 +604,7 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         if (ir_is_moved(expr.s1) == 1) {
             sema_error(str_concat("use of moved value: ", expr.s1))
         }
-        let t = type_from_sem_key(ir_get_var_type(expr.s1))
+        let mut t = type_from_sem_key(ir_get_var_type(expr.s1))
         node_set_type(expr, t)
         return t
     }
@@ -565,8 +681,8 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     if (expr.kind == NodeKind.BINARY_EXPR) {
         let left_node = ptr_to_node(expr.child1)
         let right_node = ptr_to_node(expr.child2)
-        let left_t = sema_expr(module, left_node)
-        let right_t = sema_expr(module, right_node)
+        let mut left_t = sema_expr(module, left_node)
+        let mut right_t = sema_expr(module, right_node)
 
         // Coerce a bare integer literal to the other operand's integer type so
         // mixing a sized int with a literal (e.g. `n <= 0`, `u / 7`) type-checks.
@@ -636,6 +752,18 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         }
 
         if (str_equals(op, "==") == 1 or str_equals(op, "!=") == 1 or str_equals(op, "<") == 1 or str_equals(op, "<=") == 1 or str_equals(op, ">") == 1 or str_equals(op, ">=") == 1) {
+            // String and struct values are pointers, so a comparison would
+            // compare addresses and quietly answer "not equal" for two equal
+            // strings. That was a silent wrong answer with no diagnostic -- and
+            // the reason this compiler is written with str_equals(a, b) == 1
+            // everywhere. Reject it and name the alternative.
+            if (left_t.kind == TypeKind.STRING or right_t.kind == TypeKind.STRING) {
+                sema_error("cannot compare String values directly; use str_equals(a, b) == 1")
+            }
+            if (left_t.kind == TypeKind.STRUCT or right_t.kind == TypeKind.STRUCT) {
+                sema_error("cannot compare struct values directly; compare their fields")
+            }
+
             sema_expect_assignable(str_concat("comparison ", op), left_t, right_t)
             node_set_type(expr, type_bool())
             return type_bool()
@@ -656,8 +784,8 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
         let fn_node = sema_find_function_overload(module, name, expr.child2)
 
-        let arg_ptr = expr.child2
-        let param_ptr = fn_node.child1
+        let mut arg_ptr = expr.child2
+        let mut param_ptr = fn_node.child1
         while (str_equals(arg_ptr, "") == 0 and str_equals(param_ptr, "") == 0) {
             let arg_node = ptr_to_node(arg_ptr)
             let param_node = ptr_to_node(param_ptr)
@@ -671,7 +799,7 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             param_ptr = param_node.next
         }
 
-        let ret_t = type_void()
+        let mut ret_t = type_void()
         if (fn_node.kind == NodeKind.FUNCTION) {
             ret_t = sema_declared_return_type(module, fn_node.child3)
             if (str_equals(name, "main") == 1) { ret_t = type_int() }
@@ -700,7 +828,7 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
-        let elem_ptr = expr.child1
+        let mut elem_ptr = expr.child1
         if (str_equals(elem_ptr, "") == 1) {
             let arr_t = type_array(type_invalid())
             node_set_type(expr, arr_t)
@@ -737,10 +865,10 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         if (sema_has_struct(module, expr.s1) == false) {
             sema_error(str_concat("unknown struct ", expr.s1))
         }
-        let field_ptr = expr.child1
+        let mut field_ptr = expr.child1
         while (str_equals(field_ptr, "") == 0) {
             let field = ptr_to_node(field_ptr)
-            let expected = sema_find_struct_field_type(module, expr.s1, field.s1)
+            let mut expected = sema_find_struct_field_type(module, expr.s1, field.s1)
             sema_check_value(module, ptr_to_node(field.child1), expected, str_concat("struct field ", field.s1))
             sema_move_operand(ptr_to_node(field.child1))
             field_ptr = field.next
@@ -756,7 +884,7 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
 fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo) {
     if (stmt.kind == NodeKind.VARIABLE_DECL) {
-        let var_t = type_invalid()
+        let mut var_t = type_invalid()
         let has_annotation = str_equals(stmt.child1, "") == 0
         let has_init = str_equals(stmt.child2, "") == 0
 
@@ -779,11 +907,27 @@ fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo) {
         // from an earlier binding of the same name (see ir_unmark_moved).
         ir_unmark_moved(stmt.s1)
         ir_set_var_type(stmt.s1, type_sem_key(var_t))
+        // i1 carries `mut` from the parser. Nothing read it before, so
+        // "explicit mutability" was advertised and entirely unenforced.
+        if (stmt.i1 == 1) {
+            ir_mark_mutable(stmt.s1)
+        }
         node_set_type(stmt, var_t)
     }
 
     if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) {
         let target = ptr_to_node(stmt.child1)
+
+        // Only a direct rebinding is checked. Assigning through a struct field
+        // is mutation of a heap object reached by pointer, which is a separate
+        // question from whether the binding itself may be reseated.
+        if (target.kind == NodeKind.IDENTIFIER_EXPR) {
+            if (ir_var_is_mutable(target.s1) == 0) {
+                sema_error(str_concat(str_concat("cannot assign to immutable binding: ", target.s1),
+                                      "; declare it with `let mut`"))
+            }
+        }
+
         let target_t = sema_expr(module, target)
         let value_t = sema_expr(module, ptr_to_node(stmt.child2))
         sema_expect_assignable("assignment", target_t, value_t)
@@ -831,11 +975,15 @@ fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo) {
     if (stmt.kind == NodeKind.WHILE_STATEMENT) {
         let cond_t2 = sema_expr(module, ptr_to_node(stmt.child1))
         sema_expect_assignable("while condition", type_bool(), cond_t2)
+        ir_loop_barrier_push()
         sema_block(module, ptr_to_node(stmt.child2), expected_return)
+        ir_loop_barrier_pop()
     }
 
     if (stmt.kind == NodeKind.LOOP_STATEMENT) {
+        ir_loop_barrier_push()
         sema_block(module, ptr_to_node(stmt.child1), expected_return)
+        ir_loop_barrier_pop()
     }
 
     if (stmt.kind == NodeKind.FOR_STATEMENT) {
@@ -843,8 +991,13 @@ fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo) {
         sema_expect_assignable("for range start", type_int(), start_t)
         let end_t = sema_expr(module, ptr_to_node(stmt.child2))
         sema_expect_assignable("for range end", type_int(), end_t)
+        // The loop variable belongs to the loop, not to the enclosing block.
+        ir_scope_push()
         ir_set_var_type(stmt.s1, type_sem_key(type_int()))
+        ir_loop_barrier_push()
         sema_block(module, ptr_to_node(stmt.child3), expected_return)
+        ir_loop_barrier_pop()
+        ir_scope_pop()
     }
 
     if (stmt.kind == NodeKind.MATCH_STATEMENT) {
@@ -852,9 +1005,9 @@ fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo) {
         if (scrut_t.kind != TypeKind.INT and scrut_t.kind != TypeKind.ENUM) {
             sema_error("match scrutinee must be an integer or enum value")
         }
-        let pat_expected = type_copy(scrut_t)
+        let mut pat_expected = type_copy(scrut_t)
         if (scrut_t.kind == TypeKind.ENUM) { pat_expected = type_int() }
-        let arm_ptr = stmt.child2
+        let mut arm_ptr = stmt.child2
         while (str_equals(arm_ptr, "") == 0) {
             let arm = ptr_to_node(arm_ptr)
             if (str_equals(arm.s1, "_") == 0) {
@@ -866,17 +1019,33 @@ fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo) {
     }
 }
 
+// A block is a scope: anything declared inside it stops being visible at the
+// closing brace, and a `let` that repeats an outer name shadows it for the rest
+// of the block rather than overwriting it.
 fn sema_block(module: ASTNode, block: ASTNode, expected_return: TypeInfo) {
-    let stmt_ptr = block.child1
+    ir_scope_push()
+
+    let mut stmt_ptr = block.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
         sema_statement(module, stmt, expected_return)
+
+        // Anything after a statement control cannot continue past is dead. It
+        // used to be emitted anyway, producing instructions after a terminator
+        // -- invalid IR that surfaced as a confusing backend error rather than
+        // as the source-level mistake it is.
+        if (sema_stmt_diverges(stmt) and str_equals(stmt.next, "") == 0) {
+            sema_error("unreachable code: control cannot continue past the previous statement")
+        }
+
         stmt_ptr = stmt.next
     }
+
+    ir_scope_pop()
 }
 
 fn sema_predeclare_function(module: ASTNode, fn_node: ASTNode) {
-    let ret_t = type_void()
+    let mut ret_t = type_void()
     if (fn_node.kind == NodeKind.FUNCTION) {
         ret_t = sema_declared_return_type(module, fn_node.child3)
         if (str_equals(fn_node.s1, "main") == 1) { ret_t = type_int() }
@@ -893,7 +1062,7 @@ fn sema_predeclare_function(module: ASTNode, fn_node: ASTNode) {
 }
 
 fn sema_predeclare_global(module: ASTNode, var_node: ASTNode) {
-    let var_t = type_invalid()
+    let mut var_t = type_invalid()
     if (str_equals(var_node.child1, "") == 0) {
         var_t = sema_annotation_type(module, ptr_to_node(var_node.child1))
     }
@@ -908,7 +1077,10 @@ fn sema_predeclare_global(module: ASTNode, var_node: ASTNode) {
         sema_error(str_concat("cannot infer type for global ", var_node.s1))
     }
     ir_register_global_name(var_node.s1)
-    ir_set_var_type(var_node.s1, type_sem_key(var_t))
+    ir_set_global_var_type(var_node.s1, type_sem_key(var_t))
+    if (var_node.i1 == 1) {
+        ir_mark_mutable(var_node.s1)
+    }
     node_set_type(var_node, var_t)
 }
 
@@ -917,12 +1089,16 @@ fn sema_function(module: ASTNode, fn_node: ASTNode) {
     ir_clear_moved()
     ir_clear_borrowed()
 
-    let expected_return = sema_declared_return_type(module, fn_node.child3)
+    // Parameters live in a scope of their own, outside the body block, so the
+    // body may shadow a parameter name without clobbering it.
+    ir_scope_push()
+
+    let mut expected_return = sema_declared_return_type(module, fn_node.child3)
     if (str_equals(fn_node.s1, "main") == 1) { expected_return = type_int() }
 
-    let param_ptr = fn_node.child1
+    let mut param_ptr = fn_node.child1
     while (str_equals(param_ptr, "") == 0) {
-        let param = ptr_to_node(param_ptr)
+        let mut param = ptr_to_node(param_ptr)
         let param_t = sema_annotation_type(module, ptr_to_node(param.child1))
         if (str_equals(param.s2, "inout") == 1 and type_is_move_only(param_t) == false) {
             sema_error(str_concat("inout parameter must be a struct (reference) type: ", param.s1))
@@ -937,15 +1113,33 @@ fn sema_function(module: ASTNode, fn_node: ASTNode) {
     }
 
     if (str_equals(fn_node.child2, "") == 0) {
-        sema_block(module, ptr_to_node(fn_node.child2), expected_return)
+        let mut body = ptr_to_node(fn_node.child2)
+        sema_block(module, body, expected_return)
+
+        // Every path out of a value-returning function must return. Falling off
+        // the end used to emit `ret <type> 0`, which silently returned zero for
+        // an Int and produced invalid IR (`ret ptr 0`) for anything pointer-
+        // shaped.
+        if (expected_return.kind != TypeKind.VOID) {
+            if (sema_block_diverges(body) == false) {
+                print("type error: function ")
+                print(fn_node.s1)
+                print(" must return ")
+                print(type_display(expected_return))
+                println(" on every path")
+                exit(1)
+            }
+        }
     }
+
+    ir_scope_pop()
 }
 
 fn analyze_module(module: ASTNode) {
     ir_clear_var_types()
     ir_reset_globals()
 
-    let fn_ptr = module.child1
+    let mut fn_ptr = module.child1
     while (str_equals(fn_ptr, "") == 0) {
         let stmt = ptr_to_node(fn_ptr)
         if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
@@ -954,7 +1148,7 @@ fn analyze_module(module: ASTNode) {
         fn_ptr = stmt.next
     }
 
-    let global_ptr = module.child1
+    let mut global_ptr = module.child1
     while (str_equals(global_ptr, "") == 0) {
         let stmt2 = ptr_to_node(global_ptr)
         if (stmt2.kind == NodeKind.VARIABLE_DECL) {
@@ -963,7 +1157,7 @@ fn analyze_module(module: ASTNode) {
         global_ptr = stmt2.next
     }
 
-    let stmt_ptr = module.child1
+    let mut stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt3 = ptr_to_node(stmt_ptr)
         if (stmt3.kind == NodeKind.FUNCTION) {

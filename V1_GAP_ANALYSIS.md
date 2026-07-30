@@ -169,8 +169,8 @@ decorative — you can annotate with it, but you can't compute across it.
 | **Diagnostics** | ✗ | No file/line/col/snippet/code/note. `parser_expect` prints a raw integer |
 | **Error recovery** | ✗ | First error calls `exit(1)`. **One diagnostic per run, always** |
 | **Warnings** | ✗ | No unused-variable, unreachable-code, shadowing, or dead-store warnings |
-| **Symbol table** | ✗ | A flat 4096-entry array with linear backward search (`llvm-bridge.c:920`). **No scopes** |
-| **Scope handling** | ✗ | Blocks don't scope; locals leak; locals shadowing globals miscompile |
+| **Symbol table** | ◑ | Scoped (`runtime/ir_symbols.c`), still a linear array rather than a hash map |
+| **Scope handling** | ✅ | *Added 2026-07-31.* Blocks, loop bodies, for-variables and parameters each scope. Each binding carries its own slot, so sibling blocks reusing a name get separate stack allocations |
 | Type checking | ◑ | Works for the implemented subset; `Enum ≡ Int` by design defeats enum safety |
 | Type inference | ◑ | `let x = expr` only. No bidirectional or generic inference |
 | **CFG construction** | ✗ | **Nothing builds a control-flow graph** |

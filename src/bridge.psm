@@ -130,6 +130,7 @@ extern fn ir_global_var(name: String, type: String, init_value: String, is_const
 // arrays and field access through them rather than emitting IR text, because
 // the LLVM C API backend has no way to honour raw text.
 extern fn ir_set_pointer_int_type(t: String)
+extern fn ir_set_opt_level(level: Int)
 extern fn ir_struct_type_begin(name: String)
 extern fn ir_struct_type_field(field_type: String)
 extern fn ir_struct_type_end()
@@ -157,8 +158,29 @@ extern fn ir_get_struct_field_type(struct_name: String, field_name: String) -> S
 extern fn ir_register_enum_variant(enum_name: String, variant_name: String, value: Int)
 extern fn ir_get_enum_variant(enum_name: String, variant_name: String) -> Int
 extern fn ir_set_var_type(name: String, var_type: String)
+extern fn ir_set_global_var_type(name: String, var_type: String)
 extern fn ir_get_var_type(name: String) -> String
 extern fn ir_has_var_type(name: String) -> Int
+
+// Lexical scoping. A block pushes on entry and pops on exit; a binding is
+// visible only until its scope is popped, and re-declaring a name shadows the
+// outer one rather than overwriting it.
+extern fn ir_scope_push()
+extern fn ir_scope_pop()
+
+// Loop barriers, so move checking can tell a binding the loop created from one
+// it inherited. Moving out of the latter inside a loop repeats every iteration.
+extern fn ir_loop_barrier_push()
+extern fn ir_loop_barrier_pop()
+extern fn ir_binding_predates_loop(name: String) -> Int
+
+// The LLVM-level name of the innermost binding, and whether that binding is
+// module-level. Both are shadowing-aware, which is what codegen needs to pick
+// between @global and %slot and to give sibling blocks separate stack slots.
+extern fn ir_get_var_slot(name: String) -> String
+extern fn ir_var_is_global(name: String) -> Int
+extern fn ir_mark_mutable(name: String)
+extern fn ir_var_is_mutable(name: String) -> Int
 extern fn ir_clear_var_types()
 extern fn ir_clear_local_var_types()
 extern fn ir_set_returned()

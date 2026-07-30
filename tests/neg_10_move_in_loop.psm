@@ -1,0 +1,20 @@
+// Moving out of a binding that predates the loop repeats every iteration.
+//
+// This used to compile clean and crash at run time: move state is tracked per
+// name over the AST in source order, so the single textual drop(b) looked like
+// a single consumption while it actually ran three times -- a double free the
+// checker could not see.
+
+struct Box {
+    v: Int
+}
+
+fn main() -> Int {
+    let b = Box { v: 1 }
+    let mut i = 0
+    while (i < 3) {
+        drop(b)
+        i = i + 1
+    }
+    return 0
+}

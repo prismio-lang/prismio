@@ -21,6 +21,11 @@ extern fn compiler_run_executable(exe_file: String) -> Int
 extern fn compiler_runtime_source_hash() -> String
 extern fn compiler_installed_runtime_hash() -> String
 extern fn delete_file(path: String) -> Int
+extern fn ir_llvm_version() -> String
+
+// Bumped per release. The LLVM major version is part of the identity: a given
+// Prismio targets one LLVM major, and the C API is not stable across them.
+let PRISMIO_VERSION = "0.1.0"
 
 fn is_named_top_level(stmt: ASTNode) -> Bool {
     if (stmt.kind == NodeKind.EXTERN_FUNCTION) { return true }
@@ -60,7 +65,7 @@ fn has_named_top_level(module: ASTNode, stmt: ASTNode) -> Bool {
         return false
     }
 
-    let scan_ptr = module.child1
+    let mut scan_ptr = module.child1
     while (str_equals(scan_ptr, "") == 0) {
         let scan = ptr_to_node(scan_ptr)
         if (same_top_level_name(scan, stmt)) {
@@ -89,8 +94,8 @@ fn append_statement(module: ASTNode, stmt: ASTNode) {
         return
     }
 
-    let tail_ptr = module.child1
-    let searching = true
+    let mut tail_ptr = module.child1
+    let mut searching = true
     while (searching) {
         let tail = ptr_to_node(tail_ptr)
         if (str_equals(tail.next, "") == 1) {
@@ -129,9 +134,9 @@ fn import_memo_key(import_path: String) -> String {
 // outright ("invalid redefinition of function"). Marking a path before recursing
 // into it also makes an import cycle terminate instead of recursing forever.
 fn merge_module_imports(merged: ASTNode, module: ASTNode, base_dir: String, visited: String) -> String {
-    let seen = visited
+    let mut seen = visited
 
-    let stmt_ptr = module.child1
+    let mut stmt_ptr = module.child1
     while (str_equals(stmt_ptr, "") == 0) {
         let stmt = ptr_to_node(stmt_ptr)
         let next_stmt = stmt.next
@@ -213,8 +218,8 @@ fn check_runtime_freshness() {
 }
 
 fn compile_source(path: String, output_file: String, run_after_build: Bool, bootstrap_mode: Bool) -> Int {
-    let out_file = ""
-    let emit_ir_only = false
+    let mut out_file = ""
+    let mut emit_ir_only = false
 
     // Bootstrap deliberately skips this: it never consults the installed libraries
     // at all, so their freshness cannot affect the result.
@@ -265,7 +270,7 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
         return 0
     }
 
-    let build_failed = 0
+    let mut build_failed = 0
     if (bootstrap_mode) {
         build_failed = compiler_bootstrap_executable(out_file, output_file)
     } else {
@@ -294,12 +299,12 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
 }
 
 fn main() -> Int {
-    let path = ""
-    let output_file = ""
-    let command = ""
-    let run_after_build = false
-    let bootstrap_mode = false
-    let arg_index = 0
+    let mut path = ""
+    let mut output_file = ""
+    let mut command = ""
+    let mut run_after_build = false
+    let mut bootstrap_mode = false
+    let mut arg_index = 0
 
     if (cli_arg_count() <= 1) {
         print_usage()
@@ -307,6 +312,21 @@ fn main() -> Int {
     }
 
     let first = cli_arg(1)
+
+    if (str_equals(first, "--help") == 1 or str_equals(first, "-h") == 1) {
+        print_usage()
+        return 0
+    }
+
+    // Reports the LLVM actually loaded rather than the one built against, so a
+    // version mismatch is visible without having to provoke it.
+    if (str_equals(first, "--version") == 1 or str_equals(first, "-V") == 1) {
+        print("prismio ")
+        println(PRISMIO_VERSION)
+        print("llvm ")
+        println(ir_llvm_version())
+        return 0
+    }
 
     // Reports the hash of the runtime sources on disk. tools/package.ps1 records it
     // beside the packaged libraries so later builds can detect drift, and it keeps
@@ -406,7 +426,7 @@ fn main() -> Int {
     output_file = compiler_default_exe_path(path)
 
     while (arg_index < cli_arg_count()) {
-        let arg = cli_arg(arg_index)
+        let mut arg = cli_arg(arg_index)
 
         if (str_equals(arg, "-o") == 1) {
             if (arg_index + 1 >= cli_arg_count()) {
@@ -415,6 +435,17 @@ fn main() -> Int {
             }
             output_file = cli_arg(arg_index + 1)
             arg_index = arg_index + 2
+        } else if (str_starts_with(arg, "-O") == 1 and str_length(arg) == 3) {
+            // -O0..-O3. Runs LLVM's standard pipeline over the module before it
+            // is written; without it the output keeps a load/store per binding.
+            let level = str_to_int(str_substring(arg, 2, 1))
+            if (level < 0 or level > 3) {
+                print("ERROR: unknown optimization level ")
+                println(arg)
+                return 1
+            }
+            ir_set_opt_level(level)
+            arg_index = arg_index + 1
         } else if (str_equals(arg, "--target") == 1) {
             if (arg_index + 1 >= cli_arg_count()) {
                 println("ERROR: --target requires a value (e.g. wasm32)")

@@ -1,0 +1,84 @@
+# Bootstrap the compiler from the committed seed and prove it reaches a fixed
+# point, then run the test suite against the compiler that produced it.
+#
+# The fixpoint check is the important one and it is cheap: a compiler that does
+# not reproduce its own IR is mid-migration, and freezing that state is how a
+# self-hosted toolchain quietly diverges from itself. Building from the *seed*
+# rather than from an installed binary also verifies the thing a new contributor
+# actually does on a fresh checkout.
+#
+# This runs on every push because several regressions during development were
+# caught only by running the full loop -- the suite alone was green while `for`
+# with a string literal was completely broken.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  bootstrap:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Pinned to one LLVM major; setup_llvm.py rejects anything else rather
+      # than adopting it, because the C API is not stable across majors.
+      - name: Provision LLVM
+        run: python tools/setup_llvm.py
+
+      - name: Bootstrap from the seed
+        shell: bash
+        run: |
+          set -e
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -File tools/bootstrap.ps1 -Seed bootstrap/prismio-seed.ll -Out build/gen0.exe
+            pwsh -File tools/bootstrap.ps1 -Compiler build/gen0.exe -Out build/gen1.exe
+            pwsh -File tools/bootstrap.ps1 -Compiler build/gen1.exe -Out build/gen2.exe
+          else
+            tools/bootstrap.sh --seed --out build/gen0
+            tools/bootstrap.sh --compiler build/gen0 --out build/gen1
+            tools/bootstrap.sh --compiler build/gen1 --out build/gen2
+          fi
+
+      # gen1 and gen2 must agree on the IR they produce for the compiler. gen0
+      # is excluded: it was built from the seed, which may predate the current
+      # sources, so only the generations built from this tree are compared.
+      - name: Verify the fixpoint
+        shell: bash
+        run: |
+          set -e
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          "build/gen1$EXT" build src/main.psm -o build/a.ll
+          "build/gen2$EXT" build src/main.psm -o build/b.ll
+          test -s build/a.ll && test -s build/b.ll
+          cmp build/a.ll build/b.ll && echo "fixpoint reached"
+
+      - name: Run the test suite
+        shell: bash
+        run: |
+          set -e
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          cd tests
+          PRISMIO="../build/gen2$EXT" python test_runner.py
+
+      # A seed that can no longer build the tree strands anyone starting from a
+      # fresh checkout, so it is checked rather than assumed.
+      - name: Check the committed seed is still usable
+        shell: bash
+        run: |
+          set -e
+          grep -q '^target ' bootstrap/prismio-seed.ll && {
+            echo "seed carries a target directive; it must stay target-neutral"; exit 1; }
+          echo "seed is target-neutral"

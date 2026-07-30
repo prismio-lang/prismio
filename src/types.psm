@@ -102,13 +102,13 @@ fn type_enum(name: String) -> TypeInfo {
 }
 
 fn type_array(elem: TypeInfo) -> TypeInfo {
-    let t = type_make(TypeKind.ARRAY, "Array", "ptr")
+    let mut t = type_make(TypeKind.ARRAY, "Array", "ptr")
     t.child = type_to_ptr(elem)
     return t
 }
 
 fn type_list(elem: TypeInfo) -> TypeInfo {
-    let t = type_make(TypeKind.LIST, "List", "ptr")
+    let mut t = type_make(TypeKind.LIST, "List", "ptr")
     t.child = type_to_ptr(elem)
     return t
 }
