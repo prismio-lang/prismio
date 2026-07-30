@@ -55,7 +55,7 @@ for tool in llc clang; do
 done
 
 # Must match prismio_toolchain_files[] in runtime/build_driver.c.
-RUNTIME_SOURCES="lang_runtime.c program_support.c build_driver.c llvm-bridge.c"
+RUNTIME_SOURCES="lang_runtime.c program_support.c build_driver.c ir_symbols.c llvm-api-backend.c"
 
 OUT_DIR="$(cd "$(dirname "$OUT")" 2>/dev/null && pwd || true)"
 if [ -z "$OUT_DIR" ]; then mkdir -p "$(dirname "$OUT")"; OUT_DIR="$(cd "$(dirname "$OUT")" && pwd)"; fi
@@ -100,17 +100,31 @@ step "ll -> obj"
 llc "$LL" -filetype=obj -o "$WORK/program.o" || die "ll -> obj"
 
 # 3. Runtime and backend C sources, compiled fresh from the working tree.
+# The backend is built on the LLVM C API, so this needs LLVM's headers and its C
+# API link library. tools/setup_llvm.py finds or fetches one and records it in
+# third_party/llvm-paths.json; PRISMIO_LLVM_DIR overrides that.
+if [ -n "${PRISMIO_LLVM_DIR:-}" ]; then
+    LLVM_INC="$PRISMIO_LLVM_DIR/include"; LLVM_LIB="$PRISMIO_LLVM_DIR/lib"
+elif [ -f "$REPO/third_party/llvm-paths.json" ]; then
+    LLVM_INC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["include"])' "$REPO/third_party/llvm-paths.json")"
+    LLVM_LIB="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["lib"])' "$REPO/third_party/llvm-paths.json")"
+else
+    die "no LLVM toolchain configured -- run: python3 tools/setup_llvm.py"
+fi
+
 OBJS="$WORK/program.o"
 for c in $RUNTIME_SOURCES; do
     obj="$WORK/${c%.c}.o"
     step "cc $c"
-    clang -Wno-deprecated-declarations -c "$REPO/runtime/$c" -o "$obj" || die "cc $c"
+    clang -DPRISMIO_LLVM_REAL_HEADERS -Wno-deprecated-declarations \
+          -I"$LLVM_INC" -I"$REPO/runtime" \
+          -c "$REPO/runtime/$c" -o "$obj" || die "cc $c"
     OBJS="$OBJS $obj"
 done
 
-# 4. Link.
+# 4. Link, including LLVM's C API.
 step "link"
 # shellcheck disable=SC2086
-clang $OBJS -o "$OUT" || die "link"
+clang $OBJS -o "$OUT" -L"$LLVM_LIB" -lLLVM-C || die "link"
 
 green "Built $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes)"

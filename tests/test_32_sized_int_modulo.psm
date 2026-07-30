@@ -1,0 +1,60 @@
+// Modulo on sized integer types, global string initializers, and Bool printing.
+//
+// Regression tests for three separate defects:
+//  - sema hardcoded Int for both `%` operands, so `u % 7` was rejected for every
+//    sized integer type even though codegen already emitted the right urem/srem.
+//  - a global initialized with a string literal emitted the raw text as the
+//    initializer (`@g =  global ptr hello`), which llc rejects.
+//  - print_bool was declared (i32) but called with an i1.
+
+extern fn str_equals(s1: String, s2: String) -> Int
+
+let greeting = "hello from a global"
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // unsigned modulo must lower to urem
+    let a: U64 = 100
+    if (a % 7 != 2) {
+        return fail("U64 modulo gave the wrong result")
+    }
+
+    let b: U8 = 200
+    if (b % 3 != 2) {
+        return fail("U8 modulo gave the wrong result")
+    }
+
+    // signed modulo must lower to srem
+    let c: I8 = 100
+    if (c % 9 != 1) {
+        return fail("I8 modulo gave the wrong result")
+    }
+
+    let d: I64 = 1000000
+    if (d % 7 != 1) {
+        return fail("I64 modulo gave the wrong result")
+    }
+
+    // plain Int still works
+    if (10 % 3 != 1) {
+        return fail("Int modulo gave the wrong result")
+    }
+
+    // a global initialized from a string literal
+    if (str_equals(greeting, "hello from a global") == 0) {
+        return fail("global string initializer was corrupted")
+    }
+
+    // Bool printing goes through a zext to match the C runtime's int parameter
+    print_bool(true)
+    print_bool(false)
+    println("")
+
+    println("PASS: sized int modulo and global strings")
+    return 0
+}

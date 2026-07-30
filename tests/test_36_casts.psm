@@ -1,0 +1,89 @@
+// Explicit conversions: `expr as T`.
+//
+// Before this, the sized integer family was decorative -- you could declare I64
+// and U8 and never convert between them, Int and Float could not meet in an
+// expression at all, and turning a Char into its numeric value took a
+// 90-branch if-chain (utils.psm's char_code).
+//
+// Widening is sign-extending for signed integers and zero-extending for
+// unsigned, Char and Bool, so 'A' as Int is 65 rather than a negative number.
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // narrowing truncates
+    let big: I64 = 5000000000
+    if (big as Int != 705032704) {
+        return fail("I64 -> Int should truncate")
+    }
+    if (300 as U8 as Int != 44) {
+        return fail("Int -> U8 should keep the low 8 bits")
+    }
+
+    // unsigned widening zero-extends
+    let u: U8 = 200
+    if (u as Int != 200) {
+        return fail("U8 -> Int should zero-extend")
+    }
+
+    // signed widening sign-extends and round-trips
+    let neg = -5
+    if (neg as I64 as Int != -5) {
+        return fail("Int -> I64 -> Int should round-trip a negative")
+    }
+
+    // Char is a byte value, so it zero-extends
+    if ('A' as Int != 65) {
+        return fail("'A' as Int should be 65")
+    }
+    if ('0' as Int != 48) {
+        return fail("'0' as Int should be 48")
+    }
+    // and back again
+    if (66 as Char != 'B') {
+        return fail("66 as Char should be 'B'")
+    }
+
+    // Bool widens to 0/1
+    if (true as Int != 1) {
+        return fail("true as Int should be 1")
+    }
+    if (false as Int != 0) {
+        return fail("false as Int should be 0")
+    }
+
+    // integer to float, and the mixed arithmetic it unlocks
+    let n = 7
+    if (n as Float != 7.0) {
+        return fail("Int -> Float")
+    }
+    if (n as Float / 2.0 != 3.5) {
+        return fail("Int -> Float should allow mixed arithmetic")
+    }
+
+    // float to integer truncates toward zero
+    if (3.75 as Int != 3) {
+        return fail("Float -> Int should truncate")
+    }
+    if (-3.75 as Int != -3) {
+        return fail("Float -> Int should truncate toward zero")
+    }
+
+    // unsigned arithmetic after a cast stays unsigned
+    let ux = 250 as U8
+    if (ux as Int != 250) {
+        return fail("U8 round-trip")
+    }
+
+    // chained casts apply left to right
+    if (65 as Char as Int != 65) {
+        return fail("chained casts should round-trip")
+    }
+
+    println("PASS: casts")
+    return 0
+}

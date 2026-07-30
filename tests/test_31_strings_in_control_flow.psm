@@ -1,0 +1,85 @@
+// String literals inside for/loop/match bodies.
+//
+// Regression test: collect_strings_stmt did not walk FOR_STATEMENT,
+// LOOP_STATEMENT or MATCH_STATEMENT, so a literal in any of those bodies never
+// got an @.str global and codegen emitted `ptr @` -- an empty global name that
+// llc rejects. Every string below sits in one of those positions, so this file
+// failing to compile at all is the regression.
+
+extern fn str_equals(s1: String, s2: String) -> Int
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn label_for(n: Int) -> String {
+    match (n) {
+        0 => { return "zero" }
+        1 => { return "one" }
+        _ => { return "many" }
+    }
+    return "unreachable"
+}
+
+fn main() -> Int {
+    // literal in a for body
+    let mut seen = 0
+    for i in 0..3 {
+        let tag = "in-for"
+        if (str_equals(tag, "in-for") == 0) {
+            return fail("string literal in for body was corrupted")
+        }
+        seen = seen + 1
+    }
+    if (seen != 3) {
+        return fail("for body should run 3 times")
+    }
+
+    // literal in a loop body, reached via break
+    let mut spins = 0
+    loop {
+        let tag = "in-loop"
+        if (str_equals(tag, "in-loop") == 0) {
+            return fail("string literal in loop body was corrupted")
+        }
+        spins = spins + 1
+        if (spins == 2) {
+            break
+        }
+    }
+    if (spins != 2) {
+        return fail("loop body should run 2 times")
+    }
+
+    // literals in match arms, including the wildcard
+    if (str_equals(label_for(0), "zero") == 0) {
+        return fail("match arm 0 returned the wrong string")
+    }
+    if (str_equals(label_for(1), "one") == 0) {
+        return fail("match arm 1 returned the wrong string")
+    }
+    if (str_equals(label_for(7), "many") == 0) {
+        return fail("match wildcard arm returned the wrong string")
+    }
+
+    // literal in a match nested inside a for body
+    for j in 0..2 {
+        match (j) {
+            0 => {
+                if (str_equals("nested-zero", "nested-zero") == 0) {
+                    return fail("nested match arm string was corrupted")
+                }
+            }
+            _ => {
+                if (str_equals("nested-other", "nested-other") == 0) {
+                    return fail("nested wildcard string was corrupted")
+                }
+            }
+        }
+    }
+
+    println("PASS: strings in control flow")
+    return 0
+}

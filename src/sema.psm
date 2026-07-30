@@ -493,6 +493,75 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         return t
     }
 
+    // `expr as T`. Explicit conversion between scalar types -- the only way to
+    // move between integer widths, or between integers and floats, at all.
+    // Deliberately narrow: only conversions with an unambiguous meaning are
+    // allowed, so a cast never quietly reinterprets memory.
+    if (expr.kind == NodeKind.CAST_EXPR) {
+        let source = ptr_to_node(expr.child1)
+        let from_t = sema_expr(module, source)
+        let to_t = sema_annotation_type(module, ptr_to_node(expr.child2))
+
+        let from_scalar = from_t.kind == TypeKind.INT or from_t.kind == TypeKind.FLOAT
+                          or from_t.kind == TypeKind.CHAR or from_t.kind == TypeKind.BOOL
+                          or from_t.kind == TypeKind.ENUM
+        // Bool is included here so the check below reports the specific reason
+        // rather than falling into the generic "expected X, got Y".
+        let to_scalar = to_t.kind == TypeKind.INT or to_t.kind == TypeKind.FLOAT
+                        or to_t.kind == TypeKind.CHAR or to_t.kind == TypeKind.ENUM
+                        or to_t.kind == TypeKind.BOOL
+
+        // Bool converts out to a number but nothing converts *to* Bool: an
+        // implicit "non-zero is true" rule is exactly the kind of silent
+        // coercion this language avoids. Write `x != 0`.
+        if (to_t.kind == TypeKind.BOOL) {
+            sema_error("cannot cast to Bool; compare explicitly instead, as in x != 0")
+        }
+
+        if (from_scalar == false or to_scalar == false) {
+            sema_type_error("cast", to_t, from_t)
+        }
+
+        node_set_type(expr, to_t)
+        return to_t
+    }
+
+    if (expr.kind == NodeKind.UNARY_EXPR) {
+        let operand = ptr_to_node(expr.child1)
+        let operand_t = sema_expr(module, operand)
+        let uop = expr.s1
+
+        if (str_equals(uop, "!") == 1) {
+            sema_expect_assignable("operator !", type_bool(), operand_t)
+            node_set_type(expr, type_bool())
+            return type_bool()
+        }
+
+        if (str_equals(uop, "~") == 1) {
+            if (operand_t.kind != TypeKind.INT and operand_t.kind != TypeKind.CHAR) {
+                sema_error("unary ~ requires an integer operand")
+            }
+            node_set_type(expr, operand_t)
+            return operand_t
+        }
+
+        if (str_equals(uop, "-") == 1) {
+            if (type_is_numeric(operand_t) == false) {
+                sema_error("unary - requires a numeric operand")
+            }
+            // Negating an unsigned value is almost always a mistake, and the
+            // result is not representable in the operand's own type. Reject it
+            // rather than silently wrapping.
+            if (type_int_is_unsigned(operand_t)) {
+                sema_error(str_concat("cannot apply unary - to unsigned type ", type_display(operand_t)))
+            }
+            node_set_type(expr, operand_t)
+            return operand_t
+        }
+
+        sema_error(str_concat("unknown unary operator ", uop))
+    }
+
     if (expr.kind == NodeKind.BINARY_EXPR) {
         let left_node = ptr_to_node(expr.child1)
         let right_node = ptr_to_node(expr.child2)
@@ -529,11 +598,41 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             return left_t
         }
 
+        // Modulo follows the same rule as + - * /: the left operand drives the
+        // result type, so it works on every sized integer type. Hardcoding
+        // type_int() here rejected `u % 7` for any u that was not a plain Int,
+        // even though codegen has always emitted the right urem/srem for it.
+        // Still integer-only -- there is no frem in codegen.
         if (str_equals(op, "%") == 1) {
-            sema_expect_assignable("modulo left operand", type_int(), left_t)
-            sema_expect_assignable("modulo right operand", type_int(), right_t)
-            node_set_type(expr, type_int())
-            return type_int()
+            if (left_t.kind != TypeKind.INT and left_t.kind != TypeKind.ENUM) {
+                sema_error("modulo requires integer operands")
+            }
+            sema_expect_assignable("operator %", left_t, right_t)
+            node_set_type(expr, left_t)
+            return left_t
+        }
+
+        // Bitwise and/or/xor: integer-shaped operands of the same type.
+        if (str_equals(op, "&") == 1 or str_equals(op, "|") == 1 or str_equals(op, "^") == 1) {
+            if (left_t.kind != TypeKind.INT and left_t.kind != TypeKind.ENUM and left_t.kind != TypeKind.CHAR) {
+                sema_error(str_concat("bitwise operator requires integer operands: ", op))
+            }
+            sema_expect_assignable(str_concat("operator ", op), left_t, right_t)
+            node_set_type(expr, left_t)
+            return left_t
+        }
+
+        // Shifts. The result takes the left operand's type, and the shift amount
+        // is an independent integer rather than something that has to match it.
+        if (str_equals(op, "<<") == 1 or str_equals(op, ">>") == 1) {
+            if (left_t.kind != TypeKind.INT and left_t.kind != TypeKind.CHAR) {
+                sema_error(str_concat("shift requires an integer left operand: ", op))
+            }
+            if (right_t.kind != TypeKind.INT) {
+                sema_error(str_concat("shift amount must be an integer: ", op))
+            }
+            node_set_type(expr, left_t)
+            return left_t
         }
 
         if (str_equals(op, "==") == 1 or str_equals(op, "!=") == 1 or str_equals(op, "<") == 1 or str_equals(op, "<=") == 1 or str_equals(op, ">") == 1 or str_equals(op, ">=") == 1) {

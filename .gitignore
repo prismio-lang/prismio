@@ -42,6 +42,10 @@ build/
 # the *.ll rule above must not swallow it.
 !bootstrap/prismio-seed.ll
 
+# LLVM toolchain fetched by tools/setup_llvm.py. Multi-GB, and llvm-paths.json
+# holds absolute paths that are only valid on the machine that generated it.
+third_party/
+
 # Dependencies
 node_modules/
 *.jar

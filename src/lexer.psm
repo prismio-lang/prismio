@@ -2,6 +2,9 @@ import token
 import utils
 import keywords
 
+extern fn exit(code: Int)
+extern fn str_from_char(c: Char) -> String
+
 struct Lexer {
     input: String,
     pos: Int,
@@ -49,6 +52,61 @@ fn lexer_skip_whitespace(lex: Lexer) {
             is_looping = false
         }
     }
+}
+
+// Turns the raw text between the quotes into the string's actual value. Char
+// literals have always decoded their escapes; string literals did not, so the
+// two disagreed and there was no way at all to put a newline, a tab or a quote
+// inside a string -- the backslash simply survived into the output.
+//
+// A NUL escape is rejected rather than supported: String is a NUL-terminated C
+// pointer, so an embedded NUL would silently truncate the value instead of
+// storing it. Better to say so than to lose half the string.
+fn lexer_decode_escapes(raw: String, line: Int) -> String {
+    let mut out = ""
+    let mut i = 0
+    let n = str_length(raw)
+
+    while (i < n) {
+        let ch = str_char_at(raw, i)
+
+        if (ch == '\\' and i + 1 < n) {
+            let esc = str_char_at(raw, i + 1)
+            let mut decoded = esc
+            let mut known = true
+
+            if (esc == 'n') { decoded = '\n' }
+            else if (esc == 't') { decoded = '\t' }
+            else if (esc == 'r') { decoded = '\r' }
+            else if (esc == '\\') { decoded = '\\' }
+            else if (esc == '"') { decoded = '"' }
+            else if (esc == '\'') { decoded = '\'' }
+            else if (esc == '0') {
+                print("error: line ")
+                print_int(line)
+                println(": a NUL escape cannot appear in a string literal, because String is NUL-terminated")
+                exit(1)
+            }
+            else { known = false }
+
+            if (known == false) {
+                print("error: line ")
+                print_int(line)
+                print(": unknown escape sequence ")
+                print_char('\\')
+                println_char(esc)
+                exit(1)
+            }
+
+            out = str_concat(out, str_from_char(decoded))
+            i = i + 2
+        } else {
+            out = str_concat(out, str_from_char(ch))
+            i = i + 1
+        }
+    }
+
+    return out
 }
 
 fn lexer_next_token(lex: Lexer) -> Token {
@@ -109,20 +167,41 @@ fn lexer_next_token(lex: Lexer) -> Token {
     }
 
     // String Literal
+    //
+    // Two passes. The first finds the closing quote, stepping over backslash
+    // pairs so an escaped quote does not end the literal. Escapes are then
+    // decoded only if the literal actually contains one, which keeps the common
+    // case on the cheap str_substring path instead of concatenating per
+    // character.
     if (c == '"') {
         lexer_advance(lex) // Skip opening quote
         let start = lex.pos
+        let mut has_escape = false
         while (lexer_current(lex) != '"' and lex.pos < str_length(lex.input)) {
+            if (lexer_current(lex) == '\\') {
+                has_escape = true
+                lexer_advance(lex) // consume the backslash; the pair is skipped below
+            }
             lexer_advance(lex)
         }
-        
+
         let length = lex.pos - start
-        let value = str_substring(lex.input, start, length)
-        
+        let raw = str_substring(lex.input, start, length)
+
         if (lexer_current(lex) == '"') {
             lexer_advance(lex) // Skip closing quote
+        } else {
+            print("error: line ")
+            print_int(lex.line)
+            println(": unterminated string literal")
+            exit(1)
         }
-        
+
+        let mut value = raw
+        if (has_escape) {
+            value = lexer_decode_escapes(raw, lex.line)
+        }
+
         return Token { type: TokenType.STRING_LITERAL, value: value, line: lex.line, tok_next: "" }
     }
 
@@ -166,26 +245,43 @@ fn lexer_next_token(lex: Lexer) -> Token {
         if (c == '|' and next == '|') { lexer_advance(lex) }
         if (c == '-' and next == '>') { lexer_advance(lex) }
         if (c == '=' and next == '>') { lexer_advance(lex) }
+        // Shifts. `>>` also closes two nested generic arguments, which
+        // parse_type_annotation splits back apart when it expects a single '>'.
+        if (c == '<' and next == '<') { lexer_advance(lex) }
+        if (c == '>' and next == '>') { lexer_advance(lex) }
+        // Compound assignment. Desugared by the parser into a read-modify-write.
+        if (next == '=') {
+            if (c == '+' or c == '-' or c == '*' or c == '/' or c == '%') { lexer_advance(lex) }
+            if (c == '&' or c == '|' or c == '^') { lexer_advance(lex) }
+        }
 
         let length = lex.pos - start
         let value = str_substring(lex.input, start, length)
-        
+
         // Refine type
-        let type = TokenType.ARITHMETIC_OPERATOR
+        let mut type = TokenType.ARITHMETIC_OPERATOR
         if (length == 2) {
             if (str_equals(value, "==") == 1 or str_equals(value, "!=") == 1 or str_equals(value, "<=") == 1 or str_equals(value, ">=") == 1) {
                 type = TokenType.RELATIONAL_OPERATOR
             }
             if (str_equals(value, "->") == 1 or str_equals(value, "=>") == 1) {
-                type = TokenType.ARROW 
+                type = TokenType.ARROW
                 if (str_equals(value, "=>") == 1) { type = TokenType.FAT_ARROW }
+            }
+            // `x op= y` is an assignment, not an arithmetic operator: the second
+            // character is '=' and the first is not, which distinguishes it from
+            // ==, !=, <= and >= already handled above.
+            if (str_char_at(value, 1) == '=' and str_char_at(value, 0) != '=') {
+                if (str_equals(value, "!=") == 0 and str_equals(value, "<=") == 0 and str_equals(value, ">=") == 0) {
+                    type = TokenType.ASSIGNMENT_OPERATOR
+                }
             }
         } else {
             if (c == '<' or c == '>') { type = TokenType.RELATIONAL_OPERATOR }
             if (c == '=') { type = TokenType.ASSIGNMENT_OPERATOR }
             if (c == '!') { type = TokenType.NEGATION }
         }
-        
+
         return Token { type: type, value: value, line: lex.line, tok_next: "" }
     }
 

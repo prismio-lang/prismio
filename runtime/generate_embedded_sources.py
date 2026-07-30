@@ -50,7 +50,8 @@ EMBEDDED_FILES = [
     ("lang_runtime.c", "prismio_embedded_lang_runtime_c"),
     ("program_support.c", "prismio_embedded_program_support_c"),
     ("build_driver.c", "prismio_embedded_build_driver_c"),
-    ("llvm-bridge.c", "prismio_embedded_llvm_bridge_c"),
+    ("ir_symbols.c", "prismio_embedded_ir_symbols_c"),
+    ("llvm-api-backend.c", "prismio_embedded_llvm_api_backend_c"),
 ]
 
 

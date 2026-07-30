@@ -39,7 +39,31 @@ $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrEmpty($Repo)) { $Repo = Split-Path -Parent $PSScriptRoot }
 
 # Must match prismio_toolchain_files[] in runtime\build_driver.c.
-$runtimeSources = @('lang_runtime.c', 'program_support.c', 'build_driver.c', 'llvm-bridge.c')
+$runtimeSources = @('lang_runtime.c', 'program_support.c', 'build_driver.c', 'ir_symbols.c', 'llvm-api-backend.c')
+
+# The backend is built on the LLVM C API, so building the compiler needs LLVM's
+# headers and its C API link library. Run tools\setup_llvm.py to find or fetch a
+# suitable toolchain -- it writes third_party\llvm-paths.json, which is read
+# here. PRISMIO_LLVM_DIR overrides it.
+function Resolve-Llvm {
+    param([string]$Repo)
+
+    if ($env:PRISMIO_LLVM_DIR) {
+        $root = $env:PRISMIO_LLVM_DIR
+        return @{ include = (Join-Path $root 'include'); lib = (Join-Path $root 'lib'); bin = (Join-Path $root 'bin') }
+    }
+
+    $cfg = Join-Path $Repo 'third_party\llvm-paths.json'
+    if (Test-Path $cfg) {
+        $j = Get-Content $cfg -Raw | ConvertFrom-Json
+        return @{ include = $j.include; lib = $j.lib; bin = $j.bin }
+    }
+
+    Write-Host 'FAILED: no LLVM toolchain configured.' -ForegroundColor Red
+    Write-Host '  Run: python tools\setup_llvm.py' -ForegroundColor Yellow
+    Write-Host '  (or set PRISMIO_LLVM_DIR to an LLVM install with include\llvm-c\Core.h)' -ForegroundColor Yellow
+    exit 1
+}
 
 $work = Join-Path (Split-Path -Parent $Out) ('.bootstrap-' + [System.IO.Path]::GetFileNameWithoutExtension($Out))
 New-Item -ItemType Directory -Force $work | Out-Null
@@ -89,15 +113,26 @@ $programObj = Join-Path $work 'program.obj'
 Invoke-Step 'll -> obj' 'llc' @($ll, '-filetype=obj', '-o', $programObj)
 
 # 3. Runtime and backend C sources, compiled fresh from the working tree.
+$llvm = Resolve-Llvm -Repo $Repo
+
 $objs = @($programObj)
 foreach ($c in $runtimeSources) {
     $obj = Join-Path $work ([System.IO.Path]::GetFileNameWithoutExtension($c) + '.obj')
-    Invoke-Step "cc $c" 'clang' @('-Wno-deprecated-declarations', '-c', (Join-Path $Repo "runtime\$c"), '-o', $obj)
+    Invoke-Step "cc $c" 'clang' @('-DPRISMIO_LLVM_REAL_HEADERS', '-Wno-deprecated-declarations',
+                                  "-I$($llvm.include)", "-I$(Join-Path $Repo 'runtime')",
+                                  '-c', (Join-Path $Repo "runtime\$c"), '-o', $obj)
     $objs += $obj
 }
 
-# 4. Link.
-Invoke-Step 'link' 'clang' ($objs + @('-o', $Out))
+# 4. Link, including LLVM's C API.
+Invoke-Step 'link' 'clang' ($objs + @('-o', $Out, "-L$($llvm.lib)", '-lLLVM-C'))
+
+# On Windows the compiler needs LLVM-C.dll beside it at runtime; copying beats
+# asking every user to put the LLVM bin directory on PATH.
+$dll = Join-Path $llvm.bin 'LLVM-C.dll'
+if (Test-Path $dll) {
+    Copy-Item $dll (Split-Path -Parent $Out) -Force
+}
 
 if (-not $KeepIntermediates) { Remove-Item $work -Recurse -Force }
 Write-Host "Built $Out ($((Get-Item $Out).Length) bytes)" -ForegroundColor Green

@@ -1,0 +1,92 @@
+// Escape sequences in string literals.
+//
+// Char literals decoded escapes from the start, but string literals kept the raw
+// text: "a\nb" was the four characters a, backslash, n, b, and the backslash
+// survived all the way into the emitted program. There was no way to put a
+// newline, a tab or a quote inside a string at all -- only println() could
+// produce a line break.
+//
+// The scanner also stops at the first unescaped quote only, so \" no longer ends
+// the literal early.
+
+extern fn str_equals(s1: String, s2: String) -> Int
+extern fn str_length(s: String) -> Int
+extern fn str_char_at(s: String, index: Int) -> Char
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // \n decodes to one character, not two
+    let nl = "a\nb"
+    if (str_length(nl) != 3) {
+        return fail("\\n should decode to a single character")
+    }
+    if (str_char_at(nl, 1) != '\n') {
+        return fail("\\n decoded to the wrong character")
+    }
+
+    // \t
+    let tab = "a\tb"
+    if (str_length(tab) != 3) {
+        return fail("\\t should decode to a single character")
+    }
+    if (str_char_at(tab, 1) != '\t') {
+        return fail("\\t decoded to the wrong character")
+    }
+
+    // \\ collapses to one backslash
+    let back = "a\\b"
+    if (str_length(back) != 3) {
+        return fail("\\\\ should decode to a single backslash")
+    }
+    if (str_char_at(back, 1) != '\\') {
+        return fail("\\\\ decoded to the wrong character")
+    }
+
+    // \" does not terminate the literal
+    let quoted = "say \"hi\""
+    if (str_length(quoted) != 8) {
+        return fail("escaped quotes should not end the literal")
+    }
+    if (str_char_at(quoted, 4) != '"') {
+        return fail("\\\" decoded to the wrong character")
+    }
+
+    // \r and \'
+    if (str_char_at("x\ry", 1) != '\r') {
+        return fail("\\r decoded to the wrong character")
+    }
+    if (str_char_at("x\'y", 1) != '\'') {
+        return fail("\\' decoded to the wrong character")
+    }
+
+    // a windows-style path round-trips
+    let path = "C:\\dir\\file.txt"
+    if (str_equals(path, "C:\\dir\\file.txt") == 0) {
+        return fail("path with escaped backslashes did not round-trip")
+    }
+    if (str_length(path) != 15) {
+        return fail("path length after decoding is wrong")
+    }
+
+    // strings with no escapes still work (the fast path)
+    let plain = "no escapes here"
+    if (str_length(plain) != 15) {
+        return fail("plain string length changed")
+    }
+
+    // an empty string is still empty
+    if (str_length("") != 0) {
+        return fail("empty string should stay empty")
+    }
+
+    // escapes reach the output: this prints two lines and a tab
+    print("escaped output:\n\tindented\n")
+
+    println("PASS: string escapes")
+    return 0
+}

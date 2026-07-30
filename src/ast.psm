@@ -35,6 +35,7 @@ enum NodeKind {
     INDEX_EXPR,
     ARRAY_LITERAL_EXPR,
     STRUCT_LITERAL_EXPR,
+    CAST_EXPR,
 
     // Other
     FUNCTION_PARAMETER,

@@ -61,8 +61,22 @@ extern fn ir_fsub(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_fmul(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_fdiv(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_neg(type: String, value: String) -> Int
+
+// Width conversions
+extern fn ir_zext(from_type: String, value: String, to_type: String) -> Int
+extern fn ir_sext(from_type: String, value: String, to_type: String) -> Int
+extern fn ir_trunc(from_type: String, value: String, to_type: String) -> Int
+extern fn ir_sitofp(from_type: String, value: String, to_type: String) -> Int
+extern fn ir_uitofp(from_type: String, value: String, to_type: String) -> Int
+extern fn ir_fptosi(from_type: String, value: String, to_type: String) -> Int
+extern fn ir_fptoui(from_type: String, value: String, to_type: String) -> Int
 extern fn ir_and(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_or(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_xor(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_not(type: String, value: String) -> Int
+extern fn ir_shl(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_lshr(type: String, lhs: String, rhs: String) -> Int
+extern fn ir_ashr(type: String, lhs: String, rhs: String) -> Int
 
 // Comparisons
 extern fn ir_icmp_eq(type: String, lhs: String, rhs: String) -> Int
@@ -110,6 +124,23 @@ extern fn ir_is_borrowed(name: String) -> Int
 // Globals
 extern fn ir_global_string(name: String, str_content: String)
 extern fn ir_global_var(name: String, type: String, init_value: String, is_const: Int)
+
+// Typed structural builders.
+// Both backends implement these identically. The frontend must build structs,
+// arrays and field access through them rather than emitting IR text, because
+// the LLVM C API backend has no way to honour raw text.
+extern fn ir_set_pointer_int_type(t: String)
+extern fn ir_struct_type_begin(name: String)
+extern fn ir_struct_type_field(field_type: String)
+extern fn ir_struct_type_end()
+extern fn ir_alloc_object(struct_name: String) -> Int
+extern fn ir_free_object(value: String)
+extern fn ir_struct_field_ptr(struct_name: String, object: String, field_index: Int) -> Int
+extern fn ir_elem_ptr(elem_type: String, base: String, index: String) -> Int
+extern fn ir_array_alloca(elem_type: String, count: Int) -> Int
+extern fn ir_string_ptr(global_name: String) -> Int
+extern fn ir_load_ptr(type: String, ptr_value: String) -> Int
+extern fn ir_store_ptr(type: String, value: String, ptr_value: String)
 
 // Helpers
 extern fn ir_get_temp_name(temp_num: Int) -> String

@@ -39,7 +39,8 @@ static const PrismioToolchainFile prismio_toolchain_files[] = {
     { "lang_runtime.c",     1, "lang_runtime",    1 },
     { "program_support.c",  1, "program_support", 1 },
     { "build_driver.c",     1, "build_driver",    0 },
-    { "llvm-bridge.c",      1, "bridge",          0 },
+    { "ir_symbols.c",       1, "ir_symbols",      0 },
+    { "llvm-api-backend.c", 1, "backend",         0 },
 };
 
 #define PRISMIO_TOOLCHAIN_FILE_COUNT \
@@ -55,7 +56,8 @@ static const char* prismio_embedded_text(int index) {
         case 2: return prismio_embedded_lang_runtime_c;
         case 3: return prismio_embedded_program_support_c;
         case 4: return prismio_embedded_build_driver_c;
-        case 5: return prismio_embedded_llvm_bridge_c;
+        case 5: return prismio_embedded_ir_symbols_c;
+        case 6: return prismio_embedded_llvm_api_backend_c;
         default: return NULL;
     }
 }
@@ -309,7 +311,8 @@ static int write_embedded_sources_header(const char* path) {
     write_c_string_literal(file, "prismio_embedded_lang_runtime_c", prismio_embedded_lang_runtime_c);
     write_c_string_literal(file, "prismio_embedded_program_support_c", prismio_embedded_program_support_c);
     write_c_string_literal(file, "prismio_embedded_build_driver_c", prismio_embedded_build_driver_c);
-    write_c_string_literal(file, "prismio_embedded_llvm_bridge_c", prismio_embedded_llvm_bridge_c);
+    write_c_string_literal(file, "prismio_embedded_ir_symbols_c", prismio_embedded_ir_symbols_c);
+    write_c_string_literal(file, "prismio_embedded_llvm_api_backend_c", prismio_embedded_llvm_api_backend_c);
     fputs("#endif\n", file);
 
     fclose(file);

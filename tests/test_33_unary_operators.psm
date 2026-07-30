@@ -1,0 +1,104 @@
+// Unary operators: arithmetic negation and logical not.
+//
+// Before this existed there was no way to write a negative number at all --
+// `let x = -5` was a parse error ("Unexpected token in expression: OPERATOR '-'")
+// and boolean inversion had to be spelled `== false`.
+//
+// `-<numeric literal>` is folded into the literal by the parser, so a negative
+// number still counts as a constant. The global below only compiles because of
+// that fold, and `let i: I8 = -100` only type-checks because folded literals
+// still reach sema's int-literal coercion.
+
+let neg_global = -42
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn identity(n: Int) -> Int {
+    return n
+}
+
+fn main() -> Int {
+    // negative literals
+    let a = -5
+    if (a != 0 - 5) {
+        return fail("negative literal")
+    }
+
+    // negation of a binding, not just a literal
+    let b = 10
+    if (-b != 0 - 10) {
+        return fail("negation of a variable")
+    }
+
+    // double negation must round-trip
+    if (- -b != 10) {
+        return fail("double negation")
+    }
+
+    // binary minus followed by unary minus
+    if (3 - -2 != 5) {
+        return fail("binary minus then unary minus")
+    }
+
+    // unary binds tighter than multiplication
+    if (-3 * 4 != 0 - 12) {
+        return fail("unary should bind tighter than *")
+    }
+
+    // negation of a call result
+    if (-identity(7) != 0 - 7) {
+        return fail("negation of a call result")
+    }
+
+    // Sized integer types. Compared against another folded literal rather than
+    // against `0 - 100`: that is a binary expression typed Int, and a sized type
+    // only accepts a bare literal, never a differently-typed expression.
+    let i: I8 = -100
+    if (i != -100) {
+        return fail("negative I8 literal")
+    }
+
+    let j: I64 = -9000
+    if (j != -9000) {
+        return fail("negative I64 literal")
+    }
+
+    // floats use fsub, not the integer sub
+    let f = -2.5
+    if (f != 0.0 - 2.5) {
+        return fail("negative float literal")
+    }
+    if (-f != 2.5) {
+        return fail("float negation")
+    }
+
+    // logical not
+    let t = true
+    if (!t) {
+        return fail("!true should be false")
+    }
+    if (!!t == false) {
+        return fail("!!true should be true")
+    }
+    let g = false
+    if (!g == false) {
+        return fail("!false should be true")
+    }
+
+    // not applied to a comparison
+    if (!(1 == 2) == false) {
+        return fail("!(1 == 2) should be true")
+    }
+
+    // a global initialized with a folded negative literal
+    if (neg_global != 0 - 42) {
+        return fail("negative global initializer")
+    }
+
+    println("PASS: unary operators")
+    return 0
+}

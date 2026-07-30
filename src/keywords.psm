@@ -39,6 +39,9 @@ fn is_keyword(s: String) -> Bool {
     // property
     if (str_equals(s, "mut") == 1) { return true }
 
+    // conversions
+    if (str_equals(s, "as") == 1) { return true }
+
     // parameter conventions (ownership / borrows)
     if (str_equals(s, "inout") == 1) { return true }
     if (str_equals(s, "sink") == 1) { return true }

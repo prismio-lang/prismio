@@ -70,6 +70,17 @@ fn type_u32() -> TypeInfo { return type_make(TypeKind.INT, "U32", "i32") }
 fn type_u64() -> TypeInfo { return type_make(TypeKind.INT, "U64", "i64") }
 fn type_usize() -> TypeInfo { return type_make(TypeKind.INT, "Usize", "i64") }
 
+// Bit width of an integer type, from its LLVM spelling. Casting needs it to
+// choose between truncation and extension.
+fn type_int_bits(t: TypeInfo) -> Int {
+    if (str_equals(t.llvm, "i1") == 1) { return 1 }
+    if (str_equals(t.llvm, "i8") == 1) { return 8 }
+    if (str_equals(t.llvm, "i16") == 1) { return 16 }
+    if (str_equals(t.llvm, "i32") == 1) { return 32 }
+    if (str_equals(t.llvm, "i64") == 1) { return 64 }
+    return 0
+}
+
 fn type_int_is_unsigned(t: TypeInfo) -> Bool {
     if (t.kind != TypeKind.INT) { return false }
     return str_starts_with(t.name, "U") == 1

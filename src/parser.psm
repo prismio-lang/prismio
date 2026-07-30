@@ -88,6 +88,8 @@ extern fn parse_enum_decl(p: Parser) -> ASTNode
 extern fn parse_block(p: Parser) -> ASTNode
 extern fn parse_statement(p: Parser) -> ASTNode
 extern fn parse_expression(p: Parser, precedence: Int) -> ASTNode
+extern fn parse_unary(p: Parser) -> ASTNode
+extern fn parse_postfix(p: Parser) -> ASTNode
 extern fn parse_primary(p: Parser) -> ASTNode
 extern fn parse_module(p: Parser) -> ASTNode
 
@@ -161,10 +163,25 @@ fn parse_type_annotation(p: Parser) -> ASTNode {
     if (str_equals(type_node.s1, "List") == 1 and parser_match_val(p, TokenType.RELATIONAL_OPERATOR, "<")) {
         type_node.i2 = 1 // is_list
         type_node.child1 = node_to_ptr(parse_type_annotation(p))
-        parser_expect_val(p, TokenType.RELATIONAL_OPERATOR, ">", "list type argument")
+        parser_expect_close_angle(p, "list type argument")
     }
 
     return type_node
+}
+
+// Consumes the '>' that closes a generic argument.
+//
+// The lexer produces `>>` as a single shift token, so `List<List<Int>>` would
+// otherwise fail to close the inner argument -- the classic C++ problem. Rather
+// than requiring a space, split the token: rewrite it to a single '>' in place
+// and leave it for the enclosing type to consume.
+fn parser_expect_close_angle(p: Parser, context: String) {
+    let curr = parser_current(p)
+    if (str_equals(curr.value, ">>") == 1) {
+        curr.value = ">"
+        return
+    }
+    parser_expect_val(p, TokenType.RELATIONAL_OPERATOR, ">", context)
 }
 
 fn parse_variable_decl(p: Parser) -> ASTNode {
@@ -512,12 +529,43 @@ fn parse_statement(p: Parser) -> ASTNode {
     }
     
     let expr = parse_expression(p, 0)
-    
+
     if (parser_match_val(p, TokenType.ASSIGNMENT_OPERATOR, "=")) {
         let assign_stmt = create_node(NodeKind.ASSIGNMENT_STATEMENT)
         assign_stmt.child1 = node_to_ptr(expr)
         assign_stmt.child2 = node_to_ptr(parse_expression(p, 0))
         return assign_stmt
+    }
+
+    // `x op= e` becomes `x = x op e`.
+    //
+    // Restricted to a plain variable on the left. The desugaring names the
+    // target twice, so a target with a subexpression -- `a[i()] += 1`, or
+    // `f().field += 1` -- would evaluate that subexpression twice. Rejecting
+    // those is better than silently doing it, and the workaround is to write
+    // the assignment out in full.
+    let assign_tok = parser_current(p)
+    if (assign_tok.type == TokenType.ASSIGNMENT_OPERATOR and str_length(assign_tok.value) == 2) {
+        let op = str_substring(assign_tok.value, 0, 1)
+        parser_advance(p)
+
+        if (expr.kind != NodeKind.IDENTIFIER_EXPR) {
+            print("Error: compound assignment (")
+            print(assign_tok.value)
+            println(") requires a plain variable on the left")
+            println("  write the assignment out in full instead")
+            exit(1)
+        }
+
+        let combined = create_node(NodeKind.BINARY_EXPR)
+        combined.s1 = op
+        combined.child1 = node_to_ptr(expr)
+        combined.child2 = node_to_ptr(parse_expression(p, 0))
+
+        let compound = create_node(NodeKind.ASSIGNMENT_STATEMENT)
+        compound.child1 = node_to_ptr(expr)
+        compound.child2 = node_to_ptr(combined)
+        return compound
     }
     
     let stmt = create_node(NodeKind.EXPRESSION_STATEMENT)
@@ -529,21 +577,91 @@ fn parse_statement(p: Parser) -> ASTNode {
 // Expressions
 // ---------------------------------------------------------
 
+// Bitwise operators bind *tighter* than comparison, unlike C.
+//
+// C puts & | ^ below == and !=, so `flags & MASK != 0` silently means
+// `flags & (MASK != 0)`. That is C's best-known precedence mistake -- Ritchie
+// said as much, and both Rust and Go corrected it. Prismio has no compatibility
+// reason to inherit it, and the ordering below makes the natural reading the
+// correct one. Everything else follows C.
 fn get_operator_precedence(t: Token) -> Int {
     if (str_equals(t.value, "or") == 1) { return 1 }
     if (str_equals(t.value, "and") == 1) { return 2 }
     if (t.type == TokenType.KEYWORD) { return 0 }
-    
+
     if (str_equals(t.value, "==") == 1 or str_equals(t.value, "!=") == 1) { return 3 }
     if (str_equals(t.value, "<") == 1 or str_equals(t.value, ">") == 1 or str_equals(t.value, "<=") == 1 or str_equals(t.value, ">=") == 1) { return 4 }
-    if (str_equals(t.value, "+") == 1 or str_equals(t.value, "-") == 1) { return 5 }
-    if (str_equals(t.value, "*") == 1 or str_equals(t.value, "/") == 1 or str_equals(t.value, "%") == 1) { return 6 }
-    
+    if (str_equals(t.value, "|") == 1) { return 5 }
+    if (str_equals(t.value, "^") == 1) { return 6 }
+    if (str_equals(t.value, "&") == 1) { return 7 }
+    if (str_equals(t.value, "<<") == 1 or str_equals(t.value, ">>") == 1) { return 8 }
+    if (str_equals(t.value, "+") == 1 or str_equals(t.value, "-") == 1) { return 9 }
+    if (str_equals(t.value, "*") == 1 or str_equals(t.value, "/") == 1 or str_equals(t.value, "%") == 1) { return 10 }
+
     return 0
 }
 
+// Prefix operators bind tighter than any binary operator, so they sit between
+// parse_expression and parse_primary. Recursing into parse_unary rather than
+// parse_primary is what makes `--x` and `!!b` parse.
+fn parse_unary(p: Parser) -> ASTNode {
+    let curr = parser_current(p)
+
+    let is_neg = curr.type == TokenType.ARITHMETIC_OPERATOR and str_equals(curr.value, "-") == 1
+    let is_not = curr.type == TokenType.NEGATION and str_equals(curr.value, "!") == 1
+    let is_bnot = curr.type == TokenType.ARITHMETIC_OPERATOR and str_equals(curr.value, "~") == 1
+
+    if (is_neg or is_not or is_bnot) {
+        let op = curr.value
+        parser_advance(p)
+        let operand = parse_unary(p)
+
+        // Fold `-<numeric literal>` into the literal itself rather than lowering
+        // it to `sub 0, n`. Negative numbers then still count as literals, which
+        // is what lets them appear where a constant is required (a global
+        // initializer) and what lets `let x: I8 = -5` reach sema's int-literal
+        // coercion. Guarded on the leading '-' so `--5` stays a negation of the
+        // literal -5 instead of folding into the nonsense literal "--5".
+        if (str_equals(op, "-") == 1 and operand.kind == NodeKind.LITERAL_EXPR) {
+            let is_number = operand.i1 == TokenType.NUMBER_LITERAL or operand.i1 == TokenType.FLOAT_LITERAL
+            if (is_number and str_starts_with(operand.s1, "-") == 0) {
+                operand.s1 = str_concat("-", operand.s1)
+                return operand
+            }
+        }
+
+        let unary = create_node(NodeKind.UNARY_EXPR)
+        unary.s1 = op
+        unary.child1 = node_to_ptr(operand)
+        return unary
+    }
+
+    return parse_postfix(p)
+}
+
+// `expr as Type`. Binds tighter than any binary operator and looser than a
+// prefix operator, so `-x as I64` negates first and `a + b as I64` converts only
+// b. Looping allows `x as I64 as Float` to chain left to right.
+fn parse_postfix(p: Parser) -> ASTNode {
+    let mut expr = parse_primary(p)
+
+    let mut casting = true
+    while (casting) {
+        if (parser_match_val(p, TokenType.KEYWORD, "as")) {
+            let cast = create_node(NodeKind.CAST_EXPR)
+            cast.child1 = node_to_ptr(expr)
+            cast.child2 = node_to_ptr(parse_type_annotation(p))
+            expr = cast
+        } else {
+            casting = false
+        }
+    }
+
+    return expr
+}
+
 fn parse_expression(p: Parser, precedence: Int) -> ASTNode {
-    let left = parse_primary(p)
+    let left = parse_unary(p)
     
     let is_looping = true
     while (is_looping) {

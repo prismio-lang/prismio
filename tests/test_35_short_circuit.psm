@@ -1,0 +1,99 @@
+// `and` / `or` must not evaluate the right-hand side unless it can change the
+// answer.
+//
+// Both operands used to be evaluated unconditionally and combined with a plain
+// and/or instruction, which made every guard of the shape
+// `p != empty and deref(p)` a latent crash. The compiler's own argument checks
+// in sema.psm are written in exactly that style, so `print()` with no arguments
+// segfaulted the compiler instead of reporting a type error.
+//
+// Side effects are tracked through a global counter: if the right operand is
+// evaluated when it should not be, the counter moves and the test fails.
+
+let mut side_effects = 0
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// Records that it ran, then returns what it was asked to return.
+fn touched(result: Bool) -> Bool {
+    side_effects = side_effects + 1
+    return result
+}
+
+fn main() -> Int {
+    // false and _  =>  right side must be skipped
+    side_effects = 0
+    if (false and touched(true)) {
+        return fail("false and _ should be false")
+    }
+    if (side_effects != 0) {
+        return fail("`and` evaluated its right operand after a false left")
+    }
+
+    // true and _  =>  right side must run
+    side_effects = 0
+    if (true and touched(true)) {
+        if (side_effects != 1) {
+            return fail("`and` should evaluate its right operand after a true left")
+        }
+    } else {
+        return fail("true and true should be true")
+    }
+
+    // true or _  =>  right side must be skipped
+    side_effects = 0
+    if (true or touched(false)) {
+        if (side_effects != 0) {
+            return fail("`or` evaluated its right operand after a true left")
+        }
+    } else {
+        return fail("true or _ should be true")
+    }
+
+    // false or _  =>  right side must run
+    side_effects = 0
+    if (false or touched(true)) {
+        if (side_effects != 1) {
+            return fail("`or` should evaluate its right operand after a false left")
+        }
+    } else {
+        return fail("false or true should be true")
+    }
+
+    // the values themselves must still be right in every combination
+    if (true and true) { } else { return fail("true and true") }
+    if (true and false) { return fail("true and false") }
+    if (false and true) { return fail("false and true") }
+    if (false and false) { return fail("false and false") }
+    if (true or false) { } else { return fail("true or false") }
+    if (false or true) { } else { return fail("false or true") }
+    if (false or false) { return fail("false or false") }
+
+    // nesting: only the operands that matter should run
+    side_effects = 0
+    if (false and (touched(true) or touched(true))) {
+        return fail("nested and should be false")
+    }
+    if (side_effects != 0) {
+        return fail("nested `or` ran inside a skipped `and`")
+    }
+
+    // chained conditions, mixed with comparisons
+    let n = 5
+    side_effects = 0
+    if (n > 10 and touched(true)) {
+        return fail("guarded call should not have run")
+    }
+    if (side_effects != 0) {
+        return fail("comparison guard failed to short-circuit")
+    }
+
+    if (n > 0 and n < 10) { } else { return fail("chained comparison") }
+
+    println("PASS: short circuit")
+    return 0
+}

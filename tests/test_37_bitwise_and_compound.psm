@@ -1,0 +1,91 @@
+// Bitwise operators, shifts, and compound assignment.
+//
+// Precedence follows C except for one deliberate correction: bitwise & | ^ bind
+// tighter than == and !=, so `flags & MASK != 0` reads the way it looks. In C
+// that groups as `flags & (MASK != 0)`, which is C's best-known precedence
+// mistake; Rust and Go both corrected it and so does this.
+//
+// Right shift follows the left operand's signedness: arithmetic for signed so
+// the sign is preserved, logical for unsigned so the top bit is not smeared.
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // bitwise
+    if (12 & 10 != 8) { return fail("&") }
+    if (12 | 10 != 14) { return fail("|") }
+    if (12 ^ 10 != 6) { return fail("^") }
+    if (~0 != -1) { return fail("~0 should be -1") }
+    if (~5 != -6) { return fail("~5 should be -6") }
+
+    // shifts
+    if (1 << 5 != 32) { return fail("<<") }
+    if (256 >> 4 != 16) { return fail(">>") }
+
+    // signed right shift is arithmetic
+    let neg = -16
+    if (neg >> 2 != -4) { return fail("signed >> should preserve the sign") }
+
+    // unsigned right shift is logical
+    let u: U8 = 200
+    if ((u >> 2) as Int != 50) { return fail("unsigned >> should not sign-extend") }
+
+    // shift amount need not match the value's type
+    let wide: I64 = 1
+    if ((wide << 40) as Int != 0) { return fail("I64 shift") }
+
+    // C precedence
+    if (1 + 2 << 3 != 24) { return fail("+ should bind tighter than <<") }
+    if (1 << 2 + 3 != 32) { return fail("+ should bind tighter than <<, right side") }
+    if (4 | 1 & 1 != 5) { return fail("& should bind tighter than |") }
+    if (1 ^ 3 & 1 != 0) { return fail("& should bind tighter than ^") }
+    // Bitwise binding tighter than equality is what makes these read correctly
+    // without parentheses.
+    if (12 & 10 != 8) { return fail("& should bind tighter than !=") }
+    if (12 | 10 != 14) { return fail("| should bind tighter than !=") }
+
+    // compound assignment, arithmetic
+    let mut acc = 1
+    acc += 4
+    if (acc != 5) { return fail("+=") }
+    acc *= 3
+    if (acc != 15) { return fail("*=") }
+    acc -= 5
+    if (acc != 10) { return fail("-=") }
+    acc /= 2
+    if (acc != 5) { return fail("/=") }
+    acc %= 3
+    if (acc != 2) { return fail("%=") }
+
+    // compound assignment, bitwise
+    let mut flags = 0
+    flags |= 5
+    if (flags != 5) { return fail("|=") }
+    flags &= 6
+    if (flags != 4) { return fail("&=") }
+    flags ^= 3
+    if (flags != 7) { return fail("^=") }
+
+    // compound assignment on a sized type stays in that type
+    let mut small: U8 = 250
+    small += 5
+    if (small as Int != 255) { return fail("+= on U8") }
+
+    // a bit-manipulation idiom that needed all of the above at once
+    let mut mask = 0
+    let bit = 3
+    mask |= 1 << bit
+    if (mask != 8) { return fail("set bit") }
+    // No parentheses needed around the mask test -- this is the C wart that the
+    // precedence table deliberately corrects.
+    if (mask & (1 << bit) == 0) { return fail("test bit") }
+    mask &= ~(1 << bit)
+    if (mask != 0) { return fail("clear bit") }
+
+    println("PASS: bitwise and compound assignment")
+    return 0
+}

@@ -10,7 +10,7 @@
 #
 # POSIX counterpart of tools/package.ps1. The runtime/backend split is enforced
 # here, at the point the libraries are built: runtime.a gets lang_runtime.c +
-# program_support.c, backend.a gets build_driver.c + llvm-bridge.c. Because a
+# program_support.c, backend.a gets build_driver.c + ir_symbols.c + llvm-api-backend.c. Because a
 # compiled program links only runtime.a (see find_toolchain_library and
 # link_against_runtime_library in build_driver.c), no ir_* backend symbol can reach
 # a user binary -- tools/verify_separation.sh checks that against the artifacts.
@@ -67,7 +67,7 @@ build_archive() {
 }
 
 build_archive runtime lang_runtime.c program_support.c
-build_archive backend build_driver.c llvm-bridge.c
+build_archive backend build_driver.c ir_symbols.c llvm-api-backend.c
 
 cp "$COMPILER" "$BIN/prismio"
 chmod +x "$BIN/prismio"

@@ -411,6 +411,16 @@ char* str_clone(const char* s) {
     return result;
 }
 
+// One-character string. The lexer assembles a decoded string literal a character
+// at a time and there is no other way to turn a Char into a String -- the
+// language has no string builder and no char-to-string conversion.
+char* str_from_char(char c) {
+    char* result = (char*)malloc(2);
+    result[0] = c;
+    result[1] = '\0';
+    return result;
+}
+
 char* str_trim(const char* s) {
     while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') {
         s++;
@@ -782,6 +792,16 @@ char* str_clone(const char* s) {
     int len = strlen(s);
     char* result = (char*)malloc(len + 1);
     strcpy(result, s);
+    return result;
+}
+
+// One-character string. The lexer assembles a decoded string literal a character
+// at a time and there is no other way to turn a Char into a String -- the
+// language has no string builder and no char-to-string conversion.
+char* str_from_char(char c) {
+    char* result = (char*)malloc(2);
+    result[0] = c;
+    result[1] = '\0';
     return result;
 }
 
