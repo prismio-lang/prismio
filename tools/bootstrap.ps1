@@ -1,6 +1,7 @@
 # Build a prismio compiler generation from the repository sources.
 #
-#   .\tools\bootstrap.ps1 -Compiler <existing prismio.exe> -Out build\prismio.exe
+#   .\tools\bootstrap.ps1 -Out build\gen0.exe                        # from the seed
+#   .\tools\bootstrap.ps1 -Compiler build\gen0.exe -Out build\gen1.exe
 #
 # Why this exists: the repository previously had no build script at all, so the
 # only way to rebuild the compiler was `prismio build src\main.psm`, which asks the
@@ -19,16 +20,18 @@
 # (on Windows: MSVC Build Tools with the Windows SDK).
 
 param(
-    [Parameter(Mandatory = $true)][string]$Compiler,
+    # One of -Compiler or -Seed is required. -Seed starts from
+    # bootstrap\prismio-seed.ll, committed LLVM IR for the compiler, which is the
+    # only way to build a first compiler on a machine that has none (or whose only
+    # prismio is an older generation you no longer trust). Pass a path to use a
+    # different seed. Mirrors --seed in tools/bootstrap.sh.
+    [string]$Compiler = '',
+    [string]$Seed = '',
     [Parameter(Mandatory = $true)][string]$Out,
     # Defaults to the repository root (this script's parent directory). Resolved in
     # the body, not here: $PSScriptRoot is not populated during param binding.
     [string]$Repo = '',
-    [switch]$KeepIntermediates,
-    # Supplies prismio_argc / prismio_argv when the bootstrapping compiler predates
-    # src\ir.psm emitting them. See tools\bootstrap_argv_shim.c -- needed for one
-    # stage only, when migrating from a compiler generation older than that change.
-    [switch]$ArgvShim
+    [switch]$KeepIntermediates
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,9 +58,18 @@ function Invoke-Step {
 
 $ll = Join-Path $work 'compiler.ll'
 
-# 1. Frontend: .psm -> LLVM IR.
-Invoke-Step 'psm -> ll' $Compiler @('build', (Join-Path $Repo 'src\main.psm'), '-o', $ll)
-if (-not (Test-Path $ll)) { Write-Host 'FAILED: no IR produced' -ForegroundColor Red; exit 1 }
+# 1. Obtain IR for the compiler. With no -Compiler there is nothing to run the
+# frontend with, so fall back to the seed -- that is exactly the situation it is
+# committed for.
+if ([string]::IsNullOrEmpty($Compiler)) {
+    if ([string]::IsNullOrEmpty($Seed)) { $Seed = Join-Path $Repo 'bootstrap\prismio-seed.ll' }
+    if (-not (Test-Path $Seed)) { Write-Host "FAILED: seed not found: $Seed" -ForegroundColor Red; exit 1 }
+    Write-Host '[seed -> ll]' -ForegroundColor DarkGray
+    Copy-Item $Seed $ll -Force
+} else {
+    Invoke-Step 'psm -> ll' $Compiler @('build', (Join-Path $Repo 'src\main.psm'), '-o', $ll)
+    if (-not (Test-Path $ll)) { Write-Host 'FAILED: no IR produced' -ForegroundColor Red; exit 1 }
+}
 
 # Duplicate symbols mean import resolution merged a module more than once. llc would
 # reject them anyway, but name them explicitly so the cause is obvious.
@@ -82,12 +94,6 @@ foreach ($c in $runtimeSources) {
     $obj = Join-Path $work ([System.IO.Path]::GetFileNameWithoutExtension($c) + '.obj')
     Invoke-Step "cc $c" 'clang' @('-Wno-deprecated-declarations', '-c', (Join-Path $Repo "runtime\$c"), '-o', $obj)
     $objs += $obj
-}
-
-if ($ArgvShim) {
-    $shimObj = Join-Path $work 'bootstrap_argv_shim.obj'
-    Invoke-Step 'cc argv-shim' 'clang' @('-c', (Join-Path $PSScriptRoot 'bootstrap_argv_shim.c'), '-o', $shimObj)
-    $objs += $shimObj
 }
 
 # 4. Link.
