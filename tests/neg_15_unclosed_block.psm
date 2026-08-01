@@ -1,0 +1,12 @@
+// expect-error: this block is never closed; reached end of file looking for `}`
+// expect-error: aborting due to 1 previous error
+//
+// The span points at the `{` that was opened, not at the end of the file.
+//
+// parse_block used to loop until it found `}`, so at end of input it spun until
+// some inner parser happened to fail -- and then blamed whatever token that
+// parser was looking at, which was never the real problem.
+
+fn main() -> Int {
+    let x = 1
+    return x

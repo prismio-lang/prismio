@@ -2,6 +2,7 @@ import lexer
 import token
 import utils
 import ast
+import diag
 
 struct Parser {
     current: String // Token pointer
@@ -59,18 +60,97 @@ fn parser_match_val(p: Parser, t: TokenType, val: String) -> Bool {
 
 extern fn exit(code: Int)
 
+// Creates a node already stamped with the position of the token the parser is
+// sitting on. Every node the parser builds comes from here rather than from
+// create_node(), so a node without a span means "synthesised", not "forgotten".
+fn parser_node(p: Parser, kind: NodeKind) -> ASTNode {
+    let node = create_node(kind)
+    let mut tok = parser_current(p)
+    node.line = tok.line
+    node.col = tok.col
+    node.len = tok.len
+    node.file = tok.file
+    return node
+}
+
+// Reports against the token the parser is looking at -- which is the token that
+// was *unexpected*, and so the one worth underlining.
+fn parser_error(p: Parser, message: String) {
+    let mut tok = parser_current(p)
+    diag_error_at(tok.file, tok.line, tok.col, tok.len, message)
+}
+
+// How the offending token reads in a message. EOF has no source text, so name it
+// rather than quoting the empty string.
+fn parser_describe(tok: Token) -> String {
+    if (tok.type == TokenType.EOF) {
+        return "end of file"
+    }
+    return diag_quote(tok.value)
+}
+
+// Drops tokens until something that plausibly begins a new declaration or
+// statement, so one syntax error does not turn the rest of the file into noise.
+//
+// Prismio has no statement terminator, so the anchors are the keywords that can
+// only start a construct, plus '}' which can only end one. Two properties matter:
+// it always consumes at least one token (otherwise the parser loops forever on
+// the token it could not handle), and it stops *before* the anchor so the caller
+// resumes by parsing it normally.
+fn parser_synchronize(p: Parser) {
+    parser_advance(p)
+
+    let mut scanning = true
+    while (scanning) {
+        let mut tok = parser_current(p)
+        if (tok.type == TokenType.EOF) {
+            scanning = false
+        } else if (tok.type == TokenType.SEPARATOR and str_equals(tok.value, "}") == 1) {
+            scanning = false
+        } else if (tok.type == TokenType.KEYWORD) {
+            if (str_equals(tok.value, "fn") == 1 or str_equals(tok.value, "let") == 1
+                or str_equals(tok.value, "struct") == 1 or str_equals(tok.value, "enum") == 1
+                or str_equals(tok.value, "extern") == 1 or str_equals(tok.value, "import") == 1
+                or str_equals(tok.value, "impl") == 1 or str_equals(tok.value, "trait") == 1
+                or str_equals(tok.value, "if") == 1 or str_equals(tok.value, "while") == 1
+                or str_equals(tok.value, "for") == 1 or str_equals(tok.value, "loop") == 1
+                or str_equals(tok.value, "match") == 1 or str_equals(tok.value, "return") == 1) {
+                scanning = false
+            } else {
+                parser_advance(p)
+            }
+        } else {
+            parser_advance(p)
+        }
+    }
+}
+
+// A parse error the parser cannot recover from locally. Reports, then stops:
+// continuing past a malformed type or parameter list means handing sema an AST
+// whose shape does not match what its callers assume, and a crash there is a
+// worse experience than one honest error.
+fn parser_fatal(p: Parser, message: String) {
+    parser_error(p, message)
+    diag_finish()
+    exit(1)
+}
+
 fn parser_expect(p: Parser, t: TokenType, context: String) {
     if (parser_check(p, t) == false) {
-        print("Error in ") print(context) print(": Expected token type ") println_int(t)
-        exit(1)
+        let mut tok = parser_current(p)
+        parser_fatal(p, str_concat(str_concat(str_concat("expected ", type_to_string(t)),
+                     str_concat(" in ", context)),
+                     str_concat(", found ", parser_describe(tok))))
     }
     parser_advance(p)
 }
 
 fn parser_expect_val(p: Parser, t: TokenType, val: String, context: String) {
     if (parser_check_val(p, t, val) == false) {
-        print("Error in ") print(context) print(": Expected token '") print(val) println("'")
-        exit(1)
+        let mut tok = parser_current(p)
+        parser_fatal(p, str_concat(str_concat(str_concat("expected ", diag_quote(val)),
+                     str_concat(" in ", context)),
+                     str_concat(", found ", parser_describe(tok))))
     }
     parser_advance(p)
 }
@@ -100,17 +180,17 @@ extern fn parse_module(p: Parser) -> ASTNode
 fn parse_import_statement(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "import", "import statement")
     
-    let import_node = create_node(NodeKind.IMPORT_STATEMENT)
+    let import_node = parser_node(p, NodeKind.IMPORT_STATEMENT)
     let mut curr = parser_current(p)
     import_node.s1 = curr.value
-    
+
     if (curr.type == TokenType.IDENTIFIER or curr.type == TokenType.KEYWORD) {
         parser_advance(p)
     } else {
-        println("Expected module name")
-        exit(1)
+        parser_fatal(p, str_concat("expected a module name after `import`, found ",
+                                   parser_describe(curr)))
     }
-    
+
     return import_node
 }
 
@@ -134,14 +214,19 @@ fn parse_declaration(p: Parser) -> ASTNode {
         return parse_enum_decl(p)
     }
     
-    // Add other declarations as needed
-    println("Unknown declaration")
-    exit(1)
-    return create_node(NodeKind.MODULE) // Unreachable
+    // Nothing here starts a declaration. Report it, skip to the next thing that
+    // could, and hand back a placeholder -- so a file with three broken
+    // functions reports three errors instead of only the first.
+    let bad = parser_node(p, NodeKind.ERROR_NODE)
+    let mut curr = parser_current(p)
+    parser_error(p, str_concat(str_concat("expected a declaration, found ", parser_describe(curr)),
+                               " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`)"))
+    parser_synchronize(p)
+    return bad
 }
 
 fn parse_type_annotation(p: Parser) -> ASTNode {
-    let type_node = create_node(NodeKind.TYPE_ANNOTATION)
+    let type_node = parser_node(p, NodeKind.TYPE_ANNOTATION)
     
     if (parser_match_val(p, TokenType.SEPARATOR, "[")) {
         type_node.i1 = 1 // is_array
@@ -155,8 +240,7 @@ fn parse_type_annotation(p: Parser) -> ASTNode {
         type_node.s1 = curr.value
         parser_advance(p)
     } else {
-        println("Expected type name")
-        exit(1)
+        parser_fatal(p, str_concat("expected a type name, found ", parser_describe(curr)))
     }
 
     // Generic list type: List<T>
@@ -186,7 +270,7 @@ fn parser_expect_close_angle(p: Parser, context: String) {
 
 fn parse_variable_decl(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "let", "variable declaration")
-    let var_node = create_node(NodeKind.VARIABLE_DECL)
+    let var_node = parser_node(p, NodeKind.VARIABLE_DECL)
     
     if (parser_match_val(p, TokenType.KEYWORD, "mut")) {
         var_node.i1 = 1 // is_mutable
@@ -211,7 +295,7 @@ fn parse_extern_fn_decl(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "extern", "extern fn")
     parser_expect_val(p, TokenType.KEYWORD, "fn", "extern fn")
     
-    let ext_node = create_node(NodeKind.EXTERN_FUNCTION)
+    let ext_node = parser_node(p, NodeKind.EXTERN_FUNCTION)
     let mut curr = parser_current(p)
     ext_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "function name")
@@ -222,7 +306,7 @@ fn parse_extern_fn_decl(p: Parser) -> ASTNode {
     if (parser_check_val(p, TokenType.SEPARATOR, ")") == false) {
         let mut is_looping = true
         while (is_looping) {
-            let mut param = create_node(NodeKind.FUNCTION_PARAMETER)
+            let mut param = parser_node(p, NodeKind.FUNCTION_PARAMETER)
             let mut curr = parser_current(p)
             param.s1 = curr.value
             parser_expect(p, TokenType.IDENTIFIER, "parameter name")
@@ -254,7 +338,7 @@ fn parse_extern_fn_decl(p: Parser) -> ASTNode {
 fn parse_function_decl(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "fn", "function")
     
-    let fn_node = create_node(NodeKind.FUNCTION)
+    let fn_node = parser_node(p, NodeKind.FUNCTION)
     let mut curr = parser_current(p)
     fn_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "function name")
@@ -265,7 +349,7 @@ fn parse_function_decl(p: Parser) -> ASTNode {
     if (parser_check_val(p, TokenType.SEPARATOR, ")") == false) {
         let mut is_looping = true
         while (is_looping) {
-            let mut param = create_node(NodeKind.FUNCTION_PARAMETER)
+            let mut param = parser_node(p, NodeKind.FUNCTION_PARAMETER)
             // Optional parameter convention: `sink` (move-in) or `inout` (mutable
             // borrow). Default (none) is a shared read-only borrow.
             if (parser_match_val(p, TokenType.KEYWORD, "sink")) {
@@ -308,7 +392,7 @@ fn parse_function_decl(p: Parser) -> ASTNode {
 fn parse_struct_decl(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "struct", "struct")
     
-    let struct_node = create_node(NodeKind.STRUCT_DECL)
+    let struct_node = parser_node(p, NodeKind.STRUCT_DECL)
     let mut curr = parser_current(p)
     struct_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "struct name")
@@ -317,7 +401,7 @@ fn parse_struct_decl(p: Parser) -> ASTNode {
     
     let mut last_field = ""
     while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
-        let field = create_node(NodeKind.STRUCT_FIELD)
+        let field = parser_node(p, NodeKind.STRUCT_FIELD)
         let mut curr = parser_current(p)
         field.s1 = curr.value
         parser_expect(p, TokenType.IDENTIFIER, "field name")
@@ -342,7 +426,7 @@ fn parse_struct_decl(p: Parser) -> ASTNode {
 fn parse_enum_decl(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "enum", "enum")
     
-    let enum_node = create_node(NodeKind.ENUM_DECL)
+    let enum_node = parser_node(p, NodeKind.ENUM_DECL)
     let mut curr = parser_current(p)
     enum_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "enum name")
@@ -351,7 +435,7 @@ fn parse_enum_decl(p: Parser) -> ASTNode {
     
     let mut last_var = ""
     while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
-        let variant = create_node(NodeKind.ENUM_VARIANT)
+        let variant = parser_node(p, NodeKind.ENUM_VARIANT)
         let mut curr = parser_current(p)
         variant.s1 = curr.value
         parser_expect(p, TokenType.IDENTIFIER, "variant name")
@@ -375,11 +459,21 @@ fn parse_enum_decl(p: Parser) -> ASTNode {
 // ---------------------------------------------------------
 
 fn parse_block(p: Parser) -> ASTNode {
+    let open = parser_current(p)
     parser_expect_val(p, TokenType.SEPARATOR, "{", "block")
-    let block_node = create_node(NodeKind.BLOCK)
-    
+    let block_node = parser_node(p, NodeKind.BLOCK)
+
     let mut last_stmt = ""
     while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
+        // Without this the loop spins at EOF until some inner parser happens to
+        // fail, and blames whatever it was looking at instead of the brace that
+        // was never closed.
+        if (parser_check(p, TokenType.EOF)) {
+            diag_error_at(open.file, open.line, open.col, open.len,
+                          "this block is never closed; reached end of file looking for `}`")
+            diag_finish()
+            exit(1)
+        }
         let stmt = parse_statement(p)
         if (str_equals(block_node.child1, "") == 1) {
             block_node.child1 = node_to_ptr(stmt)
@@ -397,7 +491,7 @@ fn parse_block(p: Parser) -> ASTNode {
 fn parse_if_statement(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "if", "if statement")
     
-    let if_node = create_node(NodeKind.IF_STATEMENT)
+    let if_node = parser_node(p, NodeKind.IF_STATEMENT)
     
     parser_expect_val(p, TokenType.SEPARATOR, "(", "if condition")
     if_node.child1 = node_to_ptr(parse_expression(p, 0))
@@ -419,7 +513,7 @@ fn parse_if_statement(p: Parser) -> ASTNode {
 fn parse_while_statement(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "while", "while statement")
     
-    let while_node = create_node(NodeKind.WHILE_STATEMENT)
+    let while_node = parser_node(p, NodeKind.WHILE_STATEMENT)
     
     parser_expect_val(p, TokenType.SEPARATOR, "(", "while condition")
     while_node.child1 = node_to_ptr(parse_expression(p, 0))
@@ -432,14 +526,14 @@ fn parse_while_statement(p: Parser) -> ASTNode {
 
 fn parse_loop_statement(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "loop", "loop statement")
-    let loop_node = create_node(NodeKind.LOOP_STATEMENT)
+    let loop_node = parser_node(p, NodeKind.LOOP_STATEMENT)
     loop_node.child1 = node_to_ptr(parse_block(p))
     return loop_node
 }
 
 fn parse_for_statement(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "for", "for statement")
-    let for_node = create_node(NodeKind.FOR_STATEMENT)
+    let for_node = parser_node(p, NodeKind.FOR_STATEMENT)
     let mut curr = parser_current(p)
     for_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "for loop variable")
@@ -454,7 +548,7 @@ fn parse_for_statement(p: Parser) -> ASTNode {
 }
 
 fn parse_match_arm(p: Parser) -> ASTNode {
-    let arm = create_node(NodeKind.MATCH_ARM)
+    let arm = parser_node(p, NodeKind.MATCH_ARM)
     if (parser_match_val(p, TokenType.IDENTIFIER, "_")) {
         arm.s1 = "_"
     } else {
@@ -467,7 +561,7 @@ fn parse_match_arm(p: Parser) -> ASTNode {
 
 fn parse_match_statement(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "match", "match statement")
-    let match_node = create_node(NodeKind.MATCH_STATEMENT)
+    let match_node = parser_node(p, NodeKind.MATCH_STATEMENT)
 
     parser_expect_val(p, TokenType.SEPARATOR, "(", "match scrutinee")
     match_node.child1 = node_to_ptr(parse_expression(p, 0))
@@ -511,13 +605,13 @@ fn parse_statement(p: Parser) -> ASTNode {
         return parse_for_statement(p)
     }
     if (parser_match_val(p, TokenType.KEYWORD, "break")) {
-        return create_node(NodeKind.BREAK_STATEMENT)
+        return parser_node(p, NodeKind.BREAK_STATEMENT)
     }
     if (parser_match_val(p, TokenType.KEYWORD, "continue")) {
-        return create_node(NodeKind.CONTINUE_STATEMENT)
+        return parser_node(p, NodeKind.CONTINUE_STATEMENT)
     }
     if (parser_match_val(p, TokenType.KEYWORD, "return")) {
-        let ret_node = create_node(NodeKind.RETURN_STATEMENT)
+        let ret_node = parser_node(p, NodeKind.RETURN_STATEMENT)
         let mut curr = parser_current(p)
         if (curr.type != TokenType.SEPARATOR or str_equals(curr.value, "}") == 0) {
             ret_node.child1 = node_to_ptr(parse_expression(p, 0))
@@ -531,7 +625,7 @@ fn parse_statement(p: Parser) -> ASTNode {
     let mut expr = parse_expression(p, 0)
 
     if (parser_match_val(p, TokenType.ASSIGNMENT_OPERATOR, "=")) {
-        let assign_stmt = create_node(NodeKind.ASSIGNMENT_STATEMENT)
+        let assign_stmt = parser_node(p, NodeKind.ASSIGNMENT_STATEMENT)
         assign_stmt.child1 = node_to_ptr(expr)
         assign_stmt.child2 = node_to_ptr(parse_expression(p, 0))
         return assign_stmt
@@ -550,25 +644,26 @@ fn parse_statement(p: Parser) -> ASTNode {
         parser_advance(p)
 
         if (expr.kind != NodeKind.IDENTIFIER_EXPR) {
-            print("Error: compound assignment (")
-            print(assign_tok.value)
-            println(") requires a plain variable on the left")
-            println("  write the assignment out in full instead")
+            diag_error_at(expr.file, expr.line, expr.col, expr.len,
+                str_concat(str_concat("compound assignment ", diag_quote(assign_tok.value)),
+                           " requires a plain variable on the left"))
+            diag_note("the desugaring names the target twice, so a subexpression here would be evaluated twice; write the assignment out in full instead")
+            diag_finish()
             exit(1)
         }
 
-        let combined = create_node(NodeKind.BINARY_EXPR)
+        let combined = parser_node(p, NodeKind.BINARY_EXPR)
         combined.s1 = op
         combined.child1 = node_to_ptr(expr)
         combined.child2 = node_to_ptr(parse_expression(p, 0))
 
-        let compound = create_node(NodeKind.ASSIGNMENT_STATEMENT)
+        let compound = parser_node(p, NodeKind.ASSIGNMENT_STATEMENT)
         compound.child1 = node_to_ptr(expr)
         compound.child2 = node_to_ptr(combined)
         return compound
     }
     
-    let stmt = create_node(NodeKind.EXPRESSION_STATEMENT)
+    let stmt = parser_node(p, NodeKind.EXPRESSION_STATEMENT)
     stmt.child1 = node_to_ptr(expr)
     return stmt
 }
@@ -626,11 +721,17 @@ fn parse_unary(p: Parser) -> ASTNode {
             let is_number = operand.i1 == TokenType.NUMBER_LITERAL or operand.i1 == TokenType.FLOAT_LITERAL
             if (is_number and str_starts_with(operand.s1, "-") == 0) {
                 operand.s1 = str_concat("-", operand.s1)
+                // The folded literal's span still covered only the digits, so a
+                // diagnostic about `-42` underlined `42`. Widen it to include
+                // the sign that is now part of its value.
+                operand.line = curr.line
+                operand.col = curr.col
+                operand.len = operand.len + 1
                 return operand
             }
         }
 
-        let unary = create_node(NodeKind.UNARY_EXPR)
+        let unary = parser_node(p, NodeKind.UNARY_EXPR)
         unary.s1 = op
         unary.child1 = node_to_ptr(operand)
         return unary
@@ -648,7 +749,7 @@ fn parse_postfix(p: Parser) -> ASTNode {
     let mut casting = true
     while (casting) {
         if (parser_match_val(p, TokenType.KEYWORD, "as")) {
-            let cast = create_node(NodeKind.CAST_EXPR)
+            let cast = parser_node(p, NodeKind.CAST_EXPR)
             cast.child1 = node_to_ptr(expr)
             cast.child2 = node_to_ptr(parse_type_annotation(p))
             expr = cast
@@ -683,7 +784,7 @@ fn parse_expression(p: Parser, precedence: Int) -> ASTNode {
                 // Left associativity: pass current_precedence + 1
                 let right = parse_expression(p, current_precedence + 1)
                 
-                let bin_expr = create_node(NodeKind.BINARY_EXPR)
+                let bin_expr = parser_node(p, NodeKind.BINARY_EXPR)
                 bin_expr.s1 = op
                 bin_expr.child1 = node_to_ptr(left)
                 bin_expr.child2 = node_to_ptr(right)
@@ -700,7 +801,7 @@ fn parse_primary(p: Parser) -> ASTNode {
     let mut curr = parser_current(p)
     
     if (curr.type == TokenType.NUMBER_LITERAL or curr.type == TokenType.FLOAT_LITERAL or curr.type == TokenType.STRING_LITERAL or curr.type == TokenType.BOOL_LITERAL or curr.type == TokenType.CHAR_LITERAL) {
-        let lit = create_node(NodeKind.LITERAL_EXPR)
+        let lit = parser_node(p, NodeKind.LITERAL_EXPR)
         lit.i1 = curr.type // literal type
         lit.s1 = curr.value
         parser_advance(p)
@@ -710,14 +811,14 @@ fn parse_primary(p: Parser) -> ASTNode {
     if (curr.type == TokenType.IDENTIFIER) {
         let next_tok = parser_peek(p)
         if (next_tok.type == TokenType.SEPARATOR and str_equals(next_tok.value, "{") == 1 and parser_allow_struct_lit == 1) {
-            let struct_lit = create_node(NodeKind.STRUCT_LITERAL_EXPR)
+            let struct_lit = parser_node(p, NodeKind.STRUCT_LITERAL_EXPR)
             struct_lit.s1 = curr.value
             parser_advance(p)
             parser_expect_val(p, TokenType.SEPARATOR, "{", "struct literal")
             
             let mut last_field = ""
             while (parser_check_val(p, TokenType.SEPARATOR, "}") == false) {
-                let field = create_node(NodeKind.STRUCT_FIELD)
+                let field = parser_node(p, NodeKind.STRUCT_FIELD)
                 let field_tok = parser_current(p)
                 field.s1 = field_tok.value
                 parser_expect(p, TokenType.IDENTIFIER, "struct literal field")
@@ -741,7 +842,7 @@ fn parse_primary(p: Parser) -> ASTNode {
     }
     
     if (curr.type == TokenType.IDENTIFIER) {
-        let ident = create_node(NodeKind.IDENTIFIER_EXPR)
+        let ident = parser_node(p, NodeKind.IDENTIFIER_EXPR)
         ident.s1 = curr.value
         parser_advance(p)
         
@@ -751,7 +852,11 @@ fn parse_primary(p: Parser) -> ASTNode {
         while (is_looping) {
             // Function call
             if (parser_match_val(p, TokenType.SEPARATOR, "(")) {
-                let call = create_node(NodeKind.CALL_EXPR)
+                let call = parser_node(p, NodeKind.CALL_EXPR)
+                // Point the call at its callee rather than at the first
+                // argument, so "expects 1 argument, found 2" underlines the
+                // name of the thing being called.
+                node_span_from(call, expr)
                 call.child1 = node_to_ptr(expr) // callee
                 
                 let mut last_arg = ""
@@ -776,14 +881,14 @@ fn parse_primary(p: Parser) -> ASTNode {
                 expr = call
             } else if (parser_match_val(p, TokenType.SEPARATOR, "[")) {
                 // Array indexing
-                let index_node = create_node(NodeKind.INDEX_EXPR)
+                let index_node = parser_node(p, NodeKind.INDEX_EXPR)
                 index_node.child1 = node_to_ptr(expr)
                 index_node.child2 = node_to_ptr(parse_expression(p, 0))
                 parser_expect_val(p, TokenType.SEPARATOR, "]", "array index")
                 expr = index_node
             } else if (parser_match_val(p, TokenType.SEPARATOR, ".")) {
                 // Member access
-                let member_node = create_node(NodeKind.MEMBER_ACCESS_EXPR)
+                let member_node = parser_node(p, NodeKind.MEMBER_ACCESS_EXPR)
                 member_node.child1 = node_to_ptr(expr)
                 let curr_mem = parser_current(p)
                 member_node.s1 = curr_mem.value
@@ -804,7 +909,7 @@ fn parse_primary(p: Parser) -> ASTNode {
     
     // Array literals
     if (parser_match_val(p, TokenType.SEPARATOR, "[")) {
-        let array_lit = create_node(NodeKind.ARRAY_LITERAL_EXPR)
+        let array_lit = parser_node(p, NodeKind.ARRAY_LITERAL_EXPR)
         
         let mut last_elem = ""
         if (parser_check_val(p, TokenType.SEPARATOR, "]") == false) {
@@ -830,13 +935,9 @@ fn parse_primary(p: Parser) -> ASTNode {
         return array_lit
     }
     
-    print("Unexpected token in expression: ")
-    print(type_to_string(curr.type))
-    print(" '")
-    print(curr.value)
-    println("'")
-    exit(1)
-    return create_node(NodeKind.MODULE)
+    parser_fatal(p, str_concat(str_concat("expected an expression, found ", parser_describe(curr)),
+                               str_concat(" (a ", str_concat(type_to_string(curr.type), ")"))))
+    return parser_node(p, NodeKind.ERROR_NODE)
 }
 
 // ---------------------------------------------------------
@@ -844,7 +945,7 @@ fn parse_primary(p: Parser) -> ASTNode {
 // ---------------------------------------------------------
 
 fn parse_module(p: Parser) -> ASTNode {
-    let module = create_node(NodeKind.MODULE)
+    let module = parser_node(p, NodeKind.MODULE)
     let mut last_stmt = ""
 
     let mut is_looping = true
@@ -854,13 +955,18 @@ fn parse_module(p: Parser) -> ASTNode {
             is_looping = false
         } else {
             let stmt = parse_declaration(p)
-            if (str_equals(module.child1, "") == 1) {
-                module.child1 = node_to_ptr(stmt)
-            } else {
-                let last = ptr_to_node(last_stmt)
-                last.next = node_to_ptr(stmt)
+            // A placeholder from recovery. Dropping it here is what keeps every
+            // later pass free of the question -- nothing downstream has to know
+            // that recovery exists.
+            if (stmt.kind != NodeKind.ERROR_NODE) {
+                if (str_equals(module.child1, "") == 1) {
+                    module.child1 = node_to_ptr(stmt)
+                } else {
+                    let last = ptr_to_node(last_stmt)
+                    last.next = node_to_ptr(stmt)
+                }
+                last_stmt = node_to_ptr(stmt)
             }
-            last_stmt = node_to_ptr(stmt)
         }
     }
 

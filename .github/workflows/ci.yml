@@ -33,6 +33,13 @@ jobs:
         with:
           python-version: '3.11'
 
+      # The set of runtime sources is written down in six places -- two tables in
+      # build_driver.c, the embedding generator, both bootstrap scripts and both
+      # packaging scripts. They had already drifted once, silently. Checked first
+      # because it costs nothing and a mismatch makes everything below misleading.
+      - name: Check the toolchain source lists agree
+        run: python tools/check_source_lists.py
+
       # Pinned to one LLVM major; setup_llvm.py rejects anything else rather
       # than adopting it, because the C API is not stable across majors.
       - name: Provision LLVM

@@ -1,3 +1,4 @@
+// expect-error: unknown identifier `inner`
 // A binding declared inside a block must not be visible after it.
 //
 // This used to compile and print 42: the symbol table was flat and cleared only

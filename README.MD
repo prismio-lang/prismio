@@ -7,7 +7,7 @@
 <div align="center">
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-6C63FF?style=for-the-badge&logoColor=white)](LICENSE)
-[![LLVM](https://img.shields.io/badge/backend-LLVM%2018-6C63FF?style=for-the-badge&logoColor=white)]()
+[![LLVM](https://img.shields.io/badge/backend-LLVM%2022-6C63FF?style=for-the-badge&logoColor=white)]()
 [![Status](https://img.shields.io/badge/status-active%20development-6C63FF?style=for-the-badge&logoColor=white)]()
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-6C63FF?style=for-the-badge&logoColor=white)](CONTRIBUTING.md)
 

@@ -5,6 +5,33 @@ answers a different question: **measured against what a serious self-hosted comp
 call itself v1, which capabilities exist and which don't** — independent of what any
 documentation claims.
 
+> ## Status — 2026-08-01
+>
+> **Tier 0 is complete. All ten blockers are closed**, and so is most of what mattered in Tier 1.
+> The analysis below is left as written, because the reasoning still holds and the record of what
+> was missing is worth keeping. This box is what changed.
+>
+> Closed since: casts (`as`) · unary `-`/`!`/`~` · bitwise ops and shifts · string escapes ·
+> short-circuit `and`/`or` · scoped symbol table · enforced `mut` · arrays for every element type,
+> taking their element type from an annotation · **source spans and real diagnostics with error
+> recovery** · compound assignment · definite return · unreachable code · loop-aware move checking ·
+> `-O0..-O3` · CI on three platforms.
+>
+> The central finding above has partly resolved itself. `char_code()` is now `return c as Int`
+> rather than a 90-branch chain, and `str_equals(a, b) == 1` is now a *deliberate* spelling —
+> `String ==` is rejected with a message naming the alternative, because comparing two string
+> pointers silently answered "not equal" for equal strings. The pointer-punning through `String`
+> and the hand-built linked lists remain, and still stand for missing pointers and generics.
+>
+> **Not done, and deliberately so:** the memory model (the next piece of work; the seam is in
+> place — see `ir_set_alloc_function`/`ir_set_free_function`), an error-handling story, `-g` debug
+> info, generics, methods, and closures. Tier 2 and Tier 3 are untouched.
+>
+> **Known limits worth stating plainly at v1:** compile time is superlinear in module size
+> (~290 ms for the 155 KB compiler, ~500 ms for a 105 KB single module — the remaining cost is
+> sema's per-identifier module scans); `String`, arrays and lists are never freed; arrays are
+> stack-allocated, so one cannot be returned from the function that created it.
+
 ## The bar being used
 
 "v1 of a serious self-hosted compiler" is taken to mean, concretely:

@@ -1,0 +1,22 @@
+// expect-error: initializer for `a`: expected Int, found String
+// expect-error: unknown identifier `nowhere`
+// expect-error: operator `+`: expected Int, found Bool
+// expect-error: return: expected Int, found String
+// expect-error: aborting due to 4 previous errors
+//
+// Sema reports every error it finds rather than stopping at the first.
+//
+// Before this, fixing a file was one edit-rebuild round per mistake -- which is
+// also why enforcing `mut` had to ship as a warning first, to collect all 75
+// violations of it in a single run instead of 75 rebuilds.
+//
+// The count in the last expectation matters as much as the messages: it is what
+// catches a *cascade*, where one real mistake is reported several times because
+// a later check ran against the invalid type the first one produced.
+
+fn main() -> Int {
+    let a: Int = "hello"
+    let b = nowhere
+    let c = 1 + true
+    return "not an int"
+}

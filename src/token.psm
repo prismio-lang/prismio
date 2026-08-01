@@ -27,10 +27,18 @@ enum TokenType {
     EOF
 }
 
+// `line`/`col` are 1-based and point at the token's first character; `len` is its
+// width in source bytes, which is what a diagnostic underlines. `file` is an id
+// into the registry in runtime/diagnostics.c -- an integer rather than a path
+// because every token carries one and import resolution merges files from several
+// directories into a single AST.
 struct Token {
     type: TokenType,
     value: String,
     line: Int,
+    col: Int,
+    len: Int,
+    file: Int,
     tok_next: String // Pointer to next Token
 }
 

@@ -1,0 +1,44 @@
+// Diagnostics FFI.
+//
+// The renderer lives in runtime/diagnostics.c because it needs the original text
+// of the file a node came from, which the frontend has thrown away by the time it
+// reports anything -- and because `resolve_imports` flattens every module into a
+// single AST, so "which file" has to travel on the node itself as an id into the
+// registry rather than being implied by context.
+//
+// Prismio has no varargs, so a message is composed here with str_concat and
+// handed over finished.
+
+extern fn str_concat(s1: String, s2: String) -> String
+extern fn int_to_str(value: Int) -> String
+
+// Registers a source file's text and returns the id stamped onto every token and
+// AST node parsed from it. Registering the same path twice returns the first id.
+extern fn diag_add_file(path: String, content: String) -> Int
+extern fn diag_file_path(file: Int) -> String
+
+// A located diagnostic. `len` is the width of the caret run -- the length of the
+// token the node starts at -- and may be 0 for "just point at the column".
+extern fn diag_error_at(file: Int, line: Int, col: Int, len: Int, message: String)
+extern fn diag_warning_at(file: Int, line: Int, col: Int, len: Int, message: String)
+extern fn diag_note_at(file: Int, line: Int, col: Int, len: Int, message: String)
+
+// Unlocated forms, for anything that is not about a particular piece of source:
+// a missing file, a bad command-line argument.
+extern fn diag_error(message: String)
+extern fn diag_note(message: String)
+
+extern fn diag_error_count() -> Int
+extern fn diag_warning_count() -> Int
+
+// Prints the "aborting due to N previous errors" line. That wording is the
+// contract the negative tests match on: it distinguishes a program the compiler
+// deliberately rejected from one that made it crash.
+extern fn diag_finish()
+extern fn diag_reset()
+
+// Quotes a name the way every message in the compiler quotes one, so the style
+// cannot drift between call sites.
+fn diag_quote(name: String) -> String {
+    return str_concat(str_concat("`", name), "`")
+}

@@ -1,3 +1,4 @@
+// expect-error: operator `+`: expected I64, found Int
 // Mixing two differently-sized integer variables (neither a literal) must be rejected.
 fn main() -> Int {
     let a: I64 = 10

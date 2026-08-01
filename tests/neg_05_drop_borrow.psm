@@ -1,3 +1,4 @@
+// expect-error: cannot move out of borrowed value
 // A borrowed parameter is non-owning; dropping it would free the caller's value.
 struct Res {
     v: Int

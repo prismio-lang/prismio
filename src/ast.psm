@@ -42,10 +42,21 @@ enum NodeKind {
     TYPE_ANNOTATION,
     STRUCT_FIELD,
     ENUM_VARIANT,
-    MATCH_ARM
+    MATCH_ARM,
+
+    // Placeholder for a declaration the parser could not make sense of. It is
+    // dropped by parse_module rather than appended, so nothing downstream ever
+    // sees one -- it exists only so recovery has something to return.
+    ERROR_NODE
 }
 
 // Flat AST Node using String for pointers (type punning)
+//
+// The trailing four fields are the source span: where this node started, and how
+// wide its first token was. `file` is an id into the registry in
+// runtime/diagnostics.c rather than a path, because `resolve_imports` flattens
+// every module into one AST -- after that, a node's file is knowable only from
+// the node itself.
 struct ASTNode {
     kind: NodeKind,
     s1: String,
@@ -56,13 +67,22 @@ struct ASTNode {
     child2: String, // ASTNode
     child3: String, // ASTNode
     next: String,   // ASTNode (for linked lists)
-    type_info: String // TypeInfo assigned by sema
+    type_info: String, // TypeInfo assigned by sema
+    line: Int,
+    col: Int,
+    len: Int,
+    file: Int
 }
 
 extern fn ptr_to_node(ptr: String) -> ASTNode
 extern fn node_to_ptr(node: ASTNode) -> String
 
-// Helper to create an empty node
+// Helper to create an empty node.
+//
+// The span is left at zero. Anything the parser builds should come from
+// parser_node() instead, which stamps the current token; a zero span here means
+// "synthesised, no source to point at", and the renderer degrades to a message
+// with no snippet rather than pointing somewhere wrong.
 fn create_node(kind: NodeKind) -> ASTNode {
     return ASTNode {
         kind: kind,
@@ -74,6 +94,20 @@ fn create_node(kind: NodeKind) -> ASTNode {
         child2: "",
         child3: "",
         next: "",
-        type_info: ""
+        type_info: "",
+        line: 0,
+        col: 0,
+        len: 0,
+        file: 0
     }
+}
+
+// Copies a span from one node to another. Used where a node is built from
+// another's position -- desugaring `x += 1`, or attributing a synthesised node to
+// the construct that implied it.
+fn node_span_from(target: ASTNode, source: ASTNode) {
+    target.line = source.line
+    target.col = source.col
+    target.len = source.len
+    target.file = source.file
 }

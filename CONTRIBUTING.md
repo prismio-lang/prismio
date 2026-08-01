@@ -86,7 +86,8 @@ prismio/
 │   ├── sema.psm          # Semantic analysis (type checking, move/borrow/drop)
 │   ├── types.psm         # Type system
 │   ├── ir.psm            # IR generator (AST → LLVM IR)
-│   ├── bridge.psm        # extern fn declarations for llvm-bridge
+│   ├── diag.psm          # extern fn declarations for the diagnostics engine
+│   ├── bridge.psm        # extern fn declarations for the LLVM C API backend
 │   └── utils.psm         # Shared utilities
 ├── tests/
 │   ├── test_runner.py    # Python test runner

@@ -1,0 +1,46 @@
+// An array literal takes its element type from the annotation.
+//
+// Every one of these was rejected before: the elements are bare integer
+// literals, which infer as Int, so the literal typed as [Int] and failed to
+// match the declared element type -- even though writing `let n: U8 = 200` on
+// its own has always been fine.
+
+fn fail(message: String) {
+    print("FAIL: ")
+    println(message)
+    exit(1)
+}
+
+extern fn exit(code: Int)
+
+fn main() -> Int {
+    let wide: [I64] = [1, 2, 3]
+    if (wide[0] != 1) { fail("I64 element 0") }
+    if (wide[2] != 3) { fail("I64 element 2") }
+
+    // Values that do not fit in the default Int, so this cannot be passing by
+    // accident with an i32 array underneath.
+    let big: [I64] = [4294967296, 8589934592]
+    if (big[0] != 4294967296) { fail("I64 wide value") }
+    if (big[1] != 8589934592) { fail("I64 wide value 2") }
+
+    let bytes: [U8] = [1, 200, 255]
+    if (bytes[1] != 200) { fail("U8 element") }
+    if (bytes[2] != 255) { fail("U8 max") }
+
+    let plain: [Int] = [10, 20]
+    if (plain[0] + plain[1] != 30) { fail("Int elements") }
+
+    // Still inferred when there is no annotation.
+    let inferred = [7, 8, 9]
+    if (inferred[1] != 8) { fail("inferred element") }
+
+    let mut total: I64 = 0
+    for i in 0..3 {
+        total = total + wide[i]
+    }
+    if (total != 6) { fail("sum over an annotated array") }
+
+    println("PASS: annotated arrays")
+    return 0
+}

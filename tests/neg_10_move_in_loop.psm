@@ -1,3 +1,4 @@
+// expect-error: is moved inside a loop
 // Moving out of a binding that predates the loop repeats every iteration.
 //
 // This used to compile clean and crash at run time: move state is tracked per

@@ -1,3 +1,4 @@
+// expect-error: duplicate definition of `same` with the same parameter types
 fn same(value: Int) -> Int {
     return value
 }

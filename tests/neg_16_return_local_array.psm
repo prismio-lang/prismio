@@ -1,0 +1,21 @@
+// expect-error: cannot return an array created in this function
+// expect-error: aborting due to 1 previous error
+//
+// Arrays are stack-allocated, so returning one the function created hands back a
+// pointer into a frame that has just been discarded.
+//
+// This compiled clean and *appeared* to work -- reading the dead frame still
+// found the values, so the program printed 1 and exited 0. A miscompile that
+// produces the right answer during testing is the worst kind, which is why this
+// is rejected outright rather than left to escape analysis.
+
+fn make() -> [Int] {
+    let a = [1, 2, 3]
+    return a
+}
+
+fn main() -> Int {
+    let b = make()
+    println_int(b[0])
+    return 0
+}

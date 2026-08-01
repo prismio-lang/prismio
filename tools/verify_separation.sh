@@ -89,13 +89,13 @@ check 'installed toolchain compiles a program' "$(bool $?)" "$(tr '\n' ' ' < "$P
 if [ -f "$PROBE_EXE" ]; then
     [ "$("$PROBE_EXE" 2>/dev/null)" = "ok" ]; check 'compiled program runs' "$(bool $?)"
 
-    # Format strings that only llvm-bridge.c contributes. grep -a rather than
+    # Strings only llvm-api-backend.c contributes. grep -a rather than
     # strings(1): strings lives in binutils and is not guaranteed to be installed,
     # and when it is missing the pipeline yields no matches -- which reads as a
     # clean binary and turns this whole section into a check that always passes.
     scan() { LC_ALL=C grep -c -a -F "$2" "$1" 2>/dev/null || true; }
     HITS=""
-    for sig in 'getelementptr' 'icmp ' 'alloca '; do
+    for sig in 'internal backend error: ' 'generated module failed verification' 'optimization pipeline failed'; do
         n="$(scan "$PROBE_EXE" "$sig")"
         [ "$n" -gt 0 ] && HITS="$HITS $sig x$n"
     done
@@ -103,8 +103,8 @@ if [ -f "$PROBE_EXE" ]; then
 
     # Sanity: the same signatures must be present in the compiler, otherwise the
     # check above would pass trivially for the wrong reason.
-    CN="$(scan "$PRISMIO" 'getelementptr')"
-    check 'the compiler itself does contain the backend' "$([ "$CN" -gt 0 ] && echo 1 || echo 0)" "getelementptr x$CN"
+    CN="$(scan "$PRISMIO" 'internal backend error: ')"
+    check 'the compiler itself does contain the backend' "$([ "$CN" -gt 0 ] && echo 1 || echo 0)" "backend signature x$CN"
 fi
 rm -rf "$PROBE_DIR"
 

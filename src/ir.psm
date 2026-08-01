@@ -1351,13 +1351,12 @@ fn generate_module(module: ASTNode) {
                         init_val = init_node.s1
                     }
                 } else {
-                    // There is no static-initializer pass, so nothing could run
-                    // this expression before main. Falling back to 0 meant
-                    // `let g = compute()` silently became a zero global with the
-                    // call never emitted -- a wrong answer with no diagnostic.
-                    print("error: global ")
-                    print(stmt.s1)
-                    println(" requires a constant initializer")
+                    // Unreachable: sema rejects a non-constant global initializer
+                    // (see sema_predeclare_global) and codegen only runs when
+                    // sema reported nothing. Kept as a guard because the
+                    // alternative -- falling back to 0 -- made `let g = compute()`
+                    // silently become a zero global with the call never emitted.
+                    println("internal error: non-constant global initializer reached codegen")
                     exit(1)
                 }
             }

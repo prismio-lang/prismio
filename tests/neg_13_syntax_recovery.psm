@@ -1,0 +1,26 @@
+// expect-error: expected a declaration, found `9`
+// expect-error: expected a declaration, found `%`
+// expect-error: aborting due to 2 previous errors
+//
+// A syntax error at the top level does not end the parse.
+//
+// parser_synchronize skips to the next token that can only begin a declaration
+// -- `fn` here -- so the second piece of garbage is reported too, and the
+// perfectly good function between them is still parsed. Without recovery this
+// file produced exactly one message and hid everything after it.
+//
+// The two properties that make this safe: synchronize always consumes at least
+// one token (or the parser spins forever on the token it could not handle), and
+// it stops *before* the anchor so `fn` below is parsed normally.
+
+9 9 9
+
+fn fine() -> Int {
+    return 1
+}
+
+%
+
+fn main() -> Int {
+    return fine()
+}

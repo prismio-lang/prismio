@@ -1,3 +1,4 @@
+// expect-error: unreachable code
 // Code after a statement control cannot continue past is an error.
 //
 // This used to be emitted anyway, putting instructions after a terminator in

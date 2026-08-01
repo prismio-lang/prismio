@@ -55,7 +55,7 @@ for tool in llc clang; do
 done
 
 # Must match prismio_toolchain_files[] in runtime/build_driver.c.
-RUNTIME_SOURCES="lang_runtime.c program_support.c build_driver.c ir_symbols.c llvm-api-backend.c"
+RUNTIME_SOURCES="lang_runtime.c program_support.c build_driver.c ir_symbols.c diagnostics.c llvm-api-backend.c"
 
 OUT_DIR="$(cd "$(dirname "$OUT")" 2>/dev/null && pwd || true)"
 if [ -z "$OUT_DIR" ]; then mkdir -p "$(dirname "$OUT")"; OUT_DIR="$(cd "$(dirname "$OUT")" && pwd)"; fi

@@ -112,6 +112,22 @@ def run_test(test_file):
     return success
 
 
+def expected_errors(test_file):
+    """Substrings the diagnostics must contain, from `// expect-error:` lines.
+
+    Without these a negative test passes as long as *something* went wrong, so a
+    test written for one bug quietly keeps passing when an unrelated error starts
+    firing first -- which is exactly how a regression hides.
+    """
+    wanted = []
+    with open(test_file, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            marker = "// expect-error:"
+            if marker in line:
+                wanted.append(line.split(marker, 1)[1].strip())
+    return wanted
+
+
 def run_negative_test(test_file):
     test_name = Path(test_file).stem
     exe_file = TEST_DIR / f"{test_name}.exe"
@@ -124,15 +140,59 @@ def run_negative_test(test_file):
     cleanup_files(exe_file)
 
     output = f"{result.stdout}\n{result.stderr}"
-    if result.returncode != 0 and "type error:" in output:
-        print(f"{GREEN}[PASS] Negative test rejected invalid program{RESET}")
-        if result.stdout.strip():
-            print(f"  Output: {result.stdout.strip()}")
-        if result.stderr.strip():
-            print(f"  Error: {result.stderr.strip()}")
+
+    def fail(reason):
+        print(f"{RED}[FAIL] {reason}{RESET}")
+        if result.stdout:
+            print(result.stdout)
+        if result.stderr:
+            print(result.stderr)
+        return False
+
+    if result.returncode == 0:
+        return fail("Negative test compiled successfully; it should have been rejected")
+
+    # "aborting due to N previous error(s)" is printed only by diag_finish(), so
+    # it distinguishes a program the compiler deliberately rejected from one that
+    # crashed it -- a distinction a plain non-zero exit code cannot make.
+    if "aborting due to" not in output:
+        return fail("Compiler failed without reporting a diagnostic (crash or "
+                    "toolchain error, not a rejection)")
+
+    missing = [want for want in expected_errors(test_file) if want not in output]
+    if missing:
+        return fail(f"Rejected, but not for the expected reason. Missing: {missing}")
+
+    print(f"{GREEN}[PASS] Negative test rejected invalid program{RESET}")
+    for line in output.strip().splitlines():
+        if line.startswith("error:") and "aborting due to" not in line:
+            print(f"  {line}")
+    return True
+
+
+def run_cli_test():
+    """`prismio run` with a forward-slash -o path.
+
+    Every other test goes through `build`, so `run` had no coverage at all -- and
+    it was broken on Windows for exactly this input: cmd.exe reads `build/x.exe`
+    as the command `build` with the switch `/x.exe`, and the failure was reported
+    as "Program exited with failure", blaming the compiled program.
+    """
+    print(f"\n{BLUE}--- Running cli_run_forward_slash ---{RESET}")
+    exe_file = TEST_DIR / "cli_probe.exe"
+    cleanup_files(exe_file)
+
+    # Deliberately spelled with '/' even on Windows.
+    out_arg = f"{TEST_DIR.as_posix()}/cli_probe.exe"
+    result = run_command([str(PRISMIO_EXE), "run",
+                          str(TEST_DIR / "test_01_variables.psm"), "-o", out_arg])
+    cleanup_files(exe_file)
+
+    if result.returncode == 0 and "PASS" in result.stdout:
+        print(f"{GREEN}[PASS] `prismio run` works with a forward-slash output path{RESET}")
         return True
 
-    print(f"{RED}[FAIL] Negative test should fail with a type error{RESET}")
+    print(f"{RED}[FAIL] `prismio run` failed{RESET}")
     if result.stdout:
         print(result.stdout)
     if result.stderr:
@@ -174,6 +234,11 @@ def main():
             passed += 1
         else:
             failed += 1
+
+    if run_cli_test():
+        passed += 1
+    else:
+        failed += 1
 
     print(f"\n{YELLOW}{'='*60}{RESET}")
     print(f"{YELLOW}Test Results{RESET}")

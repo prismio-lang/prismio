@@ -1,3 +1,4 @@
+// expect-error: must return String on every path
 // A value-returning function must return on every path.
 //
 // This used to compile. For an Int the compiler silently emitted `ret i32 0`;

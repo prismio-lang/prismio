@@ -13,30 +13,111 @@
 // even though none of them have anything to do with emitting IR. They are
 // shared here so both backends link against the same copy and neither owns it.
 //
-// Known limits, unchanged from the original implementation and worth fixing
-// when this grows a real hash map: names are truncated at 63 characters, and
-// every table silently stops recording once full rather than reporting it.
-// Mangled overload symbols already exceed 63 characters, so two overloads
-// sharing a long prefix would collide in the type table.
+// Every table was previously a fixed array of char[64] that truncated names at
+// 63 characters and silently stopped recording once full. Both were latent
+// silent-wrong-answer bugs rather than theoretical ones: mangled overload
+// symbols in this compiler's own source already reach 77 characters, so two
+// overloads sharing a long prefix would have been recorded as the same symbol
+// and one would have been given the other's return type -- with no diagnostic,
+// at any point. Names are now interned at full length and every table grows,
+// so neither failure mode exists.
 // ============================================================================
 
-#include <stdio.h>  // snprintf, for building slot names
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+// The compiler cannot continue meaningfully past an allocation failure, and
+// pretending otherwise is how the old silent truncation happened. Say what
+// broke and stop.
+static void symbols_oom(const char* what) {
+    fprintf(stderr, "internal error: out of memory growing %s\n", what);
+    fflush(stderr);
+    exit(1);
+}
+
+static void* xmalloc(size_t n, const char* what) {
+    void* p = malloc(n);
+    if (!p) symbols_oom(what);
+    return p;
+}
+
+static void* xrealloc(void* p, size_t n, const char* what) {
+    void* q = realloc(p, n);
+    if (!q) symbols_oom(what);
+    return q;
+}
+
+// ============================================================================
+// Name interning
+//
+// Every name the tables hold is stored once, at full length, and referred to by
+// a canonical pointer. Two benefits: nothing is ever truncated, and a lookup
+// compares pointers instead of running strcmp against every entry -- which
+// matters because find_binding() is called once per identifier in the program
+// and scans backwards over the whole binding table.
+//
+// Interned strings live for the life of the process. There is nothing to free:
+// a compiler run ends when compilation does.
+// ============================================================================
+
+#define INTERN_BUCKETS 4096
+
+typedef struct InternNode {
+    struct InternNode* next;
+    unsigned hash;
+    char text[1]; // over-allocated to hold the whole name
+} InternNode;
+
+static InternNode* intern_buckets[INTERN_BUCKETS];
+
+static unsigned hash_str(const char* s) {
+    // FNV-1a. Cheap, and good enough for identifiers.
+    unsigned h = 2166136261u;
+    while (*s) {
+        h ^= (unsigned char)*s++;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+const char* ir_intern(const char* name) {
+    if (!name) name = "";
+
+    unsigned h = hash_str(name);
+    unsigned bucket = h & (INTERN_BUCKETS - 1);
+
+    for (InternNode* n = intern_buckets[bucket]; n; n = n->next) {
+        if (n->hash == h && strcmp(n->text, name) == 0) return n->text;
+    }
+
+    size_t len = strlen(name);
+    InternNode* n = (InternNode*)xmalloc(sizeof(InternNode) + len, "the name table");
+    n->hash = h;
+    memcpy(n->text, name, len + 1);
+    n->next = intern_buckets[bucket];
+    intern_buckets[bucket] = n;
+    return n->text;
+}
 
 // ============================================================================
 // Loop context stack -- break/continue targets, supports nesting
 // ============================================================================
 
-static int loop_continue_stack[64];
-static int loop_break_stack[64];
+#define MAX_LOOP_DEPTH 256
+
+static int loop_continue_stack[MAX_LOOP_DEPTH];
+static int loop_break_stack[MAX_LOOP_DEPTH];
 static int loop_depth = 0;
 
 void ir_loop_push(int continue_label, int break_label) {
-    if (loop_depth < 64) {
-        loop_continue_stack[loop_depth] = continue_label;
-        loop_break_stack[loop_depth] = break_label;
-        loop_depth++;
+    if (loop_depth >= MAX_LOOP_DEPTH) {
+        fprintf(stderr, "internal error: loops nested more than %d deep\n", MAX_LOOP_DEPTH);
+        exit(1);
     }
+    loop_continue_stack[loop_depth] = continue_label;
+    loop_break_stack[loop_depth] = break_label;
+    loop_depth++;
 }
 
 void ir_loop_pop(void) {
@@ -52,29 +133,87 @@ int ir_loop_break_label(void) {
 }
 
 // ============================================================================
-// Global variable name registry
+// A growable list of interned names, shared by the several tables that are
+// exactly that (globals, moved-from values, borrowed values).
 // ============================================================================
 
-static char global_names[256][64];
-static int global_name_count = 0;
+typedef struct {
+    const char** items;
+    int count;
+    int capacity;
+    const char* what; // named in the message if growing it fails
+} NameList;
 
-void ir_register_global_name(const char* name) {
-    if (global_name_count < 256) {
-        strncpy(global_names[global_name_count], name, 63);
-        global_names[global_name_count][63] = '\0';
-        global_name_count++;
+static void namelist_add(NameList* list, const char* name) {
+    if (list->count == list->capacity) {
+        int next = list->capacity ? list->capacity * 2 : 64;
+        list->items = (const char**)xrealloc(list->items, (size_t)next * sizeof(char*), list->what);
+        list->capacity = next;
     }
+    list->items[list->count++] = ir_intern(name);
 }
 
-int ir_is_global_name(const char* name) {
-    for (int i = 0; i < global_name_count; i++) {
-        if (strcmp(global_names[i], name) == 0) return 1;
+static int namelist_contains(const NameList* list, const char* name) {
+    const char* interned = ir_intern(name);
+    for (int i = 0; i < list->count; i++) {
+        if (list->items[i] == interned) return 1;
     }
     return 0;
 }
 
+// ============================================================================
+// Global variable name registry
+// ============================================================================
+
+static NameList global_names = { NULL, 0, 0, "the global name table" };
+
+void ir_register_global_name(const char* name) {
+    if (namelist_contains(&global_names, name)) return;
+    namelist_add(&global_names, name);
+}
+
+int ir_is_global_name(const char* name) {
+    return namelist_contains(&global_names, name);
+}
+
 void ir_reset_globals(void) {
-    global_name_count = 0;
+    global_names.count = 0;
+}
+
+// ============================================================================
+// Named type registry -- "is this identifier a struct, an enum, or neither?"
+//
+// Separate from the struct registry below, which holds field layouts and is
+// populated by codegen. This one is filled by sema before checking begins and
+// answers only the question a type annotation asks.
+//
+// It exists for speed. sema_annotation_type() used to answer by walking the
+// whole module looking for a matching declaration, once per annotation -- and
+// annotations are read for every parameter of every function, inside a loop over
+// every function. On a 1600-function module that was the difference between
+// quadratic and cubic.
+// ============================================================================
+
+static NameList struct_type_names = { NULL, 0, 0, "the struct name table" };
+static NameList enum_type_names = { NULL, 0, 0, "the enum name table" };
+
+// kind: 1 = struct, 2 = enum.
+void ir_declare_named_type(const char* name, int kind) {
+    NameList* list = (kind == 1) ? &struct_type_names : &enum_type_names;
+    if (namelist_contains(list, name)) return;
+    namelist_add(list, name);
+}
+
+// 1 = struct, 2 = enum, 0 = not a declared type.
+int ir_named_type_kind(const char* name) {
+    if (namelist_contains(&struct_type_names, name)) return 1;
+    if (namelist_contains(&enum_type_names, name)) return 2;
+    return 0;
+}
+
+void ir_reset_named_types(void) {
+    struct_type_names.count = 0;
+    enum_type_names.count = 0;
 }
 
 // ============================================================================
@@ -82,78 +221,104 @@ void ir_reset_globals(void) {
 // ============================================================================
 
 typedef struct {
-    char name[64];
-    int field_count;
-    char field_names[32][64];
-    char field_types[32][64];
-} StructInfo;
-
-static StructInfo struct_infos[128];
-static int struct_info_count = 0;
+    const char* name;
+    const char* type;
+} FieldInfo;
 
 typedef struct {
-    char enum_name[64];
-    char variant_name[64];
+    const char* name;
+    FieldInfo* fields;
+    int field_count;
+    int field_capacity;
+} StructInfo;
+
+static StructInfo* struct_infos = NULL;
+static int struct_info_count = 0;
+static int struct_info_capacity = 0;
+
+typedef struct {
+    const char* enum_name;
+    const char* variant_name;
     int value;
 } EnumVariantInfo;
 
-static EnumVariantInfo enum_variants[512];
+static EnumVariantInfo* enum_variants = NULL;
 static int enum_variant_count = 0;
+static int enum_variant_capacity = 0;
 
 void ir_reset_types(void) {
+    // The field arrays are kept, not freed: a reset is followed by another
+    // module being compiled in the same process only during bootstrap, and
+    // reusing the allocations is both simpler and correct.
+    for (int i = 0; i < struct_info_count; i++) struct_infos[i].field_count = 0;
     struct_info_count = 0;
     enum_variant_count = 0;
 }
 
-int ir_is_struct_type_name(const char* name) {
+static StructInfo* find_struct(const char* name) {
+    const char* interned = ir_intern(name);
     for (int i = 0; i < struct_info_count; i++) {
-        if (strcmp(struct_infos[i].name, name) == 0) return 1;
+        if (struct_infos[i].name == interned) return &struct_infos[i];
     }
-    return 0;
+    return NULL;
+}
+
+int ir_is_struct_type_name(const char* name) {
+    return find_struct(name) != NULL;
 }
 
 void ir_register_struct(const char* name) {
-    if (ir_is_struct_type_name(name)) return;
-    if (struct_info_count >= 128) return;
+    if (find_struct(name)) return;
 
-    strncpy(struct_infos[struct_info_count].name, name, 63);
-    struct_infos[struct_info_count].name[63] = '\0';
+    if (struct_info_count == struct_info_capacity) {
+        int next = struct_info_capacity ? struct_info_capacity * 2 : 32;
+        struct_infos = (StructInfo*)xrealloc(struct_infos, (size_t)next * sizeof(StructInfo),
+                                             "the struct table");
+        for (int i = struct_info_capacity; i < next; i++) {
+            struct_infos[i].fields = NULL;
+            struct_infos[i].field_count = 0;
+            struct_infos[i].field_capacity = 0;
+        }
+        struct_info_capacity = next;
+    }
+
+    struct_infos[struct_info_count].name = ir_intern(name);
     struct_infos[struct_info_count].field_count = 0;
     struct_info_count++;
 }
 
 void ir_register_struct_field(const char* struct_name, const char* field_name, const char* field_type) {
-    for (int i = 0; i < struct_info_count; i++) {
-        if (strcmp(struct_infos[i].name, struct_name) == 0) {
-            int idx = struct_infos[i].field_count;
-            if (idx >= 32) return;
-            strncpy(struct_infos[i].field_names[idx], field_name, 63);
-            struct_infos[i].field_names[idx][63] = '\0';
-            strncpy(struct_infos[i].field_types[idx], field_type, 63);
-            struct_infos[i].field_types[idx][63] = '\0';
-            struct_infos[i].field_count++;
-            return;
-        }
+    StructInfo* s = find_struct(struct_name);
+    if (!s) return;
+
+    if (s->field_count == s->field_capacity) {
+        int next = s->field_capacity ? s->field_capacity * 2 : 16;
+        s->fields = (FieldInfo*)xrealloc(s->fields, (size_t)next * sizeof(FieldInfo),
+                                         "a struct's field table");
+        s->field_capacity = next;
     }
+
+    s->fields[s->field_count].name = ir_intern(field_name);
+    s->fields[s->field_count].type = ir_intern(field_type);
+    s->field_count++;
 }
 
 int ir_get_struct_field_index(const char* struct_name, const char* field_name) {
-    for (int i = 0; i < struct_info_count; i++) {
-        if (strcmp(struct_infos[i].name, struct_name) == 0) {
-            for (int j = 0; j < struct_infos[i].field_count; j++) {
-                if (strcmp(struct_infos[i].field_names[j], field_name) == 0) return j;
-            }
-        }
+    StructInfo* s = find_struct(struct_name);
+    if (!s) return -1;
+    const char* interned = ir_intern(field_name);
+    for (int j = 0; j < s->field_count; j++) {
+        if (s->fields[j].name == interned) return j;
     }
     return -1;
 }
 
 const char* ir_get_struct_field_type(const char* struct_name, const char* field_name) {
-    for (int i = 0; i < struct_info_count; i++) {
-        if (strcmp(struct_infos[i].name, struct_name) == 0) {
-            for (int j = 0; j < struct_infos[i].field_count; j++) {
-                if (strcmp(struct_infos[i].field_names[j], field_name) == 0) return struct_infos[i].field_types[j];
-            }
+    StructInfo* s = find_struct(struct_name);
+    if (s) {
+        const char* interned = ir_intern(field_name);
+        for (int j = 0; j < s->field_count; j++) {
+            if (s->fields[j].name == interned) return s->fields[j].type;
         }
     }
     return "i32";
@@ -162,36 +327,36 @@ const char* ir_get_struct_field_type(const char* struct_name, const char* field_
 // Number of fields registered for a struct, so a backend can build the type
 // body without knowing how the frontend stored it.
 int ir_get_struct_field_count(const char* struct_name) {
-    for (int i = 0; i < struct_info_count; i++) {
-        if (strcmp(struct_infos[i].name, struct_name) == 0) return struct_infos[i].field_count;
-    }
-    return 0;
+    StructInfo* s = find_struct(struct_name);
+    return s ? s->field_count : 0;
 }
 
 const char* ir_get_struct_field_type_at(const char* struct_name, int index) {
-    for (int i = 0; i < struct_info_count; i++) {
-        if (strcmp(struct_infos[i].name, struct_name) == 0) {
-            if (index < 0 || index >= struct_infos[i].field_count) return "i32";
-            return struct_infos[i].field_types[index];
-        }
-    }
-    return "i32";
+    StructInfo* s = find_struct(struct_name);
+    if (!s || index < 0 || index >= s->field_count) return "i32";
+    return s->fields[index].type;
 }
 
 void ir_register_enum_variant(const char* enum_name, const char* variant_name, int value) {
-    if (enum_variant_count >= 512) return;
-    strncpy(enum_variants[enum_variant_count].enum_name, enum_name, 63);
-    enum_variants[enum_variant_count].enum_name[63] = '\0';
-    strncpy(enum_variants[enum_variant_count].variant_name, variant_name, 63);
-    enum_variants[enum_variant_count].variant_name[63] = '\0';
+    if (enum_variant_count == enum_variant_capacity) {
+        int next = enum_variant_capacity ? enum_variant_capacity * 2 : 128;
+        enum_variants = (EnumVariantInfo*)xrealloc(enum_variants,
+                                                   (size_t)next * sizeof(EnumVariantInfo),
+                                                   "the enum variant table");
+        enum_variant_capacity = next;
+    }
+
+    enum_variants[enum_variant_count].enum_name = ir_intern(enum_name);
+    enum_variants[enum_variant_count].variant_name = ir_intern(variant_name);
     enum_variants[enum_variant_count].value = value;
     enum_variant_count++;
 }
 
 int ir_get_enum_variant(const char* enum_name, const char* variant_name) {
+    const char* e = ir_intern(enum_name);
+    const char* v = ir_intern(variant_name);
     for (int i = 0; i < enum_variant_count; i++) {
-        if (strcmp(enum_variants[i].enum_name, enum_name) == 0 &&
-            strcmp(enum_variants[i].variant_name, variant_name) == 0) {
+        if (enum_variants[i].enum_name == e && enum_variants[i].variant_name == v) {
             return enum_variants[i].value;
         }
     }
@@ -221,20 +386,19 @@ int ir_get_enum_variant(const char* enum_name, const char* variant_name) {
 // the same as a global had its writes go to the local slot and its reads come
 // from the global.
 
-#define MAX_VAR_TYPES 4096
-#define MAX_SCOPES 256
-#define SLOT_LEN 80
+#define MAX_SCOPES 1024
 
 typedef struct {
-    char name[64];
-    char type[64];
-    char slot[SLOT_LEN];
+    const char* name;
+    const char* type;
+    const char* slot;
     int is_global;
     int is_mutable;
 } VarBinding;
 
-static VarBinding var_bindings[MAX_VAR_TYPES];
+static VarBinding* var_bindings = NULL;
 static int var_type_count = 0;
+static int var_type_capacity = 0;
 
 static int scope_marks[MAX_SCOPES];
 static int scope_depth = 0;
@@ -244,10 +408,12 @@ static int scope_depth = 0;
 static int slot_serial = 0;
 
 void ir_scope_push(void) {
-    if (scope_depth < MAX_SCOPES) {
-        scope_marks[scope_depth] = var_type_count;
-        scope_depth++;
+    if (scope_depth >= MAX_SCOPES) {
+        fprintf(stderr, "internal error: blocks nested more than %d deep\n", MAX_SCOPES);
+        exit(1);
     }
+    scope_marks[scope_depth] = var_type_count;
+    scope_depth++;
 }
 
 void ir_scope_pop(void) {
@@ -265,11 +431,11 @@ void ir_scope_pop(void) {
 // the checker could not see. A binding that predates the innermost loop is one
 // the loop did not create, so moving out of it inside the loop is the case that
 // actually repeats.
-static int loop_barriers[64];
+static int loop_barriers[MAX_LOOP_DEPTH];
 static int loop_barrier_depth = 0;
 
 void ir_loop_barrier_push(void) {
-    if (loop_barrier_depth < 64) loop_barriers[loop_barrier_depth++] = var_type_count;
+    if (loop_barrier_depth < MAX_LOOP_DEPTH) loop_barriers[loop_barrier_depth++] = var_type_count;
 }
 
 void ir_loop_barrier_pop(void) {
@@ -287,31 +453,39 @@ int ir_binding_predates_loop(const char* name) {
 }
 
 static int find_binding(const char* name) {
+    const char* interned = ir_intern(name);
     for (int i = var_type_count - 1; i >= 0; i--) {
-        if (strcmp(var_bindings[i].name, name) == 0) return i;
+        if (var_bindings[i].name == interned) return i;
     }
     return -1;
 }
 
 static void add_binding(const char* name, const char* type, int is_global) {
-    if (var_type_count >= MAX_VAR_TYPES) return;
-    VarBinding* b = &var_bindings[var_type_count];
+    if (var_type_count == var_type_capacity) {
+        int next = var_type_capacity ? var_type_capacity * 2 : 256;
+        var_bindings = (VarBinding*)xrealloc(var_bindings, (size_t)next * sizeof(VarBinding),
+                                             "the binding table");
+        var_type_capacity = next;
+    }
 
-    strncpy(b->name, name, 63);
-    b->name[63] = '\0';
-    strncpy(b->type, type, 63);
-    b->type[63] = '\0';
+    VarBinding* b = &var_bindings[var_type_count];
+    b->name = ir_intern(name);
+    b->type = ir_intern(type);
     b->is_global = is_global;
     b->is_mutable = 0;
 
     if (is_global) {
         // Globals are addressed by their own name (@name), so no renaming.
-        strncpy(b->slot, name, SLOT_LEN - 1);
-        b->slot[SLOT_LEN - 1] = '\0';
+        b->slot = b->name;
     } else {
         // '.' cannot appear in a Prismio identifier, so a slot name can never
-        // collide with a user variable.
-        snprintf(b->slot, SLOT_LEN, "%.60s.%d", name, slot_serial++);
+        // collide with a user variable. Built at full length: truncating here
+        // was how two long distinct names ended up sharing one stack slot.
+        size_t len = strlen(b->name) + 24;
+        char* slot = (char*)xmalloc(len, "a slot name");
+        snprintf(slot, len, "%s.%d", b->name, slot_serial++);
+        b->slot = ir_intern(slot);
+        free(slot);
     }
 
     var_type_count++;
@@ -387,28 +561,19 @@ void ir_clear_local_var_types(void) {
 // Move tracking (MVS): names of move-only values that have been moved-from
 // ============================================================================
 
-#define MAX_MOVED 1024
-static char moved_names[MAX_MOVED][64];
-static int moved_count = 0;
+static NameList moved_names = { NULL, 0, 0, "the moved-value table" };
 
 void ir_clear_moved(void) {
-    moved_count = 0;
+    moved_names.count = 0;
 }
 
 int ir_is_moved(const char* name) {
-    for (int i = 0; i < moved_count; i++) {
-        if (strcmp(moved_names[i], name) == 0) return 1;
-    }
-    return 0;
+    return namelist_contains(&moved_names, name);
 }
 
 void ir_mark_moved(const char* name) {
     if (ir_is_moved(name)) return;
-    if (moved_count < MAX_MOVED) {
-        strncpy(moved_names[moved_count], name, 63);
-        moved_names[moved_count][63] = '\0';
-        moved_count++;
-    }
+    namelist_add(&moved_names, name);
 }
 
 // Moved-from state is tracked per name, but a `let` binds a *fresh* value to that
@@ -416,12 +581,13 @@ void ir_mark_moved(const char* name) {
 // this, reusing an ordinary name (`let t = ...` twice in one function, in different
 // branches) makes every use after the first move a spurious "use of moved value".
 void ir_unmark_moved(const char* name) {
-    for (int i = 0; i < moved_count; i++) {
-        if (strcmp(moved_names[i], name) == 0) {
-            for (int j = i; j < moved_count - 1; j++) {
-                memcpy(moved_names[j], moved_names[j + 1], sizeof(moved_names[j]));
+    const char* interned = ir_intern(name);
+    for (int i = 0; i < moved_names.count; i++) {
+        if (moved_names.items[i] == interned) {
+            for (int j = i; j < moved_names.count - 1; j++) {
+                moved_names.items[j] = moved_names.items[j + 1];
             }
-            moved_count--;
+            moved_names.count--;
             return;
         }
     }
@@ -431,28 +597,19 @@ void ir_unmark_moved(const char* name) {
 // Borrow tracking (MVS): names bound to non-owning (let/inout) parameters
 // ============================================================================
 
-#define MAX_BORROWED 1024
-static char borrowed_names[MAX_BORROWED][64];
-static int borrowed_count = 0;
+static NameList borrowed_names = { NULL, 0, 0, "the borrowed-value table" };
 
 void ir_clear_borrowed(void) {
-    borrowed_count = 0;
+    borrowed_names.count = 0;
 }
 
 int ir_is_borrowed(const char* name) {
-    for (int i = 0; i < borrowed_count; i++) {
-        if (strcmp(borrowed_names[i], name) == 0) return 1;
-    }
-    return 0;
+    return namelist_contains(&borrowed_names, name);
 }
 
 void ir_mark_borrowed(const char* name) {
     if (ir_is_borrowed(name)) return;
-    if (borrowed_count < MAX_BORROWED) {
-        strncpy(borrowed_names[borrowed_count], name, 63);
-        borrowed_names[borrowed_count][63] = '\0';
-        borrowed_count++;
-    }
+    namelist_add(&borrowed_names, name);
 }
 
 // ============================================================================

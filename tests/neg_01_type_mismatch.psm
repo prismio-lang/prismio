@@ -1,3 +1,4 @@
+// expect-error: initializer for `count`: expected Int, found Bool
 fn bad_value() -> Int {
     let count: Int = true
     return count

@@ -94,6 +94,47 @@ clean; one-error-per-build would have taken 75 rebuilds.
 
 **Every defect in this document is now closed.**
 
+---
+
+## Closed after the original audit (2026-08-01)
+
+These were not in the numbered list above — they were found by re-auditing once the numbered
+defects were closed. Recorded here because each was a live silent-wrong-answer, not a stylistic
+concern.
+
+**Symbol tables truncated names at 63 characters and silently stopped recording when full**
+(`runtime/ir_symbols.c`). Mangled overload symbols in this compiler's own source already reach 77
+characters, so two overloads sharing a long prefix would have been recorded as one symbol and
+given each other's return type, with no diagnostic at any point. Names are now interned at full
+length and every table grows; an allocation failure is a hard error rather than a silent drop.
+
+**Returning an array was a use-after-free that appeared to work.** Arrays are stack-allocated, so
+`fn make() -> [Int] { let a = [1,2,3]  return a }` handed back a pointer into a discarded frame —
+and reading it still found the values, so the program printed the right answer and exited 0.
+Rejected outright now (`tests/neg_16_return_local_array.psm`); returning an array that came in as
+a borrowed parameter is still allowed, because the caller owns that storage.
+
+**Every builtin arity check reported and then dereferenced the argument it had just called
+missing.** Harmless only because reporting an error exited the process; the moment sema started
+recovering, `print()` with no arguments would have followed a null pointer. Arity is now checked
+before any argument is walked (`tests/neg_14_wrong_arity.psm`).
+
+**A non-constant global initializer was caught in codegen**, which meant no span, after every
+other check had passed, and only for whichever global came first. Moved into sema.
+
+**`generate_embedded_sources.ps1` had silently drifted.** It still listed `llvm-bridge.c`, deleted
+several changes earlier, and had never learned about `ir_symbols.c` or `llvm-api-backend.c` —
+running it would have written a header for a runtime that no longer existed. The script is deleted
+(the Python one is cross-platform and was the only one anything used), and `tools/check_source_lists.py`
+now fails the build if any of the six hand-maintained source lists disagree. It runs first in CI.
+
+**`tools/verify_separation.*` had stopped checking anything.** Its byte signatures were IR text
+(`getelementptr`, `icmp `) emitted by the old text backend. The C API builds instructions through
+calls rather than by printing them, so those strings could no longer appear in *either* binary:
+the user-binary check passed for the wrong reason and the compiler check would have failed. Both
+now key on diagnostic strings that only `llvm-api-backend.c` contributes, and the sanity check
+confirms the compiler does contain them.
+
 Note on 1.2: the fix took two generations to take full effect. gen10 contains the new lowering but
 its *own* code was compiled by gen9 without it; gen11 is the first compiler whose own guards
 short-circuit. That is normal bootstrap behaviour and worth remembering for any future change to

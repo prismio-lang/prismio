@@ -1,3 +1,4 @@
+// expect-error: use of moved value
 // Using a struct value after it has been moved must be rejected.
 struct Point {
     x: Int,

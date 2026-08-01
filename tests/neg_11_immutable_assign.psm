@@ -1,3 +1,4 @@
+// expect-error: which is not declared `mut`
 // Assigning to a binding not declared `let mut` is an error.
 //
 // The parser has always recorded `mut`, but sema never read it, so explicit

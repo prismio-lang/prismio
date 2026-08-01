@@ -4,6 +4,24 @@ Working audit of what's actually built vs. what's missing/fragile, based on read
 directly (not just the docs). Generated 2026-07-29. Update this file as things change — it will
 drift like every other doc here if it isn't kept honest.
 
+> ## Superseded — 2026-08-01
+>
+> **Read `HANDOFF.md` for the current state.** This file is kept as the record of what was found
+> on 2026-07-29; several things it describes are no longer true:
+>
+> - The backend is now `runtime/llvm-api-backend.c`, built on the LLVM C API.
+>   `runtime/llvm-bridge.c` (the text emitter) is deleted, and so is `driver.c`, split into
+>   `program_support.c` and `build_driver.c`.
+> - **There is CI** (`.github/workflows/ci.yml`), on Windows, Linux and macOS: it bootstraps from
+>   the committed seed, proves the IR fixpoint, runs the suite, and checks the seed stayed
+>   target-neutral.
+> - `generate_embedded_sources.ps1` is **deleted** — it had silently drifted out of sync with the
+>   file list and would have written a header for a runtime that no longer existed. The Python
+>   version is the only one, and `tools/check_source_lists.py` (run first in CI) fails the build
+>   if any of the six hand-maintained source lists disagree.
+> - The "sync is 100% manual" hazard below is therefore now checked, though regenerating the
+>   header is still a step you run by hand after editing a runtime `.c`.
+
 ## Verified build pipeline
 
 ```

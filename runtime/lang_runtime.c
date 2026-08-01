@@ -326,6 +326,23 @@ char str_char_at(const char* s, int index) {
     return s[index];
 }
 
+// Unchecked-length read, for a caller that already knows the string's length.
+//
+// str_char_at() measures the whole string on every call, so the lexer -- which
+// reads one character at a time -- spent O(n) per character and was therefore
+// O(n^2) over a file. Scanning the 155 KB compiler meant several gigabytes of
+// strlen traffic and was most of its compile time.
+//
+// The contract is 0 <= index <= str_length(s). index == length is deliberately
+// allowed and returns the NUL terminator, because one-character lookahead at the
+// end of input is normal and the buffer is always NUL-terminated. The lexer
+// holds the length in the Lexer struct and checks against it, so the bound is
+// still enforced -- just not re-measured on every character.
+char str_byte_at(const char* s, int index) {
+    if (index < 0) return '\0';
+    return s[index];
+}
+
 int str_contains(const char* haystack, const char* needle) {
     return strstr(haystack, needle) != NULL ? 1 : 0;
 }
@@ -677,6 +694,12 @@ char str_char_at(const char* s, int index) {
         return '\0';
     }
 
+    return s[index];
+}
+
+// See the native definition for why this exists.
+char str_byte_at(const char* s, int index) {
+    if (index < 0) return '\0';
     return s[index];
 }
 

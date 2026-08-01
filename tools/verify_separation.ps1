@@ -11,8 +11,15 @@
 #      right translation units in the first place.
 #   2. A byte signature in the produced executable -- proves the *link step* only
 #      pulled in the runtime. A linked PE has no symbol table, so nm cannot answer
-#      this one; instead look for IR-emitter format strings that exist only in
-#      llvm-bridge.c (e.g. "  %%t%d = icmp %s %s %s, %s").
+#      this one; instead look for string literals that exist only in the backend.
+#
+#      These signatures used to be IR text ("getelementptr", "icmp ") emitted by
+#      the old text backend. That backend is gone, and the LLVM C API builds
+#      instructions through function calls rather than by printing them -- so the
+#      old signatures could no longer appear in *either* binary. The user-binary
+#      check passed for the wrong reason and the compiler check failed outright.
+#      The signatures below are diagnostic strings compiled into
+#      llvm-api-backend.c, which is in backend.lib and nowhere else.
 
 param(
     [Parameter(Mandatory = $true)][string]$Dist,
@@ -83,8 +90,8 @@ try {
 if (Test-Path $probeExe) {
     Check 'compiled program runs' ((& $probeExe) -eq 'ok')
 
-    # Format strings that only llvm-bridge.c contributes.
-    $signatures = @('getelementptr', 'icmp ', 'alloca ')
+    # Strings only llvm-api-backend.c contributes.
+    $signatures = @('internal backend error: ', 'generated module failed verification', 'optimization pipeline failed')
     $bytes = [System.IO.File]::ReadAllBytes($probeExe)
     $text = [System.Text.Encoding]::ASCII.GetString($bytes)
     $hits = @()
@@ -97,8 +104,8 @@ if (Test-Path $probeExe) {
     # Sanity: the same signatures must be present in the compiler, otherwise the
     # check above would pass trivially for the wrong reason.
     $compilerText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($prismio))
-    $compilerHits = ([regex]::Matches($compilerText, 'getelementptr')).Count
-    Check 'the compiler itself does contain the backend' ($compilerHits -gt 0) "getelementptr x$compilerHits"
+    $compilerHits = ([regex]::Matches($compilerText, 'internal backend error: ')).Count
+    Check 'the compiler itself does contain the backend' ($compilerHits -gt 0) "backend signature x$compilerHits"
 
     Remove-Item -LiteralPath $probeExe -Force -ErrorAction SilentlyContinue
 }

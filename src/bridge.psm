@@ -131,6 +131,15 @@ extern fn ir_global_var(name: String, type: String, init_value: String, is_const
 // the LLVM C API backend has no way to honour raw text.
 extern fn ir_set_pointer_int_type(t: String)
 extern fn ir_set_opt_level(level: Int)
+
+// The memory-model seam. Every heap allocation and release codegen emits goes
+// through ir_alloc_object/ir_free_object, which call whichever functions these
+// name -- so changing the model is a change here, never a change to codegen.
+// Default to malloc/free, which is exactly today's behaviour.
+extern fn ir_set_alloc_function(name: String)
+extern fn ir_set_free_function(name: String)
+extern fn ir_get_alloc_function() -> String
+extern fn ir_get_free_function() -> String
 extern fn ir_struct_type_begin(name: String)
 extern fn ir_struct_type_field(field_type: String)
 extern fn ir_struct_type_end()
@@ -150,6 +159,14 @@ extern fn ir_register_global_name(name: String)
 extern fn ir_is_global_name(name: String) -> Int
 extern fn ir_reset_globals()
 extern fn ir_reset_types()
+// Named-type registry, filled by sema before checking begins. Distinct from the
+// struct registry below, which holds field layouts and is filled by codegen:
+// this one only answers "is this identifier a struct, an enum, or neither?",
+// which a type annotation asks for every parameter of every function.
+extern fn ir_declare_named_type(name: String, kind: Int)
+extern fn ir_named_type_kind(name: String) -> Int
+extern fn ir_reset_named_types()
+
 extern fn ir_register_struct(name: String)
 extern fn ir_register_struct_field(struct_name: String, field_name: String, field_type: String)
 extern fn ir_is_struct_type_name(name: String) -> Int

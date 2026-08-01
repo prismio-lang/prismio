@@ -1,3 +1,4 @@
+// expect-error: use of moved value
 // Using a value after drop() must be rejected (drop consumes ownership).
 struct Point {
     x: Int,

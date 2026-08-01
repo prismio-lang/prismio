@@ -96,7 +96,7 @@ LLVM 18 — and a stale one is not diagnosed, it just silently miscompiles. Lett
 `llc` derive the layout from the target cannot drift.
 
 Once `gen0` is running, it no longer needs the seed's neutrality: `ir_module_start`
-in `runtime/llvm-bridge.c` emits a triple only when the bridge was itself compiled
+in `runtime/llvm-api-backend.c` emits a triple only when the backend was itself compiled
 on Windows, so a macOS-built compiler also emits triple-less IR and `llc` keeps
 resolving to the host.
 

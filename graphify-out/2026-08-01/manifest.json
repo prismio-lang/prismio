@@ -1,0 +1,77 @@
+{
+  "runtime/driver.c": {
+    "mtime": 1785349819.5900438,
+    "ast_hash": "17f00e3a41e8ed47102af7bc89fddfea",
+    "semantic_hash": ""
+  },
+  "runtime/embedded_sources.h": {
+    "mtime": 1785349963.406351,
+    "ast_hash": "e97779166713aa150f260276c92067a5",
+    "semantic_hash": ""
+  },
+  "runtime/generate_embedded_sources.ps1": {
+    "mtime": 1785349945.967037,
+    "ast_hash": "d1a6d94c52881b2b8922e3b80f071e6a",
+    "semantic_hash": ""
+  },
+  "runtime/lang_runtime.c": {
+    "mtime": 1782163518.0,
+    "ast_hash": "b2d4e07b6a2a195b8fef4118cc9e3363",
+    "semantic_hash": "b2d4e07b6a2a195b8fef4118cc9e3363"
+  },
+  "runtime/llvm-bridge.c": {
+    "mtime": 1782142958.0,
+    "ast_hash": "90bd7a382c1203b468822037f15d1569",
+    "semantic_hash": "90bd7a382c1203b468822037f15d1569"
+  },
+  "runtime/runtime.c": {
+    "mtime": 1782084682.0,
+    "ast_hash": "4118e41487fcb45abb0cfb41fc5833f0",
+    "semantic_hash": "4118e41487fcb45abb0cfb41fc5833f0"
+  },
+  "tests/test_runner.py": {
+    "mtime": 1782086568.0,
+    "ast_hash": "476f9ed9b750339fe5f449f438dae940",
+    "semantic_hash": "476f9ed9b750339fe5f449f438dae940"
+  },
+  "CONTRIBUTING.md": {
+    "mtime": 1785346535.3409808,
+    "ast_hash": "a0a82c0860d5181d38940376de0ab216",
+    "semantic_hash": ""
+  },
+  "POST_INSTALL.txt": {
+    "mtime": 1779055356.0,
+    "ast_hash": "69e901c28dab5123453abb53f1b02555",
+    "semantic_hash": "69e901c28dab5123453abb53f1b02555"
+  },
+  "README.MD": {
+    "mtime": 1785346562.5749402,
+    "ast_hash": "a0047d0a8d2d2660ead487b4f625c1a4",
+    "semantic_hash": ""
+  },
+  "SECURITY.md": {
+    "mtime": 1779044400.0,
+    "ast_hash": "72c4b305014fe23dab11c8035b2cf9e7",
+    "semantic_hash": "72c4b305014fe23dab11c8035b2cf9e7"
+  },
+  ".claude/settings.json": {
+    "mtime": 1785345017.8099906,
+    "ast_hash": "cf5c9d3223288ed94f72fe7f0cb81a66",
+    "semantic_hash": ""
+  },
+  "CLAUDE.md": {
+    "mtime": 1785345017.8098116,
+    "ast_hash": "82efb97a359f5c7290bf2513d14686be",
+    "semantic_hash": ""
+  },
+  "STATUS.md": {
+    "mtime": 1785346599.2317154,
+    "ast_hash": "c3e1d5b19a7c93e2e2d92a689105b745",
+    "semantic_hash": ""
+  },
+  "runtime/generate_embedded_sources.py": {
+    "mtime": 1785349957.2324264,
+    "ast_hash": "e329d125afc3ab57546d5a3f97bb0770",
+    "semantic_hash": ""
+  }
+}

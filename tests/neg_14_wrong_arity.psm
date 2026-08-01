@@ -1,0 +1,14 @@
+// expect-error: `println_int` expects 1 argument, found 2
+// expect-error: aborting due to 1 previous error
+//
+// Builtin arity is checked before the argument list is walked.
+//
+// Every one of these checks used to report and then dereference the argument it
+// had just said was missing. That only survived because reporting an error
+// exited the process immediately; once sema started recovering, `print()` with
+// no arguments would have followed a null pointer instead.
+
+fn main() -> Int {
+    println_int(1, 2)
+    return 0
+}
