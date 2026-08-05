@@ -7,6 +7,7 @@ import bridge
 import ir
 import sema
 import diag
+import dumpast
 
 extern fn read_file(path: String) -> String
 extern fn get_directory(path: String) -> String
@@ -188,6 +189,7 @@ fn print_usage() {
     println("  prismio run <source.psm> [-o output.exe]")
     println("  prismio bootstrap [source.psm] [-o output.exe]")
     println("  prismio runtime-hash")
+    println("  prismio dump-ast <source.psm>")
     println("")
     println("build/run link against the installed Prismio runtime only.")
     println("bootstrap builds the compiler itself from the repository sources,")
@@ -222,6 +224,44 @@ fn check_runtime_freshness() {
     println("  Re-package the toolchain (tools/package.ps1) so lib/ matches runtime/,")
     println("  or move away from the source tree to use the installed runtime as-is.")
     exit(1)
+}
+
+// Front half of compile_source -- lex, parse, resolve imports, type check -- then
+// dump instead of generating. Kept separate rather than threaded through
+// compile_source as a flag, so the build path has no branch that only the dumper
+// takes.
+fn dump_ast_command(path: String) -> Int {
+    let content = read_file(path)
+    if (str_equals(content, "") == 1) {
+        diag_error(str_concat("cannot read ", path))
+        return 1
+    }
+
+    let root_file = diag_add_file(path, content)
+    let lex = create_lexer(content, root_file)
+    let head_token = lex_all_tokens(lex)
+    let p = parser_create(head_token)
+    let ast_root = parse_module(p)
+
+    let base_dir = get_directory(path)
+    let merged_ast = resolve_imports(ast_root, base_dir)
+
+    if (diag_error_count() > 0) {
+        diag_finish()
+        return 1
+    }
+
+    // Run sema: the dump carries each node's resolved type, and without this the
+    // `ty` field would be empty on every node.
+    analyze_module(merged_ast)
+
+    if (diag_error_count() > 0) {
+        diag_finish()
+        return 1
+    }
+
+    dump_ast_json(merged_ast, path, PRISMIO_VERSION)
+    return 0
 }
 
 fn compile_source(path: String, output_file: String, run_after_build: Bool, bootstrap_mode: Bool) -> Int {
@@ -361,6 +401,18 @@ fn main() -> Int {
         }
         println(source_hash)
         return 0
+    }
+
+    // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and
+    // touches no codegen, so it cannot affect what `build` generates. Exists for
+    // the AIF memory-model work, which analyses the real AST out-of-process.
+    if (str_equals(first, "dump-ast") == 1) {
+        if (cli_arg_count() <= 2) {
+            diag_error("missing source file")
+            print_usage()
+            return 1
+        }
+        return dump_ast_command(cli_arg(2))
     }
 
     // Compiler development. The command itself selects the build mode -- there is no

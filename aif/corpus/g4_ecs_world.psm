@@ -1,0 +1,180 @@
+// G4 -- ECS world: several component arrays, several systems, each reading and
+// writing a different subset.
+//
+// This is the shape AIF has to be good at if the target is engines. It is also
+// the shape that makes the layout question non-trivial, because different
+// systems want different layouts for the *same* data:
+//
+//   movement  writes Position, reads Velocity        -- 2 of 4 arrays
+//   physics   writes Velocity, reads Mass            -- 2 of 4 arrays
+//   render    reads Position and Sprite              -- 2 of 4 arrays
+//   damage    writes Health, reads nothing else      -- 1 of 4 arrays
+//
+// No single AoS layout serves all four. A per-component SoA does, and no
+// programmer had to say so -- which is the whole claim.
+//
+// For inference specifically: the component arrays are created in `main`, handed
+// to every system, and never escape. They must land T1/T2. If a system's
+// parameter forces them to T3, the call-boundary join is not being deleted and
+// ownership contexts are not doing their job.
+
+struct Position {
+    x: Float,
+    y: Float,
+    z: Float
+}
+
+struct Velocity {
+    dx: Float,
+    dy: Float,
+    dz: Float
+}
+
+struct Physics {
+    mass: Float,
+    drag: Float,
+    restitution: Float
+}
+
+struct Sprite {
+    texture_id: Int,
+    layer: Int,
+    tint_r: Float,
+    tint_g: Float,
+    tint_b: Float,
+    alpha: Float
+}
+
+struct Health {
+    current: Int,
+    maximum: Int,
+    regen: Float
+}
+
+struct World {
+    positions: List<Position>,
+    velocities: List<Velocity>,
+    physics: List<Physics>,
+    sprites: List<Sprite>,
+    health: List<Health>,
+    entity_count: Int
+}
+
+fn make_world() -> World {
+    let p: List<Position> = list_new()
+    let v: List<Velocity> = list_new()
+    let ph: List<Physics> = list_new()
+    let s: List<Sprite> = list_new()
+    let h: List<Health> = list_new()
+    return World {
+        positions: p,
+        velocities: v,
+        physics: ph,
+        sprites: s,
+        health: h,
+        entity_count: 0
+    }
+}
+
+fn spawn(w: World, seed: Float) {
+    list_push(w.positions, Position { x: seed, y: seed, z: 0.0 })
+    list_push(w.velocities, Velocity { dx: 1.0, dy: 0.5, dz: 0.0 })
+    list_push(w.physics, Physics { mass: 1.0, drag: 0.01, restitution: 0.5 })
+    list_push(w.sprites, Sprite {
+        texture_id: 1,
+        layer: 0,
+        tint_r: 1.0,
+        tint_g: 1.0,
+        tint_b: 1.0,
+        alpha: 1.0
+    })
+    list_push(w.health, Health { current: 100, maximum: 100, regen: 0.1 })
+    w.entity_count = w.entity_count + 1
+}
+
+// System 1: writes Position, reads Velocity.
+fn system_movement(w: World, dt: Float) {
+    let n = w.entity_count
+    let mut i = 0
+    while (i < n) {
+        let p = list_get(w.positions, i)
+        let v = list_get(w.velocities, i)
+        p.x = p.x + v.dx * dt
+        p.y = p.y + v.dy * dt
+        p.z = p.z + v.dz * dt
+        i = i + 1
+    }
+}
+
+// System 2: writes Velocity, reads Physics. Touches 1 of 3 Physics fields.
+fn system_physics(w: World, dt: Float) {
+    let n = w.entity_count
+    let mut i = 0
+    while (i < n) {
+        let v = list_get(w.velocities, i)
+        let ph = list_get(w.physics, i)
+        let k = 1.0 - ph.drag * dt
+        v.dx = v.dx * k
+        v.dy = v.dy * k - 9.81 * dt
+        v.dz = v.dz * k
+        i = i + 1
+    }
+}
+
+// System 3: reads Position and Sprite. Touches 2 of 6 Sprite fields.
+fn system_render(w: World) -> Int {
+    let n = w.entity_count
+    let mut drawn = 0
+    let mut i = 0
+    while (i < n) {
+        let p = list_get(w.positions, i)
+        let s = list_get(w.sprites, i)
+        if (s.alpha > 0.0 and p.y > 0.0 - 100.0) {
+            drawn = drawn + 1
+        }
+        i = i + 1
+    }
+    return drawn
+}
+
+// System 4: writes Health only. The single-array streaming case.
+fn system_regen(w: World) {
+    let n = w.entity_count
+    let mut i = 0
+    while (i < n) {
+        let h = list_get(w.health, i)
+        if (h.current < h.maximum) {
+            h.current = h.current + 1
+        }
+        i = i + 1
+    }
+}
+
+fn main() -> Int {
+    let w = make_world()
+
+    let mut i = 0
+    let mut seed = 0.0
+    while (i < 1500) {
+        spawn(w, seed)
+        seed = seed + 1.0
+        i = i + 1
+    }
+
+    let dt = 0.016
+    let mut frame = 0
+    let mut total_drawn = 0
+    while (frame < 60) {
+        system_physics(w, dt)
+        system_movement(w, dt)
+        system_regen(w)
+        total_drawn = total_drawn + system_render(w)
+        frame = frame + 1
+    }
+
+    print("entities: ")
+    println_int(w.entity_count)
+    print("draws: ")
+    println_int(total_drawn)
+    return 0
+}

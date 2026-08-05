@@ -1,0 +1,174 @@
+// G3 -- scene graph, index-based hierarchy.
+//
+// The first draft of this program used a `parent: Node` back-reference, which is
+// the textbook shape and the one AIF's T4b tier exists for. Today's Prismio
+// rejects it twice over: there is no null to initialise it with, and
+// `child.parent = parent` is "cannot move out of borrowed value". The affine
+// discipline makes the cycle inexpressible. That is recorded in RESULTS-L0 --
+// it means the cycle collector currently has no program that can exercise it.
+//
+// What is here instead is what production engines actually do: a flat node
+// array with parent/child links stored as indices. It is acyclic by
+// construction, it is cache-friendly, and it is the pattern AIF's handle design
+// points at anyway. So this measures the shape real engine code has, not the
+// shape textbooks draw.
+//
+// The interesting property for inference: the node array outlives every
+// function that touches it, so it must land T1 or T2 -- never T3 -- despite
+// being passed through five functions and indexed from all of them.
+
+struct Transform {
+    px: Float,
+    py: Float,
+    pz: Float,
+    sx: Float,
+    sy: Float,
+    sz: Float
+}
+
+struct Bounds {
+    min_x: Float,
+    min_y: Float,
+    min_z: Float,
+    max_x: Float,
+    max_y: Float,
+    max_z: Float
+}
+
+struct Node {
+    local: Transform,
+    world: Transform,
+    bounds: Bounds,
+    parent: Int,
+    first_child: Int,
+    next_sibling: Int,
+    dirty: Bool
+}
+
+fn identity_transform() -> Transform {
+    return Transform { px: 0.0, py: 0.0, pz: 0.0, sx: 1.0, sy: 1.0, sz: 1.0 }
+}
+
+fn unit_bounds() -> Bounds {
+    return Bounds {
+        min_x: 0.0, min_y: 0.0, min_z: 0.0,
+        max_x: 1.0, max_y: 1.0, max_z: 1.0
+    }
+}
+
+fn make_node(parent: Int, ox: Float) -> Node {
+    let mut t = identity_transform()
+    t.px = ox
+    return Node {
+        local: t,
+        world: identity_transform(),
+        bounds: unit_bounds(),
+        parent: parent,
+        first_child: 0 - 1,
+        next_sibling: 0 - 1,
+        dirty: true
+    }
+}
+
+// Links `child` under `parent` by walking the sibling chain. Pure index work --
+// no reference is created, so nothing here can raise an aliasing fact.
+fn link_child(nodes: List<Node>, parent_idx: Int, child_idx: Int) {
+    let p = list_get(nodes, parent_idx)
+    if (p.first_child < 0) {
+        p.first_child = child_idx
+    } else {
+        let mut sib = p.first_child
+        let mut scanning = true
+        while (scanning) {
+            let s = list_get(nodes, sib)
+            if (s.next_sibling < 0) {
+                s.next_sibling = child_idx
+                scanning = false
+            } else {
+                sib = s.next_sibling
+            }
+        }
+    }
+}
+
+fn build_hierarchy(breadth: Int, depth: Int) -> List<Node> {
+    let mut nodes: List<Node> = list_new()
+    list_push(nodes, make_node(0 - 1, 0.0))
+
+    let mut level = 0
+    let mut level_start = 0
+    let mut level_count = 1
+
+    while (level < depth) {
+        let next_start = list_len(nodes)
+        let mut parent_off = 0
+        while (parent_off < level_count) {
+            let parent_idx = level_start + parent_off
+            let mut b = 0
+            let mut ox = 0.0
+            while (b < breadth) {
+                let child_idx = list_len(nodes)
+                list_push(nodes, make_node(parent_idx, ox))
+                link_child(nodes, parent_idx, child_idx)
+                ox = ox + 1.0
+                b = b + 1
+            }
+            parent_off = parent_off + 1
+        }
+        level_start = next_start
+        level_count = list_len(nodes) - next_start
+        level = level + 1
+    }
+    return nodes
+}
+
+// Depth-first world-transform propagation over the index hierarchy.
+fn propagate(nodes: List<Node>, idx: Int, ox: Float, oy: Float, oz: Float) -> Int {
+    let n = list_get(nodes, idx)
+    n.world.px = n.local.px + ox
+    n.world.py = n.local.py + oy
+    n.world.pz = n.local.pz + oz
+    n.dirty = false
+
+    let wx = n.world.px
+    let wy = n.world.py
+    let wz = n.world.pz
+
+    let mut visited = 1
+    let mut c = n.first_child
+    while (c >= 0) {
+        visited = visited + propagate(nodes, c, wx, wy, wz)
+        let cn = list_get(nodes, c)
+        c = cn.next_sibling
+    }
+    return visited
+}
+
+// Reads 6 of 19 scalar fields -- the hot/cold split case for the layout model.
+fn count_visible(nodes: List<Node>, limit: Float) -> Int {
+    let total = list_len(nodes)
+    let mut visible = 0
+    let mut i = 0
+    while (i < total) {
+        let n = list_get(nodes, i)
+        if (n.world.px < limit and n.world.py < limit and n.world.pz < limit) {
+            visible = visible + 1
+        }
+        i = i + 1
+    }
+    return visible
+}
+
+fn main() -> Int {
+    let nodes = build_hierarchy(4, 5)
+    let visited = propagate(nodes, 0, 0.0, 0.0, 0.0)
+    let visible = count_visible(nodes, 1000.0)
+
+    print("nodes: ")
+    println_int(list_len(nodes))
+    print("visited: ")
+    println_int(visited)
+    print("visible: ")
+    println_int(visible)
+    return 0
+}
