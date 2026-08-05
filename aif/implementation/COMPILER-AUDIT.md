@@ -216,7 +216,7 @@ come first, or the inference cost will be impossible to attribute.
 Each level is independently useful, independently testable, and does not require the next. Levels
 0–2 fit the language as it exists. Level 3 onward needs the prerequisites in §4.
 
-### Level 0 — facts, no behaviour change
+### Level 0 — facts, no behaviour change — **DONE, 2026-08-05**
 
 Build the fact graph, run the escape and aliasing modules, assign tiers, **emit the manifest, and
 change no codegen.** Everything still `malloc`s.
@@ -226,6 +226,23 @@ change no codegen.** Everything still `malloc`s.
   any risk to the self-host**. If the distribution is bad, the model is falsified cheaply.
 - Prerequisite: §4.1 only.
 - This is the right first step and it is much smaller than it sounds.
+
+**It was.** `self/src/aif.psm` + `self/runtime/aif_support.c`, driven by `prismio aif`. Two notes
+for whoever does Level 1:
+
+- §4.3's recommendation to land generic containers first was **not** taken, and the reason is worth
+  recording. The containers went into C, which is where `ir_symbols.c` already keeps the symbol
+  tables, so the engine is ordinary Prismio over an FFI surface rather than parallel arrays and
+  integer indices. The risk §4.3 names — a silent bug in the one component where that yields a
+  wrong-tier binary — is answered instead by `tools/aif_differential.py`, which holds the engine
+  against `aif/prototype/aif.py` on every corpus under both collection settings. Generic containers
+  are still worth having; they are no longer on this critical path.
+- §4.1's proposed AST node ids were not needed either. Sites are identified by the walk that creates
+  them. Level 1 will need them, because codegen has to look a tier up.
+
+And it did what this section said it would: the distribution was measurable cheaply, and it
+immediately contradicted a recorded result. See the correction note atop
+[RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md).
 
 ### Level 1 — T0
 

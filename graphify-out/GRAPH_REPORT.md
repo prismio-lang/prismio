@@ -1,16 +1,16 @@
-# Graph Report - self  (2026-08-01)
+# Graph Report - self  (2026-08-05)
 
 ## Corpus Check
-- 36 files · ~66,643 words
+- 61 files · ~140,014 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 962 nodes · 1869 edges · 84 communities (61 shown, 23 thin omitted)
-- Extraction: 89% EXTRACTED · 11% INFERRED · 0% AMBIGUOUS · INFERRED: 199 edges (avg confidence: 0.83)
+- 1567 nodes · 2703 edges · 127 communities (104 shown, 23 thin omitted)
+- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 212 edges (avg confidence: 0.83)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `985d3616`
+- Built from commit: `a4d3b5eb`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -26,8 +26,8 @@
 - Prismio — Compiler Audit
 - use_globals() function
 - fn generate_statement(stmt)
-- fn generate_module(module)
 - extern fn ptr_to_node
+- extern fn str_equals
 - setup_llvm.py
 - CONTRIBUTING.md
 - fn lexer_next_token(lex) -> Token
@@ -40,7 +40,7 @@
 - llvm-api-backend.c
 - Enum Types
 - main
-- fn resolve_imports(module, base_dir) -> ASTNode
+- layout.py
 - diagnostics.c
 - test_runner.py
 - check_source_lists.py
@@ -58,7 +58,7 @@
 - main
 - fibonacci(n) function
 - main() function (test_11_returns)
-- Prismio Project Structure (src/ layout)
+- aif_support.c
 - main
 - Prismio Toolchain Architecture Refactor — Session Handoff
 - malloc
@@ -85,24 +85,66 @@
 - struct Counter
 - struct Res
 - Handoff — continuing the Prismio work
-- fn generate_struct_decl(struct_node)
+- fn sema_expr(module, expr) -> TypeInfo
 - CLAUDE.md
 - bootstrap.sh
 - verify_separation.sh
 - Documented Compiler Pipeline (README architecture diagram)
 - package.sh script
-- fn get_expr_type(expr) -> String
+- Tier 2 — required by specified AIF features
 - die
+- AIF — Workload Declaration, Cost Model, and Layout Search
+- AIF — Design Rationale
+- 5 · A staged path
+- 1 · AIF core — genuinely ours
+- AIF — The FFI Boundary
+- aif_intern
+- AIF — The T4 Cycle Collector
+- AIF — Measurement and Falsification Plan
+- PIR — Prism Semantic IR
+- aif_solve
+- AIF — Level 0 Results
+- AIF — The Target Workload
+- AIF — Adaptive Inference Framework
+- AIF — Cross-Language Comparison Suite
+- AIF — Evaluation as a General-Purpose Memory Model
+- AIF — Adaptive Inference Framework
+- 8.4 Views — slices and element references
+- con_add
+- nominal_find
+- 5 · Annotations
+- AIF — Layout Results (A1)
+- AIF — The Inference Engine
+- 4 · Transfer rules
+- 5 · The fixed-point algorithm
+- 7 · Specialisation strategy and dedup
+- AIF — Engine/Game Boundary Results (A2)
+- AIF Prototype
+- 11 · Known weaknesses
+- 2 · Fact domains
+- 8 · Annotations as axioms and constraints
+- 11 · Conformance boundary
+- 3 · The tier ladder
+- bits_to_vec
+- fn lex_all_tokens(lex) -> Token (returns linked-list head)
+- AIF Evidence
+- 6 · Ownership contexts
+- 2 · The objects of the model
+- 4 · Tier derivation
+- 7 · Two-speed compilation
+- vs_push
+- AIF Corpus
+- 6 · The tier manifest
 
 ## God Nodes (most connected - your core abstractions)
 1. `fn generate_expression(expr) -> String` - 55 edges
 2. `extern fn ptr_to_node` - 42 edges
 3. `main()` - 37 edges
-4. `fn generate_statement(stmt)` - 36 edges
-5. `malloc()` - 35 edges
+4. `malloc()` - 36 edges
+5. `fn generate_statement(stmt)` - 36 edges
 6. `fn sema_annotation_type(module, tn) -> TypeInfo` - 33 edges
-7. `fn sema_expr(module, expr) -> TypeInfo` - 32 edges
-8. `strlen()` - 31 edges
+7. `strlen()` - 32 edges
+8. `fn sema_expr(module, expr) -> TypeInfo` - 32 edges
 9. `fn generate_module(module)` - 29 edges
 10. `type_from_key()` - 27 edges
 
@@ -113,10 +155,10 @@
   CONTRIBUTING.md → src/main.psm
 - `Claim: no semantic analysis pass between parsing and IR gen (planned)` --references--> `fn analyze_module(module)`  [AMBIGUOUS]
   README.MD → src/sema.psm
+- `accept_if_exists()` --calls--> `file_exists()`  [INFERRED]
+  runtime/build_driver.c → runtime/program_support.c
 - `diag_reset()` --calls--> `free()`  [INFERRED]
   runtime/diagnostics.c → runtime/lang_runtime.c
-- `Prismio Project Structure (src/ layout)` --references--> `LLVM Bridge FFI declarations (bridge.psm)`  [EXTRACTED]
-  CONTRIBUTING.md → src/bridge.psm
 
 ## Import Cycles
 - None detected.
@@ -129,35 +171,35 @@
 - **Shared fail(message) test-harness helper pattern across feature tests** — tests_test_01_variables_fail, tests_test_02_if_else_fail, tests_test_03_while_loops_fail, tests_test_04_structs_fail, tests_test_05_enums_fail, tests_test_06_recursion_fail, tests_test_07_booleans_fail, tests_test_08_mutability_fail, tests_test_09_strings_fail, tests_test_10_expressions_fail, tests_test_11_returns_fail, tests_test_12_imports_fail, tests_test_13_globals_fail [INFERRED 0.95]
 - **Prismio Ownership System (Move/Drop/Borrow) Demonstration** — tests_test_23_move_main, tests_test_24_drop_main, tests_test_25_conventions_main, tests_test_26_borrow_reuse_main [INFERRED 0.85]
 
-## Communities (84 total, 23 thin omitted)
+## Communities (127 total, 23 thin omitted)
 
 ### Community 0 - "fn sema_annotation_type(module, tn) -> TypeInfo"
-Cohesion: 0.07
-Nodes (80): extern fn ir_clear_borrowed, extern fn ir_clear_moved, extern fn ir_has_var_type, extern fn ir_is_borrowed, extern fn ir_is_moved, extern fn ir_mark_borrowed, extern fn ir_mark_moved, extern fn ir_set_var_type (+72 more)
+Cohesion: 0.17
+Nodes (32): fn struct_type_name(t) -> String, fn sema_annotation_type(module, tn) -> TypeInfo, fn sema_builtin_call_type(name, arg_ptr) -> TypeInfo, fn type_array, fn type_bool() -> TypeInfo, fn type_char() -> TypeInfo, fn type_enum, fn type_float() -> TypeInfo (+24 more)
 
 ### Community 1 - "fn create_node(kind) -> ASTNode"
-Cohesion: 0.28
-Nodes (32): fn create_node(kind) -> ASTNode, extern fn node_to_ptr, extern fn ptr_to_token, extern fn exit(code), fn parse_block(p) -> ASTNode, fn parse_declaration(p) -> ASTNode, fn parse_enum_decl(p) -> ASTNode, fn parse_expression(p, precedence) -> ASTNode (+24 more)
+Cohesion: 0.21
+Nodes (38): Prismio Project Structure (src/ layout), ASTNode struct (flat, string-pointer-punned), fn create_node(kind) -> ASTNode, extern fn node_to_ptr, NodeKind enum (AST node kinds), fn is_keyword(s) -> Bool, extern fn ptr_to_token, extern fn exit(code) (+30 more)
 
 ### Community 2 - "fn compile_source(path, output_file, run_after_build) -> Int"
-Cohesion: 0.16
-Nodes (15): extern fn ir_reset, extern fn ir_write_file, fn create_lexer(input) -> Lexer, fn lex_all_tokens(lex) -> Token (returns linked-list head), Lexer struct, extern fn token_to_ptr, fn compile_source(path, output_file, run_after_build) -> Int, extern fn compiler_build_executable (+7 more)
+Cohesion: 0.20
+Nodes (12): extern fn ir_reset, extern fn ir_write_file, fn compile_source(path, output_file, run_after_build) -> Int, extern fn compiler_build_executable, extern fn compiler_run_executable, extern fn compiler_temp_ir_path, extern fn delete_file, extern fn get_directory (+4 more)
 
 ### Community 3 - "ir_symbols.c"
 Cohesion: 0.07
 Nodes (39): NameList, add_binding(), find_binding(), find_struct(), hash_str(), ir_binding_predates_loop(), ir_declare_named_type(), ir_get_enum_variant() (+31 more)
 
 ### Community 4 - "build_driver.c"
-Cohesion: 0.18
-Nodes (29): FILE, accept_if_exists(), build_from_toolchain_sources(), compile_ir_to_object(), compiler_bootstrap_executable(), compiler_build_executable(), compiler_default_exe_path(), compiler_prepare_output_path() (+21 more)
+Cohesion: 0.20
+Nodes (27): FILE, accept_if_exists(), build_from_toolchain_sources(), compile_ir_to_object(), compiler_bootstrap_executable(), compiler_build_executable(), compiler_prepare_output_path(), compiler_run_executable() (+19 more)
 
 ### Community 5 - "lang_runtime.c"
-Cohesion: 0.06
-Nodes (23): Array, ir_clear_local_var_types(), array_free(), array_get(), array_len(), array_new(), array_push(), int_to_str() (+15 more)
+Cohesion: 0.07
+Nodes (20): Array, ir_clear_local_var_types(), array_free(), array_get(), array_len(), array_new(), array_push(), int_to_str() (+12 more)
 
 ### Community 6 - "fn generate_expression(expr) -> String"
 Cohesion: 0.06
-Nodes (35): extern fn ir_and, extern fn ir_call_arg, extern fn ir_call_begin, extern fn ir_call_end, extern fn ir_fadd, extern fn ir_fcmp_oeq, extern fn ir_fcmp_oge, extern fn ir_fcmp_ogt (+27 more)
+Nodes (39): extern fn ir_and, extern fn ir_call_arg, extern fn ir_call_begin, extern fn ir_call_end, extern fn ir_fadd, extern fn ir_fcmp_oeq, extern fn ir_fcmp_oge, extern fn ir_fcmp_ogt (+31 more)
 
 ### Community 7 - "Borrow Checking"
 Cohesion: 0.08
@@ -172,24 +214,24 @@ Cohesion: 0.09
 Nodes (27): Arithmetic Operators, Global Variables, Mutability (mut bindings), Operator Precedence / Expression Evaluation, Variable Declarations, bump_global(amount) function, fail(message) function (test_01_variables), main() function (test_01_variables) (+19 more)
 
 ### Community 10 - "fn generate_statement(stmt)"
-Cohesion: 0.08
-Nodes (30): extern fn ir_add, extern fn ir_alloca, extern fn ir_br_numbered, extern fn ir_clear_local_var_types, extern fn ir_clear_returned, extern fn ir_cond_br_numbered, extern fn ir_function_begin, extern fn ir_function_body_start (+22 more)
+Cohesion: 0.07
+Nodes (37): extern fn ir_add, extern fn ir_alloca, extern fn ir_append, extern fn ir_append_line, extern fn ir_br_numbered, extern fn ir_clear_returned, extern fn ir_cond_br_numbered, extern fn ir_function_begin (+29 more)
 
-### Community 11 - "fn generate_module(module)"
-Cohesion: 0.11
-Nodes (25): Claim: no semantic analysis pass between parsing and IR gen (planned), extern fn ir_blank_line, extern fn ir_clear_var_types, extern fn ir_declare_function_begin, extern fn ir_declare_function_end, extern fn ir_declare_function_param, extern fn ir_global_var, extern fn ir_is_struct_type_name (+17 more)
+### Community 11 - "extern fn ptr_to_node"
+Cohesion: 0.09
+Nodes (39): extern fn ptr_to_node, extern fn ir_blank_line, extern fn ir_clear_var_types, extern fn ir_declare_function_begin, extern fn ir_declare_function_end, extern fn ir_declare_function_param, extern fn ir_global_string, extern fn ir_global_var (+31 more)
 
-### Community 12 - "extern fn ptr_to_node"
-Cohesion: 0.19
-Nodes (16): extern fn ptr_to_node, extern fn ir_global_string, extern fn ir_register_enum_variant, fn collect_strings_block(block), fn collect_strings_expr(expr), fn collect_strings_function(func), fn collect_strings_stmt(stmt), fn count_list_nodes(first_ptr) -> Int (+8 more)
+### Community 12 - "extern fn str_equals"
+Cohesion: 0.16
+Nodes (22): fn fn_key(name) -> String, fn ir_ptr_int_type() -> String, fn map_type(t) -> String, fn struct_type_key(name) -> String, fn sema_find_function(module, name) -> ASTNode, fn sema_fn_key(name) -> String, fn sema_function_symbol(module, fn_node) -> String, fn sema_function_symbol_count(module, symbol) -> Int (+14 more)
 
 ### Community 13 - "setup_llvm.py"
 Cohesion: 0.25
 Nodes (20): candidate_roots(), detect_version(), download(), extract(), fetch(), find_existing(), inspect(), lib_names() (+12 more)
 
 ### Community 14 - "CONTRIBUTING.md"
-Cohesion: 0.25
-Nodes (7): Contributor Covenant Code of Conduct, Conventional Commits convention, Claim: no dedicated semantic analysis pass (planned), Test naming convention (test_<NN>_<description>.psm), POST_INSTALL.txt (install success message), Contributor Covenant (README reference), Prismio Design Principles
+Cohesion: 0.22
+Nodes (8): Contributor Covenant Code of Conduct, Conventional Commits convention, Claim: no dedicated semantic analysis pass (planned), Test naming convention (test_<NN>_<description>.psm), POST_INSTALL.txt (install success message), Contributor Covenant (README reference), Prismio Design Principles, Claim: no semantic analysis pass between parsing and IR gen (planned)
 
 ### Community 15 - "fn lexer_next_token(lex) -> Token"
 Cohesion: 0.18
@@ -221,7 +263,7 @@ Nodes (3): add_c_string(), escape_c_string(), main()
 
 ### Community 22 - "llvm-api-backend.c"
 Cohesion: 0.07
-Nodes (77): LLVMBasicBlockRef, LLVMTypeRef, LLVMValueRef, NamedValue, strcmp(), backend_fail(), block_done(), block_for() (+69 more)
+Nodes (81): LLVMBasicBlockRef, LLVMTypeRef, LLVMValueRef, NamedValue, strcmp(), strncpy(), backend_fail(), block_done() (+73 more)
 
 ### Community 23 - "Enum Types"
 Cohesion: 0.24
@@ -231,21 +273,21 @@ Nodes (11): Enum Types, Pattern Matching (match expressions), enum Color, enum E
 Cohesion: 0.15
 Nodes (13): String Runtime (extern str_* FFI functions), fail(message), extern fn int_to_str, main(), extern fn str_char_at, extern fn str_concat, extern fn str_contains, extern fn str_equals (+5 more)
 
-### Community 25 - "fn resolve_imports(module, base_dir) -> ASTNode"
-Cohesion: 0.32
-Nodes (8): fn append_non_imports(target, source), fn append_statement(module, stmt), fn has_named_top_level(module, stmt) -> Bool, fn is_named_top_level(stmt) -> Bool, fn join_import_path(base_dir, module_name) -> String, extern fn read_file, fn resolve_imports(module, base_dir) -> ASTNode, fn same_top_level_name(a, b) -> Bool
+### Community 25 - "layout.py"
+Cohesion: 0.05
+Nodes (40): Engine, escape_join(), escape_le(), main(), measure_masks(), Model, Scope forest. Each function's body block is a root; join is the LCA, which…, Least upper bound on Region(s) < Caller < Global. (+32 more)
 
 ### Community 26 - "diagnostics.c"
 Cohesion: 0.18
 Nodes (11): diag_digits(), diag_emit(), diag_error(), diag_error_at(), diag_line_length(), diag_line_start(), diag_note_at(), diag_render_span() (+3 more)
 
 ### Community 27 - "test_runner.py"
-Cohesion: 0.32
-Nodes (11): cleanup_files(), compile_prismio_file(), expected_errors(), main(), Substrings the diagnostics must contain, from `// expect-error:` lines. Without…, `prismio run` with a forward-slash -o path. Every other test goes through…, run_cli_test(), run_command() (+3 more)
+Cohesion: 0.28
+Nodes (13): cleanup_files(), compile_prismio_file(), expected_errors(), main(), Substrings the diagnostics must contain, from `// expect-error:` lines. Without…, `prismio run` with a forward-slash -o path. Every other test goes through…, The AIF memory model's tier derivation, one fixture per SPEC 4.2 clause.…, run_aif_test() (+5 more)
 
 ### Community 28 - "check_source_lists.py"
-Cohesion: 0.32
-Nodes (15): Exception, bootstrap_ps1_list(), bootstrap_sh_list(), embedded_generator_list(), embedded_switch_order(), Failure, main(), package_ps1_lists() (+7 more)
+Cohesion: 0.21
+Nodes (20): Exception, compare(), main(), parse_compiler(), parse_oracle(), run(), bootstrap_ps1_list(), bootstrap_sh_list() (+12 more)
 
 ### Community 29 - "main() function (test_09_strings)"
 Cohesion: 0.48
@@ -269,7 +311,7 @@ Nodes (14): 1.1 Pipeline trace: `prismio build file.psm` → executable, 1.2 How
 
 ### Community 34 - "strlen"
 Cohesion: 0.19
-Nodes (14): run_command_path(), str_char_at(), str_concat(), str_ends_with(), str_length(), str_replace(), str_substring(), str_trim() (+6 more)
+Nodes (14): run_command_path(), diag_add_file(), diag_strdup(), str_char_at(), str_clone(), str_concat(), str_ends_with(), str_length() (+6 more)
 
 ### Community 35 - "main"
 Cohesion: 0.47
@@ -303,9 +345,9 @@ Nodes (5): Recursion, fail(message) function (test_06_recursion), fibonacci(n) f
 Cohesion: 0.50
 Nodes (5): Return Statements / Early Return, classify_number(n) function, early_return(x) function, fail(message) function (test_11_returns), main() function (test_11_returns)
 
-### Community 43 - "Prismio Project Structure (src/ layout)"
-Cohesion: 0.40
-Nodes (5): Prismio Project Structure (src/ layout), ASTNode struct (flat, string-pointer-punned), NodeKind enum (AST node kinds), fn is_keyword(s) -> Bool, TypeInfo struct
+### Community 43 - "aif_support.c"
+Cohesion: 0.05
+Nodes (10): aif_fn_name(), aif_fn_symbol(), aif_nominal_name(), aif_order_symbol(), aif_site_type(), aif_str(), escape_join(), raise_escape() (+2 more)
 
 ### Community 44 - "main"
 Cohesion: 0.67
@@ -316,12 +358,12 @@ Cohesion: 0.15
 Nodes (12): Confirmed design decisions (from this session's clarifying questions — do not re-ask these), Kickoff prompt for the new session, Phase 1 — Import memoization + driver.c split (foundational, do this first), Phase 2 — Library packaging + Mode 1 (installed-toolchain discovery), Phase 3 — `prismio bootstrap` command + Mode 2 + hash-based freshness, Phase 4 — Backend boundary cleanup, Phase 5 — Tests, docs, architecture report, Prismio Toolchain Architecture Refactor — Session Handoff (+4 more)
 
 ### Community 46 - "malloc"
-Cohesion: 0.20
-Nodes (12): compiler_installed_runtime_hash(), compiler_runtime_source_hash(), fnv1a_bytes(), diag_add_file(), diag_strdup(), list_new(), list_push(), malloc() (+4 more)
+Cohesion: 0.16
+Nodes (14): compiler_default_exe_path(), compiler_installed_runtime_hash(), path_file_name(), path_without_extension(), list_new(), list_push(), malloc(), str_from_char() (+6 more)
 
 ### Community 61 - "program_support.c"
-Cohesion: 0.21
-Nodes (7): str_clone(), strcpy(), executable_directory(), execute_command(), get_directory(), join_path(), prismio_executable_directory()
+Cohesion: 0.22
+Nodes (6): executable_directory(), execute_command(), file_exists(), get_directory(), join_path(), prismio_executable_directory()
 
 ### Community 63 - "Building Prismio on macOS (and Linux)"
 Cohesion: 0.20
@@ -331,9 +373,9 @@ Nodes (9): Build it, Building Prismio on macOS (and Linux), Check you reached a 
 Cohesion: 0.25
 Nodes (7): Current state, File roles, Five rules learned the hard way, Handoff — continuing the Prismio work, Known gaps, documented rather than fixed, What's next, Workflow — do this for every change
 
-### Community 71 - "fn generate_struct_decl(struct_node)"
-Cohesion: 0.25
-Nodes (8): extern fn ir_append, extern fn ir_append_line, extern fn ir_get_struct_field_index, extern fn ir_register_struct_field, fn generate_struct_decl(struct_node), fn is_struct_type_key(t) -> Bool, fn llvm_type_name(t) -> String, fn storage_type(t) -> String
+### Community 71 - "fn sema_expr(module, expr) -> TypeInfo"
+Cohesion: 0.13
+Nodes (32): extern fn ir_clear_borrowed, extern fn ir_clear_local_var_types, extern fn ir_clear_moved, extern fn ir_has_var_type, extern fn ir_is_borrowed, extern fn ir_is_moved, extern fn ir_mark_borrowed, extern fn ir_mark_moved (+24 more)
 
 ### Community 73 - "bootstrap.sh"
 Cohesion: 0.53
@@ -347,9 +389,177 @@ Nodes (4): Documented Compiler Pipeline (README architecture diagram), Security 
 Cohesion: 0.80
 Nodes (4): build_archive(), die(), green(), package.sh script
 
-### Community 77 - "fn get_expr_type(expr) -> String"
-Cohesion: 0.67
-Nodes (4): extern fn ir_get_enum_variant, extern fn ir_get_struct_field_type, extern fn ir_get_var_type, fn get_expr_type(expr) -> String
+### Community 77 - "Tier 2 — required by specified AIF features"
+Cohesion: 0.07
+Nodes (28): 10. Per-module optimisation levels **[needed]**, 11. `verify` build mode **[needed]**, 12. Handles instead of raw pointers **[needed, long-horizon]**, 13. Generic containers — `Map<K,V>`, growable `Vec<T>` **[enabling]**, 14. Error handling — tagged unions, `Option` / `Result` **[enabling]**, 15. Concurrency / task model **[needed for `T`]**, 16. Fix superlinear compile time **[enabling]**, 17. `Int` ↔ `Float` conversion **[minor]** (+20 more)
+
+### Community 84 - "AIF — Workload Declaration, Cost Model, and Layout Search"
+Cohesion: 0.07
+Nodes (28): 10.1 The cache model has no associativity and no conflict misses, 10.2 `HandleCost` is a placeholder, 10.3 Profiles age, 10.4 Static frequency estimation is crude, 10.5 One profile, one target, 10 · Known weaknesses, 1 · The key reframing, 2.1 Contents (+20 more)
+
+### Community 85 - "AIF — Design Rationale"
+Cohesion: 0.09
+Nodes (22): AIF — Design Rationale, Arena placement is a cost decision; `region` is a pin on it, Bake the static region, not the heap, C1, C10, C2, C3, C4 (+14 more)
+
+### Community 87 - "5 · A staged path"
+Cohesion: 0.10
+Nodes (21): 1 · Headline findings, 2.1 The invariant needs a boundary the spec does not currently draw, 2.2 Structs are affine references, not values, 2 · Frozen items, one by one, 3.1 What isn't behind the seam at all, 3 · The seam, precisely, 4.1 A pass between sema and codegen, 4.2 Scope-based drop (+13 more)
+
+### Community 88 - "1 · AIF core — genuinely ours"
+Cohesion: 0.10
+Nodes (21): 1 · AIF core — genuinely ours, 2 · AIF's stake in language features it does not own, 3 · Compiler requirements AIF genuinely has, 4 · Measurement, 5 · Not AIF — recorded, then handed over, 6 · Over-built — defer or cut, A3. Realised context counts *(measurement)*, A4. Arena high-water marks *(measurement)* (+13 more)
+
+### Community 89 - "AIF — The FFI Boundary"
+Cohesion: 0.10
+Nodes (21): 10 · Reporting, 1 · The one place being wrong is unsafe, 2 · C-compatible layout, 3.1 The four cases, 3.2 Copy direction, 3.3 What is never copied, 3 · When a copy is mandatory, 4 · The cost model does the work (+13 more)
+
+### Community 90 - "aif_intern"
+Cohesion: 0.14
+Nodes (21): aif_enum_new(), aif_fn_lookup(), aif_fn_new(), aif_intern(), aif_key_field(), aif_key_param(), aif_key_ret(), aif_key_var() (+13 more)
+
+### Community 91 - "AIF — The T4 Cycle Collector"
+Cohesion: 0.11
+Nodes (18): 10 · What still needs measurement, 1 · What is actually in scope, 2 · The headline result, 3.1 Why trial deletion and not tracing, 3.2 The procedure, 3 · Algorithm, 4 · The cyclic-edge restriction, 5 · Object header (+10 more)
+
+### Community 92 - "AIF — Measurement and Falsification Plan"
+Cohesion: 0.12
+Nodes (17): 1 · The methodological point that matters most, 2.1 Definitions, 2.2 The claim under test, 2.3 False sharing from field insensitivity, 2 · Primary metric: tier distribution, 3.1 B1 is a weak headline and should not be the first result, 3.2 Baselines, 3 · Benchmark programs (+9 more)
+
+### Community 93 - "PIR — Prism Semantic IR"
+Cohesion: 0.13
+Nodes (15): 1 · Why bodies must ship, 2.1 Not LLVM IR, 2 · Content model, 3 · Deterministic emission, 4 · Merging, 5.1 Sealed surfaces SHALL publish ownership contracts, 5 · Sealed functions, 6.1 Format versioning (+7 more)
+
+### Community 94 - "aif_solve"
+Cohesion: 0.24
+Nodes (14): Bits, aif_compute_type_acyclic(), aif_reset(), aif_solve(), bits_clear(), bits_count_at_least_two(), bits_ensure(), bits_free() (+6 more)
+
+### Community 95 - "AIF — Level 0 Results"
+Cohesion: 0.17
+Nodes (12): 1 · Headline, 2 · The finding: one decision accounts for the entire residue, 3 · What the game corpus showed that the compiler could not, 3a · Handles appear to eliminate T3 in engine code, 4.1 `retain_in(k)` is missing from FFI.md's contract vocabulary, 4.2 The cycle collector has no program that can exercise it, 4 · Two spec gaps the run found, 5 · Secondary measurements (+4 more)
+
+### Community 96 - "AIF — The Target Workload"
+Cohesion: 0.17
+Nodes (12): 0.1 · Engine and game remain two workloads, 0 · The actual stack, 1 · The two halves, 2.1 The annotations belong to the engine layer, 2.2 T3 lives in the engine, T0–T2 in the game, 2.3 The engine/game boundary is where whole-program analysis must hold, 2.4 The manifest becomes a contract between teams, 2.5 Optimisation level has to be **per module**, not per build (+4 more)
+
+### Community 97 - "AIF — Adaptive Inference Framework"
+Cohesion: 0.18
+Nodes (11): 0 · Conformance language, 10.1 FFI, 10.2 Library distribution, 10 · Boundaries, 12 · What this model gives up *(informative)*, 1.1 What the invariant does not cover, 1 · The invariant, 9.1 Layout search (+3 more)
+
+### Community 98 - "AIF — Cross-Language Comparison Suite"
+Cohesion: 0.20
+Nodes (10): 1 · The thesis, stated so it can be killed, 2 · Fairness rules, 3 · The suite, 4 · Isolating the memory-model tax, 5 · Where AIF is predicted to lose, 6 · Predicted results, 7 · Reporting, AIF — Cross-Language Comparison Suite (+2 more)
+
+### Community 99 - "AIF — Evaluation as a General-Purpose Memory Model"
+Cohesion: 0.20
+Nodes (10): 1 · The finding that should drive planning, 2 · What holds up as general-purpose, 3 · Where the spec is over-fitted — the 80/20 budget rule, 4 · Regions generalise better than layout, and are under-emphasised, 5 · The biggest hole: closures, 6 · PIR is a heavier liability for general-purpose than for games, 7 · Honest scorecard, 8 · What I would change (+2 more)
+
+### Community 100 - "AIF — Adaptive Inference Framework"
+Cohesion: 0.20
+Nodes (10): AIF — Adaptive Inference Framework, Conformance is graded, Contents, Running the prototype, Start here, Status, The model in one screen, Two things to know before extending this (+2 more)
+
+### Community 101 - "8.4 Views — slices and element references"
+Cohesion: 0.20
+Nodes (10): 8.1 Handles, 8.2 The compiler owns layout, 8.3 The static region, 8.4 Views — slices and element references, 8 · Representation, Cost, stated plainly, Element references are views too — the deep consequence, Invalidation, without a borrow checker (+2 more)
+
+### Community 102 - "con_add"
+Cohesion: 0.20
+Nodes (10): aif_con_arg(), aif_con_bind(), aif_con_borrow(), aif_con_escape_caller(), aif_con_escape_global(), aif_con_live_in(), aif_con_opaque(), aif_con_retain_in() (+2 more)
+
+### Community 103 - "nominal_find"
+Cohesion: 0.20
+Nodes (10): aif_is_enum(), aif_is_struct(), aif_struct_nfields(), aif_type_acyclic(), aif_type_edge(), nominal_find(), nominal_find_id(), solver_alloc() (+2 more)
+
+### Community 104 - "5 · Annotations"
+Cohesion: 0.22
+Nodes (9): 5.0 Why exactly these four *(normative rationale)*, 5.1 `unique`, 5.2 `region { … }`, 5.3 `workload(…)`, 5.4.1 A proven-false pin is a compile error, 5.4.2 An unproven pin is never an error, 5.4.3 Strictness is opt-in, per value, 5.4 `pin` (+1 more)
+
+### Community 105 - "AIF — Layout Results (A1)"
+Cohesion: 0.25
+Nodes (8): 1 · Headline, 2 · The static profile is exact, 3 · The model discriminates, and that is the real result, 4 · Spec defect found: LAYOUT §5.4's total could go negative, 5 · What this does not show, 6 · What to do next, AIF — Layout Results (A1), Reproducing
+
+### Community 106 - "AIF — The Inference Engine"
+Cohesion: 0.25
+Nodes (8): 10 · Worked example, 1 · Architecture, 3.1 Nodes, 3.2 Edges, 3.3 Node ordering (normative), 3 · The fact graph, 9 · Incrementality, AIF — The Inference Engine
+
+### Community 107 - "4 · Transfer rules"
+Cohesion: 0.25
+Nodes (8): 4.1 Escape module, 4.2 Aliasing module, 4.3 Thread module, 4.4 Cyclicity module, 4.5 Closure capture, 4.6 Dynamic dispatch, 4.7 Generics and ownership contexts, 4 · Transfer rules
+
+### Community 108 - "5 · The fixed-point algorithm"
+Cohesion: 0.25
+Nodes (8): 5.1 Iteration strategy (normative), 5.2 The algorithm, 5.3 The give-up condition — and why you cannot simply stop, 5.4 Determinism (normative), 5.5 Termination, 5.6 Minimal cause, 5.7 Optimisation levels, 5 · The fixed-point algorithm
+
+### Community 109 - "7 · Specialisation strategy and dedup"
+Cohesion: 0.25
+Nodes (8): 7.0.1 Three strategies, 7.0.2 Dedup still applies, 7.0 The ownership-divergence ratio, 7.1 Layer 1 — the relevant-parameter mask *(pre-instantiation, cheapest, does the most work)*, 7.2 Layer 2 — semantic equivalence *(pre-codegen)*, 7.3 Layer 3 — structural dedup *(post-codegen)*, 7.4 Budget-driven collapse, 7 · Specialisation strategy and dedup
+
+### Community 110 - "AIF — Engine/Game Boundary Results (A2)"
+Cohesion: 0.29
+Nodes (7): 1 · Result, 2 · The boundary is cheap because the API is handle-based, 3 · Most of the sealing loss is recoverable with contracts, 4 · A prototype bug worth recording, 5 · Compiler bug found: `List<Int>` miscompiles, 6 · What this does not show, AIF — Engine/Game Boundary Results (A2)
+
+### Community 111 - "AIF Prototype"
+Cohesion: 0.29
+Nodes (6): AIF Prototype, Approximations, Running, Two bugs found here, both worth remembering, Two roles, What it implements
+
+### Community 112 - "11 · Known weaknesses"
+Cohesion: 0.29
+Nodes (7): 11.1 Field sensitivity is object-insensitive, 11.2 The context set is discovered from facts that are still moving, 11.3 Loops are handled by the lattice, not by a loop analysis, 11.4 There is no interprocedural path sensitivity, 11.5 ~~The `⊤` context is a cliff~~ — resolved in 1.2, 11.6 Everything here assumes whole-program PIR, 11 · Known weaknesses
+
+### Community 113 - "2 · Fact domains"
+Cohesion: 0.29
+Nodes (7): 2.1 `E` — escape, 2.2 `A` — aliasing, 2.3 `T` — thread affinity, 2.4 `C` — cyclicity, 2.5 `L` — lifetime determinacy *(derived)*, 2.6 The product, 2 · Fact domains
+
+### Community 114 - "8 · Annotations as axioms and constraints"
+Cohesion: 0.33
+Nodes (6): 8.1 Seeding and cutting, 8.2 `unique` — verification is complete, 8.3 `region` — verification is sound, and imprecision costs only performance, 8.4 `pin`, 8.5 Verification under budget, 8 · Annotations as axioms and constraints
+
+### Community 115 - "11 · Conformance boundary"
+Cohesion: 0.33
+Nodes (6): 11.0 Conformance levels, 11 · Conformance boundary, Annotation governance, Frozen — normative, Open — by descending risk, Resolved in 1.1 — was open in v1.0
+
+### Community 116 - "3 · The tier ladder"
+Cohesion: 0.33
+Nodes (6): 3 · The tier ladder, T0 — Value / stack, T1 — Region / arena, T2 — Unique owned, T3 — Shared, non-atomic reference counting, T4 — Managed residue
+
+### Community 117 - "bits_to_vec"
+Cohesion: 0.40
+Nodes (6): IntVec, aif_argv_push(), bits_to_vec(), ctz64(), vec_push(), Word
+
+### Community 118 - "fn lex_all_tokens(lex) -> Token (returns linked-list head)"
+Cohesion: 0.40
+Nodes (6): fn create_lexer(input) -> Lexer, fn lex_all_tokens(lex) -> Token (returns linked-list head), Lexer struct, extern fn token_to_ptr, fn parse_source(content) -> ASTNode, fn parser_create(tokens) -> Parser
+
+### Community 119 - "AIF Evidence"
+Cohesion: 0.40
+Nodes (5): AIF Evidence, Before quoting any number, Judgement, Measured, Projected, not measured
+
+### Community 120 - "6 · Ownership contexts"
+Cohesion: 0.40
+Nodes (5): 6.1 What a context is, 6.2 Context ordering, 6.3 Discovery (demand-driven), 6.4 The context cap, 6 · Ownership contexts
+
+### Community 121 - "2 · The objects of the model"
+Cohesion: 0.40
+Nodes (5): 2.1 Allocation site, 2.2 Ownership context, 2.3 Abstract value, 2.4 What tier is not, 2 · The objects of the model
+
+### Community 122 - "4 · Tier derivation"
+Cohesion: 0.40
+Nodes (5): 4.1 Inputs, 4.2 The derivation function, 4.3 Monotonicity (normative property), 4.4 Cost model constants *(informative)*, 4 · Tier derivation
+
+### Community 123 - "7 · Two-speed compilation"
+Cohesion: 0.40
+Nodes (5): 7.1 Requirement, 7.2 Levels, 7.3 `verify` — facts as runtime assertions, 7.4 Layout search is opt-in, 7 · Two-speed compilation
+
+### Community 124 - "vs_push"
+Cohesion: 0.40
+Nodes (5): aif_vs_key(), aif_vs_new(), aif_vs_site(), aif_vs_union(), vs_push()
+
+### Community 125 - "AIF Corpus"
+Cohesion: 0.50
+Nodes (4): AIF Corpus, Building, Gaps to fill, Three things the corpus established
+
+### Community 126 - "6 · The tier manifest"
+Cohesion: 0.50
+Nodes (4): 6.1 Purpose, 6.2 Format, 6.3 Diff semantics, 6 · The tier manifest
 
 ## Ambiguous Edges - Review These
 - `Claim: no dedicated semantic analysis pass (planned)` → `fn analyze_module(module)`  [AMBIGUOUS]
@@ -360,7 +570,7 @@ Nodes (4): extern fn ir_get_enum_variant, extern fn ir_get_struct_field_type, ex
   README.MD · relation: references
 
 ## Knowledge Gaps
-- **248 isolated node(s):** `1.1 Pipeline trace: `prismio build file.psm` → executable`, `1.2 How runtime libraries are included: embedded, external, or both?`, `1.3 Every file and function responsible`, `2.1 What happens when the compiler compiles itself (`prismio build src/main.psm`)?`, `2.2 Duplicate runtime linkage — two separate risks, at two separate layers` (+243 more)
+- **556 isolated node(s):** `1.1 Pipeline trace: `prismio build file.psm` → executable`, `1.2 How runtime libraries are included: embedded, external, or both?`, `1.3 Every file and function responsible`, `2.1 What happens when the compiler compiles itself (`prismio build src/main.psm`)?`, `2.2 Duplicate runtime linkage — two separate risks, at two separate layers` (+551 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **23 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -373,11 +583,11 @@ _Questions this graph is uniquely positioned to answer:_
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
 - **What is the exact relationship between `Claim: no semantic analysis pass between parsing and IR gen (planned)` and `fn analyze_module(module)`?**
   _Edge tagged AMBIGUOUS (relation: references) - confidence is low._
-- **Why does `extern fn ptr_to_node` connect `extern fn ptr_to_node` to `fn sema_annotation_type(module, tn) -> TypeInfo`, `fn create_node(kind) -> ASTNode`, `fn generate_expression(expr) -> String`, `fn generate_struct_decl(struct_node)`, `fn generate_statement(stmt)`, `fn generate_module(module)`, `fn get_expr_type(expr) -> String`, `fn resolve_imports(module, base_dir) -> ASTNode`?**
-  _High betweenness centrality (0.030) - this node is a cross-community bridge._
-- **Why does `fn generate_expression(expr) -> String` connect `fn generate_expression(expr) -> String` to `fn sema_annotation_type(module, tn) -> TypeInfo`, `fn generate_struct_decl(struct_node)`, `fn generate_statement(stmt)`, `extern fn ptr_to_node`, `fn get_expr_type(expr) -> String`?**
-  _High betweenness centrality (0.023) - this node is a cross-community bridge._
-- **Why does `strcmp()` connect `llvm-api-backend.c` to `strlen`, `ir_symbols.c`, `build_driver.c`, `lang_runtime.c`, `malloc`?**
-  _High betweenness centrality (0.016) - this node is a cross-community bridge._
+- **Why does `strcmp()` connect `llvm-api-backend.c` to `strlen`, `ir_symbols.c`, `build_driver.c`, `lang_runtime.c`, `aif_support.c`, `aif_intern`?**
+  _High betweenness centrality (0.054) - this node is a cross-community bridge._
+- **Why does `strlen()` connect `strlen` to `ir_symbols.c`, `build_driver.c`, `lang_runtime.c`, `malloc`, `llvm-api-backend.c`, `aif_intern`, `program_support.c`?**
+  _High betweenness centrality (0.037) - this node is a cross-community bridge._
+- **Why does `AIF — The Inference Engine` connect `AIF — The Inference Engine` to `4 · Transfer rules`, `5 · The fixed-point algorithm`, `7 · Specialisation strategy and dedup`, `11 · Known weaknesses`, `2 · Fact domains`, `8 · Annotations as axioms and constraints`, `RESULTS-L0-tiers.md`, `6 · Ownership contexts`?**
+  _High betweenness centrality (0.036) - this node is a cross-community bridge._
 - **Are the 36 inferred relationships involving `main()` (e.g. with `ir_alloc_object()` and `ir_alloca()`) actually correct?**
   _`main()` has 36 INFERRED edges - model-reasoned connections that need verification._

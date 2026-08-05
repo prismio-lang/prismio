@@ -54,9 +54,18 @@ re-deriving them is expensive.
 [spec/SPEC.md](spec/SPEC.md) §11's list is measurement or policy.
 
 **Static validation: done for what is reachable without codegen.** Six programs, three result
-documents.
+documents. **See the correction note at the top of
+[evidence/RESULTS-L0-tiers.md](evidence/RESULTS-L0-tiers.md) before quoting the SELF row.**
 
-**Implementation: not started.** The compiler has a `dump-ast` command and nothing else.
+**Implementation: Level 0 landed** (2026-08-05). The inference engine, tier assignment and the
+manifest are in the compiler — `prismio aif <source.psm>` — and change no codegen. Engine in
+[`self/src/aif.psm`](../src/aif.psm), containers in
+[`self/runtime/aif_support.c`](../runtime/aif_support.c). It agrees with `prototype/aif.py`
+site-for-site on all eight sources (`python tools/aif_differential.py`), costs no measurable time
+next to a build, and the self-host still reaches a fixed point from the committed seed.
+
+Levels 1–5 of [implementation/COMPILER-AUDIT.md](implementation/COMPILER-AUDIT.md) §5 — T0 stack
+promotion onward — are not started. Nothing yet allocates differently.
 
 **Dynamic validation: blocked on codegen.** No runtime number exists, and none can until tiers
 reach the emitted binary.

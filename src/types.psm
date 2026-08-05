@@ -1,7 +1,16 @@
 import ast
 import utils
 
+// As with NodeKind (ast.psm), **nothing may take ordinal 0**: a TypeInfo is
+// punned as a String and `kind` is its first field, so a zero-valued kind makes
+// a live TypeInfo read as an empty slot. `INVALID` at ordinal 0 used to make
+// node_has_type answer false for a node that did carry a type. That happened to
+// cancel out -- node_get_type returns type_invalid() either way -- which is
+// exactly why it survived.
 enum TypeKind {
+    // Not a type. Keeps every real kind's low byte non-zero.
+    NEVER_ZERO,
+
     INVALID,
     VOID,
     INT,
@@ -292,8 +301,14 @@ fn node_set_type(node: ASTNode, t: TypeInfo) {
     node.type_info = type_to_ptr(t)
 }
 
+// `node_exists` rather than `str_equals(type_info, "")`: a TypeInfo begins with
+// its `kind`, and `TypeKind.INVALID` is 0, so a node carrying an invalid type
+// used to report as carrying none. That happened to be harmless -- node_get_type
+// returns type_invalid() on both paths -- but it was the same latent bug as the
+// module root, and "wrong in a way that currently cancels out" is not a state to
+// leave a predicate in. See ptr_is_null in ast.psm.
 fn node_has_type(node: ASTNode) -> Bool {
-    return str_equals(node.type_info, "") == 0
+    return node_exists(node.type_info)
 }
 
 fn node_get_type(node: ASTNode) -> TypeInfo {

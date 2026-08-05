@@ -200,6 +200,63 @@ def run_cli_test():
     return False
 
 
+AIF_EXPECTED = {
+    "tier_zero__Void#0":        "T0",
+    "tier_one_string__Void#0":  "T1",
+    "tier_one_wide__Void#0":    "T1",
+    "tier_two__Void#0":         "T2",
+    "tier_three__Void#0":       "T3",
+}
+
+
+def run_aif_test():
+    """The AIF memory model's tier derivation, one fixture per SPEC 4.2 clause.
+
+    Asserts the tier of each named record rather than a distribution, because a
+    distribution can stay plausible while a clause is broken -- and a broken
+    clause here yields a silently wrong tier rather than a crash, which is the
+    whole reason aif/prototype/aif.py is kept as an oracle.
+
+    This is the cheap in-suite half of that. The full differential run against
+    the oracle is tools/aif_differential.py.
+    """
+    print(f"\n{BLUE}--- Running aif_tiers ---{RESET}")
+    fixture = TEST_DIR / "aif_tiers.psm"
+
+    result = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    if result.returncode != 0:
+        print(f"{RED}[FAIL] `prismio aif` exited {result.returncode}{RESET}")
+        print(result.stdout or result.stderr)
+        return False
+
+    if "converged   yes" not in result.stdout:
+        print(f"{RED}[FAIL] inference did not converge on the fixture{RESET}")
+        print(result.stdout)
+        return False
+
+    got = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] in AIF_EXPECTED:
+            got[parts[0]] = parts[1]
+
+    problems = []
+    for symbol, want in AIF_EXPECTED.items():
+        if symbol not in got:
+            problems.append(f"{symbol}: no manifest record")
+        elif got[symbol] != want:
+            problems.append(f"{symbol}: expected {want}, got {got[symbol]}")
+
+    if problems:
+        print(f"{RED}[FAIL] tier assignment changed{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] AIF assigns every SPEC 4.2 clause its expected tier{RESET}")
+    return True
+
+
 def main():
     print(f"{YELLOW}{'='*60}{RESET}")
     print(f"{YELLOW}Prismio Compiler Test Suite{RESET}")
@@ -236,6 +293,11 @@ def main():
             failed += 1
 
     if run_cli_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_test():
         passed += 1
     else:
         failed += 1

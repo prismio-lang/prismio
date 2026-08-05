@@ -8,6 +8,7 @@ import ir
 import sema
 import diag
 import dumpast
+import aif
 
 extern fn read_file(path: String) -> String
 extern fn get_directory(path: String) -> String
@@ -68,7 +69,7 @@ fn has_named_top_level(module: ASTNode, stmt: ASTNode) -> Bool {
     }
 
     let mut scan_ptr = module.child1
-    while (str_equals(scan_ptr, "") == 0) {
+    while (node_exists(scan_ptr)) {
         let scan = ptr_to_node(scan_ptr)
         if (same_top_level_name(scan, stmt)) {
             return true
@@ -91,7 +92,7 @@ fn append_statement(module: ASTNode, stmt: ASTNode) {
         return
     }
 
-    if (str_equals(module.child1, "") == 1) {
+    if (node_is_null(module.child1)) {
         module.child1 = node_to_ptr(stmt)
         return
     }
@@ -100,7 +101,7 @@ fn append_statement(module: ASTNode, stmt: ASTNode) {
     let mut searching = true
     while (searching) {
         let tail = ptr_to_node(tail_ptr)
-        if (str_equals(tail.next, "") == 1) {
+        if (node_is_null(tail.next)) {
             tail.next = node_to_ptr(stmt)
             searching = false
         } else {
@@ -139,7 +140,7 @@ fn merge_module_imports(merged: ASTNode, module: ASTNode, base_dir: String, visi
     let mut seen = visited
 
     let mut stmt_ptr = module.child1
-    while (str_equals(stmt_ptr, "") == 0) {
+    while (node_exists(stmt_ptr)) {
         let stmt = ptr_to_node(stmt_ptr)
         let next_stmt = stmt.next
         stmt.next = ""
@@ -190,6 +191,7 @@ fn print_usage() {
     println("  prismio bootstrap [source.psm] [-o output.exe]")
     println("  prismio runtime-hash")
     println("  prismio dump-ast <source.psm>")
+    println("  prismio aif <source.psm> [--summary] [--owned-collections]")
     println("")
     println("build/run link against the installed Prismio runtime only.")
     println("bootstrap builds the compiler itself from the repository sources,")
@@ -226,15 +228,28 @@ fn check_runtime_freshness() {
     exit(1)
 }
 
-// Front half of compile_source -- lex, parse, resolve imports, type check -- then
-// dump instead of generating. Kept separate rather than threaded through
-// compile_source as a flag, so the build path has no branch that only the dumper
-// takes.
-fn dump_ast_command(path: String) -> Int {
+// Front half of compile_source -- lex, parse, resolve imports, type check -- and
+// nothing after it. The commands that analyse rather than build all need exactly
+// this and none of them may proceed past a diagnostic, so it is one function
+// rather than a flag threaded through compile_source: the build path keeps no
+// branch that only an analysis command takes.
+//
+// Failure is signalled through the diagnostic count rather than through the
+// returned node, because "no AST" and "an AST with errors in it" are different
+// states and only one of them has anything to return. Callers check
+// diag_error_count() > 0; diag_finish() prints but does not reset, so the count
+// is still there to read.
+//
+// This function is where `ptr_is_null` came from. The obvious version returned a
+// node pointer and used "" as the sentinel, which is the idiom the rest of the
+// compiler uses -- and it silently reported every successful parse as a failure,
+// because a punned pointer compares as a string and an ASTNode begins with its
+// `kind`, of which MODULE is 0. See ast.psm.
+fn analyzed_module(path: String) -> ASTNode {
     let content = read_file(path)
     if (str_equals(content, "") == 1) {
         diag_error(str_concat("cannot read ", path))
-        return 1
+        return create_node(NodeKind.MODULE)
     }
 
     let root_file = diag_add_file(path, content)
@@ -246,21 +261,46 @@ fn dump_ast_command(path: String) -> Int {
     let base_dir = get_directory(path)
     let merged_ast = resolve_imports(ast_root, base_dir)
 
+    // Parsing recovers, so errors may already be waiting here. Type checking a
+    // module with a declaration missing produces cascades, not information.
     if (diag_error_count() > 0) {
         diag_finish()
-        return 1
+        return merged_ast
     }
 
-    // Run sema: the dump carries each node's resolved type, and without this the
-    // `ty` field would be empty on every node.
     analyze_module(merged_ast)
 
     if (diag_error_count() > 0) {
         diag_finish()
+    }
+
+    return merged_ast
+}
+
+// Emits the post-sema AST as JSON. Sema has to have run: the dump carries each
+// node's resolved type, and without it the `ty` field would be empty on every
+// node.
+fn dump_ast_command(path: String) -> Int {
+    let merged = analyzed_module(path)
+    if (diag_error_count() > 0) {
         return 1
     }
 
-    dump_ast_json(merged_ast, path, PRISMIO_VERSION)
+    dump_ast_json(merged, path, PRISMIO_VERSION)
+    return 0
+}
+
+// Runs the AIF memory model over the module and reports (aif/spec/SPEC.md 6).
+// Produces no IR and touches no codegen, so it cannot change what `build`
+// generates -- which is the point at this stage: the tier distribution becomes
+// measurable before any of it is risked on the self-host.
+fn aif_command(path: String, summary: Bool, owned_collections: Bool) -> Int {
+    let merged = analyzed_module(path)
+    if (diag_error_count() > 0) {
+        return 1
+    }
+
+    aif_analyze(merged, path, PRISMIO_VERSION, owned_collections, summary)
     return 0
 }
 
@@ -413,6 +453,41 @@ fn main() -> Int {
             return 1
         }
         return dump_ast_command(cli_arg(2))
+    }
+
+    // The memory model. `--summary` prints the tier distribution in the form
+    // aif/prototype/aif.py prints it, so the two can be compared directly --
+    // that comparison is the only real defence against a transfer function that
+    // is subtly wrong and yields a silently wrong tier rather than a crash.
+    if (str_equals(first, "aif") == 1) {
+        if (cli_arg_count() <= 2) {
+            diag_error("missing source file")
+            print_usage()
+            return 1
+        }
+
+        let mut aif_summary = false
+        let mut aif_owned = false
+        let mut aif_arg = 3
+        while (aif_arg < cli_arg_count()) {
+            let flag = cli_arg(aif_arg)
+            if (str_equals(flag, "--summary") == 1) {
+                aif_summary = true
+            } else if (str_equals(flag, "--owned-collections") == 1) {
+                // Treat String/List/Array as move-only, as SPEC 11 item 10
+                // specifies rather than as types.psm currently implements. This
+                // one property is 100% of the measured T3 residue, so it is a
+                // switch: the difference it makes is the measurement.
+                aif_owned = true
+            } else {
+                diag_error(str_concat("unknown argument ", diag_quote(flag)))
+                print_usage()
+                return 1
+            }
+            aif_arg = aif_arg + 1
+        }
+
+        return aif_command(cli_arg(2), aif_summary, aif_owned)
     }
 
     // Compiler development. The command itself selects the build mode -- there is no

@@ -235,3 +235,25 @@ actual requirements on it are in that file's scope note.
 
 - **`prismio dump-ast`** — emits the post-sema AST as JSON. Additive: IR is byte-identical before
   and after, suite 57/57. `self/src/dumpast.psm` + `dump_ast_command` in `main.psm`.
+
+- **Item 5, a pass between sema and codegen** — landed 2026-08-05 as `self/src/aif.psm`, with the
+  containers item 13 asks for supplied by `self/runtime/aif_support.c` rather than by the language.
+  That is the same split `ir_symbols.c` already makes and it removes item 13 from the critical path
+  without removing the requirement: the engine is written in Prismio and its bitsets, interning and
+  key map are written in C.
+
+  It did **not** need the AST node ids this file proposed. Sites are identified by the walk that
+  creates them and named in the manifest by `⟨function symbol, ordinal within function⟩`, which is
+  what makes a diff readable — a record does not move when an unrelated line elsewhere in the file
+  does. Node ids will still be wanted the moment codegen has to look a tier up (Level 1).
+
+  Scope: COMPILER-AUDIT §5 Level 0 exactly. Facts, tiers, manifest; no codegen change.
+  `prismio aif <source.psm> [--summary] [--owned-collections]`.
+
+  Verified: agrees with `aif/prototype/aif.py` site-for-site on all eight sources under both
+  collection settings (`python tools/aif_differential.py`); self-host reaches a fixed point from
+  the committed seed; suite 58/58, the new one asserting one tier per SPEC §4.2 clause.
+
+- **A number on item 8.** The first thing the engine found on its own source is that FFI contracts,
+  not affine collections, dominate the compiler's residue — 383 of 552 sites are opaque extern
+  returns. See the correction note in [RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md).

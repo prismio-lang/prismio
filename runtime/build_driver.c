@@ -40,6 +40,7 @@ static const PrismioToolchainFile prismio_toolchain_files[] = {
     { "program_support.c",  1, "program_support", 1 },
     { "build_driver.c",     1, "build_driver",    0 },
     { "ir_symbols.c",       1, "ir_symbols",      0 },
+    { "aif_support.c",      1, "aif_support",     0 },
     { "diagnostics.c",      1, "diagnostics",     0 },
     { "llvm-api-backend.c", 1, "backend",         0 },
 };
@@ -59,8 +60,9 @@ static const char* prismio_embedded_text(int index) {
         case 3: return prismio_embedded_program_support_c;
         case 4: return prismio_embedded_build_driver_c;
         case 5: return prismio_embedded_ir_symbols_c;
-        case 6: return prismio_embedded_diagnostics_c;
-        case 7: return prismio_embedded_llvm_api_backend_c;
+        case 6: return prismio_embedded_aif_support_c;
+        case 7: return prismio_embedded_diagnostics_c;
+        case 8: return prismio_embedded_llvm_api_backend_c;
         default: return NULL;
     }
 }

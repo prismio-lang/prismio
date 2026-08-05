@@ -131,7 +131,7 @@ fn dump_chain(head: String) {
     print("[")
     let mut p = head
     let mut first = true
-    while (str_equals(p, "") == 0) {
+    while (node_exists(p)) {
         if (first == false) { print(",") }
         first = false
         let node = ptr_to_node(p)
@@ -166,7 +166,7 @@ fn dump_node(ptr: String) {
     // The type sema resolved for this node, rendered the way diagnostics render
     // it. Absent on nodes sema does not type (statements, declarations).
     print(",")
-    if (str_equals(n.type_info, "") == 0) {
+    if (node_exists(n.type_info)) {
         json_field_str("ty", type_display(ptr_to_type(n.type_info)))
     } else {
         json_field_str("ty", "")

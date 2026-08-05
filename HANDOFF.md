@@ -82,7 +82,31 @@ which of the six lists you missed.
 
 ## What's next
 
-**The memory model.** This is the agreed next piece of work and the seam is ready:
+**The memory model, Level 1.** Level 0 landed on 2026-08-05: `prismio aif <source.psm>` runs AIF's
+inference engine over the post-sema AST, assigns every allocation site a tier, and emits the
+manifest. It changes no codegen — nothing allocates differently yet — which is why it could land
+without risking the self-host.
+
+| | |
+|---|---|
+| `src/aif.psm` | the pass: AST walk, transfer rules, tier derivation, manifest |
+| `runtime/aif_support.c` | its containers: bitsets, interning, points-to keys, the solver loop |
+| `tools/aif_differential.py` | holds it against `aif/prototype/aif.py`, the independent oracle |
+| `tests/aif_tiers.psm` | one fixture per SPEC §4.2 clause, asserted in the suite |
+
+Run `python tools/aif_differential.py` after touching either implementation. They agree today on all
+eight sources under both collection settings, and that agreement is the only thing standing between
+a subtly wrong transfer function and a silently wrong tier. A deliberate divergence is fine and
+should be commented at the site in both files; an accidental one fails the script.
+
+Level 1 is T0 — stack-promote non-escaping structs — and it is where codegen starts to move. It
+needs `ir_alloc_stack` hoisting to the entry block, and it needs codegen to be able to *look a tier
+up*, which is the AST node ids `aif/implementation/COMPILER-AUDIT.md` §4.1 proposes and Level 0 did
+not need.
+
+Below is the seam as it was assessed before any of this; it is still accurate, and
+`aif/implementation/COMPILER-AUDIT.md` §3 explains why it covers half the ladder rather than all
+of it:
 
 - `ir_alloc_object(struct_name)` and `ir_free_object(value)` are the only two places codegen
   allocates or releases anything.

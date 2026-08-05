@@ -1,5 +1,15 @@
 // AST Node Kinds
+//
+// **NEVER_ZERO must stay first, and nothing may take ordinal 0.** See
+// node_exists below: an ASTNode is punned as a String, an absent slot is the
+// empty string, and a node whose first byte is NUL is indistinguishable from
+// one. `kind` is the first field, so a zero-valued kind makes a live node read
+// as an empty slot -- which is what `MODULE` at ordinal 0 used to do to every
+// module root.
 enum NodeKind {
+    // Not a node. Exists to keep every real kind's low byte non-zero.
+    NEVER_ZERO,
+
     MODULE,
 
     // Declarations
@@ -76,6 +86,46 @@ struct ASTNode {
 
 extern fn ptr_to_node(ptr: String) -> ASTNode
 extern fn node_to_ptr(node: ASTNode) -> String
+
+// Declared rather than imported from utils: ast.psm is the bottom of the import
+// graph and everything else depends on it.
+extern fn str_equals(s1: String, s2: String) -> Int
+
+// Is there a node here?
+//
+// **Use these two rather than spelling out `str_equals(ptr, "")`.** Not because
+// the spelling is long, but because it is only correct under an invariant that
+// has to be written down somewhere, and this is that place.
+//
+// An absent slot is the **empty string** -- create_node initialises every
+// pointer slot to "" -- so a null-pointer test is the wrong question and would
+// report an empty slot as present. `str_equals` is the right question. The trap
+// is the other direction: a punned pointer is a `char*`, so str_equals compares
+// the *bytes of the node*, and `kind` is the first field. A node whose kind is 0
+// begins with a NUL byte and is byte-for-byte indistinguishable from an empty
+// slot.
+//
+// > **INVARIANT: no type punned through String may have a zero-valued first
+// > field.** NodeKind and TypeKind both reserve ordinal 0 for this reason.
+//
+// This held by luck until something tested a module root: `MODULE` was ordinal
+// 0, so every successfully parsed module reported as absent. Every other test in
+// the compiler is on a `child`/`next` slot, where the kinds that occur happen to
+// be non-zero.
+//
+// The invariant is little-endian: it is the *low* byte of an i32 kind that lands
+// first. So does the punning scheme as a whole -- on big-endian every kind below
+// 2^24 has a zero first byte, so every node would read as absent with or without
+// this. Moving pointer slots from "" to a real null pointer would fix both and
+// is the right eventual answer; it touches every slot assignment in the frontend
+// and is not this change.
+fn node_exists(ptr: String) -> Bool {
+    return str_equals(ptr, "") == 0
+}
+
+fn node_is_null(ptr: String) -> Bool {
+    return str_equals(ptr, "") == 1
+}
 
 // Helper to create an empty node.
 //

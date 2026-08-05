@@ -1,0 +1,67 @@
+// Fixture for the AIF tier regression test (test_runner.py, run_aif_test).
+//
+// Not named test_*.psm because it is never built or run -- `prismio aif` stops
+// before codegen. Every function here exists to make exactly one clause of
+// SPEC 4.2 fire, so a change in the derivation shows up as a changed count
+// rather than as a plausible-looking distribution nobody checks.
+//
+// The expected tiers are asserted in tests/test_runner.py. Editing this file
+// means editing those.
+
+struct Small {
+    a: Int,
+    b: Int
+}
+
+// Nine fields, one over Theta_stack (8), so the T0 clause cannot fire on it
+// however local it is. This is the only thing separating it from Small.
+struct Wide {
+    f1: Int, f2: Int, f3: Int, f4: Int, f5: Int,
+    f6: Int, f7: Int, f8: Int, f9: Int
+}
+
+extern fn str_concat(s1: String, s2: String) -> String
+extern fn str_length(s: String) -> Int
+extern fn cli_arg(index: Int) -> String
+
+// T0 -- a struct that never leaves its own frame, under the field threshold.
+fn tier_zero() -> Int {
+    let s = Small { a: 1, b: 2 }
+    return s.a + s.b
+}
+
+// T1 -- region-bound but not a struct, so the T0 clause cannot fire and the
+// escape clause catches it instead. A string literal is not an allocation; the
+// concat is.
+fn tier_one_string() -> Int {
+    let joined = str_concat("a", "b")
+    return str_length(joined)
+}
+
+// T1 -- a struct, region-bound, but wider than Theta_stack.
+fn tier_one_wide() -> Int {
+    let w = Wide {
+        f1: 1, f2: 2, f3: 3, f4: 4, f5: 5,
+        f6: 6, f7: 7, f8: 8, f9: 9
+    }
+    return w.f1
+}
+
+// T2 -- escapes to the caller, so no region contains it, but nothing ever
+// creates a second reference to it.
+fn tier_two() -> Small {
+    return Small { a: 3, b: 4 }
+}
+
+// T3 -- `cli_arg` declares no ownership contract, so its return has unknown
+// provenance: it may already be shared and may already outlive this frame.
+// A is driven to Shared, which is what T3 tests.
+fn tier_three() -> Int {
+    let arg = cli_arg(1)
+    return str_length(arg)
+}
+
+fn main() -> Int {
+    let escaped = tier_two()
+    return tier_zero() + tier_one_string() + tier_one_wide() + tier_three() + escaped.a
+}

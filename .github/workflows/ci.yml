@@ -80,6 +80,18 @@ jobs:
           cd tests
           PRISMIO="../build/gen2$EXT" python test_runner.py
 
+      # The AIF engine exists twice on purpose: once in the compiler and once as
+      # aif/prototype/aif.py, sharing no code. A transfer function that is subtly
+      # wrong produces a silently wrong tier rather than a crash, so the two
+      # agreeing is the only real check on either -- and it is worth nothing
+      # unless something notices when they stop.
+      - name: AIF engine agrees with the oracle
+        shell: bash
+        run: |
+          set -e
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          python tools/aif_differential.py --compiler "build/gen2$EXT"
+
       # A seed that can no longer build the tree strands anyone starting from a
       # fresh checkout, so it is checked rather than assumed.
       - name: Check the committed seed is still usable

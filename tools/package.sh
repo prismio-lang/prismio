@@ -68,7 +68,7 @@ build_archive() {
 }
 
 build_archive runtime lang_runtime.c program_support.c
-build_archive backend build_driver.c ir_symbols.c diagnostics.c llvm-api-backend.c
+build_archive backend build_driver.c ir_symbols.c aif_support.c diagnostics.c llvm-api-backend.c
 
 cp "$COMPILER" "$BIN/prismio"
 chmod +x "$BIN/prismio"

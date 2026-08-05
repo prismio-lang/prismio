@@ -913,6 +913,21 @@ void* token_to_ptr(void* ptr) { return ptr; }
 void* ptr_to_type(void* ptr) { return ptr; }
 void* type_to_ptr(void* ptr) { return ptr; }
 
+// A note on how the frontend spells "this slot is empty", because it is not
+// what it looks like and getting it wrong is a segfault rather than a warning.
+//
+// An absent child is the **empty string**, not a null pointer -- create_node()
+// initialises every pointer slot to "". So `str_equals(p, "")` is the right
+// question and a null test is not: a null test says "present" for an empty slot
+// and the caller then dereferences it.
+//
+// What makes `str_equals(p, "")` fragile is the other direction. A punned
+// pointer is a `char*`, so strcmp reads the *bytes of the pointed-to struct*,
+// and a struct beginning with a zero-valued enum begins with a NUL byte -- so
+// it compares equal to "" and a live node reads as an empty slot. src/ast.psm
+// states the invariant that keeps this from firing and enforces it at the two
+// enums that matter.
+
 // Native builds use libc malloc; the per-frame arena reset is a no-op here.
 void heap_reset(void) { }
 

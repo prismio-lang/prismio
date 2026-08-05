@@ -1,5 +1,52 @@
 # AIF — Level 0 Results
 
+> ## ⚠ Correction pending review — 2026-08-05
+>
+> Porting the engine into the compiler put a second implementation on this data, and **the SELF row
+> of §1 does not reproduce.** The G1–G5 rows do, exactly. Both implementations agree with each
+> other, so this is an error in what was written down, not in either tool.
+>
+> Reproduce, against the source tree as it stood when this document was written — commit `a4d3b5e`,
+> the last one before the engine landed (`git archive a4d3b5e src | tar -x -C /tmp/oldtree`):
+>
+> ```
+> prismio aif /tmp/oldtree/src/main.psm --summary
+> prismio aif /tmp/oldtree/src/main.psm --summary --owned-collections
+> ```
+>
+> | SELF, 200 functions | recorded here | measured, both tools |
+> |---|---:|---:|
+> | today's language, T0–T2 | 75.7% | **24.3%** |
+> | affine collections, T0–T2 | 100% | **28.4%** |
+>
+> **75.7% is the T3 share, not the T0–T2 share** — 24.3% + 75.7% = 100%, and the tool prints them
+> on adjacent rows. §3's "reported 75.7% under today's semantics, which looked like a moderate
+> result" reads as the same transposition. §5's `borrow` 75.7% vs `retain` 42.8% is the same
+> quantity and needs the same check.
+>
+> **The consequence is larger than the typo.** Affine collections do not take SELF to 100%; they
+> move it 4 points. So §2's finding — *the entire T3 residue traces to one language decision* — is
+> true of G1–G5 and **false of SELF**, and SELF is the only corpus that is not engine-shaped.
+>
+> What actually dominates SELF is **undeclared FFI contracts**, not collection affinity. 383 of its
+> 552 sites are opaque extern returns, and the compiler's type-punning surface is most of them:
+> `ptr_to_node` returns an alias of its argument, but with no contract the analysis must assume the
+> return may already be shared and may already outlive the frame, and A-STORE then propagates that
+> to everything stored through the resulting node. Declaring `alias` on the four punning externs
+> (`ptr_to_node`, `node_to_ptr`, `ptr_to_type`, `type_to_ptr`) and changing nothing else:
+>
+> | SELF, affine collections | sites | T0–T2 |
+> |---|---:|---:|
+> | no contracts on the punning externs | 552 | 28.4% |
+> | four externs declared `alias` | 243 | **69.5%** |
+>
+> That is [../implementation/REQUIREMENTS.md](../implementation/REQUIREMENTS.md) item 8 with a
+> number on it, and it is a bigger lever on this corpus than item 1. It does not disturb the G1–G5
+> results or §2's finding *for engine-shaped code*.
+>
+> Left as a note rather than an edit: the body below is the record of what was measured on
+> 2026-08-01 and the reasoning built on it deserves a deliberate revision, not a patch.
+
 **First measured data. The model's central claim holds, and the entire residue traces to one
 language decision.**
 
