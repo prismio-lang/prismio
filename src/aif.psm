@@ -67,6 +67,38 @@ extern fn aif_reset()
 extern fn aif_scope_new(parent: Int, owner: Int) -> Int
 extern fn aif_scope_set_region(scope: Int, name: String borrow)
 extern fn aif_region_name_at_site(id: Int) -> String alias
+extern fn aif_site_arena_is_pinned(id: Int) -> Int
+
+// SPEC 5's annotations. `unique` cuts the aliasing graph at a site; `pin`
+// constrains the tier after convergence, and its verdict is one of AIF_PIN_*.
+extern fn aif_con_unique(vs: Int)
+extern fn aif_con_pin(vs: Int, tier: Int)
+extern fn aif_check_pins(converged: Int)
+extern fn aif_site_pin_verdict(id: Int) -> Int
+extern fn aif_site_pin_tier(id: Int) -> Int
+extern fn aif_site_derived_tier(id: Int) -> Int
+extern fn aif_site_alias_axiom(id: Int) -> Int
+
+// INFERENCE 5.6 / SPEC 6.3. The derivation, read back as a witness path.
+extern fn aif_con_at(file: Int, line: Int, col: Int)
+extern fn aif_cause_domain_for(id: Int) -> Int
+extern fn aif_cause_build(id: Int, domain: Int) -> Int
+extern fn aif_cause_site(i: Int) -> Int
+extern fn aif_cause_rule(i: Int) -> Int
+extern fn aif_cause_value(i: Int) -> Int
+extern fn aif_cause_file(i: Int) -> Int
+extern fn aif_cause_line(i: Int) -> Int
+extern fn aif_cause_col(i: Int) -> Int
+extern fn aif_rule_name(rule: Int) -> String alias
+extern fn aif_escape_name(value: Int) -> String alias
+extern fn aif_alias_name(value: Int) -> String alias
+
+// LAYOUT 7.1. The scope carries the block it came from, so codegen can ask a
+// block whether an arena was placed there, and its loop depth, which is what
+// weights a site's contribution to the benefit.
+extern fn aif_scope_note_node(scope: Int, node: String borrow)
+extern fn aif_scope_set_loop_depth(scope: Int, depth: Int)
+extern fn aif_place_arenas()
 
 extern fn aif_fn_new(symbol: String, name: String, file: Int) -> Int
 extern fn aif_fn_lookup(symbol: String) -> Int
@@ -202,6 +234,20 @@ let mut aif_static_returns = 0
 // The budget this run was given, so the manifest header reports what was
 // actually enforced rather than the default.
 let mut aif_budget = 200
+
+// How many loops enclose the statement being walked. LAYOUT 7.1 weights a site's
+// contribution to an arena's benefit by the loops between them.
+let mut aif_loop_depth = 0
+
+// SPEC 5.4's verdicts, mirroring AIF_PIN_* in runtime/aif_support.c.
+let AIF_PIN_NONE = 0
+let AIF_PIN_HONOURED = 1
+let AIF_PIN_REFUTED = 2
+let AIF_PIN_UNPROVEN = 3
+
+// The derivation's root, mirroring AIF_RULE_ALLOC in runtime/aif_support.c: the
+// fact was never raised and is still where the allocation put it.
+let AIF_RULE_ALLOC = 14
 
 // FFI 5.4: the default contract for an extern nobody declared one for. `borrow`
 // is optimistic, `retain` costs 33 points of tier distribution on this
@@ -443,11 +489,18 @@ fn aif_sites_of(node_ptr: String, fn_id: Int, scope: Int) -> Int {
     }
 
     let e = ptr_to_node(node_ptr)
+    // Narrower than the statement's position, and it is the one a reader wants:
+    // a store's cause is the expression that did the storing, not the line the
+    // statement began on.
+    aif_con_at(e.file, e.line, e.col)
     let ty = aif_node_type(e)
 
     if (e.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+        // Re-derived rather than `sname = ty`. Strings are affine, and `ty` is
+        // read again by the branches below -- a move here would poison it for
+        // every one of them, because move state is per name over the whole body.
         let mut sname = e.s1
-        if (str_equals(sname, "") == 1) { sname = ty }
+        if (str_equals(sname, "") == 1) { sname = aif_node_type(e) }
 
         let sid = aif_new_site(sname, fn_id, scope, node_ptr)
         let owner = aif_vs_of_site(sid)
@@ -467,7 +520,7 @@ fn aif_sites_of(node_ptr: String, fn_id: Int, scope: Int) -> Int {
     }
 
     if (e.kind == NodeKind.ARRAY_LITERAL_EXPR) {
-        let mut aname = ty
+        let mut aname = aif_node_type(e)
         if (str_equals(aname, "") == 1) { aname = "Array" }
 
         let sid = aif_new_site(aname, fn_id, scope, node_ptr)
@@ -710,17 +763,92 @@ fn aif_is_statement_kind(k: NodeKind) -> Bool {
     return false
 }
 
+// SPEC 5's annotations, read off the declaration the parser stored them on.
+//
+// They apply to the value set the *initialiser* denotes, not to the name: an
+// annotation is a statement about an allocation, and the binding is how the
+// source points at one. `let unique b = a` therefore annotates whatever `a`
+// already named, which is the same value -- the move made it this scope's.
+//
+// A malformed tier has already been reported by sema and is skipped here rather
+// than guessed at: AIF reports nothing (SPEC 1) and must not turn a warning into
+// a different tier.
+fn aif_tier_from_name(name: String) -> Int {
+    if (str_equals(name, "T0") == 1) { return 0 }
+    if (str_equals(name, "T1") == 1) { return 1 }
+    if (str_equals(name, "T2") == 1) { return 2 }
+    if (str_equals(name, "T3") == 1) { return 3 }
+    if (str_equals(name, "T4b") == 1) { return 4 }
+    return 0 - 1
+}
+
+fn aif_apply_annotations(decl: ASTNode, vs: Int) {
+    if (str_equals(decl.s2, "") == 1) { return }
+
+    if (str_contains(decl.s2, "unique ") == 1) {
+        aif_con_unique(vs)
+    }
+
+    let at = str_index_of(decl.s2, "pin:")
+    if (at >= 0) {
+        let mut name = str_substring(decl.s2, at + 4, str_length(decl.s2) - at - 4)
+        let space = str_index_of(name, " ")
+        if (space >= 0) { name = str_substring(name, 0, space) }
+        let tier = aif_tier_from_name(name)
+        if (tier >= 0) { aif_con_pin(vs, tier) }
+    }
+}
+
 fn aif_walk(node_ptr: String, fn_id: Int, scope: Int) {
     if (node_is_null(node_ptr)) { return }
     let n = ptr_to_node(node_ptr)
 
+    // Every constraint added from here down is attributed to this statement.
+    // SPEC 6.3's witness path puts a file:line on each edge, and the rule alone
+    // does not carry one -- "A-STORE" without a position says which rule fired
+    // and not where, which is the half a reader cannot supply themselves.
+    aif_con_at(n.file, n.line, n.col)
+
     if (n.kind == NodeKind.BLOCK) {
         // Every scope is an implicit region (INFERENCE 2.1), which is what makes
         // the T0/T1 boundary a size question rather than an escape question.
+        // Which of them gets a real arena is LAYOUT 7.1's cost decision, and it
+        // needs the block back to tell codegen where to bracket it.
         let inner = aif_scope_new(scope, fn_id)
+        aif_scope_note_node(inner, node_ptr)
+        aif_scope_set_loop_depth(inner, aif_loop_depth)
         aif_walk_chain(n.child1, fn_id, inner)
         aif_walk_chain(n.child2, fn_id, inner)
         aif_walk_chain(n.child3, fn_id, inner)
+        return
+    }
+
+    // A loop body allocates once per iteration, not once per entry of the
+    // enclosing scope. Tracking the depth is what lets the benefit of an arena
+    // inside a loop be weighed against one outside it. The header is outside the
+    // body: a `while` condition and a `for` range are evaluated in the enclosing
+    // scope, and an allocation there is not the loop's.
+    if (n.kind == NodeKind.WHILE_STATEMENT) {
+        aif_walk_children(n.child1, fn_id, scope)
+        aif_loop_depth = aif_loop_depth + 1
+        aif_walk_children(n.child2, fn_id, scope)
+        aif_loop_depth = aif_loop_depth - 1
+        return
+    }
+
+    if (n.kind == NodeKind.LOOP_STATEMENT) {
+        aif_loop_depth = aif_loop_depth + 1
+        aif_walk_children(n.child1, fn_id, scope)
+        aif_loop_depth = aif_loop_depth - 1
+        return
+    }
+
+    if (n.kind == NodeKind.FOR_STATEMENT) {
+        aif_walk_children(n.child1, fn_id, scope)
+        aif_walk_children(n.child2, fn_id, scope)
+        aif_loop_depth = aif_loop_depth + 1
+        aif_walk_children(n.child3, fn_id, scope)
+        aif_loop_depth = aif_loop_depth - 1
         return
     }
 
@@ -744,6 +872,7 @@ fn aif_walk(node_ptr: String, fn_id: Int, scope: Int) {
             let v = aif_sites_of(n.child2, fn_id, scope)
             aif_con_bind(aif_key_var(fn_id, n.s1), v)
             aif_con_live_in(v, scope, fn_id)
+            aif_apply_annotations(n, v)
         }
         return
     }
@@ -1042,6 +1171,13 @@ fn aif_build(module: ASTNode) {
                         if (aif_is_ref(pty)) {
                             aif_con_bind(aif_key_var(fid, param.s1),
                                          aif_vs_of_key(aif_key_param(fid, index)))
+                            // SPEC 5.1 on a parameter. The axiom belongs to what
+                            // the caller passed, which is the parameter key --
+                            // the binding key would only cover uses inside this
+                            // body and the cut is about what comes from outside.
+                            if (param.i2 == 1) {
+                                aif_con_unique(aif_vs_of_key(aif_key_param(fid, index)))
+                            }
                         }
                     }
                     index = index + 1
@@ -1067,12 +1203,10 @@ fn aif_tier_name(tier: Int) -> String {
     return "T4b"
 }
 
-// SPEC 3's codegen contract per tier, named. At AIF-1 there are no arenas, so
-// T1's arena is the enclosing scope and the placement says so rather than
-// naming a region that does not exist.
-// SPEC 6.2's `placement` column. T1 names the region it is bound to: a `region`
-// statement's name when one encloses it and the value cannot outlive it,
-// otherwise the implicit region of its own scope.
+// SPEC 6.2's `placement` column, which is SPEC 3's codegen contract per tier.
+// T1 names the region it is bound to: a `region` statement's name when one
+// encloses it and the value cannot outlive it, otherwise the implicit region of
+// its own scope, which has no arena and is served by the heap.
 fn aif_placement(tier: Int, site: Int) -> String {
     if (tier == 0) { return "stack" }
     if (tier == 1) {
@@ -1203,7 +1337,14 @@ fn aif_emit_manifest(source_path: String, version: String, converged: Bool) {
     while (r < n) {
         let site = aif_order_site(r)
         let tier = aif_tier_of(site)
+        // SPEC 6.2's vocabulary. `region` means the arena serving this site was
+        // pinned by a `region` statement rather than chosen by LAYOUT 7.1's cost
+        // model -- a pin that stops being honoured is a gate regression and an
+        // inferred placement moving is not, so the two have to be tellable apart.
         let mut origin = "inferred"
+        if (aif_site_arena_is_pinned(site) == 1) { origin = "region" }
+        if (aif_site_alias_axiom(site) == 1) { origin = "unique" }
+        if (aif_site_pin_verdict(site) == AIF_PIN_HONOURED) { origin = "pin" }
         if (aif_site_widened(site) == 1) { origin = "budget-exhausted" }
         print(aif_pad(aif_order_symbol(r), 44))
         print(aif_pad(aif_tier_name(tier), 6))
@@ -1366,6 +1507,7 @@ fn aif_run(module: ASTNode, owned_collections: Bool, theta_fields: Bool,
     aif_opaque_returns = 0
     aif_static_returns = 0
     aif_budget = budget
+    aif_loop_depth = 0
 
     if (owned_collections) {
         aif_set_owned_collections(1)
@@ -1388,7 +1530,199 @@ fn aif_run(module: ASTNode, owned_collections: Bool, theta_fields: Bool,
         // mandatory, not an optimisation.
         aif_widen()
     }
+
+    // SPEC 5.4, before the arenas: a pin freezes a tier and the cost model ranks
+    // scopes by tiers, so the pins have to be settled first or an arena could be
+    // placed for a site whose tier is about to change.
+    if (converged) {
+        aif_check_pins(1)
+    } else {
+        aif_check_pins(0)
+    }
+
+    // LAYOUT 7.1, after the facts and after widening: every input to the cost
+    // model is a converged (or conservatively raised) tier, so placing arenas
+    // earlier would be ranking scopes by numbers still in motion.
+    aif_place_arenas()
     return converged
+}
+
+// ---------------------------------------------------------------------------
+// Minimal cause and ranked repairs -- SPEC 6.3, INFERENCE 5.6
+//
+// `prismio aif <src> --why <symbol>` prints the witness path for one manifest
+// record, in the layout SPEC 6.3 specifies: the tier, the fact that moved, the
+// edges that moved it innermost-first, and the repairs that would undo it.
+//
+// The split between here and tools/aif_manifest_diff.py is deliberate: only the
+// compiler has the derivation, and only the differ knows what changed. The differ
+// finds the regressed symbols and asks for each one.
+// ---------------------------------------------------------------------------
+
+// The repair for an edge is a property of the rule that fired, because breaking
+// the edge is what restores the tier and the rule says what breaking it means.
+// Cost is stated in the units a reader can act on -- a copy, a declaration, or
+// nothing -- rather than in cycles, which would be a modelled number pretending
+// to be a measured one.
+fn aif_repair_for(rule: Int) -> String {
+    if (str_equals(aif_rule_name(rule), "E-STATIC") == 1) {
+        return "make the destination region-scoped instead of static     restores T1, no runtime cost"
+    }
+    if (str_equals(aif_rule_name(rule), "E-RETURN") == 1) {
+        return "have the caller allocate and pass it in                  restores T1, no runtime cost"
+    }
+    if (str_equals(aif_rule_name(rule), "E-OPAQUE") == 1) {
+        return "declare the extern's return contract (FFI 5.2)           restores T2, no runtime cost"
+    }
+    if (str_equals(aif_rule_name(rule), "A-STORE") == 1) {
+        return "store a copy instead of the value                        restores T2, +1 copy per store"
+    }
+    if (str_equals(aif_rule_name(rule), "A-RETAIN") == 1) {
+        return "declare the parameter `borrow` if the callee keeps nothing  restores T2, no runtime cost"
+    }
+    if (str_equals(aif_rule_name(rule), "A-COPY") == 1) {
+        return "make the type move-only so a second holder is a move     restores T2, no runtime cost"
+    }
+    if (str_equals(aif_rule_name(rule), "E-BIND") == 1) {
+        return "declare the binding inside the scope that uses it        restores T1, no runtime cost"
+    }
+    return ""
+}
+
+fn aif_emit_cause(site: Int, converged: Bool) {
+    let domain = aif_cause_domain_for(site)
+    let n = aif_cause_build(site, domain)
+
+    print(aif_pad(aif_symbol_of(site), 32))
+    print("  ")
+    println(aif_tier_name(aif_tier_of(site)))
+    println("")
+
+    println("  minimal cause")
+
+    // A path of one edge whose rule is ALLOC means nothing ever raised the fact:
+    // it is still at the bottom the site was created with. Saying "rose to" there
+    // would describe a propagation that did not happen.
+    let mut fact = aif_escape_name(aif_cause_value(0))
+    if (domain == 1) { fact = aif_alias_name(aif_cause_value(0)) }
+    let mut label = "    E rose to "
+    if (domain == 1) { label = "    A rose to " }
+    if (aif_cause_rule(0) == AIF_RULE_ALLOC) {
+        label = "    E is still "
+        if (domain == 1) { label = "    A is still " }
+    }
+    print(label)
+    println(fact)
+
+    let mut i = 0
+    while (i < n) {
+        let rule = aif_cause_rule(i)
+        print("      <- ")
+        print(aif_pad(aif_rule_name(rule), 10))
+        print(aif_pad(diag_file_path(aif_cause_file(i)), 36))
+        print(" ")
+        print(int_to_str(aif_cause_line(i)))
+        print(":")
+        println(int_to_str(aif_cause_col(i)))
+        i = i + 1
+    }
+
+    println("")
+    println("  repairs, cheapest first")
+
+    // Walked outermost-first: the root cause is the cheapest thing to change,
+    // because everything downstream of it follows. An edge with no repair is one
+    // whose rule is not a choice the programmer made -- ALLOC, or a propagation
+    // step -- and listing "no action available" for it would be noise.
+    let mut rank = 1
+    let mut j = n - 1
+    while (j >= 0) {
+        let repair = aif_repair_for(aif_cause_rule(j))
+        if (str_equals(repair, "") == 0) {
+            print("    ")
+            print(int_to_str(rank))
+            print(". ")
+            println(repair)
+            rank = rank + 1
+        }
+        j = j - 1
+    }
+
+    // SPEC 6.3: a repair that is unsound SHALL be listed as rejected with its
+    // reason. Pinning the tier back is the one every reader reaches for first,
+    // and it is exactly the one a converged analysis refuses (SPEC 5.4.1) --
+    // which is also why the reason has to distinguish the two cases. On a
+    // truncated run the same pin is unproven rather than disproven, and SPEC
+    // 5.4.2 makes it a warning that raising the budget may clear.
+    print("    ")
+    print(int_to_str(rank))
+    print(". pin(")
+    print(aif_tier_name(aif_tier_of(site) - 1))
+    if (converged) {
+        println(") on the binding                     rejected -- inference converged, so this is proven false")
+    } else {
+        println(") on the binding                     unproven -- the budget ran out; raising it may settle this")
+    }
+
+    if (rank == 1) {
+        println("")
+        println("  no repair is derivable: the path ends at the allocation itself.")
+    }
+}
+
+// Finds the record by the symbol the manifest prints, so a reader can copy one
+// out of a diff and paste it back. Returns 1 when it found one.
+fn aif_explain(symbol: String, converged: Bool) -> Int {
+    let total = aif_site_count()
+    let mut i = 0
+    while (i < total) {
+        if (str_equals(aif_symbol_of(i), symbol) == 1) {
+            aif_emit_cause(i, converged)
+            return 1
+        }
+        i = i + 1
+    }
+    print("no manifest record named ")
+    println(symbol)
+    return 0
+}
+
+// SPEC 5.4's diagnostics, and the one place AIF reports anything.
+//
+// That is not a contradiction of SPEC 1. The invariant governs *inference
+// failure* -- the analysis being unable to prove a value cheap -- and says that
+// degrades performance and never compilation. A pin a converged analysis refutes
+// is the other thing: a programmer assertion that is false about their own
+// program, in the same category as `use of moved value`. SPEC 5.4.1 spells that
+// distinction out and makes this one an error.
+//
+// Returns the number of errors reported, so the caller can stop before codegen.
+fn aif_report_pins() -> Int {
+    let n = aif_site_count()
+    let mut i = 0
+    let mut errors = 0
+    while (i < n) {
+        let verdict = aif_site_pin_verdict(i)
+
+        if (verdict == AIF_PIN_REFUTED) {
+            let want = aif_tier_name(aif_site_pin_tier(i))
+            let got = aif_tier_name(aif_site_derived_tier(i))
+            diag_error_at(aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
+                          str_concat(str_concat(str_concat("pin(", want), ") cannot hold: this value is "), got))
+            diag_note("inference converged, so this is a proven-false assertion rather than a limit of the analysis")
+            errors = errors + 1
+        }
+
+        if (verdict == AIF_PIN_UNPROVEN) {
+            let want = aif_tier_name(aif_site_pin_tier(i))
+            diag_warning_at(aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
+                            str_concat(str_concat("pin(", want), ") is unproven: the analysis budget ran out"))
+            diag_note("raising --budget may settle it; the derived tier is used meanwhile")
+        }
+
+        i = i + 1
+    }
+    return errors
 }
 
 fn aif_analyze(module: ASTNode, source_path: String, version: String,

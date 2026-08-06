@@ -9,20 +9,26 @@ gate." A tier is a cost ranking, so rising means the same program now needs more
 runtime bookkeeping than it did -- and without something watching, that happens
 quietly, one FFI declaration at a time.
 
-**This is the half of 6.3 that does not need the derivation DAG.** The section
-also requires a *minimal cause* per changed record -- the backward walk through
-maximal contributors that says which rule fired where -- and ranked repairs.
-Both need the derivation retained through tier assignment, which the solver in
-runtime/aif_support.c does not do: it keeps the current value of each fact, not
-what produced it. Adding that is the real cost 6.3 names, and it is not here.
-What is here tells you *that* a record regressed and by how much, which is what a
-gate needs; understanding *why* still means reading the two manifests.
+6.3 also requires a *minimal cause* per changed record -- the backward walk
+through maximal contributors that says which rule fired where -- and ranked
+repairs. Both need the derivation retained through tier assignment, which the
+solver now does (INFERENCE 5.6). Pass `--compiler` and each regression is
+followed by its witness path and its repairs:
+
+    python tools/aif_manifest_diff.py old.manifest new.manifest \
+        --compiler build/prismio.exe
+
+The split is deliberate. This script knows *what* changed, because it has both
+manifests; only the compiler knows *why*, because only the solver has the
+derivation. Without `--compiler` the gate still works and reports the fact of the
+regression, which is what CI needs even where no binary is at hand.
 
 Generate the inputs with `prismio aif <source>`; any two manifests over the same
 source are comparable.
 """
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -61,6 +67,29 @@ def parse(path):
     return header, records
 
 
+def explain(compiler, source, symbol, owned=False):
+    """SPEC 6.3's minimal cause for one regressed record, from the compiler.
+
+    The derivation lives in the solver and nowhere else, so the differ asks for
+    it rather than reconstructing it: this script knows *what* changed and only
+    the compiler knows *why*. Absent a compiler the diff still gates, which is
+    the half that matters for CI.
+    """
+    cmd = [compiler, "aif", str(source)]
+    if owned:
+        cmd.append("--owned-collections")
+    cmd.append(f"--why={symbol}")
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"    (could not run {compiler}: {exc})"
+    if out.returncode != 0:
+        return f"    (no cause available for {symbol})"
+    # Drop the first line: it repeats the symbol and tier the caller just printed.
+    body = out.stdout.splitlines()[1:]
+    return "\n".join("  " + line for line in body).rstrip()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("old")
@@ -68,6 +97,18 @@ def main():
     ap.add_argument("--allow-regressions", action="store_true",
                     help="report regressions but exit 0 -- for recording a "
                          "deliberate trade rather than gating on it")
+    ap.add_argument("--compiler",
+                    help="a prismio binary. Given one, each regression is "
+                         "followed by its minimal cause and ranked repairs "
+                         "(SPEC 6.3); without one, only the fact that it "
+                         "regressed is reported")
+    ap.add_argument("--source",
+                    help="the source the new manifest was produced from. "
+                         "Required with --compiler; defaults to the `source` "
+                         "line in the new manifest")
+    ap.add_argument("--owned-collections", dest="owned", action="store_true",
+                    help="pass --owned-collections when asking for a cause, so "
+                         "the explanation matches the manifest it explains")
     args = ap.parse_args()
 
     old_head, old = parse(args.old)
@@ -98,12 +139,17 @@ def main():
     added = sorted(set(new) - set(old))
     removed = sorted(set(old) - set(new))
 
+    cause_source = args.source or new_head.get("source")
     for sym, o, n in regressions:
         print(f"{sym}   {o.tier} -> {n.tier}   REGRESSION")
         print(f"    placement  {o.placement} -> {n.placement}")
         if o.origin != n.origin:
             print(f"    origin     {o.origin} -> {n.origin}")
         print(f"    at         {n.site}")
+        if args.compiler and cause_source:
+            print()
+            print(explain(args.compiler, cause_source, sym, args.owned))
+        print()
     if regressions and (improvements or added or removed):
         print()
 

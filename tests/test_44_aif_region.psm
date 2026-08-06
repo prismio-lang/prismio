@@ -12,6 +12,7 @@
 
 extern fn int_to_str(n: Int) -> String
 extern fn str_length(s: String) -> Int
+extern fn str_concat(s1: String, s2: String) -> String
 extern fn arena_objects() -> Int
 extern fn arena_regions() -> Int
 
@@ -130,6 +131,31 @@ fn breaks_out() -> Int {
     return total
 }
 
+// AIF Level 4. Same question as `inside`, different mechanism: a string is
+// allocated inside the runtime rather than through ir_alloc_region, so the arena
+// is chosen by bracketing the call. Two allocations here, and the second reads
+// the first -- a wrong answer would be a use-after-free within the block.
+fn strings_inside() -> Int {
+    let mut n = 0
+    region text {
+        let s = str_concat("ab", "cde")
+        let t = str_concat(s, "fg")
+        n = str_length(t)
+    }
+    return n
+}
+
+// The str_concat mirror of escapes_inner: written to a binding declared outside
+// the region, so it outlives the arena and must come from the heap. Reading it
+// after the block is what makes a wrong answer a use-after-free.
+fn string_escapes() -> Int {
+    let mut held = ""
+    region tmp {
+        held = str_concat("xy", "z")
+    }
+    return str_length(held)
+}
+
 fn check(label: String, got: Int, want: Int) -> Int {
     if (got == want) {
         return 0
@@ -152,11 +178,26 @@ fn main() -> Int {
     bad = bad + check("returns_out_true", returns_out(true), 4)
     bad = bad + check("returns_out_false", returns_out(false), 0)
     bad = bad + check("breaks_out", breaks_out(), 6)
+    bad = bad + check("strings_inside", strings_inside(), 7)
+    bad = bad + check("string_escapes", string_escapes(), 3)
 
-    // 1 + 200 + 1 (outer only; the inner one escapes) + 1 + 1 + 3.
-    bad = bad + check("arena_objects", arena_objects(), 207)
-    // inside, many, outer, inner, returns_out x2, per_turn x3.
-    bad = bad + check("arena_regions", arena_regions(), 9)
+    // 1 + 200 + 1 (outer only; the inner one escapes) + 1 + 1 + 3, and 2 strings
+    // from strings_inside. string_escapes contributes none: it is the case the
+    // arena has to decline.
+    bad = bad + check("arena_objects", arena_objects(), 209)
+    // Eleven from the `region` statements -- inside, many, outer, inner,
+    // returns_out x2, per_turn x3, text, tmp -- plus nine from `check`, whose
+    // body LAYOUT 7.1's cost model gave an arena of its own because its failure
+    // path builds two strings. It is entered once per call and serves nothing
+    // when the check passes, which is what a static model without an access
+    // profile buys: the placement is right, the frequency is a guess.
+    //
+    // That the eleven did not move is the assertion that matters. `region` is a
+    // pin on the placement decision (SPEC 5.2), so automatic placement fills
+    // scopes with no enclosing region and never undercuts one -- otherwise the
+    // arena inside `many`'s loop would have taken all 200 objects and `batch`
+    // would serve nothing.
+    bad = bad + check("arena_regions", arena_regions(), 20)
 
     if (bad == 0) {
         println("PASS")

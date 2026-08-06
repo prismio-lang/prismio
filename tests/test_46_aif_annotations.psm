@@ -1,0 +1,119 @@
+// SPEC 5 -- the annotations, and the promise that deleting them changes nothing.
+//
+// Three of the four are here. `region` has its own fixture (test_44); `workload`
+// is not implemented, because it feeds a layout optimiser that does not exist
+// and SPEC 5.3 leaves its syntax open.
+//
+// The invariant this fixture exists for is SPEC 5's first paragraph: a conformant
+// implementation SHALL accept every program with all annotations deleted and
+// produce identical observable behaviour. So every value below is also computed
+// without its annotation and the two are compared -- an annotation that changed
+// an answer would be a defect in the model, not an optimisation.
+//
+// What they *may* change is the manifest, and test_runner's aif_annotations
+// check reads that: `unique` cuts the aliasing graph, `pin` freezes a tier, and
+// both show up in the origin column.
+
+extern fn str_length(s: String) -> Int
+extern fn str_concat(s1: String, s2: String) -> String
+extern fn int_to_str(n: Int) -> String
+
+struct Wide {
+    f01: String, f02: String, f03: String, f04: String, f05: String, f06: String,
+    f07: String, f08: String, f09: String, f10: String, f11: String, f12: String,
+    f13: String, f14: String, f15: String, f16: String, f17: String, f18: String,
+    f19: String, f20: String, f21: String, f22: String, f23: String, f24: String,
+    f25: String, f26: String, f27: String, f28: String, f29: String, f30: String,
+    f31: String, f32: String, f33: String
+}
+
+// `unique` asserts A = Unique and cuts the interprocedural aliasing graph. The
+// value is the same either way; what changes is that the analysis stops asking
+// whether a callee retained it.
+fn annotated_unique() -> Int {
+    let unique s = str_concat("uni", "que")
+    return str_length(s)
+}
+
+fn plain_unique() -> Int {
+    let s = str_concat("uni", "que")
+    return str_length(s)
+}
+
+// A pin at or above the derived tier is honoured exactly. This one derives T1 --
+// a string that dies with its scope -- and is pinned to T2, so codegen must stop
+// serving it from an arena and allocate it. Slower on purpose: a pin freezes,
+// and freezing in the expensive direction is what makes a manifest stable.
+fn annotated_pin() -> Int {
+    let pin(T2) s = str_concat("pin", "ned")
+    return str_length(s)
+}
+
+fn plain_pin() -> Int {
+    let s = str_concat("pin", "ned")
+    return str_length(s)
+}
+
+// Both on one binding, and on a struct rather than a string -- the annotations
+// are parsed in a loop, in either order, after `mut`.
+fn annotated_both() -> Int {
+    let mut unique pin(T2) w = Wide {
+        f01: "wide", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+        f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+        f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+        f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+        f33: ""
+    }
+    return str_length(w.f01)
+}
+
+// `unique` on a parameter. The axiom belongs to what the caller passed, so it is
+// keyed on the parameter rather than on the binding inside the body.
+fn takes_unique(unique s: String) -> Int {
+    return str_length(s)
+}
+
+// Neither is a keyword, so a program may still use both as ordinary names. This
+// is SPEC 5's non-virality requirement in its most literal form: adding the
+// annotations to the language must not break a program that never asked for them.
+fn names_are_not_reserved() -> Int {
+    let unique = 3
+    let pin = 4
+    return unique + pin
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) {
+        return 0
+    }
+    print("FAIL ")
+    print(label)
+    print(": expected ")
+    print(int_to_str(want))
+    print(", got ")
+    println(int_to_str(got))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // Each annotated form against its unannotated twin: SPEC 5's "identical
+    // observable behaviour with all annotations deleted", checked rather than
+    // asserted.
+    bad = bad + check("unique", annotated_unique(), plain_unique())
+    bad = bad + check("pin", annotated_pin(), plain_pin())
+    bad = bad + check("unique_value", annotated_unique(), 6)
+    bad = bad + check("pin_value", annotated_pin(), 6)
+    bad = bad + check("both", annotated_both(), 4)
+
+    let owned = str_concat("param", "eter")
+    bad = bad + check("takes_unique", takes_unique(owned), 9)
+    bad = bad + check("not_reserved", names_are_not_reserved(), 7)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

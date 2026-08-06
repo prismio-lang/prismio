@@ -1,0 +1,9 @@
+// expect-error: drop requires an owned (move-only) value
+// AIF Level 4 made String and List affine and deliberately left arrays out: an
+// array literal lowers to ir_array_alloca, so there is no allocation to own and
+// `drop` would hand a stack pointer to the deallocator.
+fn main() -> Int {
+    let xs = [1, 2, 3]
+    drop(xs)
+    return 0
+}

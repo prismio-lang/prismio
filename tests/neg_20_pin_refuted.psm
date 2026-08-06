@@ -1,0 +1,16 @@
+// expect-error: cannot hold
+// SPEC 5.4.1. A pin a *converged* analysis refutes is a false assertion about
+// the program, not an inference failure, so it fails compilation -- the one
+// thing AIF reports. This value is returned, so its escape is Caller and T1 is
+// unreachable; the analysis proved it rather than ran out of budget.
+extern fn str_concat(s1: String, s2: String) -> String
+
+fn escapes() -> String {
+    let pin(T1) s = str_concat("ab", "cd")
+    return s
+}
+
+fn main() -> Int {
+    let got = escapes()
+    return 0
+}

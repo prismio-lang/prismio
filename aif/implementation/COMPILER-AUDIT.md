@@ -20,7 +20,7 @@ there are three prerequisites nobody has costed.
 | 1 | The alloc seam is a **function-name swap**. It can express T2/T3/T4 and **cannot express T0 or T1** — the two tiers that carry the model's performance claim. | High |
 | 2 | Structs today have **pointer semantics with move checking**, not value semantics. AIF's "aliasing is unrepresentable" premise does not hold in the implementation. | High |
 | 3 | **No scope-based drop exists.** `drop(x)` is explicit and manual. Frozen item 11 (RAII on T0–T2) has no substrate. | High |
-| 4 | **Strings, arrays and lists are never freed and are not move-only** — and they are the majority of real allocations. Anything AIF does to structs alone moves a minority of the traffic. | High |
+| 4 | ~~**Strings, arrays and lists are never freed and are not move-only**~~ — and they are the majority of real allocations. Anything AIF does to structs alone moves a minority of the traffic. **Closed by Level 4** for strings and lists; arrays stay copyable because they are frame storage. | Was High |
 | 5 | **Prismio cannot comfortably express its own inference engine.** No generics, no closures, no hash maps; `List<T>` is a hardcoded special case. A worklist fixed-point solver needs all three. | High, underrated |
 | 6 | **Handles do not exist.** References are raw `ptr`, field access is `getelementptr`, and 104 extern declarations pass pointers to C. Frozen item 5 touches every layer. | High, long-horizon |
 | 7 | **There is no concurrency**, so the `T` domain is vacuous and T3 vs. T4a is currently undecidable-by-absence. Everything shared lands T3. | Medium — actually simplifying, for now |
@@ -136,7 +136,9 @@ change AIF requires**, and it is independent of every other item here.
 
 `ir_alloc_object` is called from exactly one place — `STRUCT_LITERAL_EXPR`. Strings, arrays and
 lists never touch it. They allocate inside `runtime/lang_runtime.c` through its own `malloc`
-wrappers and are **never freed**.
+wrappers and are **never freed**. (Still true of the *allocation*: Level 4 gave them a release path
+and an arena, but both reach the runtime's own allocator rather than going through this seam. That
+asymmetry is why `--verify` has to swap the runtime as well as the emitted names.)
 
 So even a complete tier implementation for structs leaves the majority of a real program's
 allocation traffic outside the model. Fixing that means making `String`, arrays and `List<T>`
@@ -146,6 +148,10 @@ borrows land; for now they stay copyable to avoid churn*").
 **This is the prerequisite with the widest blast radius in the whole compiler**, because every
 string-handling function in `lexer.psm`, `parser.psm`, `sema.psm` and `ir.psm` currently assumes
 strings are freely copyable.
+
+> **Landed 2026-08-07, and the blast radius was nine errors.** Parameters borrow by default and a
+> field read is not a move, so most of what looked like copying never was. See the Level 4 note in
+> §5. Arrays stayed copyable: they are frame storage, so there is nothing to own.
 
 ---
 
@@ -454,10 +460,235 @@ region opens a scope.
 - Also the first level that needs a new keyword, so it is the first that touches the seed and the
   bootstrap.
 
-### Level 4 — strings, arrays, lists become move-only
+### Level 4 — strings and lists become move-only — **DONE, 2026-08-07**
 
 The wide-blast-radius change of §3.1. Deliberately after Level 3 so that regions already exist to
 absorb them — most string traffic in the compiler is region-shaped.
+
+**The blast radius was nine errors.** §3.1 called this "the prerequisite with the widest blast radius
+in the whole compiler", on the grounds that every string-handling function in `lexer.psm`,
+`parser.psm`, `sema.psm` and `ir.psm` assumes strings are freely copyable. Flipping
+`type_is_move_only` produced 25 errors, and 16 of them were one missing rule rather than sixteen
+places that had to change:
+
+- **A `let` whose initialiser is a field read, an index, or an already-borrowed name is a reborrow,
+  not a move** (`sema_binding_is_borrow`). Reading `node.child1` yields a reference the AST still
+  owns; naming a borrowed parameter yields another borrow. Neither is an ownership transfer, and
+  the compiler's commonest idiom — `let mut p = node.child1`, walking a chain of pointers punned as
+  strings — is nothing but those two.
+- It is sound rather than merely quiet, and for a structural reason: a borrowed binding's
+  initialiser registers no allocation site, so `aif_frees_at_scope_node` cannot admit it. The
+  language can be permissive here precisely because the *drop* is keyed on allocation, not on the
+  binding's declared ownership.
+- Consuming a borrow is still an error. `drop(x)` and `sink` parameters go through
+  `sema_consume_operand`, which is what `sema_move_operand` used to be; `neg_05` still passes.
+
+The nine that remained were real double-uses of an owned string and were fixed at the site. Two are
+worth naming because they are the shape the rest will take: `lex_all_tokens` held the token list head
+in a second pointer binding, and `aif_sites_of` bound `ty` into a branch-local name that poisoned it
+for every other branch — move state is per name over the whole body, so a move in one arm reports at
+a use in another.
+
+**Arrays are deliberately not affine.** They lower to `ir_array_alloca` — frame storage — so there is
+nothing to own, nothing for a drop to reclaim, and `drop(arr)` would hand a stack pointer to the
+deallocator (`neg_18`). This is the one place the language and `site_is_move_only` disagree: the
+solver keeps SPEC's reading, so the oracle still agrees with it, and `aif_frees_at_scope_node`
+declines arrays by kind next to the T0 clause it already had.
+
+**"With no further codegen change" was wrong**, and it is the prediction from `HANDOFF.md` worth
+correcting. The claim was that the arena serves any T1 site, so T1 strings become arena-placed for
+free. `aif_arena_at_node` does ignore the kind — but codegen only *asks* it at `STRUCT_LITERAL_EXPR`,
+because that is the only place `ir_alloc_region` can be called. A string is allocated by `str_concat`
+inside `lang_runtime.c`, which cannot know where it was called from. So the call site says instead:
+codegen brackets a producing runtime call whose value the arena accepted with
+`rt_arena_hint_push`/`pop`, and `rt_alloc` bumps rather than calling `malloc`.
+
+The gate is `aif_arena_at_node` alone, and it is sufficient rather than convenient. A site exists on
+a call node only when the callee is opaque to this compilation; an `alias` return registers none and
+an undeclared one is raised to `Caller`, which the arena test rejects. So the bracket fires exactly
+on FFI `produce` calls inside a region whose result cannot outlive it. It wraps the call only —
+arguments are evaluated before it — so a nested allocation the analysis declined does not inherit
+the hint. `test_44`'s `arena_objects()` count went 207 → 209 for the two strings in `strings_inside`,
+and `string_escapes` contributes none, which is the case that has to be declined.
+
+**`verify` needed a second half.** SPEC §7.3's swap names the allocator and deallocator codegen
+emits, which covers everything `ir_alloc_object` handed out — and strings and lists are allocated
+past that seam, in the runtime. Their release would then be a pointer the accounting never saw, i.e.
+a *violation* on every string a program drops. A verify build now compiles `lang_runtime.c` with
+`-DPRISMIO_AIF_VERIFY`, pointing its own allocator at the same shims. Both ends of every pairing swap
+together, the accounting balances (`test_45`: 418 allocated, 416 released, 0 violations), and the
+property worth having survives — the *generated code* is still byte-identical either way, because
+the swap happens when the runtime is compiled and not when the program is generated.
+
+**Two functions returned a string literal.** `str_substring` out of range and `str_trim` of
+all-whitespace both returned `""`. That was invisible while nothing freed a string and is a `free` of
+a `.rodata` pointer the moment one does. Both allocate a one-byte empty string now, and the
+invariant is worth stating: *anything declared to return `String` returns something a release can
+take*. Found by reading the C, not by a test — the same lesson as the FFI contracts.
+
+**A list needed its own deallocator.** A `XefyList` is a handle plus an element block, so the seam's
+`fn(ptr) -> void` leaks the block. `ir_free_list` routes to `list_release`, which frees both through
+the allocator the list came from. The storage type cannot tell you which to call — a String and a
+List are both `ptr` — so `ir_mark_droppable` carries a kind. `list_push` also leaked the old element
+block on every regrow; it does not now.
+
+**The drop frees the slot, not the initialiser.** Level 2 marks a binding droppable because its
+initialiser allocated something the scope owns, and then frees whatever the slot holds at the exit.
+An assignment can put something else there:
+
+```prismio
+let mut s = str_concat(a, b)   // droppable
+s = node.name                   // now a string the AST owns
+```
+
+The exit then frees a live value. This was latent from Level 2 — the same shape works for structs —
+and Level 4 made it reachable everywhere, because strings are reassigned constantly and a field read
+is a borrow. Codegen asks `node_assigns_name` over the enclosing function body before marking, and
+declines any binding that is ever an assignment target.
+
+The question has to be asked at the *declaration*. Codegen is a single forward walk, and run-time
+order is not source order: a `break` written above the assignment still runs after it on the second
+iteration, and its drops were emitted when the binding still looked droppable. The rule is blunt on
+purpose — a binding reassigned only from owned allocations is refused too — and that costs nothing,
+because reassignment already leaks the previous value either way.
+
+`test_45`'s `reassigned_from_borrow` pins it, and the detector is the leak count rather than a
+violation: freeing a value that *is* live is a perfectly legal release as far as the accounting goes.
+The regression shows up as one fewer leak.
+
+**What it measured.** The compiler's own distribution goes from **66% to 87% T0–T2**, clearing
+BENCHMARKS H1's 70% bar on this corpus for the first time without a hypothetical. The T3 residue
+falls from 102 sites to 37 — exactly the undeclared extern returns, which is the number FFI work
+moves and this level cannot.
+
+**What still leaks, and why it is not a bug.** The compiler emits 11 frees against 186 T1 string
+sites. Droppability is a property of a *binding*, and most of those sites are temporaries —
+`str_concat(...)` written directly as an argument, never named. Freeing one at the end of its
+statement is not expressible with today's facts: `E == scope` says the value dies with the scope, not
+with the statement, and `list_push(l, str_concat(a, b))` has a temporary whose escape is the list's.
+Distinguishing the two needs a fact the model does not have. Binding the temporary is the workaround
+and `test_45`'s `per_iteration` shows it.
+
+One more imprecision the fixture pins: passing an owned string to a function that binds it to a local
+name raises its escape to `Caller`, because E-BIND cannot name a scope inside a callee. Sound,
+conservative, and the reason `test_45` leaks two rather than one.
+
+### Automatic arena placement — **DONE, 2026-08-07**
+
+LAYOUT §7.1. Every scope is already an implicit region (SPEC §4.1), so the question was never which
+scopes *could* have an arena but which are worth the setup:
+
+```
+ArenaBenefit(s) = allocs_in(s)·(α_T2 − α_T1) − entries(s)·arenaSetupCost
+```
+
+Both inputs are supposed to come from an access profile. There is no profiler, so both are estimated
+statically and the estimate is stated rather than hidden — and one of them turns out not to matter:
+
+- **`entries(s)` factors out.** Written as "allocations per entry of `s`", `allocs_in` carries the
+  same multiplier, so the *sign* of the benefit — the only thing the decision reads — is independent
+  of how often the scope runs. That removes the need for any loop-trip estimate above `s`, which is
+  the estimate most likely to be wrong.
+- `allocs_in(s)` weights each served site by `AIF_LOOP_ITERS` per loop between it and `s`.
+
+**Placement is greedy innermost-first, and that removes the nesting heuristic entirely.** LAYOUT says
+an inner arena is worth it "only when the inner scope's values die materially earlier" — but a site
+can only be served by an arena its escape bottoms at or below, so an inner arena takes exactly those
+values by construction. Whatever it cannot take, the next scope out sees.
+
+**`region` is a pin on the decision, and the pin has to bite.** Inside a `region`, the region decides:
+automatic placement fills scopes with no enclosing region and never undercuts one. Without that,
+`test_44`'s loop-body arena inside `region batch` would have taken all 200 objects and `batch` would
+have served nothing — a manifest that can no longer say which block owns a value. A programmer who
+wants per-iteration reclamation writes a nested `region`, which the same fixture does.
+
+**The chunk pool is what makes the cost constant real.** LAYOUT §4's `arenaSetupCost` of ~40 cycles
+assumes entering a region is cheap. It was not: `arena_pop` returned every chunk to libc, so a region
+serving one allocation paid a malloc and a free — 180 cycles, more than the 87 an arena saves — and
+the model would have had to decline every small scope. Chunks are pooled now and entering a region is
+a depth increment and a pointer swap.
+
+Three things it surfaced, all of which would have been silent:
+
+- **An explicitly dropped value must not be arena-placed.** `drop(x)` emits a deallocator call and an
+  arena pointer is not something a deallocator can take. Latent while arenas only appeared where a
+  `region` was written; automatic placement puts one around almost every explicit drop. Same
+  `no_stack` flag that bars T0, for the same reason.
+- **A list cannot live in an arena.** `list_push` reallocates the element block long after the
+  allocation site returned, at whatever arena depth the program is at then — so the block would be
+  tied to a region the list can outlive, and freeing the old block would hand arena memory to the
+  deallocator. Lists stay on the heap, which is also what keeps Level 2's drop path exercised.
+- **`verify` could stop reporting entirely.** With arenas everywhere a program can run to completion
+  without one call through the seam, and arming the report on the first allocation then prints
+  nothing — which reads as "the seam was not redirected". Armed on the first region entry too.
+
+**What it measured.** In the compiler: 105 arenas placed, **all 186 T1 string sites arena-served**,
+and individual frees down from 11 to 0 — every one of them is now reclaimed with its block instead.
+That closes the temporaries leak class the Level 4 note called the level's remaining residue: a
+temporary has no owner and so no free point, but it does have a scope, and the arena reclaims by
+scope. `test_45`'s allocation count fell from **420 to 7**.
+
+Peak RSS on the compiler moved 28.0 → 27.3 MB and compile time not at all, which is what
+finding 9 predicted: a program that leaks by design and exits is already a one-region program.
+**The corpus gains nothing at all, and that is the more interesting number** — `g2_frame_loop` has
+zero T1 sites (1 T0, 4 T2), so there is nothing for an arena to serve. Its 61 362 leaked allocations
+are T2 values stored into containers that outlive the frame. Arenas pay where T1 lives, and T1 lives
+in string-processing code, not in the struct-and-container corpus. Pick benchmarks accordingly.
+
+### The four annotations — **`unique` and `pin` DONE, 2026-08-07**
+
+SPEC §5. `region` landed at Level 3; `workload` is not implemented and should not be until there is a
+layout optimiser to consume it — SPEC §5.3 leaves its syntax open, so building it now would be
+inventing specification for a component that does not exist.
+
+**Both are contextual, not reserved.** SPEC §5 requires that deleting every annotation leave a working
+program; reserving two more words would break programs that already use them as names, which is the
+same obligation pointing the other way. `unique` is an annotation only when another identifier
+follows it, `pin` only when a `(` does — so `let unique = 5` is still a variable called `unique`, and
+`test_46` pins that.
+
+- **`unique` is the axiom, and the language is what makes it sound.** SPEC §5.1 asks for local
+  verification that no second owning reference is created in the declaring scope. Under affine
+  collections that is *already a compile error*: taking a second owner is a move, and using the
+  original afterwards is `use of moved value`. So the move checker discharges the local half and the
+  axiom does the interprocedural half — which is exactly the division §5.0 argues an axiom is for.
+- **SPEC §5.4's middle branch is vacuous here, and that is worth knowing rather than silently
+  skipping.** The pseudocode has a case for "the facts permit the pinned tier but the solver did not
+  reach it". `derived_tier` returns the cheapest tier its clauses admit and the clauses read the
+  facts directly; there is no search that could settle above its own optimum. An implementation whose
+  tier assignment was a separate optimisation would need that branch. This one cannot enter it, so a
+  pin below the derived tier is refuted rather than rescued.
+- A refuted pin is the **one thing AIF reports** (SPEC §5.4.1, `neg_20`), and it does not weaken the
+  invariant: §1 governs inference failure, and a false assertion about one's own program is the other
+  thing.
+
+### Minimal cause and ranked repairs — **DONE, 2026-08-07**
+
+SPEC §6.3 and INFERENCE §5.6. `prismio aif <src> --why=<symbol>` prints the witness path for one
+manifest record and the repairs that would undo it; `tools/aif_manifest_diff.py --compiler <exe>`
+prints one under every regression it gates on.
+
+**The derivation is kept as one edge per site per domain, not as the full DAG.** 5.6 specifies a
+backward BFS through maximal contributors. Recording the rule that *first raises a fact to the value
+it ends at* is a maximal contributor by construction — a rule that raises is one that set the value,
+as opposed to one that merely did not contradict it — so walking those edges backward is a chain
+rather than a search. Memory is O(sites) instead of O(edges).
+
+Two honest consequences, both recorded at the site: the path is *a* witness rather than provably the
+*shortest* one, and INFERENCE §5.1 lets constraint order vary, so "shortest" was never stable anyway.
+
+Two details that are easy to get wrong and were:
+
+- **Which domain explains a record is the reverse of the clause order.** A site is asked about
+  because its tier is worse than someone wanted, so the interesting fact is the *last* one that was
+  binding. Aliasing is checked before escape: a T3 record whose E is also Caller would otherwise be
+  explained by the escape that only got it as far as T2 — a confident answer to the wrong question.
+- **Repairs rank outermost-first.** The root cause is the cheapest thing to change, because
+  everything downstream of it follows.
+
+The output is worth reading once, because it derives an answer this project already reached by hand:
+asked why a compiler string is T3 without affine collections, it answers `A-COPY` and ranks *"make
+the type move-only so a second holder is a move"* first. That is Level 4.
 
 ### Level 5 — T3
 

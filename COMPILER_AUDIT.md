@@ -491,7 +491,7 @@ Confirmed absent by reading `parse_declaration` / `parse_primary` / `parse_type_
 | Block comments `/* */` | **Absent** | `//` only. |
 | String interpolation | **Absent** | Docs show `"Hello, ${name}!"`. |
 | Standard library | **Absent** | `dist/stdlib/` contains only a README. `print`/`println` are compiler builtins, not `std.io`. Docs mark `std.io`, `std.core`, `std.string`, `std.math` as "✅ Available". |
-| Automatic drop at scope exit | **Absent** | `drop(x)` is manual and explicit. Strings, arrays and lists are never freed at all (`types.psm:81-83`: only structs are move-only). `docs/language/memory/ownership.md` claims "no manual `free()` calls, and no memory leaks — all enforced at compile time" and that values are "automatically dropped" at scope exit. That page inverts the actual model. |
+| Automatic drop at scope exit | **Present, partial** | AIF Levels 2 and 4: structs, strings and lists are move-only and dropped at all four scope exits in reverse construction order. A value is dropped only where it is *bound to a name* — a temporary written inline as an argument has no owner and no free point — and arrays are frame storage, so `docs/language/memory/ownership.md`'s "no memory leaks — all enforced at compile time" is still stronger than the model delivers. |
 | Debug info (DWARF/PDB) | **Absent** | No `-g`, no line tables. Compiled programs cannot be source-debugged. |
 | Optimization levels | **Absent** | No `-O` flag; no LLVM pass pipeline is run. |
 

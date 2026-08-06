@@ -29,8 +29,9 @@ documentation claims.
 >
 > **Known limits worth stating plainly at v1:** compile time is superlinear in module size
 > (~290 ms for the 155 KB compiler, ~500 ms for a 105 KB single module — the remaining cost is
-> sema's per-identifier module scans); `String`, arrays and lists are never freed; arrays are
-> stack-allocated, so one cannot be returned from the function that created it.
+> sema's per-identifier module scans); a heap value is freed only where it is bound to a name, so a
+> temporary written inline as an argument still leaks (AIF Level 4); arrays are stack-allocated, so
+> one cannot be returned from the function that created it and is never freed.
 
 ## The bar being used
 
@@ -83,7 +84,7 @@ shape; the language core and all semantic analysis are roughly half-built; compi
 | `Isize`/`Usize` | ◑ | `types.psm:66,71` hardcode `i64`; `map_type` uses target width. Disagree on wasm |
 | `Float` | ◑ | `double` only. **No `F32`** |
 | `Bool`, `Char` | ✅ | `Char` is `i8` — no Unicode scalar / UTF-8 story |
-| `String` | ◑ | Opaque `ptr` to C string. No length, no ownership, never freed |
+| `String` | ◑ | Opaque `ptr` to C string. No length. Move-only and freed at scope exit as of AIF Level 4, but only where bound to a name |
 | Structs | ◑ | Always heap-allocated via `malloc`, always by-pointer. No stack structs, no by-value passing |
 | C-like enums | ✅ | `i32`, auto-numbered from 0. No explicit discriminants |
 | **Tagged unions / enums with payloads** | ✗ | Blocks `Option`, `Result`, and every sum type |
@@ -177,8 +178,8 @@ decorative — you can annotate with it, but you can't compute across it.
 |---|---|
 | Move tracking, `sink`/`inout`, borrow marking | ◑ Real design, but flow-insensitive — unsound in loops (audit §1.8) |
 | Explicit `drop(x)` | ✅ |
-| **Automatic drop at scope exit** | ✗ Nothing is freed automatically |
-| **Leak freedom** | ✗ Only structs are move-only. **Strings, arrays, and lists are never freed** |
+| **Automatic drop at scope exit** | ✅ AIF Level 2 — all four exits, reverse construction order |
+| **Leak freedom** | ◑ Structs, strings and lists are move-only and freed *where bound to a name*. A temporary written inline as an argument has no owner and no free point; arrays are frame storage |
 | **Array bounds checking** | ✗ |
 | **Null safety / optionals** | ✗ |
 | **Integer overflow semantics** | ✗ Undefined; no wrapping/checked/saturating ops |

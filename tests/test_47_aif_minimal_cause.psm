@@ -1,0 +1,71 @@
+// SPEC 6.3 / INFERENCE 5.6 -- the witness path behind a tier.
+//
+// A manifest diff makes a regression visible; the minimal cause makes it
+// understandable. `prismio aif <src> --why=<symbol>` walks the derivation
+// backward through maximal contributors and prints the edges that moved the
+// fact, then the repairs that would undo them.
+//
+// This fixture exists for the *shape* of the path rather than for its values, so
+// what test_runner asserts is the chain: two edges, in the right order, with the
+// right rules. A single-edge answer is easy to produce by accident -- record the
+// last rule that fired and stop -- and would be wrong here, because the string's
+// escape is inherited from the box's and the box's from the return.
+//
+// It also runs, because a fixture whose program never executes stops being
+// checked the moment its syntax drifts.
+
+extern fn str_length(s: String) -> Int
+extern fn str_concat(s1: String, s2: String) -> String
+extern fn int_to_str(n: Int) -> String
+
+struct Box {
+    item: String
+}
+
+// Two hops. The string is stored into the box, so its escape is at least the
+// box's (E-STORE); the box is returned, so the box's is Caller (E-RETURN).
+// Neither edge alone explains the string.
+fn boxed() -> Box {
+    let b = Box { item: str_concat("two", "hops") }
+    return b
+}
+
+// One hop, for contrast: nothing carries this one, it is returned itself.
+fn direct() -> String {
+    return str_concat("one", "hop")
+}
+
+// Zero hops: dies where it was made, so the path is the allocation and there is
+// nothing to repair.
+fn local() -> Int {
+    let s = str_concat("no", "hops")
+    return str_length(s)
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) {
+        return 0
+    }
+    print("FAIL ")
+    print(label)
+    print(": expected ")
+    print(int_to_str(want))
+    print(", got ")
+    println(int_to_str(got))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let b = boxed()
+    bad = bad + check("boxed", str_length(b.item), 7)
+    bad = bad + check("direct", str_length(direct()), 6)
+    bad = bad + check("local", local(), 6)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

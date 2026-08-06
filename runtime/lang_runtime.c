@@ -1,3 +1,23 @@
+// AIF Level 4. Strings and lists are affine now, so codegen emits a release for
+// them -- and the allocation at the other end of that pairing is in *this* file,
+// not behind ir_alloc_object. Both ends have to swap together or a verify build
+// reports every string release as a pointer that was never live.
+//
+// The build driver compiles this file with -DPRISMIO_AIF_VERIFY for `--verify`,
+// which is why verify mode still changes no codegen: the swap happens when the
+// runtime is compiled, not when the program is generated.
+#ifdef PRISMIO_AIF_VERIFY
+#include <stddef.h>
+void* aif_verify_alloc(size_t size);
+void  aif_verify_release(void* p);
+void  aif_verify_arm(void);
+#define rt_base_alloc(n) aif_verify_alloc(n)
+#define rt_free(p)       aif_verify_release(p)
+#else
+#define rt_base_alloc(n) malloc(n)
+#define rt_free(p)       free(p)
+#endif
+
 #ifdef PRISMIO_WASM
 
 typedef unsigned int size_t;
@@ -50,6 +70,14 @@ void free(void* ptr) {
 void heap_reset(void) {
     wasm_heap_ptr = 0;
 }
+
+// wasm has no `region` runtime -- arena_push and friends are native-only -- so
+// the hint is a no-op here and every allocation goes to the bump allocator,
+// which is what a region would have been anyway. The symbols exist because
+// codegen may emit calls to them.
+#define rt_alloc(n) rt_base_alloc(n)
+void rt_arena_hint_push(void) {}
+void rt_arena_hint_pop(void) {}
 
 void* realloc(void* ptr, size_t size) {
     if (!ptr) {
@@ -290,7 +318,7 @@ int str_length(const char* s) {
 char* str_concat(const char* s1, const char* s2) {
     int len1 = (int)strlen(s1);
     int len2 = (int)strlen(s2);
-    char* result = (char*)malloc(len1 + len2 + 1);
+    char* result = (char*)rt_alloc(len1 + len2 + 1);
 
     strcpy(result, s1);
     strcat(result, s2);
@@ -301,15 +329,17 @@ char* str_concat(const char* s1, const char* s2) {
 char* str_substring(const char* s, int start, int length) {
     int str_len = (int)strlen(s);
 
+    // Owned empty string rather than the literal "" -- see the native branch.
     if (start < 0 || start >= str_len) {
-        return "";
+        start = str_len;
+        length = 0;
     }
 
     if (start + length > str_len) {
         length = str_len - start;
     }
 
-    char* result = (char*)malloc(length + 1);
+    char* result = (char*)rt_alloc(length + 1);
     strncpy(result, s + start, (size_t)length);
     result[length] = '\0';
 
@@ -383,7 +413,7 @@ char* str_replace(const char* s, const char* old_str, const char* new_str) {
     const char* pos = strstr(s, old_str);
 
     if (pos == NULL) {
-        char* result = (char*)malloc(strlen(s) + 1);
+        char* result = (char*)rt_alloc(strlen(s) + 1);
         strcpy(result, s);
         return result;
     }
@@ -393,7 +423,7 @@ char* str_replace(const char* s, const char* old_str, const char* new_str) {
     int prefix_len = (int)(pos - s);
     int suffix_len = (int)strlen(pos + old_len);
 
-    char* result = (char*)malloc(prefix_len + new_len + suffix_len + 1);
+    char* result = (char*)rt_alloc(prefix_len + new_len + suffix_len + 1);
     strncpy(result, s, (size_t)prefix_len);
     result[prefix_len] = '\0';
     strcat(result, new_str);
@@ -417,13 +447,13 @@ int str_to_int(const char* s) {
 }
 
 char* int_to_str(int n) {
-    char* result = (char*)malloc(32);
+    char* result = (char*)rt_alloc(32);
     return int_to_str_buffer(n, result);
 }
 
 char* str_clone(const char* s) {
     int len = (int)strlen(s);
-    char* result = (char*)malloc(len + 1);
+    char* result = (char*)rt_alloc(len + 1);
     strcpy(result, s);
     return result;
 }
@@ -432,7 +462,7 @@ char* str_clone(const char* s) {
 // at a time and there is no other way to turn a Char into a String -- the
 // language has no string builder and no char-to-string conversion.
 char* str_from_char(char c) {
-    char* result = (char*)malloc(2);
+    char* result = (char*)rt_alloc(2);
     result[0] = c;
     result[1] = '\0';
     return result;
@@ -443,9 +473,7 @@ char* str_trim(const char* s) {
         s++;
     }
 
-    if (*s == '\0') {
-        return "";
-    }
+    // All-whitespace falls through to a one-byte allocation -- see the native branch.
 
     const char* end = s + strlen(s) - 1;
     while (end > s && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) {
@@ -453,7 +481,7 @@ char* str_trim(const char* s) {
     }
 
     int len = (int)(end - s + 1);
-    char* result = (char*)malloc(len + 1);
+    char* result = (char*)rt_alloc(len + 1);
     strncpy(result, s, (size_t)len);
     result[len] = '\0';
 
@@ -517,6 +545,35 @@ void* type_to_ptr(void* ptr) { return ptr; }
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+// AIF Level 4, second half: `region` absorbs collections too.
+//
+// COMPILER-AUDIT scheduled Level 4 after Level 3 so that regions would already
+// exist to take the string traffic -- but the arena is reached through
+// ir_alloc_region, and only a struct literal goes through that. A string is
+// allocated in this file, by str_concat, which has no idea where it is being
+// called from.
+//
+// So the *call site* says. Codegen brackets a producing runtime call whose value
+// aif_arena_at_node accepted with rt_arena_hint_push/pop, and the allocation
+// inside bumps from the arena instead of the heap. The bracket goes around the
+// call only -- arguments are already evaluated by then -- so a nested allocation
+// that was not accepted does not inherit the hint.
+//
+// The hint is a depth, not a flag, because a producing call can be an argument
+// to another one. It is never pushed outside a region: aif_arena_at_node needs an
+// enclosing one before it says yes.
+void* arena_alloc(size_t size);
+
+static int rt_arena_hint = 0;
+
+void rt_arena_hint_push(void) { rt_arena_hint++; }
+void rt_arena_hint_pop(void)  { if (rt_arena_hint > 0) rt_arena_hint--; }
+
+static void* rt_alloc(size_t size) {
+    if (rt_arena_hint > 0) return arena_alloc(size);
+    return rt_base_alloc(size);
+}
 
 // Println function - prints a string and adds a newline
 void println(const char* str) {
@@ -654,7 +711,7 @@ int str_length(const char* s) {
 char* str_concat(const char* s1, const char* s2) {
     int len1 = strlen(s1);
     int len2 = strlen(s2);
-    char* result = (char*)malloc(len1 + len2 + 1);
+    char* result = (char*)rt_alloc(len1 + len2 + 1);
 
     strcpy(result, s1);
     strcat(result, s2);
@@ -669,15 +726,20 @@ char* str_concat(const char* s1, const char* s2) {
 char* str_substring(const char* s, int start, int length) {
     int str_len = strlen(s);
 
+    // The out-of-range answer is an empty string the caller *owns*. It used to be
+    // the literal "", which was fine while nothing freed a string and is a free
+    // of a .rodata pointer now that they are affine (AIF Level 4). Anything
+    // declared to return String hands back something a release can take.
     if (start < 0 || start >= str_len) {
-        return "";
+        start = str_len;
+        length = 0;
     }
 
     if (start + length > str_len) {
         length = str_len - start;
     }
 
-    char* result = (char*)malloc(length + 1);
+    char* result = (char*)rt_alloc(length + 1);
     strncpy(result, s + start, length);
     result[length] = '\0';
 
@@ -765,7 +827,7 @@ char* str_replace(const char* s, const char* old_str, const char* new_str) {
 
     if (pos == NULL) {
         // No match, return copy
-        char* result = (char*)malloc(strlen(s) + 1);
+        char* result = (char*)rt_alloc(strlen(s) + 1);
         strcpy(result, s);
         return result;
     }
@@ -775,7 +837,7 @@ char* str_replace(const char* s, const char* old_str, const char* new_str) {
     int prefix_len = pos - s;
     int suffix_len = strlen(pos + old_len);
 
-    char* result = (char*)malloc(prefix_len + new_len + suffix_len + 1);
+    char* result = (char*)rt_alloc(prefix_len + new_len + suffix_len + 1);
 
     // Copy prefix
     strncpy(result, s, prefix_len);
@@ -803,7 +865,7 @@ int str_to_int(const char* s) {
 // ============================================
 
 char* int_to_str(int n) {
-    char* result = (char*)malloc(32);  // enough for any int
+    char* result = (char*)rt_alloc(32);  // enough for any int
     sprintf(result, "%d", n);
     return result;
 }
@@ -814,7 +876,7 @@ char* int_to_str(int n) {
 
 char* str_clone(const char* s) {
     int len = strlen(s);
-    char* result = (char*)malloc(len + 1);
+    char* result = (char*)rt_alloc(len + 1);
     strcpy(result, s);
     return result;
 }
@@ -823,7 +885,7 @@ char* str_clone(const char* s) {
 // at a time and there is no other way to turn a Char into a String -- the
 // language has no string builder and no char-to-string conversion.
 char* str_from_char(char c) {
-    char* result = (char*)malloc(2);
+    char* result = (char*)rt_alloc(2);
     result[0] = c;
     result[1] = '\0';
     return result;
@@ -839,9 +901,9 @@ char* str_trim(const char* s) {
         s++;
     }
 
-    if (*s == '\0') {
-        return "";
-    }
+    // An all-whitespace input falls through to a one-byte allocation rather than
+    // returning the literal "" -- see str_substring for why a String return is
+    // always something the caller can release.
 
     // Find end (skip trailing whitespace)
     const char* end = s + strlen(s) - 1;
@@ -850,7 +912,7 @@ char* str_trim(const char* s) {
     }
 
     int len = end - s + 1;
-    char* result = (char*)malloc(len + 1);
+    char* result = (char*)rt_alloc(len + 1);
     strncpy(result, s, len);
     result[len] = '\0';
 
@@ -968,7 +1030,28 @@ static int arena_depth = 0;
 // rather than from malloc -- the two are indistinguishable from the value.
 static long arena_bytes_served, arena_objects_served, arena_regions_entered;
 
+// Chunks are pooled rather than returned to libc, and that is what makes
+// LAYOUT 4's `arenaSetupCost` of ~40 cycles a real number instead of an
+// aspiration. Without the pool a region that serves one allocation pays a malloc
+// for its chunk and a free at the pop -- 180 cycles, more than the 87 an arena
+// saves per allocation -- so the cost model would have to decline every small
+// scope and automatic placement (LAYOUT 7.1) could never fire. With it, entering
+// a region is a depth increment and a pointer swap.
+//
+// Only default-sized chunks are pooled. An oversized one was cut for a single
+// large allocation and holding it would keep an arbitrary amount of memory live
+// for the rest of the program.
+static ArenaChunk* arena_pool;
+
 static ArenaChunk* arena_chunk_new(size_t need) {
+    if (need <= ARENA_CHUNK_MIN && arena_pool) {
+        ArenaChunk* c = arena_pool;
+        arena_pool = c->next;
+        c->used = 0;
+        c->next = NULL;
+        return c;
+    }
+
     size_t cap = need > ARENA_CHUNK_MIN ? need : ARENA_CHUNK_MIN;
     ArenaChunk* c = (ArenaChunk*)malloc(sizeof(ArenaChunk));
     if (!c) return NULL;
@@ -981,11 +1064,14 @@ static ArenaChunk* arena_chunk_new(size_t need) {
 }
 
 void arena_push(void) {
+#ifdef PRISMIO_AIF_VERIFY
+    aif_verify_arm();
+#endif
     if (arena_depth >= ARENA_MAX_DEPTH) {
         fprintf(stderr, "internal error: regions nested more than %d deep\n", ARENA_MAX_DEPTH);
         exit(1);
     }
-    arena_stack[arena_depth++] = NULL;   // chunks are allocated on first use
+    arena_stack[arena_depth++] = NULL;   // chunks are taken on first use
     arena_regions_entered++;
 }
 
@@ -994,8 +1080,13 @@ void arena_pop(void) {
     ArenaChunk* c = arena_stack[--arena_depth];
     while (c) {
         ArenaChunk* next = c->next;
-        free(c->base);
-        free(c);
+        if (c->cap == ARENA_CHUNK_MIN) {
+            c->next = arena_pool;
+            arena_pool = c;
+        } else {
+            free(c->base);
+            free(c);
+        }
         c = next;
     }
     arena_stack[arena_depth] = NULL;
@@ -1004,15 +1095,16 @@ void arena_pop(void) {
 void* arena_alloc(size_t size) {
     // No region active. Codegen only routes a site here when one is, so this is
     // a corrupted arena stack rather than an ordinary case -- but falling back
-    // to malloc keeps SPEC 1's invariant (never wrong, only slower) instead of
-    // returning NULL into code that will not check it.
-    if (arena_depth <= 0) return malloc(size);
+    // to the ordinary allocator keeps SPEC 1's invariant (never wrong, only
+    // slower) instead of returning NULL into code that will not check it. Through
+    // rt_base_alloc rather than malloc so a verify build still accounts for it.
+    if (arena_depth <= 0) return rt_base_alloc(size);
 
     size_t need = (size + 15u) & ~(size_t)15u;   // 16-byte aligned, as malloc is
     ArenaChunk* c = arena_stack[arena_depth - 1];
     if (!c || c->used + need > c->cap) {
         ArenaChunk* fresh = arena_chunk_new(need);
-        if (!fresh) return malloc(size);
+        if (!fresh) return rt_base_alloc(size);
         fresh->next = c;
         arena_stack[arena_depth - 1] = fresh;
         c = fresh;
@@ -1103,11 +1195,20 @@ void aif_verify_report(void) {
     }
 }
 
-void* aif_verify_alloc(size_t size) {
+// Armed by the first allocation *or* the first region entry. Once LAYOUT 7.1
+// places arenas automatically, a program can run to completion without a single
+// call through the seam -- every allocation served from a bump block -- and
+// arming only there would print no report at all, which reads as "the seam was
+// not redirected" rather than as "nothing needed accounting".
+void aif_verify_arm(void) {
     if (!aif_report_armed) {
         aif_report_armed = 1;
         atexit(aif_verify_report);
     }
+}
+
+void* aif_verify_alloc(size_t size) {
+    aif_verify_arm();
     void* p = malloc(size);
     if (!p) return NULL;
 
@@ -1160,10 +1261,10 @@ typedef struct {
 } XefyList;
 
 void* list_new(void) {
-    XefyList* l = (XefyList*)malloc(sizeof(XefyList));
+    XefyList* l = (XefyList*)rt_alloc(sizeof(XefyList));
     l->len = 0;
     l->cap = 4;
-    l->data = (void**)malloc(sizeof(void*) * 4);
+    l->data = (void**)rt_alloc(sizeof(void*) * 4);
     return l;
 }
 
@@ -1171,13 +1272,30 @@ void list_push(void* lp, void* value) {
     XefyList* l = (XefyList*)lp;
     if (l->len >= l->cap) {
         int nc = l->cap * 2;
-        void** nd = (void**)malloc(sizeof(void*) * nc);
+        void** nd = (void**)rt_alloc(sizeof(void*) * nc);
         for (int i = 0; i < l->len; i++) nd[i] = l->data[i];
+        rt_free(l->data);
         l->data = nd;
         l->cap = nc;
     }
     l->data[l->len] = value;
     l->len = l->len + 1;
+}
+
+// AIF Level 4. A list is two allocations -- the handle and the element block --
+// so the deallocator seam, which takes one pointer and frees it, cannot reclaim
+// it: `free(list)` leaks the block. Codegen calls this instead for a droppable
+// List binding, which is why the drop list carries a kind and not just a slot.
+//
+// The elements are not touched. `list_push` is `retain_in(0)`, so an element's
+// escape is already the list's -- if it is owned anywhere it is owned at its own
+// binding, and freeing it here as well would be the double free that predicate
+// exists to prevent.
+void list_release(void* lp) {
+    if (!lp) return;
+    XefyList* l = (XefyList*)lp;
+    rt_free(l->data);
+    rt_free(l);
 }
 
 void* list_get(void* lp, int index) {

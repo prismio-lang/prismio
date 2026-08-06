@@ -358,13 +358,24 @@ def run_aif_stack_slot_test():
 
 
 def run_aif_drop_emission_test():
-    """Level 2's drops, counted per function in the IR.
+    """Reclamation points, counted per function in the IR.
 
     test_43 running clean already proves the dynamic counts balance -- a double
-    free exits 0xC0000374. What it cannot prove is that any drop was emitted at
+    free exits 0xC0000374. What it cannot prove is that anything was emitted at
     all, since leaking is silently correct. These are the static counts, and the
-    two that would be bugs rather than slowdowns are `escapes` (freeing a value
-    that outlives the frame) and `explicit` (freeing again after `drop`).
+    two that would be bugs rather than slowdowns are `escapes` (reclaiming a
+    value that outlives the frame) and `explicit` (reclaiming again after
+    `drop`).
+
+    The counts moved from `free` to `arena_pop` when LAYOUT 7.1's automatic
+    placement landed, and moved *without changing*: every scope exit that used to
+    free one object now pops the arena that served it. That is the check worth
+    having -- the mechanism is allowed to change, the number of points at which a
+    scope reclaims what it allocated is not.
+
+    `explicit` keeps its `free`, and that is not incidental either: an explicitly
+    dropped value is barred from the arena, because `drop` emits a deallocator
+    call and an arena pointer is not something a deallocator can take.
     """
     print(f"\n{BLUE}--- Running aif_drop_emission ---{RESET}")
     fixture = TEST_DIR / "test_43_aif_scope_drop.psm"
@@ -376,42 +387,54 @@ def run_aif_drop_emission_test():
         print(result.stdout or result.stderr)
         return False
 
-    frees, current = {}, None
+    counts, current = {}, None
     for line in out.read_text(encoding="utf-8", errors="replace").splitlines():
         m = re.match(r"define .*@([A-Za-z0-9_]+)\(", line)
         if m:
             current = m.group(1)
-            frees.setdefault(current, 0)
-        elif current and re.search(r"call void @free", line):
-            frees[current] += 1
+            counts.setdefault(current, {"free": 0, "pop": 0, "push": 0})
+        elif current and re.search(r"call void @free\(", line):
+            counts[current]["free"] += 1
+        elif current and re.search(r"call void @arena_pop\(", line):
+            counts[current]["pop"] += 1
+        elif current and re.search(r"call void @arena_push\(", line):
+            counts[current]["push"] += 1
 
-    # fn -> (min, max) static frees. `escapes` returns its value, so 0 is not a
-    # floor to relax; `explicit` calls drop(), so 1 is not a ceiling to relax.
+    # fn -> (frees, arena pops). `escapes` returns its value, so 0 is not a floor
+    # to relax; `explicit` calls drop(), so its 1 free is not a ceiling to relax.
     want = {
-        "plain__Void":         (1, 1),
-        "nested__Void":        (2, 2),
-        "per_iteration__Void": (1, 1),
-        "early_exits__Void":   (4, 4),   # continue, break, fall-through, return
-        "early_return__Bool":  (3, 3),   # inner+outer, then outer
-        "explicit__Void":      (1, 1),
+        "plain__Void":         (0, 1),
+        "nested__Void":        (0, 2),
+        "per_iteration__Void": (0, 1),
+        "early_exits__Void":   (0, 4),   # continue, break, fall-through, return
+        "early_return__Bool":  (0, 3),   # inner+outer, then outer
+        "explicit__Void":      (1, 0),
         "escapes__Void":       (0, 0),
     }
 
     problems = []
-    for fn, (lo, hi) in want.items():
-        if fn not in frees:
+    for fn, (want_free, want_pop) in want.items():
+        if fn not in counts:
             problems.append(f"{fn}: not in the emitted IR")
-        elif not (lo <= frees[fn] <= hi):
-            problems.append(f"{fn}: {frees[fn]} free(s), expected {lo}..{hi}")
+            continue
+        got = counts[fn]
+        if got["free"] != want_free:
+            problems.append(f"{fn}: {got['free']} free(s), expected {want_free}")
+        if got["pop"] != want_pop:
+            problems.append(f"{fn}: {got['pop']} arena_pop(s), expected {want_pop}")
+        # An arena pushed on one path and popped on none leaks the whole block;
+        # more pushes than pops in a function is that bug however the paths run.
+        if got["push"] > got["pop"]:
+            problems.append(f"{fn}: {got['push']} push(es) but only {got['pop']} pop(s)")
 
     cleanup_files(out)
     if problems:
-        print(f"{RED}[FAIL] scope drops are not being emitted as expected{RESET}")
+        print(f"{RED}[FAIL] reclamation is not being emitted as expected{RESET}")
         for p in problems:
             print(f"  {p}")
         return False
 
-    print(f"{GREEN}[PASS] scope drops emitted at every exit, and nowhere else{RESET}")
+    print(f"{GREEN}[PASS] every scope exit reclaims what it allocated, and nowhere else does{RESET}")
     return True
 
 
@@ -435,12 +458,43 @@ def run_aif_verify_test():
         "test_42_aif_stack_promotion": 1,   # escapes() -> Point
         "test_43_aif_scope_drop": 1,        # escapes() -> Wide
         # Every other allocation in test_44 is served by an arena and released in
-        # bulk, so verify never sees it. The one that is not is the inner
-        # assignment in escapes_inner, whose escape is the *enclosing* region's
-        # scope: too long-lived for the inner arena, and not its own scope, so
-        # the scope drop declines it too. Correct but imprecise -- it is the case
-        # a threaded arena handle would place in the outer arena.
-        "test_44_aif_region": 1,
+        # bulk, so verify never sees it. Two are not.
+        #
+        # The inner assignment in escapes_inner, whose escape is the *enclosing*
+        # region's scope: too long-lived for the inner arena, and not its own
+        # scope, so the scope drop declines it too. Correct but imprecise -- it is
+        # the case a threaded arena handle would place in the outer arena.
+        #
+        # And string_escapes' str_concat, for the same reason on the Level 4 side:
+        # it outlives the region so the arena declines it, and it reaches its
+        # binding through an assignment rather than a `let`, so it never enters a
+        # drop list. Droppability is a property of a binding's initialiser.
+        "test_44_aif_region": 2,
+        # AIF Level 4, and the first fixture where strings and lists are in the
+        # accounting at all -- the runtime allocates them, so a verify build
+        # compiles the runtime with PRISMIO_AIF_VERIFY to put both ends of every
+        # pairing on the same side of the swap. Without that these would be
+        # violations, not leaks.
+        #
+        # The four that remain, and the count is load-bearing rather than
+        # incidental -- a wrong free in this fixture is a *legal* release as far
+        # as the accounting goes, so it shows up here as one fewer leak and not
+        # as a violation:
+        #
+        #   4 bytes  escapes() -> String, the T2 return, as above.
+        #   9 bytes  `owned` in main, which reborrow() binds to a local name.
+        #            E-BIND cannot name a scope inside a callee, so it raises the
+        #            escape to Caller -- sound, imprecise, and why the drop at
+        #            main's exit declines it.
+        #   6 bytes  holder.name, which reassigned_from_borrow must NOT free. If
+        #            this number goes to 2, the reassignment guard is gone and the
+        #            drop is taking a value the struct still owns.
+        #
+        # There were four until LAYOUT 7.1's automatic arena placement landed.
+        # The fourth was the initialiser in reassigned_from_borrow, which is now
+        # served by an arena and reclaimed with the block -- and the allocation
+        # total fell from 420 to 7, which is the headline for that change.
+        "test_45_aif_affine_collections": 3,
     }
 
     exe = TEST_DIR / "aif_verify_probe.exe"
@@ -480,11 +534,129 @@ def run_aif_verify_test():
     return True
 
 
+def run_aif_annotation_test():
+    """SPEC 5's annotations, read back out of the manifest.
+
+    test_46 running clean proves they change no answer, which is SPEC 5's first
+    requirement and the more important one. It cannot prove they did anything at
+    all -- an implementation that parsed both and dropped them on the floor would
+    pass it. This is the other half: the annotated site's tier and origin, against
+    its unannotated twin's.
+    """
+    print(f"\n{BLUE}--- Running aif_annotations ---{RESET}")
+    fixture = TEST_DIR / "test_46_aif_annotations.psm"
+    records, _ = aif_records(fixture)
+    if records is None:
+        print(f"{RED}[FAIL] could not read a manifest for {fixture.name}{RESET}")
+        return False
+
+    # symbol -> (tier, origin). The twins differ only in the annotation, so any
+    # difference in these columns is the annotation's doing and nothing else.
+    want = {
+        "annotated_unique__Void#0": ("T1", "unique"),
+        "plain_unique__Void#0":     ("T1", "inferred"),
+        # The pin freezes above the derived tier, so this one is deliberately
+        # *worse* than its twin -- that is what freezing means, and it is what
+        # keeps a manifest stable across an unrelated edit.
+        "annotated_pin__Void#0":    ("T2", "pin"),
+        "plain_pin__Void#0":        ("T1", "inferred"),
+        "annotated_both__Void#0":   ("T2", "pin"),
+        # `unique` on a parameter is keyed on what the caller passed, so the
+        # origin lands on main's allocation rather than inside the callee.
+        "main#0":                   ("T1", "unique"),
+    }
+
+    problems = []
+    for symbol, (tier, origin) in want.items():
+        if symbol not in records:
+            problems.append(f"{symbol}: not in the manifest")
+            continue
+        got_tier, got_origin = records[symbol][0], records[symbol][2]
+        if got_tier != tier:
+            problems.append(f"{symbol}: tier {got_tier}, expected {tier}")
+        if got_origin != origin:
+            problems.append(f"{symbol}: origin {got_origin}, expected {origin}")
+
+    if problems:
+        print(f"{RED}[FAIL] annotations did not reach the manifest{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] `unique` cuts aliasing and `pin` freezes a tier, both recorded{RESET}")
+    return True
+
+
+def run_aif_minimal_cause_test():
+    """SPEC 6.3's witness path, checked for shape rather than for prose.
+
+    The interesting property is that the path is a *chain*: a value stored into a
+    container inherits the container's escape, so explaining it takes both edges
+    and in that order. An implementation that recorded only the last rule to fire
+    would print one edge and look plausible, which is exactly the failure this
+    catches.
+    """
+    print(f"\n{BLUE}--- Running aif_minimal_cause ---{RESET}")
+    fixture = TEST_DIR / "test_47_aif_minimal_cause.psm"
+
+    def why(symbol):
+        return run_command([str(PRISMIO_EXE), "aif", str(fixture),
+                            "--owned-collections", f"--why={symbol}"])
+
+    # symbol -> the rules its witness path should visit, innermost edge first.
+    want = {
+        # The string is stored into the box, and the box is returned. Two edges,
+        # and the return has to be the *last* one -- it is the root cause.
+        "boxed__Void#1":  ["A-STORE", "E-RETURN"],
+        "boxed__Void#0":  ["E-RETURN"],
+        "direct__Void#0": ["E-RETURN"],
+        # Dies where it was made, so the path is the allocation and there is
+        # nothing to repair.
+        "local__Void#0":  ["ALLOC"],
+    }
+
+    problems = []
+    for symbol, rules in want.items():
+        result = why(symbol)
+        if result.returncode != 0:
+            problems.append(f"{symbol}: --why exited {result.returncode}")
+            continue
+        got = re.findall(r"<- (\S+)", result.stdout)
+        if got != rules:
+            problems.append(f"{symbol}: path {got}, expected {rules}")
+        # A repair list that is only the rejected pin means nothing actionable
+        # was derived, which is right for a root and wrong for anything else.
+        actionable = "rejected --" not in result.stdout.split("repairs")[-1].split("\n")[1]
+        if rules == ["ALLOC"] and actionable:
+            problems.append(f"{symbol}: a repair was offered for an allocation root")
+        if rules != ["ALLOC"] and not actionable:
+            problems.append(f"{symbol}: no repair derived from a path with {len(rules)} edge(s)")
+
+    # An unknown symbol has to fail rather than print an empty explanation, or a
+    # differ that mistypes one gets silence instead of an error.
+    missing = why("no_such_symbol#0")
+    if missing.returncode == 0:
+        problems.append("--why on an unknown symbol exited 0")
+
+    if problems:
+        print(f"{RED}[FAIL] the witness path is not what the derivation says{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] minimal cause walks the derivation, and repairs follow the path{RESET}")
+    return True
+
+
 TIER_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3, "T4b": 4}
 
 
 def aif_records(source, budget=None):
-    """symbol -> (tier, was_widened) from a manifest run."""
+    """symbol -> (tier, was_widened, origin) from a manifest run.
+
+    The columns are `symbol tier placement type layout origin site`, and the site
+    is last because a path may contain spaces and nothing else may.
+    """
     cmd = [str(PRISMIO_EXE), "aif", str(source)]
     if budget is not None:
         cmd.append(f"--budget={budget}")
@@ -495,7 +667,7 @@ def aif_records(source, budget=None):
     for line in result.stdout.splitlines():
         parts = line.split()
         if len(parts) >= 6 and "#" in parts[0] and parts[1] in TIER_ORDER:
-            out[parts[0]] = (parts[1], "budget-exhausted" in line)
+            out[parts[0]] = (parts[1], "budget-exhausted" in line, parts[5])
     return out, result
 
 
@@ -535,10 +707,10 @@ def run_aif_widening_test():
                 problems.append(f"{src.name} --budget={budget}: the site "
                                 "population changed with the budget")
                 continue
-            widened = sum(1 for _, w in got.values() if w)
+            widened = sum(1 for rec in got.values() if rec[1])
             if 0 < widened < len(got):
                 saw_partial = True
-            for sym, (tier, _) in got.items():
+            for sym, (tier, _, _origin) in got.items():
                 if TIER_ORDER[tier] < TIER_ORDER[converged[sym][0]]:
                     problems.append(
                         f"{src.name} --budget={budget}: {sym} is {tier} "
@@ -622,6 +794,16 @@ def main():
         failed += 1
 
     if run_aif_verify_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_annotation_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_minimal_cause_test():
         passed += 1
     else:
         failed += 1

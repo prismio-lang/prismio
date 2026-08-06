@@ -98,10 +98,21 @@ fn type_int_is_unsigned(t: TypeInfo) -> Bool {
 }
 
 // Move-only types are owned, heap-backed values that transfer ownership on use.
-// Scalars/enums are Copyable (bit-copied) and never move. (String/Array become
-// move-only once borrows land; for now they stay copyable to avoid churn.)
+// Scalars/enums are Copyable (bit-copied) and never move.
+//
+// AIF Level 4. Strings and lists join structs here, which is what gives the
+// memory model a single owner for the values that make up most of a real
+// program's allocation traffic -- aif_frees_at_scope_node asks the same question
+// through site_is_move_only, so a T1 string now has a free point.
+//
+// Arrays deliberately do not. An array literal lowers to ir_array_alloca, which
+// is frame storage: there is no allocation to own, nothing for a drop to
+// reclaim, and `drop(arr)` would hand a stack pointer to the deallocator.
+// Making them affine would buy the aliasing rule and cost that hazard.
 fn type_is_move_only(t: TypeInfo) -> Bool {
-    return t.kind == TypeKind.STRUCT
+    if (t.kind == TypeKind.STRUCT) { return true }
+    if (t.kind == TypeKind.STRING) { return true }
+    return t.kind == TypeKind.LIST
 }
 
 fn type_struct(name: String) -> TypeInfo {

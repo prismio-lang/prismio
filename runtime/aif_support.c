@@ -288,6 +288,15 @@ typedef struct {
     // it is the interned name -- which is what the manifest's `region:<name>`
     // placement reports, and how codegen knows an arena is live here.
     int region_name;
+    // LAYOUT 7.1. Set by aif_place_arenas when the cost model chooses this scope,
+    // or unconditionally when `region` pinned it. Codegen reads it through the
+    // block node to know where to bracket arena_push/arena_pop.
+    int arena;
+    // How many loops enclose this scope, within its function. The weight a site
+    // contributes to its arena's benefit is one allocation per entry of the
+    // arena, times the trip count of every loop between them.
+    int loop_depth;
+    const void* node;   // the BLOCK this scope came from, for the codegen lookup
 } Scope;
 
 static Scope* scopes;
@@ -303,12 +312,29 @@ int aif_scope_new(int parent, int owner) {
     s->owner = owner;
     s->depth = (parent < 0) ? 0 : scopes[parent].depth + 1;
     s->region_name = -1;
+    s->arena = 0;
+    s->loop_depth = 0;
+    s->node = NULL;
     return scope_count++;
 }
 
 void aif_scope_set_region(int scope, const char* name) {
     if (scope < 0 || scope >= scope_count) return;
     scopes[scope].region_name = aif_intern(name);
+    // SPEC 5.2: `region` is a pin on the placement decision, not an input to it.
+    // The cost model never sees this scope -- it is guaranteed an arena whether
+    // or not the model would have chosen one, and the manifest records that.
+    scopes[scope].arena = 1;
+}
+
+void aif_scope_set_loop_depth(int scope, int depth) {
+    if (scope < 0 || scope >= scope_count) return;
+    scopes[scope].loop_depth = depth < 0 ? 0 : depth;
+}
+
+void aif_scope_note_node(int scope, const void* node) {
+    if (scope < 0 || scope >= scope_count) return;
+    scopes[scope].node = node;
 }
 
 int aif_scope_count(void) { return scope_count; }
@@ -570,7 +596,20 @@ typedef struct {
     int E, A, C;
     int type_acyclic;   // stamped once, before iteration
     int no_stack;       // explicitly dropped -- see AIF_CON_NO_STACK
+    // SPEC 5.1. `unique` asserts A = Unique and cuts the aliasing graph: a rule
+    // that would raise A above Unique is suppressed rather than applied.
+    int alias_axiom;
+    int alias_suppressed;   // the axiom actually stopped a rule; reported
+    // SPEC 5.4. The tier a `pin` froze, or -1. Applied after convergence.
+    int pin_tier;
+    int pin_verdict;        // AIF_PIN_*, decided by aif_check_pins
 } Site;
+
+// SPEC 5.4's four outcomes, plus "there is no pin here".
+#define AIF_PIN_NONE     0
+#define AIF_PIN_HONOURED 1
+#define AIF_PIN_REFUTED  2   // converged facts make it unreachable -- an error
+#define AIF_PIN_UNPROVEN 3   // budget ran out -- a warning, and the pin is dropped
 
 static Site* sites;
 static int site_count, site_cap;
@@ -599,6 +638,10 @@ int aif_site_new(const char* type, int kind, int fn, int scope,
     s->bytes = 0;
     s->type_acyclic = 1;
     s->no_stack = 0;
+    s->alias_axiom = 0;
+    s->alias_suppressed = 0;
+    s->pin_tier = -1;
+    s->pin_verdict = AIF_PIN_NONE;
     // Bottom, per INFERENCE 5.2 line 2: Region(defscope), Unique, Acyclic.
     s->E = scope;
     s->A = AIF_A_UNIQUE;
@@ -869,19 +912,38 @@ void aif_argv_end(int base) { argv.len = base; }
 #define AIF_CON_ESCAPE_CALLER 7
 #define AIF_CON_ESCAPE_GLOBAL 8
 #define AIF_CON_NO_STACK      9
+// SPEC 5's annotations. Neither is a transfer rule: both are applied once,
+// between the points-to fixed point and the fact loop, because an axiom that
+// arrives mid-iteration would only cut what had not already been raised.
+#define AIF_CON_UNIQUE       10
+#define AIF_CON_PIN          11
+// Not constraints: the two rules that read a site's own state rather than an
+// incoming edge. They still need names, because a witness path that ends at one
+// has to say so rather than reporting "no cause".
+#define AIF_RULE_A_ESCAPE    12
+#define AIF_RULE_A_COPY      13
+#define AIF_RULE_ALLOC       14   // the root: this is where the value is made
 
 typedef struct {
     int kind, a, b, c;
+    // Where in the source this constraint came from. Carried so a manifest diff
+    // can name the store or the call that moved a fact (SPEC 6.3's example puts
+    // a file:line on every edge of the witness path), not just which rule fired.
+    int file, line, col;
 } Constraint;
 
 static Constraint* cons;
 static int con_count, con_cap;
+static int con_file, con_line, con_col;
 
 static void con_add(int kind, int a, int b, int c) {
     if (con_count == con_cap) {
         con_cap = con_cap ? con_cap * 2 : 4096;
         cons = (Constraint*)xrealloc(cons, (size_t)con_cap * sizeof(Constraint), "AIF constraints");
     }
+    cons[con_count].file = con_file;
+    cons[con_count].line = con_line;
+    cons[con_count].col = con_col;
     Constraint* k = &cons[con_count++];
     k->kind = kind;
     k->a = a;
@@ -898,6 +960,8 @@ void aif_con_retain_in(int vs, int holder)      { con_add(AIF_CON_RETAIN_IN, vs,
 void aif_con_borrow(int vs)                     { con_add(AIF_CON_BORROW, vs, 0, 0); }
 void aif_con_escape_caller(int vs)              { con_add(AIF_CON_ESCAPE_CALLER, vs, 0, 0); }
 void aif_con_escape_global(int vs)              { con_add(AIF_CON_ESCAPE_GLOBAL, vs, 0, 0); }
+void aif_con_unique(int vs)                     { con_add(AIF_CON_UNIQUE, vs, 0, 0); }
+void aif_con_pin(int vs, int tier)              { con_add(AIF_CON_PIN, vs, tier, 0); }
 
 // `drop(x)` lowers to a free, and a stack slot is not a thing that can be freed.
 // A T0 value has no allocation to release -- its storage *is* the frame -- so
@@ -955,11 +1019,89 @@ static int site_is_move_only(const Site* s) {
     return s->kind == AIF_K_STRING || s->kind == AIF_K_ARRAY || s->kind == AIF_K_LIST;
 }
 
+// ============================================================================
+// The derivation DAG (INFERENCE 5.6, SPEC 6.3)
+//
+// A manifest diff has to answer *why* a tier moved, and the answer is a witness
+// path from a root cause to the record. INFERENCE 5.6 specifies a backward BFS
+// through **maximal contributors**: for a fact `f` at node `n` holding value
+// `v`, the predecessors whose transfer produced `v`.
+//
+// Keeping every predecessor and searching backward is one way to get that. This
+// keeps **one edge per site per domain** instead, written the moment a rule
+// first raises the fact to the value it ends at -- which is a maximal
+// contributor by construction, because a rule that raises is one that set the
+// value rather than one that merely failed to contradict it. Walking those edges
+// backward is then a chain rather than a search.
+//
+// Two honest consequences of that choice:
+//
+//   * The path is *a* witness, not provably the *shortest* one. The first rule
+//     to reach the final value is recorded, which is the shortest among the
+//     rules that fired in that round, but a different constraint order could
+//     have produced a shorter chain. INFERENCE 5.1 permits the order to vary,
+//     so "shortest" was never stable anyway.
+//   * Memory is O(sites), not O(edges). 5.6's requirement is that the DAG be
+//     *retained through tier assignment*, and one maximal edge per fact is
+//     enough to retain what a diff reads back.
+// ============================================================================
+
+typedef struct {
+    int rule;   // the AIF_CON_* that fired, or -1 for "never raised"
+    int from;   // the site the value came from, or -1 for an axiom or a root
+    int value;  // what it was raised to
+    int file, line, col;
+} Deriv;
+
+static Deriv* deriv_e;      // why each site's E is what it is
+static Deriv* deriv_a;      // and its A
+static int cur_con = -1;    // the constraint being applied, for attribution
+static int synth_rule = -1; // ...or the rule, when there is no constraint
+
+// Where the constraint currently being *built* came from. Constraints are added
+// during the walk, one node at a time, so a sticky position costs nothing and
+// keeps ten aif_con_* signatures unchanged.
+void aif_con_at(int file, int line, int col) {
+    con_file = file;
+    con_line = line;
+    con_col = col;
+}
+
+static void note_deriv(Deriv* d, int site, int from, int value) {
+    if (!d) return;
+    int live = (cur_con >= 0 && cur_con < con_count);
+    d[site].rule  = live ? cons[cur_con].kind : synth_rule;
+    d[site].from  = from;
+    d[site].value = value;
+    d[site].file  = live ? cons[cur_con].file : sites[site].file;
+    d[site].line  = live ? cons[cur_con].line : sites[site].line;
+    d[site].col   = live ? cons[cur_con].col  : sites[site].col;
+}
+
+
 static void solver_alloc(void) {
     pt_len = key_count;
     holders_len = site_count;
     pt = (Bits*)xcalloc((size_t)pt_len, sizeof(Bits), "AIF points-to");
     holders = (Bits*)xcalloc((size_t)holders_len, sizeof(Bits), "AIF holders");
+    // INFERENCE 5.6 requires the derivation be retained through tier assignment.
+    deriv_e = (Deriv*)xcalloc((size_t)site_count, sizeof(Deriv), "AIF derivation (E)");
+    deriv_a = (Deriv*)xcalloc((size_t)site_count, sizeof(Deriv), "AIF derivation (A)");
+    for (int s = 0; s < site_count; s++) {
+        // A site nothing ever raised is at its own allocation, which is the root
+        // every witness path terminates at.
+        deriv_e[s].rule = AIF_RULE_ALLOC;
+        deriv_a[s].rule = AIF_RULE_ALLOC;
+        deriv_e[s].from = -1;
+        deriv_a[s].from = -1;
+        // The bottom values, so a fact nothing ever raised still reports what it
+        // is rather than whatever calloc left behind.
+        deriv_e[s].value = sites[s].E;
+        deriv_a[s].value = sites[s].A;
+        deriv_e[s].file = deriv_a[s].file = sites[s].file;
+        deriv_e[s].line = deriv_a[s].line = sites[s].line;
+        deriv_e[s].col  = deriv_a[s].col  = sites[s].col;
+    }
     for (int s = 0; s < site_count; s++) {
         sites[s].type_acyclic = type_acyclic_id(sites[s].type);
         int t = nominal_find_id(sites[s].type);
@@ -990,16 +1132,35 @@ static int moved(int site) {
     return 1;
 }
 
-static int raise_escape(int site, int target) {
+static int raise_escape(int site, int target, int from) {
     int j = escape_join(sites[site].E, target);
     if (j == sites[site].E) return 0;
     sites[site].E = j;
+    note_deriv(deriv_e, site, from, j);
     return 1;
 }
 
-static int raise_alias(int site, int level) {
+static int raise_alias(int site, int level, int from) {
     if (sites[site].A >= level) return 0;
+    // SPEC 5.1: `unique` is an axiom, so the solver takes A = Unique as given
+    // and does not propagate aliasing into the annotated binding. This is the
+    // cut, and it is the whole mechanism -- an axiom that a rule could overrule
+    // is not one.
+    //
+    // What makes it sound here rather than merely asserted is the language: a
+    // second *owning* reference within the declaring scope is already a
+    // compile error under affine collections, because taking one is a move and
+    // using the original afterwards is `use of moved value`. So the local
+    // verification SPEC 5.1 asks for is discharged by the move checker, and
+    // what remains is the interprocedural half -- exactly what an axiom is for.
+    // The suppression is recorded so the manifest can say which values rest on
+    // the assertion.
+    if (sites[site].alias_axiom && level > AIF_A_UNIQUE) {
+        sites[site].alias_suppressed = 1;
+        return 0;
+    }
     sites[site].A = level;
+    note_deriv(deriv_a, site, from, level);
     return 1;
 }
 
@@ -1058,6 +1219,30 @@ int aif_solve(int max_rounds) {
     }
     pt_rounds = solve_rounds;
 
+    // SPEC 5: annotations enter here, after points-to and before the facts.
+    //
+    // After, because a value set may name a variable rather than a site, and
+    // resolving one needs the points-to relation. Before, because both are
+    // statements about the *result*: an axiom applied mid-iteration would only
+    // cut the rules that had not fired yet, which would make the answer depend
+    // on constraint order -- and INFERENCE 5.1 lets the order vary.
+    for (int ci = 0; ci < con_count; ci++) {
+        Constraint* k = &cons[ci];
+        if (k->kind != AIF_CON_UNIQUE && k->kind != AIF_CON_PIN) continue;
+        resolve(k->a, &scratch_val);
+        bits_to_vec(&scratch_val, &vec_val);
+        for (int i = 0; i < vec_val.len; i++) {
+            if (k->kind == AIF_CON_UNIQUE) {
+                sites[vec_val.v[i]].alias_axiom = 1;
+            } else if (k->b > sites[vec_val.v[i]].pin_tier) {
+                // Two pins on one site is a program that annotated the same
+                // allocation twice; the stricter reading is the more expensive
+                // tier, which is the one that cannot be unsound.
+                sites[vec_val.v[i]].pin_tier = k->b;
+            }
+        }
+    }
+
     // Nothing has been proved about any site yet, so if the budget leaves no
     // round for the facts the frontier is the whole graph. Overwritten by the
     // first round that runs.
@@ -1071,6 +1256,7 @@ int aif_solve(int max_rounds) {
 
         for (int ci = 0; ci < con_count; ci++) {
             Constraint* k = &cons[ci];
+            cur_con = ci;
 
             if (k->kind == AIF_CON_BIND) {
                 resolve(k->b, &scratch_val);
@@ -1086,7 +1272,7 @@ int aif_solve(int max_rounds) {
                 bits_to_vec(&scratch_val, &vec_val);
                 // A-CALL: passing a value hands out a borrow of it.
                 for (int i = 0; i < vec_val.len; i++) {
-                    if (raise_alias(vec_val.v[i], AIF_A_BORROWED)) changed = moved(vec_val.v[i]);
+                    if (raise_alias(vec_val.v[i], AIF_A_BORROWED, -1)) changed = moved(vec_val.v[i]);
                 }
 
             } else if (k->kind == AIF_CON_STORE) {
@@ -1102,9 +1288,9 @@ int aif_solve(int max_rounds) {
                         int o = vec_own.v[j];
                         // E-STORE: reachable from the container, so it lives at
                         // least as long as the container does.
-                        if (raise_escape(s, sites[o].E)) changed = moved(s);
+                        if (raise_escape(s, sites[o].E, o)) changed = moved(s);
                         // A-STORE: sharing is inherited through reachability.
-                        if (raise_alias(s, sites[o].A)) changed = moved(s);
+                        if (raise_alias(s, sites[o].A, o)) changed = moved(s);
                     }
                 }
 
@@ -1117,7 +1303,7 @@ int aif_solve(int max_rounds) {
                     // binding in the site's own function says anything about
                     // which of that function's scopes the value outlives.
                     int target = (sites[s].fn == k->c) ? k->b : AIF_E_CALLER;
-                    if (raise_escape(s, target)) changed = moved(s);
+                    if (raise_escape(s, target, -1)) changed = moved(s);
                 }
 
             } else if (k->kind == AIF_CON_OPAQUE) {
@@ -1125,8 +1311,8 @@ int aif_solve(int max_rounds) {
                 bits_to_vec(&scratch_val, &vec_val);
                 for (int i = 0; i < vec_val.len; i++) {
                     int s = vec_val.v[i];
-                    if (sites[s].E != AIF_E_GLOBAL && raise_escape(s, AIF_E_CALLER)) changed = moved(s);
-                    if (raise_alias(s, AIF_A_SHARED)) changed = moved(s);
+                    if (sites[s].E != AIF_E_GLOBAL && raise_escape(s, AIF_E_CALLER, -1)) changed = moved(s);
+                    if (raise_alias(s, AIF_A_SHARED, -1)) changed = moved(s);
                 }
 
             } else if (k->kind == AIF_CON_RETAIN_IN) {
@@ -1140,10 +1326,10 @@ int aif_solve(int max_rounds) {
                     int s = vec_val.v[i];
                     for (int j = 0; j < vec_own.len; j++) {
                         int h = vec_own.v[j];
-                        if (raise_escape(s, sites[h].E)) changed = moved(s);
-                        if (raise_alias(s, sites[h].A)) changed = moved(s);
+                        if (raise_escape(s, sites[h].E, h)) changed = moved(s);
+                        if (raise_alias(s, sites[h].A, h)) changed = moved(s);
                     }
-                    if (raise_alias(s, AIF_A_BORROWED)) changed = moved(s);
+                    if (raise_alias(s, AIF_A_BORROWED, -1)) changed = moved(s);
                 }
 
             } else if (k->kind == AIF_CON_BORROW) {
@@ -1153,14 +1339,14 @@ int aif_solve(int max_rounds) {
                 resolve(k->a, &scratch_val);
                 bits_to_vec(&scratch_val, &vec_val);
                 for (int i = 0; i < vec_val.len; i++) {
-                    if (raise_alias(vec_val.v[i], AIF_A_BORROWED)) changed = moved(vec_val.v[i]);
+                    if (raise_alias(vec_val.v[i], AIF_A_BORROWED, -1)) changed = moved(vec_val.v[i]);
                 }
 
             } else if (k->kind == AIF_CON_ESCAPE_CALLER) {
                 resolve(k->a, &scratch_val);
                 bits_to_vec(&scratch_val, &vec_val);
                 for (int i = 0; i < vec_val.len; i++) {
-                    if (raise_escape(vec_val.v[i], AIF_E_CALLER)) changed = moved(vec_val.v[i]);
+                    if (raise_escape(vec_val.v[i], AIF_E_CALLER, -1)) changed = moved(vec_val.v[i]);
                 }
 
             } else if (k->kind == AIF_CON_NO_STACK) {
@@ -1180,21 +1366,27 @@ int aif_solve(int max_rounds) {
                     int s = vec_val.v[i];
                     if (sites[s].E != AIF_E_GLOBAL) {
                         sites[s].E = AIF_E_GLOBAL;
+                        note_deriv(deriv_e, s, -1, AIF_E_GLOBAL);
                         changed = moved(s);
                     }
                 }
             }
         }
 
-        // Rules that read a site's own state rather than an incoming edge.
+        // Rules that read a site's own state rather than an incoming edge. They
+        // have no constraint to attribute to, so the derivation names the rule
+        // directly -- cur_con of -1 makes note_deriv fall back to synth_rule.
+        cur_con = -1;
         for (int s = 0; s < site_count; s++) {
             // A-ESCAPE: anything globally reachable is reachable more than once.
-            if (sites[s].E == AIF_E_GLOBAL && raise_alias(s, AIF_A_SHARED)) changed = moved(s);
+            synth_rule = AIF_RULE_A_ESCAPE;
+            if (sites[s].E == AIF_E_GLOBAL && raise_alias(s, AIF_A_SHARED, -1)) changed = moved(s);
 
             // A-COPY: only a copyable value can be genuinely multiply held.
+            synth_rule = AIF_RULE_A_COPY;
             if (!site_is_move_only(&sites[s])
                 && bits_count_at_least_two(&holders[s])
-                && raise_alias(s, AIF_A_SHARED)) {
+                && raise_alias(s, AIF_A_SHARED, -1)) {
                 changed = moved(s);
             }
 
@@ -1360,10 +1552,9 @@ static int fits_on_stack(const Site* s) {
     return s->bytes > 0 && s->bytes <= AIF_THETA_STACK_BYTES;
 }
 
-int aif_tier_of(int id) {
-    if (id < 0 || id >= site_count) return AIF_T4B;
-    Site* s = &sites[id];
-
+// The cheapest tier the converged facts permit. This is where SPEC 3's ladder
+// becomes a decision, and the clauses are ordered so the first match wins.
+static int derived_tier(const Site* s) {
     if (s->E == s->scope && s->A <= AIF_A_BORROWED
         && s->kind == AIF_K_STRUCT && fits_on_stack(s) && !s->no_stack) {
         return AIF_T0;
@@ -1372,6 +1563,191 @@ int aif_tier_of(int id) {
     if (s->A <= AIF_A_BORROWED) return AIF_T2;
     if (s->C == AIF_C_ACYCLIC) return AIF_T3;
     return AIF_T4B;
+}
+
+int aif_tier_of(int id) {
+    if (id < 0 || id >= site_count) return AIF_T4B;
+    Site* s = &sites[id];
+    // SPEC 5.4: a honoured pin freezes the tier, and everything downstream --
+    // codegen, the drop predicate, the arena test -- has to read the frozen one
+    // or they would disagree with the manifest about what was built.
+    if (s->pin_verdict == AIF_PIN_HONOURED) return s->pin_tier;
+    return derived_tier(s);
+}
+
+// SPEC 5.4, after convergence. The pin derives nothing and seeds nothing; it
+// constrains the output, so this runs once the facts are final.
+//
+// SPEC's pseudocode has four branches and the middle one -- "the facts permit
+// the pinned tier but the solver did not reach it" -- is **vacuous here**, and
+// saying why matters more than the code. derived_tier returns the cheapest tier
+// its clauses admit, and the clauses read the facts directly; there is no search
+// that could settle above its own optimum. An implementation whose tier
+// assignment was a separate optimisation would need that branch. This one cannot
+// enter it, so a pin below the derived tier is refuted rather than rescued.
+void aif_check_pins(int converged) {
+    for (int i = 0; i < site_count; i++) {
+        Site* s = &sites[i];
+        if (s->pin_tier < 0) continue;
+
+        int derived = derived_tier(s);
+        if (s->pin_tier >= derived) {
+            s->pin_verdict = AIF_PIN_HONOURED;
+        } else if (converged) {
+            s->pin_verdict = AIF_PIN_REFUTED;
+        } else {
+            // SPEC 5.4.2: unproven is not disproven. Failing here would punish
+            // the programmer for the budget, which SPEC 1 forbids. The tier is
+            // kept so the warning can name what was asked for; only the verdict
+            // decides whether aif_tier_of uses it, and this one does not.
+            s->pin_verdict = AIF_PIN_UNPROVEN;
+        }
+    }
+}
+
+int aif_site_pin_verdict(int id) {
+    if (id < 0 || id >= site_count) return AIF_PIN_NONE;
+    return sites[id].pin_verdict;
+}
+
+int aif_site_pin_tier(int id) {
+    if (id < 0 || id >= site_count) return -1;
+    return sites[id].pin_tier;
+}
+
+// The tier the facts would have given, so a refuted pin's diagnostic can say
+// what the analysis actually proved instead of just refusing.
+int aif_site_derived_tier(int id) {
+    if (id < 0 || id >= site_count) return AIF_T4B;
+    return derived_tier(&sites[id]);
+}
+
+int aif_site_alias_axiom(int id) {
+    if (id < 0 || id >= site_count) return 0;
+    return sites[id].alias_axiom;
+}
+
+// ============================================================================
+// Minimal cause (INFERENCE 5.6, SPEC 6.3)
+//
+// Walk the derivation backward from a site through maximal contributors until a
+// root -- an allocation, an axiom, or a rule with no incoming site. The result
+// is the witness path SPEC 6.3 prints under "minimal cause", innermost edge
+// first, which is the order it reads in: the change, then what made the change
+// matter.
+//
+// Which domain to walk is decided by the tier, and that mapping is the reason
+// the two are kept separately. A T1 -> T2 move is an *escape* question and a
+// T2 -> T3 move is an *aliasing* one; showing the E path for a value that lost
+// its tier to sharing would be a confident answer to the wrong question.
+// ============================================================================
+
+#define AIF_CAUSE_MAX 32
+
+static int cause_site[AIF_CAUSE_MAX];
+static int cause_rule[AIF_CAUSE_MAX];
+static int cause_value[AIF_CAUSE_MAX];
+static int cause_file[AIF_CAUSE_MAX];
+static int cause_line[AIF_CAUSE_MAX];
+static int cause_col[AIF_CAUSE_MAX];
+static int cause_len;
+static int cause_domain;    // 0 = escape, 1 = aliasing
+
+// Which fact cost this site its tier, and therefore which derivation explains
+// it.
+//
+// The order matters and is the reverse of the tier clauses'. A site is asked
+// about because its tier is worse than someone wanted, so the interesting fact
+// is the *last* one that was binding, not the first. Aliasing is checked before
+// escape because A > Borrowed is what separates T3 from T2: a T3 record whose E
+// is also Caller would otherwise be explained by the escape that only got it as
+// far as T2, which is a confident answer to the wrong question.
+//
+// T4b is cyclicity, which is derived from A and the type graph rather than
+// propagated, so it reports the aliasing path too -- that is where its own
+// witness would start.
+int aif_cause_domain_for(int id) {
+    if (id < 0 || id >= site_count) return 0;
+    Site* s = &sites[id];
+    if (s->A > AIF_A_BORROWED) return 1;                          // aliasing
+    return 0;                                                     // escape
+}
+
+// Builds the path and returns its length. The caller reads it back edge by edge;
+// one buffer is enough because a diff explains one record at a time.
+int aif_cause_build(int id, int domain) {
+    cause_len = 0;
+    cause_domain = domain;
+    if (id < 0 || id >= site_count || !deriv_e || !deriv_a) return 0;
+
+    Deriv* d = domain == 1 ? deriv_a : deriv_e;
+    int cur = id;
+    for (int hops = 0; hops < AIF_CAUSE_MAX; hops++) {
+        cause_site[cause_len]  = cur;
+        cause_rule[cause_len]  = d[cur].rule;
+        cause_value[cause_len] = d[cur].value;
+        cause_file[cause_len]  = d[cur].file;
+        cause_line[cause_len]  = d[cur].line;
+        cause_col[cause_len]   = d[cur].col;
+        cause_len++;
+
+        int next = d[cur].from;
+        if (next < 0 || next >= site_count) break;   // a root: nothing fed it
+        // The derivation is a DAG by construction -- a fact only ever rises, so
+        // an edge always points at a site that reached its value earlier -- but
+        // a cap costs nothing and turns a bug here into a truncated explanation
+        // rather than a hang.
+        int seen = 0;
+        for (int i = 0; i < cause_len; i++) {
+            if (cause_site[i] == next) { seen = 1; break; }
+        }
+        if (seen) break;
+        cur = next;
+    }
+    return cause_len;
+}
+
+int aif_cause_len(void)          { return cause_len; }
+int aif_cause_site(int i)        { return (i < 0 || i >= cause_len) ? -1 : cause_site[i]; }
+int aif_cause_rule(int i)        { return (i < 0 || i >= cause_len) ? -1 : cause_rule[i]; }
+int aif_cause_value(int i)       { return (i < 0 || i >= cause_len) ? -1 : cause_value[i]; }
+int aif_cause_file(int i)        { return (i < 0 || i >= cause_len) ? 0 : cause_file[i]; }
+int aif_cause_line(int i)        { return (i < 0 || i >= cause_len) ? 0 : cause_line[i]; }
+int aif_cause_col(int i)         { return (i < 0 || i >= cause_len) ? 0 : cause_col[i]; }
+
+// The E value an edge raised to, spelled the way the manifest spells a scope.
+// Region ids are per-function and meaningless outside one, so a scope reports as
+// its depth rather than its id -- what a reader needs is "an enclosing scope",
+// not which array slot it occupies.
+const char* aif_escape_name(int value) {
+    if (value == AIF_E_CALLER) return "Caller";
+    if (value == AIF_E_GLOBAL) return "Global";
+    return "Region";
+}
+
+const char* aif_alias_name(int value) {
+    if (value <= AIF_A_UNIQUE) return "Unique";
+    if (value <= AIF_A_BORROWED) return "Borrowed";
+    return "Shared";
+}
+
+// SPEC 6.3 prints the rule that fired on each edge, because that is what makes
+// a repair derivable: breaking the edge restores the tier, and the rule says
+// what breaking it would mean.
+const char* aif_rule_name(int rule) {
+    if (rule == AIF_CON_BIND)           return "E-BIND";
+    if (rule == AIF_CON_ARG)            return "A-CALL";
+    if (rule == AIF_CON_STORE)          return "A-STORE";
+    if (rule == AIF_CON_LIVE_IN)        return "E-BIND";
+    if (rule == AIF_CON_OPAQUE)         return "E-OPAQUE";
+    if (rule == AIF_CON_RETAIN_IN)      return "A-RETAIN";
+    if (rule == AIF_CON_BORROW)         return "A-CALL";
+    if (rule == AIF_CON_ESCAPE_CALLER)  return "E-RETURN";
+    if (rule == AIF_CON_ESCAPE_GLOBAL)  return "E-STATIC";
+    if (rule == AIF_RULE_A_ESCAPE)      return "A-ESCAPE";
+    if (rule == AIF_RULE_A_COPY)        return "A-COPY";
+    if (rule == AIF_RULE_ALLOC)         return "ALLOC";
+    return "?";
 }
 
 // ============================================================================
@@ -1453,12 +1829,140 @@ int aif_tier_at_node(const void* node) {
 // double free through the other. Today that admits structs only; it widens on
 // its own when SPEC 11 item 10's affine collections land, which is what makes
 // this the change Level 4 pays off rather than Level 2.
-// The innermost `region` scope enclosing this site's own scope, or -1.
+// The innermost scope at or above this one that has an arena, or -1.
+//
+// "Has an arena" is a `region` statement (which pins one) or a scope the cost
+// model chose (LAYOUT 7.1). Both are the same thing to every question below:
+// what matters is where the bump allocator that would serve this site lives.
 static int enclosing_region(int scope) {
     for (int s = scope; s >= 0; s = scopes[s].parent) {
-        if (scopes[s].region_name >= 0) return s;
+        if (scopes[s].arena) return s;
     }
     return -1;
+}
+
+// ============================================================================
+// Automatic arena placement (LAYOUT 7.1)
+//
+//     ArenaBenefit(s) = allocs_in(s)·(α_T2 − α_T1) − entries(s)·arenaSetupCost
+//
+// Every scope is already an implicit region (SPEC 4.1), so the question is not
+// which scopes *could* have an arena but which ones are worth the setup. Both
+// inputs are supposed to come from an access profile; there is no profiler, so
+// they are estimated statically and the estimate is stated rather than hidden:
+//
+//   entries(s)     factors out. It multiplies both terms once `allocs_in` is
+//                  written as "allocations per entry of s", so the *sign* of the
+//                  benefit -- which is the only thing the decision reads -- does
+//                  not depend on it. That is why no loop-trip estimate above s
+//                  is needed, and it is the reason to write the model this way.
+//   allocs_in(s)   per entry: one per site the arena would serve, weighted by
+//                  AIF_LOOP_ITERS for each loop between the site and s, since a
+//                  site in a loop inside s allocates many times per entry.
+//
+// Placement is greedy innermost-first, which needs no separate nesting rule.
+// A site can only be served by an arena its escape bottoms at or below, so an
+// inner arena takes exactly the values that die earlier -- LAYOUT's condition
+// for an inner arena being worth it, satisfied by construction rather than by a
+// heuristic. Whatever the inner one cannot take, the next one out sees.
+//
+// Ties break by scope id, which is creation order and therefore node order
+// (LAYOUT 7.1 last line).
+// ============================================================================
+
+#define AIF_ALPHA_T1        3     // LAYOUT 4: allocation cycles at T1 (bump)
+#define AIF_ALPHA_T2        90    //           and at T2 (a general allocator)
+#define AIF_ARENA_SETUP    40     // LAYOUT 4: ~one block acquisition plus reset
+#define AIF_LOOP_ITERS      16    // assumed trip count of a loop with no profile
+
+// Loops between `inner` and its ancestor `outer`, or 0 if unrelated.
+static int loops_between(int inner, int outer) {
+    if (inner < 0 || outer < 0) return 0;
+    int d = scopes[inner].loop_depth - scopes[outer].loop_depth;
+    return d > 0 ? d : 0;
+}
+
+static long weight_of(int site_scope, int arena_scope) {
+    long w = 1;
+    int loops = loops_between(site_scope, arena_scope);
+    // Capped so a deeply nested site cannot overflow the benefit; anything past
+    // the cap is already far above the threshold and the exact value is noise.
+    if (loops > 6) loops = 6;
+    for (int i = 0; i < loops; i++) w *= AIF_LOOP_ITERS;
+    return w;
+}
+
+static int is_ancestor_or_self(int anc, int s) {
+    for (int p = s; p >= 0; p = scopes[p].parent) {
+        if (p == anc) return 1;
+    }
+    return 0;
+}
+
+// Would an arena at `cand` serve this site, given the arenas chosen so far?
+static int arena_would_serve(int site_id, int cand) {
+    Site* s = &sites[site_id];
+    if (aif_tier_of(site_id) != AIF_T1) return 0;   // T0 has the frame already
+    if (s->no_stack) return 0;                      // an explicit drop frees it
+    if (s->kind == AIF_K_LIST) return 0;            // grows past its site; see below
+    if (s->E < 0) return 0;                         // Caller or Global
+    if (!is_ancestor_or_self(cand, s->scope)) return 0;
+    if (scope_lca(s->E, cand) != cand) return 0;    // outlives the arena
+    // A nearer arena already claimed it. Innermost-first placement means any
+    // scope strictly between the site and `cand` that has one gets it first.
+    for (int p = s->scope; p >= 0 && p != cand; p = scopes[p].parent) {
+        if (scopes[p].arena) return 0;
+    }
+    return 1;
+}
+
+// Chosen after the fixed point, because every input is a converged fact.
+void aif_place_arenas(void) {
+    // Innermost-first: a higher scope id is a scope created later, and the walk
+    // creates a parent before its children, so descending id visits every child
+    // before its parent.
+    for (int s = scope_count - 1; s >= 0; s--) {
+        if (scopes[s].arena) continue;              // pinned by `region`
+        if (scopes[s].node == NULL) continue;       // no block for codegen to bracket
+
+        // Inside a `region`, the region decides. SPEC 5.2 makes `region` a pin on
+        // this decision, and a pin that the cost model can undercut by placing a
+        // tighter arena two lines in is not one -- the named region would serve
+        // nothing and the manifest would stop being able to say which block owns
+        // a value. A programmer who wants per-iteration reclamation inside a
+        // region writes a nested `region`, which test_44's breaks_out does.
+        //
+        // Only *explicit* ancestors count, and the traversal is what makes that
+        // true for free: innermost-first means an ancestor's flag is set here
+        // only if `region` set it, never if this pass did.
+        int pinned_above = 0;
+        for (int p = scopes[s].parent; p >= 0; p = scopes[p].parent) {
+            if (scopes[p].arena) { pinned_above = 1; break; }
+        }
+        if (pinned_above) continue;
+
+        long served = 0;
+        for (int k = 0; k < site_count; k++) {
+            if (arena_would_serve(k, s)) served += weight_of(sites[k].scope, s);
+        }
+        if (served == 0) continue;
+
+        long benefit = served * (AIF_ALPHA_T2 - AIF_ALPHA_T1) - (long)AIF_ARENA_SETUP;
+        if (benefit > 0) scopes[s].arena = 1;
+    }
+}
+
+// 1 when this BLOCK node opens an arena the cost model chose. A `region`
+// statement is excluded: codegen already brackets that one, and bracketing it
+// twice would push two arenas and pop only the inner one at an early exit.
+int aif_auto_arena_at_node(const void* node) {
+    if (node == NULL) return 0;
+    for (int s = 0; s < scope_count; s++) {
+        if (scopes[s].node != node) continue;
+        if (scopes[s].region_name >= 0) return 0;
+        return scopes[s].arena;
+    }
+    return 0;
 }
 
 // SPEC 5.2: may this value come from the enclosing region's arena?
@@ -1480,6 +1984,20 @@ int aif_arena_at_node(const void* node) {
         if (n->node != node) continue;
         Site* s = &sites[n->site];
         if (aif_tier_of(n->site) != AIF_T1) return 0;   // T0 has the frame already
+        // The same reason the T0 clause asks: an arena pointer is not a thing a
+        // deallocator can take, and `drop(x)` emits one unconditionally -- the
+        // source, not the model, decided when that value dies. Latent while
+        // arenas only appeared where a `region` was written; automatic placement
+        // (LAYOUT 7.1) puts one around almost every explicit drop.
+        if (s->no_stack) return 0;
+        // An arena serves values allocated once. A list is not one: list_push
+        // reallocates the element block long after this site returned, at
+        // whatever arena depth the program happens to be at then -- so the block
+        // would be tied to a region the list can outlive, and freeing the old
+        // block would hand arena memory to the deallocator. Lists stay on the
+        // heap and are reclaimed by list_release at their binding's scope exit,
+        // which is also what keeps the Level 2 drop path exercised.
+        if (s->kind == AIF_K_LIST) return 0;
         int r = enclosing_region(s->scope);
         if (r < 0) return 0;
         if (s->E < 0) return 0;                         // Caller or Global
@@ -1489,13 +2007,29 @@ int aif_arena_at_node(const void* node) {
 }
 
 // The region name to report for this site, or "" when it is not arena-placed.
+// An arena the cost model chose has no name to report -- it is a scope, not a
+// declaration -- so it reports "auto", which is what distinguishes it in the
+// manifest from a `region` the programmer pinned.
 const char* aif_region_name_at_site(int id) {
     if (id < 0 || id >= site_count) return "";
     if (aif_tier_of(id) != AIF_T1) return "";
+    if (sites[id].no_stack) return "";
+    if (sites[id].kind == AIF_K_LIST) return "";
     int r = enclosing_region(sites[id].scope);
     if (r < 0 || sites[id].E < 0) return "";
     if (scope_lca(sites[id].E, r) != r) return "";
+    if (scopes[r].region_name < 0) return "auto";
     return aif_str(scopes[r].region_name);
+}
+
+// 1 when this site's arena was pinned by a `region` statement rather than chosen
+// by the cost model. SPEC 6.2's `origin` column distinguishes them: a pin that
+// stops being honoured is a gate regression, an inferred placement moving is not.
+int aif_site_arena_is_pinned(int id) {
+    if (id < 0 || id >= site_count) return 0;
+    int r = enclosing_region(sites[id].scope);
+    if (r < 0) return 0;
+    return scopes[r].region_name >= 0 ? 1 : 0;
 }
 
 int aif_frees_at_scope_node(const void* node) {
@@ -1509,6 +2043,14 @@ int aif_frees_at_scope_node(const void* node) {
         Site* s = &sites[n->site];
         if (s->E != s->scope) return 0;
         if (!site_is_move_only(s)) return 0;
+        // An array literal lowers to ir_array_alloca -- frame storage, like T0
+        // below, so there is nothing here for a deallocator to take. This is the
+        // one place the language and site_is_move_only disagree: affine
+        // collections make arrays move-only in the model (and in the oracle), and
+        // types.psm deliberately does not, because an affine value with no
+        // allocation behind it buys the aliasing rule and costs a `drop(arr)`
+        // that frees a stack pointer.
+        if (s->kind == AIF_K_ARRAY) return 0;
         // An explicit `drop` already frees it; a scope drop as well is a double
         // free. Same flag that bars T0, and for the same reason -- it records
         // that the source, not the model, decides when this value dies.
@@ -1587,6 +2129,14 @@ void aif_reset(void) {
     holders = NULL;
     pt_len = 0;
     holders_len = 0;
+
+    free(deriv_e);
+    free(deriv_a);
+    deriv_e = NULL;
+    deriv_a = NULL;
+    cause_len = 0;
+    cur_con = -1;
+    synth_rule = -1;
 
     for (int i = 0; i < vs_count; i++) free(vsets[i].items);
     vs_count = 0;

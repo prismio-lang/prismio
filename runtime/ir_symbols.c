@@ -398,6 +398,10 @@ typedef struct {
     // bottoms at the scope holding the binding, so the scope's exits are where
     // it is freed. Set by codegen from the tier; nothing here decides policy.
     int is_droppable;
+    // AIF Level 4: which deallocator reclaims it. A list owns a second block --
+    // its element array -- so a plain free on the handle leaks that block, and
+    // the storage type cannot tell you: a list and a string are both `ptr`.
+    int drop_kind;
 } VarBinding;
 
 static VarBinding* var_bindings = NULL;
@@ -474,9 +478,12 @@ int ir_binding_predates_loop(const char* name) {
 // generate_scope_drops.
 // ============================================================================
 
-void ir_mark_droppable(const char* name) {
+void ir_mark_droppable(const char* name, int kind) {
     int i = find_binding(name);
-    if (i >= 0) var_bindings[i].is_droppable = 1;
+    if (i >= 0) {
+        var_bindings[i].is_droppable = 1;
+        var_bindings[i].drop_kind = kind;
+    }
 }
 
 int ir_scope_drop_floor(void) {
@@ -550,6 +557,11 @@ const char* ir_drop_type(int floor, int i) {
     return k >= 0 ? var_bindings[k].type : "";
 }
 
+int ir_drop_kind(int floor, int i) {
+    int k = drop_index(floor, i);
+    return k >= 0 ? var_bindings[k].drop_kind : 0;
+}
+
 static int find_binding(const char* name) {
     const char* interned = ir_intern(name);
     for (int i = var_type_count - 1; i >= 0; i--) {
@@ -572,6 +584,7 @@ static void add_binding(const char* name, const char* type, int is_global) {
     b->is_global = is_global;
     b->is_mutable = 0;
     b->is_droppable = 0;
+    b->drop_kind = 0;
 
     if (is_global) {
         // Globals are addressed by their own name (@name), so no renaming.
@@ -709,6 +722,23 @@ int ir_is_borrowed(const char* name) {
 void ir_mark_borrowed(const char* name) {
     if (ir_is_borrowed(name)) return;
     namelist_add(&borrowed_names, name);
+}
+
+// Same reason ir_unmark_moved exists. A `let` binds a fresh value, and AIF Level
+// 4 made borrowing something a `let` can do -- `let p = node.child1` reborrows
+// the field -- so a name that reborrowed once and owns the next time must not
+// keep the first answer.
+void ir_unmark_borrowed(const char* name) {
+    const char* interned = ir_intern(name);
+    for (int i = 0; i < borrowed_names.count; i++) {
+        if (borrowed_names.items[i] == interned) {
+            for (int j = i; j < borrowed_names.count - 1; j++) {
+                borrowed_names.items[j] = borrowed_names.items[j + 1];
+            }
+            borrowed_names.count--;
+            return;
+        }
+    }
 }
 
 // ============================================================================

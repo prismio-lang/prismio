@@ -138,6 +138,10 @@ def main():
         # mismatch in how the two implementations number scopes would be
         # invisible without this, and scope ids are what Region(s) compares.
         sources.append(Path("tests/test_44_aif_region.psm"))
+        # Level 4's fixture is the densest source of string and list sites there
+        # is, and site_is_move_only is exactly what --owned-collections flips --
+        # so this is where the second pass has the most to disagree about.
+        sources.append(Path("tests/test_45_aif_affine_collections.psm"))
 
     dumps = {}
     failures = []

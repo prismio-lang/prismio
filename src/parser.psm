@@ -269,14 +269,62 @@ fn parser_expect_close_angle(p: Parser, context: String) {
     parser_expect_val(p, TokenType.RELATIONAL_OPERATOR, ">", context)
 }
 
+// AIF annotations on a binding -- SPEC 5's `unique` and `pin`.
+//
+//     let unique buf = make_buffer()
+//     let pin(T1) work = build()
+//     let mut unique pin(T2) cache = ...
+//
+// **Contextual, not reserved**, for the same reason the FFI contracts are
+// (parse_ffi_contract): SPEC 5 requires that deleting every annotation leave a
+// working program, and reserving two more words would break programs that
+// already use them as names -- which is the opposite obligation. `unique` is an
+// annotation only when another identifier follows it, so `let unique = 5` is
+// still a variable called `unique`; `pin` only when a `(` follows.
+//
+// Stored on the declaration's `s2`, which is free on a VARIABLE_DECL, encoded as
+// text so `pin`'s tier travels without a second slot. Same idiom as the FFI
+// contracts, and for the same reason.
+fn parser_at_annotation(p: Parser, name: String) -> Bool {
+    if (parser_check(p, TokenType.IDENTIFIER) == false) { return false }
+    let curr = parser_current(p)
+    if (str_equals(curr.value, name) == 0) { return false }
+    let next = parser_peek(p)
+    if (str_equals(name, "pin") == 1) {
+        return str_equals(next.value, "(") == 1
+    }
+    return next.type == TokenType.IDENTIFIER
+}
+
+fn parse_aif_annotations(p: Parser, node: ASTNode) {
+    let mut scanning = true
+    while (scanning) {
+        if (parser_at_annotation(p, "unique")) {
+            parser_expect(p, TokenType.IDENTIFIER, "unique annotation")
+            node.s2 = str_concat(node.s2, "unique ")
+        } else if (parser_at_annotation(p, "pin")) {
+            parser_expect(p, TokenType.IDENTIFIER, "pin annotation")
+            parser_expect_val(p, TokenType.SEPARATOR, "(", "pin tier")
+            let tier = parser_current(p)
+            parser_expect(p, TokenType.IDENTIFIER, "a tier name such as T1")
+            parser_expect_val(p, TokenType.SEPARATOR, ")", "pin tier")
+            node.s2 = str_concat(node.s2, str_concat(str_concat("pin:", tier.value), " "))
+        } else {
+            scanning = false
+        }
+    }
+}
+
 fn parse_variable_decl(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "let", "variable declaration")
     let var_node = parser_node(p, NodeKind.VARIABLE_DECL)
-    
+
     if (parser_match_val(p, TokenType.KEYWORD, "mut")) {
         var_node.i1 = 1 // is_mutable
     }
-    
+
+    parse_aif_annotations(p, var_node)
+
     let mut curr = parser_current(p)
     var_node.s1 = curr.value
     parser_expect(p, TokenType.IDENTIFIER, "variable name")
@@ -448,6 +496,14 @@ fn parse_function_decl(p: Parser) -> ASTNode {
                 if (parser_match_val(p, TokenType.KEYWORD, "inout")) {
                     param.s2 = "inout"
                 }
+            }
+            // SPEC 5.1. `s2` is taken by the convention, so the flag goes in
+            // `i2`. `pin` is deliberately not accepted here: a pin constrains an
+            // allocation site's tier and a parameter is a binding, not an
+            // allocation.
+            if (parser_at_annotation(p, "unique")) {
+                parser_expect(p, TokenType.IDENTIFIER, "unique annotation")
+                param.i2 = 1
             }
             let mut curr = parser_current(p)
             param.s1 = curr.value
@@ -684,7 +740,9 @@ fn parse_match_statement(p: Parser) -> ASTNode {
         let arm = parse_match_arm(p)
         if (str_equals(head, "") == 1) {
             head = node_to_ptr(arm)
-            tail_ptr = head
+            // Not `tail_ptr = head`: that moves a binding the loop did not create,
+            // so the move would repeat on the next iteration.
+            tail_ptr = node_to_ptr(arm)
         } else {
             let tail = ptr_to_node(tail_ptr)
             tail.next = node_to_ptr(arm)

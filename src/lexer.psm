@@ -244,7 +244,7 @@ fn lexer_next_token(lex: Lexer) -> Token {
         }
 
         let length = lex.pos - start
-        let raw = str_substring(lex.input, start, length)
+        let mut value = str_substring(lex.input, start, length)
 
         if (lexer_current(lex) == '"') {
             lexer_advance(lex) // Skip closing quote
@@ -252,9 +252,11 @@ fn lexer_next_token(lex: Lexer) -> Token {
             lexer_fatal(lex, start_line, start_col, "unterminated string literal")
         }
 
-        let mut value = raw
+        // Decoded in place rather than through a second `raw` binding: strings
+        // are affine, so `let value = raw` moves and the decode call would then
+        // be reading a moved-from name.
         if (has_escape) {
-            value = lexer_decode_escapes(lex, raw, start_line, body_col)
+            value = lexer_decode_escapes(lex, value, start_line, body_col)
         }
 
         return lexer_token(lex, TokenType.STRING_LITERAL, value, start_line, start_col, start_pos)
@@ -379,8 +381,12 @@ extern fn token_to_ptr(tok: Token borrow) -> String alias
 // `return head` a use-after-move. Thread the list through pointers instead: the
 // bindings stay local to one iteration and the chain itself is built the same way.
 fn lex_all_tokens(lex: Lexer) -> Token {
-    let head_ptr = token_to_ptr(lexer_next_token(lex))
-    let mut current_ptr = head_ptr
+    // The head stays a Token rather than a second pointer binding. Pointers are
+    // Strings here, and AIF Level 4 made those affine too, so `let mut
+    // current_ptr = head_ptr` moved the head and the return read a moved-from
+    // name. `token_to_ptr` takes a borrow, so naming it twice costs nothing.
+    let head = lexer_next_token(lex)
+    let mut current_ptr = token_to_ptr(head)
 
     let mut scanning = true
     while (scanning) {
@@ -388,11 +394,12 @@ fn lex_all_tokens(lex: Lexer) -> Token {
         if (current.type == TokenType.EOF) {
             scanning = false
         } else {
-            let next_ptr = token_to_ptr(lexer_next_token(lex))
-            current.tok_next = next_ptr
-            current_ptr = next_ptr
+            current.tok_next = token_to_ptr(lexer_next_token(lex))
+            // Read back through the field rather than keeping a second binding:
+            // the store already moved the pointer into the token.
+            current_ptr = current.tok_next
         }
     }
 
-    return ptr_to_token(head_ptr)
+    return head
 }

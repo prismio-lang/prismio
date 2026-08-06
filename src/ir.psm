@@ -8,11 +8,22 @@ let mut ir_string_counter = 0
 let mut ir_target_wasm = false
 let mut ir_short_circuit_counter = 0
 
+// The body of the function being generated, so a droppable candidate can ask
+// whether the binding is ever reassigned. See node_assigns_name.
+let mut ir_function_body = ""
+
 // AIF's T0. The only tier codegen currently acts on -- everything else keeps
 // the allocator hook it always used. Kept as a named constant here rather than
 // imported so that ir.psm depends on the memory model's *answer* and not on its
 // implementation; aif.psm owns the encoding.
 let AIF_TIER_T0 = 0
+
+// AIF Level 4. Which deallocator reclaims a droppable binding. Everything the
+// allocator seam handed out is IR_DROP_OBJECT; a List is two allocations and
+// needs the runtime's own release, so the drop list has to carry the answer --
+// by the time it is read, a String and a List are both `ptr`.
+let IR_DROP_OBJECT = 0
+let IR_DROP_LIST = 1
 
 // Where a value the memory model inferred lives, keyed by the AST node that
 // allocates it -- both passes walk the same tree, so the node is a name for the
@@ -30,6 +41,11 @@ extern fn aif_frees_at_scope_node(node: String borrow) -> Int
 // outlive that region, which a nested region makes a real question.
 extern fn aif_arena_at_node(node: String borrow) -> Int
 
+// Whether the cost model placed an arena at this block (LAYOUT 7.1). A `region`
+// statement answers 0 here -- codegen already brackets that one by keyword, and
+// bracketing it twice would push two arenas and pop one.
+extern fn aif_auto_arena_at_node(node: String borrow) -> Int
+
 extern fn exit(code: Int)
 
 // Forward declarations for mutual recursion
@@ -38,6 +54,7 @@ extern fn generate_statement(stmt: ASTNode)
 extern fn generate_block(block: ASTNode)
 extern fn collect_strings_stmt(stmt: ASTNode)
 extern fn collect_strings_block(block: ASTNode)
+extern fn chain_assigns_name(head: String, name: String) -> Bool
 
 fn ir_set_target_wasm(enabled: Bool) {
     ir_target_wasm = enabled
@@ -275,6 +292,60 @@ fn generate_short_circuit(expr: ASTNode) -> String {
     ir_label_numbered(done_label)
     let result_id = ir_load("i1", slot)
     return ir_get_temp_name(result_id)
+}
+
+// Whether `name` is ever the target of an assignment inside the function being
+// generated.
+//
+// A binding is droppable because its *initialiser* allocated something this
+// scope owns -- but what the drop frees is the slot, and an assignment can put
+// something else in it. `s = node.name` leaves a borrowed pointer where the exit
+// expects an owned one, which is a free of a value the AST still holds. AIF
+// Level 4 made that reachable everywhere: strings are reassigned constantly and
+// a field read is a borrow.
+//
+// Asked at the declaration rather than at the assignment, because codegen is a
+// single forward walk and the run-time order is not the source order: a `break`
+// written above the assignment still executes after it on the second iteration.
+//
+// Deliberately syntactic and deliberately blunt. A reassigned binding is not
+// droppable even when every value it receives is owned -- that case leaks today
+// regardless, since there is no drop on reassignment, so the strictness costs
+// nothing that is not already lost.
+fn node_assigns_name(node_ptr: String, name: String) -> Bool {
+    if (str_equals(node_ptr, "") == 1) { return false }
+    let n = ptr_to_node(node_ptr)
+
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        if (str_equals(n.child1, "") == 0) {
+            let target = ptr_to_node(n.child1)
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and str_equals(target.s1, name) == 1) {
+                return true
+            }
+        }
+    }
+
+    if (chain_assigns_name(n.child1, name)) { return true }
+    if (chain_assigns_name(n.child2, name)) { return true }
+    return chain_assigns_name(n.child3, name)
+}
+
+fn chain_assigns_name(head: String, name: String) -> Bool {
+    let mut p = head
+    while (str_equals(p, "") == 0) {
+        let n = ptr_to_node(p)
+        if (node_assigns_name(p, name)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+// Which deallocator an expression's value needs. Read from sema's type rather
+// than the storage type, which has already collapsed String, List and every
+// struct to `ptr`.
+fn drop_kind_of(expr: ASTNode) -> Int {
+    if (node_get_type(expr).kind == TypeKind.LIST) { return IR_DROP_LIST }
+    return IR_DROP_OBJECT
 }
 
 fn generate_expression(expr: ASTNode) -> String {
@@ -576,7 +647,13 @@ fn generate_expression(expr: ASTNode) -> String {
         if (str_equals(func_name, "drop") == 1) {
             let drop_arg = expr.child2
             if (str_equals(drop_arg, "") == 0) {
-                ir_free_object(generate_expression(ptr_to_node(drop_arg)))
+                let arg_node = ptr_to_node(drop_arg)
+                let value = generate_expression(arg_node)
+                if (drop_kind_of(arg_node) == IR_DROP_LIST) {
+                    ir_free_list(value)
+                } else {
+                    ir_free_object(value)
+                }
             }
             return ""
         }
@@ -664,7 +741,22 @@ fn generate_expression(expr: ASTNode) -> String {
             ir_call_end("void", call_name)
             return ""
         }
+
+        // AIF Level 4. The value this call produces may belong to an enclosing
+        // `region`, and it is allocated inside the runtime rather than through
+        // ir_alloc_region -- so the arena is chosen here, around the call, and
+        // the runtime bumps instead of calling malloc.
+        //
+        // aif_arena_at_node is the whole gate, and it is sufficient rather than
+        // merely convenient. A site exists on a call node only when the callee is
+        // opaque to this compilation; the analysis raised it to T1 with an escape
+        // at or below the region, which an `alias` return or an undeclared one
+        // never gets. So this fires exactly on FFI `produce` calls inside a region
+        // whose result cannot outlive it.
+        let arena_placed = aif_arena_at_node(node_to_ptr(expr)) == 1
+        if (arena_placed) { ir_arena_hint_begin() }
         let mut temp_id = ir_call_end(ret_type, call_name)
+        if (arena_placed) { ir_arena_hint_end() }
         return ir_get_temp_name(temp_id)
     }
     
@@ -708,8 +800,9 @@ fn generate_statement(stmt: ASTNode) {
             // so it registers no site and gets no entry -- and `a` is moved by
             // it, so `a` gets skipped too. That leaks rather than double-frees,
             // and it is what an ownership-transferring move would fix.
-            if (aif_frees_at_scope_node(stmt.child2) == 1) {
-                ir_mark_droppable(var_name)
+            if (aif_frees_at_scope_node(stmt.child2) == 1
+                and chain_assigns_name(ir_function_body, var_name) == false) {
+                ir_mark_droppable(var_name, drop_kind_of(ptr_to_node(stmt.child2)))
             }
         }
     }
@@ -982,12 +1075,27 @@ fn generate_scope_drops(floor: Int) {
     while (i < n) {
         let store_type = storage_type(ir_drop_type(floor, i))
         let loaded = ir_load(store_type, ir_drop_slot(floor, i))
-        ir_free_object(ir_get_temp_name(loaded))
+        let value = ir_get_temp_name(loaded)
+        if (ir_drop_kind(floor, i) == IR_DROP_LIST) {
+            ir_free_list(value)
+        } else {
+            ir_free_object(value)
+        }
         i = i + 1
     }
 }
 
 fn generate_block(block: ASTNode) {
+    // LAYOUT 7.1. The cost model may have placed an arena here, in which case
+    // the block is bracketed exactly as a `region` statement is -- same runtime,
+    // same early-exit handling through ir_region_depth. The only difference is
+    // who decided.
+    let arena = aif_auto_arena_at_node(node_to_ptr(block)) == 1
+    if (arena) {
+        ir_region_begin()
+        ir_region_enter()
+    }
+
     // Mirrors sema_block: the same scopes must be pushed and popped in the same
     // order, so that a name resolves to the same binding -- and therefore the
     // same slot -- in both passes.
@@ -1009,6 +1117,14 @@ fn generate_block(block: ASTNode) {
     }
 
     ir_scope_pop()
+
+    if (arena) {
+        // Only on fall-through, for the same reason the drops are: a `return` or
+        // `break` inside already popped every arena between itself and its
+        // target, and popping twice releases the caller's.
+        if (ir_has_returned() == 0) { ir_region_end() }
+        ir_region_exit()
+    }
 }
 
 fn generate_function(func: ASTNode) {
@@ -1077,7 +1193,9 @@ fn generate_function(func: ASTNode) {
     // iteration -- and each declaration gets its own slot, which the old
     // name-keyed pre-pass could not express.
     if (str_equals(func.child2, "") == 0) {
+        ir_function_body = func.child2
         generate_block(ptr_to_node(func.child2))
+        ir_function_body = ""
     }
 
     ir_scope_pop()

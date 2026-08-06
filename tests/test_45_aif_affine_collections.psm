@@ -1,0 +1,217 @@
+// AIF Level 4 -- strings and lists are affine, and therefore freeable.
+//
+// Levels 2 and 3 built the drop and the arena; neither freed anything in this
+// corpus, because the only move-only type was `struct` and no program here has a
+// T1 struct. This is the level where that changes: `str_concat` produces a value
+// whose escape bottoms at the scope that made it, and the same predicate that
+// declined it before now admits it.
+//
+// A doubled free exits 0xC0000374 before any comparison runs, so the fixture
+// finishing at all is most of the assertion. The rest checks that a value stays
+// readable up to the exit that releases it, and that the paths which must *not*
+// free -- a returned string, a borrowed parameter, a string literal -- still do
+// not.
+//
+// Arrays are deliberately absent. They lower to ir_array_alloca, which is frame
+// storage, so types.psm leaves them copyable and aif_frees_at_scope_node declines
+// them by kind; neg_18 pins the `drop` half of that.
+
+extern fn str_length(s: String) -> Int
+extern fn str_concat(s1: String, s2: String) -> String
+extern fn str_equals(s1: String, s2: String) -> Int
+extern fn str_substring(s: String, start: Int, length: Int) -> String
+extern fn int_to_str(n: Int) -> String
+
+struct Item {
+    value: Int
+}
+
+struct Named {
+    name: String
+}
+
+// Fall-through. One allocation, released at the closing brace, read on the way.
+fn plain() -> Int {
+    let s = str_concat("ab", "cde")
+    return str_length(s)
+}
+
+// Every iteration allocates two and releases both, newest first. Skipping a drop
+// grows the heap without bound; doubling one kills the second iteration.
+//
+// `digits` is named rather than written inline as `str_concat("xy",
+// int_to_str(i))`. A temporary that is never bound registers a site nobody frees
+// -- droppability is a property of a binding, and there is no binding. That is
+// Level 4's remaining leak class and this fixture keeps it out of the count on
+// purpose, so the number below means something.
+fn per_iteration() -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < 200) {
+        let digits = int_to_str(i)
+        let s = str_concat("xy", digits)
+        total = total + str_length(s)
+        i = i + 1
+    }
+    return total
+}
+
+// `break` and `continue` leave without reaching the closing brace, so each needs
+// its own drop -- and neither may free what the loop inherited.
+fn early_exits() -> Int {
+    let kept = str_concat("k", "ept")
+    let mut total = 0
+    let mut i = 0
+    while (i < 10) {
+        i = i + 1
+        let s = str_concat("mn", "o")
+        if (i == 3) {
+            continue
+        }
+        if (i == 6) {
+            break
+        }
+        total = total + str_length(s)
+    }
+    return total + str_length(kept)
+}
+
+// A return unwinds every scope at once, so the outer binding is released on that
+// path too -- and the returned value is not among them.
+fn early_return(flag: Bool) -> Int {
+    let outer = str_concat("pq", "r")
+    if (flag) {
+        let inner = str_concat("st", "uv")
+        return str_length(inner) + str_length(outer)
+    }
+    return str_length(outer)
+}
+
+// An explicit `drop` already freed it; the scope exit must not free it again.
+fn explicit() -> Int {
+    let s = str_concat("uvw", "x")
+    let n = str_length(s)
+    drop(s)
+    return n
+}
+
+// Returned, so it outlives the frame and nothing here may free it. Reading it in
+// the caller is the check that nothing did.
+fn escapes() -> String {
+    return str_concat("yz", "!")
+}
+
+// A parameter is borrowed, not owned, so the callee frees nothing -- and the
+// caller's own drop must still find the value intact.
+fn borrows(s: String) -> Int {
+    return str_length(s)
+}
+
+// Reborrowing. `let t = s` on a borrowed binding does not move it, so both names
+// stay usable and neither is droppable: the initialiser is an identifier, which
+// allocates nothing.
+fn reborrow(s: String) -> Int {
+    let t = s
+    return str_length(t) + str_length(s)
+}
+
+// A string literal is an LLVM global, not an allocation. It registers no site, so
+// nothing frees it -- which is what keeps this from being a free of .rodata.
+fn literal_is_not_owned() -> Int {
+    let s = "static"
+    return str_length(s)
+}
+
+// str_substring's out-of-range answer is an owned empty string rather than the
+// literal "". Before Level 4 the difference was invisible; now the difference is
+// whether the scope exit frees a pointer into read-only memory.
+fn empty_substring_is_owned() -> Int {
+    let s = str_substring("abc", 9, 2)
+    return str_length(s)
+}
+
+// A list is two allocations -- the handle and its element block -- so it is
+// released through list_release rather than the deallocator seam. Freeing only
+// the handle leaks the block, which a verify build reports.
+fn list_released() -> Int {
+    let items: List<Item> = list_new()
+    list_push(items, Item { value: 10 })
+    list_push(items, Item { value: 20 })
+    list_push(items, Item { value: 30 })
+    list_push(items, Item { value: 40 })
+    // Five pushes cross the initial capacity of four, so the element block is
+    // regrown -- and the old one has to go back, not leak.
+    list_push(items, Item { value: 50 })
+    return list_len(items)
+}
+
+// The binding looks droppable -- its initialiser allocated something this scope
+// owns -- but the slot ends up holding a string the struct owns, and a free at
+// the exit would take a value that is still live. What the drop frees is the
+// slot, not the initialiser, and codegen asks whether the name is ever assigned
+// before marking it (node_assigns_name).
+//
+// The detector is the leak count, not the value: a wrong free here is a
+// perfectly legal release as far as the accounting goes, so it shows up as one
+// fewer leak rather than as a violation. The caller reads `name` afterwards,
+// which under --verify reads poison.
+fn reassigned_from_borrow(n: Named) -> Int {
+    let mut s = str_concat("ab", "cd")
+    s = n.name
+    return str_length(s)
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) {
+        return 0
+    }
+    print("FAIL ")
+    print(label)
+    print(": expected ")
+    print(int_to_str(want))
+    print(", got ")
+    println(int_to_str(got))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("plain", plain(), 5)
+    // "xy" plus the decimal length of i: 0..9 is 1 digit, 10..99 is 2, 100..199 is 3.
+    bad = bad + check("per_iteration", per_iteration(), 400 + 10 + 180 + 300)
+    // i counts 1..; i==3 continues and i==6 breaks, so "mno" is added for
+    // i in {1,2,4,5}, plus "kept" from the binding the loop inherited.
+    bad = bad + check("early_exits", early_exits(), 16)
+    bad = bad + check("early_return_true", early_return(true), 7)
+    bad = bad + check("early_return_false", early_return(false), 3)
+    bad = bad + check("explicit", explicit(), 4)
+    bad = bad + check("literal", literal_is_not_owned(), 6)
+    bad = bad + check("empty_substring", empty_substring_is_owned(), 0)
+    bad = bad + check("list_released", list_released(), 5)
+
+    let e = escapes()
+    bad = bad + check("escapes", str_length(e), 3)
+
+    let owned = str_concat("bo", "rrowed")
+    bad = bad + check("borrows", borrows(owned), 8)
+    bad = bad + check("reborrow", reborrow(owned), 16)
+    // Still intact after two calls that only borrowed it.
+    if (str_equals(owned, "borrowed") != 1) {
+        println("FAIL borrowed value was modified or released by the callee")
+        bad = bad + 1
+    }
+
+    let holder = Named { name: str_concat("hel", "lo") }
+    bad = bad + check("reassigned_from_borrow", reassigned_from_borrow(holder), 5)
+    if (str_equals(holder.name, "hello") != 1) {
+        println("FAIL a reassigned binding freed the value its slot was pointing at")
+        bad = bad + 1
+    }
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

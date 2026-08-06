@@ -483,6 +483,23 @@ static int run_build_command(const char* command) {
     return result == 0 ? 0 : 1;
 }
 
+// SPEC 7.3's `--verify`, as seen from the build.
+//
+// Codegen swaps the allocator and deallocator *names* and changes nothing else.
+// That covers everything ir_alloc_object handed out and nothing else -- but AIF
+// Level 4 made strings and lists affine, and those are allocated inside
+// lang_runtime.c, past the seam. Their release would then be a pointer the
+// accounting never saw, which reads as a violation on every string a program
+// drops.
+//
+// So a verify build compiles the runtime from source with PRISMIO_AIF_VERIFY
+// defined, which points its own allocator at the same shims. That keeps both
+// ends of every pairing on the same side of the swap, and it keeps the property
+// worth having: the *generated code* is byte-identical either way.
+static int g_verify_mode = 0;
+
+void compiler_set_verify_mode(int on) { g_verify_mode = on ? 1 : 0; }
+
 static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     char* q_ir = command_quote_arg(ir_file);
     char* q_obj = command_quote_arg(program_obj);
@@ -618,8 +635,8 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
         objs[i] = compiler_temp_obj_path(exe_file, prismio_toolchain_files[i].role);
         q_objs[i] = command_quote_arg(objs[i]);
         char* q_src = command_quote_arg(source_paths[i]);
-        snprintf(command, command_len, "clang -Wno-deprecated-declarations -c %s -o %s",
-                 q_src, q_objs[i]);
+        snprintf(command, command_len, "clang -Wno-deprecated-declarations %s-c %s -o %s",
+                 g_verify_mode ? "-DPRISMIO_AIF_VERIFY " : "", q_src, q_objs[i]);
         if (run_build_command(command) != 0) result = 1;
         free(q_src);
     }
@@ -669,7 +686,11 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
 
     if (result == 0) {
         char runtime_lib[1024];
-        if (find_toolchain_library(runtime_lib, sizeof(runtime_lib), "runtime")) {
+        // An installed runtime.lib was compiled without PRISMIO_AIF_VERIFY, so a
+        // verify build cannot use it: half the allocations would be outside the
+        // accounting. Compiling from source is slower and this is a debug mode.
+        if (!g_verify_mode
+            && find_toolchain_library(runtime_lib, sizeof(runtime_lib), "runtime")) {
             result = link_against_runtime_library(program_obj, runtime_lib, exe_file);
         } else {
             result = build_from_toolchain_sources(program_obj, exe_file, 0, 0);

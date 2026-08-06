@@ -119,6 +119,7 @@ extern fn ir_is_moved(name: String) -> Int
 // Borrow tracking (non-owning bindings: let/inout params)
 extern fn ir_clear_borrowed()
 extern fn ir_mark_borrowed(name: String)
+extern fn ir_unmark_borrowed(name: String)
 extern fn ir_is_borrowed(name: String) -> Int
 
 // Globals
@@ -158,11 +159,22 @@ extern fn ir_alloc_stack(struct_name: String) -> Int
 extern fn ir_alloc_region(struct_name: String) -> Int
 extern fn ir_region_begin()
 extern fn ir_region_end()
+
+// Level 4's arena path for values the runtime allocates. `ir_alloc_region` only
+// serves struct literals; a string comes out of str_concat, which cannot know
+// where it was called from -- so the call site brackets it instead.
+extern fn ir_arena_hint_begin()
+extern fn ir_arena_hint_end()
 extern fn ir_region_enter()
 extern fn ir_region_exit()
 extern fn ir_region_depth() -> Int
 extern fn ir_loop_region_depth() -> Int
 extern fn ir_free_object(value: String)
+
+// AIF Level 4's second deallocator. A List is a handle plus an element block, so
+// the seam's fn(ptr) -> void cannot reclaim it; this routes to the runtime's own
+// list_release, which frees both through the allocator the list came from.
+extern fn ir_free_list(value: String)
 extern fn ir_struct_field_ptr(struct_name: String, object: String, field_index: Int) -> Int
 extern fn ir_elem_ptr(elem_type: String, base: String, index: String) -> Int
 extern fn ir_array_alloca(elem_type: String, count: Int) -> Int
@@ -212,7 +224,9 @@ extern fn ir_binding_predates_loop(name: String) -> Int
 // Scope drop lists (AIF Level 2). A floor is a binding-table watermark: the
 // current scope's for a block exit, the loop's for break/continue, 0 for a
 // return. Enumeration is reverse construction order.
-extern fn ir_mark_droppable(name: String borrow)
+// `kind` is which deallocator reclaims the binding (IR_DROP_* in ir.psm). The
+// storage type cannot answer it: a String and a List are both `ptr`.
+extern fn ir_mark_droppable(name: String borrow, kind: Int)
 extern fn ir_scope_drop_floor() -> Int
 extern fn ir_drop_barrier_push()
 extern fn ir_drop_barrier_pop()
@@ -220,6 +234,7 @@ extern fn ir_loop_drop_floor() -> Int
 extern fn ir_drop_count(floor: Int) -> Int
 extern fn ir_drop_slot(floor: Int, i: Int) -> String alias
 extern fn ir_drop_type(floor: Int, i: Int) -> String alias
+extern fn ir_drop_kind(floor: Int, i: Int) -> Int
 
 // The LLVM-level name of the innermost binding, and whether that binding is
 // module-level. Both are shadowing-aware, which is what codegen needs to pick

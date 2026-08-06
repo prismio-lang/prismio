@@ -16,10 +16,14 @@ feature · **[enabling]** unblocks work on AIF itself · **[minor]** small, foun
 
 ## Tier 1 — measured, highest impact
 
-### 1. Affine collections — `String`, `List<T>`, arrays become move-only **[blocker]**
+### 1. Affine collections — `String`, `List<T>`, arrays become move-only **[done, 2026-08-07]**
 
-`types.psm:92` makes only structs move-only. Everything else is freely copyable, so any collection
+~~`types.psm:92` makes only structs move-only.~~ Everything else is freely copyable, so any collection
 reachable from two places is `Shared`, and A-STORE propagates that to **every element inside it**.
+
+Done for `String` and `List`. **Arrays deliberately excluded**: an array literal lowers to
+`ir_array_alloca`, so there is no allocation to own and `drop(arr)` would free a stack pointer. See
+COMPILER-AUDIT's Level 4 note.
 
 **Measured impact: this single fact is 100% of the T3 residue in every program tested.** Turning it
 on takes all five corpora from 0–75.7% to **100% T0–T2**.
@@ -27,14 +31,22 @@ on takes all five corpora from 0–75.7% to **100% T0–T2**.
 *Source:* [RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md) §2. Already required by SPEC §11 item 10;
 `types.psm`'s own comment anticipates it.
 
-### 2. `region { }` — keyword, arena runtime, handle threading **[needed]**
+### 2. `region { }` — keyword, arena runtime, handle threading **[done, 2026-08-07]**
 
-The frame arena is the dominant allocation pattern in real-time code. Currently untestable: no
-keyword, no arena allocator, and `ir_alloc_object` takes only a size, so there is nowhere to pass
-an arena handle.
+~~The frame arena is the dominant allocation pattern in real-time code. Currently untestable~~: the
+keyword landed at Level 3, the arena runtime with it, and automatic placement (LAYOUT §7.1) at
+Level 4. The handle is **not** threaded — the arenas are a dynamically scoped stack, which keeps
+`ir_alloc_region` a `fn(size) -> ptr` and costs exactly one case; see the Level 3 note.
 
 **Measured relevance:** every game-corpus allocation lands T2 rather than T1 because values escape
 to the caller. Frame-scoped arenas are the largest untested upside for the target workload.
+
+**And that prediction did not survive contact.** The corpus gained *nothing* from arenas, because it
+has no T1 sites at all — its allocations are T0 or T2, and a value that escapes to the caller cannot
+come from a frame arena no matter how the arena is placed. The compiler gained everything: 186 T1
+string sites, all arena-served. Arenas pay where T1 lives, and T1 turned out to live in
+string-processing code rather than in the struct-and-container corpus this section was written from.
+The corpus's residue needs item 3's shared references and container ownership, not arenas.
 
 *Source:* RESULTS-L0 §6, SPEC §5.2, LAYOUT §7.1.
 
@@ -140,10 +152,18 @@ The measured effect is in [RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md)'s cor
 58% T0–T2 on the compiler from four `alias` declarations, and 72% with affine collections — the
 first time this corpus clears H1's kill criterion.
 
-### 9. The four annotations — `unique`, `region`, `workload`, `pin` **[needed]**
+### 9. The four annotations — `unique`, `region`, `workload`, `pin` **[three done, 2026-08-07]**
 
-None exists in `keywords.psm`. Per TARGET §2.1 these are engine-layer tools; gameplay code should
+~~None exists in `keywords.psm`.~~ Per TARGET §2.1 these are engine-layer tools; gameplay code should
 never need them.
+
+- `region` — done at Level 3. A keyword, because it opens a statement.
+- `unique`, `pin` — done. **Contextual identifiers, not keywords**, so a program may still use both
+  as names: SPEC §5 requires that deleting every annotation leave a working program, and reserving
+  the words would break the programs that never asked for them. Same treatment as the FFI contracts.
+- `workload` — **deliberately not implemented.** SPEC §5.3 leaves its syntax and semantics open, and
+  it feeds a layout cost model (§9) that does not exist. Building it now would mean inventing
+  specification for a consumer that cannot use it. Do it with LAYOUT §7.2, not before.
 
 ### 10. Per-module optimisation levels **[needed]**
 
@@ -217,11 +237,14 @@ accumulator.
 Tier assignment needs real sizes for SPEC §4.2's `Θ_stack` threshold. The prototype approximates
 with field count.
 
-### 19. Memory budget reporting **[needed for consoles]**
+### 19. Memory budget reporting **[needed for consoles; now cheap]**
 
 Fixed memory budgets are a hard constraint on console targets and AIF has nothing on them. Arenas
 make it tractable: compute an arena high-water mark from the profile, report it in the manifest,
 and let `pin` carry an asserted cap that fails the build gate when exceeded.
+
+Both halves now exist. `arena_bytes()` already reports what the arenas served, and `pin` is
+implemented — so this is a manifest line plus a cap on the annotation, not new machinery.
 
 *Source:* the AAA target; not yet in any spec document.
 

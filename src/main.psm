@@ -19,6 +19,12 @@ extern fn str_ends_with(s: String, suffix: String) -> Int
 extern fn compiler_default_exe_path(source_path: String) -> String
 extern fn compiler_temp_ir_path(source_path: String) -> String
 extern fn compiler_build_executable(ir_file: String, exe_file: String) -> Int
+// SPEC 7.3. Tells the build to compile the runtime with its own allocator
+// pointed at the verify shims, so the strings and lists it allocates are in the
+// same accounting as everything ir_alloc_object handed out.
+extern fn compiler_set_verify_mode(on: Int)
+extern fn aif_report_pins() -> Int
+extern fn aif_explain(symbol: String, converged: Bool) -> Int
 extern fn compiler_bootstrap_executable(ir_file: String, exe_file: String) -> Int
 extern fn compiler_run_executable(exe_file: String) -> Int
 extern fn compiler_runtime_source_hash() -> String
@@ -192,6 +198,7 @@ fn print_usage() {
     println("  prismio runtime-hash")
     println("  prismio dump-ast <source.psm>")
     println("  prismio aif <source.psm> [--summary] [--owned-collections] [--theta-fields] [--budget=N]")
+    println("  prismio aif <source.psm> --why=<symbol>   why one record has the tier it has")
     println("")
     println("build/run link against the installed Prismio runtime only.")
     println("bootstrap builds the compiler itself from the repository sources,")
@@ -295,10 +302,18 @@ fn dump_ast_command(path: String) -> Int {
 // generates -- which is the point at this stage: the tier distribution becomes
 // measurable before any of it is risked on the self-host.
 fn aif_command(path: String, summary: Bool, owned_collections: Bool, theta_fields: Bool,
-               budget: Int) -> Int {
+               budget: Int, why: String) -> Int {
     let merged = analyzed_module(path)
     if (diag_error_count() > 0) {
         return 1
+    }
+
+    // `--why` explains one record instead of printing the manifest. It runs the
+    // same inference -- the derivation is a by-product of the solve, not a
+    // second pass -- so the answer describes the build a plain run would give.
+    if (str_equals(why, "") == 0) {
+        let converged = aif_run(merged, owned_collections, theta_fields, budget)
+        return 1 - aif_explain(why, converged)
     }
 
     aif_analyze(merged, path, PRISMIO_VERSION, owned_collections, summary, theta_fields, budget)
@@ -366,7 +381,21 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
     // It cannot fail the build. SPEC 1: inference failure degrades performance
     // and never correctness, and a value it says nothing about is allocated the
     // way it always was.
-    aif_run(merged_ast, false, false, AIF_DEFAULT_ROUNDS)
+    // `true` for owned collections is AIF Level 4: types.psm made String and List
+    // move-only, so the copy rule no longer applies to them and the analysis has
+    // to agree with the language. This is the switch that gives the 184 T1 string
+    // sites a free point -- with it off, site_is_move_only admits structs only and
+    // aif_frees_at_scope_node declines every one of them.
+    aif_run(merged_ast, true, false, AIF_DEFAULT_ROUNDS)
+
+    // The one thing AIF can fail a build for, and SPEC 5.4.1 is explicit that it
+    // is not a violation of SPEC 1: a pin a *converged* analysis refutes is a
+    // false assertion about the program, not an inference failure. An unproven
+    // one warns and is ignored.
+    if (aif_report_pins() > 0) {
+        diag_finish()
+        return 1
+    }
 
     ir_reset()
 
@@ -378,6 +407,11 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
     if (verify_mode) {
         ir_set_alloc_function("aif_verify_alloc")
         ir_set_free_function("aif_verify_release")
+        // The other half of the swap. Strings and lists are affine as of Level 4
+        // and are allocated inside the runtime, past this seam -- without this
+        // every string a program drops reports as a release of something that was
+        // never live.
+        compiler_set_verify_mode(1)
     }
 
     generate_module(merged_ast)
@@ -492,12 +526,18 @@ fn main() -> Int {
         let mut aif_summary = false
         let mut aif_owned = false
         let mut aif_theta_fields = false
+        let mut aif_why = ""
         let mut aif_budget_arg = AIF_DEFAULT_ROUNDS
         let mut aif_arg = 3
         while (aif_arg < cli_arg_count()) {
             let flag = cli_arg(aif_arg)
             if (str_equals(flag, "--summary") == 1) {
                 aif_summary = true
+            } else if (str_starts_with(flag, "--why=") == 1) {
+                // SPEC 6.3's minimal cause for one record. The symbol is the one
+                // the manifest prints, so it can be copied straight out of a
+                // diff -- which is where a reader will have found it.
+                aif_why = str_substring(flag, 6, str_length(flag) - 6)
             } else if (str_starts_with(flag, "--budget=") == 1) {
                 // INFERENCE 5.3's truncation path is unreachable at the default
                 // of 200 rounds, and an unreachable path is where a bug lives
@@ -529,7 +569,7 @@ fn main() -> Int {
             aif_arg = aif_arg + 1
         }
 
-        return aif_command(cli_arg(2), aif_summary, aif_owned, aif_theta_fields, aif_budget_arg)
+        return aif_command(cli_arg(2), aif_summary, aif_owned, aif_theta_fields, aif_budget_arg, aif_why)
     }
 
     // Compiler development. The command itself selects the build mode -- there is no
@@ -655,7 +695,10 @@ fn main() -> Int {
             }
 
             if (str_equals(command, "build") == 1 and arg_index == 2) {
-                output_file = arg
+                // Re-read rather than `output_file = arg`: that moves `arg`, and
+                // move state is per name for the whole body, so the `else` below
+                // would report a use of a moved value on a path that never ran.
+                output_file = cli_arg(arg_index)
                 arg_index = arg_index + 1
             } else {
                 diag_error(str_concat("unknown argument ", diag_quote(arg)))

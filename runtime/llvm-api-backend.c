@@ -708,18 +708,34 @@ static void ir_arena_call(const char *name) {
 void ir_region_begin(void) { ir_arena_call("arena_push"); }
 void ir_region_end(void)   { ir_arena_call("arena_pop"); }
 
-void ir_free_object(const char *value) {
+// AIF Level 4. A string or a list is allocated inside the runtime, not through
+// ir_alloc_region, so the site cannot pick the arena for itself. Bracketing the
+// producing call says "the allocation this one makes belongs to the region", and
+// the runtime bumps rather than calling malloc. Emitted around the call only;
+// the arguments are already evaluated by then.
+void ir_arena_hint_begin(void) { ir_arena_call("rt_arena_hint_push"); }
+void ir_arena_hint_end(void)   { ir_arena_call("rt_arena_hint_pop"); }
+
+static void ir_release_call(const char *value, const char *fn_name) {
     if (block_done()) return;
     LLVMTypeRef voidty = LLVMVoidTypeInContext(g_ctx);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
 
     LLVMTypeRef free_ty = LLVMFunctionType(voidty, &ptr, 1, 0);
-    LLVMValueRef free_fn = LLVMGetNamedFunction(g_module, g_free_fn);
-    if (!free_fn) free_fn = LLVMAddFunction(g_module, g_free_fn, free_ty);
+    LLVMValueRef free_fn = LLVMGetNamedFunction(g_module, fn_name);
+    if (!free_fn) free_fn = LLVMAddFunction(g_module, fn_name, free_ty);
 
     LLVMValueRef args[1] = {resolve_value(value, "ptr")};
     LLVMBuildCall2(g_builder, free_ty, free_fn, args, 1, "");
 }
+
+void ir_free_object(const char *value) { ir_release_call(value, g_free_fn); }
+
+// AIF Level 4. A list is a handle plus an element block, so the one-pointer
+// deallocator the seam names cannot reclaim it. `list_release` is the runtime's
+// own -- it frees both through the same allocator the list came from, which is
+// what keeps a verify build's accounting balanced.
+void ir_free_list(const char *value) { ir_release_call(value, "list_release"); }
 
 // Field address within a struct object. Replaces emitted getelementptr text.
 int ir_struct_field_ptr(const char *struct_name, const char *object, int field_index) {

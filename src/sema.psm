@@ -255,6 +255,67 @@ fn sema_error(message: String) {
     diag_error(message)
 }
 
+// SPEC 5: being wrong about an annotation is a diagnostic of severity *warning*
+// and never fails compilation -- the annotation is discarded and the value is
+// inferred normally. The one exception is a pin a converged analysis refutes
+// (SPEC 5.4.1), which is a program error and goes through sema_error_at.
+fn sema_warning_at(node: ASTNode, message: String) {
+    diag_warning_at(node.file, node.line, node.col, node.len, message)
+}
+
+// ---------------------------------------------------------------------------
+// AIF annotations (SPEC 5)
+//
+// The parser stores them on the declaration's `s2` as space-separated text --
+// `unique `, `pin:T1 ` -- the same encoding the FFI contracts use, and for the
+// same reason: one free slot, and an argument to carry.
+// ---------------------------------------------------------------------------
+
+fn sema_annotation_has(encoded: String, name: String) -> Bool {
+    return str_contains(encoded, str_concat(name, " ")) == 1
+}
+
+// The tier a `pin(...)` named, or "" if there is no pin.
+fn sema_annotation_pin_tier(encoded: String) -> String {
+    let at = str_index_of(encoded, "pin:")
+    if (at < 0) { return "" }
+    let rest = str_substring(encoded, at + 4, str_length(encoded) - at - 4)
+    let space = str_index_of(rest, " ")
+    if (space < 0) { return rest }
+    return str_substring(rest, 0, space)
+}
+
+fn sema_is_tier_name(name: String) -> Bool {
+    if (str_equals(name, "T0") == 1) { return true }
+    if (str_equals(name, "T1") == 1) { return true }
+    if (str_equals(name, "T2") == 1) { return true }
+    if (str_equals(name, "T3") == 1) { return true }
+    return str_equals(name, "T4b") == 1
+}
+
+// Checked here rather than in AIF because a misspelled tier is a source
+// question, and because AIF must not report anything (SPEC 1: it cannot fail a
+// build). Everything that survives this is a tier the solver can compare against.
+fn sema_check_annotations(stmt: ASTNode, var_t: TypeInfo) {
+    let encoded = stmt.s2
+    if (str_equals(encoded, "") == 1) { return }
+
+    if (sema_annotation_has(encoded, "unique")) {
+        // A Copyable value has no ownership to be unique about, so the axiom
+        // asserts nothing and would silently do nothing.
+        if (type_is_move_only(var_t) == false and type_is_valid(var_t)) {
+            sema_warning_at(stmt, str_concat("`unique` has no effect on ", type_display(var_t)))
+            diag_note("only owned values -- structs, strings and lists -- carry an aliasing fact")
+        }
+    }
+
+    let tier = sema_annotation_pin_tier(encoded)
+    if (str_equals(tier, "") == 0 and sema_is_tier_name(tier) == false) {
+        sema_warning_at(stmt, str_concat(str_concat("unknown tier ", diag_quote(tier)), " in `pin`"))
+        diag_note("the tiers are T0, T1, T2, T3 and T4b")
+    }
+}
+
 fn sema_type_error_at(node: ASTNode, context: String, expected: TypeInfo, actual: TypeInfo) {
     sema_error_at(node, str_concat(str_concat(context, ": expected "),
                   str_concat(type_display(expected), str_concat(", found ", type_display(actual)))))
@@ -365,14 +426,37 @@ fn sema_is_int_literal(e: ASTNode) -> Bool {
     return e.kind == NodeKind.LITERAL_EXPR and e.i1 == TokenType.NUMBER_LITERAL
 }
 
+// Whether binding this expression to a name produces a *borrow* rather than an
+// owned value.
+//
+// AIF Level 4 made String and List affine, and that turned the compiler's own
+// commonest idiom -- `let mut p = node.child1`, walking a chain of pointers
+// punned as strings -- into "use of moved value" everywhere. It is not a move:
+// reading a field yields a reference the container still owns, and so does
+// naming a binding that was already a borrow. Both stay borrows.
+//
+// This is also what keeps it sound rather than merely quiet. A borrowed binding's
+// initialiser registers no allocation site, so aif_frees_at_scope_node never
+// admits it and nothing frees a value it does not own.
+fn sema_binding_is_borrow(node: ASTNode) -> Bool {
+    if (node.kind == NodeKind.MEMBER_ACCESS_EXPR) { return true }
+    if (node.kind == NodeKind.INDEX_EXPR) { return true }
+    if (node.kind == NodeKind.IDENTIFIER_EXPR) {
+        return ir_is_borrowed(node.s1) == 1
+    }
+    return false
+}
+
 // If `node` is a move-only value referenced by name, transfer ownership out of it:
 // any later use of that binding becomes a "use of moved value" error.
+//
+// A borrowed operand is reborrowed instead -- the caller marks the new binding
+// borrowed in turn. Consuming one is still an error; that goes through
+// sema_consume_operand.
 fn sema_move_operand(node: ASTNode) {
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
         if (type_is_move_only(node_get_type(node))) {
-            if (ir_is_borrowed(node.s1) == 1) {
-                sema_error_at(node, str_concat("cannot move out of borrowed value ", diag_quote(node.s1)))
-            }
+            if (ir_is_borrowed(node.s1) == 1) { return }
             // Move state is tracked per name over the AST in source order, so a
             // move inside a loop body is seen once but executes on every
             // iteration. If the binding was created outside the loop, that is a
@@ -384,6 +468,22 @@ fn sema_move_operand(node: ASTNode) {
             ir_mark_moved(node.s1)
         }
     }
+}
+
+// A move that destroys: `drop(x)` and a `sink` parameter both end the value's
+// life here, so a borrow cannot supply one -- the owner would be left with a
+// dangling binding. This is the check sema_move_operand used to make for every
+// caller, kept for the two that still need it.
+fn sema_consume_operand(node: ASTNode) {
+    if (node.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (type_is_move_only(node_get_type(node))) {
+            if (ir_is_borrowed(node.s1) == 1) {
+                sema_error_at(node, str_concat("cannot move out of borrowed value ", diag_quote(node.s1)))
+                return
+            }
+        }
+    }
+    sema_move_operand(node)
 }
 
 // Type-check a value against an expected type, allowing a bare integer literal to
@@ -641,7 +741,7 @@ fn sema_check_builtin_call(module: ASTNode, call: ASTNode, name: String, arg_ptr
             sema_error_at(arg, str_concat("drop requires an owned (move-only) value, found ", type_display(t)))
             return true
         }
-        sema_move_operand(arg)
+        sema_consume_operand(arg)
         return true
     }
 
@@ -934,7 +1034,7 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             sema_check_value(module, arg_node, param_t, str_concat(diag_quote(name), " argument"))
             // Only `sink` parameters take ownership; `let`/`inout` borrow.
             if (str_equals(param_node.s2, "sink") == 1) {
-                sema_move_operand(arg_node)
+                sema_consume_operand(arg_node)
             }
             arg_ptr = arg_node.next
             param_ptr = param_node.next
@@ -1058,9 +1158,19 @@ fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo) {
             }
         }
 
+        sema_check_annotations(stmt, var_t)
+
         // This `let` binds a fresh value, so drop any moved-from state left over
         // from an earlier binding of the same name (see ir_unmark_moved).
         ir_unmark_moved(stmt.s1)
+        // ...and any borrow state, for the same reason. Whether *this* binding is
+        // a borrow is decided by its own initialiser.
+        ir_unmark_borrowed(stmt.s1)
+        if (has_init) {
+            if (sema_binding_is_borrow(ptr_to_node(stmt.child2))) {
+                ir_mark_borrowed(stmt.s1)
+            }
+        }
         ir_set_var_type(stmt.s1, type_sem_key(var_t))
         // i1 carries `mut` from the parser. Nothing read it before, so
         // "explicit mutability" was advertised and entirely unenforced.
@@ -1088,6 +1198,16 @@ fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo) {
         let value_t = sema_expr(module, ptr_to_node(stmt.child2))
         sema_expect_assignable(ptr_to_node(stmt.child2), "assignment", target_t, value_t)
         sema_move_operand(ptr_to_node(stmt.child2))
+
+        // Reborrowing through an assignment. Marked but never unmarked: an
+        // assignment in one branch says nothing about the other, and a binding
+        // that might hold a borrow must not be consumable. Erring towards
+        // "borrowed" refuses a `drop`; erring the other way permits one.
+        if (target.kind == NodeKind.IDENTIFIER_EXPR) {
+            if (sema_binding_is_borrow(ptr_to_node(stmt.child2))) {
+                ir_mark_borrowed(target.s1)
+            }
+        }
     }
 
     if (stmt.kind == NodeKind.RETURN_STATEMENT) {
