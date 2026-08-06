@@ -514,6 +514,7 @@ void* type_to_ptr(void* ptr) { return ptr; }
 #else
 
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -930,6 +931,221 @@ void* type_to_ptr(void* ptr) { return ptr; }
 
 // Native builds use libc malloc; the per-frame arena reset is a no-op here.
 void heap_reset(void) { }
+
+// ============================================================================
+// Arenas (AIF Level 3, SPEC 5.2)
+//
+// A stack of bump allocators. `region r { ... }` pushes one on entry and pops it
+// on every exit; an allocation the analysis proved cannot outlive that region
+// comes from the top of the stack, and the whole block goes back at once.
+//
+// COMPILER-AUDIT 3 expected the arena handle to be *threaded* to each allocation
+// site as a second argument. It is dynamically scoped instead, which keeps
+// ir_alloc_region a `fn(size) -> ptr` like the other two hooks and needs no new
+// frontend plumbing. The cost of that choice is that a callee cannot be given a
+// different arena from its caller's -- which does not arise, because only sites
+// lexically inside the block are routed here (SPEC 5.2's own wording), and the
+// analysis has already proved each of those dies no later than this region.
+//
+// Chunks are a linked list so a region that outgrows its first block keeps
+// going rather than falling back to the heap; pointers already handed out stay
+// valid because earlier chunks are not moved.
+// ============================================================================
+
+#define ARENA_CHUNK_MIN 8192
+#define ARENA_MAX_DEPTH 64
+
+typedef struct ArenaChunk {
+    struct ArenaChunk* next;
+    size_t used, cap;
+    unsigned char* base;
+} ArenaChunk;
+
+static ArenaChunk* arena_stack[ARENA_MAX_DEPTH];
+static int arena_depth = 0;
+
+// Reported by arena_stats so a test can assert an allocation came from a region
+// rather than from malloc -- the two are indistinguishable from the value.
+static long arena_bytes_served, arena_objects_served, arena_regions_entered;
+
+static ArenaChunk* arena_chunk_new(size_t need) {
+    size_t cap = need > ARENA_CHUNK_MIN ? need : ARENA_CHUNK_MIN;
+    ArenaChunk* c = (ArenaChunk*)malloc(sizeof(ArenaChunk));
+    if (!c) return NULL;
+    c->base = (unsigned char*)malloc(cap);
+    if (!c->base) { free(c); return NULL; }
+    c->used = 0;
+    c->cap = cap;
+    c->next = NULL;
+    return c;
+}
+
+void arena_push(void) {
+    if (arena_depth >= ARENA_MAX_DEPTH) {
+        fprintf(stderr, "internal error: regions nested more than %d deep\n", ARENA_MAX_DEPTH);
+        exit(1);
+    }
+    arena_stack[arena_depth++] = NULL;   // chunks are allocated on first use
+    arena_regions_entered++;
+}
+
+void arena_pop(void) {
+    if (arena_depth <= 0) return;
+    ArenaChunk* c = arena_stack[--arena_depth];
+    while (c) {
+        ArenaChunk* next = c->next;
+        free(c->base);
+        free(c);
+        c = next;
+    }
+    arena_stack[arena_depth] = NULL;
+}
+
+void* arena_alloc(size_t size) {
+    // No region active. Codegen only routes a site here when one is, so this is
+    // a corrupted arena stack rather than an ordinary case -- but falling back
+    // to malloc keeps SPEC 1's invariant (never wrong, only slower) instead of
+    // returning NULL into code that will not check it.
+    if (arena_depth <= 0) return malloc(size);
+
+    size_t need = (size + 15u) & ~(size_t)15u;   // 16-byte aligned, as malloc is
+    ArenaChunk* c = arena_stack[arena_depth - 1];
+    if (!c || c->used + need > c->cap) {
+        ArenaChunk* fresh = arena_chunk_new(need);
+        if (!fresh) return malloc(size);
+        fresh->next = c;
+        arena_stack[arena_depth - 1] = fresh;
+        c = fresh;
+    }
+
+    void* p = c->base + c->used;
+    c->used += need;
+    arena_bytes_served += (long)need;
+    arena_objects_served++;
+    return p;
+}
+
+long arena_objects(void) { return arena_objects_served; }
+long arena_bytes(void)   { return arena_bytes_served; }
+long arena_regions(void) { return arena_regions_entered; }
+
+// ============================================================================
+// AIF `verify` mode (SPEC 7.3)
+//
+// A verify build swaps the allocator and deallocator names through
+// ir_set_alloc_function / ir_set_free_function and changes nothing else -- the
+// same seam COMPILER-AUDIT 3 describes for T2, used here for its first real
+// purpose. Codegen is identical to a release build.
+//
+// What this covers, of SPEC 7.3's table:
+//
+//   Tier T0/T1, "no access after frame or region exit" -- partially. Released
+//   memory is poisoned before it goes back to the allocator, so a read that
+//   should not have happened returns a recognisable pattern rather than data
+//   that is merely stale-but-plausible. Reads are not instrumented, so this
+//   makes such a bug loud rather than impossible.
+//
+//   The balance itself, which is not in the table and should be: every object
+//   released exactly once, and none left over. That is what catches a missed
+//   drop path (leak) and a doubled one (release of something not live), which
+//   are the two ways Level 2 can be wrong.
+//
+// What it does not cover, and why:
+//
+//   A = Unique / A <= Borrowed  need a count word in the object header, which
+//                               is the same layout change T3 needs.
+//   E = Region(r)               needs arenas; Level 3.
+//   E <= Caller                 needs static-root reachability at return.
+//   T = Isolated / Transferred  vacuous -- the language has no tasks.
+//   C = Acyclic                 needs a periodic heap walk.
+// ============================================================================
+
+#define AIF_VERIFY_BUCKETS 4096
+#define AIF_VERIFY_POISON  0xDD
+
+typedef struct AifLive {
+    struct AifLive* next;
+    void* p;
+    size_t size;
+    long serial;        // allocation order, so a leak report names something
+} AifLive;
+
+static AifLive* aif_live[AIF_VERIFY_BUCKETS];
+static long aif_allocs, aif_releases, aif_violations;
+static int aif_report_armed;
+
+static unsigned aif_live_hash(const void* p) {
+    uintptr_t v = (uintptr_t)p;
+    v ^= v >> 33;
+    v *= 0xff51afd7ed558ccdull;
+    v ^= v >> 29;
+    return (unsigned)v & (AIF_VERIFY_BUCKETS - 1);
+}
+
+void aif_verify_report(void) {
+    long leaked = 0;
+    for (int i = 0; i < AIF_VERIFY_BUCKETS; i++) {
+        for (AifLive* n = aif_live[i]; n; n = n->next) {
+            // The serial is the allocation's order in the run, which is the only
+            // handle a leak report can offer without debug info: "the 116th
+            // object" is enough to find the site by counting sites.
+            if (leaked < 20) {
+                fprintf(stderr, "aif-verify: leaked #%ld (%lu bytes)\n",
+                        n->serial, (unsigned long)n->size);
+            }
+            leaked++;
+        }
+    }
+    fprintf(stderr, "aif-verify: %ld allocated, %ld released, %ld leaked, %ld violation(s)\n",
+            aif_allocs, aif_releases, leaked, aif_violations);
+    if (leaked || aif_violations) {
+        fprintf(stderr, "aif-verify: FAILED -- an inferred fact did not hold at run time\n");
+    }
+}
+
+void* aif_verify_alloc(size_t size) {
+    if (!aif_report_armed) {
+        aif_report_armed = 1;
+        atexit(aif_verify_report);
+    }
+    void* p = malloc(size);
+    if (!p) return NULL;
+
+    aif_allocs++;
+    AifLive* n = (AifLive*)malloc(sizeof(AifLive));
+    if (n) {
+        n->p = p;
+        n->size = size;
+        n->serial = aif_allocs;
+        unsigned b = aif_live_hash(p);
+        n->next = aif_live[b];
+        aif_live[b] = n;
+    }
+    return p;
+}
+
+void aif_verify_release(void* p) {
+    if (!p) return;
+
+    unsigned b = aif_live_hash(p);
+    AifLive** link = &aif_live[b];
+    while (*link && (*link)->p != p) link = &(*link)->next;
+
+    if (!*link) {
+        // Either released twice, or never came from here. Both mean a fact was
+        // wrong: the value was freed on a path the analysis did not account for.
+        fprintf(stderr, "aif-verify: release of a pointer that is not live (%p)\n", p);
+        aif_violations++;
+        return;
+    }
+
+    AifLive* n = *link;
+    *link = n->next;
+    memset(p, AIF_VERIFY_POISON, n->size);
+    free(n);
+    free(p);
+    aif_releases++;
+}
 
 #endif
 

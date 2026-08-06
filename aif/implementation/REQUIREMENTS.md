@@ -119,6 +119,27 @@ nor `retain`, and collections are the most common FFI shape in a systems languag
 
 *Source:* [FFI.md](../spec/FFI.md) §5, RESULTS-L0 §4.1 and §5.
 
+**Landed 2026-08-06** — parameter and return contracts, in FFI §5.4's postfix form:
+
+```prismio
+extern fn ptr_to_node(ptr: String borrow) -> ASTNode alias
+extern fn list_push(list: List borrow, item: Ptr retain_in(0))
+extern fn fopen(path: String borrow) -> File produce(fclose)
+```
+
+Contextual identifiers rather than reserved keywords, so `borrow`, `out` and `alias` remain usable
+as ordinary names; parsed only inside an `extern` declaration, never by the shared type parser.
+Sema rejects a return contract on a parameter, a parameter contract on a return, an out-of-range or
+self-naming `retain_in(k)`, and a `produce` with no deallocator — FFI §1 makes this the one place in
+AIF where being wrong is unsafe rather than slow, and nothing downstream can catch it.
+
+`pure` and `nocallback` (§5.3) are **not** implemented: they drive the fact invalidation of FFI §6,
+which AIF-1 does not model at all. They trail the declaration, so adding them later breaks nothing.
+
+The measured effect is in [RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md)'s correction note: 27% →
+58% T0–T2 on the compiler from four `alias` declarations, and 72% with affine collections — the
+first time this corpus clears H1's kill criterion.
+
 ### 9. The four annotations — `unique`, `region`, `workload`, `pin` **[needed]**
 
 None exists in `keywords.psm`. Per TARGET §2.1 these are engine-layer tools; gameplay code should

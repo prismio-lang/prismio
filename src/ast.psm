@@ -34,6 +34,7 @@ enum NodeKind {
     EXPRESSION_STATEMENT,
     BREAK_STATEMENT,
     CONTINUE_STATEMENT,
+    REGION_STATEMENT,
 
     // Expressions
     BINARY_EXPR,
@@ -84,8 +85,14 @@ struct ASTNode {
     file: Int
 }
 
-extern fn ptr_to_node(ptr: String) -> ASTNode
-extern fn node_to_ptr(node: ASTNode) -> String
+// Both are the identity on a pointer (runtime/lang_runtime.c), so the result is
+// the argument -- `alias` in FFI 5.2's vocabulary. Saying so is not decoration:
+// without it the analysis must treat every `ptr_to_node` result as an extern
+// return of unknown provenance, which means Shared, which A-STORE then spreads
+// to everything stored through the resulting node. That single omission was
+// most of the compiler's own T3 population.
+extern fn ptr_to_node(ptr: String borrow) -> ASTNode alias
+extern fn node_to_ptr(node: ASTNode borrow) -> String alias
 
 // Declared rather than imported from utils: ast.psm is the bottom of the import
 // graph and everything else depends on it.

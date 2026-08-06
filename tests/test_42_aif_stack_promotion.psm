@@ -1,0 +1,129 @@
+// AIF T0 -- stack promotion, end to end.
+//
+// Every struct literal here is one the escape module should prove does not
+// outlive its frame, so codegen emits an `alloca` and no allocation call. The
+// point of the test is that the *values* are still right: a wrong escape fact
+// shows up as a stale or clobbered read, not as a crash, which is exactly the
+// failure mode aif/prototype/aif.py exists to guard against.
+//
+// The self-host cannot cover this. The compiler's own source has zero T0 sites
+// (its structs are driven to Shared by undeclared FFI contracts), so the
+// fixpoint check -- the safety net COMPILER-AUDIT 5 assumes for Level 1 -- never
+// exercises the path. This test is the replacement for it.
+
+extern fn int_to_str(n: Int) -> String
+
+struct Point {
+    x: Int,
+    y: Int
+}
+
+struct Pair {
+    lo: Int,
+    hi: Int
+}
+
+// The plain case: created, read, discarded.
+fn sum_local() -> Int {
+    let p = Point { x: 3, y: 4 }
+    return p.x + p.y
+}
+
+// Two literals of the same type in one frame must get two slots. If the alloca
+// were deduplicated by type the second would overwrite the first.
+fn two_of_a_kind() -> Int {
+    let a = Point { x: 1, y: 2 }
+    let b = Point { x: 10, y: 20 }
+    return a.x + a.y + b.x + b.y
+}
+
+// A T0 slot is hoisted to the entry block and reused by every iteration. That is
+// only correct because nothing from one iteration survives into the next -- so
+// this must total 1+2+3+4+5 and not five times the last value.
+fn loop_local() -> Int {
+    let mut total = 0
+    let mut i = 1
+    while (i < 6) {
+        let p = Point { x: i, y: 0 }
+        total = total + p.x
+        i = i + 1
+    }
+    return total
+}
+
+// Distinct types in one frame, interleaved with a loop, to catch a slot being
+// shared across types.
+fn mixed() -> Int {
+    let pt = Point { x: 7, y: 8 }
+    let mut total = 0
+    let mut i = 0
+    while (i < 3) {
+        let pr = Pair { lo: i, hi: i * 2 }
+        total = total + pr.lo + pr.hi
+        i = i + 1
+    }
+    return total + pt.x + pt.y
+}
+
+// Mutation through a promoted value must stick.
+fn mutated() -> Int {
+    let mut p = Point { x: 1, y: 1 }
+    p.x = 41
+    p.y = p.x + 1
+    return p.y
+}
+
+// Not T0: returned, so it outlives the frame. Must still be heap-allocated and
+// must still be readable by the caller -- promoting this would return a pointer
+// into a dead frame, which is the one way Level 1 can turn a slow program into a
+// wrong one.
+fn escapes() -> Point {
+    return Point { x: 99, y: 100 }
+}
+
+// A T0 struct literal that starts at the same file:line:col as the T1 array
+// literal containing it. Codegen used to look tiers up by position, which had to
+// resolve that collision by taking the higher tier, and this promotion was lost.
+// It is keyed by AST node now, so the two are separate answers.
+struct Nested {
+    v: Int
+}
+
+fn nested_in_array() -> Int {
+    let boxed = [Nested { v: 5 }]
+    return boxed[0].v
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) {
+        return 0
+    }
+    print("FAIL ")
+    print(label)
+    print(": expected ")
+    print(int_to_str(want))
+    print(", got ")
+    println(int_to_str(got))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("sum_local", sum_local(), 7)
+    bad = bad + check("two_of_a_kind", two_of_a_kind(), 33)
+    bad = bad + check("loop_local", loop_local(), 15)
+    bad = bad + check("mixed", mixed(), 24)
+    bad = bad + check("mutated", mutated(), 42)
+    bad = bad + check("nested_in_array", nested_in_array(), 5)
+
+    let e = escapes()
+    bad = bad + check("escapes.x", e.x, 99)
+    bad = bad + check("escapes.y", e.y, 100)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

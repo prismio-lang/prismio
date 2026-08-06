@@ -238,13 +238,13 @@ for whoever does Level 1:
   against `aif/prototype/aif.py` on every corpus under both collection settings. Generic containers
   are still worth having; they are no longer on this critical path.
 - §4.1's proposed AST node ids were not needed either. Sites are identified by the walk that creates
-  them. Level 1 will need them, because codegen has to look a tier up.
+  them. Level 1 does need a key codegen can look a tier up by — see the note under Level 1.
 
 And it did what this section said it would: the distribution was measurable cheaply, and it
 immediately contradicted a recorded result. See the correction note atop
 [RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md).
 
-### Level 1 — T0
+### Level 1 — T0 — **DONE, 2026-08-05**
 
 Stack-promote non-escaping structs. Escape module only; `ir_alloc_stack` hoisting to the entry
 block.
@@ -253,7 +253,91 @@ block.
   miscompiles itself — which the fixpoint test will catch loudly.
 - Measurable: allocation count on a self-compile should drop.
 
-### Level 2 — T2 and scope drop
+**Both of those predictions were wrong, and the way they were wrong is the useful part.**
+
+- **The fixpoint test catches nothing here.** The compiler's own source has *zero* T0 sites, so a
+  self-compile never emits a single `alloca` from this path and the fixpoint check is green whatever
+  the escape module says. The safety net this section assumes does not exist for Level 1. What
+  replaced it is `tests/test_42_aif_stack_promotion.psm`, which exercises the path directly, plus
+  the oracle in `tools/aif_differential.py`.
+- **Allocation count on a self-compile does not drop.** It is unchanged, for the same reason.
+- The T0 population across the entire corpus is **two sites**. The suspicion was that `Θ_stack` was
+  the binding constraint — the prototype approximates it with a field count of 8, which excludes
+  ASTNode at 14 fields. Level 1 replaced that with a real byte threshold (256 B, computed from
+  field types, since AIF-1's layout *is* declaration order) and the population **did not move**.
+  Aliasing is the constraint, not size. The byte threshold is still the correct rule and is what a
+  wide struct needs; it is not what was holding T0 back.
+
+Two defects Level 1 surfaced, both of which were latent at Level 0 because nothing allocated
+differently:
+
+- **The escape module was unsound for assignment to an outer-scope binding.** `live_in` used the
+  scope of the *assignment* rather than the scope the variable was *declared* in, so a value created
+  in a loop body and assigned to a binding declared outside it kept the loop body's escape — which
+  reads as "dies at the end of this iteration" and is false. At Level 0 that cost a tier and nothing
+  else. At Level 1 a hoisted `alloca` gives every iteration the same slot, so it is a miscompile.
+  Fixed in both implementations (`aif_var_scope`); the probe is in the git history of this change.
+- **`drop(x)` lowers to a free, and a stack slot cannot be freed.** A promoted value passed to
+  `drop` freed a stack pointer — heap corruption, caught by `test_24_drop`. T0 is now suppressed for
+  any value an explicit `drop` names. That is a codegen constraint rather than a fact and is
+  implemented as one, so the manifest does not claim the value escaped.
+
+The seam is now two hooks of the three §3 says it needs: `ir_alloc_stack` and `ir_alloc_object`.
+`ir_alloc_region` still does not exist.
+
+**Postscript, 2026-08-06 — the tier lookup is keyed by AST node now.** It was keyed by
+`file:line:col`, on the reasoning that a struct literal sits at exactly one position and that key
+needed no AST change. It is not one position: an array literal and its first element start at the
+same column, so `[Nested { v: 5 }]` put a T1 and a T0 site on the same key. A position key has to
+resolve that by taking the *higher* tier, because codegen reads T0 as permission to use a stack
+slot and rounding down there is heap corruption — so the collision was silently costing the
+promotion. §4.1 was right that node identity is the answer; it does not need a numbering or a
+parser change, because both passes walk the same tree in the same process and the node's address
+already names it. `tests/test_42`'s `nested_in_array` is the case, and `run_aif_stack_slot_test`
+asserts the `alloca` in the IR — the value test alone passes just as well with promotion off.
+
+### Analysis quality — three recorded gaps closed, 2026-08-06
+
+Not a level. Three approximations that Level 0 shipped with a comment rather than a fix, all of
+which had to be fixed in both implementations at once to keep the oracle meaningful.
+
+- **`List<T>` and `[T]` fields produced no type-graph edge.** The walk read the annotation's own
+  name, which is `List` or empty; the element type hangs off `child1`. So `children: List<Node>`
+  reported the whole module acyclic. This is the one direction in which the analysis was unsound
+  rather than imprecise — a T3 refcount on a genuine cycle leaks — and the fixture for it is
+  `Tree` in `tests/aif_tiers.psm`, which moves T3 → T4b once the edge exists.
+  The oracle carried *dead code* for this: it parsed `List<...>` out of the field type string, and
+  the dump never contains that spelling. Both implementations missed the edges, for different
+  reasons, which is exactly how a differential test agrees on a wrong answer.
+- **Array-literal elements produced no sites.** `[str_concat(a,b), …]` allocated twice and reported
+  neither. Elements now store into the array under one shared element key, the same shape the
+  struct-literal case uses for fields. Neither the compiler nor the corpus contains such a nesting,
+  so `tier_array_elements` is the only coverage.
+- **`widen_and_close` raised the whole graph** (INFERENCE §5.3 asks for the unresolved subgraph and
+  its successors). Now it raises `Δ ∪ transitive_succs(Δ)`, over the owner → value edges of `store`
+  and `retain_in` — the only two rules that carry a fact from one site to another.
+
+That last one needed two supporting changes, and both are worth more than the narrowing itself:
+
+- **The truncation path was unreachable, and an unreachable path is where a bug lives undisturbed.**
+  `--budget=N` makes it reachable. `run_aif_widening_test` then checks the property that actually
+  matters — for every site, every source, and every budget from 1 to convergence, the truncated tier
+  is at or above the converged one. Disabling `aif_widen` fails it with
+  `tier_four_cyclic is T0 truncated but T4b converged`, which is §5.3's use-after-free exactly.
+- **Points-to is now solved to a fixed point before the facts.** No rule writing `pt` or `holders`
+  reads a fact, so its least fixed point is independent and reaching it first changes no answer.
+  What it changes is the frontier: solved together the two converge together, so a budget that bites
+  always finds points-to still growing — and a set that may still gain members this pass cannot name
+  makes every site a possible successor. Separated, the fact phase always truncates over a final
+  graph. The manifest reports the split (`rounds 10 (points-to 8)`).
+
+**Measured:** on the corpus the frontier is a proper subset — `g3_scene_graph` widens 2 of 4 sites
+at budget 6, `g4_ecs_world` 5 of 11 at budget 5. On the compiler's own source it is not: the fact
+phase there is two rounds, so there is no late truncation point to have. Records are marked
+`budget-exhausted` individually now rather than wholesale, which is what makes a raised budget an
+informed decision rather than a guess.
+
+### Level 2 — T2 and scope drop — **DONE, 2026-08-06**
 
 Deterministic destruction at scope exit for uniquely owned structs. Needs §4.2.
 
@@ -261,10 +345,110 @@ Deterministic destruction at scope exit for uniquely owned structs. Needs §4.2.
 - Biggest correctness risk in the whole plan: a missed drop path leaks, a doubled one crashes.
   Both are caught by the existing 56-test suite plus a leak check under a debug allocator.
 
-### Level 3 — T1 and `region`
+**It is not where the compiler stops leaking structs, and the suite would not have caught it.**
+Measured before writing any of it: the compiler has five struct sites and every one is **T2**, and
+there is not a single **T1** struct in the compiler or in any of the seven corpus programs. A struct
+small enough for a stack slot takes the T0 clause first, and one that escapes takes T2, so T1 —
+the only tier a scope-exit free applies to — is left with structs that exceed Θ_stack and stay
+local, which none of these programs has. The 184 T1 sites in the compiler are strings, and the
+language does not own strings. So the self-host exercises this path zero times, exactly as at
+Level 1, and `tests/test_43_aif_scope_drop.psm` is again the whole safety net.
+
+Built anyway, because Levels 3 and 4 both need the mechanism and it is the cheaper half of them.
+What it does:
+
+- Drops at all four exits — fall-through, `return`, `break`, `continue` — in reverse construction
+  order, which is what §4.2 asks for.
+- No new structure: the binding table is already flat with a watermark per scope, so "what dies
+  when this scope exits" is the droppable bindings above that watermark. A `return` reads the same
+  list with floor 0 and `break`/`continue` with the loop's watermark.
+- The predicate is `aif_frees_at_scope_node`, not the tier. T1 means "some region", which may be an
+  *enclosing* scope if the value was also bound further out; freeing at the inner exit would be a
+  use-after-free rather than a leak. What it tests is `E == defscope`, the same conjunct the T0
+  clause opens with.
+
+Three things this surfaced, all of which would have been silent:
+
+- **The escape fact is not sufficient on its own — the language has to agree.** The first build
+  freed every region-scoped value, which includes strings, and four tests died with
+  `0xC0000374`. RAII needs a single owner, and today only structs are move-only. The predicate now
+  also asks `site_is_move_only`, which is the same switch `--owned-collections` flips — so this
+  widens by itself when affine collections land, and that is what makes Level 4, not Level 2, the
+  point where the leaking stops.
+- **Move state belongs to sema and is gone by codegen.** `ir_mark_moved` is called only from
+  `sema.psm`, which clears it per function, so a `ir_is_moved` check in codegen reads an answer
+  about some other function — and `drop(x)` followed by a scope drop was a double free. There is no
+  move test in the drop path now: moving a value outward raises its escape past the scope, and an
+  explicit `drop` already marks the site (the flag that bars T0, for the same reason).
+- **The loop barrier codegen wanted did not exist.** `ir_loop_barrier_push` is sema's, so
+  `break`/`continue` would have read a watermark of 0 and dropped the entire function — freeing
+  outer bindings that the fall-through path then frees again. Codegen has its own stack now.
+
+Coverage is `tests/test_43` for the values plus `run_aif_drop_emission_test` for the static free
+counts per function, because a build that emitted no drops at all passes every value test.
+
+### `verify` mode — **DONE, 2026-08-06**
+
+SPEC §7.3, and the answer to the safety-net problem Levels 1 and 2 both hit. `prismio build <src>
+--verify` swaps the allocator and deallocator names through the §3 seam and changes nothing else,
+so codegen is byte-identical to a release build; the shims in `runtime/lang_runtime.c` check that
+every object is released exactly once and poison it on the way out.
+
+Two of SPEC §7.3's rows are covered — the T0/T1 "no access after exit" row, partially, by poisoning
+rather than by instrumenting reads; and the balance itself, which the table omits and which is what
+catches a missed or doubled drop path. The rest each need machinery that does not exist: `A` needs
+a count word in the object header (the same layout change T3 needs), `E = Region(r)` needs arenas,
+`E ⊑ Caller` needs static-root reachability, `T` is vacuous, and `C` needs a periodic heap walk.
+The shim's header comment carries that table.
+
+**It found a defect on its first run, in code this audit had already blessed.** §3 says the seam is
+"exactly one thing: the name of a `fn(size) -> ptr`", and `HANDOFF.md` recorded `ir_alloc_object`
+and `ir_free_object` as the only two places codegen allocates or releases. `drop(x)` was not going
+through either — it emitted a call to `free` by name. Under `verify` that showed up as a leak the
+accounting could not explain; at Level 3 it would have handed an arena pointer to libc `free`. The
+lesson is the one §7.3 states: the bug was invisible to every existing test, because calling the
+right deallocator by the wrong route is only wrong once the deallocator changes.
+
+### Level 3 — T1 and `region` — **DONE, 2026-08-06**
 
 Arena runtime, `region` keyword through lexer/parser/sema, the arena handle threaded to
 allocation sites, `ir_alloc_region`.
+
+**The handle is not threaded, and that is the one design choice here worth arguing about.** §3
+predicted `fn(arena, size) -> ptr` with the region in scope reaching each allocation site — "frontend
+plumbing that does not exist". The arenas are a runtime stack instead: `region r { … }` pushes on
+entry and pops on every exit, and `arena_alloc` bumps from the top. That keeps `ir_alloc_region` a
+`fn(size) -> ptr` like the other two hooks and needs no plumbing at all.
+
+What it costs is exactly one case, and the fixture pins it:
+
+```prismio
+region outer { let mut held = Wide{…}; region inner { held = Wide{…} } use(held) }
+```
+
+The inner literal's escape is *outer*'s scope. It cannot come from `inner`'s arena, which is gone by
+`use(held)` — and with a dynamically scoped stack there is no way to name `outer`'s arena from
+inside `inner`, so it falls back to the heap. `aif_arena_at_node` declines it by testing
+`lca(E, r) == r` rather than mere lexical containment, which is what keeps that a leak instead of a
+use-after-free. A threaded handle would place it in `outer` and is the reason to want one.
+
+Two smaller notes:
+
+- **The seed did not need to carry the keyword**, contrary to the prediction above that this is the
+  first level to touch it: `src/` does not use `region`, so the old seed still parsed the tree. The
+  seed *did* need refreshing, but for an unrelated reason — the node-keyed tier lookup renamed
+  `aif_tier_at`, and the committed seed's IR still called it, so a cold start failed to link. That
+  had been broken for three changes and nothing caught it, because bootstrapping from a warm binary
+  never exercises the seed. **Run a cold start after any change to the runtime's FFI surface**, not
+  only after a language change.
+- `placement` now names the region (`region:work`), which is what SPEC §6.2's example shows and what
+  makes an arena traceable to the block that owns it.
+
+Coverage is `tests/test_44_aif_region.psm`, which asserts `arena_objects()` and `arena_regions()`
+rather than inspecting IR — an arena pointer and a malloc pointer are indistinguishable from the
+value, so counting what the arena actually served is the only honest check. It is also in
+`tools/aif_differential.py`'s default source list, since no corpus program opens a region and a
+region opens a scope.
 
 - The first level where the performance claim is actually testable.
 - Also the first level that needs a new keyword, so it is the first that touches the seed and the

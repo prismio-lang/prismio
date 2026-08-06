@@ -114,7 +114,8 @@ fn parser_synchronize(p: Parser) {
                 or str_equals(tok.value, "impl") == 1 or str_equals(tok.value, "trait") == 1
                 or str_equals(tok.value, "if") == 1 or str_equals(tok.value, "while") == 1
                 or str_equals(tok.value, "for") == 1 or str_equals(tok.value, "loop") == 1
-                or str_equals(tok.value, "match") == 1 or str_equals(tok.value, "return") == 1) {
+                or str_equals(tok.value, "match") == 1 or str_equals(tok.value, "return") == 1
+                or str_equals(tok.value, "region") == 1) {
                 scanning = false
             } else {
                 parser_advance(p)
@@ -291,6 +292,93 @@ fn parse_variable_decl(p: Parser) -> ASTNode {
     return var_node
 }
 
+// FFI ownership contracts -- aif/spec/FFI.md 5.
+//
+// Postfix on the type, which is the form FFI.md 5.4's own examples use:
+//
+//     extern fn strlen(s: String borrow) -> Int
+//     extern fn fopen(path: String borrow, mode: String borrow) -> File produce(fclose)
+//     extern fn list_push(list: List borrow, item: Ptr retain_in(0))
+//
+// Three decisions worth stating, because each could reasonably have gone the
+// other way:
+//
+// **Contextual, not reserved.** None of these is a keyword, so they lex as
+// ordinary identifiers and a program may still call a variable `out` or a
+// function `alias`. A contract is only recognised in the one position where a
+// type annotation has just ended inside an `extern` declaration, and at top
+// level the token after a return type is otherwise always a keyword, so there
+// is nothing to be ambiguous with.
+//
+// **Parsed here, not in parse_type_annotation.** FFI.md 5 is explicit that a
+// contract is part of an *extern declaration's signature* -- it describes
+// foreign code. Putting it in the shared type parser would also make
+// `let x: Int borrow` parse, which is not a thing and should not become one.
+//
+// **Stored on the type annotation's `s2`.** It is the only free slot on that
+// node, and EXTERN_FUNCTION's own `s2` already carries the mangled symbol that
+// sema caches there. String-encoded so `retain_in(k)` and `produce(free_fn)`
+// carry their argument without needing a second slot.
+//
+// Call-site contracts (`pure`, `nocallback`, FFI 5.3) are deliberately not
+// parsed. They drive the fact invalidation of FFI 6, which AIF-1 does not model
+// at all -- there is no static-root invalidation to switch off. They trail the
+// declaration, so adding them later breaks nothing.
+fn is_ffi_contract_name(name: String) -> Bool {
+    if (str_equals(name, "borrow") == 1) { return true }
+    if (str_equals(name, "retain") == 1) { return true }
+    if (str_equals(name, "retain_in") == 1) { return true }
+    if (str_equals(name, "consume") == 1) { return true }
+    if (str_equals(name, "out") == 1) { return true }
+    if (str_equals(name, "alias") == 1) { return true }
+    if (str_equals(name, "produce") == 1) { return true }
+    return false
+}
+
+// Whether the contract takes a parenthesised argument. Checked here so that
+// `borrow(3)` is a syntax error at the point it is written rather than a
+// silently ignored suffix.
+fn ffi_contract_takes_argument(name: String) -> Bool {
+    if (str_equals(name, "retain_in") == 1) { return true }
+    if (str_equals(name, "produce") == 1) { return true }
+    return false
+}
+
+// Reads a contract, if one is present, onto the annotation it follows. Whether
+// the contract makes sense in this position -- `alias` on a parameter, `produce`
+// on an argument -- is sema's call, not the parser's.
+fn parse_ffi_contract(p: Parser, annotation: ASTNode) {
+    let curr = parser_current(p)
+    if (curr.type != TokenType.IDENTIFIER) {
+        return
+    }
+    if (is_ffi_contract_name(curr.value) == false) {
+        return
+    }
+
+    let name = curr.value
+    parser_advance(p)
+
+    if (ffi_contract_takes_argument(name)) {
+        parser_expect_val(p, TokenType.SEPARATOR, "(", "contract argument")
+        let arg = parser_current(p)
+        let arg_text = arg.value
+        parser_advance(p)
+        parser_expect_val(p, TokenType.SEPARATOR, ")", "contract argument")
+        annotation.s2 = str_concat(str_concat(name, ":"), arg_text)
+        return
+    }
+
+    if (parser_check_val(p, TokenType.SEPARATOR, "(")) {
+        diag_error_at(curr.file, curr.line, curr.col, str_length(name),
+            str_concat(str_concat("the ", diag_quote(name)),
+                       " contract takes no argument"))
+        diag_note("only `retain_in(k)` and `produce(free_fn)` are parameterised")
+    }
+
+    annotation.s2 = name
+}
+
 fn parse_extern_fn_decl(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "extern", "extern fn")
     parser_expect_val(p, TokenType.KEYWORD, "fn", "extern fn")
@@ -312,7 +400,8 @@ fn parse_extern_fn_decl(p: Parser) -> ASTNode {
             parser_expect(p, TokenType.IDENTIFIER, "parameter name")
             parser_expect_val(p, TokenType.SEPARATOR, ":", "parameter type")
             param.child1 = node_to_ptr(parse_type_annotation(p))
-            
+            parse_ffi_contract(p, ptr_to_node(param.child1))
+
             if (str_equals(ext_node.child1, "") == 1) {
                 ext_node.child1 = node_to_ptr(param)
             } else {
@@ -330,8 +419,9 @@ fn parse_extern_fn_decl(p: Parser) -> ASTNode {
     
     if (parser_match_val(p, TokenType.ARROW, "->")) {
         ext_node.child2 = node_to_ptr(parse_type_annotation(p))
+        parse_ffi_contract(p, ptr_to_node(ext_node.child2))
     }
-    
+
     return ext_node
 }
 
@@ -531,6 +621,26 @@ fn parse_loop_statement(p: Parser) -> ASTNode {
     return loop_node
 }
 
+// `region <name> { ... }` (SPEC 5.2). The name is a label, not a binding: it
+// identifies the arena in the manifest so that a reader can tell which `region`
+// in the source a `region:parse` placement refers to.
+fn parse_region_statement(p: Parser) -> ASTNode {
+    parser_expect_val(p, TokenType.KEYWORD, "region", "region statement")
+
+    let region_node = parser_node(p, NodeKind.REGION_STATEMENT)
+    let mut curr = parser_current(p)
+    if (curr.type == TokenType.IDENTIFIER) {
+        region_node.s1 = curr.value
+        parser_advance(p)
+    } else {
+        parser_fatal(p, str_concat("expected a name for the region, found ",
+                                   parser_describe(curr)))
+    }
+
+    region_node.child1 = node_to_ptr(parse_block(p))
+    return region_node
+}
+
 fn parse_for_statement(p: Parser) -> ASTNode {
     parser_expect_val(p, TokenType.KEYWORD, "for", "for statement")
     let for_node = parser_node(p, NodeKind.FOR_STATEMENT)
@@ -603,6 +713,9 @@ fn parse_statement(p: Parser) -> ASTNode {
     }
     if (parser_check_val(p, TokenType.KEYWORD, "for")) {
         return parse_for_statement(p)
+    }
+    if (parser_check_val(p, TokenType.KEYWORD, "region")) {
+        return parse_region_statement(p)
     }
     if (parser_match_val(p, TokenType.KEYWORD, "break")) {
         return parser_node(p, NodeKind.BREAK_STATEMENT)

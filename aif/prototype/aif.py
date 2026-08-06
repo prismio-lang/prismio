@@ -141,6 +141,18 @@ def escape_le(scopes, x, y):
     return escape_join(scopes, x, y) == y
 
 
+def ann_leaf_name(ann):
+    """The type an annotation refers to: `[T]` and `List<T>` hang T off c1,
+    and their own name is '' or 'List'. Mirrors aif_annotation_leaf_name."""
+    name = ann['s1']
+    kids = ann.get('c1') or []
+    while kids:
+        ann = kids[0]
+        name = ann['s1']
+        kids = ann.get('c1') or []
+    return name
+
+
 # ---------------------------------------------------------------------------
 # Model: read the dump into functions, structs, scopes and allocation sites
 # ---------------------------------------------------------------------------
@@ -173,10 +185,25 @@ class Model:
         self.sites = []
         self.type_acyclic = {}
 
+        # Declared FFI contracts (FFI 5), read off each extern's type
+        # annotations. The compiler stores them on the annotation's `s2`; the
+        # dump carries that through verbatim. Index -1 is the return.
+        self.contracts = {}            # (fn name, index) -> contract text
+
         for d in dump['decls']:
+            if d['k'] == 'EXTERN_FUNCTION':
+                index = 0
+                for p in d['c1']:
+                    if p['k'] != 'FUNCTION_PARAMETER':
+                        continue
+                    if p['c1'] and p['c1'][0].get('s2'):
+                        self.contracts[(d['s1'], index)] = p['c1'][0]['s2']
+                    index += 1
+                if d['c2'] and d['c2'][0].get('s2'):
+                    self.contracts[(d['s1'], -1)] = d['c2'][0]['s2']
             if d['k'] == 'STRUCT_DECL':
                 self.structs[d['s1']] = [
-                    (f['s1'], f['c1'][0]['s1'] if f['c1'] else '')
+                    (f['s1'], ann_leaf_name(f['c1'][0]) if f['c1'] else '')
                     for f in d['c1'] if f['k'] == 'STRUCT_FIELD'
                 ]
             elif d['k'] == 'ENUM_DECL':
@@ -225,17 +252,14 @@ class Model:
         """Tarjan-free SCC via iterative Kosaraju on the type reference graph
         (INFERENCE 4.4 stage 1). A type is acyclic when its SCC is trivial and
         it reaches no non-trivial SCC."""
+        # Field types are leaf names already. This used to parse `List<...>` out
+        # of the type string, which the dump never contains, so that branch could
+        # not fire and the edge was silently never added.
         g = {t: set() for t in self.structs}
         for t, fields in self.structs.items():
             for _, fty in fields:
-                base = fty.split('<')[0].strip('[]')
-                if base in self.structs:
-                    g[t].add(base)
-                # List<T>/[T] of a struct reaches that struct
-                if '<' in fty:
-                    inner = fty[fty.find('<') + 1:fty.rfind('>')]
-                    if inner in self.structs:
-                        g[t].add(inner)
+                if fty in self.structs:
+                    g[t].add(fty)
 
         index, low, onstack, stack, comp = {}, {}, set(), [], {}
         counter = [0]
@@ -317,14 +341,27 @@ class Engine:
         self.literal_strings = 0
         self.extern_alloc = 0
         self.opaque_returns = 0
+        self.static_returns = 0
         self.pt = defaultdict(set)        # ('var', fn, name) | ('field', ty, f)
                                           # | ('ret', fn) | ('param', fn, i) -> {site}
+        self.no_stack = set()             # sites an explicit drop() forbids T0 for
         self.E = {}                       # site -> escape
         self.A = {}                       # site -> alias
         self.C = {}                       # site -> cyclicity
         self.holders = defaultdict(set)   # site -> {holder keys}, for A-COPY
         self.constraints = []             # deferred (kind, args) edges
         self.rounds = 0
+        self.pt_rounds = 0                # of rounds, how many points-to used
+        self.delta = set()                # sites whose facts moved last round
+        self.delta_pt = False             # did points-to move last round?
+        self.widened = set()              # sites widen_unconverged raised
+        # Declaring scope per ('var', fn, name). E-BIND needs the scope the
+        # *variable* was declared in, not the scope the assignment sits in: a
+        # value created in a loop body and assigned to a binding declared
+        # outside it survives the iteration, and its escape has to say so.
+        # Shadowing joins outward via the LCA, so the answer does not depend on
+        # which declaration the walk saw last.
+        self.var_scope = {}
 
     # -- construction --------------------------------------------------------
 
@@ -334,6 +371,7 @@ class Engine:
             for p_i, p in enumerate(fn['c1']):
                 if p['k'] != 'FUNCTION_PARAMETER':
                     continue
+                self.note_var_scope(sym, p['s1'], root)
                 ty = p['ty'] or (p['c1'][0]['s1'] if p['c1'] else '')
                 if self.m.is_ref(ty):
                     self.constraints.append(('bind', ('var', sym, p['s1']),
@@ -367,7 +405,15 @@ class Engine:
             return vs_sites(sid)
 
         if k == 'ARRAY_LITERAL_EXPR':
-            return vs_sites(self.new_site(ty or 'Array', fn, scope, e))
+            aname = ty or 'Array'
+            sid = self.new_site(aname, fn, scope, e)
+            # Elements store into the array like a struct literal's initialisers
+            # store into its fields; one shared key, since there is no name.
+            for el in e['c1']:
+                v = self.sites_of(el, fn, scope)
+                self.constraints.append(
+                    ('store', ('field', aname, '[]'), v, vs_sites(sid)))
+            return vs_sites(sid)
 
         if k == 'LITERAL_EXPR':
             # A string literal is not an allocation. It lowers to an LLVM global
@@ -398,12 +444,32 @@ class Engine:
             contracts = FFI_CONTRACTS.get(plain, {})
             argvals = [self.sites_of(a, fn, scope) for a in e['c2']]
 
+            # `drop(x)` lowers to a free, and a stack slot cannot be freed. A T0
+            # value has no allocation to release -- its storage *is* the frame --
+            # so promoting a value the source explicitly drops turns a working
+            # program into heap corruption.
+            #
+            # Deliberately not a fact: an explicit drop says nothing about
+            # lifetime or aliasing, and bending E or A to carry a codegen
+            # constraint would make the manifest lie about why the tier moved.
+            if plain == 'drop' and argvals:
+                self.constraints.append(('no_stack', argvals[0]))
+
             for i, av in enumerate(argvals):
                 if known:
                     self.constraints.append(('arg', ('param', callee, i), av))
                     continue
-                c = contracts.get(i, self.ffi_default)
-                if isinstance(c, tuple) and c[0] == 'retain_in':
+                c = self.declared_contract(plain, i)
+                if c is None:
+                    c = contracts.get(i, self.ffi_default)
+                if c == 'consume':
+                    # The callee frees it, so it must be something a free can
+                    # take: never a stack slot, and no longer this frame's.
+                    self.constraints.append(('no_stack', av))
+                    self.constraints.append(('escape_caller', av))
+                elif c == 'out':
+                    self.constraints.append(('borrow', av))
+                elif isinstance(c, tuple) and c[0] == 'retain_in':
                     # The callee stores this argument into another argument, so
                     # it escapes exactly as far as that container does.
                     holder = argvals[c[1]] if c[1] < len(argvals) else VS_EMPTY
@@ -423,9 +489,34 @@ class Engine:
             if alias_of is not None and alias_of < len(argvals):
                 return argvals[alias_of]         # FFI 5.2 `alias`
             if self.m.is_ref(ty):
+                ret_contract = self.m.contracts.get((plain, -1), '')
+                # FFI 5.2 `alias`: not an allocation -- it borrows from an
+                # argument or from static storage. FFI.md names no argument, so
+                # the return is the union of the arguments' value sets, which
+                # generalises the `list_get` special case rather than adding a
+                # second mechanism.
+                #
+                # Returning nothing would NOT be sound: an empty value set makes
+                # every store through the result a no-op, so nothing inherits the
+                # container's escape. Where there is nothing to alias, fall
+                # through to the opaque path.
+                if ret_contract == 'alias':
+                    aliased = VS_EMPTY
+                    for av in argvals:
+                        aliased = vs_union(aliased, av)
+                    if aliased != VS_EMPTY:
+                        return aliased
+                    # Nothing to alias means FFI 5.2's other case: static
+                    # storage. Not an allocation, and so not on a ladder that
+                    # ranks ways of reclaiming heap memory -- the same reason a
+                    # string literal is excluded.
+                    self.static_returns += 1
+                    return VS_EMPTY
                 self.extern_alloc += 1
                 sid = self.new_site(ty, fn, scope, e)
-                if plain not in FFI_RETURNS_PRODUCE:
+                produces = (plain in FFI_RETURNS_PRODUCE
+                            or ret_contract.startswith('produce'))
+                if not produces:
                     # Undeclared return: provenance unknown. It may already be
                     # shared and may already outlive this frame, so it cannot be
                     # modelled as a fresh local allocation.
@@ -440,9 +531,39 @@ class Engine:
                 out = vs_union(out, self.sites_of(c, fn, scope))
         return out
 
+    def declared_contract(self, name, index):
+        """What the extern declaration said, or None to fall through.
+
+        A declared contract wins; FFI_CONTRACTS below is a fallback for the
+        Prismio runtime's own surface, whose ownership semantics are a property
+        of the runtime rather than of any one program's declaration of it.
+        """
+        text = self.m.contracts.get((name, index))
+        if text is None:
+            return None
+        if text.startswith('retain_in:'):
+            return ('retain_in', int(text.split(':', 1)[1]))
+        if text in ('borrow', 'retain', 'consume', 'out'):
+            return text
+        return None                       # a return contract; sema rejected it
+
     def ref(self, key):
         self.pt[key]                      # touch so it exists
         return vs_ref(key)
+
+    def note_var_scope(self, fn, name, scope):
+        key = ('var', fn, name)
+        prev = self.var_scope.get(key)
+        if prev is None:
+            self.var_scope[key] = scope
+            return
+        m = self.m.scopes.lca(prev, scope)
+        if m is not None:
+            self.var_scope[key] = m
+
+    def holder_scope(self, fn, name, fallback):
+        """Where a value assigned to `name` has to stay alive until."""
+        return self.var_scope.get(('var', fn, name), fallback)
 
     # -- statement walk ------------------------------------------------------
 
@@ -456,7 +577,18 @@ class Engine:
                     self.walk(c, fn, inner)
             return
 
+        # SPEC 5.2. The scope is what has to match the compiler's, because scope
+        # ids are what Region(s) compares. Which arena a value comes from is a
+        # codegen decision and is not modelled here; the region supplies no fact
+        # the escape analysis did not already have.
+        if k == 'REGION_STATEMENT':
+            inner = self.m.scopes.new(scope, fn)
+            for c in n['c1']:
+                self.walk(c, fn, inner)
+            return
+
         if k == 'VARIABLE_DECL':
+            self.note_var_scope(fn, n['s1'], scope)
             if n['c2']:
                 v = self.sites_of(n['c2'][0], fn, scope)
                 self.constraints.append(('bind', ('var', fn, n['s1']), v))
@@ -469,7 +601,8 @@ class Engine:
             if tgt is not None:
                 if tgt['k'] == 'IDENTIFIER_EXPR':
                     self.constraints.append(('bind', ('var', fn, tgt['s1']), val))
-                    self.constraints.append(('live_in', val, scope, fn))
+                    self.constraints.append(
+                        ('live_in', val, self.holder_scope(fn, tgt['s1'], scope), fn))
                 elif tgt['k'] == 'MEMBER_ACCESS_EXPR':
                     obj = tgt['c1'][0] if tgt['c1'] else None
                     ov = self.sites_of(obj, fn, scope) if obj is not None else VS_EMPTY
@@ -490,7 +623,7 @@ class Engine:
                 if c['k'] in ('BLOCK', 'VARIABLE_DECL', 'ASSIGNMENT_STATEMENT',
                               'RETURN_STATEMENT', 'IF_STATEMENT', 'WHILE_STATEMENT',
                               'FOR_STATEMENT', 'LOOP_STATEMENT', 'MATCH_STATEMENT',
-                              'MATCH_ARM', 'EXPRESSION_STATEMENT'):
+                              'MATCH_ARM', 'EXPRESSION_STATEMENT', 'REGION_STATEMENT'):
                     self.walk(c, fn, scope)
                 else:
                     self.sites_of(c, fn, scope)
@@ -504,14 +637,56 @@ class Engine:
             out |= self.pt[key]
         return out
 
+    def solve_points_to(self, max_rounds):
+        """Every rule that writes pt or holders reads only pt, so points-to has
+        a least fixed point independent of the facts. Reaching it first changes
+        no answer; it changes the frontier a truncated fact phase leaves behind
+        (see widen_unconverged). Mirrors solve_points_to in aif_support.c."""
+        for _ in range(max_rounds):
+            self.rounds += 1
+            changed = False
+            for c in self.constraints:
+                kind = c[0]
+                if kind not in ('bind', 'arg', 'store'):
+                    continue
+                key, val = c[1], c[2]
+                v = self.resolve(val)
+                if not v <= self.pt[key]:
+                    self.pt[key] |= v
+                    changed = True
+                if kind == 'arg':       # passing does not make a holder
+                    continue
+                for s in v:
+                    if kind == 'bind' and key[0] not in ('var', 'field', 'ret'):
+                        continue
+                    if key not in self.holders[s]:
+                        self.holders[s].add(key)
+                        changed = True
+            if not changed:
+                return True
+        return False
+
     def solve(self, max_rounds=200):
         """Round-synchronous (Jacobi) iteration, per INFERENCE 5.1: every round
         reads the previous round's state, so the result cannot depend on the
         order constraints happen to be listed in."""
         scopes = self.m.scopes
-        for r in range(max_rounds):
+        self.rounds = 0
+        if not self.solve_points_to(max_rounds):
+            self.delta_pt = True
+            self.pt_rounds = self.rounds
+            return False
+        self.pt_rounds = self.rounds
+
+        # Nothing proved yet, so a budget with no round left for the facts
+        # leaves the whole graph unresolved. Overwritten by the first round run.
+        self.delta = set(range(len(self.m.sites)))
+
+        for r in range(self.rounds, max_rounds):
             self.rounds = r + 1
             changed = False
+            self.delta = set()
+            self.delta_pt = False
 
             for c in self.constraints:
                 kind = c[0]
@@ -521,23 +696,23 @@ class Engine:
                     v = self.resolve(val)
                     if not v <= self.pt[key]:
                         self.pt[key] |= v
-                        changed = True
+                        changed = self.delta_pt = True
                     for s in v:
                         if key[0] in ('var', 'field', 'ret'):
                             if key not in self.holders[s]:
                                 self.holders[s].add(key)
-                                changed = True
+                                changed = self.delta_pt = True
 
                 elif kind == 'arg':
                     _, key, val = c
                     v = self.resolve(val)
                     if not v <= self.pt[key]:
                         self.pt[key] |= v
-                        changed = True
+                        changed = self.delta_pt = True
                     for s in v:                       # A-CALL: passing borrows
                         if self.A[s] < BORROWED:
                             self.A[s] = BORROWED
-                            changed = True
+                            changed = self.moved(s)
 
                 elif kind == 'store':
                     _, key, val, owners = c
@@ -545,22 +720,22 @@ class Engine:
                     ow = self.resolve(owners)
                     if not v <= self.pt[key]:
                         self.pt[key] |= v
-                        changed = True
+                        changed = self.delta_pt = True
                     for s in v:
                         if key not in self.holders[s]:
                             self.holders[s].add(key)
-                            changed = True
+                            changed = self.delta_pt = True
                         # E-STORE: reachable from the container, so at least as
                         # long-lived as it.
                         for o in ow:
                             j = escape_join(scopes, self.E[s], self.E[o])
                             if j != self.E[s]:
                                 self.E[s] = j
-                                changed = True
+                                changed = self.moved(s)
                             # A-STORE: sharing is inherited through reachability
                             if self.A[o] > self.A[s]:
                                 self.A[s] = self.A[o]
-                                changed = True
+                                changed = self.moved(s)
 
                 elif kind == 'live_in':
                     _, val, scope, fn = c
@@ -572,7 +747,7 @@ class Engine:
                         j = escape_join(scopes, self.E[s], tgt)
                         if j != self.E[s]:
                             self.E[s] = j
-                            changed = True
+                            changed = self.moved(s)
 
                 elif kind == 'opaque':
                     for s in self.resolve(c[1]):
@@ -580,10 +755,10 @@ class Engine:
                             j = escape_join(scopes, self.E[s], CALLER)
                             if j != self.E[s]:
                                 self.E[s] = j
-                                changed = True
+                                changed = self.moved(s)
                         if self.A[s] < SHARED:
                             self.A[s] = SHARED
-                            changed = True
+                            changed = self.moved(s)
 
                 elif kind == 'retain_in':
                     # E-STORE / A-STORE against a container reached through a
@@ -595,13 +770,13 @@ class Engine:
                             j = escape_join(scopes, self.E[s], self.E[h])
                             if j != self.E[s]:
                                 self.E[s] = j
-                                changed = True
+                                changed = self.moved(s)
                             if self.A[h] > self.A[s]:
                                 self.A[s] = self.A[h]
-                                changed = True
+                                changed = self.moved(s)
                         if self.A[s] < BORROWED:
                             self.A[s] = BORROWED
-                            changed = True
+                            changed = self.moved(s)
 
                 elif kind == 'borrow':
                     # Raises A to Borrowed for the call's duration and nothing
@@ -610,26 +785,32 @@ class Engine:
                     for s in self.resolve(c[1]):
                         if self.A[s] < BORROWED:
                             self.A[s] = BORROWED
-                            changed = True
+                            changed = self.moved(s)
 
                 elif kind == 'escape_caller':
                     for s in self.resolve(c[1]):
                         j = escape_join(scopes, self.E[s], CALLER)
                         if j != self.E[s]:
                             self.E[s] = j
-                            changed = True
+                            changed = self.moved(s)
+
+                elif kind == 'no_stack':
+                    for s in self.resolve(c[1]):
+                        if s not in self.no_stack:
+                            self.no_stack.add(s)
+                            changed = self.moved(s)
 
                 elif kind == 'escape_global':
                     for s in self.resolve(c[1]):
                         if self.E[s] != GLOBAL:
                             self.E[s] = GLOBAL
-                            changed = True
+                            changed = self.moved(s)
 
             # A-ESCAPE and the copy rule, applied to every site each round.
             for s_id, site in enumerate(self.m.sites):
                 if self.E[s_id] == GLOBAL and self.A[s_id] < SHARED:
                     self.A[s_id] = SHARED
-                    changed = True
+                    changed = self.moved(s_id)
                 # A-COPY: only copyable types can be multiply held. Structs are
                 # affine (compiler-enforced), so multiple holders means sequential
                 # ownership, not aliasing.
@@ -637,26 +818,64 @@ class Engine:
                         and len(self.holders[s_id]) >= 2
                         and self.A[s_id] < SHARED):
                     self.A[s_id] = SHARED
-                    changed = True
+                    changed = self.moved(s_id)
                 # C-UNIQUE / C-TYPE (INFERENCE 4.4 stage 2)
                 acyclic = (self.A[s_id] == UNIQUE
                            or self.m.type_acyclic.get(site.type, True))
                 want = ACYCLIC if acyclic else MAYBE_CYCLIC
                 if want > self.C[s_id]:
                     self.C[s_id] = want
-                    changed = True
+                    changed = self.moved(s_id)
 
             if not changed:
                 return True
         return False        # budget exhausted -> caller must widen (INFERENCE 5.3)
 
+    def moved(self, s):
+        """Records s in this round's delta and returns True, so a rule reads
+        `changed = self.moved(s)`."""
+        self.delta.add(s)
+        return True
+
     def widen_unconverged(self):
         """INFERENCE 5.3: a truncated ascending iteration is a *pre*-fixed point
-        and is unsound. Everything not known stable goes to TOP."""
-        for s in range(len(self.m.sites)):
+        and is unsound, so what is still in motion goes to TOP.
+
+        U := delta union transitive_succs(delta). If a site's facts change in
+        round r+1 then some input of it changed in round r, so the closure of
+        the last round's delta contains everything still moving. Fact flow runs
+        owner -> value and only through store and retain_in; every other rule
+        raises from a constant and the per-site rules are self-edges. Those
+        edges are read out of points-to, which is final by the time the fact
+        phase runs -- unless the budget stopped points-to itself, and then no
+        set is final and the whole graph is the only sound answer.
+        """
+        if self.delta_pt:
+            u = set(range(len(self.m.sites)))
+        else:
+            succ = {}
+            for c in self.constraints:
+                if c[0] == 'store':
+                    vals, owners = self.resolve(c[2]), self.resolve(c[3])
+                elif c[0] == 'retain_in':
+                    vals, owners = self.resolve(c[1]), self.resolve(c[2])
+                else:
+                    continue
+                for o in owners:
+                    succ.setdefault(o, set()).update(vals)
+
+            u, work = set(self.delta), list(self.delta)
+            while work:
+                for w in succ.get(work.pop(), ()):
+                    if w not in u:
+                        u.add(w)
+                        work.append(w)
+
+        for s in u:
             self.E[s] = GLOBAL
             self.A[s] = SHARED
             self.C[s] = MAYBE_CYCLIC
+        self.widened = u
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +890,8 @@ def tier_of(model, eng, sid):
     E, A, C = eng.E[sid], eng.A[sid], eng.C[sid]
 
     if (E == ('R', site.scope) and A <= BORROWED
-            and site.kind == 'struct' and site.nfields <= THETA_STACK_FIELDS):
+            and site.kind == 'struct' and site.nfields <= THETA_STACK_FIELDS
+            and sid not in eng.no_stack):
         return 'T0'
     if E != CALLER and E != GLOBAL:
         return 'T1'
@@ -709,6 +929,8 @@ def report(model, eng, converged, args):
           f"(undeclared extern/sealed returns -- provenance unknown)")
     print(f"extern-alloc {eng.extern_alloc}  "
           f"(values produced by runtime calls, e.g. str_concat)")
+    print(f"static-ret  {eng.static_returns}  "
+          f"(declared `alias` with nothing to alias -- static, not allocated)")
     print("#")
     print("# tier distribution  (BENCHMARKS H1: static D over abstract values)")
     for t in ('T0', 'T1', 'T2', 'T3', 'T4b'):

@@ -1,0 +1,12 @@
+// expect-error: expected a name for the region
+//
+// SPEC 5.2's region is named, and the name is not decoration: it is what the
+// manifest's `region:<name>` placement refers to, so an anonymous one would give
+// a reader no way to tell which block an arena belongs to.
+
+fn main() -> Int {
+    region {
+        let x = 1
+    }
+    return 0
+}

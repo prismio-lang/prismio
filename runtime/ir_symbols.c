@@ -394,6 +394,10 @@ typedef struct {
     const char* slot;
     int is_global;
     int is_mutable;
+    // AIF Level 2: this binding's initialiser allocated a value whose escape
+    // bottoms at the scope holding the binding, so the scope's exits are where
+    // it is freed. Set by codegen from the tier; nothing here decides policy.
+    int is_droppable;
 } VarBinding;
 
 static VarBinding* var_bindings = NULL;
@@ -452,6 +456,100 @@ int ir_binding_predates_loop(const char* name) {
     return i < loop_barriers[loop_barrier_depth - 1] ? 1 : 0;
 }
 
+// ============================================================================
+// Scope drop lists (AIF Level 2)
+//
+// A drop list is not a separate structure: the binding table is already a flat
+// array with a watermark per scope, so "what dies when this scope exits" is the
+// droppable bindings above that watermark. The same read with a different floor
+// answers it for a `return` (the whole function) and for `break`/`continue` (the
+// loop barrier), which is why those two watermarks already existing matters.
+//
+// Enumeration is reverse construction order, which SPEC's RAII requires: a value
+// may hold a reference to one constructed before it, never after.
+//
+// Whether a binding was *moved* is deliberately not consulted, here or by the
+// caller: move state belongs to sema and is cleared per function before codegen
+// starts. What would have needed it is carried by the facts instead -- see
+// generate_scope_drops.
+// ============================================================================
+
+void ir_mark_droppable(const char* name) {
+    int i = find_binding(name);
+    if (i >= 0) var_bindings[i].is_droppable = 1;
+}
+
+int ir_scope_drop_floor(void) {
+    return scope_depth > 0 ? scope_marks[scope_depth - 1] : 0;
+}
+
+// Its own stack rather than loop_barriers above: that one is sema's, pushed
+// while move checking runs, and codegen is a separate walk. Sharing it would
+// have made break/continue read a watermark of 0 and drop the whole function.
+static int drop_barriers[MAX_LOOP_DEPTH];
+static int barrier_regions[MAX_LOOP_DEPTH];
+static int drop_barrier_depth = 0;
+
+// How many `region` blocks are open. A return has to close all of them and a
+// break/continue those the loop did not open, for the same reason each has to
+// run the drops: an arena still on the stack at function exit is never released.
+static int region_depth = 0;
+
+void ir_region_enter(void) { region_depth++; }
+void ir_region_exit(void)  { if (region_depth > 0) region_depth--; }
+int  ir_region_depth(void) { return region_depth; }
+
+int ir_loop_region_depth(void) {
+    return drop_barrier_depth > 0 ? barrier_regions[drop_barrier_depth - 1] : 0;
+}
+
+void ir_drop_barrier_push(void) {
+    if (drop_barrier_depth < MAX_LOOP_DEPTH) {
+        barrier_regions[drop_barrier_depth] = region_depth;
+        drop_barriers[drop_barrier_depth++] = var_type_count;
+    }
+}
+
+void ir_drop_barrier_pop(void) {
+    if (drop_barrier_depth > 0) drop_barrier_depth--;
+}
+
+int ir_loop_drop_floor(void) {
+    return drop_barrier_depth > 0 ? drop_barriers[drop_barrier_depth - 1] : 0;
+}
+
+int ir_drop_count(int floor) {
+    if (floor < 0) floor = 0;
+    int n = 0;
+    for (int i = floor; i < var_type_count; i++) {
+        if (var_bindings[i].is_droppable) n++;
+    }
+    return n;
+}
+
+// The i-th droppable binding at or above `floor`, counting from the most
+// recently constructed.
+static int drop_index(int floor, int i) {
+    if (floor < 0) floor = 0;
+    int n = 0;
+    for (int k = var_type_count - 1; k >= floor; k--) {
+        if (!var_bindings[k].is_droppable) continue;
+        if (n == i) return k;
+        n++;
+    }
+    return -1;
+}
+
+const char* ir_drop_slot(int floor, int i) {
+    int k = drop_index(floor, i);
+    return k >= 0 ? var_bindings[k].slot : "";
+}
+
+const char* ir_drop_type(int floor, int i) {
+    int k = drop_index(floor, i);
+    return k >= 0 ? var_bindings[k].type : "";
+}
+
 static int find_binding(const char* name) {
     const char* interned = ir_intern(name);
     for (int i = var_type_count - 1; i >= 0; i--) {
@@ -473,6 +571,7 @@ static void add_binding(const char* name, const char* type, int is_global) {
     b->type = ir_intern(type);
     b->is_global = is_global;
     b->is_mutable = 0;
+    b->is_droppable = 0;
 
     if (is_global) {
         // Globals are addressed by their own name (@name), so no renaming.

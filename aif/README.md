@@ -57,15 +57,22 @@ re-deriving them is expensive.
 documents. **See the correction note at the top of
 [evidence/RESULTS-L0-tiers.md](evidence/RESULTS-L0-tiers.md) before quoting the SELF row.**
 
-**Implementation: Level 0 landed** (2026-08-05). The inference engine, tier assignment and the
-manifest are in the compiler — `prismio aif <source.psm>` — and change no codegen. Engine in
+**Implementation: Levels 0 and 1 landed** (2026-08-05). The inference engine, tier assignment and
+the manifest are in the compiler — `prismio aif <source.psm>` — and T0 now reaches codegen: a value
+proved not to outlive its frame gets an `alloca` and no allocation call. Engine in
 [`self/src/aif.psm`](../src/aif.psm), containers in
-[`self/runtime/aif_support.c`](../runtime/aif_support.c). It agrees with `prototype/aif.py`
-site-for-site on all eight sources (`python tools/aif_differential.py`), costs no measurable time
-next to a build, and the self-host still reaches a fixed point from the committed seed.
+[`self/runtime/aif_support.c`](../runtime/aif_support.c), the T0 hook in `ir_alloc_stack`. It agrees
+with `prototype/aif.py` site-for-site on all eight sources (`python tools/aif_differential.py`),
+costs no measurable time next to a build, and the self-host still reaches a fixed point from the
+committed seed.
 
-Levels 1–5 of [implementation/COMPILER-AUDIT.md](implementation/COMPILER-AUDIT.md) §5 — T0 stack
-promotion onward — are not started. Nothing yet allocates differently.
+**Level 1 is real and its population is small: two T0 sites across the whole corpus, zero in the
+compiler.** Not because of the stack-size threshold — that was the suspicion, and measuring it
+killed it — but because aliasing keeps values off T0, for the same reason it keeps them off T2.
+See [evidence/RESULTS-L0-tiers.md](evidence/RESULTS-L0-tiers.md)'s correction note.
+
+Levels 2–5 are not started. **The next step by measured impact is not Level 2; it is FFI ownership
+contracts** ([implementation/REQUIREMENTS.md](implementation/REQUIREMENTS.md) item 8).
 
 **Dynamic validation: blocked on codegen.** No runtime number exists, and none can until tiers
 reach the emitted binary.

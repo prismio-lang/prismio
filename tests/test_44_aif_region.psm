@@ -1,0 +1,166 @@
+// AIF T1 -- `region` and the arena, end to end (SPEC 5.2).
+//
+// A value the analysis proved cannot outlive the region is bump-allocated from
+// that region's arena and released with the whole block; one that can outlive it
+// must not be, and the nested case is where that stops being a lexical question.
+//
+// `Wide` is wide for the same reason as in test_43: T0 wins over T1 for any
+// struct that fits a stack slot, and a stack slot is not served by an arena.
+//
+// arena_objects() counts what the arena actually served, which is the only way
+// to tell an arena pointer from a malloc pointer -- the values are identical.
+
+extern fn int_to_str(n: Int) -> String
+extern fn str_length(s: String) -> Int
+extern fn arena_objects() -> Int
+extern fn arena_regions() -> Int
+
+struct Wide {
+    f01: String, f02: String, f03: String, f04: String, f05: String, f06: String,
+    f07: String, f08: String, f09: String, f10: String, f11: String, f12: String,
+    f13: String, f14: String, f15: String, f16: String, f17: String, f18: String,
+    f19: String, f20: String, f21: String, f22: String, f23: String, f24: String,
+    f25: String, f26: String, f27: String, f28: String, f29: String, f30: String,
+    f31: String, f32: String, f33: String
+}
+
+// Allocated and read inside the region, so the arena serves it.
+fn inside() -> Int {
+    let mut n = 0
+    region work {
+        let w = Wide {
+            f01: "ab", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+            f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+            f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+            f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+            f33: ""
+        }
+        n = str_length(w.f01)
+    }
+    return n
+}
+
+// Many objects, one release. The arena grows past its first chunk here, which is
+// the case where a pointer handed out earlier must stay valid.
+fn many() -> Int {
+    let mut total = 0
+    region batch {
+        let mut i = 0
+        while (i < 200) {
+            let w = Wide {
+                f01: "c", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+                f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+                f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+                f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+                f33: ""
+            }
+            total = total + str_length(w.f01)
+            i = i + 1
+        }
+    }
+    return total
+}
+
+// The value is written to a binding declared outside the inner region, so it
+// outlives that region and must come from the heap instead. Reading it after the
+// inner block is what makes a wrong answer here a use-after-free rather than a
+// slower program.
+fn escapes_inner() -> Int {
+    let mut n = 0
+    region outer {
+        let mut held = Wide {
+            f01: "de", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+            f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+            f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+            f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+            f33: ""
+        }
+        region inner {
+            held = Wide {
+                f01: "fgh", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+                f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+                f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+                f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+                f33: ""
+            }
+        }
+        n = str_length(held.f01)
+    }
+    return n
+}
+
+// A `return` out of a region has to pop the arena on the way, or it stays live
+// for the rest of the program.
+fn returns_out(flag: Bool) -> Int {
+    region early {
+        let w = Wide {
+            f01: "ijkl", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+            f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+            f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+            f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+            f33: ""
+        }
+        if (flag) {
+            return str_length(w.f01)
+        }
+    }
+    return 0
+}
+
+// So does a `break`, and it must leave the loop's own depth alone.
+fn breaks_out() -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < 5) {
+        i = i + 1
+        region per_turn {
+            let w = Wide {
+                f01: "mn", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+                f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+                f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+                f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+                f33: ""
+            }
+            total = total + str_length(w.f01)
+            if (i == 3) {
+                break
+            }
+        }
+    }
+    return total
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) {
+        return 0
+    }
+    print("FAIL ")
+    print(label)
+    print(": expected ")
+    print(int_to_str(want))
+    print(", got ")
+    println(int_to_str(got))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("inside", inside(), 2)
+    bad = bad + check("many", many(), 200)
+    bad = bad + check("escapes_inner", escapes_inner(), 3)
+    bad = bad + check("returns_out_true", returns_out(true), 4)
+    bad = bad + check("returns_out_false", returns_out(false), 0)
+    bad = bad + check("breaks_out", breaks_out(), 6)
+
+    // 1 + 200 + 1 (outer only; the inner one escapes) + 1 + 1 + 3.
+    bad = bad + check("arena_objects", arena_objects(), 207)
+    // inside, many, outer, inner, returns_out x2, per_turn x3.
+    bad = bad + check("arena_regions", arena_regions(), 9)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

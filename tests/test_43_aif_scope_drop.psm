@@ -1,0 +1,203 @@
+// AIF T2 -- scope-based drop, end to end.
+//
+// A value whose escape bottoms at the scope that allocated it is freed at that
+// scope's exits: fall-through, `return`, `break` and `continue`. A missed drop
+// leaks and a doubled one corrupts the heap, so the assertion that matters most
+// here is that the program finishes at all -- a double free exits 0xC0000374
+// long before any output is compared.
+//
+// Two things make the fixture look the way it does.
+//
+// `Wide` is wide on purpose: T0 wins over T1 for any struct small enough for a
+// stack slot, and a stack slot has nothing to free, so clearing the 256-byte
+// threshold takes 33 pointer-width fields. And every literal is written out at
+// its binding rather than built by a helper, because a value a function returns
+// escapes to its caller and stops being this scope's to release.
+//
+// The compiler cannot cover this itself: it has no T1 struct sites, and neither
+// does aif/corpus. See COMPILER-AUDIT's Level 2 note.
+
+extern fn int_to_str(n: Int) -> String
+extern fn str_length(s: String) -> Int
+
+struct Wide {
+    f01: String, f02: String, f03: String, f04: String, f05: String, f06: String,
+    f07: String, f08: String, f09: String, f10: String, f11: String, f12: String,
+    f13: String, f14: String, f15: String, f16: String, f17: String, f18: String,
+    f19: String, f20: String, f21: String, f22: String, f23: String, f24: String,
+    f25: String, f26: String, f27: String, f28: String, f29: String, f30: String,
+    f31: String, f32: String, f33: String
+}
+
+// Fall-through: allocated and released without any control flow leaving early.
+fn plain() -> Int {
+    let w = Wide {
+        f01: "a", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+        f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+        f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+        f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+        f33: ""
+    }
+    return str_length(w.f01)
+}
+
+// A nested block ends before the function does, so its drop belongs at the inner
+// exit and the outer binding must survive to the outer one.
+fn nested() -> Int {
+    let outer = Wide {
+        f01: "ab", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+        f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+        f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+        f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+        f33: ""
+    }
+    let mut total = 0
+    if (true) {
+        let inner = Wide {
+            f01: "cde", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+            f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+            f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+            f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+            f33: ""
+        }
+        total = total + str_length(inner.f01)
+    }
+    return total + str_length(outer.f01)
+}
+
+// Every iteration allocates and releases its own. Skipping the drop grows the
+// heap without bound; doubling it kills the second iteration.
+fn per_iteration() -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < 100) {
+        let w = Wide {
+            f01: "xy", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+            f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+            f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+            f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+            f33: ""
+        }
+        total = total + str_length(w.f01)
+        i = i + 1
+    }
+    return total
+}
+
+// `break` and `continue` leave the block without reaching its closing brace, so
+// each needs its own drop -- and neither may touch what the loop inherited.
+fn early_exits() -> Int {
+    let kept = Wide {
+        f01: "k", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+        f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+        f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+        f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+        f33: ""
+    }
+    let mut total = 0
+    let mut i = 0
+    while (i < 10) {
+        i = i + 1
+        let w = Wide {
+            f01: "mn", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+            f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+            f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+            f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+            f33: ""
+        }
+        if (i == 3) {
+            continue
+        }
+        if (i == 6) {
+            break
+        }
+        total = total + str_length(w.f01)
+    }
+    return total + str_length(kept.f01)
+}
+
+// An early return unwinds every scope at once, so the outer binding is released
+// on that path too.
+fn early_return(flag: Bool) -> Int {
+    let outer = Wide {
+        f01: "pq", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+        f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+        f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+        f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+        f33: ""
+    }
+    if (flag) {
+        let inner = Wide {
+            f01: "rst", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+            f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+            f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+            f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+            f33: ""
+        }
+        return str_length(inner.f01) + str_length(outer.f01)
+    }
+    return str_length(outer.f01)
+}
+
+// An explicit `drop` already freed it, and the scope exit must not free it
+// again. `drop` moves the binding, which is what the drop list consults.
+fn explicit() -> Int {
+    let w = Wide {
+        f01: "uvwx", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+        f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+        f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+        f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+        f33: ""
+    }
+    let n = str_length(w.f01)
+    drop(w)
+    return n
+}
+
+// Returned, so it outlives the frame and nothing here may free it. Reading it in
+// the caller is the check that nothing did.
+fn escapes() -> Wide {
+    return Wide {
+        f01: "yz", f02: "", f03: "", f04: "", f05: "", f06: "", f07: "", f08: "",
+        f09: "", f10: "", f11: "", f12: "", f13: "", f14: "", f15: "", f16: "",
+        f17: "", f18: "", f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+        f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
+        f33: ""
+    }
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) {
+        return 0
+    }
+    print("FAIL ")
+    print(label)
+    print(": expected ")
+    print(int_to_str(want))
+    print(", got ")
+    println(int_to_str(got))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("plain", plain(), 1)
+    bad = bad + check("nested", nested(), 5)
+    bad = bad + check("per_iteration", per_iteration(), 200)
+    // i counts 1..; i==3 continues and i==6 breaks, so "mn" is added for
+    // i in {1,2,4,5}, plus "k" from the binding the loop inherited.
+    bad = bad + check("early_exits", early_exits(), 9)
+    bad = bad + check("early_return_true", early_return(true), 5)
+    bad = bad + check("early_return_false", early_return(false), 2)
+    bad = bad + check("explicit", explicit(), 4)
+
+    let e = escapes()
+    bad = bad + check("escapes", str_length(e.f01), 2)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

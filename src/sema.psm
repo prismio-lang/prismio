@@ -54,6 +54,11 @@ fn sema_block_has_break(block: ASTNode) -> Bool {
         if (stmt.kind == NodeKind.FOR_STATEMENT) {
             if (sema_block_has_break(ptr_to_node(stmt.child3))) { return true }
         }
+        // A region is not a loop, so a `break` inside one belongs to the loop
+        // enclosing it and has to be visible through the block.
+        if (stmt.kind == NodeKind.REGION_STATEMENT) {
+            if (sema_block_has_break(ptr_to_node(stmt.child1))) { return true }
+        }
         if (stmt.kind == NodeKind.MATCH_STATEMENT) {
             let mut arm_ptr = stmt.child2
             while (str_equals(arm_ptr, "") == 0) {
@@ -1157,6 +1162,13 @@ fn sema_statement(module: ASTNode, stmt: ASTNode, expected_return: TypeInfo) {
         ir_loop_barrier_pop()
     }
 
+    // A region is an ordinary block as far as checking goes. It says nothing
+    // about types or ownership -- SPEC 5.2 makes it a placement pin, and the
+    // escape fact it would assert is one the analysis already has.
+    if (stmt.kind == NodeKind.REGION_STATEMENT) {
+        sema_block(module, ptr_to_node(stmt.child1), expected_return)
+    }
+
     if (stmt.kind == NodeKind.FOR_STATEMENT) {
         let start_t = sema_expr(module, ptr_to_node(stmt.child1))
         sema_expect_assignable(ptr_to_node(stmt.child1), "for range start", type_int(), start_t)
@@ -1334,6 +1346,111 @@ fn sema_function(module: ASTNode, fn_node: ASTNode) {
     ir_scope_pop()
 }
 
+// FFI ownership contracts (aif/spec/FFI.md 5), checked where they are written.
+//
+// FFI 1 is blunt about why this matters: an `extern` contract describes opaque
+// foreign code and cannot be verified, so **the FFI boundary is the one place in
+// AIF where being wrong is unsafe rather than slow.** Nothing downstream can
+// catch a `retain_in(9)` on a two-argument function or an `alias` on a
+// parameter; the analysis would read a contract that means nothing and quietly
+// apply a default instead. So the declaration is the only place these can be
+// rejected, and they are rejected here rather than warned about.
+fn sema_contract_name(encoded: String) -> String {
+    let at = str_index_of(encoded, ":")
+    if (at < 0) {
+        return encoded
+    }
+    return str_substring(encoded, 0, at)
+}
+
+fn sema_contract_argument(encoded: String) -> String {
+    let at = str_index_of(encoded, ":")
+    if (at < 0) {
+        return ""
+    }
+    return str_substring(encoded, at + 1, str_length(encoded) - at - 1)
+}
+
+fn sema_is_parameter_contract(name: String) -> Bool {
+    if (str_equals(name, "borrow") == 1) { return true }
+    if (str_equals(name, "retain") == 1) { return true }
+    if (str_equals(name, "retain_in") == 1) { return true }
+    if (str_equals(name, "consume") == 1) { return true }
+    if (str_equals(name, "out") == 1) { return true }
+    return false
+}
+
+fn sema_check_extern_contracts(ext_node: ASTNode) {
+    // Counted first: `retain_in(k)` names another parameter by index, so the
+    // arity has to be known before any of them can be checked.
+    let mut arity = 0
+    let mut count_ptr = ext_node.child1
+    while (str_equals(count_ptr, "") == 0) {
+        let param = ptr_to_node(count_ptr)
+        if (param.kind == NodeKind.FUNCTION_PARAMETER) {
+            arity = arity + 1
+        }
+        count_ptr = param.next
+    }
+
+    let mut index = 0
+    let mut param_ptr = ext_node.child1
+    while (str_equals(param_ptr, "") == 0) {
+        let param = ptr_to_node(param_ptr)
+        if (param.kind == NodeKind.FUNCTION_PARAMETER and str_equals(param.child1, "") == 0) {
+            let annotation = ptr_to_node(param.child1)
+            let encoded = annotation.s2
+
+            if (str_equals(encoded, "") == 0) {
+                let name = sema_contract_name(encoded)
+
+                if (sema_is_parameter_contract(name) == false) {
+                    diag_error_at(param.file, param.line, param.col, str_length(param.s1),
+                        str_concat(str_concat(diag_quote(name),
+                                   " is a return contract and cannot appear on parameter "),
+                                   diag_quote(param.s1)))
+                    diag_note("parameters take `borrow`, `retain`, `retain_in(k)`, `consume` or `out`")
+                } else if (str_equals(name, "retain_in") == 1) {
+                    let target = str_to_int(sema_contract_argument(encoded))
+                    if (target < 0 or target >= arity) {
+                        diag_error_at(param.file, param.line, param.col, str_length(param.s1),
+                            str_concat(str_concat("`retain_in` names argument ",
+                                       sema_contract_argument(encoded)),
+                                       str_concat(", but this function takes ", int_to_str(arity))))
+                        diag_note("the index is zero-based and names the container this argument is stored into")
+                    } else if (target == index) {
+                        diag_error_at(param.file, param.line, param.col, str_length(param.s1),
+                            str_concat(str_concat("`retain_in` on ", diag_quote(param.s1)),
+                                       " names itself"))
+                        diag_note("it names the *other* argument this one is stored into; a value cannot contain itself")
+                    }
+                }
+            }
+            index = index + 1
+        }
+        param_ptr = param.next
+    }
+
+    if (str_equals(ext_node.child2, "") == 0) {
+        let ret = ptr_to_node(ext_node.child2)
+        if (str_equals(ret.s2, "") == 0) {
+            let name = sema_contract_name(ret.s2)
+            if (str_equals(name, "alias") == 0 and str_equals(name, "produce") == 0) {
+                diag_error_at(ext_node.file, ext_node.line, ext_node.col, str_length(ext_node.s1),
+                    str_concat(diag_quote(name),
+                               " is a parameter contract and cannot appear on a return type"))
+                diag_note("returns take `alias` or `produce(free_fn)`")
+            } else if (str_equals(name, "produce") == 1) {
+                if (str_equals(sema_contract_argument(ret.s2), "") == 1) {
+                    diag_error_at(ext_node.file, ext_node.line, ext_node.col, str_length(ext_node.s1),
+                        "`produce` requires the name of the function that releases the value")
+                    diag_note("FFI 5.2: calling `free` on something from a custom allocator is the bug this prevents")
+                }
+            }
+        }
+    }
+}
+
 fn analyze_module(module: ASTNode) {
     ir_clear_var_types()
     ir_reset_globals()
@@ -1350,6 +1467,9 @@ fn analyze_module(module: ASTNode) {
         let stmt = ptr_to_node(fn_ptr)
         if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
             sema_predeclare_function(module, stmt)
+        }
+        if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            sema_check_extern_contracts(stmt)
         }
         fn_ptr = stmt.next
     }

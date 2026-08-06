@@ -13,16 +13,34 @@ struct Small {
     b: Int
 }
 
-// Nine fields, one over Theta_stack (8), so the T0 clause cannot fire on it
-// however local it is. This is the only thing separating it from Small.
+// Over Theta_stack, so the T0 clause cannot fire on it however local it is.
+// This is the only thing separating it from Small.
+//
+// Theta_stack is 256 bytes and every field Prismio has is at most 8, so
+// "too big for a stack slot" takes 33 pointer-width fields. That is a clumsy
+// way to write a large struct and it is the honest one: the threshold is a
+// byte count, and a fixture that tested it in fields would be testing the
+// prototype's approximation instead of the compiler's rule.
 struct Wide {
-    f1: Int, f2: Int, f3: Int, f4: Int, f5: Int,
-    f6: Int, f7: Int, f8: Int, f9: Int
+    f01: String, f02: String, f03: String, f04: String, f05: String, f06: String,
+    f07: String, f08: String, f09: String, f10: String, f11: String, f12: String,
+    f13: String, f14: String, f15: String, f16: String, f17: String, f18: String,
+    f19: String, f20: String, f21: String, f22: String, f23: String, f24: String,
+    f25: String, f26: String, f27: String, f28: String, f29: String, f30: String,
+    f31: String, f32: String, f33: String
+}
+
+// Reaches itself only through a `List` element type, which the type-graph walk
+// sees only if it descends past the annotation's own name.
+struct Tree {
+    children: List<Tree>,
+    value: Int
 }
 
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn str_length(s: String) -> Int
 extern fn cli_arg(index: Int) -> String
+extern fn tree_root() -> Tree
 
 // T0 -- a struct that never leaves its own frame, under the field threshold.
 fn tier_zero() -> Int {
@@ -41,10 +59,25 @@ fn tier_one_string() -> Int {
 // T1 -- a struct, region-bound, but wider than Theta_stack.
 fn tier_one_wide() -> Int {
     let w = Wide {
-        f1: 1, f2: 2, f3: 3, f4: 4, f5: 5,
-        f6: 6, f7: 7, f8: 8, f9: 9
+        f01: "", f02: "", f03: "", f04: "", f05: "", f06: "",
+        f07: "", f08: "", f09: "", f10: "", f11: "", f12: "",
+        f13: "", f14: "", f15: "", f16: "", f17: "", f18: "",
+        f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+        f25: "", f26: "", f27: "", f28: "", f29: "", f30: "",
+        f31: "", f32: "", f33: ""
     }
-    return w.f1
+    return str_length(w.f01)
+}
+
+// T1 -- local, small and unaliased, so every fact says T0. It is not T0 because
+// `drop` lowers to a free and a stack slot cannot be freed. The suppression is a
+// codegen constraint rather than a fact, which is why this lands one rung up
+// instead of being reported as escaping.
+fn tier_one_dropped() -> Int {
+    let s = Small { a: 5, b: 6 }
+    let total = s.a + s.b
+    drop(s)
+    return total
 }
 
 // T2 -- escapes to the caller, so no region contains it, but nothing ever
@@ -61,7 +94,23 @@ fn tier_three() -> Int {
     return str_length(arg)
 }
 
+// T4b -- unknown provenance like tier_three, so A is Shared, but the type lies
+// in a non-trivial SCC so the T3 clause fails too.
+fn tier_four_cyclic() -> Int {
+    let t = tree_root()
+    return t.value
+}
+
+// Two allocations nested inside an array literal. They exist only if the walk
+// descends into the elements; the array itself is a site either way.
+fn tier_array_elements() -> Int {
+    let parts = [str_concat("a", "b"), str_concat("c", "d")]
+    return str_length(parts[0])
+}
+
 fn main() -> Int {
     let escaped = tier_two()
-    return tier_zero() + tier_one_string() + tier_one_wide() + tier_three() + escaped.a
+    return tier_zero() + tier_one_string() + tier_one_wide()
+         + tier_one_dropped() + tier_three() + tier_four_cyclic()
+         + tier_array_elements() + escaped.a
 }

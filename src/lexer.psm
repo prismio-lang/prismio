@@ -368,9 +368,11 @@ fn lexer_next_token(lex: Lexer) -> Token {
     return lexer_token(lex, TokenType.UNKNOWN, "?", start_line, start_col, start_pos)
 }
 
-// Lexes all tokens and returns the head of a linked list of Tokens
-extern fn ptr_to_token(ptr: String) -> Token
-extern fn token_to_ptr(tok: Token) -> String
+// Lexes all tokens and returns the head of a linked list of Tokens.
+// Both are `void* f(void* p) { return p; }` in lang_runtime.c, so the result is
+// the argument; without the contracts every Token reads as an opaque extern.
+extern fn ptr_to_token(ptr: String borrow) -> Token alias
+extern fn token_to_ptr(tok: Token borrow) -> String alias
 
 // Token is a struct and therefore move-only, so walking the list with a second
 // Token binding (`let current = head`) would move `head` and make the final

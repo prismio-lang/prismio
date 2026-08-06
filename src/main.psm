@@ -186,12 +186,12 @@ fn resolve_imports(module: ASTNode, base_dir: String) -> ASTNode {
 
 fn print_usage() {
     println("Usage:")
-    println("  prismio build <source.psm> [-o output.exe]")
-    println("  prismio run <source.psm> [-o output.exe]")
+    println("  prismio build <source.psm> [-o output.exe] [--verify]")
+    println("  prismio run <source.psm> [-o output.exe] [--verify]")
     println("  prismio bootstrap [source.psm] [-o output.exe]")
     println("  prismio runtime-hash")
     println("  prismio dump-ast <source.psm>")
-    println("  prismio aif <source.psm> [--summary] [--owned-collections]")
+    println("  prismio aif <source.psm> [--summary] [--owned-collections] [--theta-fields] [--budget=N]")
     println("")
     println("build/run link against the installed Prismio runtime only.")
     println("bootstrap builds the compiler itself from the repository sources,")
@@ -294,17 +294,19 @@ fn dump_ast_command(path: String) -> Int {
 // Produces no IR and touches no codegen, so it cannot change what `build`
 // generates -- which is the point at this stage: the tier distribution becomes
 // measurable before any of it is risked on the self-host.
-fn aif_command(path: String, summary: Bool, owned_collections: Bool) -> Int {
+fn aif_command(path: String, summary: Bool, owned_collections: Bool, theta_fields: Bool,
+               budget: Int) -> Int {
     let merged = analyzed_module(path)
     if (diag_error_count() > 0) {
         return 1
     }
 
-    aif_analyze(merged, path, PRISMIO_VERSION, owned_collections, summary)
+    aif_analyze(merged, path, PRISMIO_VERSION, owned_collections, summary, theta_fields, budget)
     return 0
 }
 
-fn compile_source(path: String, output_file: String, run_after_build: Bool, bootstrap_mode: Bool) -> Int {
+fn compile_source(path: String, output_file: String, run_after_build: Bool, bootstrap_mode: Bool,
+                  verify_mode: Bool) -> Int {
     let mut out_file = ""
     let mut emit_ir_only = false
 
@@ -357,7 +359,27 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
         return 1
     }
 
+    // AIF, between sema and codegen. It reports nothing here and writes nothing
+    // back to the AST; codegen queries it per allocation site through
+    // aif_tier_at. `prismio aif` runs the same engine and prints the manifest.
+    //
+    // It cannot fail the build. SPEC 1: inference failure degrades performance
+    // and never correctness, and a value it says nothing about is allocated the
+    // way it always was.
+    aif_run(merged_ast, false, false, AIF_DEFAULT_ROUNDS)
+
     ir_reset()
+
+    // SPEC 7.3's verify mode is a name swap through the allocator seam and
+    // nothing else -- codegen is identical to a release build. The shims live in
+    // runtime/lang_runtime.c and check that every object is released exactly
+    // once, poisoning it on the way out so a read that should not have happened
+    // returns a pattern instead of plausible data.
+    if (verify_mode) {
+        ir_set_alloc_function("aif_verify_alloc")
+        ir_set_free_function("aif_verify_release")
+    }
+
     generate_module(merged_ast)
 
     if (ir_write_file(out_file) != 0) {
@@ -405,6 +427,7 @@ fn main() -> Int {
     let mut command = ""
     let mut run_after_build = false
     let mut bootstrap_mode = false
+    let mut verify_mode = false
     let mut arg_index = 0
 
     if (cli_arg_count() <= 1) {
@@ -468,11 +491,30 @@ fn main() -> Int {
 
         let mut aif_summary = false
         let mut aif_owned = false
+        let mut aif_theta_fields = false
+        let mut aif_budget_arg = AIF_DEFAULT_ROUNDS
         let mut aif_arg = 3
         while (aif_arg < cli_arg_count()) {
             let flag = cli_arg(aif_arg)
             if (str_equals(flag, "--summary") == 1) {
                 aif_summary = true
+            } else if (str_starts_with(flag, "--budget=") == 1) {
+                // INFERENCE 5.3's truncation path is unreachable at the default
+                // of 200 rounds, and an unreachable path is where a bug lives
+                // undisturbed. This makes it reachable, which is what
+                // tests/test_43 uses to check that widening only ever raises.
+                aif_budget_arg = str_to_int(str_substring(flag, 9, str_length(flag) - 9))
+                if (aif_budget_arg < 1) {
+                    diag_error("--budget= must be at least 1 round")
+                    return 1
+                }
+            } else if (str_equals(flag, "--theta-fields") == 1) {
+                // Approximate Theta_stack by field count instead of bytes, the
+                // way aif/prototype/aif.py must because a JSON dump carries no
+                // layout. tools/aif_differential.py passes this so the two are
+                // compared on their inference rather than on a threshold only
+                // one of them can evaluate.
+                aif_theta_fields = true
             } else if (str_equals(flag, "--owned-collections") == 1) {
                 // Treat String/List/Array as move-only, as SPEC 11 item 10
                 // specifies rather than as types.psm currently implements. This
@@ -487,7 +529,7 @@ fn main() -> Int {
             aif_arg = aif_arg + 1
         }
 
-        return aif_command(cli_arg(2), aif_summary, aif_owned)
+        return aif_command(cli_arg(2), aif_summary, aif_owned, aif_theta_fields, aif_budget_arg)
     }
 
     // Compiler development. The command itself selects the build mode -- there is no
@@ -526,7 +568,7 @@ fn main() -> Int {
             }
         }
 
-        return compile_source(path, output_file, run_after_build, bootstrap_mode)
+        return compile_source(path, output_file, run_after_build, bootstrap_mode, false)
     }
 
     if (str_equals(first, "build") == 1) {
@@ -601,6 +643,11 @@ fn main() -> Int {
                 ir_set_target_wasm(true)
             }
             arg_index = arg_index + 2
+        } else if (str_equals(arg, "--verify") == 1) {
+            // SPEC 7.3. Slower and heavier by design: the mode exists to be run
+            // by CI, not by users.
+            verify_mode = true
+            arg_index = arg_index + 1
         } else {
             if (str_equals(arg, "build") == 1 or str_equals(arg, "run") == 1) {
                 diag_error("use either `build` or `run`, not both")
@@ -618,5 +665,5 @@ fn main() -> Int {
         }
     }
 
-    return compile_source(path, output_file, run_after_build, bootstrap_mode)
+    return compile_source(path, output_file, run_after_build, bootstrap_mode, verify_mode)
 }

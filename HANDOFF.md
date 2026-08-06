@@ -12,7 +12,7 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
   IR for `src/main.psm` is byte-identical to the warm build's.
-- **56/56 tests**, of which 16 are negative and each asserts *which* diagnostic it expects.
+- **68/68 tests**, of which 17 are negative and each asserts *which* diagnostic it expects.
 - Backend is the **LLVM C API** (`runtime/llvm-api-backend.c`); the old text emitter is gone.
   `ir_append()` survives only as a loud failure guarding against raw text creeping back in.
 - Pinned to **LLVM 22.x**, enforced at build time (`tools/setup_llvm.py`) and at runtime
@@ -50,7 +50,7 @@ Everything below is verified, not asserted — the commands that verify it are i
 ```
 
 ```bash
-cd tests && PRISMIO=../build/next2.exe python test_runner.py   # must stay 56/56
+cd tests && PRISMIO=../build/next2.exe python test_runner.py   # must stay 68/68
 ```
 
 Then, only for a language or codegen change the seed must carry:
@@ -99,10 +99,118 @@ eight sources under both collection settings, and that agreement is the only thi
 a subtly wrong transfer function and a silently wrong tier. A deliberate divergence is fine and
 should be commented at the site in both files; an accidental one fails the script.
 
-Level 1 is T0 — stack-promote non-escaping structs — and it is where codegen starts to move. It
-needs `ir_alloc_stack` hoisting to the entry block, and it needs codegen to be able to *look a tier
-up*, which is the AST node ids `aif/implementation/COMPILER-AUDIT.md` §4.1 proposes and Level 0 did
-not need.
+**Level 1 also landed.** T0 reaches codegen: `ir_alloc_stack` emits an `alloca` hoisted to the entry
+block, and `generate_expression` picks it over `ir_alloc_object` when `aif_tier_at_node` says T0.
+Tiers are keyed by the AST node's address: both passes walk the same tree in the same process, so
+it names the expression for free and cannot collide. It replaced a `file:line:col` key, which could
+— an array literal and its first element share a column, and the collision cost a real promotion.
+
+Three things to know before extending it:
+
+1. **The self-host does not test this path.** The compiler has zero T0 sites, so a fixpoint check
+   passes no matter what stack promotion does. `tests/test_42_aif_stack_promotion.psm` is the
+   coverage; keep it working.
+2. **A hoisted `alloca` is one slot per site, reused by every loop iteration.** That is only sound
+   because T0 requires the value's escape to bottom at its own defining scope. The escape module was
+   wrong about exactly this and it was a miscompile, not a slowdown — see `aif_var_scope`.
+3. **`drop(x)` lowers to a free.** Anything an explicit `drop` names is barred from T0, or the free
+   lands on a stack pointer. `test_24_drop` catches it.
+
+**FFI ownership contracts landed too** (`aif/implementation/REQUIREMENTS.md` item 8). `extern`
+declarations carry them postfix on the type:
+
+```prismio
+extern fn ptr_to_node(ptr: String borrow) -> ASTNode alias
+extern fn list_push(list: List borrow, item: Ptr retain_in(0))
+```
+
+They are contextual identifiers, not keywords, so `borrow`/`out`/`alias` still work as ordinary
+names. **The seed was refreshed for this** — `src/ast.psm` and `src/types.psm` now use the syntax,
+so the previous seed could not have parsed the tree.
+
+That took the compiler's own distribution from 27% to 58% T0–T2. Annotating the rest of the verified
+runtime surface took it to **66%**, and **85% with affine collections** — the first time this corpus
+clears BENCHMARKS H1's 70% bar. Opaque extern returns fell from 425 to 36.
+
+Read the C before declaring a contract. `ir_get_temp_name` and `ir_get_label_name` sit among a dozen
+interned-string accessors and `malloc`; guessing `alias` from the name would have been FFI §1's
+unsafe-not-slow error. What could not be verified is still undeclared, which is what the remaining
+36 opaque returns are.
+
+**Three analysis gaps closed on 2026-08-06** — `List<T>`/`[T]` type-graph edges, array-literal
+element sites, and a `widen_and_close` that raised the whole graph. `COMPILER-AUDIT.md`'s "Analysis
+quality" section has the detail. Two things from it that change how you work here:
+
+- `prismio aif <src> --budget=N` truncates the fixed point on purpose. That path had never executed
+  before; `run_aif_widening_test` now checks, at every budget from 1 to convergence, that the
+  truncated tier is at or above the converged one.
+- Points-to is solved to a fixed point *before* the facts, and the manifest reports the split
+  (`rounds 10 (points-to 8)`). No rule writing points-to reads a fact, so this changes no answer.
+
+**Level 2 landed too** — drops at all four scope exits (fall-through, `return`, `break`,
+`continue`), in reverse construction order. Read `COMPILER-AUDIT.md`'s Level 2 note before touching
+it; the short version:
+
+- It frees **nothing** in the compiler and nothing in the corpus. There is no T1 struct in either —
+  small ones take T0, escaping ones take T2 — so `tests/test_43_aif_scope_drop.psm` is the entire
+  safety net, as at Level 1. Its `Wide` is 33 fields because that is what it takes to be a struct
+  that is neither.
+- Droppability is `aif_frees_at_scope_node`, not the tier. T1 alone is not enough: it means *some*
+  region, possibly an enclosing one, and freeing at the inner exit would be a use-after-free.
+- **Do not add a `ir_is_moved` check to the drop path.** Move state is sema's and is cleared per
+  function before codegen runs, so the answer is about some other function. Everything it would
+  have caught is a fact: moving outward raises the escape, and `drop(x)` marks the site.
+
+**`verify` mode landed** (SPEC 7.3): `prismio build <src> --verify`. It is a name swap through
+`ir_set_alloc_function` / `ir_set_free_function` and nothing else — codegen is byte-identical to a
+release build — and the shims in `runtime/lang_runtime.c` check that every object is released
+exactly once, poisoning it on the way out. It reports to stderr and names the leaked allocation by
+serial. The suite runs it over the four struct-allocating fixtures and asserts **zero violations**;
+the leaks it does report are the T2 returns, which have no free point yet.
+
+It paid for itself on the first run: **`drop(x)` was emitting a call to `free` by name**, bypassing
+`ir_free_object` and therefore the allocator seam — so an explicit drop was invisible to verify and
+would have handed an arena pointer to libc at Level 3. Routed through the seam now. If you add
+another release path, put it through `ir_free_object` or it is outside the model.
+
+Not all of SPEC 7.3's table is implementable yet; the header comment over the shims lists each row
+and what it needs (`A` needs an object header word, `E = Region` needs arenas, `C` needs a heap
+walk).
+
+**Level 3 landed.** `region <name> { … }` is a keyword statement; the arena is a runtime stack in
+`lang_runtime.c`, pushed on entry and popped at every exit. `ir_alloc_region` is the third hook the
+seam always needed. A value comes from the arena only when `aif_arena_at_node` says its escape
+bottoms at or below that region — lexical containment is not enough, and the nested case in
+`tests/test_44_aif_region.psm` is why.
+
+The handle is **dynamically scoped, not threaded**, against `COMPILER-AUDIT.md` §3's prediction. It
+costs exactly one case: a value written inside an inner region but escaping to an outer one cannot
+name the outer arena and falls back to the heap. See the Level 3 note in the audit before changing
+this.
+
+**Run a cold start after any change to the runtime's FFI surface:**
+
+```powershell
+.\tools\bootstrap.ps1 -Seed bootstrap\prismio-seed.ll -Out build\cold0.exe
+```
+
+The node-keyed tier lookup renamed `aif_tier_at`, and the committed seed's IR still called it — so
+the seed could not link. CI's first step would have caught it; three local changes did not, because
+bootstrapping from a warm binary never touches the seed. The seed is refreshed as of 2026-08-06.
+
+**Next, in order of measured value:**
+
+1. Level 4 — affine `String`/`List`/arrays. It is the item that makes Levels 2 and 3 both pay: the
+   drop predicate already asks `site_is_move_only`, and the arena serves any T1 site, so the 184 T1
+   string sites become arena-placed and freeable the day collections are affine — with no further
+   codegen change. It is also the widest blast radius in the compiler (`COMPILER-AUDIT.md` §3.1).
+2. Level 5 — T3 refcounting.
+3. Automatic arena placement (LAYOUT §7.1). `region` pins an arena; the compiler placing one
+   unprompted is the other half of SPEC §5.2 and needs a cost model.
+
+`src/aif.psm`'s `aif_runtime_contract` is a fallback table for the runtime's own functions, kept
+because every corpus program declares `list_push` itself and none of them should have to get it
+right for the analysis to be sound. It should shrink as declarations gain contracts.
 
 Below is the seam as it was assessed before any of this; it is still accurate, and
 `aif/implementation/COMPILER-AUDIT.md` §3 explains why it covers half the ladder rather than all

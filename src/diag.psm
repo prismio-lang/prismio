@@ -15,7 +15,7 @@ extern fn int_to_str(value: Int) -> String
 // Registers a source file's text and returns the id stamped onto every token and
 // AST node parsed from it. Registering the same path twice returns the first id.
 extern fn diag_add_file(path: String, content: String) -> Int
-extern fn diag_file_path(file: Int) -> String
+extern fn diag_file_path(file: Int) -> String alias
 
 // A located diagnostic. `len` is the width of the caret run -- the length of the
 // token the node starts at -- and may be 0 for "just point at the column".

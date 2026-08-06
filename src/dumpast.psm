@@ -108,6 +108,7 @@ fn node_kind_name(k: NodeKind) -> String {
     else if (k == NodeKind.EXPRESSION_STATEMENT) { return "EXPRESSION_STATEMENT" }
     else if (k == NodeKind.BREAK_STATEMENT) { return "BREAK_STATEMENT" }
     else if (k == NodeKind.CONTINUE_STATEMENT) { return "CONTINUE_STATEMENT" }
+    else if (k == NodeKind.REGION_STATEMENT) { return "REGION_STATEMENT" }
     else if (k == NodeKind.BINARY_EXPR) { return "BINARY_EXPR" }
     else if (k == NodeKind.UNARY_EXPR) { return "UNARY_EXPR" }
     else if (k == NodeKind.LITERAL_EXPR) { return "LITERAL_EXPR" }

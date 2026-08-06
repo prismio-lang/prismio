@@ -46,6 +46,11 @@ fn is_keyword(s: String) -> Bool {
     if (str_equals(s, "inout") == 1) { return true }
     if (str_equals(s, "sink") == 1) { return true }
 
+    // memory model. SPEC 5.2: pins an arena at this scope. Unlike the FFI
+    // contract names, which are contextual, this one opens a statement and so
+    // has to be a real keyword.
+    if (str_equals(s, "region") == 1) { return true }
+
     return false
 }
 

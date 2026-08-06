@@ -44,6 +44,38 @@
 > number on it, and it is a bigger lever on this corpus than item 1. It does not disturb the G1–G5
 > results or §2's finding *for engine-shaped code*.
 >
+> ### Item 8 has since landed — measured, not projected
+>
+> `extern` declarations now carry FFI §5 contracts, and the four punning externs declare `alias`.
+> The compiler's own distribution, measured by both implementations:
+>
+> | SELF | sites | T0–T2 | opaque returns |
+> |---|---:|---:|---:|
+> | before contracts | 649 | 27% | 425 |
+> | four punning externs declared `alias` | 308 | 58% | 84 |
+> | + the verified runtime surface | 302 | **63%** | **45** |
+> | …and affine collections | 302 | **85%** | 45 |
+>
+> **85% clears BENCHMARKS H1's 70% kill criterion with room**, and it takes both changes to get
+> there — item 8 alone reaches 63%, item 1 alone reached 31%. The site count halves because an
+> aliasing extern no longer manufactures a fresh allocation per call, which was itself a large part
+> of the distortion.
+>
+> Two things the annotation work turned up, both worth having:
+>
+> - **`ir_get_temp_name` and `ir_get_label_name` `malloc`.** They look exactly like the interned
+>   accessors around them and reading the C is the only way to tell. Declaring them `alias` on
+>   appearance would have been a wrong contract at the boundary — FFI §1's unsafe-not-slow case —
+>   so every contract here was checked against the C rather than inferred from the name.
+> - **`alias` cannot express "static despite taking a reference argument".** FFI §5.2 defines
+>   `alias` as "borrows from an argument *or* from static storage" and names no index, so the sound
+>   reading is the union of the arguments. For `ir_get_var_type(name)`, whose return is a static
+>   type key unrelated to `name`, that is conservative but wrong in spirit — those were left
+>   undeclared rather than declared misleadingly. An optional `alias(k)` would resolve it and is a
+>   change to FFI.md, not to the compiler.
+>
+> 45 undeclared returns remain, all outside the verified set.
+>
 > Left as a note rather than an edit: the body below is the record of what was measured on
 > 2026-08-01 and the reasoning built on it deserves a deliberate revision, not a patch.
 

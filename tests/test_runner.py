@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 import os
@@ -200,12 +201,64 @@ def run_cli_test():
     return False
 
 
+def run_punned_slot_invariant_test():
+    """Nothing may take ordinal 0 in NodeKind or TypeKind.
+
+    A source check, because the property is about a declaration order and no
+    runtime observation can distinguish "the invariant holds" from "the invariant
+    is broken but nothing has punned a zero-kinded node yet". That gap is exactly
+    how MODULE sat at ordinal 0 making every module root read as an empty slot,
+    with a green suite, for as long as nobody tested a root.
+
+    tests/test_41_punned_slot_bytes.psm covers the mechanism; this covers the fix.
+    """
+    print(f"\n{BLUE}--- Running punned_slot_invariant ---{RESET}")
+
+    checks = [
+        (PROJECT_ROOT / "src" / "ast.psm", "NodeKind"),
+        (PROJECT_ROOT / "src" / "types.psm", "TypeKind"),
+    ]
+
+    problems = []
+    for path, enum_name in checks:
+        text = path.read_text(encoding="utf-8")
+        m = re.search(rf"enum\s+{enum_name}\s*\{{(.*?)\}}", text, re.S)
+        if not m:
+            problems.append(f"{path.name}: no `enum {enum_name}` found")
+            continue
+        variants = [v.strip() for v in re.sub(r"//[^\n]*", "", m.group(1)).split(",")]
+        variants = [v for v in variants if v]
+        if not variants or variants[0] != "NEVER_ZERO":
+            first = variants[0] if variants else "(empty)"
+            problems.append(
+                f"{enum_name}: ordinal 0 is `{first}`, not NEVER_ZERO. "
+                f"A {enum_name}-first struct punned as String would read as an empty slot."
+            )
+
+    if problems:
+        print(f"{RED}[FAIL] punned-pointer invariant broken{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        print("  see the invariant in src/ast.psm")
+        return False
+
+    print(f"{GREEN}[PASS] NodeKind and TypeKind both reserve ordinal 0{RESET}")
+    return True
+
+
 AIF_EXPECTED = {
     "tier_zero__Void#0":        "T0",
     "tier_one_string__Void#0":  "T1",
     "tier_one_wide__Void#0":    "T1",
+    "tier_one_dropped__Void#0": "T1",
     "tier_two__Void#0":         "T2",
     "tier_three__Void#0":       "T3",
+    "tier_four_cyclic__Void#0": "T4b",
+    # #0 is the array; #1 and #2 are the two allocations nested in its elements,
+    # which exist only if the walk descends into them.
+    "tier_array_elements__Void#0": "T1",
+    "tier_array_elements__Void#1": "T1",
+    "tier_array_elements__Void#2": "T1",
 }
 
 
@@ -247,6 +300,14 @@ def run_aif_test():
         elif got[symbol] != want:
             problems.append(f"{symbol}: expected {want}, got {got[symbol]}")
 
+    # Asserted separately from the tiers because the type graph can be wrong in
+    # the direction that reports *fewer* cycles without any tier moving. Lives
+    # in --summary, hence the second run.
+    summary = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--summary"])
+    if "collector needed: 1 of" not in summary.stdout:
+        problems.append("Tree reaches itself through List<Tree>, but the "
+                        "cyclicity report does not say so")
+
     if problems:
         print(f"{RED}[FAIL] tier assignment changed{RESET}")
         for p in problems:
@@ -254,6 +315,249 @@ def run_aif_test():
         return False
 
     print(f"{GREEN}[PASS] AIF assigns every SPEC 4.2 clause its expected tier{RESET}")
+    return True
+
+
+def run_aif_stack_slot_test():
+    """The T0 path has to be checked in the IR, not only in the output: falling
+    back to the heap is silently correct, so every value test here passes just as
+    well with stack promotion switched off entirely.
+
+    `Nested` exists in the fixture for one reason -- its literal starts at the
+    same file:line:col as the array literal holding it, and those get different
+    tiers. A tier lookup keyed by position cannot tell them apart and has to take
+    the higher one, which loses this promotion.
+    """
+    print(f"\n{BLUE}--- Running aif_stack_slot ---{RESET}")
+    fixture = TEST_DIR / "test_42_aif_stack_promotion.psm"
+    out = TEST_DIR / "t42_slots.ll"
+
+    result = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(out)])
+    if result.returncode != 0:
+        print(f"{RED}[FAIL] build exited {result.returncode}{RESET}")
+        print(result.stdout or result.stderr)
+        return False
+
+    ir = out.read_text(encoding="utf-8", errors="replace")
+    cleanup_files(out)
+    problems = []
+    if not re.search(r"alloca %Point\b", ir):
+        problems.append("no `alloca %Point` -- T0 promotion is not reaching codegen")
+    if not re.search(r"alloca %Nested\b", ir):
+        problems.append("no `alloca %Nested` -- the struct literal nested in an "
+                        "array literal lost its T0 to a key collision")
+
+    if problems:
+        print(f"{RED}[FAIL] stack promotion is not being emitted{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] T0 sites reach codegen as allocas, collisions included{RESET}")
+    return True
+
+
+def run_aif_drop_emission_test():
+    """Level 2's drops, counted per function in the IR.
+
+    test_43 running clean already proves the dynamic counts balance -- a double
+    free exits 0xC0000374. What it cannot prove is that any drop was emitted at
+    all, since leaking is silently correct. These are the static counts, and the
+    two that would be bugs rather than slowdowns are `escapes` (freeing a value
+    that outlives the frame) and `explicit` (freeing again after `drop`).
+    """
+    print(f"\n{BLUE}--- Running aif_drop_emission ---{RESET}")
+    fixture = TEST_DIR / "test_43_aif_scope_drop.psm"
+    out = TEST_DIR / "t43_drops.ll"
+
+    result = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(out)])
+    if result.returncode != 0:
+        print(f"{RED}[FAIL] build exited {result.returncode}{RESET}")
+        print(result.stdout or result.stderr)
+        return False
+
+    frees, current = {}, None
+    for line in out.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.match(r"define .*@([A-Za-z0-9_]+)\(", line)
+        if m:
+            current = m.group(1)
+            frees.setdefault(current, 0)
+        elif current and re.search(r"call void @free", line):
+            frees[current] += 1
+
+    # fn -> (min, max) static frees. `escapes` returns its value, so 0 is not a
+    # floor to relax; `explicit` calls drop(), so 1 is not a ceiling to relax.
+    want = {
+        "plain__Void":         (1, 1),
+        "nested__Void":        (2, 2),
+        "per_iteration__Void": (1, 1),
+        "early_exits__Void":   (4, 4),   # continue, break, fall-through, return
+        "early_return__Bool":  (3, 3),   # inner+outer, then outer
+        "explicit__Void":      (1, 1),
+        "escapes__Void":       (0, 0),
+    }
+
+    problems = []
+    for fn, (lo, hi) in want.items():
+        if fn not in frees:
+            problems.append(f"{fn}: not in the emitted IR")
+        elif not (lo <= frees[fn] <= hi):
+            problems.append(f"{fn}: {frees[fn]} free(s), expected {lo}..{hi}")
+
+    cleanup_files(out)
+    if problems:
+        print(f"{RED}[FAIL] scope drops are not being emitted as expected{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] scope drops emitted at every exit, and nowhere else{RESET}")
+    return True
+
+
+def run_aif_verify_test():
+    """SPEC 7.3's verify mode, run over the fixtures that allocate structs.
+
+    The hard invariant is `0 violation(s)`: nothing is released twice and nothing
+    is released that the allocator never handed out. That is what a wrong escape
+    fact looks like from the outside, and unlike a leak it is a crash waiting to
+    happen rather than a slowdown.
+
+    Leak counts are asserted exactly, because right now they are not noise --
+    each one is a T2 value returned to a caller, and T2 has no free point until
+    ownership transfer is modelled. When that lands these numbers go to zero and
+    this test says so.
+    """
+    print(f"\n{BLUE}--- Running aif_verify ---{RESET}")
+    expected_leaks = {
+        "test_24_drop": 0,
+        "test_25_conventions": 0,
+        "test_42_aif_stack_promotion": 1,   # escapes() -> Point
+        "test_43_aif_scope_drop": 1,        # escapes() -> Wide
+        # Every other allocation in test_44 is served by an arena and released in
+        # bulk, so verify never sees it. The one that is not is the inner
+        # assignment in escapes_inner, whose escape is the *enclosing* region's
+        # scope: too long-lived for the inner arena, and not its own scope, so
+        # the scope drop declines it too. Correct but imprecise -- it is the case
+        # a threaded arena handle would place in the outer arena.
+        "test_44_aif_region": 1,
+    }
+
+    exe = TEST_DIR / "aif_verify_probe.exe"
+    problems = []
+    for name, want_leaks in expected_leaks.items():
+        src = TEST_DIR / f"{name}.psm"
+        built = run_command([str(PRISMIO_EXE), "build", str(src), "--verify", "-o", str(exe)])
+        if built.returncode != 0:
+            problems.append(f"{name}: --verify build exited {built.returncode}")
+            continue
+
+        ran = run_command([str(exe)])
+        report = re.search(r"aif-verify: (\d+) allocated, (\d+) released, "
+                           r"(\d+) leaked, (\d+) violation\(s\)", ran.stderr or "")
+        if not report:
+            problems.append(f"{name}: no aif-verify report -- the allocator seam "
+                            "was not redirected")
+            continue
+
+        leaked, violations = int(report.group(3)), int(report.group(4))
+        if violations:
+            problems.append(f"{name}: {violations} violation(s) -- a value was "
+                            "released twice, or released without being allocated")
+        if leaked != want_leaks:
+            problems.append(f"{name}: {leaked} leaked, expected {want_leaks} "
+                            "(if this dropped, T2 now has a free point and the "
+                            "expectation should follow)")
+
+    cleanup_files(exe)
+    if problems:
+        print(f"{RED}[FAIL] verify mode reported a fact that did not hold{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] verify: no double frees, and leaks are only the T2 returns{RESET}")
+    return True
+
+
+TIER_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3, "T4b": 4}
+
+
+def aif_records(source, budget=None):
+    """symbol -> (tier, was_widened) from a manifest run."""
+    cmd = [str(PRISMIO_EXE), "aif", str(source)]
+    if budget is not None:
+        cmd.append(f"--budget={budget}")
+    result = run_command(cmd)
+    if result.returncode != 0:
+        return None, result
+    out = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 6 and "#" in parts[0] and parts[1] in TIER_ORDER:
+            out[parts[0]] = (parts[1], "budget-exhausted" in line)
+    return out, result
+
+
+def run_aif_widening_test():
+    """INFERENCE 5.3: truncating the ascending iteration yields a *pre*-fixed
+    point, whose facts are too optimistic -- so the widening that follows must
+    leave every site at or above the tier full convergence gives it. Below is a
+    use-after-free rather than a slowdown.
+
+    Checked as a property over every budget from 1 to convergence, because the
+    frontier is a different set at each one, and against sources whose fact
+    phase is long enough for it to be a proper subset -- the compiler's own
+    source converges in two fact rounds, so it only ever exercises widen-all.
+    """
+    print(f"\n{BLUE}--- Running aif_widening ---{RESET}")
+    sources = [TEST_DIR / "aif_tiers.psm"]
+    sources += sorted((TEST_DIR.parent / "aif" / "corpus").glob("*.psm"))
+
+    problems = []
+    saw_partial = False
+    for src in sources:
+        converged, result = aif_records(src)
+        if converged is None:
+            problems.append(f"{src.name}: `aif` exited {result.returncode}")
+            continue
+        m = re.search(r"^rounds\s+(\d+)", result.stdout, re.M)
+        if not m:
+            problems.append(f"{src.name}: no round count in the manifest")
+            continue
+
+        for budget in range(1, int(m.group(1))):
+            got, _ = aif_records(src, budget)
+            if got is None:
+                problems.append(f"{src.name} --budget={budget}: `aif` failed")
+                continue
+            if set(got) != set(converged):
+                problems.append(f"{src.name} --budget={budget}: the site "
+                                "population changed with the budget")
+                continue
+            widened = sum(1 for _, w in got.values() if w)
+            if 0 < widened < len(got):
+                saw_partial = True
+            for sym, (tier, _) in got.items():
+                if TIER_ORDER[tier] < TIER_ORDER[converged[sym][0]]:
+                    problems.append(
+                        f"{src.name} --budget={budget}: {sym} is {tier} "
+                        f"truncated but {converged[sym][0]} converged -- "
+                        "widening lowered a tier")
+
+    # Without this the test would still pass if widening raised everything
+    # every time, which is sound but would make the frontier dead code.
+    if not saw_partial:
+        problems.append("no budget produced a partial frontier, so the "
+                        "narrowing in aif_widen was never exercised")
+
+    if problems:
+        print(f"{RED}[FAIL] widening is not monotone{RESET}")
+        for p in problems[:10]:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] widening never lowers a tier, at any budget{RESET}")
     return True
 
 
@@ -298,6 +602,31 @@ def main():
         failed += 1
 
     if run_aif_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_widening_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_stack_slot_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_drop_emission_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_verify_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_punned_slot_invariant_test():
         passed += 1
     else:
         failed += 1

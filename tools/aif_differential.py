@@ -31,7 +31,8 @@ PROTOTYPE = REPO / "aif" / "prototype" / "aif.py"
 # and they are compared too because a site one implementation declines to count
 # is exactly the kind of difference that would otherwise hide a real one.
 TIERS = ("T0", "T1", "T2", "T3", "T4b")
-COUNTERS = ("sites", "opaque-ret", "extern-alloc", "literal-strings", "rounds")
+COUNTERS = ("sites", "opaque-ret", "extern-alloc", "static-ret",
+            "literal-strings", "rounds")
 
 
 def parse_compiler(text):
@@ -45,6 +46,8 @@ def parse_compiler(text):
     out["opaque-ret"] = int(m.group(1)) if m else -1
     m = re.search(r"^extern-alloc\s+(\d+)", text, re.M)
     out["extern-alloc"] = int(m.group(1)) if m else -1
+    m = re.search(r"^static-ret\s+(\d+)", text, re.M)
+    out["static-ret"] = int(m.group(1)) if m else -1
     for t in TIERS:
         m = re.search(rf"^\s+{t}\s+(\d+)\s", text, re.M)
         out[t] = int(m.group(1)) if m else -1
@@ -62,6 +65,8 @@ def parse_oracle(text):
     out["opaque-ret"] = int(m.group(1)) if m else -1
     m = re.search(r"^extern-alloc\s+(\d+)", text, re.M)
     out["extern-alloc"] = int(m.group(1)) if m else -1
+    m = re.search(r"^static-ret\s+(\d+)", text, re.M)
+    out["static-ret"] = int(m.group(1)) if m else -1
     for t in TIERS:
         m = re.search(rf"^\s+{t}\s+(\d+)\s+\d", text, re.M)
         out[t] = int(m.group(1)) if m else -1
@@ -75,7 +80,11 @@ def run(cmd, **kw):
 def compare(compiler, source, owned, dumps):
     flags = ["--owned-collections"] if owned else []
 
-    got = run([compiler, "aif", str(source), "--summary"] + flags)
+    # The compiler's Theta_stack is in bytes; the oracle reads a JSON dump with
+    # no layout in it and can only count fields. Comparing in fields mode keeps
+    # the test aimed at the inference, which is the part that can be silently
+    # wrong -- the byte threshold is a documented, deliberate divergence.
+    got = run([compiler, "aif", str(source), "--summary", "--theta-fields"] + flags)
     if got.returncode != 0:
         return f"compiler failed on {source}: {got.stderr.strip()[:200]}"
 
@@ -125,6 +134,10 @@ def main():
     sources = [Path(s) for s in args.sources]
     if not sources:
         sources = [Path("src/main.psm")] + sorted(Path("aif/corpus").glob("*.psm"))
+        # No corpus program uses `region`, and a region opens a scope -- so a
+        # mismatch in how the two implementations number scopes would be
+        # invisible without this, and scope ids are what Region(s) compares.
+        sources.append(Path("tests/test_44_aif_region.psm"))
 
     dumps = {}
     failures = []

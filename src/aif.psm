@@ -65,6 +65,8 @@ import diag
 extern fn aif_reset()
 
 extern fn aif_scope_new(parent: Int, owner: Int) -> Int
+extern fn aif_scope_set_region(scope: Int, name: String borrow)
+extern fn aif_region_name_at_site(id: Int) -> String alias
 
 extern fn aif_fn_new(symbol: String, name: String, file: Int) -> Int
 extern fn aif_fn_lookup(symbol: String) -> Int
@@ -76,6 +78,8 @@ extern fn aif_fn_is_sealed(f: Int) -> Int
 extern fn aif_struct_new(name: String)
 extern fn aif_enum_new(name: String)
 extern fn aif_struct_add_field(name: String)
+extern fn aif_struct_set_size(name: String, bytes: Int)
+extern fn aif_struct_size(name: String) -> Int
 extern fn aif_is_struct(name: String) -> Int
 extern fn aif_is_enum(name: String) -> Int
 extern fn aif_struct_nfields(name: String) -> Int
@@ -101,8 +105,13 @@ extern fn aif_vs_new() -> Int
 extern fn aif_vs_site(vs: Int, site: Int)
 extern fn aif_vs_key(vs: Int, key: Int)
 extern fn aif_vs_union(a: Int, b: Int) -> Int
+extern fn aif_vs_is_empty(vs: Int) -> Int
 
 extern fn aif_key_var(fn_id: Int, name: String) -> Int
+extern fn aif_var_note_scope(fn_id: Int, name: String, scope: Int)
+extern fn aif_var_scope(fn_id: Int, name: String) -> Int
+extern fn aif_extern_contract_set(fn_name: String, index: Int, contract: String)
+extern fn aif_extern_contract(fn_name: String, index: Int) -> String
 extern fn aif_key_field(type: String, field: String) -> Int
 extern fn aif_key_ret(fn_id: Int) -> Int
 extern fn aif_key_param(fn_id: Int, index: Int) -> Int
@@ -122,14 +131,20 @@ extern fn aif_con_retain_in(vs: Int, holder: Int)
 extern fn aif_con_borrow(vs: Int)
 extern fn aif_con_escape_caller(vs: Int)
 extern fn aif_con_escape_global(vs: Int)
+extern fn aif_con_no_stack(vs: Int)
 extern fn aif_con_count() -> Int
 
 extern fn aif_set_owned_collections(on: Int)
 extern fn aif_solve(max_rounds: Int) -> Int
 extern fn aif_rounds() -> Int
 extern fn aif_widen()
+extern fn aif_site_widened(id: Int) -> Int
+extern fn aif_pt_rounds() -> Int
 extern fn aif_tier_of(site: Int) -> Int
 extern fn aif_theta_stack() -> Int
+extern fn aif_set_theta_mode(mode: Int)
+extern fn aif_theta_mode() -> Int
+extern fn aif_site_note_node(site: Int, node: String borrow)
 
 extern fn aif_order_add(symbol: String, site: Int)
 extern fn aif_order_sort()
@@ -167,7 +182,14 @@ let AIF_DEFAULT_ROUNDS = 200
 // and no further.
 let AIF_FFI_BORROW = 0
 let AIF_FFI_RETAIN = 1
-let AIF_FFI_RETAIN_IN_BASE = 2
+// The callee takes ownership and frees it. Nothing on a stack or in an arena can
+// be handed to a free, so this bars T0 the way an explicit `drop` does, and the
+// value leaves this frame's control so its escape rises with it.
+let AIF_FFI_CONSUME = 2
+// The callee writes through the pointer and does not read what was there. No
+// ownership consequence at all, so it behaves as `borrow`.
+let AIF_FFI_OUT = 3
+let AIF_FFI_RETAIN_IN_BASE = 100
 
 // Counters the manifest reports. They exist so that what the model *excludes*
 // is visible rather than silent -- an exclusion nobody can see is indistinguish-
@@ -175,6 +197,11 @@ let AIF_FFI_RETAIN_IN_BASE = 2
 let mut aif_literal_strings = 0
 let mut aif_extern_alloc = 0
 let mut aif_opaque_returns = 0
+let mut aif_static_returns = 0
+
+// The budget this run was given, so the manifest header reports what was
+// actually enforced rather than the default.
+let mut aif_budget = 200
 
 // FFI 5.4: the default contract for an extern nobody declared one for. `borrow`
 // is optimistic, `retain` costs 33 points of tier distribution on this
@@ -268,7 +295,43 @@ fn aif_kind_name(kind: Int) -> String {
 // into a list looks like it never escapes, which is optimistic, i.e. unsound.
 // ---------------------------------------------------------------------------
 
-fn aif_ffi_contract(name: String, index: Int) -> Int {
+// Decodes what an `extern` declaration said, if it said anything.
+// Returns -1 when there is no declared contract, so the caller can fall through
+// to the runtime table and then to the default.
+fn aif_declared_contract(name: String, index: Int) -> Int {
+    let text = aif_extern_contract(name, index)
+    if (str_equals(text, "") == 1) { return 0 - 1 }
+
+    if (str_equals(text, "borrow") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(text, "retain") == 1) { return AIF_FFI_RETAIN }
+    if (str_equals(text, "consume") == 1) { return AIF_FFI_CONSUME }
+    if (str_equals(text, "out") == 1) { return AIF_FFI_OUT }
+
+    if (str_starts_with(text, "retain_in:") == 1) {
+        let k = str_to_int(str_substring(text, 10, str_length(text) - 10))
+        return AIF_FFI_RETAIN_IN_BASE + k
+    }
+
+    // `alias` and `produce` are return contracts and sema has already rejected
+    // them on a parameter, so reaching here means the declaration was malformed
+    // and never got past the checker. Default rather than guess.
+    return 0 - 1
+}
+
+// The ownership semantics of the Prismio runtime's own surface.
+//
+// **This is a fallback, not the source of truth.** A declared contract wins;
+// this only answers for a call whose `extern` says nothing, and it exists
+// because these functions' semantics are a property of the runtime rather than
+// of any one program's declaration of it -- every corpus program declares
+// `list_push` itself, and none of them should have to get it right for the
+// analysis to be sound. FFI 5.3a is the measurement that made `retain_in`
+// necessary in the first place.
+//
+// It should shrink as declarations gain contracts, and the entry that matters is
+// `list_push`: without it every element pushed into a list appears never to
+// escape, which is optimistic and therefore unsound.
+fn aif_runtime_contract(name: String, index: Int) -> Int {
     if (str_equals(name, "list_push") == 1) {
         if (index == 1) { return AIF_FFI_RETAIN_IN_BASE + 0 }
         return AIF_FFI_BORROW
@@ -294,12 +357,33 @@ fn aif_ffi_contract(name: String, index: Int) -> Int {
     return aif_ffi_default
 }
 
+// Declared contract, then the runtime table, then FFI 5.1's default.
+fn aif_ffi_contract(name: String, index: Int) -> Int {
+    let declared = aif_declared_contract(name, index)
+    if (declared >= 0) {
+        return declared
+    }
+    return aif_runtime_contract(name, index)
+}
+
 // FFI 5.2 `alias`: the return is an existing value reached through an argument,
 // not a fresh allocation. Modelled by returning that argument's own sites, so
 // an element read back out of a list is the element rather than a new object.
 fn aif_ffi_alias_of(name: String) -> Int {
     if (str_equals(name, "list_get") == 1) { return 0 }
     return 0 - 1
+}
+
+// FFI 5.2's return contracts, read off the declaration. `alias` says the return
+// borrows from an argument or from static storage rather than being a fresh
+// allocation, so it must not be modelled as one; `produce` says the caller owns
+// it, which is exactly what the undeclared case cannot assume.
+fn aif_declared_return_is_produce(name: String) -> Bool {
+    return str_starts_with(aif_extern_contract(name, 0 - 1), "produce") == 1
+}
+
+fn aif_declared_return_is_alias(name: String) -> Bool {
+    return str_equals(aif_extern_contract(name, 0 - 1), "alias") == 1
 }
 
 // FFI 5.2 `produce`: a fresh owned value the caller must release. Anything
@@ -333,9 +417,15 @@ fn aif_vs_of_key(key: Int) -> Int {
     return v
 }
 
-fn aif_new_site(ty: String, fn_id: Int, scope: Int, node: ASTNode) -> Int {
-    return aif_site_new(ty, aif_kind_of(ty), fn_id, scope,
-                        node.file, node.line, node.col, aif_struct_nfields(ty))
+// The node pointer is what codegen later looks the tier up by, so it is
+// registered here rather than derived: the two passes walk the same tree in the
+// same process, and one node names one site exactly.
+fn aif_new_site(ty: String, fn_id: Int, scope: Int, node_ptr: String) -> Int {
+    let node = ptr_to_node(node_ptr)
+    let sid = aif_site_new(ty, aif_kind_of(ty), fn_id, scope,
+                           node.file, node.line, node.col, aif_struct_nfields(ty))
+    aif_site_note_node(sid, node_ptr)
+    return sid
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +449,7 @@ fn aif_sites_of(node_ptr: String, fn_id: Int, scope: Int) -> Int {
         let mut sname = e.s1
         if (str_equals(sname, "") == 1) { sname = ty }
 
-        let sid = aif_new_site(sname, fn_id, scope, e)
+        let sid = aif_new_site(sname, fn_id, scope, node_ptr)
         let owner = aif_vs_of_site(sid)
 
         let mut f_ptr = e.child1
@@ -377,18 +467,24 @@ fn aif_sites_of(node_ptr: String, fn_id: Int, scope: Int) -> Int {
     }
 
     if (e.kind == NodeKind.ARRAY_LITERAL_EXPR) {
-        // LIMITATION, shared with the oracle: the elements are not walked, so a
-        // struct literal inside an array literal produces no site and appears in
-        // no manifest. Unlike every other approximation here this one does not
-        // err conservatively -- it *omits* a value rather than over-tiering it.
-        // Harmless at Level 0, where the manifest is the only output; a real
-        // hazard at Level 1, where a site codegen cannot find a tier for must
-        // fall back to the heap rather than to whatever it happens to read.
-        // Fix in both implementations at once or the differential test stops
-        // meaning anything.
         let mut aname = ty
         if (str_equals(aname, "") == 1) { aname = "Array" }
-        return aif_vs_of_site(aif_new_site(aname, fn_id, scope, e))
+
+        let sid = aif_new_site(aname, fn_id, scope, node_ptr)
+        let owner = aif_vs_of_site(sid)
+
+        // Elements are stored into the array, exactly as a struct literal's
+        // initialisers are stored into its fields. There is no field name to
+        // key on, so all elements share one -- field-insensitive within the
+        // array type, which is the same granularity the struct case uses.
+        let mut el_ptr = e.child1
+        while (node_exists(el_ptr)) {
+            let el = ptr_to_node(el_ptr)
+            aif_con_store(aif_key_field(aname, "[]"),
+                          aif_sites_of(el_ptr, fn_id, scope), owner)
+            el_ptr = el.next
+        }
+        return aif_vs_of_site(sid)
     }
 
     if (e.kind == NodeKind.LITERAL_EXPR) {
@@ -482,6 +578,15 @@ fn aif_call_sites(call_ptr: String, fn_id: Int, scope: Int) -> Int {
     }
     let argc = aif_argv_count(base)
 
+    // `drop(x)` lowers to a free, and a stack slot cannot be freed. Suppress T0
+    // for whatever it names -- see aif_con_no_stack for why this is a codegen
+    // constraint rather than a fact.
+    if (str_equals(plain, "drop") == 1) {
+        if (argc > 0) {
+            aif_con_no_stack(aif_argv_get(base, 0))
+        }
+    }
+
     let mut i = 0
     while (i < argc) {
         let av = aif_argv_get(base, i)
@@ -493,6 +598,11 @@ fn aif_call_sites(call_ptr: String, fn_id: Int, scope: Int) -> Int {
                 aif_con_retain_in(av, aif_argv_get(base, contract - AIF_FFI_RETAIN_IN_BASE))
             } else if (contract == AIF_FFI_RETAIN) {
                 aif_con_escape_global(av)
+            } else if (contract == AIF_FFI_CONSUME) {
+                // The callee frees it, so it must be something a free can take:
+                // never a stack slot, and no longer this frame's to reclaim.
+                aif_con_no_stack(av)
+                aif_con_escape_caller(av)
             } else {
                 // FFI 5.1: the callee may read and write during the call but does
                 // not retain, so it cannot extend a lifetime. Only A rises.
@@ -507,6 +617,19 @@ fn aif_call_sites(call_ptr: String, fn_id: Int, scope: Int) -> Int {
     if (alias_of >= 0 and alias_of < argc) {
         aliased = aif_argv_get(base, alias_of)
     }
+
+    // For a declared `alias`, everything the call could have reached.
+    let mut aliased_all = aif_vs_empty()
+    let mut aliased_any = false
+    let mut a_i = 0
+    while (a_i < argc) {
+        let one = aif_argv_get(base, a_i)
+        if (aif_vs_is_empty(one) == 0) {
+            aliased_all = aif_vs_union(aliased_all, one)
+            aliased_any = true
+        }
+        a_i = a_i + 1
+    }
     aif_argv_end(base)
 
     if (known) {
@@ -516,9 +639,46 @@ fn aif_call_sites(call_ptr: String, fn_id: Int, scope: Int) -> Int {
         return aliased
     }
     if (aif_is_ref(ty)) {
+        // FFI 5.2 `alias`: the return is not an allocation -- it borrows from an
+        // argument or from static storage. Modelling it as a fresh site would
+        // invent an allocation that does not exist, which is what makes every
+        // `ptr_to_node` result look like an independent opaque value.
+        //
+        // FFI.md's `alias` names no argument, so the return is the union of the
+        // arguments' value sets. That generalises the `list_get` special case
+        // rather than adding a second mechanism, and it is the sound reading:
+        // whatever the callee could have returned, it reached through one of
+        // them.
+        //
+        // Returning nothing would NOT be sound. A value set with no sites makes
+        // every subsequent store through the result a no-op, so nothing inherits
+        // the container's escape -- optimistic, and optimistic is the direction
+        // that produces a use-after-free rather than a slow program. Where there
+        // is nothing to alias, fall through to the opaque path instead.
+        if (aif_declared_return_is_alias(plain)) {
+            if (aliased_any) {
+                return aliased_all
+            }
+            // `alias` with nothing to alias is FFI 5.2's other case: static
+            // storage. That is not an allocation and does not belong on a ladder
+            // that ranks ways of reclaiming heap memory -- the same reason a
+            // string literal is excluded. Interned names, temp names and the
+            // symbol tables are all this shape.
+            //
+            // The exclusion rests on the declaration being true, which is what
+            // FFI 1 means by the boundary being the one place a wrong answer is
+            // unsafe. If it is wrong the value leaks rather than being freed
+            // twice, which is the direction FFI 5.4 chooses deliberately.
+            // Counted so the exclusion is visible rather than silent.
+            aif_static_returns = aif_static_returns + 1
+            return aif_vs_empty()
+        }
+
         aif_extern_alloc = aif_extern_alloc + 1
-        let sid = aif_new_site(ty, fn_id, scope, e)
-        if (aif_ffi_produces(plain) == false) {
+        let sid = aif_new_site(ty, fn_id, scope, call_ptr)
+        let mut produces = aif_ffi_produces(plain)
+        if (aif_declared_return_is_produce(plain)) { produces = true }
+        if (produces == false) {
             // Undeclared return: provenance unknown. It may already be shared
             // and may already outlive this frame, so it cannot be modelled as a
             // fresh local allocation.
@@ -546,6 +706,7 @@ fn aif_is_statement_kind(k: NodeKind) -> Bool {
     if (k == NodeKind.MATCH_STATEMENT) { return true }
     if (k == NodeKind.MATCH_ARM) { return true }
     if (k == NodeKind.EXPRESSION_STATEMENT) { return true }
+    if (k == NodeKind.REGION_STATEMENT) { return true }
     return false
 }
 
@@ -563,7 +724,22 @@ fn aif_walk(node_ptr: String, fn_id: Int, scope: Int) {
         return
     }
 
+    // SPEC 5.2. The scope it opens is an ordinary one -- the escape fact would
+    // have been the same without the keyword. Naming it is what changes: an
+    // allocation whose escape bottoms at or below this scope may be served from
+    // an arena rather than the heap, and the manifest can say which one.
+    if (n.kind == NodeKind.REGION_STATEMENT) {
+        let inner = aif_scope_new(scope, fn_id)
+        aif_scope_set_region(inner, n.s1)
+        aif_walk(n.child1, fn_id, inner)
+        return
+    }
+
     if (n.kind == NodeKind.VARIABLE_DECL) {
+        // Recorded whether or not there is an initialiser: a later assignment to
+        // this name needs the declaring scope, and `let x: T` with no value is
+        // still a declaration.
+        aif_var_note_scope(fn_id, n.s1, scope)
         if (node_exists(n.child2)) {
             let v = aif_sites_of(n.child2, fn_id, scope)
             aif_con_bind(aif_key_var(fn_id, n.s1), v)
@@ -586,7 +762,19 @@ fn aif_walk(node_ptr: String, fn_id: Int, scope: Int) {
             let tgt = ptr_to_node(n.child1)
             if (tgt.kind == NodeKind.IDENTIFIER_EXPR) {
                 aif_con_bind(aif_key_var(fn_id, tgt.s1), val)
-                aif_con_live_in(val, scope, fn_id)
+                // E-BIND against the *variable's* scope, not the assignment's.
+                // A value created in a loop body and assigned to a binding
+                // declared outside it survives the iteration, so its escape has
+                // to say so. Using the assignment's scope instead reads as "dies
+                // at the end of this iteration", which is how a hoisted T0
+                // alloca would hand two live values the same slot.
+                //
+                // Falls back to the assignment's scope for a name with no
+                // declaration on record -- a global, which lives longer than any
+                // scope anyway and is handled by the store path.
+                let mut holder_scope = aif_var_scope(fn_id, tgt.s1)
+                if (holder_scope < 0) { holder_scope = scope }
+                aif_con_live_in(val, holder_scope, fn_id)
             } else if (tgt.kind == NodeKind.MEMBER_ACCESS_EXPR) {
                 let mut owner = aif_vs_empty()
                 let mut base = ""
@@ -644,16 +832,98 @@ fn aif_walk_children(head: String, fn_id: Int, scope: Int) {
 // ---------------------------------------------------------------------------
 
 // The type reference graph (INFERENCE 4.4 stage 1) needs an edge from a struct
-// to every nominal type its fields can reach.
+// to every nominal type its fields can reach. A missing edge is the one
+// direction here that is unsound rather than merely imprecise: it makes a
+// genuine cycle look acyclic, and a T3 refcount on a cycle leaks.
+// ---------------------------------------------------------------------------
+// Struct layout
 //
-// LIMITATION, shared with the oracle: only a field declared directly as a
-// struct produces an edge. `tokens: List<Token>` and `items: [Node]` do not,
-// because the annotation's own name is `List` or empty. A missing edge can only
-// make the graph look *less* cyclic, so it is not conservative -- it is the one
-// approximation here that could under-report, and it is why C is currently
-// carried almost entirely by C-UNIQUE rather than by C-TYPE. Fixing it means
-// walking the annotation's child chain, and it must be fixed in both
-// implementations at once or the differential test stops meaning anything.
+// SPEC 4.2's T0 clause tests `size(s) <= Theta_stack`, in bytes. The prototype
+// approximates it with field count because a JSON AST dump carries no layout
+// (its A5); in the compiler that approximation is not merely imprecise, it is
+// the difference between Level 1 doing something and doing nothing. ASTNode is
+// 14 fields and about 88 bytes: over a threshold of 8 fields, comfortably under
+// one of 256 bytes.
+//
+// AIF-1's layout is declaration order with natural alignment (SPEC 8.2 grants
+// layout freedom; AIF-1 does not use it), so this is not an estimate of what the
+// backend will do -- it is the same rule the backend follows.
+// ---------------------------------------------------------------------------
+
+// What a field of this type occupies. Size equals alignment for every type
+// Prismio has, because every one of them is a scalar or a pointer; the day a
+// struct is stored by value that stops being true and this needs the real rule.
+fn aif_type_bytes(ann: ASTNode) -> Int {
+    // `[T]` and `List<T>` are both a pointer to elements held elsewhere.
+    if (ann.i1 == 1) { return 8 }
+    if (ann.i2 == 1) { return 8 }
+
+    let n = ann.s1
+    if (str_equals(n, "I8") == 1) { return 1 }
+    if (str_equals(n, "U8") == 1) { return 1 }
+    if (str_equals(n, "Char") == 1) { return 1 }
+    if (str_equals(n, "Bool") == 1) { return 1 }
+    if (str_equals(n, "I16") == 1) { return 2 }
+    if (str_equals(n, "U16") == 1) { return 2 }
+    if (str_equals(n, "Int") == 1) { return 4 }
+    if (str_equals(n, "I32") == 1) { return 4 }
+    if (str_equals(n, "U32") == 1) { return 4 }
+    if (str_equals(n, "I64") == 1) { return 8 }
+    if (str_equals(n, "U64") == 1) { return 8 }
+    if (str_equals(n, "Isize") == 1) { return 8 }
+    if (str_equals(n, "Usize") == 1) { return 8 }
+    if (str_equals(n, "Float") == 1) { return 8 }
+    if (aif_is_enum(n) == 1) { return 4 }
+
+    // String, Ptr, and every struct: a pointer. Structs have reference
+    // semantics here, so a struct-typed field is one word rather than the
+    // nested layout (COMPILER-AUDIT 2.2).
+    return 8
+}
+
+fn aif_align_up(offset: Int, align: Int) -> Int {
+    let slack = offset % align
+    if (slack == 0) { return offset }
+    return offset + align - slack
+}
+
+fn aif_compute_struct_size(decl: ASTNode) {
+    let mut offset = 0
+    let mut max_align = 1
+
+    let mut f_ptr = decl.child1
+    while (node_exists(f_ptr)) {
+        let f = ptr_to_node(f_ptr)
+        if (f.kind == NodeKind.STRUCT_FIELD) {
+            if (node_exists(f.child1)) {
+                let width = aif_type_bytes(ptr_to_node(f.child1))
+                offset = aif_align_up(offset, width) + width
+                if (width > max_align) { max_align = width }
+            }
+        }
+        f_ptr = f.next
+    }
+
+    // Trailing padding, so an array of these would be correctly strided. A
+    // zero-field struct still occupies a byte.
+    let mut total = aif_align_up(offset, max_align)
+    if (total == 0) { total = 1 }
+    aif_struct_set_size(decl.s1, total)
+}
+
+// `[T]` and `List<T>` both hang T off child1, so descending finds the type the
+// field actually refers to; the annotation's own name is `` or `List`.
+fn aif_annotation_leaf_name(ann: ASTNode) -> String {
+    let mut name = ann.s1
+    let mut child_ptr = ann.child1
+    while (node_exists(child_ptr)) {
+        let c = ptr_to_node(child_ptr)
+        name = c.s1
+        child_ptr = c.child1
+    }
+    return name
+}
+
 fn aif_register_type_edges(decl: ASTNode) {
     let mut f_ptr = decl.child1
     while (node_exists(f_ptr)) {
@@ -661,8 +931,9 @@ fn aif_register_type_edges(decl: ASTNode) {
         if (f.kind == NodeKind.STRUCT_FIELD) {
             if (node_exists(f.child1)) {
                 let ann = ptr_to_node(f.child1)
-                if (aif_is_struct(ann.s1) == 1) {
-                    aif_type_edge(decl.s1, ann.s1)
+                let reached = aif_annotation_leaf_name(ann)
+                if (aif_is_struct(reached) == 1) {
+                    aif_type_edge(decl.s1, reached)
                 }
             }
         }
@@ -687,6 +958,30 @@ fn aif_declare(module: ASTNode) {
             }
         } else if (d.kind == NodeKind.ENUM_DECL) {
             aif_enum_new(d.s1)
+        } else if (d.kind == NodeKind.EXTERN_FUNCTION) {
+            // Contracts live on each type annotation's s2 (see parser.psm). The
+            // return's is filed under index -1.
+            let mut index = 0
+            let mut p_ptr = d.child1
+            while (node_exists(p_ptr)) {
+                let param = ptr_to_node(p_ptr)
+                if (param.kind == NodeKind.FUNCTION_PARAMETER) {
+                    if (node_exists(param.child1)) {
+                        let ann = ptr_to_node(param.child1)
+                        if (str_equals(ann.s2, "") == 0) {
+                            aif_extern_contract_set(d.s1, index, ann.s2)
+                        }
+                    }
+                    index = index + 1
+                }
+                p_ptr = param.next
+            }
+            if (node_exists(d.child2)) {
+                let ret = ptr_to_node(d.child2)
+                if (str_equals(ret.s2, "") == 0) {
+                    aif_extern_contract_set(d.s1, 0 - 1, ret.s2)
+                }
+            }
         } else if (d.kind == NodeKind.FUNCTION) {
             // s2 is the mangled symbol, which is the identity an overloaded name
             // does not have. Falling back to s1 keeps this working on an AST
@@ -709,6 +1004,9 @@ fn aif_build(module: ASTNode) {
         let d = ptr_to_node(p)
         if (d.kind == NodeKind.STRUCT_DECL) {
             aif_register_type_edges(d)
+            // After the declaration pass, so a field typed by an enum declared
+            // later in the file is still sized as an i32 rather than a pointer.
+            aif_compute_struct_size(d)
         }
         p = d.next
     }
@@ -730,6 +1028,10 @@ fn aif_build(module: ASTNode) {
                 while (node_exists(param_ptr)) {
                     let param = ptr_to_node(param_ptr)
                     if (param.kind == NodeKind.FUNCTION_PARAMETER) {
+                        // A parameter is declared at the function root, so a
+                        // value assigned to it anywhere in the body outlives
+                        // every block inside it.
+                        aif_var_note_scope(fid, param.s1, root)
                         let mut pty = aif_node_type(param)
                         if (str_equals(pty, "") == 1) {
                             if (node_exists(param.child1)) {
@@ -768,9 +1070,16 @@ fn aif_tier_name(tier: Int) -> String {
 // SPEC 3's codegen contract per tier, named. At AIF-1 there are no arenas, so
 // T1's arena is the enclosing scope and the placement says so rather than
 // naming a region that does not exist.
-fn aif_placement(tier: Int) -> String {
+// SPEC 6.2's `placement` column. T1 names the region it is bound to: a `region`
+// statement's name when one encloses it and the value cannot outlive it,
+// otherwise the implicit region of its own scope.
+fn aif_placement(tier: Int, site: Int) -> String {
     if (tier == 0) { return "stack" }
-    if (tier == 1) { return "region:scope" }
+    if (tier == 1) {
+        let named = aif_region_name_at_site(site)
+        if (str_equals(named, "") == 0) { return str_concat("region:", named) }
+        return "region:scope"
+    }
     if (tier == 2) { return "owned" }
     if (tier == 3) { return "rc" }
     return "rc+cycle"
@@ -848,22 +1157,33 @@ fn aif_emit_manifest(source_path: String, version: String, converged: Bool) {
 
     println("aif-manifest 1")
     aif_kv("level", "AIF-1")
+    // `prismio aif` never runs codegen, so the manifest it prints describes an
+    // analysis, not a build. SPEC 7.3's verify mode changes the allocator names
+    // and nothing the inference does, so the facts here are the same either way.
     aif_kv("build", "release")
-    aif_kv("budget", str_concat(int_to_str(AIF_DEFAULT_ROUNDS), " rounds"))
+    aif_kv("budget", str_concat(int_to_str(aif_budget), " rounds"))
     if (converged) {
         aif_kv("converged", "yes")
     } else {
         aif_kv("converged", "no")
     }
-    aif_kv("rounds", int_to_str(aif_rounds()))
-    aif_kv("theta-stack", str_concat(int_to_str(aif_theta_stack()), " fields"))
+    // Split because the two phases truncate very differently: a budget that
+    // stops the points-to phase leaves the whole graph unproven, one that stops
+    // the fact phase leaves only a frontier.
+    aif_kv("rounds", str_concat(str_concat(int_to_str(aif_rounds()), " (points-to "),
+                                str_concat(int_to_str(aif_pt_rounds()), ")")))
+    // SPEC 4.2 requires the implementation document its Theta_stack. This is
+    // where it does it.
+    let mut theta_unit = " bytes"
+    if (aif_theta_mode() == 1) { theta_unit = " fields (oracle-parity mode)" }
+    aif_kv("theta-stack", str_concat(int_to_str(aif_theta_stack()), theta_unit))
     aif_kv("ffi-default", "borrow")
     aif_kv("compiler", str_concat("prismio ", version))
     aif_kv("llvm", ir_llvm_version())
     aif_kv("source", source_path)
     aif_kv("sites", int_to_str(total))
     println("#")
-    println("# symbol                                      tier  placement     type            layout  origin            site")
+    println("# symbol                                      tier  placement         type            layout  origin            site")
 
     let mut i = 0
     while (i < total) {
@@ -875,18 +1195,19 @@ fn aif_emit_manifest(source_path: String, version: String, converged: Bool) {
     // A record whose facts came from a truncated iteration is not a settled
     // proof, and SPEC 6.2 makes that visible: a reviewer should read a large
     // budget-exhausted population as a signal to raise the budget, not as a
-    // result.
-    let mut origin = "inferred"
-    if (converged == false) { origin = "budget-exhausted" }
-
+    // result. Only the widened frontier is marked -- the rest of a truncated
+    // build converged, and calling those records exhausted too would make the
+    // signal useless for deciding whether to raise the budget.
     let n = aif_order_count()
     let mut r = 0
     while (r < n) {
         let site = aif_order_site(r)
         let tier = aif_tier_of(site)
+        let mut origin = "inferred"
+        if (aif_site_widened(site) == 1) { origin = "budget-exhausted" }
         print(aif_pad(aif_order_symbol(r), 44))
         print(aif_pad(aif_tier_name(tier), 6))
-        print(aif_pad(aif_placement(tier), 14))
+        print(aif_pad(aif_placement(tier, site), 18))
         print(aif_pad(aif_site_type(site), 16))
         print(aif_pad("AoS", 8))
         print(aif_pad(origin, 18))
@@ -946,6 +1267,10 @@ fn aif_emit_summary(source_path: String, converged: Bool) {
     print("extern-alloc ")
     print(int_to_str(aif_extern_alloc))
     println("  (values produced by runtime calls, e.g. str_concat)")
+
+    print("static-ret   ")
+    print(int_to_str(aif_static_returns))
+    println("  (declared `alias` with nothing to alias -- static, not allocated)")
 
     println("#")
     println("# tier distribution  (BENCHMARKS H1: static D over abstract values)")
@@ -1026,29 +1351,50 @@ fn aif_emit_summary(source_path: String, converged: Bool) {
 // writes nothing back to it, which is what makes SPEC 7.1's zero-analysis build
 // mode true by construction here: skipping this call cannot change what
 // generate_module emits, because nothing it produces is an input to codegen yet.
-fn aif_analyze(module: ASTNode, source_path: String, version: String,
-               owned_collections: Bool, summary: Bool) {
+// Build the graph and solve. Reports nothing -- `build` runs this and then asks
+// aif_tier_at() per allocation site, while the `aif` command runs it and prints.
+//
+// Returns whether inference converged. A false return is not a failure: SPEC 1
+// makes giving up a performance outcome, and aif_widen has already raised the
+// unproven facts to the conservative end, so every tier that follows is at or
+// above the true one.
+fn aif_run(module: ASTNode, owned_collections: Bool, theta_fields: Bool,
+           budget: Int) -> Bool {
     aif_reset()
     aif_literal_strings = 0
     aif_extern_alloc = 0
     aif_opaque_returns = 0
+    aif_static_returns = 0
+    aif_budget = budget
 
     if (owned_collections) {
         aif_set_owned_collections(1)
     } else {
         aif_set_owned_collections(0)
     }
+    if (theta_fields) {
+        aif_set_theta_mode(1)
+    } else {
+        aif_set_theta_mode(0)
+    }
 
     aif_declare(module)
     aif_build(module)
 
-    let converged = aif_solve(AIF_DEFAULT_ROUNDS) == 1
+    let converged = aif_solve(budget) == 1
     if (converged == false) {
         // INFERENCE 5.3: a truncated ascending iteration is a pre-fixed point,
         // so its facts are too optimistic. Widening to a post-fixed point is
         // mandatory, not an optimisation.
         aif_widen()
     }
+    return converged
+}
+
+fn aif_analyze(module: ASTNode, source_path: String, version: String,
+               owned_collections: Bool, summary: Bool, theta_fields: Bool,
+               budget: Int) {
+    let converged = aif_run(module, owned_collections, theta_fields, budget)
 
     if (summary) {
         aif_emit_summary(source_path, converged)

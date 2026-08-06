@@ -34,8 +34,10 @@ struct TypeInfo {
     next: String
 }
 
-extern fn ptr_to_type(ptr: String) -> TypeInfo
-extern fn type_to_ptr(t: TypeInfo) -> String
+// The identity on a pointer, like ptr_to_node -- see ast.psm for why declaring
+// it matters.
+extern fn ptr_to_type(ptr: String borrow) -> TypeInfo alias
+extern fn type_to_ptr(t: TypeInfo borrow) -> String alias
 
 fn type_make(kind: TypeKind, name: String, llvm: String) -> TypeInfo {
     return TypeInfo {

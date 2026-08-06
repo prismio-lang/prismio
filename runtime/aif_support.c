@@ -26,6 +26,7 @@
 // ============================================================================
 
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -283,6 +284,10 @@ typedef struct {
     int parent;
     int depth;
     int owner;      // function id
+    // SPEC 5.2. -1 unless a `region` statement opened this scope, in which case
+    // it is the interned name -- which is what the manifest's `region:<name>`
+    // placement reports, and how codegen knows an arena is live here.
+    int region_name;
 } Scope;
 
 static Scope* scopes;
@@ -297,7 +302,13 @@ int aif_scope_new(int parent, int owner) {
     s->parent = parent;
     s->owner = owner;
     s->depth = (parent < 0) ? 0 : scopes[parent].depth + 1;
+    s->region_name = -1;
     return scope_count++;
+}
+
+void aif_scope_set_region(int scope, const char* name) {
+    if (scope < 0 || scope >= scope_count) return;
+    scopes[scope].region_name = aif_intern(name);
 }
 
 int aif_scope_count(void) { return scope_count; }
@@ -398,6 +409,7 @@ int aif_fn_is_sealed(int f)      { return (f < 0 || f >= fn_count) ? 0 : fns[f].
 typedef struct {
     int name;
     int nfields;
+    int bytes;          // 0 until the frontend computes a layout for it
     int is_enum;
     Bits reaches;       // direct edges, then closed transitively
     int acyclic;
@@ -441,6 +453,7 @@ static int nominal_intern(const char* name, int is_enum) {
     Nominal* t = &nominals[nominal_count];
     t->name = aif_intern(name);
     t->nfields = 0;
+    t->bytes = 0;
     t->is_enum = is_enum;
     t->reaches.w = NULL;
     t->reaches.nwords = 0;
@@ -469,6 +482,19 @@ int aif_struct_nfields(const char* name) {
 
 void aif_struct_add_field(const char* name) {
     nominals[nominal_intern(name, 0)].nfields++;
+}
+
+// The frontend computes this from the field types once every type is known.
+// It is here rather than derived here because AIF-1's layout *is* declaration
+// order (SPEC 8.2 gives the compiler layout freedom; AIF-1 does not use it), and
+// the frontend is what knows what a field's type lowers to.
+void aif_struct_set_size(const char* name, int bytes) {
+    nominals[nominal_intern(name, 0)].bytes = bytes;
+}
+
+int aif_struct_size(const char* name) {
+    int id = nominal_find(name);
+    return (id >= 0) ? nominals[id].bytes : 0;
 }
 
 // One edge of the type reference graph (INFERENCE 4.4 stage 1). The frontend
@@ -540,8 +566,10 @@ typedef struct {
     int scope;
     int file, line, col;
     int nfields;
+    int bytes;          // stamped once, before iteration
     int E, A, C;
     int type_acyclic;   // stamped once, before iteration
+    int no_stack;       // explicitly dropped -- see AIF_CON_NO_STACK
 } Site;
 
 static Site* sites;
@@ -568,7 +596,9 @@ int aif_site_new(const char* type, int kind, int fn, int scope,
     s->line = line;
     s->col = col;
     s->nfields = nfields;
+    s->bytes = 0;
     s->type_acyclic = 1;
+    s->no_stack = 0;
     // Bottom, per INFERENCE 5.2 line 2: Region(defscope), Unique, Acyclic.
     s->E = scope;
     s->A = AIF_A_UNIQUE;
@@ -600,10 +630,11 @@ int aif_site_cyc(int id)     { return (id < 0 || id >= site_count) ? AIF_C_MAYBE
 // functions is two keys, and `Lexer.source` is one key across every Lexer.
 // ============================================================================
 
-#define AIF_KEY_VAR   0
-#define AIF_KEY_FIELD 1
-#define AIF_KEY_RET   2
-#define AIF_KEY_PARAM 3
+#define AIF_KEY_VAR    0
+#define AIF_KEY_FIELD  1
+#define AIF_KEY_RET    2
+#define AIF_KEY_PARAM  3
+#define AIF_KEY_EXTERN 4
 
 #define AIF_KEY_BUCKETS 16384
 
@@ -635,10 +666,97 @@ static int key_intern(int kind, int a, int b) {
 }
 
 int aif_key_var(int fn, const char* name)            { return key_intern(AIF_KEY_VAR, fn, aif_intern(name)); }
+
+// ---------------------------------------------------------------------------
+// Declaring scopes
+//
+// E-BIND needs the scope a *variable* was declared in, not the scope the
+// assignment sits in. Without it a value created inside a loop and assigned to a
+// binding declared outside keeps the loop body's escape -- which reads as "dies
+// at the end of this iteration" and is false, because the outer binding still
+// refers to it on the next one.
+//
+// At Level 0 that was invisible: every tier is semantically valid and nothing
+// allocated differently. It stops being invisible the moment T0 emits one
+// hoisted alloca per site and every iteration writes the same slot.
+//
+// Shadowing joins outward. Two declarations of one name in sibling blocks join
+// to their least common ancestor, which is at least as long-lived as either, so
+// the answer is conservative rather than dependent on which the walk saw last.
+// ---------------------------------------------------------------------------
+
+static int* var_scope;
+static int var_scope_cap;
+
+static void var_scope_grow(int key) {
+    if (key < var_scope_cap) return;
+    int grow = var_scope_cap ? var_scope_cap * 2 : 1024;
+    if (grow <= key) grow = key + 1;
+    var_scope = (int*)xrealloc(var_scope, (size_t)grow * sizeof(int), "AIF declaring scopes");
+    for (int i = var_scope_cap; i < grow; i++) var_scope[i] = -1;
+    var_scope_cap = grow;
+}
+
+void aif_var_note_scope(int fn, const char* name, int scope) {
+    int key = aif_key_var(fn, name);
+    var_scope_grow(key);
+    if (var_scope[key] < 0) {
+        var_scope[key] = scope;
+        return;
+    }
+    int m = scope_lca(var_scope[key], scope);
+    if (m >= 0) var_scope[key] = m;
+}
+
+// -1 when the name has no declaration on record -- a global, or an assignment
+// the walk reached before the declaration. The caller falls back to the
+// assignment's own scope, which is what this function replaced.
+int aif_var_scope(int fn, const char* name) {
+    int key = aif_key_var(fn, name);
+    return (key < var_scope_cap) ? var_scope[key] : -1;
+}
 int aif_key_field(const char* type, const char* fld) { return key_intern(AIF_KEY_FIELD, aif_intern(type), aif_intern(fld)); }
 int aif_key_ret(int fn)                              { return key_intern(AIF_KEY_RET, fn, 0); }
 int aif_key_param(int fn, int index)                 { return key_intern(AIF_KEY_PARAM, fn, index); }
 int aif_key_count(void)                              { return key_count; }
+
+// ---------------------------------------------------------------------------
+// Declared FFI contracts
+//
+// What an `extern` declaration says about ownership (FFI 5), keyed by the
+// callee's name and a parameter index. Index -1 holds the return contract and
+// -2 marks the name as declared at all.
+//
+// Keyed through the same tuple map as everything else, so a contract lookup at a
+// call site is one hash rather than a scan over declarations.
+// ---------------------------------------------------------------------------
+
+static int* extern_contract;    // key id -> interned contract text, -1 unset
+static int extern_contract_cap;
+
+static void extern_contract_grow(int key) {
+    if (key < extern_contract_cap) return;
+    int grow = extern_contract_cap ? extern_contract_cap * 2 : 1024;
+    if (grow <= key) grow = key + 1;
+    extern_contract = (int*)xrealloc(extern_contract, (size_t)grow * sizeof(int),
+                                     "AIF extern contracts");
+    for (int i = extern_contract_cap; i < grow; i++) extern_contract[i] = -1;
+    extern_contract_cap = grow;
+}
+
+void aif_extern_contract_set(const char* fn, int index, const char* contract) {
+    int key = key_intern(AIF_KEY_EXTERN, aif_intern(fn), index);
+    extern_contract_grow(key);
+    extern_contract[key] = aif_intern(contract);
+}
+
+// "" when nothing was declared, which the frontend reads as "fall through to the
+// default" rather than as a contract in its own right.
+const char* aif_extern_contract(const char* fn, int index) {
+    int key = key_intern(AIF_KEY_EXTERN, aif_intern(fn), index);
+    if (key >= extern_contract_cap || extern_contract[key] < 0) return "";
+    return aif_str(extern_contract[key]);
+}
 
 // ============================================================================
 // Value-set expressions
@@ -750,6 +868,7 @@ void aif_argv_end(int base) { argv.len = base; }
 #define AIF_CON_BORROW        6
 #define AIF_CON_ESCAPE_CALLER 7
 #define AIF_CON_ESCAPE_GLOBAL 8
+#define AIF_CON_NO_STACK      9
 
 typedef struct {
     int kind, a, b, c;
@@ -780,6 +899,23 @@ void aif_con_borrow(int vs)                     { con_add(AIF_CON_BORROW, vs, 0,
 void aif_con_escape_caller(int vs)              { con_add(AIF_CON_ESCAPE_CALLER, vs, 0, 0); }
 void aif_con_escape_global(int vs)              { con_add(AIF_CON_ESCAPE_GLOBAL, vs, 0, 0); }
 
+// `drop(x)` lowers to a free, and a stack slot is not a thing that can be freed.
+// A T0 value has no allocation to release -- its storage *is* the frame -- so
+// promoting a value the source explicitly drops turns a working program into
+// heap corruption.
+//
+// This is not a fact about the value and deliberately does not touch E, A or C:
+// an explicit drop says nothing about lifetime or aliasing, and distorting a
+// fact domain to carry a codegen constraint would make the manifest lie about
+// why. It suppresses the T0 clause and nothing else, so the value lands T1/T2 --
+// heap-allocated, with something to free.
+//
+// The better answer is for `drop` on a T0 value to emit nothing at all, which
+// needs codegen to resolve the tier of a *binding* at the drop site rather than
+// the tier of an allocation at its literal. That wants COMPILER-AUDIT 4.1's node
+// ids. Until then this is the sound direction to be wrong in.
+void aif_con_no_stack(int vs)                   { con_add(AIF_CON_NO_STACK, vs, 0, 0); }
+
 int aif_con_count(void) { return con_count; }
 
 // ============================================================================
@@ -792,6 +928,14 @@ static int pt_len, holders_len;
 static Bits scratch_val, scratch_own;
 static IntVec vec_val, vec_own;
 static int solve_rounds;
+static int pt_rounds;       // of solve_rounds, how many the points-to phase used
+
+// Delta, in INFERENCE 5.3's sense: what moved in the round that just ran. On a
+// truncated run that is the frontier the widening has to start from, so it is
+// reset at the top of every round and only the last one's survives.
+static Bits delta;          // sites whose facts moved
+static int  delta_pt;       // did any points-to or holders set grow?
+static Bits widened;        // sites aif_widen raised, for the manifest
 
 // Whether collections are affine, i.e. whether the copy rule applies to them.
 // Today's Prismio makes only structs move-only (types.psm); AIF specifies
@@ -818,6 +962,8 @@ static void solver_alloc(void) {
     holders = (Bits*)xcalloc((size_t)holders_len, sizeof(Bits), "AIF holders");
     for (int s = 0; s < site_count; s++) {
         sites[s].type_acyclic = type_acyclic_id(sites[s].type);
+        int t = nominal_find_id(sites[s].type);
+        sites[s].bytes = (t >= 0) ? nominals[t].bytes : 0;
     }
 }
 
@@ -835,6 +981,13 @@ static void resolve(int vs, Bits* out) {
             bits_set(out, item >> 1, "AIF resolve");
         }
     }
+}
+
+// Records the site in this round's delta and returns 1, so a rule reads
+// `if (raise_alias(s, X)) changed = moved(s);`.
+static int moved(int site) {
+    bits_set(&delta, site, "AIF delta");
+    return 1;
 }
 
 static int raise_escape(int site, int target) {
@@ -859,49 +1012,99 @@ static int raise_alias(int site, int level) {
 //
 // Returns 1 on convergence, 0 when the round budget ran out. A 0 return is NOT
 // safe to assign tiers from: see aif_widen.
+// Every rule that writes pt or holders reads only pt -- no fact feeds back into
+// the points-to relation -- so its least fixed point is independent of the facts
+// and reaching it first changes no answer. What it changes is the frontier:
+// solved together, points-to is still growing when a budget bites, and a set
+// that may still gain members this pass cannot name makes every site a possible
+// successor. Separated, the fact phase always truncates over a final graph.
+static int solve_points_to(int max_rounds) {
+    for (int r = 0; r < max_rounds; r++) {
+        solve_rounds++;
+        int changed = 0;
+
+        for (int ci = 0; ci < con_count; ci++) {
+            Constraint* k = &cons[ci];
+            if (k->kind != AIF_CON_BIND && k->kind != AIF_CON_ARG
+                && k->kind != AIF_CON_STORE) {
+                continue;
+            }
+
+            resolve(k->b, &scratch_val);
+            if (bits_or(&pt[k->a], &scratch_val, "AIF points-to")) changed = 1;
+
+            // Passing a value as an argument does not make the parameter a
+            // holder of it, so ARG records none.
+            if (k->kind == AIF_CON_ARG) continue;
+            bits_to_vec(&scratch_val, &vec_val);
+            for (int i = 0; i < vec_val.len; i++) {
+                if (bits_set(&holders[vec_val.v[i]], k->a, "AIF holders")) changed = 1;
+            }
+        }
+
+        if (!changed) return 1;
+    }
+    return 0;
+}
+
 int aif_solve(int max_rounds) {
     solver_alloc();
+    solve_rounds = 0;
 
-    for (int r = 0; r < max_rounds; r++) {
+    if (!solve_points_to(max_rounds)) {
+        delta_pt = 1;
+        pt_rounds = solve_rounds;
+        return 0;
+    }
+    pt_rounds = solve_rounds;
+
+    // Nothing has been proved about any site yet, so if the budget leaves no
+    // round for the facts the frontier is the whole graph. Overwritten by the
+    // first round that runs.
+    for (int s = 0; s < site_count; s++) bits_set(&delta, s, "AIF delta");
+
+    for (int r = solve_rounds; r < max_rounds; r++) {
         solve_rounds = r + 1;
         int changed = 0;
+        bits_clear(&delta);
+        delta_pt = 0;
 
         for (int ci = 0; ci < con_count; ci++) {
             Constraint* k = &cons[ci];
 
             if (k->kind == AIF_CON_BIND) {
                 resolve(k->b, &scratch_val);
-                if (bits_or(&pt[k->a], &scratch_val, "AIF points-to")) changed = 1;
+                if (bits_or(&pt[k->a], &scratch_val, "AIF points-to")) changed = delta_pt = 1;
                 bits_to_vec(&scratch_val, &vec_val);
                 for (int i = 0; i < vec_val.len; i++) {
-                    if (bits_set(&holders[vec_val.v[i]], k->a, "AIF holders")) changed = 1;
+                    if (bits_set(&holders[vec_val.v[i]], k->a, "AIF holders")) changed = delta_pt = 1;
                 }
 
             } else if (k->kind == AIF_CON_ARG) {
                 resolve(k->b, &scratch_val);
-                if (bits_or(&pt[k->a], &scratch_val, "AIF points-to")) changed = 1;
+                if (bits_or(&pt[k->a], &scratch_val, "AIF points-to")) changed = delta_pt = 1;
                 bits_to_vec(&scratch_val, &vec_val);
                 // A-CALL: passing a value hands out a borrow of it.
                 for (int i = 0; i < vec_val.len; i++) {
-                    if (raise_alias(vec_val.v[i], AIF_A_BORROWED)) changed = 1;
+                    if (raise_alias(vec_val.v[i], AIF_A_BORROWED)) changed = moved(vec_val.v[i]);
                 }
 
             } else if (k->kind == AIF_CON_STORE) {
                 resolve(k->b, &scratch_val);
                 resolve(k->c, &scratch_own);
-                if (bits_or(&pt[k->a], &scratch_val, "AIF points-to")) changed = 1;
+                if (bits_or(&pt[k->a], &scratch_val, "AIF points-to")) changed = delta_pt = 1;
                 bits_to_vec(&scratch_val, &vec_val);
                 bits_to_vec(&scratch_own, &vec_own);
                 for (int i = 0; i < vec_val.len; i++) {
                     int s = vec_val.v[i];
-                    if (bits_set(&holders[s], k->a, "AIF holders")) changed = 1;
+                    if (bits_set(&holders[s], k->a, "AIF holders")) changed = delta_pt = 1;
                     for (int j = 0; j < vec_own.len; j++) {
                         int o = vec_own.v[j];
                         // E-STORE: reachable from the container, so it lives at
                         // least as long as the container does.
-                        if (raise_escape(s, sites[o].E)) changed = 1;
+                        if (raise_escape(s, sites[o].E)) changed = moved(s);
                         // A-STORE: sharing is inherited through reachability.
-                        if (raise_alias(s, sites[o].A)) changed = 1;
+                        if (raise_alias(s, sites[o].A)) changed = moved(s);
                     }
                 }
 
@@ -914,7 +1117,7 @@ int aif_solve(int max_rounds) {
                     // binding in the site's own function says anything about
                     // which of that function's scopes the value outlives.
                     int target = (sites[s].fn == k->c) ? k->b : AIF_E_CALLER;
-                    if (raise_escape(s, target)) changed = 1;
+                    if (raise_escape(s, target)) changed = moved(s);
                 }
 
             } else if (k->kind == AIF_CON_OPAQUE) {
@@ -922,8 +1125,8 @@ int aif_solve(int max_rounds) {
                 bits_to_vec(&scratch_val, &vec_val);
                 for (int i = 0; i < vec_val.len; i++) {
                     int s = vec_val.v[i];
-                    if (sites[s].E != AIF_E_GLOBAL && raise_escape(s, AIF_E_CALLER)) changed = 1;
-                    if (raise_alias(s, AIF_A_SHARED)) changed = 1;
+                    if (sites[s].E != AIF_E_GLOBAL && raise_escape(s, AIF_E_CALLER)) changed = moved(s);
+                    if (raise_alias(s, AIF_A_SHARED)) changed = moved(s);
                 }
 
             } else if (k->kind == AIF_CON_RETAIN_IN) {
@@ -937,10 +1140,10 @@ int aif_solve(int max_rounds) {
                     int s = vec_val.v[i];
                     for (int j = 0; j < vec_own.len; j++) {
                         int h = vec_own.v[j];
-                        if (raise_escape(s, sites[h].E)) changed = 1;
-                        if (raise_alias(s, sites[h].A)) changed = 1;
+                        if (raise_escape(s, sites[h].E)) changed = moved(s);
+                        if (raise_alias(s, sites[h].A)) changed = moved(s);
                     }
-                    if (raise_alias(s, AIF_A_BORROWED)) changed = 1;
+                    if (raise_alias(s, AIF_A_BORROWED)) changed = moved(s);
                 }
 
             } else if (k->kind == AIF_CON_BORROW) {
@@ -950,14 +1153,24 @@ int aif_solve(int max_rounds) {
                 resolve(k->a, &scratch_val);
                 bits_to_vec(&scratch_val, &vec_val);
                 for (int i = 0; i < vec_val.len; i++) {
-                    if (raise_alias(vec_val.v[i], AIF_A_BORROWED)) changed = 1;
+                    if (raise_alias(vec_val.v[i], AIF_A_BORROWED)) changed = moved(vec_val.v[i]);
                 }
 
             } else if (k->kind == AIF_CON_ESCAPE_CALLER) {
                 resolve(k->a, &scratch_val);
                 bits_to_vec(&scratch_val, &vec_val);
                 for (int i = 0; i < vec_val.len; i++) {
-                    if (raise_escape(vec_val.v[i], AIF_E_CALLER)) changed = 1;
+                    if (raise_escape(vec_val.v[i], AIF_E_CALLER)) changed = moved(vec_val.v[i]);
+                }
+
+            } else if (k->kind == AIF_CON_NO_STACK) {
+                resolve(k->a, &scratch_val);
+                bits_to_vec(&scratch_val, &vec_val);
+                for (int i = 0; i < vec_val.len; i++) {
+                    if (!sites[vec_val.v[i]].no_stack) {
+                        sites[vec_val.v[i]].no_stack = 1;
+                        changed = moved(vec_val.v[i]);
+                    }
                 }
 
             } else if (k->kind == AIF_CON_ESCAPE_GLOBAL) {
@@ -967,7 +1180,7 @@ int aif_solve(int max_rounds) {
                     int s = vec_val.v[i];
                     if (sites[s].E != AIF_E_GLOBAL) {
                         sites[s].E = AIF_E_GLOBAL;
-                        changed = 1;
+                        changed = moved(s);
                     }
                 }
             }
@@ -976,13 +1189,13 @@ int aif_solve(int max_rounds) {
         // Rules that read a site's own state rather than an incoming edge.
         for (int s = 0; s < site_count; s++) {
             // A-ESCAPE: anything globally reachable is reachable more than once.
-            if (sites[s].E == AIF_E_GLOBAL && raise_alias(s, AIF_A_SHARED)) changed = 1;
+            if (sites[s].E == AIF_E_GLOBAL && raise_alias(s, AIF_A_SHARED)) changed = moved(s);
 
             // A-COPY: only a copyable value can be genuinely multiply held.
             if (!site_is_move_only(&sites[s])
                 && bits_count_at_least_two(&holders[s])
                 && raise_alias(s, AIF_A_SHARED)) {
-                changed = 1;
+                changed = moved(s);
             }
 
             // C-UNIQUE / C-TYPE (INFERENCE 4.4 stage 2).
@@ -990,7 +1203,7 @@ int aif_solve(int max_rounds) {
             int want = acyclic ? AIF_C_ACYCLIC : AIF_C_MAYBE;
             if (want > sites[s].C) {
                 sites[s].C = want;
-                changed = 1;
+                changed = moved(s);
             }
         }
 
@@ -1000,6 +1213,7 @@ int aif_solve(int max_rounds) {
 }
 
 int aif_rounds(void) { return solve_rounds; }
+int aif_pt_rounds(void) { return pt_rounds; }
 
 // INFERENCE 5.3: a truncated ascending iteration is a *pre*-fixed point, so its
 // facts are too optimistic -- assigning tiers from one would hand a value T2
@@ -1007,20 +1221,85 @@ int aif_rounds(void) { return solve_rounds; }
 // use-after-free, not a slowdown, so truncation must be followed by widening to
 // a post-fixed point.
 //
-// The spec's widen_and_close raises only the unresolved subgraph and its
-// successors. This raises everything, which is a strictly more conservative
-// instance of the same operation: still a post-fixed point, still sound by
-// SPEC 4.3's monotonicity, and it costs precision only on a build that has
-// already declared itself imprecise. Every record is then marked
-// budget-exhausted, so the pessimism is visible in the manifest rather than
-// silent. Narrowing this to the real frontier is worth doing the day a budget
-// actually binds; at the default of 200 rounds nothing observed comes close.
-void aif_widen(void) {
+// U := delta union transitive_succs(delta). If a site's facts change in round
+// r+1, some input of it changed in round r, so chaining back puts everything
+// still in motion inside the closure of the last round's delta -- and raising
+// exactly that set to top yields a post-fixed point.
+//
+// Fact flow between sites runs owner -> value and only through STORE and
+// RETAIN_IN; every other rule raises a site from a constant, and the per-site
+// rules are self-edges. Those two edges are read out of the points-to state,
+// which takes no input from the facts -- so once points-to has settled the
+// successor graph is final and the frontier is exact. While points-to is still
+// growing it is not: a later round can put a site into a set this pass cannot
+// name, so there the whole graph is the only sound answer.
+static void widen_sites(const Bits* u) {
     for (int s = 0; s < site_count; s++) {
+        if (u && !bits_test(u, s)) continue;
         sites[s].E = AIF_E_GLOBAL;
         sites[s].A = AIF_A_SHARED;
         sites[s].C = AIF_C_MAYBE;
+        bits_set(&widened, s, "AIF widened");
     }
+}
+
+void aif_widen(void) {
+    if (site_count <= 0) return;
+
+    if (delta_pt) {
+        widen_sites(NULL);
+        return;
+    }
+
+    Bits* succ = (Bits*)xcalloc((size_t)site_count, sizeof(Bits), "AIF widen succ");
+    for (int ci = 0; ci < con_count; ci++) {
+        Constraint* k = &cons[ci];
+        int vs_val, vs_own;
+        if (k->kind == AIF_CON_STORE)           { vs_val = k->b; vs_own = k->c; }
+        else if (k->kind == AIF_CON_RETAIN_IN)  { vs_val = k->a; vs_own = k->b; }
+        else continue;
+
+        resolve(vs_val, &scratch_val);
+        resolve(vs_own, &scratch_own);
+        bits_to_vec(&scratch_own, &vec_own);
+        for (int j = 0; j < vec_own.len; j++) {
+            bits_or(&succ[vec_own.v[j]], &scratch_val, "AIF widen succ");
+        }
+    }
+
+    Bits u;
+    memset(&u, 0, sizeof(u));
+    bits_or(&u, &delta, "AIF widen frontier");
+
+    IntVec work;
+    memset(&work, 0, sizeof(work));
+    bits_to_vec(&delta, &vec_val);
+    for (int i = 0; i < vec_val.len; i++) vec_push(&work, vec_val.v[i], "AIF widen work");
+
+    while (work.len > 0) {
+        int s = work.v[--work.len];
+        bits_to_vec(&succ[s], &vec_own);
+        for (int i = 0; i < vec_own.len; i++) {
+            if (bits_set(&u, vec_own.v[i], "AIF widen frontier")) {
+                vec_push(&work, vec_own.v[i], "AIF widen work");
+            }
+        }
+    }
+
+    widen_sites(&u);
+
+    free(work.v);
+    bits_free(&u);
+    for (int s = 0; s < site_count; s++) bits_free(&succ[s]);
+    free(succ);
+}
+
+// Whether this site's facts were raised by the widening rather than inferred.
+// SPEC 6.2 marks exactly those records budget-exhausted; the rest of a truncated
+// build carries facts that converged and are as good as any other build's.
+int aif_site_widened(int id) {
+    if (id < 0 || id >= site_count) return 0;
+    return bits_test(&widened, id);
 }
 
 // ============================================================================
@@ -1040,6 +1319,10 @@ void aif_widen(void) {
 // ============================================================================
 
 #define AIF_THETA_STACK_FIELDS 8
+#define AIF_THETA_STACK_BYTES 256
+
+#define AIF_THETA_MODE_BYTES  0
+#define AIF_THETA_MODE_FIELDS 1
 
 #define AIF_T0  0
 #define AIF_T1  1
@@ -1047,20 +1330,192 @@ void aif_widen(void) {
 #define AIF_T3  3
 #define AIF_T4B 4
 
-int aif_theta_stack(void) { return AIF_THETA_STACK_FIELDS; }
+// Which Theta_stack to apply. Bytes is the real threshold and the default;
+// fields is the prototype's approximation (its A5), kept switchable because the
+// oracle reads a JSON dump with no layout in it and cannot compute the other.
+// A comparison against the oracle therefore runs in fields mode -- otherwise the
+// two would differ on the T0/T1 split alone and the differential test would stop
+// saying anything about the part that matters, which is the inference.
+static int theta_mode = AIF_THETA_MODE_BYTES;
+
+void aif_set_theta_mode(int mode) {
+    theta_mode = (mode == AIF_THETA_MODE_FIELDS) ? AIF_THETA_MODE_FIELDS
+                                                 : AIF_THETA_MODE_BYTES;
+}
+
+int aif_theta_mode(void) { return theta_mode; }
+
+int aif_theta_stack(void) {
+    return (theta_mode == AIF_THETA_MODE_FIELDS) ? AIF_THETA_STACK_FIELDS
+                                                 : AIF_THETA_STACK_BYTES;
+}
+
+// SPEC 4.2 requires the size be *statically known* as well as under the
+// threshold. A struct whose size the frontend never computed is not known, and
+// unknown must not read as small.
+static int fits_on_stack(const Site* s) {
+    if (theta_mode == AIF_THETA_MODE_FIELDS) {
+        return s->nfields <= AIF_THETA_STACK_FIELDS;
+    }
+    return s->bytes > 0 && s->bytes <= AIF_THETA_STACK_BYTES;
+}
 
 int aif_tier_of(int id) {
     if (id < 0 || id >= site_count) return AIF_T4B;
     Site* s = &sites[id];
 
     if (s->E == s->scope && s->A <= AIF_A_BORROWED
-        && s->kind == AIF_K_STRUCT && s->nfields <= AIF_THETA_STACK_FIELDS) {
+        && s->kind == AIF_K_STRUCT && fits_on_stack(s) && !s->no_stack) {
         return AIF_T0;
     }
     if (s->E != AIF_E_CALLER && s->E != AIF_E_GLOBAL) return AIF_T1;
     if (s->A <= AIF_A_BORROWED) return AIF_T2;
     if (s->C == AIF_C_ACYCLIC) return AIF_T3;
     return AIF_T4B;
+}
+
+// ============================================================================
+// Tier lookup by AST node
+//
+// Codegen has to ask "what tier is the value this expression allocates?", and
+// the answer has to survive the gap between the two passes. The join key is the
+// node itself: the AIF pass and codegen walk the same in-memory tree in the same
+// process, so the address the parser allocated is a name for the expression that
+// costs nothing to carry and cannot collide.
+//
+// It replaces a file:line:col key, which could: an array literal and its first
+// element start at the same column, and `[str_concat(a,b), ...]` puts a site at
+// each. That key had to resolve a collision by keeping the *highest* tier, since
+// codegen reads T0 as permission to use a stack slot and rounding down there is
+// heap corruption. Nothing rounds now -- one node, one site.
+// ============================================================================
+
+#define AIF_NODE_BUCKETS 8192
+
+typedef struct NodeSite {
+    struct NodeSite* next;
+    const void* node;
+    int site;
+} NodeSite;
+
+static NodeSite* node_buckets[AIF_NODE_BUCKETS];
+
+static unsigned node_hash(const void* p) {
+    uintptr_t v = (uintptr_t)p;
+    v ^= v >> 33;
+    v *= 0xff51afd7ed558ccdull;
+    v ^= v >> 29;
+    return (unsigned)v & (AIF_NODE_BUCKETS - 1);
+}
+
+// One site per allocating expression, so a node that already has one is a bug
+// in the walk rather than a collision to resolve. Recording the first keeps that
+// deterministic if it ever happens.
+void aif_site_note_node(int site, const void* node) {
+    if (site < 0 || site >= site_count || node == NULL) return;
+    unsigned b = node_hash(node);
+    for (NodeSite* n = node_buckets[b]; n; n = n->next) {
+        if (n->node == node) return;
+    }
+    NodeSite* n = (NodeSite*)xmalloc(sizeof(NodeSite), "AIF node index");
+    n->node = node;
+    n->site = site;
+    n->next = node_buckets[b];
+    node_buckets[b] = n;
+}
+
+// -1 when no site was inferred for this node. Codegen must read that as "no
+// information" and allocate the way it always did -- which is what makes SPEC
+// 7.1's zero-analysis build behaviourally identical rather than merely intended
+// to be.
+int aif_tier_at_node(const void* node) {
+    if (node == NULL) return -1;
+    for (NodeSite* n = node_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node == node) return aif_tier_of(n->site);
+    }
+    return -1;
+}
+
+// Level 2's question: may the value this node allocates be freed when the scope
+// that allocated it exits?
+//
+// Two things have to hold, and the analysis supplies only one of them.
+//
+// The escape must bottom at that scope -- the same test the T0 clause opens
+// with, and the reason the declaring-scope fix in the escape module had to be
+// right. The tier alone does not answer it: T1 says "some region", which may be
+// an enclosing scope if the value was also bound further out, and freeing at the
+// inner exit would then be a use-after-free rather than a leak.
+//
+// The *language* must also guarantee a single owner, which is what
+// site_is_move_only reports. Without it there is nothing to stop a second
+// binding holding the same value, and a free at one binding's scope exit is a
+// double free through the other. Today that admits structs only; it widens on
+// its own when SPEC 11 item 10's affine collections land, which is what makes
+// this the change Level 4 pays off rather than Level 2.
+// The innermost `region` scope enclosing this site's own scope, or -1.
+static int enclosing_region(int scope) {
+    for (int s = scope; s >= 0; s = scopes[s].parent) {
+        if (scopes[s].region_name >= 0) return s;
+    }
+    return -1;
+}
+
+// SPEC 5.2: may this value come from the enclosing region's arena?
+//
+// Only if it dies no later than that region does. The escape is a scope, and
+// the arena is released when its own scope exits, so the test is "is the region
+// an ancestor-or-self of the escape scope" -- lca(E, r) == r.
+//
+// The nesting case is the one that makes this more than a lexical question:
+//
+//     region outer { let mut x = ...; region inner { x = Foo{} } use(x) }
+//
+// `Foo{}` is lexically inside `inner`, but its escape is `outer`'s scope, and
+// inner's arena is gone by `use(x)`. lca(outer, inner) is outer, not inner, so
+// this correctly declines and the value goes to the heap.
+int aif_arena_at_node(const void* node) {
+    if (node == NULL) return 0;
+    for (NodeSite* n = node_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node != node) continue;
+        Site* s = &sites[n->site];
+        if (aif_tier_of(n->site) != AIF_T1) return 0;   // T0 has the frame already
+        int r = enclosing_region(s->scope);
+        if (r < 0) return 0;
+        if (s->E < 0) return 0;                         // Caller or Global
+        return scope_lca(s->E, r) == r ? 1 : 0;
+    }
+    return 0;
+}
+
+// The region name to report for this site, or "" when it is not arena-placed.
+const char* aif_region_name_at_site(int id) {
+    if (id < 0 || id >= site_count) return "";
+    if (aif_tier_of(id) != AIF_T1) return "";
+    int r = enclosing_region(sites[id].scope);
+    if (r < 0 || sites[id].E < 0) return "";
+    if (scope_lca(sites[id].E, r) != r) return "";
+    return aif_str(scopes[r].region_name);
+}
+
+int aif_frees_at_scope_node(const void* node) {
+    if (node == NULL) return 0;
+    // An arena releases in bulk when its region exits. Freeing one of its
+    // objects individually would hand a pointer into the middle of a chunk to
+    // the deallocator -- so a value the arena serves is never on a drop list.
+    if (aif_arena_at_node(node)) return 0;
+    for (NodeSite* n = node_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node != node) continue;
+        Site* s = &sites[n->site];
+        if (s->E != s->scope) return 0;
+        if (!site_is_move_only(s)) return 0;
+        // An explicit `drop` already frees it; a scope drop as well is a double
+        // free. Same flag that bars T0, and for the same reason -- it records
+        // that the source, not the model, decides when this value dies.
+        if (s->no_stack) return 0;
+        return aif_tier_of(n->site) == AIF_T0 ? 0 : 1;   // T0 storage is the frame
+    }
+    return 0;
 }
 
 // ============================================================================
@@ -1142,6 +1597,24 @@ void aif_reset(void) {
 
     for (int i = 0; i < fn_by_symbol_cap; i++) fn_by_symbol[i] = -1;
     fn_count = 0;
+
+    free(var_scope);
+    var_scope = NULL;
+    var_scope_cap = 0;
+
+    free(extern_contract);
+    extern_contract = NULL;
+    extern_contract_cap = 0;
+
+    for (int i = 0; i < AIF_NODE_BUCKETS; i++) {
+        NodeSite* n = node_buckets[i];
+        while (n) {
+            NodeSite* next = n->next;
+            free(n);
+            n = next;
+        }
+        node_buckets[i] = NULL;
+    }
 
     site_count = 0;
     scope_count = 0;

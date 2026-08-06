@@ -1,0 +1,66 @@
+// Why NodeKind and TypeKind reserve ordinal 0 (src/ast.psm's invariant).
+//
+// This is a characterization test: it asserts the *mechanism*, not a desirable
+// property. The compiler puns struct pointers as String and spells "this slot is
+// empty" as the empty string, so `str_equals(ptr, "")` reads the first byte of
+// the pointed-to struct. A struct whose first field is zero therefore looks
+// exactly like an empty slot.
+//
+// That is the bug that made every module root report as absent, back when
+// NodeKind.MODULE was ordinal 0. The fix was the invariant, not a change to the
+// representation -- so the mechanism is still live, and this test is what makes
+// it visible rather than folklore.
+//
+// If this test ever starts failing, the punning or string representation
+// changed. That is good news, and src/ast.psm's invariant should be revisited
+// rather than this test patched.
+
+extern fn node_to_ptr(slot: Slot) -> String
+extern fn str_equals(s1: String, s2: String) -> Int
+
+struct Slot {
+    tag: Int,
+    value: Int
+}
+
+fn reads_as_empty(tag: Int) -> Bool {
+    let s = Slot { tag: tag, value: 99 }
+    return str_equals(node_to_ptr(s), "") == 1
+}
+
+fn main() -> Int {
+    let mut failures = 0
+
+    // A zero first field is byte-for-byte an empty slot. This is the hazard.
+    if (reads_as_empty(0) == false) {
+        println("FAIL: a zero first field no longer aliases the empty slot")
+        println("  the punning representation changed -- revisit ast.psm's invariant")
+        failures = failures + 1
+    }
+
+    // A non-zero first field is not. This is what the invariant buys, and it is
+    // the property every `node_exists` call in the compiler rests on.
+    if (reads_as_empty(1)) {
+        println("FAIL: a live value with a non-zero first field read as empty")
+        failures = failures + 1
+    }
+    if (reads_as_empty(255)) {
+        println("FAIL: tag 255 read as empty")
+        failures = failures + 1
+    }
+
+    // The low byte is what lands first on a little-endian target, so a tag whose
+    // low byte is zero still aliases the empty slot even though the tag is not.
+    // Stated here because it is the exact reason the invariant is about ordinal
+    // 0 rather than about "small" values.
+    if (reads_as_empty(256) == false) {
+        println("FAIL: 256 has a zero low byte and should alias the empty slot")
+        failures = failures + 1
+    }
+
+    if (failures == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

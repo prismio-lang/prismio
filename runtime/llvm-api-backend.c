@@ -619,6 +619,33 @@ void ir_store_global(const char *type, const char *value, const char *name) {
 // Replaces the hand-written getelementptr-null / ptrtoint / call malloc text
 // the frontend used to emit, and is the single place a different memory model
 // needs to change.
+// AIF T0: the value does not outlive the activation record that creates it, so
+// it needs a stack slot and no allocation call at all (SPEC 3, T0 row).
+//
+// Hoisted to the entry block, like every other alloca here, because a literal
+// inside a loop would otherwise allocate a fresh slot per iteration and grow the
+// frame without bound. That means **one slot per site, reused by every
+// iteration** -- which is only correct because T0 requires the value's escape to
+// bottom at its own defining scope, i.e. nothing from one iteration is still
+// reachable in the next. The escape module has to be right about that; when it
+// was not, this was a miscompile rather than a slowdown (see aif_var_scope in
+// aif_support.c).
+//
+// Unnamed and never deduplicated, unlike ir_alloca: two struct literals of the
+// same type in one function are two values and need two slots.
+int ir_alloc_stack(const char *struct_name) {
+    LLVMTypeRef sty = named_struct(struct_name);
+
+    LLVMValueRef entry_term = LLVMGetBasicBlockTerminator(g_entry_block);
+    if (entry_term) {
+        LLVMPositionBuilderBefore(g_alloca_builder, entry_term);
+    } else {
+        LLVMPositionBuilderAtEnd(g_alloca_builder, g_entry_block);
+    }
+
+    return intern_value(LLVMBuildAlloca(g_alloca_builder, sty, ""));
+}
+
 int ir_alloc_object(const char *struct_name) {
     LLVMTypeRef sty = named_struct(struct_name);
     LLVMTypeRef size_ty = type_from_key(g_ptr_int);
@@ -638,6 +665,48 @@ int ir_alloc_object(const char *struct_name) {
     LLVMValueRef args[1] = {size};
     return intern_value(LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, ""));
 }
+
+// The third hook COMPILER-AUDIT 3 asked for. It expected `fn(arena, size) -> ptr`
+// with the handle threaded from the enclosing region; the arena is dynamically
+// scoped instead (see runtime/lang_runtime.c), so the signature stays
+// `fn(size) -> ptr` and no frontend plumbing is needed to reach it.
+//
+// Unlike ir_alloc_object this does not read g_alloc_fn: a region allocation is a
+// different obligation, not a different allocator, and routing it through the
+// name swap would mean a verify build tried to account for memory the arena
+// releases in bulk.
+int ir_alloc_region(const char *struct_name) {
+    LLVMTypeRef sty = named_struct(struct_name);
+    LLVMTypeRef size_ty = type_from_key(g_ptr_int);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+
+    LLVMValueRef size = LLVMSizeOf(sty);
+    if (size_ty != LLVMInt64TypeInContext(g_ctx)) {
+        size = LLVMBuildTrunc(g_builder, size, size_ty, "");
+    }
+
+    LLVMTypeRef alloc_ty = LLVMFunctionType(ptr, &size_ty, 1, 0);
+    LLVMValueRef alloc_fn = LLVMGetNamedFunction(g_module, "arena_alloc");
+    if (!alloc_fn) alloc_fn = LLVMAddFunction(g_module, "arena_alloc", alloc_ty);
+
+    LLVMValueRef args[1] = {size};
+    return intern_value(LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, ""));
+}
+
+// Region entry and exit. Emitted at every exit from the block, like the drops --
+// a `return` out of a region that did not pop would leave the arena live for the
+// rest of the program.
+static void ir_arena_call(const char *name) {
+    if (block_done()) return;
+    LLVMTypeRef voidty = LLVMVoidTypeInContext(g_ctx);
+    LLVMTypeRef fn_ty = LLVMFunctionType(voidty, NULL, 0, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, name);
+    if (!fn) fn = LLVMAddFunction(g_module, name, fn_ty);
+    LLVMBuildCall2(g_builder, fn_ty, fn, NULL, 0, "");
+}
+
+void ir_region_begin(void) { ir_arena_call("arena_push"); }
+void ir_region_end(void)   { ir_arena_call("arena_pop"); }
 
 void ir_free_object(const char *value) {
     if (block_done()) return;
