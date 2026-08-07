@@ -1,0 +1,170 @@
+// Struct-field ownership -- a struct releases the fields it owns, through a
+// function generated for its type.
+//
+// The sibling of container ownership and deliberately not the same mechanism. A
+// container is *told* its element disposition at construction because its
+// contents are dynamic; a struct's fields are known statically, so the answer is
+// a function per type with one release per owned field emitted in line.
+//
+// That difference is the whole point of the fixture. A container reclaims
+// nothing when its elements disagree -- one teardown loop, one call per element.
+// A generated function has a separate statement per field, so `Inventory` below
+// releases a struct and a container and steps over two scalars, which is the
+// case a single per-type disposition could not express.
+//
+// A doubled free exits 0xC0000374 before any comparison runs, so the fixture
+// finishing at all is most of the assertion. What the numbers add is that the
+// paths which must NOT free still do not.
+
+struct Slot {
+    weight: Int
+}
+
+struct Item {
+    value: Int
+}
+
+// The mixed case. An owned struct field, an owned container field, and two
+// scalars that must be stepped over -- a release that treated the type
+// uniformly would have to reclaim nothing here.
+struct Inventory {
+    lead: Slot,
+    items: List<Item>,
+    capacity: Int,
+    version: Int
+}
+
+fn make_inventory(n: Int) -> Inventory {
+    let contents: List<Item> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(contents, Item { value: i })
+        i = i + 1
+    }
+    return Inventory {
+        lead: Slot { weight: 100 },
+        items: contents,
+        capacity: n,
+        version: 1
+    }
+}
+
+// Ownership across a return, for a struct rather than a container. Sound for the
+// same reason it is sound for `List`: the value set has to be complete, and a
+// struct has no sentinel form -- there is no null, so every way to produce one is
+// either a literal in the callee or a value from elsewhere, and the latter
+// belongs to another function and is declined. REQUIREMENTS 4 is the item that
+// would make this false, and it must not.
+fn owned_struct_return(n: Int) -> Int {
+    let inv = make_inventory(n)
+    return inv.capacity + list_len(inv.items) + inv.lead.weight
+}
+
+// Called in a loop, so a missed release grows without bound and a doubled one
+// dies on the second iteration. Neither is visible in the value.
+fn per_iteration() -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < 20) {
+        total = total + owned_struct_return(3)
+        i = i + 1
+    }
+    return total
+}
+
+// Nested ownership: the release of a type whose field is another owning type
+// calls that type's release. Declaration order says nothing about which needs
+// which, so every release is declared before any is defined.
+struct Crate {
+    inner: Inventory,
+    label: Int
+}
+
+// Its own builder rather than `make_inventory`, and the reason is the same one
+// test_47 records for `build_row`: the facts are per site, not per call. Storing
+// `make_inventory`'s result into a field here would mark the Inventory literal
+// *inside that function* as field-held, and that site is the one
+// owned_struct_return binds -- so this fixture would quietly stop releasing
+// there. Context-insensitivity, doing exactly what INFERENCE 6 says contexts are
+// for.
+fn make_crate_inventory(n: Int) -> Inventory {
+    let contents: List<Item> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(contents, Item { value: i })
+        i = i + 1
+    }
+    return Inventory {
+        lead: Slot { weight: 5 },
+        items: contents,
+        capacity: n,
+        version: 2
+    }
+}
+
+// Returned so the Crate escapes and takes T2. A Crate built and bound in one
+// scope would take the T0 clause -- two fields, no aliasing -- and a frame slot
+// has no release, so the nested path would never run and the test would pass for
+// the wrong reason.
+fn make_crate(n: Int) -> Crate {
+    return Crate {
+        inner: make_crate_inventory(n),
+        label: 7
+    }
+}
+
+fn nested_owner(n: Int) -> Int {
+    let c = make_crate(n)
+    return c.label + list_len(c.inner.items) + c.inner.lead.weight
+}
+
+// **The T0 owner.** `Holder` is small, does not escape, and nothing aliases it,
+// so it takes the T0 clause and lives in the frame -- which means nothing frees
+// it and nothing runs its release. The list stored in it is therefore reclaimed
+// by its own binding, and barring that on the strength of `Holder` having a
+// release function would delete the only release there is.
+//
+// This is the case that regressed g5_asset_cache from 47 leaked to 2049 before
+// type_is_reclaimed existed, and no value test sees it -- the leak count is the
+// detector.
+struct Holder {
+    items: List<Item>,
+    tag: Int
+}
+
+fn stack_owner_does_not_bar_its_field(n: Int) -> Int {
+    let contents: List<Item> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(contents, Item { value: i })
+        i = i + 1
+    }
+    let h = Holder { items: contents, tag: 3 }
+    return h.tag + list_len(h.items)
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    print("FAIL ")
+    print(label)
+    print(": got ")
+    print_int(got)
+    print(" want ")
+    println_int(want)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("owned_struct_return", owned_struct_return(4), 108)
+    bad = bad + check("per_iteration", per_iteration(), 2120)
+    bad = bad + check("nested_owner", nested_owner(5), 17)
+    bad = bad + check("stack_owner", stack_owner_does_not_bar_its_field(6), 9)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

@@ -267,23 +267,223 @@ and `tools/aif_manifest_diff.py old new --compiler build/prismio.exe` prints one
 regression it gates on. The derivation is one maximal edge per site per domain rather than the full
 DAG — see the audit for why that is still a maximal contributor, and for the two properties it costs.
 
+**Ownership inside containers landed** (2026-08-07), and it is what moved the corpus: leaked
+allocations under `--verify` went from **127 999 to 14 866**, zero violations, with `g1` and `g2`
+reaching zero. Read `COMPILER-AUDIT.md`'s note before touching it; six things:
+
+- **It had to precede Level 5.** A T3 value's escape is Caller or Global by definition of the tier,
+  and `aif_frees_at_scope_node` opens with `E == scope` — so the Level 2 drop path is *unreachable*
+  for T3 in every program. A container teardown is the only release point T3 can have.
+- **Level 4's "the elements are not touched" was exactly inverted.** It argued the element is owned
+  at its own binding; the raised escape that argument rests on is what makes the binding decline.
+  Every element of every list leaked. The container owns them now, and is *told* so at `list_new` —
+  it cannot ask, because reading a header in front of an element is reading memory we did not
+  allocate.
+- **A mixed container reclaims nothing.** One call per element, so the disposition is `NONE` unless
+  every element site agrees. Arrays, opaques and T3 elements all fall out here.
+- **A-CONTAIN is new and A-COPY is why it had to be.** A-COPY exempts move-only values because a
+  second binding is a move; a container is not a binding and `list_push` is not a move, so one value
+  in two lists read as T2. It is Shared now, i.e. T3 — zero containers is a scope drop, one is a
+  teardown, two is a refcount. The half it cannot see (two pushes of one *name*) is a compile error:
+  `list_push` consumes its operand. `neg_21`, `neg_22`.
+- **`list_get` returned the list, not the element**, against its own comment — so an element moved
+  between containers hid the sharing *and* made the receiver call `list_release` on a struct. A
+  container's contents are a field key now. It is object-insensitive, and one cross-container push
+  therefore poisons a whole file; that is why `test_47` and `test_48` are two files.
+- **Ownership across a return is containers only, and that is soundness.** A `String`-returning
+  function can `return "literal"`, which registers no site, so its return set looks exactly like one
+  that always allocates — freeing that is a free of `.rodata`. The first build emitted 44 such frees
+  and the next generation could not compile itself. A `List` has no literal form. It also survives
+  one hop only: the returned site must belong to the callee.
+
+`g4_ecs_world` is unchanged by all of it — its lists are fields of a struct that is returned and
+never released. **Struct-field ownership is the sibling item**, and it wants a per-type release
+function rather than a stamped mode, because a struct's fields are known statically.
+
+**Level 5 landed** (2026-08-07). T3 is non-atomic refcounting with the count in a **prefix header** —
+`rc_alloc` returns `base + 16`, `rc_of(p)` is `((size_t*)p)[-1]` — so the LLVM struct type is
+untouched, every `ir_struct_field_ptr` index still means what it meant, and the seam really is just a
+fourth allocator name (`ir_alloc_rc`). Read `COMPILER-AUDIT.md`'s note; five things:
+
+- **The count starts at zero.** What is counted is container edges, because they are the only holder
+  class this compiler both tracks and releases — a T3 value's escape is Caller or Global by the
+  tier's definition, so its binding is never on a drop list. Counting the creating expression would
+  pin every T3 value at one forever. At zero, one container is one count and the value dies with the
+  last one holding it; a value in no container leaks, as it always did.
+- **The retain and the release are the same container's**, driven by the one mode stamped at
+  `list_new`. Putting them anywhere else would give the two a chance to disagree about whether an
+  element is counted.
+- **An OPAQUE site is never refcounted** — no header of ours in front of it. That is all 37 of the
+  compiler's T3 sites, so `src/main.psm` emits **zero** `rc_alloc` calls while still declaring it,
+  and `run_aif_rc_test` asserts exactly that. `STRING` and `LIST` are excluded too, for Level 4's
+  reason: they are allocated past the seam.
+- **The manifest says `rc` or `rc:none`.** T3 means the facts permit a count; whether one was emitted
+  is a different question, and printing `rc` for a site nothing counts would assert a mechanism the
+  binary does not contain.
+- **It found a pre-existing unsoundness.** `list_set(list, index, value)`'s `retain_in(0)` named
+  argument **1**, the integer index, so the stored value only borrowed and appeared never to escape.
+  Both implementations had it identically. Invisible until a stored value took a stack slot and
+  `list_set` wrote a frame pointer into a container that outlives the frame.
+
+`test_48` goes 2 leaked → **0**, 24 allocated / 24 released, 0 violations. The corpus does not move:
+no program in it reads an element out of one container and pushes it into another, which is the only
+route to T3 once collections are affine. **T3 is rare here by construction**, and that is the model
+working rather than a gap.
+
+Not done: **Perceus-style elision** (needs a reference-level IR the AST walk does not have), and
+release at anything finer than container granularity.
+
+**The remaining FFI surface is declared** (2026-08-07). Twelve declarations — eight `alias`, four
+`produce(free)` — take the T3 residue from **37 to 0** and the compiler's distribution to **100%
+T0–T2** over 294 sites. Level 5 could not have reached any of them: every one is an opaque extern
+return, which must never be refcounted.
+
+The split came from reading the C each time. `alias`: `aif_extern_contract`, `aif_fn_symbol`,
+`aif_order_symbol`, `aif_site_type` (all `aif_str` of an interned id), `ir_get_var_type`,
+`ir_get_struct_field_type` (`ir_intern`, literal fallback), `cli_arg` (argv), `ir_llvm_version` (a
+`static char buf[32]`). `produce(free)`: `compiler_default_exe_path`, `compiler_temp_ir_path`,
+`compiler_installed_runtime_hash`, `compiler_runtime_source_hash`.
+
+The four `produce` declarations needed Level 4's `str_substring` check: **every** path allocates,
+including the failure paths, which return a one-byte empty string rather than a literal. A `produce`
+true only on the happy path is a free of `.rodata`.
+
+Two things move that are easy to misread. Sites fall 325 → 294 and `static-ret` rises 16 → 34,
+because an `alias` return with nothing to alias stops being a site — so 100% is over a smaller set,
+deliberately. T1 rises 205 → 209 and arenas 105 → 119, so the compiler still emits **zero**
+individual frees.
+
+**The ranking in the list below was wrong and the reason generalises.** This was item 2 and Level 5
+item 1; measured, this is the one that moved the compiler and Level 5 moved nothing there. A tier is
+a claim about what the analysis could prove, and an undeclared boundary is not a hard case — it is a
+missing input. Reach for the input before the mechanism.
+
+**The layout optimiser landed partly** (2026-08-07), and **`workload` deliberately did not**.
+
+LAYOUT §7.2 runs over a statically estimated access profile and searches **one** of §6's five
+candidate dimensions — field order within AoS. The other four are not deferred, they are not
+implementable: SoA and a hot/cold split both make one logical object several allocations, so a field
+reference stops being `getelementptr` on a pointer, which is `COMPILER-AUDIT.md` §1 finding 6
+(handles, "touches every layer"). Choosing a layout codegen cannot emit would be a manifest
+describing a binary nobody built. The `layout` column reads `AoS` or `AoS*`.
+
+Three things to know before touching it:
+
+- **The first field never moves.** The compiler puns a struct pointer as `String` and spells "empty
+  slot" as `str_equals(ptr, "")`, which reads the first byte of the pointed-to struct — the reason
+  `NodeKind` and `TypeKind` reserve ordinal 0. Sorting by width put an 8-byte pointer at offset 0,
+  a pointer to `""` has a zero first byte, and every live node with an empty `s1` read as absent.
+  The next generation could not parse its own source. `run_aif_layout_test` guards it, because the
+  failure mode is "the next generation does not build" and no value test sees that.
+- **LAYOUT §6's derived sort is wrong once a field is pinned.** A sort is optimal for padding only
+  when placement starts at 0 with nothing fixed; a pinned 4-byte `kind` leaves a hole only a narrow
+  field can fill. Sorting made `Health` 16 → 24 bytes and `Sprite` 40 → 48, and nothing smaller.
+  Placement is greedy over the running offset now, with frequency demoted to a tie-break — §6 puts
+  frequency first to decide a hot/cold cut, and there is no cut.
+- **The differential is not the safety net here.** The oracle runs in `--theta-fields` mode, so it
+  never sees a byte size and the layout is invisible to it. Fixpoint and the new test are the
+  coverage.
+
+Measured: one struct shrank across the compiler and all six corpus programs (`g6_game`'s `Order`,
+32 → 24 bytes) and none grew. Small, and honest — declaration order was already near-optimal almost
+everywhere, which is worth knowing before budgeting for the SoA half.
+
+**`workload` is not built on purpose.** Its only contribution over the static estimate is *measured*
+frequencies, and that needs a build-time instrumented compile-link-run inside the compile plus
+LAYOUT §3.2's W3 sandbox obligations. Shipping the syntax without the runner is the same objection
+this item was ordered around, pointed the other way: a producer that produces nothing. The
+instrumentation point already exists when someone wants it — `ir_struct_field_ptr` is the single
+choke point for field access, the way `ir_alloc_object` is for allocation.
+
+---
+
+## Session of 2026-08-07 (second) — the corpus reaches zero
+
+**`--verify` over the whole corpus: 14 866 leaked allocations → 0, with 0 violations.** Six items
+landed; the seventh was deliberately not started. Read
+`aif/implementation/COMPILER-AUDIT.md` for the design notes on each — the short version is below.
+
+| | before | after |
+|---|---|---|
+| `g3_scene_graph` | 4 095 | **0** |
+| `g4_ecs_world` | 7 511 | **0** |
+| `g5_asset_cache` | 47 | **0** |
+| `g6_game` | 3 213 | **0** |
+| `g1`, `g2` | 0 | 0 |
+| **total** | **14 866** | **0** |
+
+Suite **91/91** (was 82). Fixpoint holds cold and warm, cold == warm, the oracle agrees on all 12
+sources, seed refreshed.
+
+**No tier moved all session.** The compiler's distribution is byte-identical before and after —
+248 T1 / 17 T2 / 79 T3 — because every change was a *codegen* change reading facts that already
+existed, not a change to the facts. That is also why the differential kept agreeing, and it means
+**the differential was not the safety net for any of this work**; the fixpoint, the corpus under
+`--verify`, and per-item static checks on the emitted IR were.
+
+What landed:
+
+1. **Struct-field ownership** — a generated `__aif_release_T` per type, per-field disposition, and
+   `type_is_reclaimed` so a field is only a release point when its owner has one. This is what took
+   g3, g4, g5 and g6 to zero. **The first level the self-host exercises**: the compiler generates
+   releases for `Token`, `Lexer`, `ASTNode` and `TypeInfo` and emits 11 calls to them.
+2. **REQUIREMENTS 20** — `List<T>` for scalar elements. A real miscompile, now a pointer-slot
+   coercion rather than a box, so the memory model needs no case for it at all.
+3. **REQUIREMENTS 4** — `T?`, `none`, `expect(x)`. `none` is a **null pointer**, which is immune to
+   the punned-slot hazard by construction: a null test reads no byte of any object.
+4. **The T4b cycle collector** — trial deletion over cyclic edges only.
+5. **SPEC 7.1's zero-analysis level** — `--debug`, plus a test that makes the invariant falsifiable.
+6. **REQUIREMENTS 19** — `peak-bytes` in the manifest and `region name pin(N)` as the gate.
+
+### Three things to carry forward
+
+- **A pun must decline rather than guess.** The first struct-field build emitted a call to
+  `__aif_release_String`, because this compiler puns an `ASTNode` pointer as `String`. Gen 1 linked
+  (it was built by the *old* compiler); gen 2 did not. **Two generations before judging** earned its
+  place again.
+- **A guard must establish what it assumes.** Barring a binding's drop because "some type's release
+  will take it" is wrong when that type lives in the frame and is never released — it deletes the
+  release rather than moving it. That took g5 from 47 leaked to **2049** before `type_is_reclaimed`
+  existed, and no value test sees it: the leak count is the only detector.
+- **A mechanism must count every edge it traverses.** The first cycle collector **segfaulted**:
+  trial deletion subtracted field references that nobody had ever incremented, so the arithmetic
+  called a live object unreachable. Container edges were counted (Level 5's design); field edges
+  were not.
+
+### Not started: ownership contexts (INFERENCE §6–7)
+
+Deliberately not begun rather than half-landed. Reading §6–7 against the current code, it needs
+per-context fact graphs, demand-driven instantiation, a relevant-parameter mask, δ-based strategy
+selection, caps with deterministic victim selection — **and an identical change to
+`aif/prototype/aif.py`, or the differential stops meaning anything.** It is a project, and the
+audit's own "each of these is a project on the scale of the current compiler" is accurate.
+
+**What changed about its value, and this is the part worth reading.** It was ranked highest because
+three recorded limitations were one missing feature *and* because `g4_ecs_world` would not move.
+g4 now moves — struct-field ownership took it to zero — so **contexts no longer buy correctness on
+this corpus; they buy precision.** The three limitations are still real and still one thing, but the
+leak that motivated them is closed. Re-rank it against `workload` and Perceus on measurement rather
+than inheriting the old order.
+
 **Next, in order of measured value:**
 
-1. **Level 5 — T3 refcounting.** 37 sites in the compiler, and every one of them is an *opaque*
-   extern return, which must never be refcounted: the pointer was not allocated by us. So the
-   compiler cannot exercise it and the fixture is the whole safety net, exactly as at Levels 1–3.
-   Design notes in the prompt below.
-2. **Declare the remaining FFI surface.** Those same 37 sites are T3 only because their provenance is
-   unknown. A declaration is cheaper than a refcount and competes with item 1 directly.
-3. **Ownership inside containers.** `g2_frame_loop` leaks 61 362 allocations and automatic arenas
-   changed that by zero, because it has no T1 sites — its residue is T2 values stored into containers
-   that outlive the frame. Making a container release its elements is the item that moves the corpus,
-   and it is a prerequisite for T3 being useful rather than merely present.
-4. `workload` and the layout optimiser (LAYOUT §7.2), together, in that order.
-5. Two items from `REQUIREMENTS.md` that are now cheaper than they were: **memory budget reporting**
-   (§19 — the arena already tracks a high-water mark through `arena_bytes()`, so this is a manifest
-   line and a `pin` that gates on it), and **`List<T>` for scalar elements** (§20, a real
-   miscompile: `list_push` passes `i32` where the runtime expects `ptr`).
+1. **Ownership contexts (INFERENCE §6–7).** Still the highest-value *analysis* work, and still a
+   project. See the note above for why its value changed. **Measure first** — the corpus is at zero
+   leaks, so the question is now how much precision is left on the table, and nobody has that number.
+2. **The undeclared-boundary residue.** The compiler reports **79 T3 sites** over `src/main.psm`,
+   and this document's earlier "100% T0–T2, T3 residue 0" claim does not match the tree as it
+   stands. That discrepancy pre-dates this session (the baseline binary reports the same 79) and was
+   not chased. It is the cheapest measured win available if it is the same undeclared-extern shape
+   as last time — **reach for the input before the mechanism**, twice recorded.
+3. **`workload` and the rest of LAYOUT.** Unchanged: the runner needs a build-time instrumented
+   compile-link-run, and SoA/hot-cold need handles. Do not build the syntax alone.
+4. **Perceus-style elision** for T3. Needs a reference-level IR the AST walk does not have.
+
+**One methodological result worth carrying forward.** The ranking above was wrong in the previous
+handoff and wrong in the same way twice: Level 5 was ranked first and moved the compiler by nothing,
+while declaring twelve FFI contracts took its entire T3 residue to zero. A tier is a claim about
+what the analysis could *prove*, and an undeclared boundary is not a hard case — it is a missing
+input. **Reach for the input before the mechanism.**
 
 `src/aif.psm`'s `aif_runtime_contract` is a fallback table for the runtime's own functions, kept
 because every corpus program declares `list_push` itself and none of them should have to get it

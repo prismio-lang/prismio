@@ -47,6 +47,11 @@ enum NodeKind {
     ARRAY_LITERAL_EXPR,
     STRUCT_LITERAL_EXPR,
     CAST_EXPR,
+    // REQUIREMENTS 4. The absent reference. Its own kind rather than a
+    // LITERAL_EXPR with a marker, because every walk that asks "does this
+    // expression allocate" has to answer *no* for it, and a kind is the thing
+    // those walks already switch on.
+    NONE_LITERAL_EXPR,
 
     // Other
     FUNCTION_PARAMETER,
@@ -74,6 +79,10 @@ struct ASTNode {
     s2: String,
     i1: Int,
     i2: Int,
+    // REQUIREMENTS 4. On a TYPE_ANNOTATION, whether the type was written `T?`.
+    // Its own slot rather than a bit in i2, because i1 and i2 already mean
+    // "array" and "list" and a nullable list is both.
+    i3: Int,
     child1: String, // ASTNode
     child2: String, // ASTNode
     child3: String, // ASTNode
@@ -147,6 +156,7 @@ fn create_node(kind: NodeKind) -> ASTNode {
         s2: "",
         i1: 0,
         i2: 0,
+        i3: 0,
         child1: "",
         child2: "",
         child3: "",

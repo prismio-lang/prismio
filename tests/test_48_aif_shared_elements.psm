@@ -1,0 +1,129 @@
+// AIF item 3 -- an element held by two containers is Shared, and therefore not
+// owned by either.
+//
+// Its own file rather than a case in test_47, because the element key `@elem` is
+// one key per container base type (INFERENCE 3.1's object-insensitivity, the same
+// rule that makes `Lexer.source` one key across every Lexer). A single
+// cross-container push therefore marks every pushed site in the *file* as
+// multiply held, so a fixture cannot show both this and ordinary container
+// ownership. That cliff is the cost of the model and this is where it is
+// measured.
+//
+// What has to hold here: no violation, and the Item is not freed. Once a
+// container releases its elements, two owners is a double free -- and the only
+// thing standing between this program and one is that A-CONTAIN calls the value
+// Shared, which is T3, which has no release yet.
+
+struct Item {
+    value: Int
+}
+
+// `list_get` reads the element field, so what lands in `b` is `a`'s Item and not
+// a copy. The move checker sees nothing: the operand is a call, not a name, and
+// nothing about a call is a move.
+//
+// A-COPY would not catch it either. It exempts move-only values on the grounds
+// that a second *binding* would have been a move and the earlier one is provably
+// dead -- an argument that does not reach a container, because a container is not
+// a binding. A-CONTAIN counts containers instead.
+fn shared_between_containers() -> Int {
+    let a: List<Item> = list_new()
+    let b: List<Item> = list_new()
+    list_push(a, Item { value: 3 })
+    list_push(b, list_get(a, 0))
+
+    // Read through both, after both are live. If either container had taken
+    // ownership, one of these would be reading a released value -- poison under
+    // --verify, and the value check below is what notices.
+    let via_a = list_get(a, 0)
+    let via_b = list_get(b, 0)
+    return via_a.value + via_b.value
+}
+
+// The same value reaching two containers through a call rather than directly.
+// `hold`'s parameter is a borrow, so the push inside it is a move out of a
+// borrowed value -- which is an error, and neg_21 pins that. What is legal is
+// pushing what a *read* returned, which is the shape above; this one goes through
+// two reads of the same source.
+fn spread(src: List<Item>, x: List<Item>, y: List<Item>) {
+    list_push(x, list_get(src, 0))
+    list_push(y, list_get(src, 0))
+}
+
+fn two_hops() -> Int {
+    let src: List<Item> = list_new()
+    let x: List<Item> = list_new()
+    let y: List<Item> = list_new()
+    list_push(src, Item { value: 5 })
+    spread(src, x, y)
+    return list_len(x) + list_len(y) + list_len(src)
+}
+
+// The property the count exists for, and the one no arrangement of ownership
+// could give: a container is destroyed while another still holds its element, and
+// the element survives.
+//
+// `temp` dies at the end of borrow_into_temp -- its escape bottoms at that scope
+// and it is a list, so Level 2's drop admits it. Its teardown decrements. If the
+// decrement were a free, the read below would be poison under --verify and a wrong
+// value without it, which is what makes the returned 9 an assertion rather than a
+// formality.
+fn borrow_into_temp(src: List<Item>) -> Int {
+    let temp: List<Item> = list_new()
+    list_push(temp, list_get(src, 0))
+    return list_len(temp)
+}
+
+fn survives_first_release() -> Int {
+    let keep: List<Item> = list_new()
+    list_push(keep, Item { value: 9 })
+    let n = borrow_into_temp(keep)
+    let e = list_get(keep, 0)
+    return e.value + n
+}
+
+// Overwriting a counted element releases the old one and retains the new. The
+// old Item is held by nothing else here, so its count reaches zero at the
+// overwrite rather than at the teardown -- which is the one release in this
+// fixture that does not happen at a scope exit.
+//
+// Under OBJECT the old element leaks instead, deliberately: the container owns
+// it, but so might the binding it came from, and only a count can tell.
+fn overwrite_releases() -> Int {
+    let items: List<Item> = list_new()
+    list_push(items, Item { value: 1 })
+    list_push(items, Item { value: 2 })
+    // Shared, so counted: also pushed into `other` below.
+    let other: List<Item> = list_new()
+    list_push(other, list_get(items, 1))
+    list_set(items, 0, Item { value: 40 })
+    let a = list_get(items, 0)
+    let b = list_get(items, 1)
+    return a.value + b.value + list_len(other)
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    print("FAIL ")
+    print(label)
+    print(": got ")
+    print_int(got)
+    print(" want ")
+    println_int(want)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("shared", shared_between_containers(), 6)
+    bad = bad + check("two_hops", two_hops(), 3)
+    bad = bad + check("survives_first_release", survives_first_release(), 10)
+    bad = bad + check("overwrite_releases", overwrite_releases(), 43)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

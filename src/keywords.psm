@@ -51,6 +51,13 @@ fn is_keyword(s: String) -> Bool {
     // has to be a real keyword.
     if (str_equals(s, "region") == 1) { return true }
 
+    // REQUIREMENTS 4. The absent reference. A real keyword rather than a
+    // contextual name, unlike `unique` and `pin`: those are annotations, and
+    // SPEC 5 requires that deleting one leave a working program. `none` is a
+    // *value* -- deleting it leaves a hole -- so the obligation does not apply
+    // and a keyword is the honest spelling.
+    if (str_equals(s, "none") == 1) { return true }
+
     return false
 }
 

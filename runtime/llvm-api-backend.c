@@ -693,6 +693,34 @@ int ir_alloc_region(const char *struct_name) {
     return intern_value(LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, ""));
 }
 
+// AIF Level 5, and the fourth hook. COMPILER-AUDIT 3 rated T3 only "partly"
+// expressible through the seam because a count word changes struct layout, which
+// named_struct and every ir_struct_field_ptr index would have to account for. A
+// *prefix* header avoids that entirely -- the count sits in front of the pointer,
+// the LLVM struct type is untouched, and what is left really is just a name.
+//
+// Like ir_alloc_region, this does not read g_alloc_fn. rc_alloc reaches the verify
+// shim through the runtime's own rt_base_alloc, so both ends of the pairing swap
+// together when the runtime is compiled -- the same arrangement Level 4 needed for
+// strings, and for the same reason.
+int ir_alloc_rc(const char *struct_name) {
+    LLVMTypeRef sty = named_struct(struct_name);
+    LLVMTypeRef size_ty = type_from_key(g_ptr_int);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+
+    LLVMValueRef size = LLVMSizeOf(sty);
+    if (size_ty != LLVMInt64TypeInContext(g_ctx)) {
+        size = LLVMBuildTrunc(g_builder, size, size_ty, "");
+    }
+
+    LLVMTypeRef alloc_ty = LLVMFunctionType(ptr, &size_ty, 1, 0);
+    LLVMValueRef alloc_fn = LLVMGetNamedFunction(g_module, "rc_alloc");
+    if (!alloc_fn) alloc_fn = LLVMAddFunction(g_module, "rc_alloc", alloc_ty);
+
+    LLVMValueRef args[1] = {size};
+    return intern_value(LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, ""));
+}
+
 // Region entry and exit. Emitted at every exit from the block, like the drops --
 // a `return` out of a region that did not pop would leave the arena live for the
 // rest of the program.
@@ -736,6 +764,63 @@ void ir_free_object(const char *value) { ir_release_call(value, g_free_fn); }
 // own -- it frees both through the same allocator the list came from, which is
 // what keeps a verify build's accounting balanced.
 void ir_free_list(const char *value) { ir_release_call(value, "list_release"); }
+
+// Struct-field ownership. A struct that owns its fields is reclaimed by a
+// function generated for its type, so the callee is named by the caller rather
+// than fixed. It is still behind the seam: what that generated function frees,
+// it frees through ir_free_object and its siblings.
+void ir_free_typed(const char *value, const char *fn_name) { ir_release_call(value, fn_name); }
+
+// AIF Level 5. The decrement half, for a counted value held in a struct field.
+void ir_free_rc(const char *value) { ir_release_call(value, "rc_release"); }
+
+// AIF T4b. The fifth allocator hook, and a `fn(size) -> ptr` like the other
+// four: the colour and the per-type descriptor go in front of the pointer, so
+// the LLVM struct type is untouched and cyc_set_type fills them in afterwards --
+// the same shape as list_set_elem_owner, and for the same reason.
+int ir_alloc_cycle(const char *struct_name) {
+    LLVMTypeRef sty = named_struct(struct_name);
+    LLVMTypeRef size_ty = type_from_key(g_ptr_int);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+
+    LLVMValueRef size = LLVMSizeOf(sty);
+    if (size_ty != LLVMInt64TypeInContext(g_ctx)) {
+        size = LLVMBuildTrunc(g_builder, size, size_ty, "");
+    }
+
+    LLVMTypeRef alloc_ty = LLVMFunctionType(ptr, &size_ty, 1, 0);
+    LLVMValueRef alloc_fn = LLVMGetNamedFunction(g_module, "cyc_alloc");
+    if (!alloc_fn) alloc_fn = LLVMAddFunction(g_module, "cyc_alloc", alloc_ty);
+
+    LLVMValueRef args[1] = {size};
+    return intern_value(LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, ""));
+}
+
+// An indirect call to a `fn(ptr) -> void` through a function pointer.
+//
+// The collector's visitor is a value rather than a name: the children function
+// is generated per type, and the visitor differs per traversal phase, so the
+// callee cannot be baked into the call.
+void ir_call_indirect_ptr(const char *fn_value, const char *arg) {
+    if (block_done()) return;
+    LLVMTypeRef voidty = LLVMVoidTypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef fn_ty = LLVMFunctionType(voidty, &ptr, 1, 0);
+    LLVMValueRef args[1] = {resolve_value(arg, "ptr")};
+    LLVMBuildCall2(g_builder, fn_ty, resolve_value(fn_value, "ptr"), args, 1, "");
+}
+
+// The address of a named function, as a value.
+//
+// Needed because a container of structs-with-owned-fields cannot be told its
+// disposition with an int: the release differs per element *type*, and the
+// runtime has no way to name a type. So it is told the function instead, which
+// is the same "the container is told, it cannot ask" rule the int modes follow.
+int ir_func_addr(const char *name) {
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, name);
+    if (!fn) backend_fail("address of unknown function", name);
+    return intern_value(fn);
+}
 
 // Field address within a struct object. Replaces emitted getelementptr text.
 int ir_struct_field_ptr(const char *struct_name, const char *object, int field_index) {
@@ -850,6 +935,29 @@ int ir_sext(const char *from_type, const char *value, const char *to_type) {
 int ir_trunc(const char *from_type, const char *value, const char *to_type) {
     return intern_value(LLVMBuildTrunc(g_builder, resolve_value(value, from_type),
                                        type_from_key(to_type), ""));
+}
+
+// REQUIREMENTS 20. A `List<T>` stores pointer-sized slots, so a scalar element
+// rides in one rather than being boxed. Boxing would cost an allocation per
+// element *and* give the container something to own, which is the opposite of
+// what a scalar element is: nothing allocates, so there is no site and nothing
+// to release.
+int ir_int_to_ptr(const char *from_type, const char *value) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    return intern_value(LLVMBuildIntToPtr(g_builder, resolve_value(value, from_type),
+                                          ptr, ""));
+}
+
+int ir_ptr_to_int(const char *value, const char *to_type) {
+    return intern_value(LLVMBuildPtrToInt(g_builder, resolve_value(value, "ptr"),
+                                          type_from_key(to_type), ""));
+}
+
+// The float half of the same round trip: a double is 64 bits of payload, not a
+// number to convert, so this reinterprets rather than rounding.
+int ir_bitcast(const char *from_type, const char *value, const char *to_type) {
+    return intern_value(LLVMBuildBitCast(g_builder, resolve_value(value, from_type),
+                                         type_from_key(to_type), ""));
 }
 
 // Integer <-> floating point. Needed by `as`; the signed and unsigned forms are

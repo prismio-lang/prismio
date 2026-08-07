@@ -74,10 +74,40 @@ They also capture, which makes them the main genuine source of shared ownership 
 handle-based engine code avoids. Closure capture is where AIF's aliasing analysis will actually be
 exercised.
 
-### 4. Optional / nullable reference fields **[needed]**
+### 4. Optional / nullable reference fields — **DONE, 2026-08-07**
 
-No null literal and no `Option`, so a struct field of reference type cannot be "not set yet."
-Blocks parent pointers, optional components, empty slots — all routine in engine code.
+`T?` for any reference type, a `none` literal, `==`/`!=` against `none`, and `expect(x)` as the
+checked unwrap. Implicit widening from `T` to `T?`; never the reverse.
+
+**`none` is a null pointer, and that choice is the whole of the punned-slot question.** This
+compiler already had a way to spell "empty slot" — a pointer to `""`, tested with `str_equals(p, "")`
+— and that encoding reads the *first byte of the pointed-to object*, so a live value whose first
+field is zero is byte-for-byte an empty slot. It is why `NodeKind` and `TypeKind` reserve ordinal 0,
+why the layout search pins field 0, and what `test_41` characterises. A null comparison reads no byte
+of any object, so **nothing can collide with it**, whatever a live value's first field holds. Reusing
+`""` would have inherited the collision and spread it from the compiler's own punned pointers into
+every user program. `test_51`'s `zero_first_field_is_still_present` aims exactly that case at the new
+encoding.
+
+Four things worth keeping:
+
+- **The unwrap is checked, not narrowed.** Flow-sensitive narrowing of `if (x != none) { … }` is a
+  real feature and is not this item; `expect(x)` costs one branch in the runtime and fails loudly
+  where narrowing would have failed silently. It is also the shape this compiler already writes by
+  hand — `if (node_exists(p)) { let n = ptr_to_node(p) }`.
+- **`expect` borrows.** Treating it as a move would make `while (cur.parent != none) { cur =
+  expect(cur.parent) }` fail on the second iteration. It is declared `alias` to the analysis for the
+  same reason: it is the identity on a pointer, and an opaque extern return would have raised the
+  unwrapped value's escape to Caller.
+- **Optionals change the type, not the ownership.** Storing a `Node` into a `Node?` field is a move,
+  exactly as into a `Node` field. `none` registers no allocation site, so a sometimes-absent field's
+  release is derived from the sites that *are* there — which is why every release path now has to
+  tolerate a null, and all four do.
+- **It forced a guard into struct-field ownership.** `struct Node { parent: Node?, … }` is the first
+  type in this project that can reach itself, and a generated release for it would recurse until the
+  stack gave out. `field_closes_cycle` declines any field whose type reaches its owner. That is the
+  boundary between statically generated release and the T4b collector, and it could not be drawn
+  before this item existed — which is precisely why CYCLES had nothing to run against.
 
 *Source:* RESULTS-L0 §4.2 (`parent: 0` → *expected Node, found Int*).
 
@@ -237,28 +267,69 @@ accumulator.
 Tier assignment needs real sizes for SPEC §4.2's `Θ_stack` threshold. The prototype approximates
 with field count.
 
-### 19. Memory budget reporting **[needed for consoles; now cheap]**
+### 19. Memory budget reporting — **DONE, 2026-08-07**
 
-Fixed memory budgets are a hard constraint on console targets and AIF has nothing on them. Arenas
-make it tractable: compute an arena high-water mark from the profile, report it in the manifest,
-and let `pin` carry an asserted cap that fails the build gate when exceeded.
+`peak-bytes` in the manifest, and `region <name> pin(N)` as the gate.
 
-Both halves now exist. `arena_bytes()` already reports what the arenas served, and `pin` is
-implemented — so this is a manifest line plus a cap on the annotation, not new machinery.
+**The peak is the largest sum along a root-to-leaf chain of arena scopes**, not the total: arenas
+nest lexically, so sibling regions are never live together and adding them would report a number the
+program cannot reach. Weighted by `AIF_LOOP_ITERS` per enclosing loop — the same estimator automatic
+placement uses for `allocs_in(s)`, so the two cannot disagree about how much a scope serves.
+
+Three things worth keeping:
+
+- **The estimate names the part it cannot see.** `arena_bytes()` is a *run-time* counter and a
+  manifest is a build artifact, so this is computed statically. A struct's size comes from its
+  layout; a string's is its length, which is a run-time value. Sites of unknown size are counted
+  separately (`247 dynamically-sized site(s) excluded` on the compiler's own source) rather than
+  given a fabricated per-string constant — which would make the gate turn on a number nobody
+  computed. On the compiler that leaves the estimate at 0 bytes, which is the honest answer: every
+  arena-served site there is a string.
+- **The cap goes on a `region`, not on a binding.** A budget is a property of a block's peak and not
+  of one value, which is the one thing SPEC §5.4's `pin` had nothing to say about. Contextual like
+  every other use of `pin`, so a region may still be called `pin`.
+- **It is only checked when the analysis converged.** A truncated one raises unproven facts to the
+  conservative end, which *lowers* an arena's estimated load — fewer sites stay T1 — so a budget
+  could pass for want of analysis and fail on the next build.
+
+A refuted budget is an error rather than a warning for the reason SPEC §5.4.1 gives about pins: an
+inference *failure* degrades performance, and a proven-false claim about one's own program is a
+different thing. `test_53_memory_budget.psm` and `neg_24_region_budget_refuted.psm`.
 
 *Source:* the AAA target; not yet in any spec document.
 
 ---
 
-### 20. `List<T>` miscompiles for scalar element types **[minor, real bug]**
+### 20. `List<T>` miscompiles for scalar element types — **DONE, 2026-08-07**
 
-`list_push` on a `List<Int>` emits a call passing `i32` where the runtime signature expects `ptr`,
-and LLVM module verification rejects the result. `List<T>` works only for pointer-shaped elements.
+`list_push` on a `List<Int>` emitted a call passing `i32` where the runtime signature expects `ptr`,
+and LLVM module verification rejected the result. `List<T>` worked only for pointer-shaped elements.
 
 ```
 Call parameter type does not match function signature!
  ptr  call void @list_push(ptr %23, i32 %24)
 ```
+
+**A scalar rides in the container's pointer-sized slot rather than being boxed.** Boxing was the
+alternative and is worse twice over: an allocation per element, and the container would then have
+something to *own*. A scalar element allocates nothing, so it registers no site, so
+`aif_elem_owner_at_node` answers NONE and the teardown steps over the list — **the memory model needs
+no case for this at all**, which is the property that makes the representation the right one. A
+container that thought it owned scalars would hand `42` to the deallocator, which is a *violation*
+under `--verify` rather than a leak.
+
+Three details worth keeping:
+
+- **The round trip preserves bits, not value.** A `Float` bitcasts to its 64 bits and reinterprets;
+  an `fptosi` would store `0.5` as `0`. The integer family widens to pointer width and truncates on
+  the way back, which is what recovers a negative `Int`.
+- **The coercion is keyed on argument position**, not on "the last argument": `list_push(l, v)` is
+  index 1 and `list_set(l, i, v)` is index 2.
+- `list_get` is declared to return `ptr` while sema types it as the element type, so the return side
+  needed the same treatment as the argument side and was equally broken.
+
+`tests/test_50_scalar_lists.psm` is the coverage, and the *allocation* count in the runner is the
+half that matters — 12 for six lists, two each, nothing per element.
 
 *Source:* [RESULTS-L2.md](../evidence/RESULTS-L2-boundary.md) §5, hit writing `../corpus/g6_game.psm`.
 

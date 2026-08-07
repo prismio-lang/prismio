@@ -1,0 +1,20 @@
+// expect-error: use of moved value
+// AIF item 3. A container releases its elements at teardown, so a push is an
+// ownership transfer and is move-checked as one. Pushing the same name twice
+// would put one value under one owner twice, and no fact can see it: `list_push`
+// is a call, and the aliasing module counts containers rather than stores into
+// one, so both pushes name the same container and A-CONTAIN stays quiet.
+//
+// This is the half the language has to own, because it is the half the language
+// can see.
+struct Item {
+    value: Int
+}
+
+fn main() -> Int {
+    let items: List<Item> = list_new()
+    let e = Item { value: 1 }
+    list_push(items, e)
+    list_push(items, e)
+    return list_len(items)
+}

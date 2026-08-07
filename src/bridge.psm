@@ -160,6 +160,17 @@ extern fn ir_alloc_region(struct_name: String) -> Int
 extern fn ir_region_begin()
 extern fn ir_region_end()
 
+// The fourth, and the one 3 rated only "partly" expressible -- on the grounds
+// that a count word changes struct layout and every ir_struct_field_ptr index
+// with it. It does not, because the count goes in front of the pointer rather
+// than inside the object, so this really is just another fn(size) -> ptr.
+extern fn ir_alloc_rc(struct_name: String) -> Int
+
+// The fifth, for T4b. Like ir_alloc_rc it is a fn(size) -> ptr: the colour bits
+// and the per-type descriptor go in front of the pointer, so the LLVM struct
+// type is untouched and cyc_set_type fills them in afterwards.
+extern fn ir_alloc_cycle(struct_name: String) -> Int
+
 // Level 4's arena path for values the runtime allocates. `ir_alloc_region` only
 // serves struct literals; a string comes out of str_concat, which cannot know
 // where it was called from -- so the call site brackets it instead.
@@ -175,6 +186,29 @@ extern fn ir_free_object(value: String)
 // the seam's fn(ptr) -> void cannot reclaim it; this routes to the runtime's own
 // list_release, which frees both through the allocator the list came from.
 extern fn ir_free_list(value: String)
+
+// Struct-field ownership. A struct that owns its fields is reclaimed by a
+// function generated for its type, so the deallocator is named rather than
+// fixed. Still behind the seam: the generated body frees through ir_free_object
+// and its siblings, so a verify build sees every one of them.
+extern fn ir_free_typed(value: String, fn_name: String)
+extern fn ir_free_rc(value: String)
+
+// The address of a named function, as a value. A container of structs that own
+// their fields cannot be told its disposition with an int -- the release differs
+// per element type and the runtime cannot name a type -- so it is told this.
+extern fn ir_func_addr(name: String) -> Int
+
+// An indirect call to a `fn(ptr) -> void`. The collector's visitor differs per
+// traversal phase, so its callee is a value rather than a name.
+extern fn ir_call_indirect_ptr(fn_value: String, arg: String)
+
+// REQUIREMENTS 20. A `List<T>` stores pointer-sized slots, so a scalar element
+// rides in one. Boxing it would cost an allocation per element and hand the
+// container something to own, which is exactly what a scalar element is not.
+extern fn ir_int_to_ptr(from_type: String, value: String) -> Int
+extern fn ir_ptr_to_int(value: String, to_type: String) -> Int
+extern fn ir_bitcast(from_type: String, value: String, to_type: String) -> Int
 extern fn ir_struct_field_ptr(struct_name: String, object: String, field_index: Int) -> Int
 extern fn ir_elem_ptr(elem_type: String, base: String, index: String) -> Int
 extern fn ir_array_alloca(elem_type: String, count: Int) -> Int
@@ -201,12 +235,15 @@ extern fn ir_register_struct(name: String)
 extern fn ir_register_struct_field(struct_name: String, field_name: String, field_type: String)
 extern fn ir_is_struct_type_name(name: String) -> Int
 extern fn ir_get_struct_field_index(struct_name: String, field_name: String) -> Int
-extern fn ir_get_struct_field_type(struct_name: String, field_name: String) -> String
+// Both return an *interned* type name -- ir_add_struct_field and add_binding
+// each store ir_intern(type), and the fallbacks ("i32", "i64") are literals. No
+// branch allocates, so neither is a value the caller could release.
+extern fn ir_get_struct_field_type(struct_name: String, field_name: String) -> String alias
 extern fn ir_register_enum_variant(enum_name: String, variant_name: String, value: Int)
 extern fn ir_get_enum_variant(enum_name: String, variant_name: String) -> Int
 extern fn ir_set_var_type(name: String, var_type: String)
 extern fn ir_set_global_var_type(name: String, var_type: String)
-extern fn ir_get_var_type(name: String) -> String
+extern fn ir_get_var_type(name: String) -> String alias
 extern fn ir_has_var_type(name: String) -> Int
 
 // Lexical scoping. A block pushes on entry and pops on exit; a binding is

@@ -357,6 +357,129 @@ def run_aif_stack_slot_test():
     return True
 
 
+def run_aif_rc_test():
+    """AIF Level 5, checked in the IR because neither half shows in a value.
+
+    The negative half is the load-bearing one. An OPAQUE site must never be
+    refcounted -- the pointer came back from a function this compilation cannot
+    see, so there is no header in front of it and `rc_release` would decrement
+    whatever the real allocator put there. Every one of the compiler's 37 T3 sites
+    is an opaque extern return, so `src/main.psm` must emit **zero** calls to
+    rc_alloc while still declaring it. That makes this the only check that the
+    exclusion holds on the one program large enough to violate it.
+    """
+    print(f"\n{BLUE}--- Running aif_rc ---{RESET}")
+    problems = []
+
+    fixture = TEST_DIR / "test_48_aif_shared_elements.psm"
+    out = TEST_DIR / "t48_rc.ll"
+    result = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(out)])
+    if result.returncode != 0:
+        print(f"{RED}[FAIL] build exited {result.returncode}{RESET}")
+        print(result.stdout or result.stderr)
+        return False
+    ir = out.read_text(encoding="utf-8", errors="replace")
+    cleanup_files(out)
+    if not re.search(r"call ptr @rc_alloc\b", ir):
+        problems.append("no call to rc_alloc -- a value two containers hold is "
+                        "not being counted, so T3 is not reaching codegen")
+
+    compiler_out = TEST_DIR / "main_rc.ll"
+    result = run_command([str(PRISMIO_EXE), "build",
+                          str(TEST_DIR.parent / "src" / "main.psm"), "-o", str(compiler_out)])
+    if result.returncode != 0:
+        problems.append(f"building src/main.psm exited {result.returncode}")
+    else:
+        cir = compiler_out.read_text(encoding="utf-8", errors="replace")
+        cleanup_files(compiler_out)
+        n = len(re.findall(r"call ptr @rc_alloc\b", cir))
+        if n:
+            problems.append(f"{n} call(s) to rc_alloc in the compiler -- every T3 "
+                            "site there is an opaque extern return, and a header "
+                            "in front of one of those is memory we never allocated")
+
+    if problems:
+        print(f"{RED}[FAIL] refcounting is not where it should be{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] T3 is counted where it is ours and nowhere else{RESET}")
+    return True
+
+
+def run_aif_layout_test():
+    """LAYOUT 7.2's field-order search, checked where it is decided: the IR.
+
+    The load-bearing assertion is the **pinned first field**, and the reason is
+    the sharpest constraint in this item. The compiler puns a struct pointer as
+    `String` and spells "this slot is empty" as a zero first byte, so a struct
+    whose first field moved is a struct whose live values can read as absent --
+    which is what NodeKind and TypeKind reserving ordinal 0 exists to prevent
+    (test_41). The first build that sorted by width put an 8-byte pointer at
+    offset 0 and the next generation could not parse its own source.
+
+    A value test cannot see any of this: every layout computes the same answers,
+    and a wrong one fails by not building at all one generation later.
+    """
+    print(f"\n{BLUE}--- Running aif_layout ---{RESET}")
+    src_dir = TEST_DIR.parent / "src"
+    out = TEST_DIR / "layout_probe.ll"
+    result = run_command([str(PRISMIO_EXE), "build",
+                          str(src_dir / "main.psm"), "-o", str(out)])
+    if result.returncode != 0:
+        print(f"{RED}[FAIL] build exited {result.returncode}{RESET}")
+        print(result.stdout or result.stderr)
+        return False
+    ir = out.read_text(encoding="utf-8", errors="replace")
+    cleanup_files(out)
+
+    lowered = {"Int": "i32", "Float": "double", "Bool": "i1", "Char": "i8",
+               "I8": "i8", "I16": "i16", "I64": "i64", "U8": "i8", "U16": "i16",
+               "U32": "i32", "U64": "i64", "Isize": "i64", "Usize": "i64"}
+    emitted = {m.group(1): [f.strip() for f in m.group(2).split(",")]
+               for m in re.finditer(r"^%(\w+) = type \{(.*)\}", ir, re.M)}
+
+    # Enums lower to i32; everything else that is not a scalar is a pointer.
+    # Read the declarations rather than guessing from the name -- `TokenType` is
+    # an enum and does not look like one.
+    sources = {p: p.read_text(encoding="utf-8") for p in sorted(src_dir.glob("*.psm"))}
+    enums = {m.group(1) for text in sources.values()
+             for m in re.finditer(r"enum\s+(\w+)\s*\{", text)}
+
+    problems = []
+    checked = 0
+    for path, text in sources.items():
+        for m in re.finditer(r"struct\s+(\w+)\s*\{(.*?)\}", text, re.S):
+            name, body = m.group(1), re.sub(r"//[^\n]*", "", m.group(2))
+            fields = [f.strip() for f in body.split(",") if f.strip()]
+            if name not in emitted or not fields:
+                continue
+            declared = fields[0].split(":", 1)[1].strip()
+            want = lowered.get(declared, "i32" if declared in enums else "ptr")
+            got = emitted[name][0]
+            checked += 1
+            if got != want:
+                problems.append(f"{name}: first field is `{declared}` ({want}) but "
+                                f"the emitted type starts with {got} -- the layout "
+                                "search moved field 0, and the punning invariant "
+                                "goes with it")
+
+    if checked == 0:
+        problems.append("no struct matched between src/ and the emitted IR -- "
+                        "this test stopped checking anything")
+
+    if problems:
+        print(f"{RED}[FAIL] the layout search moved something it must not{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] layout reorders fields and never the first one "
+          f"({checked} structs){RESET}")
+    return True
+
+
 def run_aif_drop_emission_test():
     """Reclamation points, counted per function in the IR.
 
@@ -438,6 +561,184 @@ def run_aif_drop_emission_test():
     return True
 
 
+def run_no_inference_test():
+    """SPEC 7.1's zero-analysis mode, made falsifiable.
+
+    `src/aif.psm` used to carry a comment asserting this invariant held by
+    construction, "because nothing it produces is an input to codegen yet". That
+    was true at Level 0 and has been false since Level 1: inference now drives
+    codegen at eight points -- stack promotion, arena placement, scope drops,
+    container element disposition, refcounting, struct-field release, cycle
+    collection, and field order. Every one of those changes what is emitted.
+
+    So the invariant is a property to test, not to assert. `--debug` is SPEC
+    7.2's level as a budget of zero rounds: the same engine runs and records the
+    same pins, but nothing is proved, so widening puts every value at its top
+    tier. This asserts what 7.1 actually requires -- **identical observable
+    output** -- across every value fixture in the suite.
+
+    `max` is deliberately not offered. With today's engine it would be
+    byte-identical to `release`: the bounds it raises are never reached on this
+    corpus and there is no monomorphization cap to raise. A flag whose settings
+    cannot be told apart is a check that cannot fail.
+    """
+    print(f"\n{BLUE}--- Running no_inference ---{RESET}")
+
+    fixtures = sorted(TEST_DIR.glob("test_*.psm"))
+    release_exe = TEST_DIR / "ni_release.exe"
+    debug_exe = TEST_DIR / "ni_debug.exe"
+
+    # SPEC 7.1 is explicit that "behaviourally identical" does NOT mean same tier
+    # assignment, same layout or same performance -- only same observable program
+    # semantics. A fixture that reads the allocator's own counters is measuring
+    # exactly what 7.1 excludes: test_44 asserts 209 arena objects and gets 0 at
+    # debug, which is SPEC 7.2's level table working rather than a violation.
+    #
+    # Detected by reading the source rather than by a name list, so a new fixture
+    # that probes the mechanism excludes itself and one that does not is checked.
+    PROBES = ("arena_objects", "arena_regions", "arena_bytes",
+              "cyc_objects", "cyc_reclaimed", "cyc_collections_run")
+
+    problems = []
+    checked = 0
+    skipped = []
+    for src in fixtures:
+        text = src.read_text(encoding="utf-8", errors="replace")
+        if any(p in text for p in PROBES):
+            skipped.append(src.name)
+            continue
+        rel = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(release_exe)])
+        dbg = run_command([str(PRISMIO_EXE), "build", str(src), "--debug", "-o", str(debug_exe)])
+
+        # A fixture that does not build either way is some other test's problem.
+        if rel.returncode != 0 and dbg.returncode != 0:
+            continue
+        if rel.returncode != dbg.returncode:
+            problems.append(f"{src.name}: build exit {rel.returncode} at release, "
+                            f"{dbg.returncode} at --debug -- a level changed which "
+                            "programs compile (SPEC 7.2)")
+            continue
+
+        ran_rel = run_command([str(release_exe)])
+        ran_dbg = run_command([str(debug_exe)])
+        checked += 1
+
+        if ran_rel.stdout != ran_dbg.stdout:
+            problems.append(f"{src.name}: stdout differs between release and --debug")
+        if ran_rel.returncode != ran_dbg.returncode:
+            problems.append(f"{src.name}: exit {ran_rel.returncode} at release, "
+                            f"{ran_dbg.returncode} at --debug")
+
+    cleanup_files(release_exe, debug_exe)
+    if checked == 0:
+        print(f"{RED}[FAIL] no fixture built at both levels -- the check ran over nothing{RESET}")
+        return False
+    if problems:
+        print(f"{RED}[FAIL] a zero-analysis build is not behaviourally identical{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    note = ""
+    if skipped:
+        note = f" ({len(skipped)} probing the allocator's own counters, which 7.1 excludes)"
+    print(f"{GREEN}[PASS] inference changes no observable output, over {checked} fixture(s){note}{RESET}")
+    return True
+
+
+def run_aif_struct_field_test():
+    """Struct-field ownership, read out of the emitted IR.
+
+    test_49 running clean proves the dynamic counts balance and that nothing is
+    freed twice. It cannot prove a release was *generated*, because leaking is
+    silently correct -- an implementation that emitted no release function at all
+    passes every value assertion in the fixture.
+
+    Two things are asserted here, and they are different claims:
+
+      * the per-field dispositions, which is where a struct differs from a
+        container. `Inventory` releases a struct field and a container field and
+        steps over two scalars; a container reclaims nothing when its elements
+        disagree, and a per-type answer here would have to do the same.
+      * that `Slot` gets no release function, so a struct with nothing to own
+        does not pay for a generated call.
+    """
+    print(f"\n{BLUE}--- Running aif_struct_fields ---{RESET}")
+    fixture = TEST_DIR / "test_49_aif_struct_fields.psm"
+    out = TEST_DIR / "t49_fields.ll"
+
+    result = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(out)])
+    if result.returncode != 0:
+        print(f"{RED}[FAIL] build exited {result.returncode}{RESET}")
+        print(result.stdout or result.stderr)
+        return False
+
+    bodies, current = {}, None
+    for line in out.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.match(r"define void @__aif_release_([A-Za-z0-9_]+)\(", line)
+        if m:
+            current = m.group(1)
+            bodies.setdefault(current, {"free": 0, "list": 0, "typed": 0})
+            continue
+        if current is None:
+            continue
+        if line.startswith("define ") or line == "}":
+            current = None
+            continue
+        if re.search(r"call void @free\(", line):
+            bodies[current]["free"] += 1
+        elif re.search(r"call void @list_release\(", line):
+            bodies[current]["list"] += 1
+        elif re.search(r"call void @__aif_release_", line):
+            bodies[current]["typed"] += 1
+
+    problems = []
+
+    # type -> (plain frees, list releases, typed releases). The plain-free count
+    # includes the object's own storage, which is always the last statement --
+    # that is what keeps the struct itself behind the allocator seam.
+    want = {
+        # lead: Slot (a plain free) + items: List (list_release) + the object.
+        # capacity and version are scalars and contribute nothing, which is the
+        # per-field claim.
+        "Inventory": (2, 1, 0),
+        # inner: Inventory, which owns things of its own, so this is a call to
+        # that type's release rather than a free -- freeing it here would leak
+        # everything hanging off it.
+        "Crate":     (1, 0, 1),
+        # items: List + the object. tag is a scalar.
+        "Holder":    (1, 1, 0),
+    }
+
+    for ty, (want_free, want_list, want_typed) in want.items():
+        if ty not in bodies:
+            problems.append(f"{ty}: no release function was generated")
+            continue
+        got = bodies[ty]
+        if got["free"] != want_free:
+            problems.append(f"{ty}: {got['free']} free(s), expected {want_free}")
+        if got["list"] != want_list:
+            problems.append(f"{ty}: {got['list']} list_release(s), expected {want_list}")
+        if got["typed"] != want_typed:
+            problems.append(f"{ty}: {got['typed']} typed release(s), expected {want_typed}")
+
+    # A struct with nothing to own must not get one. Item is the same: it is a
+    # container element, reclaimed by the teardown rather than by a function.
+    for ty in ("Slot", "Item"):
+        if ty in bodies:
+            problems.append(f"{ty}: owns nothing but got a release function")
+
+    cleanup_files(out)
+    if problems:
+        print(f"{RED}[FAIL] struct-field releases are not being generated as expected{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] a struct releases the fields it owns, and only those{RESET}")
+    return True
+
+
 def run_aif_verify_test():
     """SPEC 7.3's verify mode, run over the fixtures that allocate structs.
 
@@ -495,6 +796,70 @@ def run_aif_verify_test():
         # served by an arena and reclaimed with the block -- and the allocation
         # total fell from 420 to 7, which is the headline for that change.
         "test_45_aif_affine_collections": 3,
+        # AIF item 3. Every container in this fixture releases its elements, and
+        # every binding that receives one from a known callee releases the
+        # container -- so the ordinary cases are zero and what is left is one
+        # shape:
+        #
+        #   6  the result of forwards(), which is `build`'s list and its four
+        #      Items. Ownership transfer survives one hop, because it requires the
+        #      returned site to belong to the callee, and `forwards` returns
+        #      `build`'s. Two hops needs INFERENCE 6's contexts.
+        #
+        # A doubled release here is a violation rather than a missing leak, unlike
+        # test_45: these are struct allocations the seam handed out, so releasing
+        # one twice is something the accounting can see.
+        "test_47_aif_containers": 6,
+        # AIF Level 5. The element shared between two containers is released by
+        # the second teardown to reach it, so this is zero -- and it was 2 before
+        # the count existed, which is the level's whole measurement on this
+        # fixture. A regression shows up as a violation, not a leak: two
+        # containers each decrementing a count that was only ever incremented once
+        # is a free of live memory.
+        "test_48_aif_shared_elements": 0,
+        # Struct-field ownership. Zero, and every path in the fixture is a
+        # different way of reaching it: a returned owning struct, a struct whose
+        # field is another owning struct, and a T0 owner whose field must still
+        # be released by its own binding.
+        #
+        # A regression in the last of those shows up here and only here. Barring
+        # a binding because some type's release "will" take it, when that type
+        # lives in the frame and is never released, deletes the release rather
+        # than moving it -- it took g5_asset_cache from 47 leaked to 2049.
+        "test_49_aif_struct_fields": 0,
+        # REQUIREMENTS 20. Zero, and the *allocation* count is the interesting
+        # half: 12 for six lists, which is two each -- the handle and the element
+        # block, and nothing per element. A scalar element that was boxed would
+        # make this 12 + one per push, and a scalar element the container thought
+        # it owned would be a violation rather than a leak, because `rt_free(42)`
+        # is not a pointer the allocator ever handed out.
+        "test_50_scalar_lists": 0,
+        # REQUIREMENTS 4. One heap allocation in the whole fixture, and it leaks
+        # for a reason that has nothing to do with optionals:
+        #
+        #   16 bytes  presence_is_visible's `root`, whose escape is raised to
+        #             Caller by an E-BIND in *depth_of_chain*. A field key is one
+        #             per nominal type across the module, so both functions share
+        #             `Node.parent`, and a bind in one raises the escape of a site
+        #             in the other. The same object-insensitivity that keeps
+        #             test_47 and test_48 in separate files, reached through a
+        #             struct field instead of a container element. INFERENCE 6's
+        #             contexts are what would fix it.
+        #
+        # Everything else in the fixture is T0. If this number goes to 0, contexts
+        # landed; if it goes up, something stopped being stack-promoted.
+        "test_51_optional_refs": 1,
+        # AIF T4b. Zero, and it is the first number in this table that a *tracing*
+        # step produced: both cycles are unreachable at exit with every count
+        # sitting at one, so nothing but trial deletion can tell that the
+        # remaining references are internal.
+        #
+        # A doubled free here is a violation rather than a missing leak, and
+        # live_cycle_survives is where that would show: it collects while the
+        # cycle is still reachable, so ScanBlack has to restore every count trial
+        # deletion removed. Before field edges were counted this fixture
+        # segfaulted -- the collector subtracted references nobody had added.
+        "test_52_aif_cycle_collector": 0,
     }
 
     exe = TEST_DIR / "aif_verify_probe.exe"
@@ -789,6 +1154,26 @@ def main():
         failed += 1
 
     if run_aif_drop_emission_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_rc_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_layout_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_struct_field_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_no_inference_test():
         passed += 1
     else:
         failed += 1

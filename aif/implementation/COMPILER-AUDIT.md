@@ -690,10 +690,426 @@ The output is worth reading once, because it derives an answer this project alre
 asked why a compiler string is T3 without affine collections, it answers `A-COPY` and ranks *"make
 the type move-only so a second holder is a move"* first. That is Level 4.
 
-### Level 5 — T3
+### Ownership inside containers — **DONE, 2026-08-07**
 
-Non-atomic reference counting for shared acyclic values. Header word, layout consequences,
-Perceus-style elision.
+Not a level. The item `HANDOFF.md` ranked third and the one that moved the corpus:
+`g2_frame_loop` leaked 61 362 allocations, automatic arenas changed that by zero, and the residue
+was values stored into containers that outlive the frame.
+
+**It had to come before Level 5, and the reason is structural rather than a matter of taste.** A T3
+value's escape is Caller or Global by the tier's own definition — anything lower is T1 — and
+`aif_frees_at_scope_node` opens with `E == scope`. So the binding-drop path Level 2 built is
+*unreachable* for T3, at every site, in every program. A container or field teardown is the only
+release point a T3 value can have, and there was no such thing. Level 5 built first would have been
+a refcount nothing ever decremented.
+
+Two halves, and neither pays without the other. The container releases its elements; a binding that
+receives a container from a known callee owns it. Without the second nothing tears the container
+down, so the first never runs.
+
+- **Level 4's rule was exactly inverted, and its reasoning is why.** `list_release` left elements
+  alone, on the grounds that `list_push` is `retain_in(0)` so an element's escape is already the
+  list's — "if it is owned anywhere it is owned at its own binding". Nobody owns it there: that
+  raised escape is precisely what makes `aif_frees_at_scope_node` decline the binding. The two
+  halves of that sentence contradict each other, and the consequence was that every element of every
+  list leaked. One owner, and it is the container.
+- **The container is told what it owns; it cannot ask.** `elem_own` is stamped by codegen at
+  `list_new`. Probing a header in front of an element to find out would be reading memory this
+  compilation did not allocate — the same unsound move that bars refcounting an OPAQUE site.
+- **A teardown loop makes one call per element, so a mixed container has no answer.** The
+  disposition is `NONE` unless every element site agrees, which makes an array element (frame
+  storage), an opaque one (never ours) and a T3 one (wants a decrement that does not exist yet) all
+  reclaim nothing. A leak rather than a wrong free.
+- **Being in a container bars T0**, next to `no_stack` and for the same reason. Reachable whenever
+  container and element share a scope, which leaves every other T0 conjunct satisfied — and the
+  teardown would then hand a frame slot to the deallocator.
+
+**The aliasing module had a hole exactly the width of a container.** A-COPY exempts move-only values
+because a second *binding* is a move, so the earlier one is provably dead. A container is not a
+binding and `list_push` is not a move, so that argument never reached it: one value in two lists was
+`Borrowed`, which is T2, which is one owner too few. **A-CONTAIN** counts containers and makes it
+Shared — which is T3, the tier built for this shape. The decomposition is the satisfying part: zero
+containers and `E == scope` is a scope drop, one container is a teardown, two is a refcount.
+
+**And the half A-CONTAIN cannot see, the language now refuses.** Two pushes of one *name* name one
+container, so no count moves. `list_push` consumes its operand — the push is an ownership transfer,
+so it is move-checked as one — which also recovers the loop case free, because
+`ir_binding_predates_loop` already refuses a move that repeats. `neg_21` and `neg_22` pin both
+halves. `neg_22` is the one worth reading: pushing a borrowed parameter was harmless until a
+container released its elements, and is a use-after-free the moment one does. `sink` is the fix and
+the language already had the word.
+
+**`list_get` did not return the element.** Its comment said "an element read back out of a list is
+the element rather than a new object", and the implementation returned the argument's value set,
+which is *the list*. Reading an element and pushing it into a second container therefore recorded
+the container as the element — so A-CONTAIN saw nothing, and the second container was told its
+elements were lists when they were structs. `list_release` then called `list_release` on a struct.
+Heap corruption, found by the fixture on its first run, in code this document had already described
+as working.
+
+A container's contents are a **field key** now (`@elem`), which is what makes that sentence true and
+costs no new mechanism — INFERENCE 3.1's field-sensitivity already exists. Object-insensitive
+through `aif_base_type`, and that is forced rather than chosen: `list_new()` types as
+`List<Invalid>` and an annotated binding does not, so keying on the spelled type would put two
+spellings of one container on different keys, and a lost edge is the unsound direction.
+
+**The cliff that buys is worth stating.** One key per container base type means one cross-container
+push marks every pushed site in the file as multiply held. `test_47` and `test_48` are two files
+rather than one because of it: together, the single push in `test_48` would make all seventeen of
+`test_47`'s sites T3 and nothing would be released. Contexts (INFERENCE 6) are what would fix it.
+
+**Ownership transfer across a return is restricted to containers, and the restriction is soundness,
+not caution.** A value set records sites, and a string literal is not a site — so for a function
+returning `String`, `return "ptr"` contributes nothing and the return set is indistinguishable from
+one that always allocates. Freeing that is a free of `.rodata`, which is Level 4's `str_substring`
+defect arriving by a different road; the first build of this emitted 44 such frees into the compiler
+and the next generation could not compile itself. A `List` has no literal form — `list_new` is the
+only way to make one — so its return set is complete. Recovering strings and structs needs the
+points-to lattice to carry "may hold something untracked".
+
+It also survives exactly one hop: the returned site must belong to the callee, so `forwards`
+returning `build`'s list is declined. That is `test_47`'s entire remaining leak.
+
+**What it measured**, over the corpus under `--verify`, all with **0 violations**:
+
+| | before | after |
+|---|---|---|
+| `g1_particles` | 2 002 | **0** |
+| `g2_frame_loop` | 61 362 | **0** |
+| `g3_scene_graph` | 5 462 | 4 095 |
+| `g4_ecs_world` | 7 511 | 7 511 |
+| `g5_asset_cache` | 2 049 | 47 |
+| `g6_game` | 49 613 | 3 213 |
+| total | 127 999 | **14 866** |
+
+The compiler's own distribution does not move at all — it has no lists — and that is the fourth
+consecutive level where the self-host exercises none of the new path. `test_47`/`test_48` are the
+whole safety net, as at Levels 1–4.
+
+**`g4_ecs_world` is unchanged, and it says what comes next.** Its lists are fields of a `World`
+struct that is returned and never released. Struct-field ownership is the same problem with the same
+answer, and it needs a per-type descriptor rather than a per-object word — a struct's fields are
+known statically, so the release is a generated function per type rather than a stamped mode.
+
+**Found in passing: `parser_expect_close_angle` never worked.** It splits `>>` into two `>` so
+`List<List<T>>` parses, rewriting the token's text — and not its type, which the lexer had set to
+arithmetic. The enclosing argument then failed with `expected `>`, found `>``. Written with a
+correct comment and never exercised, because the thing it enables was unwritable and so nobody had
+written one. The same lesson as `--budget`: an unreachable path is where a bug lives undisturbed.
+
+### Struct-field ownership — **DONE, 2026-08-07**
+
+The sibling of container ownership, and the item the previous handoff ranked first. It closes the
+corpus: **14 866 leaked allocations → 0, with 0 violations, on all six programs.**
+
+| | before | after |
+|---|---|---|
+| `g1_particles` | 0 | **0** |
+| `g2_frame_loop` | 0 | **0** |
+| `g3_scene_graph` | 4 095 | **0** |
+| `g4_ecs_world` | 7 511 | **0** |
+| `g5_asset_cache` | 47 | **0** |
+| `g6_game` | 3 213 | **0** |
+| total | 14 866 | **0** |
+
+**Deliberately not the container mechanism, and the difference is the whole design.** A container is
+*told* its element disposition at construction because its contents are dynamic — only the runtime
+knows how many elements there are. A struct's fields are known statically, so the answer is a
+**function generated per type**, `__aif_release_T`, with one release per owned field emitted in line.
+Two things follow, and both are the point:
+
+- **The disposition is per field.** A container reclaims nothing when its elements disagree, because
+  a teardown loop makes one call for all of them. A generated function has a separate statement per
+  field, so `World` — five owned `List`s and an `Int` — releases the five and steps over the Int. A
+  single answer for the whole type would have to be NONE for all six, which *is* the leak.
+- **No runtime word.** The container needs `elem_own` on the object; a struct needs nothing, because
+  the type selects the function.
+
+It needed no new fact. A struct literal's field initialiser has been a `STORE` into
+`key_field(type, field)` since Level 0 — that is what carries E-STORE — so the sites that may reach a
+field are exactly `pt[key_field(type, field)]`. This is a query, not a rule, which is why **no tier
+moves**: the histogram over `src/main.psm` is identical before and after (212 T1, 13 T2, 73 T3).
+
+Five things to know before touching it:
+
+- **A pun must decline rather than guess, and the second generation is what said so.** The first
+  build emitted a call to `__aif_release_String`, because this compiler puns an `ASTNode` pointer as
+  `String` and walks node chains through it — so a `String`-declared field receives struct sites, and
+  a release named from the sites alone names a function that does not exist. Gen 1 linked fine (it
+  was built by the *old* compiler); gen 2 did not. `field_release_of` now requires the field's
+  declared base type to match what the sites say is in the slot, and reclaims nothing when they
+  disagree. Same discipline as arrays in `aif_frees_at_scope_node`, which decline by kind for exactly
+  this reason.
+- **A field is only a release point if its owner has one.** This is the rule `in_container` encodes
+  one level out, and the naive version of it is wrong. A T0 struct lives in the frame: nothing frees
+  it, so nothing runs its release, so barring the field's own binding does not *move* the release —
+  it deletes it. `g5_asset_cache`'s `Scene` is four fields and does not escape `main`, so it takes
+  the T0 clause, and barring its `entities` list took g5 from **47 leaked to 2049**. `type_is_reclaimed`
+  is the guard. The leak count is the only detector; no value test sees it.
+- **Ownership across a return now covers structs, and the soundness argument is different from
+  `List`'s.** A `List` qualifies because it has no *literal* form. A struct qualifies because it has
+  no *sentinel* form — there is no null, so every way to produce one is either a literal in the
+  callee (a site) or a value from elsewhere (a site whose `fn` is not the callee's, which is already
+  declined). **REQUIREMENTS 4 is the item that would make this false**, and the note is at the line.
+  Restricted to structs that *own* something, which is a scope choice rather than a soundness one.
+- **A container of owning structs is told a function, not an int.** `XEFY_ELEM_TYPED` plus
+  `list_set_elem_releaser`, because the release differs per element *type* and the runtime cannot
+  name a type. Same "told, cannot ask" rule as `elem_own`, one step less abstract. `ir_func_addr` is
+  the new backend surface it needed.
+- **This is the first level the self-host exercises.** Levels 1–5 were all fixture-only. The compiler
+  now generates releases for `Token`, `Lexer`, `ASTNode` and `TypeInfo` and emits **11 calls** to
+  them, and it still reaches a fixed point cold and warm — so the bootstrap is real coverage here for
+  the first time, on top of `tests/test_49_aif_struct_fields.psm`.
+
+**The differential is not the safety net here**, for the second time after layout. The oracle
+compares tiers, and this changes none — so its agreement on all 12 sources is a check that the
+change was *tier-neutral*, which is worth having and is not the same as checking it is correct. The
+fixpoint, the corpus under `--verify`, and `run_aif_struct_field_test` are the coverage. That last
+one is a static check on the emitted IR, because leaking is silently correct: a build that generated
+no release function at all passes every value assertion in the fixture.
+
+### Level 5 — T3 — **DONE, 2026-08-07**
+
+Non-atomic reference counting for shared acyclic values.
+
+**§1's finding 1 said the header word is what makes T3 only "partly" expressible** — "the header
+word changes struct layout, which `named_struct` and every `ir_struct_field_ptr` index would have to
+account for". That is true of a header word *inside* the object and avoided entirely by putting it
+in front: `rc_alloc` returns `base + 16` and the count is `((size_t*)p)[-1]`. The LLVM struct type is
+untouched, every field index still means what it meant, and the seam really is just a fourth
+`fn(size) -> ptr`. The table's T3 row should read "Yes" with that caveat.
+
+**The count starts at zero, and that is the design rather than an off-by-one.** What is counted is
+*container edges*, because they are the only holder class this compiler both tracks and releases: a
+T3 value's escape is Caller or Global by definition of the tier, so `aif_frees_at_scope_node` can
+never admit its binding, and a struct field has no teardown. Counting the creating expression would
+therefore put every T3 value permanently at one. At zero, one container is one count, the teardown
+decrements, and the value dies with the last container that held it — while a value in no container
+stays at zero and leaks, which is exactly what it did before this existed.
+
+A release without a matching retain is not possible: only a container retains, and only the same
+container releases, both driven by the one mode stamped at construction. That symmetry is the point
+of putting them in `list_push`/`list_release` rather than at the call sites — a per-element answer
+would be a chance for the two to disagree.
+
+**Four exclusions, and each is a different sense of "we did not allocate this".** OPAQUE is the one
+that matters: the pointer came back from a function this compilation cannot see, so there is no
+header in front of it and a decrement writes into whatever the real allocator put there. `STRING`
+and `LIST` are allocated inside `lang_runtime.c`, past the seam, so the site cannot choose its own
+allocator — the same asymmetry Level 4 hit with the arena, and a hint would work here too. `ARRAY`
+is frame storage. And the positive requirement: the site must be in a container, or it pays 16 bytes
+of header for a count nothing will ever move.
+
+**The self-host exercises none of it, for the fourth level running.** All 37 of the compiler's T3
+sites are opaque extern returns, so `src/main.psm` emits **zero** calls to `rc_alloc` while still
+declaring it. `run_aif_rc_test` asserts exactly that, and it is the more useful half of the test:
+the compiler is the only program here large enough to violate the exclusion.
+
+**The manifest now distinguishes `rc` from `rc:none`.** SPEC 6.2's placement column has to say what
+was *built*, and printing `rc` for a T3 site nothing counts would assert a mechanism the binary does
+not contain. All 37 compiler sites read `rc:none`.
+
+**It found a pre-existing unsoundness, and both implementations had it identically.**
+`list_set(list, index, value)`'s `retain_in(0)` named argument **1** — the integer index — so the
+stored value was a plain `borrow` and appeared never to escape. Optimistic, i.e. exactly the
+unsoundness the fallback table's own comment warns about. It was invisible while nothing acted on
+the fact; at Level 5 a stored value took a *stack slot* and `list_set` wrote a frame pointer into a
+container that outlives the frame. The oracle had the same off-by-one, which is how a differential
+test agrees on a wrong answer — the third time this project has recorded that failure mode, after
+the `List<T>` field edges and `parser_expect_close_angle`.
+
+**What it measured.** `test_48_aif_shared_elements` goes from 2 leaked to **0 leaked, 24 allocated,
+24 released, 0 violations**. The corpus does not move at all: no program in it reads an element out
+of one container and pushes it into another, which is the only way to reach T3 once affine
+collections are on. That is worth stating plainly — **T3 is rare by construction here**, and the
+model is what makes it rare.
+
+The fixture's load-bearing case is `survives_first_release`: a container is destroyed while another
+still holds its element, and the element survives. No arrangement of single ownership can give that,
+which is the whole argument for the tier.
+
+**What is not done.** Perceus-style elision — a retain immediately followed by a release, or a
+retain of a value whose only other holder is dying — needs the reference-level IR the codegen walk
+does not have. Nothing here elides anything. And the release is at container granularity, so a T3
+value held only by a binding or a struct field is still never freed.
+
+### The zero-analysis level — **DONE, 2026-08-07**
+
+SPEC §7.1's requirement, made falsifiable. `prismio build <src> --debug`.
+
+**The invariant was asserted by a comment that had been false for five levels.** `src/aif.psm` said
+the zero-analysis mode was true by construction, "because nothing it produces is an input to codegen
+yet". That was accurate at Level 0. Inference now drives codegen at **eight** points — stack
+promotion, arena placement, scope drops, container element disposition, refcounting, struct-field
+release, cycle collection, and field order — and every one of them changes what is emitted.
+
+**`--debug` is a budget of zero rounds, not a skipped pass**, which is what SPEC §7.2 actually says:
+"levels are compile-time budgets, not different algorithms. The same engine runs at every level."
+The graph is built and the pins are recorded; nothing is proved, so widening puts every value at its
+top tier — heap, no drop, no arena, no count, no collector. Running the engine rather than skipping
+it is what keeps §7.2's "a level SHALL NOT change which programs compile" true: a refuted `pin` is
+still diagnosed.
+
+`run_no_inference_test` builds every value fixture both ways and compares stdout and exit status —
+**53 fixtures**, one excluded. The exclusion is principled and self-maintaining: a fixture is skipped
+when its *source* reads the allocator's own counters, because §7.1 says "behaviourally identical"
+does not mean same tier assignment, layout or performance. `test_44` asserts 209 arena objects and
+gets 0 at `--debug`, which is §7.2's level table working rather than a violation.
+
+**`max` is deliberately not offered.** With today's engine it would be byte-identical to `release` —
+the bounds it raises are never reached on this corpus and there is no monomorphization cap to raise
+— and a flag whose settings cannot be told apart is a check that cannot fail.
+
+### The T4b cycle collector — **DONE, 2026-08-07**
+
+CYCLES §3's trial deletion (Bacon–Rajan), scoped to the T4b residue, traversing only cyclic edges.
+Before this a T4b site was *detected and then leaked* — plain `malloc`, no header, no release —
+while the manifest printed `rc+cycle` for every one of them.
+
+**Constructing a cycle at all was the hard part, and the finding is worth more than the collector.**
+CYCLES §10 says to measure the T4b population *before writing a line of the collector*, and the
+measurement is this: **a value cycle is not something a Prismio program can write by accident.** Two
+independent things have to be defeated.
+
+- The *type* must refer to itself, which needs REQUIREMENTS 4 — `parent: Node` had no terminating
+  value and `parent: 0` did not typecheck. That is exactly why CYCLES had nothing to run against,
+  and why item 3 was a hard prerequisite rather than a convenience.
+- The *value* graph must close, and **affinity forbids every direct route**: `a.peer = b` is an
+  ownership transfer, so `b.peer = a` is `use of moved value`. The container round-trip fails the
+  same way. What is left is laundering a pointer through an `alias` extern — FFI §5.2's escape hatch
+  doing exactly what it is for.
+
+So `cycles none` is what the compiler and **all six corpus programs** report: no type in a
+non-trivial SCC, collector omitted from the binary entirely. That is CYCLES §2's headline result
+holding on every program in the project, and it is a stronger form of §1's prediction than §1 made.
+
+Four things to know before touching it:
+
+- **The counts have to include the edges the collector walks, and the first build did not.** Trial
+  deletion subtracts internal edges and reads the remainder as "held from outside"; an edge that is
+  traversed but was never counted makes it subtract a reference nobody added, and the arithmetic
+  calls a live object unreachable. The first run **segfaulted** rather than leaking. `list_push`
+  counted container edges (Level 5's design) but `a.peer = b` is a plain field store — so a store
+  into a counted cyclic field now retains, and an assignment releases the old value, retain first.
+- **The cyclic-edge restriction is what makes the work bound credible**, and it is available only
+  because the compiler owns the type graph. `__aif_cyclic_children_T` visits exactly the fields whose
+  type is in the owner's SCC, so the traversal cannot *leave* the skeleton into the string and token
+  graphs hanging off it.
+- **Struct-field ownership and the collector partition the field set.** `field_closes_cycle` makes a
+  generated release decline any field that reaches its owner — otherwise `__aif_release_Node` would
+  recurse until the stack gave out — and those are exactly the fields the collector walks. Neither
+  mechanism can be understood without the other, and the boundary could not be drawn before
+  REQUIREMENTS 4 made a self-referential type expressible.
+- **`cycle:none` joins `rc:none` in the manifest**, for the reason Level 5 recorded: printing
+  `rc+cycle` for a site nothing collects asserts a mechanism the binary does not contain.
+
+Coverage is `tests/test_52_aif_cycle_collector.psm`. Its load-bearing case is `live_cycle_survives`,
+which collects *while the cycle is still reachable* — trial deletion takes every count to zero
+through the peer edges and `ScanBlack` has to put them all back. Getting that wrong is a
+use-after-free rather than a leak, and the reads afterwards are what catch it. It needs CYCLES
+§6.1's third trigger (explicit request) because the other two — buffer occupancy at 4096 and
+allocation failure — are unreachable in a fixture small enough to reason about.
+
+Not done: CYCLES §7's concurrency cases (there are no tasks), §8's inferred weak references, and
+§10's tuning constants, which are the document's defaults and are **not** measured — this corpus
+produces no candidates at all to measure with.
+
+### The remaining FFI surface — **DONE, 2026-08-07**
+
+`HANDOFF.md` ranked this second and said it "competes with item 1 directly": the compiler's 37 T3
+sites were T3 only because provenance was unknown, and a declaration is cheaper than a refcount.
+
+It is not close. Twelve declarations take the T3 residue from **37 to 0** and the compiler's
+distribution to **100% T0–T2** over 294 sites. Level 5 could not have reached any of them — every
+one is an opaque extern return, which must never be refcounted.
+
+Eight are `alias`, four are `produce(free)`, and the split came from reading the C in every case:
+
+| | |
+|---|---|
+| `alias` | `aif_extern_contract`, `aif_fn_symbol`, `aif_order_symbol`, `aif_site_type` (all `aif_str` of an interned id); `ir_get_var_type`, `ir_get_struct_field_type` (`ir_intern`, with a literal fallback); `cli_arg` (argv, which the C runtime owns); `ir_llvm_version` (a `static char buf[32]`) |
+| `produce(free)` | `compiler_default_exe_path`, `compiler_temp_ir_path`, `compiler_installed_runtime_hash`, `compiler_runtime_source_hash` — all `malloc` and hand over |
+
+The four `produce` declarations needed the check Level 4 had to make for `str_substring`: **every**
+path allocates, including the failure paths, which return a one-byte empty string rather than a
+literal. A `produce` that is true on the happy path only is a free of `.rodata`.
+
+Two second-order effects worth recording. Site count falls 325 → 294 and `static-ret` rises 16 → 34,
+because an `alias` return with nothing to alias is not an allocation and stops being a site at all —
+so the denominator moves as well as the numerator, and "100%" is over a smaller set on purpose.
+And T1 rose 205 → 209 with arenas 105 → 119: values that were T3 for want of a declaration are now
+region-scoped and arena-served, so the compiler still emits **zero** individual frees.
+
+**What this says about the ordering.** Level 5 was ranked first and this second; measured, the
+ranking is inverted for this corpus, and the reason generalises. A tier is a claim about what the
+analysis could prove, and an undeclared boundary is not a hard case — it is a missing input. Reach
+for the input before the mechanism.
+
+### The layout optimiser — **PARTLY DONE, 2026-08-07. `workload` deliberately not built**
+
+LAYOUT §7.2, over a statically estimated access profile. **One of §6's five candidate dimensions is
+searched, and the other four are not implementable rather than deferred:**
+
+| Dimension | Status |
+|---|---|
+| Field order within a group | **Done** — searched and emitted |
+| Grouping (AoS/SoA) | Needs handles. SoA makes one logical object several allocations, so a field reference stops being `getelementptr` on a pointer — §1 finding 6, "touches every layer" |
+| Hot/cold split | Same reason: a second allocation and an indirection |
+| Bit-packing | A mask and a shift at every access; self-contained but its own project |
+| Handle width | There are no handles |
+
+Choosing a layout codegen cannot emit would be a manifest describing a binary nobody built, so the
+search is restricted to what it can act on. `layout` in the manifest reads `AoS` or `AoS*`, the star
+meaning the physical order is not the declared one.
+
+**Field order is safe to permute at all only because C sees a Prismio struct as an opaque `void*`.**
+`ptr_to_node` and its siblings are the identity on a pointer and no runtime function reads a field.
+`generate_struct_decl` feeds `ir_register_struct_field` and `ir_struct_type_field` from one loop, so
+the name→index map and the LLVM body cannot disagree, and every access follows through
+`ir_get_struct_field_index` without knowing a layout was chosen.
+
+**The first field never moves, and finding that out cost two generations.** The compiler puns a
+struct pointer as `String` and spells "this slot is empty" as `str_equals(ptr, "")`, which reads the
+*first byte of the pointed-to struct* — which is why `NodeKind` and `TypeKind` both reserve ordinal
+0 (`test_41_punned_slot_bytes.psm`). Sorting by width puts an 8-byte pointer at offset 0, and a
+pointer to `""` has a zero first byte, so every live node with an empty `s1` read as absent. The
+generation built by that compiler could not parse its own source. SPEC §8.2 grants the compiler
+layout freedom; **this implementation has already spent the first field of it**, and the search has
+to be told rather than allowed to rediscover it. `run_aif_layout_test` is the guard, because the
+failure mode is "the next generation does not build", which no value test can see.
+
+**LAYOUT §6's derived rule is wrong once a field is pinned, and measurement is what says so.** §6
+derives field order as a *sort* — descending frequency, then descending alignment — and a sort is
+optimal for padding only when placement starts at offset 0 with nothing fixed. Pinning a 4-byte
+`kind` leaves a 4-byte hole that only a narrow field can fill; the sort puts the widest field next
+and pays for it. Measured: `Health` 16 bytes → **24**, `Sprite` 40 → **48**. It made nothing smaller.
+
+Placement is greedy over the running offset instead — the widest remaining field that needs *no*
+padding where the last one ended, falling back to the widest overall — with frequency as a
+tie-break and declaration index below that, so the result is total and deterministic (§9). Frequency
+is demoted rather than dropped: §6 puts it first to decide where a hot/cold cut falls, and there is
+no cut to decide.
+
+**What it measured.** Across the compiler and all six corpus programs, one struct shrank and none
+grew: `g6_game`'s `Order` 32 → 24 bytes. Several others were reordered to the same size. That is a
+small result and it is the honest one — declaration order was already near-optimal almost
+everywhere, which is worth knowing before anyone budgets for the SoA half.
+
+**The differential is not the safety net here**, and this is the first item where that is true. The
+oracle is run in `--theta-fields` mode, so it approximates Θ_stack by field count and never sees a
+byte size — the layout is invisible to it by construction. The fixpoint and `run_aif_layout_test`
+are the coverage.
+
+**`workload` is not implemented, and building it now would be the same mistake pointed the other
+way.** Its only contribution over the static estimate is *measured* frequencies, and producing those
+needs a build-time instrumented compile-link-run inside the compile, plus §3.2's W3 obligations
+(stubbing network and filesystem, warning on each). Shipping the syntax without the runner gives a
+producer that produces nothing — exactly the "annotation with no consumer" objection, inverted. The
+static profile is what LAYOUT §10.4 already names as the fallback, and it is the same estimator
+automatic arena placement uses (`AIF_LOOP_ITERS`, now defined once so the two cannot drift).
+
+When it is built, the instrumentation point already exists: `ir_struct_field_ptr` is the single
+choke point for field access, the way `ir_alloc_object` is for allocation.
 
 ### Beyond
 
@@ -701,9 +1117,14 @@ Ownership monomorphization (needs contexts and body duplication), the layout opt
 handles — see §1 finding 6), PIR, concurrency and therefore a non-vacuous `T` domain, the T4 cycle
 collector. Each of these is a project on the scale of the current compiler.
 
-**Honest read on schedule:** Levels 0–3 are a realistic near-term programme against this codebase.
-Everything from "Beyond" is the part of SPEC that describes a language that does not exist yet, and
-the spec should be read that way.
+**Honest read on schedule:** Levels 0–5 are all landed as of 2026-08-07, which is further than this
+section's original estimate of "Levels 0–3 are a realistic near-term programme". What made the
+difference was that four of the five levels turned out not to be exercised by the self-host at all,
+so the risk each carried was fixture-shaped rather than bootstrap-shaped. Everything still under
+"Beyond" is the part of SPEC that describes a language that does not exist yet, and the spec should
+be read that way — with **ownership contexts (INFERENCE §6) now the single highest-value item**, because
+three separate limitations recorded above are the same missing thing: ownership transfer surviving
+only one hop, the element key having to be object-insensitive, and `g4_ecs_world` not moving.
 
 ---
 

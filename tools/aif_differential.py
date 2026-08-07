@@ -142,6 +142,13 @@ def main():
         # is, and site_is_move_only is exactly what --owned-collections flips --
         # so this is where the second pass has the most to disagree about.
         sources.append(Path("tests/test_45_aif_affine_collections.psm"))
+        # Item 3 put a container's contents behind a field key and made two
+        # containers holding one value Shared. Both are edges in the points-to
+        # graph rather than tier clauses, so a mismatch shows up as a wrong tier
+        # somewhere else entirely -- and no corpus program reads an element back
+        # out of one container and pushes it into another.
+        sources.append(Path("tests/test_47_aif_containers.psm"))
+        sources.append(Path("tests/test_48_aif_shared_elements.psm"))
 
     dumps = {}
     failures = []

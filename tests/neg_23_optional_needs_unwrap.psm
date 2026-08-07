@@ -1,0 +1,17 @@
+// expect-error: member access requires a struct value
+// REQUIREMENTS 4. `T?` cannot be used as a `T` -- that refusal is the entire
+// point of the type, and without it an optional would be a nullable pointer with
+// nicer syntax and the same null dereference at the end of it.
+//
+// `expect(n.parent)` is the way across, and it is checked at run time rather
+// than narrowed by flow analysis. See test_51 for the positive side.
+struct Node {
+    id: Int,
+    parent: Node?
+}
+
+fn main() -> Int {
+    let root = Node { id: 1, parent: none }
+    let child = Node { id: 2, parent: root }
+    return child.parent.id
+}

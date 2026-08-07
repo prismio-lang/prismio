@@ -35,6 +35,9 @@ fn is_separator(c: Char) -> Bool {
     if (c == ',') { return true }
     if (c == '.') { return true }
     if (c == ':') { return true }
+    // REQUIREMENTS 4. Only ever the nullable-type suffix `T?`; there is no
+    // ternary and no try operator, so it needs no precedence anywhere.
+    if (c == '?') { return true }
     return false
 }
 

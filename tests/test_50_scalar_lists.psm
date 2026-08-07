@@ -1,0 +1,124 @@
+// REQUIREMENTS 20 -- `List<T>` for scalar element types.
+//
+// This was a real miscompile rather than a missing feature: `list_push` on a
+// `List<Int>` emitted `call void @list_push(ptr %1, i32 %2)` against a runtime
+// signature taking `ptr`, and LLVM rejected the module. `List<T>` worked only
+// for pointer-shaped elements.
+//
+// A scalar rides in the container's pointer-sized slot instead of being boxed.
+// Boxing was the alternative and it is worse twice over: an allocation per
+// element, and the container would then have something to *own*. A scalar
+// element allocates nothing, so it registers no site, so the disposition is NONE
+// and the teardown steps over the whole list -- which is why the memory model
+// needs no case for any of this. The count in the runner is what pins that: a
+// list of three Ints is two allocations, not five.
+//
+// The round trip has to preserve bits, not value. `Float` is the case that says
+// so: an `fptosi` would store 0.5 as 0, so the double is bitcast to its 64 bits
+// and reinterpreted. And a negative `Int` is the case for the integer half --
+// widening then narrowing recovers the sign bits, and a narrowing that used the
+// wrong instruction would not.
+
+fn sum_ints() -> Int {
+    let nums: List<Int> = list_new()
+    list_push(nums, 42)
+    list_push(nums, 7)
+    list_push(nums, -3)
+
+    let mut total = 0
+    let mut i = 0
+    while (i < list_len(nums)) {
+        total = total + list_get(nums, i)
+        i = i + 1
+    }
+    return total
+}
+
+// list_set takes the element as its third argument, so the coercion has to be
+// keyed on the position and not on "the last one".
+fn overwrite() -> Int {
+    let nums: List<Int> = list_new()
+    list_push(nums, 1)
+    list_push(nums, 2)
+    list_set(nums, 0, 100)
+    return list_get(nums, 0) + list_get(nums, 1)
+}
+
+// The bit-exactness case. 0.5 and 2.25 are both exactly representable, so a
+// wrong answer here is a wrong *instruction* rather than a rounding difference.
+fn float_round_trip() -> Bool {
+    let fs: List<Float> = list_new()
+    list_push(fs, 0.5)
+    list_push(fs, 2.25)
+    let got = list_get(fs, 0) + list_get(fs, 1)
+    return got == 2.75
+}
+
+// Narrower than a pointer in the other direction: i1 has to widen on the way in
+// and truncate on the way out, and getting the width wrong reads a neighbouring
+// byte as the flag.
+fn bools_survive() -> Int {
+    let bs: List<Bool> = list_new()
+    list_push(bs, true)
+    list_push(bs, false)
+    list_push(bs, true)
+
+    let mut set = 0
+    let mut i = 0
+    while (i < list_len(bs)) {
+        if (list_get(bs, i)) { set = set + 1 }
+        i = i + 1
+    }
+    return set
+}
+
+// Crossing the initial capacity of four, so the element block is regrown with
+// scalars in it. The regrow copies `void*` slots and must not care what they
+// hold.
+fn grows_past_capacity() -> Int {
+    let nums: List<Int> = list_new()
+    let mut i = 0
+    while (i < 10) {
+        list_push(nums, i * i)
+        i = i + 1
+    }
+
+    let mut total = 0
+    let mut k = 0
+    while (k < list_len(nums)) {
+        total = total + list_get(nums, k)
+        k = k + 1
+    }
+    return total
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    print("FAIL ")
+    print(label)
+    print(": got ")
+    print_int(got)
+    print(" want ")
+    println_int(want)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("sum_ints", sum_ints(), 46)
+    bad = bad + check("overwrite", overwrite(), 102)
+    bad = bad + check("bools", bools_survive(), 2)
+    bad = bad + check("grows", grows_past_capacity(), 285)
+
+    if (float_round_trip() == false) {
+        println("FAIL float_round_trip")
+        bad = bad + 1
+    }
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

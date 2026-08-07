@@ -1,0 +1,214 @@
+// AIF item 3 -- a container owns its elements, and a returned container is owned
+// by the binding that receives it.
+//
+// Level 4 gave a list a release point and reclaimed two allocations: the handle
+// and the element block. The elements themselves were left alone, on the reading
+// that `list_push` is `retain_in(0)` and so whoever owns the element owns it at
+// its own binding. Nobody does -- the push raises the element's escape to the
+// container's, which is exactly what makes aif_frees_at_scope_node decline the
+// binding. So every element of every list leaked, and the corpus is where that
+// showed: g2_frame_loop leaked 61 362 allocations with four T2 sites and no T1.
+//
+// Two changes, and both are needed before either pays. The container releases its
+// elements, and a binding that receives a container from a known callee owns it.
+// Without the second the first never runs, because nothing tears the container
+// down; without the first the second reclaims a handle and leaves the contents.
+//
+// A doubled free exits 0xC0000374 before any comparison runs, so the fixture
+// finishing at all is most of the assertion. What the numbers add is that the
+// paths which must NOT free still do not.
+
+extern fn str_length(s: String) -> Int
+extern fn str_concat(s1: String, s2: String) -> String
+
+struct Item {
+    value: Int
+}
+
+// The plain case: a list built here, torn down at the closing brace, elements and
+// all. Five pushes cross the initial capacity of four, so the element block is
+// regrown too -- reclaiming the elements must not reclaim the block they used to
+// live in.
+fn owned_elements() -> Int {
+    let items: List<Item> = list_new()
+    list_push(items, Item { value: 1 })
+    list_push(items, Item { value: 2 })
+    list_push(items, Item { value: 4 })
+    list_push(items, Item { value: 8 })
+    list_push(items, Item { value: 16 })
+
+    let mut total = 0
+    let mut i = 0
+    while (i < list_len(items)) {
+        let e = list_get(items, i)
+        total = total + e.value
+        i = i + 1
+    }
+    return total
+}
+
+// An element that shares the element's own scope with its container. This is the
+// case that bars T0: every other conjunct of the T0 clause holds -- the escape
+// bottoms at this scope, the struct is small, nothing aliases it -- and promoting
+// it would hand the teardown a frame slot. The value is small enough that it
+// would have been promoted before.
+fn small_element_is_not_stack() -> Int {
+    let items: List<Item> = list_new()
+    list_push(items, Item { value: 7 })
+    let e = list_get(items, 0)
+    return e.value
+}
+
+// Ownership across a return. `build` allocates the container and hands it over;
+// the binding here is what releases it. The escape lattice says Caller for both
+// the list and its elements and cannot say otherwise -- E is per site and a site
+// belongs to one function -- so this is the fact that had to come from somewhere
+// else.
+fn build(n: Int) -> List<Item> {
+    let mut out: List<Item> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(out, Item { value: i })
+        i = i + 1
+    }
+    return out
+}
+
+fn consumes_returned_container(n: Int) -> Int {
+    let items = build(n)
+    let mut total = 0
+    let mut i = 0
+    while (i < list_len(items)) {
+        let e = list_get(items, i)
+        total = total + e.value
+        i = i + 1
+    }
+    return total
+}
+
+// Called in a loop, so a missed release grows without bound and a doubled one
+// dies on the second iteration. Neither is visible in the value.
+fn per_iteration() -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < 20) {
+        let batch = build(3)
+        total = total + list_len(batch)
+        i = i + 1
+    }
+    return total
+}
+
+// The binding receives an owned container and passes it on. Releasing it here
+// would be a use-after-free in the caller -- and the guard cannot be the escape
+// fact, which already says Caller for every returned value however briefly the
+// caller holds it. node_returns_name is what declines this.
+//
+// The caller does not get it either, and that is the level's remaining leak: the
+// return set of `forwards` is the return set of `build`, whose sites belong to
+// `build`. Ownership transfer requires the returned site to belong to the callee,
+// so it survives exactly one hop. Two hops needs INFERENCE 6's contexts, which
+// would instantiate `build` per call site and put the site where the value
+// actually dies. Six allocations here -- one list, its element block, four Items.
+fn forwards(n: Int) -> List<Item> {
+    let items = build(n)
+    return items
+}
+
+// A pass-through: the callee returns a container it did not allocate. The return
+// set holds a site belonging to the *caller*, so treating the result as owned
+// here would free a value the caller's own binding still owns. Excluded by
+// requiring every returned site to belong to the callee.
+fn identity(l: List<Item>) -> List<Item> {
+    return l
+}
+
+fn pass_through_is_not_owned() -> Int {
+    let items = build(2)
+    let same = identity(items)
+    return list_len(same)
+}
+
+// Nested containers. The outer list's elements are lists, which need
+// list_release rather than the deallocator -- a list is two allocations, so the
+// seam's fn(ptr) -> void leaks the element block. The disposition carries the
+// kind for exactly this.
+//
+// `rows` is unannotated because `List<List<Item>>` does not lex: the closing
+// `>>` is one shift token and the parser wants two. Unrelated to this item, and
+// the inference reads the element type off the push either way.
+//
+// Its own builder rather than `build`, and the reason is worth stating: the
+// facts are per site, not per call. Pushing `build`'s result into a container
+// here would set in_container on the site *inside* build, and that site is the
+// one every other caller binds -- so consumes_returned_container and
+// per_iteration would quietly stop releasing. Context-insensitivity, doing
+// exactly what INFERENCE 6 says contexts are for.
+fn build_row() -> List<Item> {
+    let mut row: List<Item> = list_new()
+    list_push(row, Item { value: 1 })
+    list_push(row, Item { value: 2 })
+    return row
+}
+
+fn nested_containers() -> Int {
+    let rows: List<List<Item>> = list_new()
+    let mut i = 0
+    while (i < 3) {
+        list_push(rows, build_row())
+        i = i + 1
+    }
+
+    let mut total = 0
+    let mut r = 0
+    while (r < list_len(rows)) {
+        let row = list_get(rows, r)
+        total = total + list_len(row)
+        r = r + 1
+    }
+    return total
+}
+
+// An element shared between two containers lives in test_48, not here, and the
+// reason is the element key's object-insensitivity. `@elem` is one key per
+// container *base* type, so every `List` in a file shares it -- and a single
+// cross-container push therefore marks every pushed site in the file as
+// multiply held. In this file that would make all seventeen sites T3 and nothing
+// above would release anything, so the two cases cannot share a fixture.
+//
+// That is a real cliff and test_48 is where it is measured rather than hidden.
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    print("FAIL ")
+    print(label)
+    print(": got ")
+    print_int(got)
+    print(" want ")
+    println_int(want)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("owned_elements", owned_elements(), 31)
+    bad = bad + check("small_element", small_element_is_not_stack(), 7)
+    bad = bad + check("returned_container", consumes_returned_container(5), 10)
+    bad = bad + check("per_iteration", per_iteration(), 60)
+    bad = bad + check("pass_through", pass_through_is_not_owned(), 2)
+    bad = bad + check("nested", nested_containers(), 6)
+
+    let forwarded = forwards(4)
+    bad = bad + check("forwards", list_len(forwarded), 4)
+    // Still readable: the callee's binding must not have released what it
+    // returned. Reading a released element under --verify reads poison.
+    let head = list_get(forwarded, 0)
+    bad = bad + check("forwarded_head", head.value, 0)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

@@ -1,0 +1,58 @@
+// REQUIREMENTS 19 -- memory budget reporting, and the `pin` that gates on it.
+//
+// Fixed budgets are a hard constraint on console targets, and arenas are what
+// make one tractable: a region's peak is what its arena serves, and a program's
+// peak is the largest sum along a root-to-leaf chain of arena scopes -- not the
+// total, which would add sibling regions that are never live together.
+//
+// `region name pin(N)` asserts a cap. A cap belongs on a region rather than on
+// a binding because a budget is a property of a block's peak and not of one
+// value, which is the one thing SPEC 5.4's `pin` had nothing to say about.
+//
+// **The estimate names the part it cannot see.** A struct's size comes from its
+// layout; a string's is its length, which is a run-time value. Sites of unknown
+// size are counted separately in the manifest rather than guessed at, because a
+// fabricated per-string constant would make this gate turn on a number nobody
+// computed. `Wide` is 33 pointer-width fields for the reason test_44's is: at
+// 264 bytes it clears Theta_stack, so it is T1 and an arena serves it.
+
+extern fn str_length(s: String) -> Int
+
+struct Wide {
+    f01: String, f02: String, f03: String, f04: String, f05: String, f06: String,
+    f07: String, f08: String, f09: String, f10: String, f11: String, f12: String,
+    f13: String, f14: String, f15: String, f16: String, f17: String, f18: String,
+    f19: String, f20: String, f21: String, f22: String, f23: String, f24: String,
+    f25: String, f26: String, f27: String, f28: String, f29: String, f30: String,
+    f31: String, f32: String, f33: String
+}
+
+fn use_it(w: Wide) -> Int { return str_length(w.f01) }
+
+// Generous enough that the converged estimate fits. The refuted direction is
+// neg_24, because a build that fails cannot also assert a value.
+fn main() -> Int {
+    let mut total = 0
+    region work pin(65536) {
+        let mut i = 0
+        while (i < 3) {
+            let w = Wide {
+                f01: "", f02: "", f03: "", f04: "", f05: "", f06: "",
+        f07: "", f08: "", f09: "", f10: "", f11: "", f12: "",
+        f13: "", f14: "", f15: "", f16: "", f17: "", f18: "",
+        f19: "", f20: "", f21: "", f22: "", f23: "", f24: "",
+        f25: "", f26: "", f27: "", f28: "", f29: "", f30: "",
+        f31: "", f32: "", f33: ""
+            }
+            total = total + use_it(w)
+            i = i + 1
+        }
+    }
+
+    if (total == 0) {
+        println("PASS")
+        return 0
+    }
+    println("FAIL: expected empty strings")
+    return 1
+}

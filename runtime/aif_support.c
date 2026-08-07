@@ -75,6 +75,11 @@ static void* xrealloc(void* p, size_t n, const char* what) {
 
 // Site kinds. Mirrors what src/aif.psm classifies a type as; the solver only
 // cares that kind 0 is a struct (the T0 clause and the copy rule both test it).
+// LAYOUT 4. Assumed trip count of a loop with no profile, and the one estimator
+// both static profiles share -- arena placement's allocs_in(s) and the layout
+// search's access counts. One definition, so they cannot drift apart.
+#define AIF_LOOP_ITERS      16
+
 #define AIF_K_STRUCT 0
 #define AIF_K_STRING 1
 #define AIF_K_ARRAY  2
@@ -297,6 +302,11 @@ typedef struct {
     // arena, times the trip count of every loop between them.
     int loop_depth;
     const void* node;   // the BLOCK this scope came from, for the codegen lookup
+    // REQUIREMENTS 19. A byte cap asserted by `region name pin(N)`, or 0. The
+    // span travels with it so a refuted budget can underline the annotation
+    // rather than the block.
+    long budget;
+    int budget_file, budget_line, budget_col;
 } Scope;
 
 static Scope* scopes;
@@ -315,7 +325,17 @@ int aif_scope_new(int parent, int owner) {
     s->arena = 0;
     s->loop_depth = 0;
     s->node = NULL;
+    s->budget = 0;
+    s->budget_file = s->budget_line = s->budget_col = 0;
     return scope_count++;
+}
+
+void aif_scope_set_budget(int scope, int bytes, int file, int line, int col) {
+    if (scope < 0 || scope >= scope_count) return;
+    scopes[scope].budget = bytes;
+    scopes[scope].budget_file = file;
+    scopes[scope].budget_line = line;
+    scopes[scope].budget_col = col;
 }
 
 void aif_scope_set_region(int scope, const char* name) {
@@ -439,6 +459,19 @@ typedef struct {
     int is_enum;
     Bits reaches;       // direct edges, then closed transitively
     int acyclic;
+    // LAYOUT 7.2. The fields themselves, in declaration order, plus the access
+    // profile over them and the permutation the search chose.
+    int* field_name;    // interned
+    // The field's *declared* type, base-named. Struct-field ownership compares
+    // it against what the sites say is in the slot: this compiler puns an
+    // ASTNode pointer as `String`, and a release chosen from the sites alone
+    // would emit a call to __aif_release_String.
+    int* field_type;
+    int* field_bytes;   // width, from the frontend -- it knows the lowering
+    long long* field_acc;
+    int* order;         // order[i] is the declaration index placed i-th
+    int field_cap;
+    int reordered;
 } Nominal;
 
 static Nominal* nominals;
@@ -484,6 +517,13 @@ static int nominal_intern(const char* name, int is_enum) {
     t->reaches.w = NULL;
     t->reaches.nwords = 0;
     t->acyclic = 1;
+    t->field_name = NULL;
+    t->field_type = NULL;
+    t->field_bytes = NULL;
+    t->field_acc = NULL;
+    t->order = NULL;
+    t->field_cap = 0;
+    t->reordered = 0;
     nominal_index_put(t->name, nominal_count);
     return nominal_count++;
 }
@@ -506,8 +546,162 @@ int aif_struct_nfields(const char* name) {
     return (id >= 0) ? nominals[id].nfields : 0;
 }
 
-void aif_struct_add_field(const char* name) {
-    nominals[nominal_intern(name, 0)].nfields++;
+void aif_struct_add_field(const char* name, const char* field, const char* type, int bytes) {
+    Nominal* t = &nominals[nominal_intern(name, 0)];
+    if (t->nfields == t->field_cap) {
+        int grow = t->field_cap ? t->field_cap * 2 : 8;
+        t->field_name  = (int*)xrealloc(t->field_name,  (size_t)grow * sizeof(int), "AIF fields");
+        t->field_type  = (int*)xrealloc(t->field_type,  (size_t)grow * sizeof(int), "AIF field types");
+        t->field_bytes = (int*)xrealloc(t->field_bytes, (size_t)grow * sizeof(int), "AIF field widths");
+        t->field_acc = (long long*)xrealloc(t->field_acc,
+                                           (size_t)grow * sizeof(long long), "AIF field accesses");
+        t->order = (int*)xrealloc(t->order, (size_t)grow * sizeof(int), "AIF field order");
+        t->field_cap = grow;
+    }
+    int i = t->nfields++;
+    t->field_name[i] = aif_intern(field);
+    t->field_type[i] = aif_intern(type);
+    t->field_bytes[i] = bytes;
+    t->field_acc[i] = 0;
+    t->order[i] = i;
+}
+
+// ============================================================================
+// The access profile (LAYOUT 2.1) and layout selection (LAYOUT 7.2)
+//
+// LAYOUT 2 wants the profile measured, by running a declared `workload` under
+// instrumentation. There is no workload runner, so this is the static estimate
+// LAYOUT 10.4 names as the fallback -- one count per syntactic access, weighted
+// by AIF_LOOP_ITERS per enclosing loop, which is exactly how automatic arena
+// placement estimates allocs_in(s). Same estimator, same known crudeness, and
+// the same property that matters: it is deterministic and needs no profile file.
+//
+// **Only one candidate dimension is searched, and the rest is not caution.**
+// LAYOUT 6's table lists grouping (AoS/SoA), a hot/cold split, field order,
+// bit-packing and handle width. Field order is the only one this compiler can
+// *emit*: SoA and a hot/cold split both make one logical object several
+// allocations, so a field reference stops being `getelementptr` on a pointer and
+// becomes a base plus an index -- which is 1's finding 6, handles, rated as
+// touching every layer. Bit-packing needs a mask and a shift at every access.
+// Choosing a layout codegen cannot produce would be a manifest that describes a
+// binary nobody built.
+// ============================================================================
+
+void aif_field_access(const char* type, const char* field, int loops) {
+    int id = nominal_find(type);
+    if (id < 0) return;
+    Nominal* t = &nominals[id];
+    int f = aif_intern(field);
+    long long weight = 1;
+    if (loops > 6) loops = 6;       // capped as weight_of caps it, and for the same reason
+    for (int i = 0; i < loops; i++) weight *= AIF_LOOP_ITERS;
+    for (int i = 0; i < t->nfields; i++) {
+        if (t->field_name[i] == f) { t->field_acc[i] += weight; return; }
+    }
+}
+
+// **The first field never moves, and this is not a tuning choice.**
+//
+// The compiler puns a struct pointer as `String` and spells "this slot is empty"
+// as `str_equals(ptr, "")`, which reads the *first byte of the pointed-to
+// struct*. That is why NodeKind and TypeKind both reserve ordinal 0: a live node
+// whose first field is zero is byte-for-byte an empty slot, and every
+// node_exists in the compiler rests on it (tests/test_41_punned_slot_bytes.psm).
+//
+// Sorting by width puts an 8-byte pointer at offset 0, and a pointer to "" has a
+// zero first byte -- so every live node with an empty `s1` began reading as
+// absent. The generation built by the first compiler that did this could not
+// parse its own source. SPEC 8.2 grants the compiler layout freedom; this
+// implementation's representation of "absent" spends the first field of it, and
+// the search has to know that rather than rediscover it.
+// **Descending width alone is wrong here, and measurement is what says so.**
+//
+// LAYOUT 6 derives field order as a sort -- descending frequency, then descending
+// alignment -- and a sort is optimal for padding only when placement starts at
+// offset 0 with nothing fixed. The pinned first field breaks that: pinning a
+// 4-byte `kind` leaves a 4-byte hole that only a narrow field can fill, and a
+// width sort puts the widest field next and pays the padding. Measured on the
+// corpus, sorting made `Health` 16 bytes -> 24 and `Sprite` 40 -> 48. It made
+// nothing smaller.
+//
+// So placement is greedy over the running offset instead: at each step take the
+// widest remaining field that needs *no* padding where the last one ended, and
+// only when nothing fits fall back to the widest overall. That fills the pin's
+// hole with the narrow field declaration order would have put there, and is at
+// least as good as both a sort and source order everywhere on this corpus.
+//
+// Frequency is the tie-break rather than the primary key, and LAYOUT 6's ordering
+// of the two is right for the reason it gives -- frequency decides where a
+// hot/cold cut falls. There is no cut here (it needs handles), so frequency has
+// nothing structural to decide and only costs padding if it leads.
+static int layout_pad(int offset, int width) {
+    if (width <= 0) return 0;
+    int slack = offset % width;
+    return slack == 0 ? 0 : width - slack;
+}
+
+void aif_layout_select(void) {
+    for (int n = 0; n < nominal_count; n++) {
+        Nominal* t = &nominals[n];
+        if (t->is_enum || t->nfields < 3) continue;   // nothing to permute past field 0
+
+        // The first field never moves; see above. Everything else is chosen by
+        // greedy best-fit from the offset the pinned prefix left.
+        int offset = t->field_bytes[0];
+        for (int slot = 1; slot < t->nfields; slot++) {
+            int best = -1, best_pad = 0;
+            for (int c = slot; c < t->nfields; c++) {
+                int f = t->order[c];
+                int pad = layout_pad(offset, t->field_bytes[f]);
+                if (best < 0) { best = c; best_pad = pad; continue; }
+                int b = t->order[best];
+                // Fits without padding beats anything that does not; then wider;
+                // then hotter; then declaration index, so the order is total and
+                // the output deterministic (LAYOUT 9).
+                int better = 0;
+                if ((pad == 0) != (best_pad == 0))            better = (pad == 0);
+                else if (t->field_bytes[f] != t->field_bytes[b]) better = t->field_bytes[f] > t->field_bytes[b];
+                else if (t->field_acc[f] != t->field_acc[b])     better = t->field_acc[f] > t->field_acc[b];
+                else                                             better = f < b;
+                if (better) { best = c; best_pad = pad; }
+            }
+            int chosen = t->order[best];
+            t->order[best] = t->order[slot];
+            t->order[slot] = chosen;
+            offset += best_pad + t->field_bytes[chosen];
+        }
+
+        for (int i = 0; i < t->nfields; i++) {
+            if (t->order[i] != i) { t->reordered = 1; break; }
+        }
+    }
+}
+
+// The i-th field of `type` in the chosen order, or "" when there is none. Codegen
+// reads this to emit the struct body, and ir_register_struct_field follows in the
+// same loop -- so the name -> index map and the LLVM type stay in lockstep and
+// every field access follows without knowing anything about layout.
+const char* aif_layout_field(const char* type, int i) {
+    int id = nominal_find(type);
+    if (id < 0) return "";
+    Nominal* t = &nominals[id];
+    if (i < 0 || i >= t->nfields) return "";
+    return aif_str(t->field_name[t->order[i]]);
+}
+
+int aif_layout_reordered(const char* type) {
+    int id = nominal_find(type);
+    return id >= 0 ? nominals[id].reordered : 0;
+}
+
+// The width of the field placed i-th, so the size computation walks the layout
+// the search chose rather than the one the source wrote.
+int aif_layout_field_bytes(const char* type, int i) {
+    int id = nominal_find(type);
+    if (id < 0) return 0;
+    Nominal* t = &nominals[id];
+    if (i < 0 || i >= t->nfields) return 0;
+    return t->field_bytes[t->order[i]];
 }
 
 // The frontend computes this from the field types once every type is known.
@@ -596,6 +790,10 @@ typedef struct {
     int E, A, C;
     int type_acyclic;   // stamped once, before iteration
     int no_stack;       // explicitly dropped -- see AIF_CON_NO_STACK
+    // Stored into a container by a `retain_in` call. The container owns it from
+    // that point on, which is what makes a container teardown a release point --
+    // and what takes the value's own binding off the drop list.
+    int in_container;
     // SPEC 5.1. `unique` asserts A = Unique and cuts the aliasing graph: a rule
     // that would raise A above Unique is suppressed rather than applied.
     int alias_axiom;
@@ -638,6 +836,7 @@ int aif_site_new(const char* type, int kind, int fn, int scope,
     s->bytes = 0;
     s->type_acyclic = 1;
     s->no_stack = 0;
+    s->in_container = 0;
     s->alias_axiom = 0;
     s->alias_suppressed = 0;
     s->pin_tier = -1;
@@ -923,6 +1122,7 @@ void aif_argv_end(int base) { argv.len = base; }
 #define AIF_RULE_A_ESCAPE    12
 #define AIF_RULE_A_COPY      13
 #define AIF_RULE_ALLOC       14   // the root: this is where the value is made
+#define AIF_RULE_A_CONTAIN   15
 
 typedef struct {
     int kind, a, b, c;
@@ -988,6 +1188,11 @@ int aif_con_count(void) { return con_count; }
 
 static Bits* pt;            // key id -> set of sites
 static Bits* holders;       // site id -> set of keys holding it
+// site id -> set of *container sites* holding it. Separate from `holders`, which
+// counts keys -- named locations the move checker governs. A container element is
+// neither: `list_push` is a call, so nothing about it is a move, and two pushes
+// of one value are two owners the language never had to notice.
+static Bits* container_of;
 static int pt_len, holders_len;
 static Bits scratch_val, scratch_own;
 static IntVec vec_val, vec_own;
@@ -1084,6 +1289,7 @@ static void solver_alloc(void) {
     holders_len = site_count;
     pt = (Bits*)xcalloc((size_t)pt_len, sizeof(Bits), "AIF points-to");
     holders = (Bits*)xcalloc((size_t)holders_len, sizeof(Bits), "AIF holders");
+    container_of = (Bits*)xcalloc((size_t)holders_len, sizeof(Bits), "AIF container holders");
     // INFERENCE 5.6 requires the derivation be retained through tier assignment.
     deriv_e = (Deriv*)xcalloc((size_t)site_count, sizeof(Deriv), "AIF derivation (E)");
     deriv_a = (Deriv*)xcalloc((size_t)site_count, sizeof(Deriv), "AIF derivation (A)");
@@ -1328,6 +1534,17 @@ int aif_solve(int max_rounds) {
                         int h = vec_own.v[j];
                         if (raise_escape(s, sites[h].E, h)) changed = moved(s);
                         if (raise_alias(s, sites[h].A, h)) changed = moved(s);
+                        // Which containers hold it, not merely that one does. The
+                        // count is the fact A-CONTAIN reads, and it is the only
+                        // thing separating "the container owns this, free it at
+                        // teardown" from a double free through the second one.
+                        if (bits_set(&container_of[s], h, "AIF container holders")) {
+                            changed = moved(s);
+                        }
+                    }
+                    if (!sites[s].in_container && vec_own.len > 0) {
+                        sites[s].in_container = 1;
+                        changed = moved(s);
                     }
                     if (raise_alias(s, AIF_A_BORROWED, -1)) changed = moved(s);
                 }
@@ -1386,6 +1603,25 @@ int aif_solve(int max_rounds) {
             synth_rule = AIF_RULE_A_COPY;
             if (!site_is_move_only(&sites[s])
                 && bits_count_at_least_two(&holders[s])
+                && raise_alias(s, AIF_A_SHARED, -1)) {
+                changed = moved(s);
+            }
+
+            // A-CONTAIN: two containers holding one value is sharing, whatever
+            // the type.
+            //
+            // A-COPY exempts move-only values because a second *binding* is a
+            // move, so the earlier one is provably dead. That argument does not
+            // reach a container: `list_push(l, x)` is a call, and a call is not a
+            // move -- so `store(l1, x); store(l2, x)` puts one value under two
+            // owners with nothing in the language to notice. Once a container
+            // teardown releases its elements, that is the double free.
+            //
+            // Making it Shared is not a workaround for the gap; it is the correct
+            // reading, and it lands the value on the tier built for exactly this
+            // shape. One container owns and frees (T2); two share and count (T3).
+            synth_rule = AIF_RULE_A_CONTAIN;
+            if (bits_count_at_least_two(&container_of[s])
                 && raise_alias(s, AIF_A_SHARED, -1)) {
                 changed = moved(s);
             }
@@ -1555,8 +1791,14 @@ static int fits_on_stack(const Site* s) {
 // The cheapest tier the converged facts permit. This is where SPEC 3's ladder
 // becomes a decision, and the clauses are ordered so the first match wins.
 static int derived_tier(const Site* s) {
+    // in_container joins no_stack here for the same reason it sits next to it in
+    // the drop predicate: the container reclaims its elements, and a frame slot is
+    // not something a deallocator can take. Reachable whenever the container and
+    // the element share a scope, which keeps E at that scope and every other T0
+    // conjunct satisfied.
     if (s->E == s->scope && s->A <= AIF_A_BORROWED
-        && s->kind == AIF_K_STRUCT && fits_on_stack(s) && !s->no_stack) {
+        && s->kind == AIF_K_STRUCT && fits_on_stack(s)
+        && !s->no_stack && !s->in_container) {
         return AIF_T0;
     }
     if (s->E != AIF_E_CALLER && s->E != AIF_E_GLOBAL) return AIF_T1;
@@ -1746,6 +1988,7 @@ const char* aif_rule_name(int rule) {
     if (rule == AIF_CON_ESCAPE_GLOBAL)  return "E-STATIC";
     if (rule == AIF_RULE_A_ESCAPE)      return "A-ESCAPE";
     if (rule == AIF_RULE_A_COPY)        return "A-COPY";
+    if (rule == AIF_RULE_A_CONTAIN)     return "A-CONTAIN";
     if (rule == AIF_RULE_ALLOC)         return "ALLOC";
     return "?";
 }
@@ -1873,7 +2116,6 @@ static int enclosing_region(int scope) {
 #define AIF_ALPHA_T1        3     // LAYOUT 4: allocation cycles at T1 (bump)
 #define AIF_ALPHA_T2        90    //           and at T2 (a general allocator)
 #define AIF_ARENA_SETUP    40     // LAYOUT 4: ~one block acquisition plus reset
-#define AIF_LOOP_ITERS      16    // assumed trip count of a loop with no profile
 
 // Loops between `inner` and its ancestor `outer`, or 0 if unrelated.
 static int loops_between(int inner, int outer) {
@@ -1952,6 +2194,96 @@ void aif_place_arenas(void) {
     }
 }
 
+// ============================================================================
+// REQUIREMENTS 19 -- memory budget reporting
+//
+// The arena high-water mark, statically estimated. Fixed budgets are a hard
+// constraint on console targets, and arenas are what make one tractable: a
+// region's peak is the sum of what it serves, and the peak for a program is the
+// largest sum along a **root-to-leaf chain** of arena scopes -- not the total,
+// which would add sibling regions that are never live at the same time.
+//
+// Weighted by AIF_LOOP_ITERS per enclosing loop, the same estimator automatic
+// placement uses for allocs_in(s), so the two cannot disagree about how much a
+// scope serves.
+//
+// **It is an estimate, and the manifest says which part it cannot see.** A
+// struct's size is known from its layout; a string's is its length, which is a
+// run-time value. Sites whose size is not statically known are counted
+// separately rather than guessed at, because a fabricated per-string constant
+// would make a budget gate that passes or fails on a number nobody computed.
+// ============================================================================
+
+long aif_arena_high_water(void) {
+    if (scope_count <= 0) return 0;
+    long* own = (long*)xcalloc((size_t)scope_count, sizeof(long), "AIF arena bytes");
+
+    for (int s = 0; s < scope_count; s++) {
+        if (!scopes[s].arena) continue;
+        long b = 0;
+        for (int k = 0; k < site_count; k++) {
+            if (!arena_would_serve(k, s)) continue;
+            b += (long)sites[k].bytes * weight_of(sites[k].scope, s);
+        }
+        own[s] = b;
+    }
+
+    long peak = 0;
+    for (int s = 0; s < scope_count; s++) {
+        if (!scopes[s].arena) continue;
+        long chain = 0;
+        for (int p = s; p >= 0; p = scopes[p].parent) {
+            if (scopes[p].arena) chain += own[p];
+        }
+        if (chain > peak) peak = chain;
+    }
+
+    free(own);
+    return peak;
+}
+
+// What one region's arena serves, for the `pin(N)` gate. Its own scope only:
+// a nested region has its own arena and its own cap.
+static long arena_bytes_of(int scope) {
+    long b = 0;
+    for (int k = 0; k < site_count; k++) {
+        if (!arena_would_serve(k, scope)) continue;
+        b += (long)sites[k].bytes * weight_of(sites[k].scope, scope);
+    }
+    return b;
+}
+
+// REQUIREMENTS 19's gate. A refuted budget is an error for the same reason a
+// refuted `pin` is (SPEC 5.4.1): it is a false assertion about one's own
+// program, not an inference failure, so SPEC 1's invariant is untouched.
+//
+// Returns the number refuted; the frontend prints them.
+int aif_budget_count(void) { return scope_count; }
+
+long aif_scope_budget(int s)     { return (s < 0 || s >= scope_count) ? 0 : scopes[s].budget; }
+long aif_scope_served(int s)     { return (s < 0 || s >= scope_count) ? 0 : arena_bytes_of(s); }
+const char* aif_scope_region(int s) {
+    if (s < 0 || s >= scope_count || scopes[s].region_name < 0) return "";
+    return aif_str(scopes[s].region_name);
+}
+int aif_scope_budget_file(int s) { return (s < 0 || s >= scope_count) ? 0 : scopes[s].budget_file; }
+int aif_scope_budget_line(int s) { return (s < 0 || s >= scope_count) ? 0 : scopes[s].budget_line; }
+int aif_scope_budget_col(int s)  { return (s < 0 || s >= scope_count) ? 0 : scopes[s].budget_col; }
+
+// Arena-served sites whose size is not statically known -- strings, whose length
+// is a run-time value. Reported alongside the estimate so the number above is
+// read as covering what it covers.
+int aif_arena_unsized_sites(void) {
+    int n = 0;
+    for (int s = 0; s < scope_count; s++) {
+        if (!scopes[s].arena) continue;
+        for (int k = 0; k < site_count; k++) {
+            if (arena_would_serve(k, s) && sites[k].bytes == 0) n++;
+        }
+    }
+    return n;
+}
+
 // 1 when this BLOCK node opens an arena the cost model chose. A `region`
 // statement is excluded: codegen already brackets that one, and bracketing it
 // twice would push two arenas and pop only the inner one at an early exit.
@@ -1990,6 +2322,10 @@ int aif_arena_at_node(const void* node) {
         // arenas only appeared where a `region` was written; automatic placement
         // (LAYOUT 7.1) puts one around almost every explicit drop.
         if (s->no_stack) return 0;
+        // The container frees its elements through the deallocator, and a pointer
+        // into the middle of an arena chunk is not one it can take. Same exclusion
+        // as no_stack above, one owner further out.
+        if (s->in_container) return 0;
         // An arena serves values allocated once. A list is not one: list_push
         // reallocates the element block long after this site returned, at
         // whatever arena depth the program happens to be at then -- so the block
@@ -2014,6 +2350,7 @@ const char* aif_region_name_at_site(int id) {
     if (id < 0 || id >= site_count) return "";
     if (aif_tier_of(id) != AIF_T1) return "";
     if (sites[id].no_stack) return "";
+    if (sites[id].in_container) return "";
     if (sites[id].kind == AIF_K_LIST) return "";
     int r = enclosing_region(sites[id].scope);
     if (r < 0 || sites[id].E < 0) return "";
@@ -2031,6 +2368,8 @@ int aif_site_arena_is_pinned(int id) {
     if (r < 0) return 0;
     return scopes[r].region_name >= 0 ? 1 : 0;
 }
+
+static int site_in_released_field(int s);
 
 int aif_frees_at_scope_node(const void* node) {
     if (node == NULL) return 0;
@@ -2055,9 +2394,633 @@ int aif_frees_at_scope_node(const void* node) {
         // free. Same flag that bars T0, and for the same reason -- it records
         // that the source, not the model, decides when this value dies.
         if (s->no_stack) return 0;
+        // A container took ownership, so the container's teardown is the release
+        // point and this binding is not one. Reachable only when the two share a
+        // scope -- otherwise the container's escape already lifted E past it and
+        // the test above declined -- and in that case the element would otherwise
+        // be freed here *and* at the teardown, newest binding first.
+        if (s->in_container) return 0;
+        // The same rule one level out: a struct field the type now releases is
+        // this value's release point, so its binding is not. See
+        // site_in_released_field for why the E test above does not already cover
+        // it.
+        if (site_in_released_field(n->site)) return 0;
         return aif_tier_of(n->site) == AIF_T0 ? 0 : 1;   // T0 storage is the frame
     }
     return 0;
+}
+
+// ============================================================================
+// Ownership inside containers
+//
+// A container teardown is a release point, and the container has to be told what
+// its elements are: probing a pointer's header to find out would be reading
+// memory in front of a pointer this compilation did not allocate, which is the
+// same unsound move that bars refcounting an OPAQUE site.
+//
+// So the disposition is decided here, once, and codegen stamps it on the
+// container at construction. It is a property of the *container site*, not of the
+// element, because that is the only granularity a teardown loop has: one call per
+// element, all elements alike.
+//
+// Which means a mixed container has no answer. If one element wants a free and
+// another wants a decrement, neither is right for both and the honest outcome is
+// to reclaim nothing -- today's behaviour, and a leak rather than a wrong free.
+// The same goes for anything the deallocator cannot take: an array element is
+// frame storage and an opaque one was never ours.
+// ============================================================================
+
+#define AIF_ELEM_NONE   0
+#define AIF_ELEM_OBJECT 1   // the deallocator
+#define AIF_ELEM_LIST   2   // list_release, which is two allocations
+#define AIF_ELEM_RC     3   // Level 5: a decrement, and the last holder frees
+#define AIF_ELEM_TYPED  4   // the type's generated release -- struct-field ownership
+#define AIF_ELEM_CYCLE  5   // T4b: a decrement, and a non-zero result buffers a candidate
+
+// AIF Level 5. Whether this site is allocated with a reference count.
+//
+// Three exclusions, and each is a different kind of "we did not allocate this":
+//
+//   * OPAQUE -- the pointer came back from a function this compilation cannot
+//     see. There is no header in front of it. This is the exclusion that matters,
+//     because it covers all 37 of the compiler's own T3 sites.
+//   * STRING and LIST -- allocated inside lang_runtime.c, past the seam, so the
+//     site cannot choose its own allocator. The same asymmetry Level 4 hit with
+//     the arena; a hint would work here too and is not this level.
+//   * ARRAY -- frame storage.
+//
+// And a positive requirement: the site must be in a container. A count is a count
+// of container edges, so a value in none of them would be born at zero, never
+// retained, never released, and pay 16 bytes of header for nothing.
+static int site_is_rc(const Site* s, int tier) {
+    if (tier != AIF_T3) return 0;
+    if (s->kind != AIF_K_STRUCT) return 0;
+    if (s->no_stack) return 0;              // an explicit drop needs a plain free
+    return s->in_container;
+}
+
+// AIF T4b. The same shape one tier up, and the exclusions are the same: the
+// object must be one this compilation allocated, so there is a header in front
+// of it, and it must be in a container, because a container edge is the only
+// count this compiler both increments and decrements.
+//
+// The extra requirement over T3 is structural rather than a policy choice: a
+// T4b site is one whose type is *not* acyclic (SPEC 4.2's C = MaybeCyclic), so
+// there is an SCC to walk. Without one there are no cyclic children and the
+// collector would buffer candidates it can never reclaim.
+static int site_is_cyclic(const Site* s, int tier) {
+    if (tier != AIF_T4B) return 0;
+    if (s->kind != AIF_K_STRUCT) return 0;
+    if (s->no_stack) return 0;
+    if (s->type_acyclic) return 0;
+    return s->in_container;
+}
+
+int aif_site_is_cyclic(int id) {
+    if (id < 0 || id >= site_count) return 0;
+    return site_is_cyclic(&sites[id], aif_tier_of(id));
+}
+
+int aif_cycle_at_node(const void* node) {
+    if (node == NULL) return 0;
+    for (NodeSite* n = node_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node != node) continue;
+        return site_is_cyclic(&sites[n->site], aif_tier_of(n->site));
+    }
+    return 0;
+}
+
+static int type_releases_of(int nominal);
+
+static int elem_disposition_of(const Site* s, int tier) {
+    if (s->kind == AIF_K_ARRAY || s->kind == AIF_K_OPAQUE) return AIF_ELEM_NONE;
+    if (site_is_rc(s, tier)) return AIF_ELEM_RC;
+    if (site_is_cyclic(s, tier)) return AIF_ELEM_CYCLE;
+    // T0 is the frame, and a T3 or T4b site the two predicates above declined has
+    // no header to decrement.
+    if (tier != AIF_T1 && tier != AIF_T2) return AIF_ELEM_NONE;
+    if (s->no_stack) return AIF_ELEM_NONE;      // an explicit drop already frees it
+    if (s->kind == AIF_K_LIST) return AIF_ELEM_LIST;
+    // Struct-field ownership. Handing a struct with owned fields to the plain
+    // deallocator frees the object and leaks everything it owns -- which is g3's
+    // entire residue: 1365 Nodes, three owned struct fields each, 4095 leaks.
+    if (s->kind == AIF_K_STRUCT && type_releases_of(nominal_find_id(s->type))) {
+        return AIF_ELEM_TYPED;
+    }
+    return AIF_ELEM_OBJECT;
+}
+
+// ============================================================================
+// Struct-field ownership
+//
+// The sibling of container ownership, and deliberately not the same mechanism.
+// A container is *told* its element disposition at construction because its
+// contents are dynamic -- the runtime is the only thing that knows how many
+// elements there are or when the last one arrived. A struct's fields are known
+// statically, right here in the nominal registry, so the answer is a **function
+// generated per type** with one release per owned field emitted in line.
+//
+// Two consequences follow from that difference, and both are the point:
+//
+//   * **The disposition is per field, not per type.** A container reclaims
+//     nothing when its elements disagree, because a teardown loop makes one call
+//     for all of them. A generated function has a separate statement per field,
+//     so `World` -- five owned `List`s and an `Int` -- releases the five and
+//     steps over the Int. A single answer for the whole type would have to be
+//     NONE for all six, which is exactly the leak this closes.
+//   * **No runtime word.** The container needs `elem_own` on the object; a struct
+//     needs nothing, because the type is what selects the function.
+//
+// The fact this reads is not new. A struct literal's field initialiser has been
+// a STORE into `key_field(type, field)` since Level 0 -- that is what carries
+// E-STORE and A-STORE -- so the sites that may reach a field are exactly
+// `pt[key_field(type, field)]`. This adds a query, not a rule.
+// ============================================================================
+
+// Lookup without interning. A query after the solve must not add a key: pt is
+// sized to key_count at solve start, so a fresh id would index past it, and a
+// table that grows while it is being read is a table nobody can reason about.
+static int key_find(int kind, int a, int b) {
+    unsigned h = (unsigned)kind * 2654435761u
+               ^ (unsigned)a * 40503u
+               ^ (unsigned)b * 2246822519u;
+    for (KeyNode* n = key_buckets[h & (AIF_KEY_BUCKETS - 1)]; n; n = n->next) {
+        if (n->kind == kind && n->a == a && n->b == b) return n->id;
+    }
+    return -1;
+}
+
+// What release `type.field` needs, or NONE.
+//
+// Agreement over the field's points-to set, for the same reason the container
+// case agrees over its elements: one field holds one pointer, but the analysis
+// may not be able to say which site produced it, and a field that is a `List` on
+// one path and an opaque on another has no single correct release.
+// `List<Token>` -> `List`, on interned ids. The frontend's aif_base_type exists
+// for the same reason field keys are object-insensitive: `list_new()` types as
+// `List<Invalid>` and an annotated field does not, so a raw comparison of the
+// two spellings would reject every container field.
+static int base_type_id(int name) {
+    const char* s = aif_str(name);
+    const char* lt = strchr(s, '<');
+    if (!lt) return name;
+    char buf[128];
+    size_t n = (size_t)(lt - s);
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, s, n);
+    buf[n] = '\0';
+    return aif_intern(buf);
+}
+
+// Whether releasing this field would re-enter the type that owns it.
+//
+// `struct Node { parent: Node?, children: List<Node> }` is the shape:
+// __aif_release_Node(n) releasing n.parent releases *its* parent, and so on
+// until the stack gives out -- or, worse, around a cycle and back to an object
+// already freed. A statically generated release is for the acyclic part of the
+// type graph by construction, and a cycle is what SPEC's T4b collector is for.
+//
+// **Only reachable once REQUIREMENTS 4 exists.** Before `none` a parent
+// back-reference did not typecheck, which is precisely why CYCLES had nothing to
+// run against.
+static int field_closes_cycle(int owner, int declared_type) {
+    if (owner < 0 || declared_type < 0) return 0;
+    int fid = nominal_find_id(declared_type);
+    if (fid < 0) return 0;
+    if (fid == owner) return 1;
+    return bits_test(&nominals[fid].reaches, owner);
+}
+
+static int field_release_of(int type_name, int field_name, int declared_type) {
+    int key = key_find(AIF_KEY_FIELD, type_name, field_name);
+    if (key < 0 || key >= pt_len) return AIF_ELEM_NONE;
+    if (field_closes_cycle(nominal_find_id(type_name), declared_type)) return AIF_ELEM_NONE;
+
+    int agreed = AIF_ELEM_NONE;
+    for (int s = 0; s < site_count; s++) {
+        if (!bits_test(&pt[key], s)) continue;
+        // **The slot has to hold what it says it holds.** This compiler puns an
+        // ASTNode pointer as `String` and walks node chains through it, so a
+        // `String` field can receive struct sites -- and a release chosen from
+        // the sites alone emits `__aif_release_String`, which is not a function.
+        // That is not a naming bug to paper over: the language and the analysis
+        // genuinely disagree about what is in the slot, and the honest answer is
+        // to reclaim nothing. Same discipline as arrays in
+        // aif_frees_at_scope_node, which decline by kind for the same reason.
+        if (declared_type >= 0 && base_type_id(sites[s].type) != declared_type) {
+            return AIF_ELEM_NONE;
+        }
+        int d = elem_disposition_of(&sites[s], aif_tier_of(s));
+        if (d == AIF_ELEM_NONE) return AIF_ELEM_NONE;
+        if (agreed == AIF_ELEM_NONE) agreed = d;
+        else if (agreed != d) return AIF_ELEM_NONE;
+    }
+    return agreed;
+}
+
+// The declared type of a struct's i-th field, base-named, or -1.
+static int field_declared_type(const Nominal* t, int i) {
+    return t->field_type ? t->field_type[i] : -1;
+}
+
+// -1 not computed, -2 in progress.
+//
+// The in-progress marker is what a self-referential type needs. `struct Node {
+// child: Node }` would otherwise have to know whether Node releases in order to
+// decide whether Node releases. Read as "does not", which leaks rather than
+// double-frees -- and a type that reaches itself is C-MAYBE anyway, so it is the
+// cycle collector's problem and not this one's.
+static int* type_releases;
+static int type_releases_cap;
+
+static int type_releases_of(int nominal) {
+    if (nominal < 0 || nominal >= nominal_count) return 0;
+    if (nominals[nominal].is_enum) return 0;
+
+    if (nominal >= type_releases_cap) {
+        int grow = type_releases_cap ? type_releases_cap * 2 : 64;
+        if (grow <= nominal) grow = nominal + 1;
+        type_releases = (int*)xrealloc(type_releases, (size_t)grow * sizeof(int),
+                                       "AIF type release cache");
+        for (int i = type_releases_cap; i < grow; i++) type_releases[i] = -1;
+        type_releases_cap = grow;
+    }
+    if (type_releases[nominal] == -2) return 0;
+    if (type_releases[nominal] >= 0) return type_releases[nominal];
+
+    type_releases[nominal] = -2;
+    Nominal* t = &nominals[nominal];
+    int any = 0;
+    for (int i = 0; i < t->nfields && !any; i++) {
+        if (field_release_of(t->name, t->field_name[i], field_declared_type(t, i))
+            != AIF_ELEM_NONE) any = 1;
+    }
+    type_releases[nominal] = any;
+    return any;
+}
+
+int aif_type_releases(const char* name) {
+    return type_releases_of(nominal_find(name));
+}
+
+// ---------------------------------------------------------------------------
+// CYCLES 4 -- the cyclic-edge restriction
+//
+// Every edge of a value-level reference cycle connects two types in one SCC of
+// the type reference graph: an edge x -> y arises from a field of type(x) that
+// can hold a type(y), so the types of a value cycle form a directed cycle in the
+// type graph and therefore lie in one SCC.
+//
+// So a collector that traverses only fields whose type is in the owner's SCC
+// still finds every cycle -- and never *leaves* the skeleton. A Node with two
+// child pointers and six fields of tokens, strings and spans is walked through
+// two edges rather than eight, and the collector never descends into the string
+// graph hanging off it. Those subgraphs are usually far larger than the cyclic
+// skeleton, which is what makes CYCLES 6's work bounds credible.
+// ---------------------------------------------------------------------------
+
+static int same_scc(int a, int b) {
+    if (a < 0 || b < 0) return 0;
+    if (a == b) return bits_test(&nominals[a].reaches, a);   // a non-trivial self-loop
+    return bits_test(&nominals[a].reaches, b) && bits_test(&nominals[b].reaches, a);
+}
+
+// Whether this type lies in a non-trivial SCC. The transitive closure marks a
+// type as reaching itself exactly then, which is also what makes it not acyclic.
+int aif_type_in_cycle(const char* name) {
+    int id = nominal_find(name);
+    if (id < 0 || nominals[id].is_enum) return 0;
+    return bits_test(&nominals[id].reaches, id) ? 1 : 0;
+}
+
+// Whether this field is a cyclic edge, i.e. one the collector traverses.
+int aif_field_is_cyclic(const char* type, const char* field) {
+    int owner = nominal_find(type);
+    if (owner < 0 || nominals[owner].is_enum) return 0;
+    Nominal* t = &nominals[owner];
+    int fname = aif_intern(field);
+    for (int i = 0; i < t->nfields; i++) {
+        if (t->field_name[i] != fname) continue;
+        return same_scc(owner, nominal_find_id(field_declared_type(t, i)));
+    }
+    return 0;
+}
+
+// Whether a store into this field must move a reference count.
+//
+// **Bacon-Rajan requires the count to reflect every reference the traversal
+// walks.** Trial deletion subtracts the internal edges and reads what is left as
+// "held from outside"; an edge the collector traverses but nobody ever counted
+// makes that subtraction remove a reference that was never added, and the
+// arithmetic says unreachable for a live object. That is a premature free, and
+// it is what the first build of the collector did -- a segfault on the fixture,
+// not a leak.
+//
+// So a cyclic field is counted, and only when every site that can reach it is
+// one the collector can take. A field mixing a counted object with an opaque or
+// stack one has no correct answer and moves no count, which leaks rather than
+// corrupting.
+int aif_field_is_counted(const char* type, const char* field) {
+    if (!aif_field_is_cyclic(type, field)) return 0;
+    int owner = nominal_find(type);
+    if (owner < 0) return 0;
+    int key = key_find(AIF_KEY_FIELD, nominals[owner].name, aif_intern(field));
+    if (key < 0 || key >= pt_len) return 0;
+
+    int any = 0;
+    for (int s = 0; s < site_count; s++) {
+        if (!bits_test(&pt[key], s)) continue;
+        any = 1;
+        if (!site_is_cyclic(&sites[s], aif_tier_of(s))) return 0;
+    }
+    return any;
+}
+
+// CYCLES 2's headline result, as a number the manifest can print: how many types
+// lie in a non-trivial SCC. Zero means the program cannot leak a cycle and the
+// collector is omitted from the binary entirely -- a property checkable from the
+// type declarations alone, before any inference runs.
+int aif_scc_type_count(void) {
+    int n = 0;
+    for (int i = 0; i < nominal_count; i++) {
+        if (nominals[i].is_enum) continue;
+        if (bits_test(&nominals[i].reaches, i)) n++;
+    }
+    return n;
+}
+
+int aif_t4b_site_count(void) {
+    int n = 0;
+    for (int s = 0; s < site_count; s++) {
+        if (aif_tier_of(s) == AIF_T4B) n++;
+    }
+    return n;
+}
+
+int aif_field_release(const char* type, const char* field) {
+    int id = nominal_find(type);
+    if (id < 0 || nominals[id].is_enum) return AIF_ELEM_NONE;
+    Nominal* t = &nominals[id];
+    int fname = aif_intern(field);
+    for (int i = 0; i < t->nfields; i++) {
+        if (t->field_name[i] != fname) continue;
+        return field_release_of(t->name, fname, field_declared_type(t, i));
+    }
+    return AIF_ELEM_NONE;
+}
+
+// Whether any released field may hold this site.
+//
+// This is the double-free rule `in_container` encodes, one level out. A value
+// stored into a field the type now releases has the struct's teardown as its
+// release point, so its own binding is not one -- otherwise it is freed at the
+// scope exit *and* again when the struct goes.
+//
+// Reachable for the same narrow reason the container case is: normally E-STORE
+// has already raised the value's escape to the struct's, and the `E == scope`
+// test in aif_frees_at_scope_node declines first. It is only when the struct and
+// the field's value share a scope that both tests pass and this one has to say
+// no.
+//
+// Computed once over every (type, field) rather than per site, because the
+// answer depends on the type's fields and not on where the site sits.
+static Bits in_released_field;
+static int in_released_field_done;
+
+// Whether anything actually reclaims a value of this type.
+//
+// **A field is only a release point if its owner has one**, and that is not
+// implied by the owner having a generated release function. A T0 struct lives in
+// the frame: nothing frees it, so nothing runs its release, so its fields are
+// reclaimed by nobody. Barring the field's own binding there does not move the
+// release -- it deletes it.
+//
+// g5_asset_cache is the case, and it cost a 47 -> 2049 regression to find. Its
+// `Scene` is four fields and does not escape `main`, so it takes the T0 clause;
+// the `entities` list stored in it was being freed at main's exit, and barring
+// that on the strength of `Scene`'s release function leaked all 2000 elements.
+static int type_reclaimed_cache_valid;
+static int* type_reclaimed;
+
+static int type_is_reclaimed(int nominal) {
+    if (nominal < 0 || nominal >= nominal_count) return 0;
+    if (!type_reclaimed_cache_valid) {
+        type_reclaimed = (int*)xcalloc((size_t)nominal_count, sizeof(int),
+                                       "AIF reclaimed types");
+        for (int s = 0; s < site_count; s++) {
+            if (elem_disposition_of(&sites[s], aif_tier_of(s)) == AIF_ELEM_NONE) continue;
+            int id = nominal_find_id(base_type_id(sites[s].type));
+            if (id >= 0) type_reclaimed[id] = 1;
+        }
+        type_reclaimed_cache_valid = 1;
+    }
+    return type_reclaimed[nominal];
+}
+
+static void compute_released_fields(void) {
+    if (in_released_field_done) return;
+    in_released_field_done = 1;
+    for (int n = 0; n < nominal_count; n++) {
+        if (nominals[n].is_enum) continue;
+        if (!type_is_reclaimed(n)) continue;
+        Nominal* t = &nominals[n];
+        for (int i = 0; i < t->nfields; i++) {
+            if (field_release_of(t->name, t->field_name[i], field_declared_type(t, i))
+                == AIF_ELEM_NONE) continue;
+            int key = key_find(AIF_KEY_FIELD, t->name, t->field_name[i]);
+            if (key < 0 || key >= pt_len) continue;
+            bits_or(&in_released_field, &pt[key], "AIF released fields");
+        }
+    }
+}
+
+static int site_in_released_field(int s) {
+    compute_released_fields();
+    return bits_test(&in_released_field, s);
+}
+
+// Whether codegen should allocate this node's value through rc_alloc.
+//
+// Keyed by node like every other codegen query, and it must agree with
+// elem_disposition_of exactly: a container told its elements are counted will
+// decrement every one of them, so a site that reached that container without a
+// header is a write through a pointer into someone else's allocation. They read
+// the same predicate for that reason.
+int aif_rc_at_node(const void* node) {
+    if (node == NULL) return 0;
+    for (NodeSite* n = node_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node != node) continue;
+        return site_is_rc(&sites[n->site], aif_tier_of(n->site));
+    }
+    return 0;
+}
+
+// What the container allocated at this node should do with its elements.
+int aif_elem_owner_at_node(const void* node) {
+    if (node == NULL) return AIF_ELEM_NONE;
+    int container = -1;
+    for (NodeSite* n = node_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node == node) { container = n->site; break; }
+    }
+    if (container < 0) return AIF_ELEM_NONE;
+
+    int agreed = AIF_ELEM_NONE;
+    for (int s = 0; s < site_count; s++) {
+        if (!bits_test(&container_of[s], container)) continue;
+        int d = elem_disposition_of(&sites[s], aif_tier_of(s));
+        if (d == AIF_ELEM_NONE) return AIF_ELEM_NONE;
+        if (agreed == AIF_ELEM_NONE) agreed = d;
+        else if (agreed != d) return AIF_ELEM_NONE;
+    }
+    return agreed;
+}
+
+// The element type of a container whose elements are released by type.
+//
+// Read from the sites rather than from the container's spelled type, for the
+// same reason the element key is object-insensitive: `list_new()` types as
+// `List<Invalid>`, so the annotation is not always there to read, and the sites
+// that actually reached the container always are. "" when they disagree, which
+// aif_elem_owner_at_node has already turned into NONE.
+const char* aif_elem_type_at_node(const void* node) {
+    if (node == NULL) return "";
+    int container = -1;
+    for (NodeSite* n = node_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node == node) { container = n->site; break; }
+    }
+    if (container < 0) return "";
+
+    int agreed = -1;
+    for (int s = 0; s < site_count; s++) {
+        if (!bits_test(&container_of[s], container)) continue;
+        if (agreed < 0) agreed = sites[s].type;
+        else if (agreed != sites[s].type) return "";
+    }
+    return agreed < 0 ? "" : aif_str(agreed);
+}
+
+int aif_site_in_container(int id) {
+    if (id < 0 || id >= site_count) return 0;
+    return sites[id].in_container;
+}
+
+// The manifest's half of aif_rc_at_node. SPEC 6.2's placement column has to say
+// what was *built*, and "rc" for a T3 site nothing counts would be the manifest
+// asserting a mechanism the binary does not contain.
+int aif_site_is_rc(int id) {
+    if (id < 0 || id >= site_count) return 0;
+    return site_is_rc(&sites[id], aif_tier_of(id));
+}
+
+// ============================================================================
+// Ownership transfer across a return
+//
+// `let cmds = cull(scene, ...)` allocates in the callee and reclaims in the
+// caller, and the escape lattice cannot say so: E is per site, a site belongs to
+// one function, and Region(s) can only name a scope in that function. So a
+// returned value is Caller and stays Caller no matter how briefly the caller
+// keeps it. INFERENCE 6's ownership contexts are the specified fix -- instantiate
+// the callee per call site so the return lands in the caller's scope -- and that
+// is a project, not a clause.
+//
+// What is available without it: T2 already means "unique, and the callee kept no
+// other holder", which is the whole of what the caller needs to know. The rest is
+// asked of the syntax at the binding, the same way node_assigns_name is, because
+// the two things that could still go wrong are both visible there.
+//
+//   * The callee returned something it did not allocate -- a pass-through of its
+//     own argument. Then the caller frees a value it already owns elsewhere.
+//     Excluded by requiring every site in the return set to belong to the callee.
+//   * The caller returns it onward. Excluded in ir.psm by node_returns_name,
+//     which is the guard the escape fact would otherwise have supplied.
+//
+// Restricted to a returned **container**, and the restriction is a soundness
+// requirement rather than a conservative start. A value set records the sites an
+// expression may denote, and a string literal or a static is not a site -- so for
+// a function returning `String`, `return "ptr"` contributes nothing and the set
+// looks exactly like one that always allocates. Freeing that is a free of
+// `.rodata`, which is the defect Level 4 found in `str_substring` arriving by a
+// different road. The same goes for a struct-returning function with a sentinel
+// path.
+//
+// A `List` has no literal form: list_new is the only way to make one and it
+// always allocates. So the return set of a list-returning function is complete,
+// which is the property this needs and the one the other two lack. Recovering
+// them needs the points-to lattice to carry "may hold something untracked", which
+// is a real extension and not this item.
+//
+// Returns the deallocator the result needs: 0 none, 2 list.
+// ============================================================================
+
+typedef struct NodeCall {
+    struct NodeCall* next;
+    const void* node;
+    int vs;
+    int fn;
+} NodeCall;
+
+static NodeCall* call_buckets[AIF_NODE_BUCKETS];
+static Bits query_scratch;
+
+void aif_note_call_result(const void* node, int vs, int fn) {
+    if (node == NULL || fn < 0) return;
+    unsigned b = node_hash(node);
+    for (NodeCall* n = call_buckets[b]; n; n = n->next) {
+        if (n->node == node) return;
+    }
+    NodeCall* n = (NodeCall*)xmalloc(sizeof(NodeCall), "AIF call index");
+    n->node = node;
+    n->vs = vs;
+    n->fn = fn;
+    n->next = call_buckets[b];
+    call_buckets[b] = n;
+}
+
+int aif_owns_call_result_at_node(const void* node) {
+    if (node == NULL) return AIF_ELEM_NONE;
+    NodeCall* c = NULL;
+    for (NodeCall* n = call_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node == node) { c = n; break; }
+    }
+    if (c == NULL) return AIF_ELEM_NONE;
+
+    resolve(c->vs, &query_scratch);
+    int agreed = AIF_ELEM_NONE;
+    int any = 0;
+    for (int s = 0; s < site_count; s++) {
+        if (!bits_test(&query_scratch, s)) continue;
+        any = 1;
+        // Allocated by the callee, not handed to it. A pass-through leaves the
+        // value owned where it was created, and freeing it here is a double free
+        // through whichever binding owns it there.
+        if (sites[s].fn != c->fn) return AIF_ELEM_NONE;
+        if (sites[s].in_container) return AIF_ELEM_NONE;
+        // A field the type releases is already this value's release point, so
+        // the caller must not become a second one. The same exclusion as
+        // in_container above, and reachable the same way: a function that both
+        // stores a value into a field and returns that field.
+        if (site_in_released_field(s)) return AIF_ELEM_NONE;
+        if (aif_tier_of(s) != AIF_T2) return AIF_ELEM_NONE;
+        int d = elem_disposition_of(&sites[s], AIF_T2);
+        // A struct that owns something joins `List` here, and for the same
+        // reason the comment above gives: the value set has to be complete.
+        // A `List` qualifies because it has no literal form. A struct qualifies
+        // because it has no *sentinel* form -- there is no null, so every way to
+        // produce one is either a literal (a site in this callee) or a value
+        // that came from somewhere else (a site whose fn is not this one, which
+        // the test above declines). **REQUIREMENTS 4 must not break that**: an
+        // Option-typed return would be the first struct-shaped value that is not
+        // a site, and this is the line it would make unsound.
+        //
+        // Restricted to structs that own something, which is a scope choice and
+        // not a soundness one -- the completeness argument says nothing about
+        // the fields. It is where the leak is (g4's `World`), and a plain struct
+        // return has a much wider blast radius for no measured gain.
+        if (d != AIF_ELEM_LIST && d != AIF_ELEM_TYPED) return AIF_ELEM_NONE;
+        if (agreed != AIF_ELEM_NONE && agreed != d) return AIF_ELEM_NONE;
+        agreed = d;
+    }
+    return any ? agreed : AIF_ELEM_NONE;
 }
 
 // ============================================================================
@@ -2123,12 +3086,24 @@ int aif_order_site(int i) { return (i < 0 || i >= record_count) ? -1 : records[i
 void aif_reset(void) {
     for (int i = 0; i < pt_len; i++) bits_free(&pt[i]);
     for (int i = 0; i < holders_len; i++) bits_free(&holders[i]);
+    for (int i = 0; i < holders_len; i++) bits_free(&container_of[i]);
     free(pt);
     free(holders);
+    free(container_of);
     pt = NULL;
     holders = NULL;
+    container_of = NULL;
     pt_len = 0;
     holders_len = 0;
+
+    bits_free(&in_released_field);
+    in_released_field_done = 0;
+    free(type_releases);
+    type_releases = NULL;
+    type_releases_cap = 0;
+    free(type_reclaimed);
+    type_reclaimed = NULL;
+    type_reclaimed_cache_valid = 0;
 
     free(deriv_e);
     free(deriv_a);
@@ -2141,7 +3116,14 @@ void aif_reset(void) {
     for (int i = 0; i < vs_count; i++) free(vsets[i].items);
     vs_count = 0;
 
-    for (int i = 0; i < nominal_count; i++) bits_free(&nominals[i].reaches);
+    for (int i = 0; i < nominal_count; i++) {
+        bits_free(&nominals[i].reaches);
+        free(nominals[i].field_name);
+        free(nominals[i].field_type);
+        free(nominals[i].field_bytes);
+        free(nominals[i].field_acc);
+        free(nominals[i].order);
+    }
     nominal_count = 0;
     for (int i = 0; i < nominal_by_name_cap; i++) nominal_by_name[i] = -1;
 
@@ -2166,6 +3148,16 @@ void aif_reset(void) {
         node_buckets[i] = NULL;
     }
 
+    for (int i = 0; i < AIF_NODE_BUCKETS; i++) {
+        NodeCall* n = call_buckets[i];
+        while (n) {
+            NodeCall* next = n->next;
+            free(n);
+            n = next;
+        }
+        call_buckets[i] = NULL;
+    }
+
     site_count = 0;
     scope_count = 0;
     con_count = 0;
@@ -2176,6 +3168,7 @@ void aif_reset(void) {
 
     bits_free(&scratch_val);
     bits_free(&scratch_own);
+    bits_free(&query_scratch);
     free(vec_val.v);
     free(vec_own.v);
     free(argv.v);

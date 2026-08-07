@@ -233,6 +233,9 @@ fn parse_type_annotation(p: Parser) -> ASTNode {
         type_node.i1 = 1 // is_array
         type_node.child1 = node_to_ptr(parse_type_annotation(p))
         parser_expect_val(p, TokenType.SEPARATOR, "]", "array type")
+        // REQUIREMENTS 4. `[T]?` binds the whole array, matching the suffix
+        // below rather than reaching inside the brackets.
+        if (parser_match_val(p, TokenType.SEPARATOR, "?")) { type_node.i3 = 1 }
         return type_node
     }
     
@@ -251,6 +254,12 @@ fn parse_type_annotation(p: Parser) -> ASTNode {
         parser_expect_close_angle(p, "list type argument")
     }
 
+    // REQUIREMENTS 4. `T?` -- a reference that may be absent. Postfix, and after
+    // the list argument so `List<Node>?` is an optional list rather than a list
+    // of optionals; `List<Node?>` spells the other one, because the `?` there is
+    // consumed by the recursive call above.
+    if (parser_match_val(p, TokenType.SEPARATOR, "?")) { type_node.i3 = 1 }
+
     return type_node
 }
 
@@ -260,10 +269,17 @@ fn parse_type_annotation(p: Parser) -> ASTNode {
 // otherwise fail to close the inner argument -- the classic C++ problem. Rather
 // than requiring a space, split the token: rewrite it to a single '>' in place
 // and leave it for the enclosing type to consume.
+// The token's *type* has to be rewritten too, not just its text. The lexer types
+// a two-character operator as arithmetic, so leaving `>>` as `>` with the old
+// type made the enclosing argument fail with "expected `>`, found `>`" -- which
+// is what this said until a nested container needed it. Written with the comment
+// above and never exercised, because `List<List<T>>` was unwritable and so nobody
+// had written one.
 fn parser_expect_close_angle(p: Parser, context: String) {
     let mut curr = parser_current(p)
     if (str_equals(curr.value, ">>") == 1) {
         curr.value = ">"
+        curr.type = TokenType.RELATIONAL_OPERATOR
         return
     }
     parser_expect_val(p, TokenType.RELATIONAL_OPERATOR, ">", context)
@@ -693,6 +709,26 @@ fn parse_region_statement(p: Parser) -> ASTNode {
                                    parser_describe(curr)))
     }
 
+    // REQUIREMENTS 19. `region work pin(4096) { … }` asserts a byte cap on what
+    // this region's arena serves, and the build fails when the static estimate
+    // exceeds it. A cap belongs on a region rather than on a binding because a
+    // budget is a property of a block's peak, not of one value -- which is the
+    // one place SPEC 5.4's `pin` had nothing to say.
+    //
+    // Contextual, like every other use of `pin`: only an annotation when a `(`
+    // follows, so a region may still be called `pin`.
+    if (parser_at_annotation(p, "pin")) {
+        parser_advance(p)
+        parser_expect_val(p, TokenType.SEPARATOR, "(", "region budget")
+        let cap = parser_current(p)
+        if (cap.type != TokenType.NUMBER_LITERAL) {
+            parser_fatal(p, str_concat("expected a byte budget, found ", parser_describe(cap)))
+        }
+        region_node.i1 = str_to_int(cap.value)
+        parser_advance(p)
+        parser_expect_val(p, TokenType.SEPARATOR, ")", "region budget")
+    }
+
     region_node.child1 = node_to_ptr(parse_block(p))
     return region_node
 }
@@ -970,7 +1006,16 @@ fn parse_expression(p: Parser, precedence: Int) -> ASTNode {
 
 fn parse_primary(p: Parser) -> ASTNode {
     let mut curr = parser_current(p)
-    
+
+    // REQUIREMENTS 4. The absent reference. A keyword rather than an identifier,
+    // so it cannot be shadowed by a binding -- `let none = 5` would otherwise
+    // make the literal mean something else halfway down a file.
+    if (curr.type == TokenType.KEYWORD and str_equals(curr.value, "none") == 1) {
+        let none_lit = parser_node(p, NodeKind.NONE_LITERAL_EXPR)
+        parser_advance(p)
+        return none_lit
+    }
+
     if (curr.type == TokenType.NUMBER_LITERAL or curr.type == TokenType.FLOAT_LITERAL or curr.type == TokenType.STRING_LITERAL or curr.type == TokenType.BOOL_LITERAL or curr.type == TokenType.CHAR_LITERAL) {
         let lit = parser_node(p, NodeKind.LITERAL_EXPR)
         lit.i1 = curr.type // literal type

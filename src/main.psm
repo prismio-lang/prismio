@@ -14,23 +14,35 @@ extern fn read_file(path: String) -> String
 extern fn get_directory(path: String) -> String
 extern fn join_path(directory: String, filename: String) -> String
 extern fn cli_arg_count() -> Int
-extern fn cli_arg(index: Int) -> String
+// argv, which the C runtime owns and outlives every use of it. Not an
+// allocation, and freeing one would be a free of memory this program never got.
+extern fn cli_arg(index: Int) -> String alias
 extern fn str_ends_with(s: String, suffix: String) -> Int
-extern fn compiler_default_exe_path(source_path: String) -> String
-extern fn compiler_temp_ir_path(source_path: String) -> String
+// Both malloc and hand the buffer over: compiler_default_exe_path sprintfs into
+// a fresh block, compiler_temp_ir_path goes through compiler_temp_path which
+// does the same. The caller owns them.
+extern fn compiler_default_exe_path(source_path: String) -> String produce(free)
+extern fn compiler_temp_ir_path(source_path: String) -> String produce(free)
 extern fn compiler_build_executable(ir_file: String, exe_file: String) -> Int
 // SPEC 7.3. Tells the build to compile the runtime with its own allocator
 // pointed at the verify shims, so the strings and lists it allocates are in the
 // same accounting as everything ir_alloc_object handed out.
 extern fn compiler_set_verify_mode(on: Int)
 extern fn aif_report_pins() -> Int
+extern fn aif_report_budgets(converged: Bool) -> Int
 extern fn aif_explain(symbol: String, converged: Bool) -> Int
 extern fn compiler_bootstrap_executable(ir_file: String, exe_file: String) -> Int
 extern fn compiler_run_executable(exe_file: String) -> Int
-extern fn compiler_runtime_source_hash() -> String
-extern fn compiler_installed_runtime_hash() -> String
+// Every path through both mallocs, including the failure paths, which allocate a
+// one-byte empty string rather than returning a literal. That is the same
+// invariant Level 4 had to give str_substring and str_trim -- anything declared
+// to return String returns something a release can take -- and it is what makes
+// `produce` true here rather than nearly true.
+extern fn compiler_runtime_source_hash() -> String produce(free)
+extern fn compiler_installed_runtime_hash() -> String produce(free)
 extern fn delete_file(path: String) -> Int
-extern fn ir_llvm_version() -> String
+// A `static char buf[32]` the next call overwrites.
+extern fn ir_llvm_version() -> String alias
 
 // Bumped per release. The LLVM major version is part of the identity: a given
 // Prismio targets one LLVM major, and the C API is not stable across them.
@@ -321,7 +333,7 @@ fn aif_command(path: String, summary: Bool, owned_collections: Bool, theta_field
 }
 
 fn compile_source(path: String, output_file: String, run_after_build: Bool, bootstrap_mode: Bool,
-                  verify_mode: Bool) -> Int {
+                  verify_mode: Bool, debug_mode: Bool) -> Int {
     let mut out_file = ""
     let mut emit_ir_only = false
 
@@ -386,13 +398,25 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
     // to agree with the language. This is the switch that gives the 184 T1 string
     // sites a free point -- with it off, site_is_move_only admits structs only and
     // aif_frees_at_scope_node declines every one of them.
-    aif_run(merged_ast, true, false, AIF_DEFAULT_ROUNDS)
+    // SPEC 7.2's level, as a budget. `debug` is zero rounds: the same engine
+    // runs, builds the same graph and records the same pins, but nothing is
+    // proved, so widening puts every value at its top tier -- heap, no drop, no
+    // arena, no count, no collector. That is the zero-analysis mode SPEC 7.1
+    // requires, and running the engine rather than skipping it is what keeps
+    // 7.2's "a level SHALL NOT change which programs compile" true: a refuted
+    // `pin` is still diagnosed.
+    let mut aif_rounds = AIF_DEFAULT_ROUNDS
+    if (debug_mode) { aif_rounds = 0 }
+    let aif_converged = aif_run(merged_ast, true, false, aif_rounds)
 
     // The one thing AIF can fail a build for, and SPEC 5.4.1 is explicit that it
     // is not a violation of SPEC 1: a pin a *converged* analysis refutes is a
     // false assertion about the program, not an inference failure. An unproven
     // one warns and is ignored.
-    if (aif_report_pins() > 0) {
+    // REQUIREMENTS 19's gate joins it, and for the same reason: a budget the
+    // converged estimate exceeds is a false assertion about one's own program,
+    // which SPEC 5.4.1 separates from an inference failure.
+    if (aif_report_pins() + aif_report_budgets(aif_converged) > 0) {
         diag_finish()
         return 1
     }
@@ -462,6 +486,7 @@ fn main() -> Int {
     let mut run_after_build = false
     let mut bootstrap_mode = false
     let mut verify_mode = false
+    let mut debug_mode = false
     let mut arg_index = 0
 
     if (cli_arg_count() <= 1) {
@@ -608,7 +633,7 @@ fn main() -> Int {
             }
         }
 
-        return compile_source(path, output_file, run_after_build, bootstrap_mode, false)
+        return compile_source(path, output_file, run_after_build, bootstrap_mode, false, false)
     }
 
     if (str_equals(first, "build") == 1) {
@@ -688,6 +713,14 @@ fn main() -> Int {
             // by CI, not by users.
             verify_mode = true
             arg_index = arg_index + 1
+        } else if (str_equals(arg, "--debug") == 1) {
+            // SPEC 7.1/7.2's zero-analysis level. `max` is deliberately not
+            // offered: with today's engine it would be byte-identical to
+            // `release` -- the bounds it raises are never reached and there is no
+            // monomorphization cap to raise -- and a flag whose settings cannot
+            // be told apart is a check that cannot fail.
+            debug_mode = true
+            arg_index = arg_index + 1
         } else {
             if (str_equals(arg, "build") == 1 or str_equals(arg, "run") == 1) {
                 diag_error("use either `build` or `run`, not both")
@@ -708,5 +741,5 @@ fn main() -> Int {
         }
     }
 
-    return compile_source(path, output_file, run_after_build, bootstrap_mode, verify_mode)
+    return compile_source(path, output_file, run_after_build, bootstrap_mode, verify_mode, debug_mode)
 }

@@ -1,0 +1,22 @@
+// expect-error: cannot move out of borrowed value
+// The other half of neg_21. Parameters borrow by default, so a function that
+// pushes its parameter into a container is handing away something it does not
+// own -- and the container would release it while the caller still holds it.
+//
+// The fix is `sink`, which is the language already having the word for this. It
+// is worth being explicit that the strictness is not incidental: before a
+// container released its elements, this was harmless, and the same code is a
+// use-after-free the moment one does.
+struct Item {
+    value: Int
+}
+
+fn hold(items: List<Item>, e: Item) {
+    list_push(items, e)
+}
+
+fn main() -> Int {
+    let items: List<Item> = list_new()
+    hold(items, Item { value: 1 })
+    return list_len(items)
+}

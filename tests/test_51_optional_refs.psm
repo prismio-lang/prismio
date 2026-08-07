@@ -1,0 +1,134 @@
+// REQUIREMENTS 4 -- optional / nullable reference fields.
+//
+// Without these a struct field of reference type could not be "not set yet", so
+// parent pointers, optional components and empty slots were all unwritable.
+// `parent: 0` was the workaround and it did not typecheck.
+//
+// **`none` is a null pointer, and that choice is the whole of the punned-slot
+// question.** This compiler already had a way to spell "empty slot": a pointer
+// to the empty string, tested with `str_equals(p, "")`. That reads the *first
+// byte of the pointed-to object*, so a live value whose first field is zero is
+// byte-for-byte an empty slot -- which is why NodeKind and TypeKind reserve
+// ordinal 0, why the layout search pins field 0, and what test_41 characterises.
+// A null comparison reads no byte of any object, so **nothing can collide with
+// it**, whatever a live value's first field holds. Reusing `""` would have
+// inherited the collision and spread it from the compiler's own punned pointers
+// into every user program.
+//
+// The other half is narrowing. `T?` cannot be used as a `T`, so `expect(x)` is
+// the one way across: a *checked* unwrap rather than flow-sensitive narrowing,
+// which would be a real feature and is not this item. It is also the shape the
+// compiler already writes by hand -- `if (node_exists(p)) { let n = ptr_to_node(p) }`.
+
+struct Node {
+    id: Int,
+    parent: Node?
+}
+
+// The parent chain, which is the thing this unblocks. Note that building it is
+// a sequence of *moves*: storing a `Node` into a `Node?` field transfers
+// ownership exactly as storing it into a `Node` field would, so the optional
+// changes the type and not the ownership.
+fn depth_of_chain() -> Int {
+    let root = Node { id: 1, parent: none }
+    let child = Node { id: 2, parent: root }
+    let grand = Node { id: 3, parent: child }
+
+    let mut d = 0
+    let mut cur = grand
+    while (cur.parent != none) {
+        cur = expect(cur.parent)
+        d = d + 1
+    }
+    return d
+}
+
+// `none` compares equal to `none` and a present value does not. The two branches
+// are what a null test has to distinguish, and nothing about the pointed-to
+// object is read to do it.
+// Two separate values rather than one, because storing `root` into `child`
+// moves it -- reading `root.parent` afterwards is `use of moved value`, which is
+// the move checker doing its job and not an optional-specific rule.
+fn presence_is_visible() -> Int {
+    let mut score = 0
+
+    let lone = Node { id: 7, parent: none }
+    if (lone.parent == none) { score = score + 1 }
+
+    let root = Node { id: 9, parent: none }
+    let child = Node { id: 8, parent: root }
+    if (child.parent != none) { score = score + 2 }
+    return score
+}
+
+// **The punned-slot hazard, aimed straight at the new encoding.** `Zero`'s first
+// field is 0, so it is byte-for-byte the compiler's own "empty slot" -- a
+// pointer to it satisfies `str_equals(p, "")`. It must still be *present* as an
+// optional. If `none` were ever spelled the old way, this is the case that would
+// read a live value as absent, which is the bug that made every module root
+// report missing when NodeKind.MODULE was ordinal 0.
+struct Zero {
+    first: Int,
+    second: Int
+}
+
+struct Holder {
+    slot: Zero?
+}
+
+fn zero_first_field_is_still_present() -> Int {
+    let z = Zero { first: 0, second: 42 }
+    let h = Holder { slot: z }
+    if (h.slot == none) { return 0 - 1 }
+    let got = expect(h.slot)
+    return got.second
+}
+
+// `expect` is the identity on a pointer, so unwrapping twice yields the same
+// object rather than two. It borrows rather than consuming: treating it as a
+// move would make the loop in depth_of_chain fail on its second iteration.
+//
+// Its own carrier type rather than reusing `Holder`, and the reason is the same
+// one that keeps test_47 and test_48 in separate files: a field key is one per
+// nominal type across the whole module, so two functions sharing `Holder.slot`
+// share the key -- and `let a = expect(...)` here raised the escape of the Zero
+// in zero_first_field_is_still_present to Caller, which made *that* one leak.
+// Object-insensitivity, reached through a struct field instead of a container
+// element. INFERENCE 6's contexts are what would fix it.
+struct Carrier {
+    slot: Zero?
+}
+
+fn unwrap_is_not_a_move() -> Int {
+    let inner = Zero { first: 5, second: 6 }
+    let c = Carrier { slot: inner }
+    let a = expect(c.slot)
+    let b = expect(c.slot)
+    return a.first + b.second
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    print("FAIL ")
+    print(label)
+    print(": got ")
+    print_int(got)
+    print(" want ")
+    println_int(want)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("depth_of_chain", depth_of_chain(), 2)
+    bad = bad + check("presence", presence_is_visible(), 3)
+    bad = bad + check("zero_first_field", zero_first_field_is_still_present(), 42)
+    bad = bad + check("unwrap_not_move", unwrap_is_not_a_move(), 11)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

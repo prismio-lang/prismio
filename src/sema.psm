@@ -345,6 +345,24 @@ fn sema_register_named_types(module: ASTNode) {
 }
 
 fn sema_annotation_type(module: ASTNode, tn: ASTNode) -> TypeInfo {
+    // REQUIREMENTS 4. `T?` wraps whatever the rest of the annotation says, so
+    // the suffix is peeled here once rather than in each branch below.
+    if (tn.i3 == 1) {
+        let inner = sema_annotation_inner(module, tn)
+        if (type_can_be_optional(inner) == false) {
+            if (type_is_valid(inner)) {
+                sema_error_at(tn, str_concat(str_concat("only a reference can be optional, and ",
+                                                        type_display(inner)),
+                                             " is not one"))
+            }
+            return inner
+        }
+        return type_optional(inner)
+    }
+    return sema_annotation_inner(module, tn)
+}
+
+fn sema_annotation_inner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     if (tn.i1 == 1) {
         if (str_equals(tn.child1, "") == 0) {
             return type_array(sema_annotation_type(module, ptr_to_node(tn.child1)))
@@ -406,6 +424,13 @@ fn sema_types_match(expected: TypeInfo, actual: TypeInfo) -> Bool {
     if (type_equals(expected, actual)) { return true }
     if (sema_enum_matches_int(expected, actual)) { return true }
     if (sema_enum_matches_int(actual, expected)) { return true }
+    // REQUIREMENTS 4. A present value goes into an optional slot without
+    // ceremony; the reverse does not, and that asymmetry is the whole guarantee.
+    // Widening is safe because the representations are identical -- a `T?` is one
+    // pointer, and a present `T` is that pointer with a non-null value.
+    if (expected.kind == TypeKind.OPTIONAL and actual.kind != TypeKind.OPTIONAL) {
+        return sema_types_match(type_optional_inner(expected), actual)
+    }
     return false
 }
 
@@ -701,6 +726,23 @@ fn sema_builtin_call_type(name: String, arg_ptr: String) -> TypeInfo {
     if (str_equals(name, "print_char") == 1 or str_equals(name, "println_char") == 1) { return type_void() }
     if (str_equals(name, "drop") == 1) { return type_void() }
 
+    // REQUIREMENTS 4. The narrowing half. `T?` cannot be used as a `T` -- that
+    // is what the type buys -- so there has to be one way across, and this is it.
+    //
+    // Deliberately a *checked* unwrap rather than flow narrowing. Narrowing
+    // `if (x != none) { ... }` would need flow-sensitive types in sema, which is
+    // a real feature and not this item; a checked unwrap costs one branch and
+    // fails loudly where narrowing would have failed silently. It is also the
+    // idiom the compiler already writes by hand -- `if (node_exists(p)) { let n =
+    // ptr_to_node(p) }` is exactly this shape.
+    if (str_equals(name, "expect") == 1) {
+        if (str_equals(arg_ptr, "") == 0) {
+            let ot = node_get_type(ptr_to_node(arg_ptr))
+            if (ot.kind == TypeKind.OPTIONAL) { return type_optional_inner(ot) }
+        }
+        return type_invalid()
+    }
+
     if (str_equals(name, "list_new") == 1) { return type_list(type_invalid()) }
     if (str_equals(name, "list_len") == 1) { return type_int() }
     if (str_equals(name, "list_push") == 1) { return type_void() }
@@ -745,6 +787,26 @@ fn sema_check_builtin_call(module: ASTNode, call: ASTNode, name: String, arg_ptr
         return true
     }
 
+    // REQUIREMENTS 4. The checked unwrap. Its operand is *borrowed*, not
+    // consumed: `expect` reads the slot and hands back the pointer it already
+    // held, so it transfers no ownership and the optional stays usable. Treating
+    // it as a move would make `if (p != none) { use(expect(p)) }` fail on the
+    // second visit to a loop body.
+    if (str_equals(name, "expect") == 1) {
+        if (sema_check_arity(call, name, arg_ptr, 1) == false) { return true }
+        let a0 = ptr_to_node(arg_ptr)
+        let ot = sema_expr(module, a0)
+        if (ot.kind != TypeKind.OPTIONAL) {
+            sema_error_at(a0, str_concat("expect requires an optional value, found ",
+                                         type_display(ot)))
+            return true
+        }
+        if (str_equals(ot.child, "") == 1) {
+            sema_error_at(a0, "expect needs to know what it is unwrapping; `none` on its own has no type")
+        }
+        return true
+    }
+
     if (str_equals(name, "list_new") == 1) {
         sema_check_arity(call, name, arg_ptr, 0)
         return true
@@ -778,6 +840,16 @@ fn sema_check_builtin_call(module: ASTNode, call: ASTNode, name: String, arg_ptr
             return true
         }
         sema_check_value(module, ptr_to_node(a0.next), sema_list_element_type(lt), "list_push value")
+        // AIF item 3. The list owns what is pushed into it and releases it at
+        // teardown, so a push is an ownership transfer and has to be move-checked
+        // as one. Two pushes of the same name would otherwise put one value under
+        // one owner twice, which no fact can see: `list_push` is a call, and the
+        // aliasing module counts *containers*, not stores into one.
+        //
+        // This also recovers the loop case for free -- `ir_binding_predates_loop`
+        // already refuses a move that repeats on the next iteration, which is the
+        // same double release written differently.
+        sema_consume_operand(ptr_to_node(a0.next))
         return true
     }
     if (str_equals(name, "list_set") == 1) {
@@ -791,6 +863,11 @@ fn sema_check_builtin_call(module: ASTNode, call: ASTNode, name: String, arg_ptr
         let a1 = ptr_to_node(a0.next)
         sema_check_value(module, a1, type_int(), "list_set index")
         sema_check_value(module, ptr_to_node(a1.next), sema_list_element_type(lt), "list_set value")
+        // Same transfer as list_push. What it does *not* do is release whatever
+        // occupied the slot: an overwritten element leaks, and closing that needs
+        // a release the container can only make if it owns the old value, which
+        // is the question this level answers for teardown and not for overwrite.
+        sema_consume_operand(ptr_to_node(a1.next))
         return true
     }
 
@@ -838,6 +915,16 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         let mut t = type_from_sem_key(ir_get_var_type(expr.s1))
         node_set_type(expr, t)
         return t
+    }
+
+    // REQUIREMENTS 4. `none` is absent-of-anything: an optional with no inner
+    // type, which type_equals matches against every `T?`. It registers no
+    // allocation site, which is what keeps the memory model out of this -- there
+    // is nothing to place, count or release.
+    if (expr.kind == NodeKind.NONE_LITERAL_EXPR) {
+        let nt = type_none()
+        node_set_type(expr, nt)
+        return nt
     }
 
     // `expr as T`. Explicit conversion between scalar types -- the only way to
@@ -987,6 +1074,28 @@ fn sema_expr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         }
 
         if (str_equals(op, "==") == 1 or str_equals(op, "!=") == 1 or str_equals(op, "<") == 1 or str_equals(op, "<=") == 1 or str_equals(op, ">") == 1 or str_equals(op, ">=") == 1) {
+            // REQUIREMENTS 4. `x == none` is the presence test, and it is
+            // checked before the String and struct rejections below -- a
+            // `String?` compared against `none` is a null test and not the
+            // address comparison those exist to forbid.
+            //
+            // Only equality: an optional has no order, and `<` on one would be
+            // comparing addresses, which is exactly the silent wrong answer the
+            // next two rules are about.
+            if (left_t.kind == TypeKind.OPTIONAL or right_t.kind == TypeKind.OPTIONAL) {
+                if (str_equals(op, "==") == 0 and str_equals(op, "!=") == 0) {
+                    sema_error_at(expr, str_concat(str_concat("cannot order optional values with ",
+                                                              diag_quote(op)),
+                                                   "; compare with `none` instead"))
+                } else if (left_t.kind != TypeKind.OPTIONAL or right_t.kind != TypeKind.OPTIONAL) {
+                    // Comparing `T?` to a present `T` would be an address
+                    // comparison, which is the thing the String rule forbids.
+                    sema_error_at(expr, "an optional can only be compared with `none`")
+                }
+                node_set_type(expr, type_bool())
+                return type_bool()
+            }
+
             // String and struct values are pointers, so a comparison would
             // compare addresses and quietly answer "not equal" for two equal
             // strings. That was a silent wrong answer with no diagnostic -- and

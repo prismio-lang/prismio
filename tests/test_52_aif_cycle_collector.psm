@@ -1,0 +1,126 @@
+// AIF T4b -- the cycle collector (CYCLES 3), trial deletion over cyclic edges.
+//
+// Before this, a T4b site was *detected and then leaked*: it got a plain malloc,
+// no header and no release, so the fifth tier had no implementation while the
+// manifest printed `rc+cycle` for every one of them -- asserting a mechanism the
+// binary did not contain, which is exactly what the `rc`/`rc:none` split exists
+// to prevent one tier down.
+//
+// **Constructing a cycle at all is the hard part, and what it took is worth
+// recording.** Two things had to be true:
+//
+//   1. The *type* must be able to refer to itself, which needs REQUIREMENTS 4 --
+//      before `none`, `parent: Node` had no terminating value and `parent: 0`
+//      did not typecheck. That is why CYCLES had nothing to run against.
+//   2. The *value* graph must actually close, and affinity forbids it directly:
+//      `a.peer = b` is an ownership transfer, so `b.peer = a` is `use of moved
+//      value`. Every direct route is a compile error, and so is the container
+//      round-trip.
+//
+// So a value cycle is reachable only by laundering a pointer through an `alias`
+// extern, which is FFI 5.2's escape hatch doing exactly what it is for. **In
+// this language a cycle is not something you write by accident** -- which is the
+// strongest form of CYCLES 1's prediction that the residue is small, and it is
+// why the corpus and the compiler all report `cycles none`.
+
+extern fn node_to_ptr(n: Node borrow) -> String alias
+extern fn ptr_to_node(p: String borrow) -> Node alias
+
+// CYCLES 6.1's third trigger. The other two -- buffer occupancy at 4096 and
+// allocation failure -- are both unreachable in a fixture small enough to reason
+// about, and a collector that only ever runs at exit cannot be shown to *restore*
+// counts on a cycle that is still live.
+extern fn cyc_collect_now()
+
+struct Node {
+    id: Int,
+    peer: Node?
+}
+
+// `owner` and the mirror below put every node in two containers, which is what
+// makes them Shared (A-CONTAIN) and therefore T4b rather than T2. The `peer`
+// edges close the value cycle.
+fn build_cycle() -> List<Node> {
+    let owner: List<Node> = list_new()
+    list_push(owner, Node { id: 1, peer: none })
+    list_push(owner, Node { id: 2, peer: none })
+
+    let a = list_get(owner, 0)
+    let b = list_get(owner, 1)
+    a.peer = ptr_to_node(node_to_ptr(b))
+    b.peer = ptr_to_node(node_to_ptr(a))
+    return owner
+}
+
+fn mirror(src: List<Node>, dst: List<Node>) {
+    let mut i = 0
+    while (i < list_len(src)) {
+        list_push(dst, list_get(src, i))
+        i = i + 1
+    }
+}
+
+// The whole point. Both containers are torn down, every count reaches one rather
+// than zero -- because each node is held by the other -- and nothing but a
+// collector can tell that the remaining references are internal.
+//
+// A count that drops without reaching zero is the only way a cycle can become
+// garbage, and that is the one place a candidate root is born.
+fn collected_when_unreachable() -> Int {
+    let primary = build_cycle()
+    let second: List<Node> = list_new()
+    mirror(primary, second)
+    return list_len(primary) + list_len(second)
+}
+
+// **The load-bearing case, and the one a wrong implementation fails loudly.**
+// The cycle is still reachable from `keep` when the other container is torn
+// down, so trial deletion must find a non-zero count on the way through and
+// restore every count it removed. Freeing here would be a use-after-free rather
+// than a leak, and the read below is what catches it -- under `--verify` a
+// released object reads as poison.
+fn live_cycle_survives() -> Int {
+    let keep = build_cycle()
+
+    // `temp` dies at the closing brace, so every node's count drops from two to
+    // one and each becomes a candidate root -- while `keep` still holds them.
+    if (true) {
+        let temp: List<Node> = list_new()
+        mirror(keep, temp)
+    }
+
+    // Collect while the cycle is still reachable. Trial deletion takes each
+    // count to zero through the peer edges, Scan finds `keep`'s reference and
+    // ScanBlack has to put every one of them back. Getting that wrong frees a
+    // live cycle, and the reads below are what catch it: under `--verify` a
+    // released object reads as poison.
+    cyc_collect_now()
+
+    let head = list_get(keep, 0)
+    let other = expect(head.peer)
+    return head.id + other.id
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    print("FAIL ")
+    print(label)
+    print(": got ")
+    print_int(got)
+    print(" want ")
+    println_int(want)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("collected", collected_when_unreachable(), 4)
+    bad = bad + check("live_survives", live_cycle_survives(), 3)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

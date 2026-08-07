@@ -65,7 +65,11 @@ REF_SCALARS = {'Int', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64',
 FFI_CONTRACTS = {
     # name          : {arg_index: contract}
     'list_push':      {0: 'borrow', 1: ('retain_in', 0)},
-    'list_set':       {0: 'borrow', 1: ('retain_in', 0), 2: 'borrow'},
+    # `list_set(list, index, value)` -- the stored value is argument **2**. This
+    # said 1, which is the integer index, so the value only borrowed and appeared
+    # never to escape. Optimistic, i.e. unsound, and the compiler had the same
+    # off-by-one -- which is how a differential test agrees on a wrong answer.
+    'list_set':       {0: 'borrow', 1: 'borrow', 2: ('retain_in', 0)},
     'list_get':       {0: 'borrow'},          # returns an alias into arg 0
     'list_len':       {0: 'borrow'},
     'list_new':       {},                     # produces a fresh container
@@ -84,9 +88,34 @@ FFI_CONTRACTS = {
 }
 
 # Externs whose return value aliases an argument rather than allocating
-# (FFI 5.2 `alias`). Modelled by returning the argument's own sites, so an
-# element read back out of a list is the element, not a fresh allocation.
-FFI_RETURNS_ALIAS_OF = {'list_get': 0}
+# (FFI 5.2 `alias`). Modelled by returning the argument's own sites.
+FFI_RETURNS_ALIAS_OF = {}
+
+# Externs that read an element back out of a container: name -> argument index.
+#
+# `list_get` used to be in FFI_RETURNS_ALIAS_OF above, on the reading that the
+# argument's value set *is* the element -- and it is not, it is the list. Reading
+# an element and pushing it into a second container then recorded the container as
+# the element, which hid the sharing and told the second container its elements
+# were lists. A container's contents are a field key (elem_key); this reads it.
+FFI_READS_ELEMENT_OF = {'list_get': 0}
+
+
+def base_type(ty):
+    """`List<Token>` -> `List`. Field keys are per nominal type, so a generic
+    container's fields are shared across its instantiations."""
+    at = ty.find('<')
+    return ty if at < 0 else ty[:at]
+
+
+def elem_key(container_type):
+    """A container's contents, as a field key.
+
+    Object-insensitive through base_type for the reason base_type exists: keying
+    on the spelled type would put `list_new()`'s `List<Invalid>` and an annotated
+    `List<Item>` on different keys, and a lost edge is the unsound direction.
+    """
+    return ('field', base_type(container_type), '@elem')
 
 # Return contracts (FFI 5.2). 'produce' = a fresh owned value the caller must
 # release; anything undeclared has UNKNOWN provenance and must be treated
@@ -345,6 +374,11 @@ class Engine:
         self.pt = defaultdict(set)        # ('var', fn, name) | ('field', ty, f)
                                           # | ('ret', fn) | ('param', fn, i) -> {site}
         self.no_stack = set()             # sites an explicit drop() forbids T0 for
+        # site -> {container sites holding it}. Separate from `holders`, which
+        # counts *keys* -- named locations the move checker governs. A container
+        # element is neither: list_push is a call, so nothing about it is a move,
+        # and two pushes of one value are two owners the language never noticed.
+        self.container_of = defaultdict(set)
         self.E = {}                       # site -> escape
         self.A = {}                       # site -> alias
         self.C = {}                       # site -> cyclicity
@@ -474,6 +508,10 @@ class Engine:
                     # it escapes exactly as far as that container does.
                     holder = argvals[c[1]] if c[1] < len(argvals) else VS_EMPTY
                     self.constraints.append(('retain_in', av, holder))
+                    # ...and the container's element field now points at it, so a
+                    # later read gets the element back rather than the container.
+                    holder_ty = e['c2'][c[1]]['ty'] if c[1] < len(e['c2']) else ''
+                    self.constraints.append(('bind', elem_key(holder_ty), av))
                 elif c == 'retain':
                     self.constraints.append(('escape_global', av))
                 else:
@@ -485,6 +523,12 @@ class Engine:
 
             if known:
                 return self.ref(('ret', callee))
+            # Reading an element out of a container yields what was stored into
+            # it, which is the element field rather than the container. Resolved
+            # at the fixed point, so the pushes may be walked after this read.
+            elem_of = FFI_READS_ELEMENT_OF.get(plain)
+            if elem_of is not None and elem_of < len(e['c2']):
+                return self.ref(elem_key(e['c2'][elem_of]['ty']))
             alias_of = FFI_RETURNS_ALIAS_OF.get(plain)
             if alias_of is not None and alias_of < len(argvals):
                 return argvals[alias_of]         # FFI 5.2 `alias`
@@ -774,6 +818,11 @@ class Engine:
                             if self.A[h] > self.A[s]:
                                 self.A[s] = self.A[h]
                                 changed = self.moved(s)
+                            # Which containers hold it, not merely that one does:
+                            # the count is what A-CONTAIN reads.
+                            if h not in self.container_of[s]:
+                                self.container_of[s].add(h)
+                                changed = self.moved(s)
                         if self.A[s] < BORROWED:
                             self.A[s] = BORROWED
                             changed = self.moved(s)
@@ -816,6 +865,16 @@ class Engine:
                 # ownership, not aliasing.
                 if (not self.m.is_move_only(site.type)
                         and len(self.holders[s_id]) >= 2
+                        and self.A[s_id] < SHARED):
+                    self.A[s_id] = SHARED
+                    changed = self.moved(s_id)
+                # A-CONTAIN: two containers holding one value is sharing, whatever
+                # the type. A-COPY exempts move-only values because a second
+                # *binding* is a move, so the earlier one is provably dead -- and
+                # that argument does not reach a container, because list_push is a
+                # call and a call is not a move. Once a container teardown releases
+                # its elements, two owners is the double free.
+                if (len(self.container_of[s_id]) >= 2
                         and self.A[s_id] < SHARED):
                     self.A[s_id] = SHARED
                     changed = self.moved(s_id)
@@ -889,9 +948,13 @@ def tier_of(model, eng, sid):
     site = model.sites[sid]
     E, A, C = eng.E[sid], eng.A[sid], eng.C[sid]
 
+    # in_container joins no_stack for the same reason: the container reclaims its
+    # elements, and a frame slot is not something a deallocator can take.
+    # Reachable whenever container and element share a scope, which leaves every
+    # other T0 conjunct satisfied.
     if (E == ('R', site.scope) and A <= BORROWED
             and site.kind == 'struct' and site.nfields <= THETA_STACK_FIELDS
-            and sid not in eng.no_stack):
+            and sid not in eng.no_stack and not eng.container_of[sid]):
         return 'T0'
     if E != CALLER and E != GLOBAL:
         return 'T1'

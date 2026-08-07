@@ -23,7 +23,12 @@ enum TypeKind {
     ENUM,
     ARRAY,
     LIST,
-    FUNCTION
+    FUNCTION,
+
+    // REQUIREMENTS 4. A reference that may be absent. Appended rather than
+    // inserted: TypeKind's ordinals are load-bearing (see NEVER_ZERO above and
+    // test_41), so adding in the middle would renumber every kind after it.
+    OPTIONAL
 }
 
 struct TypeInfo {
@@ -112,11 +117,67 @@ fn type_int_is_unsigned(t: TypeInfo) -> Bool {
 fn type_is_move_only(t: TypeInfo) -> Bool {
     if (t.kind == TypeKind.STRUCT) { return true }
     if (t.kind == TypeKind.STRING) { return true }
+    // REQUIREMENTS 4. `T?` owns whatever `T` owns; being absent is a state of
+    // the slot, not a different kind of ownership.
+    if (t.kind == TypeKind.OPTIONAL) {
+        if (str_equals(t.child, "") == 0) { return type_is_move_only(ptr_to_type(t.child)) }
+        return false
+    }
     return t.kind == TypeKind.LIST
 }
 
 fn type_struct(name: String) -> TypeInfo {
     return type_make(TypeKind.STRUCT, name, "ptr")
+}
+
+// ---------------------------------------------------------------------------
+// REQUIREMENTS 4 -- optional references
+//
+// **`none` is a null pointer, and that choice is the whole of the punned-slot
+// question.** This compiler already has a way to spell "this slot is empty": a
+// pointer to the empty string, tested with `str_equals(p, "")`. That encoding
+// reads the *first byte of the pointed-to struct*, so a live value whose first
+// field is zero is byte-for-byte an empty slot -- which is why NodeKind and
+// TypeKind both reserve ordinal 0, why the layout search pins field 0, and what
+// test_41 characterises.
+//
+// A null pointer dereferences nothing. `x == none` is `icmp eq ptr %x, null`,
+// which reads no byte of any object, so **no live value can collide with it
+// whatever its first field holds**. Reusing the `""` convention would have
+// inherited the collision and spread it from the compiler's own punned pointers
+// to every user program; a distinct null is immune by construction.
+//
+// The cost is that both encodings now exist. They do not meet: `""` is the
+// compiler's internal idiom on `String`-punned node pointers, `none` is the
+// language's, and nothing converts between them.
+// ---------------------------------------------------------------------------
+
+// The type of a bare `none`: optional, with no inner type to speak of. Its empty
+// `child` is what makes type_equals match it against any `T?`, which is how the
+// literal reaches a typed slot without an inference pass to give it one.
+fn type_none() -> TypeInfo { return type_make(TypeKind.OPTIONAL, "none", "ptr") }
+
+fn type_optional(inner: TypeInfo) -> TypeInfo {
+    let t = type_make(TypeKind.OPTIONAL, str_concat(inner.name, "?"), "ptr")
+    t.child = type_to_ptr(inner)
+    return t
+}
+
+fn type_optional_inner(t: TypeInfo) -> TypeInfo {
+    if (t.kind == TypeKind.OPTIONAL and str_equals(t.child, "") == 0) {
+        return ptr_to_type(t.child)
+    }
+    return type_invalid()
+}
+
+// Only a reference can be absent. A scalar has no spare representation -- 0 is a
+// perfectly good Int -- so `Int?` would need a second word and is refused rather
+// than silently given one.
+fn type_can_be_optional(t: TypeInfo) -> Bool {
+    if (t.kind == TypeKind.STRUCT) { return true }
+    if (t.kind == TypeKind.STRING) { return true }
+    if (t.kind == TypeKind.LIST) { return true }
+    return t.kind == TypeKind.PTR
 }
 
 fn type_enum(name: String) -> TypeInfo {
@@ -154,6 +215,12 @@ fn type_display(t: TypeInfo) -> String {
         }
         return "List"
     }
+    if (t.kind == TypeKind.OPTIONAL) {
+        if (str_equals(t.child, "") == 0) {
+            return str_concat(type_display(ptr_to_type(t.child)), "?")
+        }
+        return "none"
+    }
     return t.name
 }
 
@@ -179,6 +246,13 @@ fn type_equals(a: TypeInfo, b: TypeInfo) -> Bool {
         if (type_is_valid(ac) == false or type_is_valid(bc) == false) { return true }
         return type_equals(ac, bc)
     }
+    if (a.kind == TypeKind.OPTIONAL) {
+        // A bare `none` carries no inner type, so it matches any optional. That
+        // is what lets `none` be written wherever a `T?` is wanted without an
+        // inference pass to give it one.
+        if (str_equals(a.child, "") == 1 or str_equals(b.child, "") == 1) { return true }
+        return type_equals(ptr_to_type(a.child), ptr_to_type(b.child))
+    }
     return true
 }
 
@@ -197,6 +271,12 @@ fn type_ir_key(t: TypeInfo) -> String {
     if (t.kind == TypeKind.ENUM) { return "i32" }
     if (t.kind == TypeKind.STRUCT) { return str_concat("struct:", t.name) }
     if (t.kind == TypeKind.LIST) { return "ptr" }
+    // REQUIREMENTS 4. A `T?` is one pointer, absent or not. Deliberately *not*
+    // `struct:T` even when the inner is a struct: the storage is the same, but
+    // an lvalue of this type must never reach ir_struct_field_ptr without an
+    // unwrap, and keeping the key opaque is what makes that a type error rather
+    // than a null dereference.
+    if (t.kind == TypeKind.OPTIONAL) { return "ptr" }
     if (t.kind == TypeKind.ARRAY) {
         if (str_equals(t.child, "") == 0) {
             let elem = ptr_to_type(t.child)
@@ -228,6 +308,12 @@ fn type_sem_key(t: TypeInfo) -> String {
             return str_concat("list:", type_sem_key(ptr_to_type(t.child)))
         }
         return "list:Invalid"
+    }
+    if (t.kind == TypeKind.OPTIONAL) {
+        if (str_equals(t.child, "") == 0) {
+            return str_concat("opt:", type_sem_key(ptr_to_type(t.child)))
+        }
+        return "opt:Invalid"
     }
     return "Invalid"
 }
