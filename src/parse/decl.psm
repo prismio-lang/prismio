@@ -1,0 +1,395 @@
+// Top-level declarations, type annotations, and the annotations that ride on
+// them: AIF's `unique`/`pin` and the FFI ownership contracts.
+
+import lexer.token
+import common.text
+import ast.nodes
+import common.diagnostics
+
+fn parseDeclaration(p: Parser) -> ASTNode {
+    if (parserCheckVal(p, TokenType.KEYWORD, "import")) { return parseImportStatement(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "extern")) { return parseExternFnDecl(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "fn")) { return parseFunctionDecl(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "struct")) { return parseStructDecl(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "enum")) { return parseEnumDecl(p) }
+
+    // Nothing here starts a declaration. Report it, skip to the next thing that
+    // could, and hand back a placeholder -- so a file with three broken functions
+    // reports three errors instead of only the first.
+    let bad = parserNode(p, NodeKind.ERROR_NODE)
+    let current = parserCurrent(p)
+    parserError(p, str_concat(str_concat("expected a declaration, found ", parserDescribe(current)),
+                               " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`)"))
+    parserSynchronize(p)
+    return bad
+}
+
+// ---------------------------------------------------------
+// Types
+// ---------------------------------------------------------
+
+// Consumes the '>' that closes a generic argument.
+//
+// The lexer produces `>>` as a single shift token, so `List<List<Int>>` would
+// otherwise fail to close the inner argument -- the classic C++ problem. Rather
+// than requiring a space, split the token: rewrite it to a single '>' in place
+// and leave it for the enclosing type to consume.
+//
+// The token's *type* has to be rewritten too, not just its text. The lexer types
+// a two-character operator as arithmetic, so leaving `>>` as `>` with the old
+// type made the enclosing argument fail with "expected `>`, found `>`" -- which
+// is what this did until a nested container needed it. Written with the comment
+// above and never exercised, because `List<List<T>>` was unwritable and so nobody
+// had written one.
+fn parserExpectCloseAngle(p: Parser, context: String) {
+    let current = parserCurrent(p)
+    if (str_equals(current.value, ">>") == 1) {
+        current.value = ">"
+        current.type = TokenType.RELATIONAL_OPERATOR
+        return
+    }
+    parserExpectVal(p, TokenType.RELATIONAL_OPERATOR, ">", context)
+}
+
+fn parseTypeAnnotation(p: Parser) -> ASTNode {
+    let typeNode = parserNode(p, NodeKind.TYPE_ANNOTATION)
+
+    if (parserMatchVal(p, TokenType.SEPARATOR, "[")) {
+        typeNode.i1 = 1 // is_array
+        typeNode.child1 = node_to_ptr(parseTypeAnnotation(p))
+        parserExpectVal(p, TokenType.SEPARATOR, "]", "array type")
+        // REQUIREMENTS 4. `[T]?` binds the whole array, matching the suffix below
+        // rather than reaching inside the brackets.
+        if (parserMatchVal(p, TokenType.SEPARATOR, "?")) { typeNode.i3 = 1 }
+        return typeNode
+    }
+
+    let name = parserCurrent(p)
+    if (name.type == TokenType.IDENTIFIER or name.type == TokenType.KEYWORD) {
+        typeNode.s1 = name.value
+        parserAdvance(p)
+    } else {
+        parserFatal(p, str_concat("expected a type name, found ", parserDescribe(name)))
+    }
+
+    if (str_equals(typeNode.s1, "List") == 1 and parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
+        typeNode.i2 = 1 // is_list
+        typeNode.child1 = node_to_ptr(parseTypeAnnotation(p))
+        parserExpectCloseAngle(p, "list type argument")
+    }
+
+    // REQUIREMENTS 4. `T?` -- a reference that may be absent. Postfix, and after
+    // the list argument so `List<Node>?` is an optional list rather than a list
+    // of optionals; `List<Node?>` spells the other one, because the `?` there is
+    // consumed by the recursive call above.
+    if (parserMatchVal(p, TokenType.SEPARATOR, "?")) { typeNode.i3 = 1 }
+
+    return typeNode
+}
+
+// ---------------------------------------------------------
+// Annotations
+// ---------------------------------------------------------
+
+// AIF annotations on a binding -- SPEC 5's `unique` and `pin`.
+//
+//     let unique buf = make_buffer()
+//     let pin(T1) work = build()
+//     let mut unique pin(T2) cache = ...
+//
+// **Contextual, not reserved**, for the same reason the FFI contracts are: SPEC 5
+// requires that deleting every annotation leave a working program, and reserving
+// two more words would break programs that already use them as names -- which is
+// the opposite obligation. `unique` is an annotation only when another identifier
+// follows it, so `let unique = 5` is still a variable called `unique`; `pin` only
+// when a `(` follows.
+fn parserAtAnnotation(p: Parser, name: String) -> Bool {
+    if (parserCheck(p, TokenType.IDENTIFIER) == false) { return false }
+
+    let current = parserCurrent(p)
+    if (str_equals(current.value, name) == 0) { return false }
+
+    let next = parserPeek(p)
+    if (str_equals(name, "pin") == 1) {
+        return str_equals(next.value, "(") == 1
+    }
+    return next.type == TokenType.IDENTIFIER
+}
+
+// Stored on the declaration's `s2`, which is free on a VARIABLE_DECL, encoded as
+// text so `pin`'s tier travels without needing a second slot. Same idiom as the
+// FFI contracts below, and for the same reason.
+fn parseAifAnnotations(p: Parser, node: ASTNode) {
+    loop {
+        if (parserAtAnnotation(p, "unique")) {
+            parserExpect(p, TokenType.IDENTIFIER, "unique annotation")
+            node.s2 = str_concat(node.s2, "unique ")
+        } else if (parserAtAnnotation(p, "pin")) {
+            parserExpect(p, TokenType.IDENTIFIER, "pin annotation")
+            parserExpectVal(p, TokenType.SEPARATOR, "(", "pin tier")
+            let tier = parserCurrent(p)
+            parserExpect(p, TokenType.IDENTIFIER, "a tier name such as T1")
+            parserExpectVal(p, TokenType.SEPARATOR, ")", "pin tier")
+            node.s2 = str_concat(node.s2, str_concat(str_concat("pin:", tier.value), " "))
+        } else {
+            break
+        }
+    }
+}
+
+// FFI ownership contracts -- aif/spec/FFI.md 5.
+//
+// Postfix on the type, which is the form FFI.md 5.4's own examples use:
+//
+//     extern fn strlen(s: String borrow) -> Int
+//     extern fn fopen(path: String borrow, mode: String borrow) -> File produce(fclose)
+//     extern fn list_push(list: List borrow, item: Ptr retain_in(0))
+//
+// Three decisions worth stating, because each could reasonably have gone the
+// other way:
+//
+// **Contextual, not reserved.** None of these is a keyword, so they lex as
+// ordinary identifiers and a program may still call a variable `out` or a
+// function `alias`. A contract is only recognised in the one position where a
+// type annotation has just ended inside an `extern` declaration, and at top level
+// the token after a return type is otherwise always a keyword, so there is
+// nothing to be ambiguous with.
+//
+// **Parsed here, not in parseTypeAnnotation.** FFI.md 5 is explicit that a
+// contract is part of an *extern declaration's signature* -- it describes foreign
+// code. Putting it in the shared type parser would also make `let x: Int borrow`
+// parse, which is not a thing and should not become one.
+//
+// **Stored on the type annotation's `s2`.** It is the only free slot on that
+// node, and EXTERN_FUNCTION's own `s2` already carries the mangled symbol that
+// sema caches there. String-encoded so `retain_in(k)` and `produce(free_fn)`
+// carry their argument without needing a second slot.
+//
+// Call-site contracts (`pure`, `nocallback`, FFI 5.3) are deliberately not
+// parsed. They drive the fact invalidation of FFI 6, which AIF-1 does not model
+// at all -- there is no static-root invalidation to switch off. They trail the
+// declaration, so adding them later breaks nothing.
+fn isFfiContractName(name: String) -> Bool {
+    if (str_equals(name, "borrow") == 1) { return true }
+    if (str_equals(name, "retain") == 1) { return true }
+    if (str_equals(name, "retain_in") == 1) { return true }
+    if (str_equals(name, "consume") == 1) { return true }
+    if (str_equals(name, "out") == 1) { return true }
+    if (str_equals(name, "alias") == 1) { return true }
+    if (str_equals(name, "produce") == 1) { return true }
+    return false
+}
+
+// Whether the contract takes a parenthesised argument. Checked so that
+// `borrow(3)` is a syntax error where it is written rather than a silently
+// ignored suffix.
+fn ffiContractTakesArgument(name: String) -> Bool {
+    if (str_equals(name, "retain_in") == 1) { return true }
+    if (str_equals(name, "produce") == 1) { return true }
+    return false
+}
+
+// Reads a contract, if one is present, onto the annotation it follows. Whether
+// the contract makes sense in this position -- `alias` on a parameter, `produce`
+// on an argument -- is sema's call, not the parser's.
+fn parseFfiContract(p: Parser, annotation: ASTNode) {
+    let current = parserCurrent(p)
+    if (current.type != TokenType.IDENTIFIER) { return }
+    if (isFfiContractName(current.value) == false) { return }
+
+    let name = current.value
+    parserAdvance(p)
+
+    if (ffiContractTakesArgument(name)) {
+        parserExpectVal(p, TokenType.SEPARATOR, "(", "contract argument")
+        let argument = parserCurrent(p)
+        let argumentText = argument.value
+        parserAdvance(p)
+        parserExpectVal(p, TokenType.SEPARATOR, ")", "contract argument")
+        annotation.s2 = str_concat(str_concat(name, ":"), argumentText)
+        return
+    }
+
+    if (parserCheckVal(p, TokenType.SEPARATOR, "(")) {
+        diag_error_at(current.file, current.line, current.col, str_length(name),
+            str_concat(str_concat("the ", diagQuote(name)), " contract takes no argument"))
+        diag_note("only `retain_in(k)` and `produce(free_fn)` are parameterised")
+    }
+
+    annotation.s2 = name
+}
+
+// ---------------------------------------------------------
+// Declarations
+// ---------------------------------------------------------
+
+fn parseVariableDecl(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "let", "variable declaration")
+    let varNode = parserNode(p, NodeKind.VARIABLE_DECL)
+
+    if (parserMatchVal(p, TokenType.KEYWORD, "mut")) {
+        varNode.i1 = 1 // is_mutable
+    }
+
+    parseAifAnnotations(p, varNode)
+
+    let name = parserCurrent(p)
+    varNode.s1 = name.value
+    parserExpect(p, TokenType.IDENTIFIER, "variable name")
+
+    if (parserMatchVal(p, TokenType.SEPARATOR, ":")) {
+        varNode.child1 = node_to_ptr(parseTypeAnnotation(p))
+    }
+
+    if (parserMatchVal(p, TokenType.ASSIGNMENT_OPERATOR, "=")) {
+        varNode.child2 = node_to_ptr(parseExpression(p, 0))
+    }
+
+    return varNode
+}
+
+// One `name: Type` pair. `extern` declarations may carry an FFI contract after
+// the type; ordinary functions may carry a calling convention and `unique`
+// before the name. Nothing else differs, so both parameter lists come through
+// here.
+fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
+    let param = parserNode(p, NodeKind.FUNCTION_PARAMETER)
+
+    if (isExtern == false) {
+        // `sink` moves in, `inout` is a mutable borrow. The default is a shared
+        // read-only borrow.
+        if (parserMatchVal(p, TokenType.KEYWORD, "sink")) {
+            param.s2 = "sink"
+        } else if (parserMatchVal(p, TokenType.KEYWORD, "inout")) {
+            param.s2 = "inout"
+        }
+
+        // SPEC 5.1. `s2` is taken by the convention, so the flag goes in `i2`.
+        // `pin` is deliberately not accepted here: a pin constrains an allocation
+        // site's tier, and a parameter is a binding, not an allocation.
+        if (parserAtAnnotation(p, "unique")) {
+            parserExpect(p, TokenType.IDENTIFIER, "unique annotation")
+            param.i2 = 1
+        }
+    }
+
+    let name = parserCurrent(p)
+    param.s1 = name.value
+    parserExpect(p, TokenType.IDENTIFIER, "parameter name")
+    parserExpectVal(p, TokenType.SEPARATOR, ":", "parameter type")
+    param.child1 = node_to_ptr(parseTypeAnnotation(p))
+
+    if (isExtern) {
+        parseFfiContract(p, ptr_to_node(param.child1))
+    }
+
+    return param
+}
+
+// The shared `( a: A, b: B )` shape. Returns the head of the parameter chain.
+fn parseParameterList(p: Parser, isExtern: Bool) -> String {
+    parserExpectVal(p, TokenType.SEPARATOR, "(", "params")
+
+    let params = nodeList()
+    if (parserCheckVal(p, TokenType.SEPARATOR, ")") == false) {
+        loop {
+            nodeListPush(params, parseParameter(p, isExtern))
+            if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+        }
+    }
+
+    parserExpectVal(p, TokenType.SEPARATOR, ")", "params")
+    return params.head
+}
+
+fn parseExternFnDecl(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "extern", "extern fn")
+    parserExpectVal(p, TokenType.KEYWORD, "fn", "extern fn")
+
+    let extNode = parserNode(p, NodeKind.EXTERN_FUNCTION)
+    let name = parserCurrent(p)
+    extNode.s1 = name.value
+    parserExpect(p, TokenType.IDENTIFIER, "function name")
+
+    extNode.child1 = parseParameterList(p, true)
+
+    if (parserMatchVal(p, TokenType.ARROW, "->")) {
+        extNode.child2 = node_to_ptr(parseTypeAnnotation(p))
+        parseFfiContract(p, ptr_to_node(extNode.child2))
+    }
+
+    return extNode
+}
+
+fn parseFunctionDecl(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "fn", "function")
+
+    let fnNode = parserNode(p, NodeKind.FUNCTION)
+    let name = parserCurrent(p)
+    fnNode.s1 = name.value
+    parserExpect(p, TokenType.IDENTIFIER, "function name")
+
+    fnNode.child1 = parseParameterList(p, false)
+
+    if (parserMatchVal(p, TokenType.ARROW, "->")) {
+        fnNode.child3 = node_to_ptr(parseTypeAnnotation(p))
+    }
+    fnNode.child2 = node_to_ptr(parseBlock(p))
+
+    return fnNode
+}
+
+fn parseStructDecl(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "struct", "struct")
+
+    let structNode = parserNode(p, NodeKind.STRUCT_DECL)
+    let name = parserCurrent(p)
+    structNode.s1 = name.value
+    parserExpect(p, TokenType.IDENTIFIER, "struct name")
+
+    parserExpectVal(p, TokenType.SEPARATOR, "{", "struct body")
+
+    let fields = nodeList()
+    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
+        let field = parserNode(p, NodeKind.STRUCT_FIELD)
+        let fieldName = parserCurrent(p)
+        field.s1 = fieldName.value
+        parserExpect(p, TokenType.IDENTIFIER, "field name")
+        parserExpectVal(p, TokenType.SEPARATOR, ":", "field type")
+        field.child1 = node_to_ptr(parseTypeAnnotation(p))
+        nodeListPush(fields, field)
+
+        parserMatchVal(p, TokenType.SEPARATOR, ",")
+    }
+
+    parserExpectVal(p, TokenType.SEPARATOR, "}", "struct body")
+    structNode.child1 = fields.head
+    return structNode
+}
+
+fn parseEnumDecl(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "enum", "enum")
+
+    let enumNode = parserNode(p, NodeKind.ENUM_DECL)
+    let name = parserCurrent(p)
+    enumNode.s1 = name.value
+    parserExpect(p, TokenType.IDENTIFIER, "enum name")
+
+    parserExpectVal(p, TokenType.SEPARATOR, "{", "enum body")
+
+    let variants = nodeList()
+    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
+        let variant = parserNode(p, NodeKind.ENUM_VARIANT)
+        let variantName = parserCurrent(p)
+        variant.s1 = variantName.value
+        parserExpect(p, TokenType.IDENTIFIER, "variant name")
+        nodeListPush(variants, variant)
+
+        parserMatchVal(p, TokenType.SEPARATOR, ",")
+    }
+
+    parserExpectVal(p, TokenType.SEPARATOR, "}", "enum body")
+    enumNode.child1 = variants.head
+    return enumNode
+}

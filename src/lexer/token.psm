@@ -1,0 +1,131 @@
+// The token vocabulary: what the scanner produces and what the parser matches on.
+//
+// The keyword set lives here too. It used to be its own module with a single
+// consumer, which bought nothing -- a keyword is a token that happens to spell a
+// reserved word, and the two answers belong beside the enum that names them.
+
+extern fn str_equals(s1: String, s2: String) -> Int
+
+enum TokenType {
+    STRING_LITERAL,
+    CHAR_LITERAL,
+    NUMBER_LITERAL,
+    FLOAT_LITERAL,
+    BOOL_LITERAL,
+
+    IDENTIFIER,
+    SEPARATOR,
+
+    UNDERSCORE,
+
+    ARITHMETIC_OPERATOR,
+    RELATIONAL_OPERATOR,
+    NEGATION,
+    BITWISE_OR,
+    ASSIGNMENT_OPERATOR,
+    UNARY_OPERATOR,
+    AMPERSAND,
+
+    ARROW,
+    FAT_ARROW,
+    RANGE,
+
+    KEYWORD,
+    UNKNOWN,
+    EOF
+}
+
+// `line`/`col` are 1-based and point at the token's first character; `len` is its
+// width in source bytes, which is what a diagnostic underlines. `file` is an id
+// into the registry in runtime/diagnostics.c -- an integer rather than a path
+// because every token carries one and import resolution merges files from several
+// directories into a single AST.
+struct Token {
+    type: TokenType,
+    value: String,
+    line: Int,
+    col: Int,
+    len: Int,
+    file: Int,
+    tokNext: String // Pointer to next Token
+}
+
+// How a token kind reads inside a diagnostic. Deliberately coarser than the enum:
+// a reader does not care that `<=` is RELATIONAL_OPERATOR rather than
+// ARITHMETIC_OPERATOR, and kinds with no distinct wording fall through to "TOKEN".
+fn typeToString(t: TokenType) -> String {
+    if (t == TokenType.STRING_LITERAL) { return "STRING" }
+    if (t == TokenType.CHAR_LITERAL) { return "CHAR" }
+    if (t == TokenType.NUMBER_LITERAL) { return "NUMBER" }
+    if (t == TokenType.FLOAT_LITERAL) { return "FLOAT" }
+    if (t == TokenType.BOOL_LITERAL) { return "BOOL" }
+    if (t == TokenType.IDENTIFIER) { return "IDENTIFIER" }
+    if (t == TokenType.KEYWORD) { return "KEYWORD" }
+    if (t == TokenType.SEPARATOR) { return "SEPARATOR" }
+    if (t == TokenType.ARITHMETIC_OPERATOR) { return "OPERATOR" }
+    if (t == TokenType.RELATIONAL_OPERATOR) { return "REL_OP" }
+    if (t == TokenType.ASSIGNMENT_OPERATOR) { return "ASSIGN_OP" }
+    if (t == TokenType.ARROW) { return "ARROW" }
+    if (t == TokenType.EOF) { return "EOF" }
+    return "TOKEN"
+}
+
+// A linear scan rather than a lookup table: the set is small, this runs once per
+// identifier, and building a table would mean str_concat calls that allocate on
+// the hottest path in the scanner.
+fn isKeyword(word: String) -> Bool {
+    if (str_equals(word, "import") == 1) { return true }
+
+    if (str_equals(word, "match") == 1) { return true }
+    if (str_equals(word, "if") == 1) { return true }
+    if (str_equals(word, "else") == 1) { return true }
+    if (str_equals(word, "and") == 1) { return true }
+    if (str_equals(word, "or") == 1) { return true }
+
+    if (str_equals(word, "true") == 1) { return true }
+    if (str_equals(word, "false") == 1) { return true }
+
+    if (str_equals(word, "break") == 1) { return true }
+    if (str_equals(word, "continue") == 1) { return true }
+    if (str_equals(word, "return") == 1) { return true }
+    if (str_equals(word, "throw") == 1) { return true }
+
+    if (str_equals(word, "while") == 1) { return true }
+    if (str_equals(word, "loop") == 1) { return true }
+    if (str_equals(word, "for") == 1) { return true }
+    if (str_equals(word, "in") == 1) { return true }
+
+    if (str_equals(word, "let") == 1) { return true }
+    if (str_equals(word, "struct") == 1) { return true }
+    if (str_equals(word, "impl") == 1) { return true }
+    if (str_equals(word, "enum") == 1) { return true }
+    if (str_equals(word, "trait") == 1) { return true }
+    if (str_equals(word, "fn") == 1) { return true }
+    if (str_equals(word, "extern") == 1) { return true }
+
+    if (str_equals(word, "mut") == 1) { return true }
+    if (str_equals(word, "as") == 1) { return true }
+
+    // Parameter conventions: ownership and borrows.
+    if (str_equals(word, "inout") == 1) { return true }
+    if (str_equals(word, "sink") == 1) { return true }
+
+    // SPEC 5.2: pins an arena at this scope. Unlike the FFI contract names, which
+    // are contextual, this one opens a statement and so has to be a real keyword.
+    if (str_equals(word, "region") == 1) { return true }
+
+    // REQUIREMENTS 4. The absent reference. A real keyword rather than a
+    // contextual name, unlike `unique` and `pin`: those are annotations, and
+    // SPEC 5 requires that deleting one leave a working program. `none` is a
+    // *value* -- deleting it leaves a hole -- so the obligation does not apply
+    // and a keyword is the honest spelling.
+    if (str_equals(word, "none") == 1) { return true }
+
+    return false
+}
+
+fn isBoolean(word: String) -> Bool {
+    if (str_equals(word, "true") == 1) { return true }
+    if (str_equals(word, "false") == 1) { return true }
+    return false
+}

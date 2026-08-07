@@ -1,0 +1,157 @@
+// Struct sizes and the type graph they are computed over. Layout is what turns a
+// tier into a byte figure, which is what a region budget is checked against.
+
+import ast.nodes
+import ast.types
+import common.text
+import common.diagnostics
+
+// ---------------------------------------------------------------------------
+// Building the fact graph
+// ---------------------------------------------------------------------------
+
+// The type reference graph (INFERENCE 4.4 stage 1) needs an edge from a struct
+// to every nominal type its fields can reach. A missing edge is the one
+// direction here that is unsound rather than merely imprecise: it makes a
+// genuine cycle look acyclic, and a T3 refcount on a cycle leaks.
+// ---------------------------------------------------------------------------
+// Struct layout
+//
+// SPEC 4.2's T0 clause tests `size(s) <= Theta_stack`, in bytes. The prototype
+// approximates it with field count because a JSON AST dump carries no layout
+// (its A5); in the compiler that approximation is not merely imprecise, it is
+// the difference between Level 1 doing something and doing nothing. ASTNode is
+// 14 fields and about 88 bytes: over a threshold of 8 fields, comfortably under
+// one of 256 bytes.
+//
+// AIF-1's layout is declaration order with natural alignment (SPEC 8.2 grants
+// layout freedom; AIF-1 does not use it), so this is not an estimate of what the
+// backend will do -- it is the same rule the backend follows.
+// ---------------------------------------------------------------------------
+
+// What a field of this type occupies. Size equals alignment for every type
+// Prismio has, because every one of them is a scalar or a pointer; the day a
+// struct is stored by value that stops being true and this needs the real rule.
+// Struct-field ownership. A field's declared type, base-named, which the release
+// derivation compares against what the sites say is in the slot. Answers "" when
+// the field has no annotation, and the comparison is then skipped.
+//
+// Base-named for the reason aifBaseType exists: a container made by
+// `list_new()` types as `List<Invalid>` and an annotated field as `List<Node>`,
+// so comparing the spellings would reject every container field there is.
+fn aifFieldTypeName(field: ASTNode) -> String {
+    if (nodeExists(field.child1) == false) { return "" }
+    let ann = ptr_to_node(field.child1)
+    if (ann.i2 == 1) { return "List" }
+    if (ann.i1 == 1) { return "Array" }
+    return aifBaseType(ann.s1)
+}
+
+fn aifTypeBytes(ann: ASTNode) -> Int {
+    // `[T]` and `List<T>` are both a pointer to elements held elsewhere.
+    if (ann.i1 == 1) { return 8 }
+    if (ann.i2 == 1) { return 8 }
+
+    let n = ann.s1
+    if (str_equals(n, "I8") == 1) { return 1 }
+    if (str_equals(n, "U8") == 1) { return 1 }
+    if (str_equals(n, "Char") == 1) { return 1 }
+    if (str_equals(n, "Bool") == 1) { return 1 }
+    if (str_equals(n, "I16") == 1) { return 2 }
+    if (str_equals(n, "U16") == 1) { return 2 }
+    if (str_equals(n, "Int") == 1) { return 4 }
+    if (str_equals(n, "I32") == 1) { return 4 }
+    if (str_equals(n, "U32") == 1) { return 4 }
+    if (str_equals(n, "I64") == 1) { return 8 }
+    if (str_equals(n, "U64") == 1) { return 8 }
+    if (str_equals(n, "Isize") == 1) { return 8 }
+    if (str_equals(n, "Usize") == 1) { return 8 }
+    if (str_equals(n, "Float") == 1) { return 8 }
+    if (aif_is_enum(n) == 1) { return 4 }
+
+    // String, Ptr, and every struct: a pointer. Structs have reference
+    // semantics here, so a struct-typed field is one word rather than the
+    // nested layout (COMPILER-AUDIT 2.2).
+    return 8
+}
+
+fn aifAlignUp(offset: Int, align: Int) -> Int {
+    let slack = offset % align
+    if (slack == 0) { return offset }
+    return offset + align - slack
+}
+
+// LAYOUT 7.2 runs before this, so the widths are summed in the order codegen will
+// emit rather than in declaration order. That is the whole measurable effect of
+// the search on this compiler: sorting by descending width removes interior
+// padding, and the size it removes feeds Theta_stack, which is what decides T0.
+fn aifComputeStructSize(decl: ASTNode) {
+    let mut offset = 0
+    let mut maxAlign = 1
+
+    let n = aif_struct_nfields(decl.s1)
+    let mut i = 0
+    while (i < n) {
+        let width = aif_layout_field_bytes(decl.s1, i)
+        if (width > 0) {
+            offset = aifAlignUp(offset, width) + width
+            if (width > maxAlign) { maxAlign = width }
+        }
+        i = i + 1
+    }
+
+    // Trailing padding, so an array of these would be correctly strided. A
+    // zero-field struct still occupies a byte.
+    let mut total = aifAlignUp(offset, maxAlign)
+    if (total == 0) { total = 1 }
+    aif_struct_set_size(decl.s1, total)
+}
+
+// `[T]` and `List<T>` both hang T off child1, so descending finds the type the
+// field actually refers to; the annotation's own name is `` or `List`.
+fn aifAnnotationLeafName(ann: ASTNode) -> String {
+    let mut name = ann.s1
+    let mut childPtr = ann.child1
+    while (nodeExists(childPtr)) {
+        let c = ptr_to_node(childPtr)
+        name = c.s1
+        childPtr = c.child1
+    }
+    return name
+}
+
+fn aifRegisterTypeEdges(decl: ASTNode) {
+    let mut fPtr = decl.child1
+    while (nodeExists(fPtr)) {
+        let f = ptr_to_node(fPtr)
+        if (f.kind == NodeKind.STRUCT_FIELD) {
+            if (nodeExists(f.child1)) {
+                let ann = ptr_to_node(f.child1)
+                let reached = aifAnnotationLeafName(ann)
+                if (aif_is_struct(reached) == 1) {
+                    aif_type_edge(decl.s1, reached)
+                }
+            }
+        }
+        fPtr = f.next
+    }
+}
+
+// Sizes are computed after the layout search, because the search decides the
+// order the widths are summed in and therefore the padding. It used to run at the
+// top of aifBuild, which is before the walk that builds the access profile --
+// too early for a size that depends on it.
+//
+// Still after the declaration pass, for the reason that placement already had: a
+// field typed by an enum declared later in the file must be sized as an i32
+// rather than as a pointer.
+fn aifComputeSizes(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let d = ptr_to_node(p)
+        if (d.kind == NodeKind.STRUCT_DECL) {
+            aifComputeStructSize(d)
+        }
+        p = d.next
+    }
+}

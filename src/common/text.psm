@@ -9,23 +9,23 @@ extern fn str_index_of(haystack: String, needle: String) -> Int
 extern fn int_to_str(n: Int) -> String
 extern fn str_to_int(s: String) -> Int
 
-fn is_digit(c: Char) -> Bool {
+fn isDigit(c: Char) -> Bool {
     return c >= '0' and c <= '9'
 }
 
-fn is_alpha(c: Char) -> Bool {
+fn isAlpha(c: Char) -> Bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_'
 }
 
-fn is_alnum(c: Char) -> Bool {
-    return is_alpha(c) or is_digit(c)
+fn isAlnum(c: Char) -> Bool {
+    return isAlpha(c) or isDigit(c)
 }
 
-fn is_space(c: Char) -> Bool {
+fn isSpace(c: Char) -> Bool {
     return c == ' ' or c == '\t' or c == '\n' or c == '\r'
 }
 
-fn is_separator(c: Char) -> Bool {
+fn isSeparator(c: Char) -> Bool {
     if (c == '(') { return true }
     if (c == ')') { return true }
     if (c == '{') { return true }
@@ -41,7 +41,7 @@ fn is_separator(c: Char) -> Bool {
     return false
 }
 
-fn is_operator(c: Char) -> Bool {
+fn isOperator(c: Char) -> Bool {
     if (c == '+') { return true }
     if (c == '-') { return true }
     if (c == '*') { return true }
@@ -67,6 +67,6 @@ fn is_operator(c: Char) -> Bool {
 //
 // `as` makes the whole thing a zero-extension. Kept as a named function because
 // it reads better at the call sites and is the documented spelling.
-fn char_code(c: Char) -> Int {
+fn charCode(c: Char) -> Int {
     return c as Int
 }

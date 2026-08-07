@@ -1,0 +1,775 @@
+// Whole-module emission: functions, struct types, the release and cycle-walk
+// helpers generated per struct, and the string interning pass that has to run
+// before any of them.
+
+import ast.nodes
+import ast.types
+import common.text
+import common.diagnostics
+
+fn generateFunction(func: ASTNode) {
+    let funcName = func.s1
+    let emittedName = functionSymbolName(func)
+    
+    let mut retType = "void"
+    if (str_equals(func.child3, "") == 0) {
+        let retNode = ptr_to_node(func.child3)
+        retType = mapTypeNode(retNode)
+    }
+    
+    let mut isMain = 0
+    if (str_equals(funcName, "main") == 1) {
+        retType = "i32"
+        isMain = 1
+    }
+    
+    let retSigType = storageType(retType)
+    ir_function_begin(emittedName, retSigType)
+
+    if (isMain == 1) {
+        // Real OS argc/argv only reach the C `main` symbol; stash into globals for cli_arg().
+        ir_function_param("i32", "p_argc")
+        ir_function_param("ptr", "p_argv")
+    }
+
+    let mut paramPtr = func.child1
+    while (str_equals(paramPtr, "") == 0) {
+        let paramNode = ptr_to_node(paramPtr)
+        let pTypeNode = ptr_to_node(paramNode.child1)
+        ir_function_param(storageType(mapTypeNode(pTypeNode)), str_concat("p_", paramNode.s1))
+        paramPtr = paramNode.next
+    }
+
+    ir_function_body_start()
+    ir_clear_local_var_types()
+    ir_clear_returned()
+
+    if (isMain == 1) {
+        ir_store_global("i32", "%p_argc", "prismio_argc")
+        ir_store_global("ptr", "%p_argv", "prismio_argv")
+    }
+
+    // Parameter scope, outside the body block, matching semaFunction.
+    ir_scope_push()
+
+    let mut paramPtr2 = func.child1
+    while (str_equals(paramPtr2, "") == 0) {
+        let paramNode = ptr_to_node(paramPtr2)
+        let pTypeNode = ptr_to_node(paramNode.child1)
+        let pTypeStr = mapTypeNode(pTypeNode)
+        let pStoreType = storageType(pTypeStr)
+
+        ir_set_var_type(paramNode.s1, pTypeStr)
+        let pSlot = ir_get_var_slot(paramNode.s1)
+        ir_alloca(pStoreType, pSlot)
+        ir_store(pStoreType, str_concat("%p_", paramNode.s1), pSlot)
+
+        paramPtr2 = paramNode.next
+    }
+
+    // Locals are created where they are declared now, rather than hoisted by a
+    // separate pre-pass. The backend still places every alloca in the entry
+    // block, so a `let` inside a loop body does not grow the stack per
+    // iteration -- and each declaration gets its own slot, which the old
+    // name-keyed pre-pass could not express.
+    if (str_equals(func.child2, "") == 0) {
+        irFunctionBody = func.child2
+        generateBlock(ptr_to_node(func.child2))
+        irFunctionBody = ""
+    }
+
+    ir_scope_pop()
+    
+    if (ir_has_returned() == 0) {
+        if (str_equals(retSigType, "void") == 1) {
+            ir_ret_void()
+        } else {
+            if (isMain == 1) {
+                ir_ret("i32", "0")
+            } else {
+                ir_ret(retSigType, "0")
+            }
+        }
+    }
+    
+    ir_function_end()
+}
+
+// Pre-pass: collect string literals
+fn collectStringsExpr(expr: ASTNode) {
+    if (expr.kind == NodeKind.LITERAL_EXPR) {
+        if (expr.i1 == TokenType.STRING_LITERAL) {
+            let strName = str_concat(".str.s", int_to_str(irStringCounter))
+            irStringCounter = irStringCounter + 1
+            ir_global_string(strName, expr.s1)
+            expr.s2 = strName
+        }
+    }
+    if (expr.kind == NodeKind.UNARY_EXPR or expr.kind == NodeKind.CAST_EXPR) {
+        if (str_equals(expr.child1, "") == 0) {
+            collectStringsExpr(ptr_to_node(expr.child1))
+        }
+    }
+    if (expr.kind == NodeKind.BINARY_EXPR) {
+        if (str_equals(expr.child1, "") == 0) {
+            collectStringsExpr(ptr_to_node(expr.child1))
+        }
+        if (str_equals(expr.child2, "") == 0) {
+            collectStringsExpr(ptr_to_node(expr.child2))
+        }
+    }
+    if (expr.kind == NodeKind.CALL_EXPR) {
+        let mut argPtr = expr.child2
+        while (str_equals(argPtr, "") == 0) {
+            let argNode = ptr_to_node(argPtr)
+            collectStringsExpr(argNode)
+            argPtr = argNode.next
+        }
+    }
+    if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+        let mut elemPtr = expr.child1
+        while (str_equals(elemPtr, "") == 0) {
+            let elemNode = ptr_to_node(elemPtr)
+            collectStringsExpr(elemNode)
+            elemPtr = elemNode.next
+        }
+    }
+    if (expr.kind == NodeKind.INDEX_EXPR) {
+        if (str_equals(expr.child1, "") == 0) {
+            collectStringsExpr(ptr_to_node(expr.child1))
+        }
+        if (str_equals(expr.child2, "") == 0) {
+            collectStringsExpr(ptr_to_node(expr.child2))
+        }
+    }
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        if (str_equals(expr.child1, "") == 0) {
+            collectStringsExpr(ptr_to_node(expr.child1))
+        }
+    }
+    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+        let mut fieldPtr = expr.child1
+        while (str_equals(fieldPtr, "") == 0) {
+            let field = ptr_to_node(fieldPtr)
+            if (str_equals(field.child1, "") == 0) {
+                collectStringsExpr(ptr_to_node(field.child1))
+            }
+            fieldPtr = field.next
+        }
+    }
+}
+
+fn declareExternFunction(ext: ASTNode) {
+    let mut retType = getDeclaredReturnType(ext, ext.child2)
+    ir_set_var_type(fnKey(functionSymbolName(ext)), retType)
+
+    ir_declare_function_begin(functionSymbolName(ext), storageType(retType))
+    let mut paramPtr = ext.child1
+    while (str_equals(paramPtr, "") == 0) {
+        let paramNode = ptr_to_node(paramPtr)
+        let pTypeNode = ptr_to_node(paramNode.child1)
+        ir_declare_function_param(storageType(mapTypeNode(pTypeNode)))
+        paramPtr = paramNode.next
+    }
+    ir_declare_function_end()
+}
+
+fn moduleHasFunction(module: ASTNode, name: String) -> Bool {
+    let mut stmtPtr = module.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        if (stmt.kind == NodeKind.FUNCTION and str_equals(stmt.s1, name) == 1) {
+            return true
+        }
+        stmtPtr = stmt.next
+    }
+
+    return false
+}
+
+fn registerEnumDecl(enumNode: ASTNode) {
+    let mut variantPtr = enumNode.child1
+    let mut value = 0
+    while (str_equals(variantPtr, "") == 0) {
+        let variant = ptr_to_node(variantPtr)
+        ir_register_enum_variant(enumNode.s1, variant.s1, value)
+        value = value + 1
+        variantPtr = variant.next
+    }
+}
+
+fn registerStructName(structNode: ASTNode) {
+    ir_register_struct(structNode.s1)
+}
+
+fn generateStructDecl(structNode: ASTNode) {
+    let firstFieldPtr = structNode.child1
+    if (str_equals(firstFieldPtr, "") == 0) {
+        let firstField = ptr_to_node(firstFieldPtr)
+        if (ir_get_struct_field_index(structNode.s1, firstField.s1) >= 0) {
+            return
+        }
+    }
+
+    ir_struct_type_begin(structNode.s1)
+
+    // LAYOUT 7.2. The physical order is the search's, not the source's, and the
+    // two registrations below stay in one loop so the name -> index map and the
+    // LLVM body cannot disagree. Every field access in codegen goes through
+    // ir_get_struct_field_index, so nothing else has to know a layout was chosen.
+    //
+    // Safe to permute at all only because C sees a Prismio struct as an opaque
+    // `void*` -- ptr_to_node and its siblings are the identity on a pointer and
+    // no runtime function reads a field. If that ever stops being true, this is
+    // the line that breaks, silently.
+    //
+    // "" means AIF did not run, which is SPEC 7.1's zero-analysis mode: fall back
+    // to declaration order, which is what this did before a layout existed.
+    let mut i = 0
+    let mut emitted = 0
+    while (i < irFieldCountOf(structNode)) {
+        let chosen = aif_layout_field(structNode.s1, i)
+        if (str_equals(chosen, "") == 0) {
+            let field = findStructField(structNode, chosen)
+            if (nodeExists(node_to_ptr(field))) {
+                let fieldType = storageType(mapTypeNode(ptr_to_node(field.child1)))
+                ir_register_struct_field(structNode.s1, field.s1, fieldType)
+                ir_struct_type_field(fieldType)
+                emitted = emitted + 1
+            }
+        }
+        i = i + 1
+    }
+
+    if (emitted == 0) {
+        let mut fieldPtr = structNode.child1
+        while (str_equals(fieldPtr, "") == 0) {
+            let field = ptr_to_node(fieldPtr)
+            let typeNode = ptr_to_node(field.child1)
+            let fieldType = storageType(mapTypeNode(typeNode))
+            ir_register_struct_field(structNode.s1, field.s1, fieldType)
+            ir_struct_type_field(fieldType)
+            fieldPtr = field.next
+        }
+    }
+
+    ir_struct_type_end()
+}
+
+// Struct-field ownership. The generated release for a type.
+//
+// Named rather than numbered so the IR reads, and so two builds of the same
+// program name the same function -- the manifest is diffed and so is the IR.
+fn releaseFnName(typeName: String) -> String {
+    return str_concat("__aif_release_", typeName)
+}
+
+// Emits one release per owned field, then frees the object.
+//
+// **Reverse declaration order**, as everywhere else a scope unwinds: a later
+// field may hold a reference to one declared before it, never after. And the
+// object itself goes last, because every field address is computed from it.
+//
+// The struct's own storage goes through ir_free_object, so the seam still sees
+// it: a verify build's accounting counts this free exactly as it counts a scope
+// drop's, and an arena build routes it the same way.
+fn generateReleaseFn(structNode: ASTNode) {
+    let tname = structNode.s1
+    ir_function_begin(releaseFnName(tname), "void")
+    ir_function_param("ptr", "p_obj")
+    ir_function_body_start()
+
+    // REQUIREMENTS 4 made this reachable. A `T?` field can hold `none`, and a
+    // generated release reached through one would compute field addresses from a
+    // null pointer. The other three dispositions all tolerate a null already --
+    // `free(NULL)` is a no-op and list_release and rc_release both guard -- so
+    // this is the only one that has to say so itself.
+    let bodyLabel = ir_get_label()
+    let doneLabel = ir_get_label()
+    let isNull = ir_get_temp_name(ir_icmp_eq("ptr", "%p_obj", "null"))
+    ir_cond_br_numbered(isNull, doneLabel, bodyLabel)
+    ir_label_numbered(bodyLabel)
+
+    let n = irFieldCountOf(structNode)
+    let mut i = n - 1
+    while (i >= 0) {
+        let field = nthStructField(structNode, i)
+        if (nodeExists(node_to_ptr(field))) {
+            let disp = aif_field_release(tname, field.s1)
+            if (disp != AIF_ELEM_NONE) {
+                let idx = ir_get_struct_field_index(tname, field.s1)
+                let slot = ir_struct_field_ptr(tname, "%p_obj", idx)
+                let loaded = ir_load_ptr("ptr", ir_get_temp_name(slot))
+                let value = ir_get_temp_name(loaded)
+                if (disp == AIF_ELEM_LIST) {
+                    ir_free_list(value)
+                } else if (disp == AIF_ELEM_RC) {
+                    ir_free_rc(value)
+                } else if (disp == AIF_ELEM_TYPED) {
+                    let ftype = ptr_to_node(field.child1)
+                    ir_free_typed(value, releaseFnName(ftype.s1))
+                } else {
+                    ir_free_object(value)
+                }
+            }
+        }
+        i = i - 1
+    }
+
+    ir_free_object("%p_obj")
+    ir_br_numbered(doneLabel)
+    ir_label_numbered(doneLabel)
+    ir_ret_void()
+    ir_function_end()
+}
+
+// CYCLES 4. The per-type function the collector is told about at construction:
+// it visits exactly the fields whose type is in the owner's SCC.
+//
+// That restriction is the design's contribution and it is what makes the work
+// bound credible. Every edge of a value cycle joins two types in one SCC, so
+// walking only these still finds every cycle -- and the traversal never *leaves*
+// the skeleton into the string and token graphs hanging off it, which are
+// usually far larger.
+fn cyclicChildrenFnName(typeName: String) -> String {
+    return str_concat("__aif_cyclic_children_", typeName)
+}
+
+fn generateCyclicChildrenFn(structNode: ASTNode) {
+    let tname = structNode.s1
+    ir_function_begin(cyclicChildrenFnName(tname), "void")
+    ir_function_param("ptr", "p_obj")
+    ir_function_param("ptr", "p_visit")
+    ir_function_body_start()
+
+    let n = irFieldCountOf(structNode)
+    let mut i = 0
+    while (i < n) {
+        let field = nthStructField(structNode, i)
+        if (nodeExists(node_to_ptr(field))) {
+            if (aif_field_is_cyclic(tname, field.s1) == 1) {
+                let idx = ir_get_struct_field_index(tname, field.s1)
+                let slot = ir_struct_field_ptr(tname, "%p_obj", idx)
+                let loaded = ir_load_ptr("ptr", ir_get_temp_name(slot))
+                ir_call_indirect_ptr("%p_visit", ir_get_temp_name(loaded))
+            }
+        }
+        i = i + 1
+    }
+
+    ir_ret_void()
+    ir_function_end()
+}
+
+fn nthStructField(structNode: ASTNode, want: Int) -> ASTNode {
+    let mut seen = 0
+    let mut p = structNode.child1
+    while (str_equals(p, "") == 0) {
+        let f = ptr_to_node(p)
+        if (f.kind == NodeKind.STRUCT_FIELD) {
+            if (seen == want) { return f }
+            seen = seen + 1
+        }
+        p = f.next
+    }
+    return ptr_to_node("")
+}
+
+fn irFieldCountOf(structNode: ASTNode) -> Int {
+    let mut n = 0
+    let mut p = structNode.child1
+    while (str_equals(p, "") == 0) {
+        let f = ptr_to_node(p)
+        if (f.kind == NodeKind.STRUCT_FIELD) { n = n + 1 }
+        p = f.next
+    }
+    return n
+}
+
+fn findStructField(structNode: ASTNode, name: String) -> ASTNode {
+    let mut p = structNode.child1
+    while (str_equals(p, "") == 0) {
+        let f = ptr_to_node(p)
+        if (str_equals(f.s1, name) == 1) { return f }
+        p = f.next
+    }
+    return ptr_to_node("")
+}
+
+// Walks every child of `stmt` that can contain an expression, so each string
+// literal gets an @.str global allocated before codegen needs its name.
+//
+// This must stay exhaustive over NodeKind. A statement kind missing from here does
+// not fail loudly: the literal simply never gets a name, and generateExpression
+// then emits `ptr @` with an empty global, which llc rejects with "expected value
+// token" pointing at generated IR rather than at the user's source. FOR/LOOP/MATCH
+// were absent for exactly this reason, which made any string literal inside a for
+// loop or a match arm fail to build.
+//
+// The helpers below take a possibly-empty child pointer so each kind reads as a
+// plain list of the children it owns, rather than repeating the emptiness check.
+fn collectStringsChildExpr(child: String) {
+    if (str_equals(child, "") == 0) {
+        collectStringsExpr(ptr_to_node(child))
+    }
+}
+
+fn collectStringsChildBlock(child: String) {
+    if (str_equals(child, "") == 0) {
+        collectStringsBlock(ptr_to_node(child))
+    }
+}
+
+fn collectStringsStmt(stmt: ASTNode) {
+    if (stmt.kind == NodeKind.VARIABLE_DECL) {
+        collectStringsChildExpr(stmt.child2)
+    }
+    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
+        collectStringsChildExpr(stmt.child1)
+    }
+    if (stmt.kind == NodeKind.RETURN_STATEMENT) {
+        collectStringsChildExpr(stmt.child1)
+    }
+    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        // child1 is the assignment target, which can itself hold literals in an
+        // index expression such as `table[key_for("a")] = 1`.
+        collectStringsChildExpr(stmt.child1)
+        collectStringsChildExpr(stmt.child2)
+    }
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        collectStringsChildExpr(stmt.child1)
+        collectStringsChildBlock(stmt.child2)
+        if (str_equals(stmt.child3, "") == 0) {
+            let elseNode = ptr_to_node(stmt.child3)
+            if (elseNode.kind == NodeKind.IF_STATEMENT) {
+                collectStringsStmt(elseNode)
+            } else {
+                collectStringsBlock(elseNode)
+            }
+        }
+    }
+    if (stmt.kind == NodeKind.WHILE_STATEMENT) {
+        collectStringsChildExpr(stmt.child1)
+        collectStringsChildBlock(stmt.child2)
+    }
+    if (stmt.kind == NodeKind.LOOP_STATEMENT) {
+        collectStringsChildBlock(stmt.child1)
+    }
+    if (stmt.kind == NodeKind.REGION_STATEMENT) {
+        collectStringsChildBlock(stmt.child1)
+    }
+    if (stmt.kind == NodeKind.FOR_STATEMENT) {
+        // child1/child2 are the range bounds, child3 the body.
+        collectStringsChildExpr(stmt.child1)
+        collectStringsChildExpr(stmt.child2)
+        collectStringsChildBlock(stmt.child3)
+    }
+    if (stmt.kind == NodeKind.MATCH_STATEMENT) {
+        collectStringsChildExpr(stmt.child1)
+        let mut armPtr = stmt.child2
+        while (str_equals(armPtr, "") == 0) {
+            let arm = ptr_to_node(armPtr)
+            // A non-wildcard arm's pattern is an ordinary expression.
+            collectStringsChildExpr(arm.child1)
+            collectStringsChildBlock(arm.child2)
+            armPtr = arm.next
+        }
+    }
+}
+
+fn collectStringsBlock(block: ASTNode) {
+    let mut sPtr = block.child1
+    while (str_equals(sPtr, "") == 0) {
+        let s = ptr_to_node(sPtr)
+        collectStringsStmt(s)
+        sPtr = s.next
+    }
+}
+
+fn collectStringsFunction(func: ASTNode) {
+    if (str_equals(func.child2, "") == 0) {
+        collectStringsBlock(ptr_to_node(func.child2))
+    }
+}
+
+fn generateModule(module: ASTNode) {
+    ir_reset_globals()
+    ir_reset_types()
+    ir_clear_var_types()
+    // Tell the backend the target's pointer width -- it sizes the allocator's
+    // size argument and array GEP indices.
+    ir_set_pointer_int_type(irPtrIntType())
+    if (irTargetWasm) {
+        ir_module_start_wasm("self_hosted_module")
+    } else {
+        ir_module_start("self_hosted_module")
+    }
+
+    let mut typeStmtPtr = module.child1
+    while (str_equals(typeStmtPtr, "") == 0) {
+        let typeStmt = ptr_to_node(typeStmtPtr)
+        if (typeStmt.kind == NodeKind.ENUM_DECL) {
+            registerEnumDecl(typeStmt)
+        }
+        if (typeStmt.kind == NodeKind.STRUCT_DECL) {
+            registerStructName(typeStmt)
+        }
+        typeStmtPtr = typeStmt.next
+    }
+
+    let mut structStmtPtr = module.child1
+    while (str_equals(structStmtPtr, "") == 0) {
+        let structStmt = ptr_to_node(structStmtPtr)
+        if (structStmt.kind == NodeKind.STRUCT_DECL) {
+            generateStructDecl(structStmt)
+        }
+        structStmtPtr = structStmt.next
+    }
+
+    ir_blank_line()
+
+    // Populated from main's real argc/argv (see generateFunction) so cli_arg()/
+    // cli_arg_count() in runtime/program_support.c work the same on every platform.
+    ir_global_var("prismio_argc", "i32", "0", 0)
+    ir_global_var("prismio_argv", "ptr", "null", 0)
+
+    // Declare runtime functions
+    ir_declare_function_begin("malloc", "ptr")
+    ir_declare_function_param(irPtrIntType())
+    ir_declare_function_end()
+
+    ir_declare_function_begin("free", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_new", "ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_set_elem_releaser", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("rc_release", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("prismio_expect", "ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("cyc_set_type", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("cyc_retain", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("cyc_release", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_set_elem_owner", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("rc_alloc", "ptr")
+    ir_declare_function_param(irPtrIntType())
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_push", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_get", "ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_set", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_len", "i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("println", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("print", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("println_int", "void")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("print_int", "void")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("println_float", "void")
+    ir_declare_function_param("double")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("print_float", "void")
+    ir_declare_function_param("double")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("println_bool", "void")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("print_bool", "void")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("println_char", "void")
+    ir_declare_function_param("i8")
+    ir_declare_function_end()
+    
+    ir_declare_function_begin("print_char", "void")
+    ir_declare_function_param("i8")
+    ir_declare_function_end()
+
+    // Struct-field ownership. Declared before any is defined, because a type
+    // whose field is another owning struct calls that type's release -- and the
+    // declaration order of two structs says nothing about which needs the other.
+    let mut relDeclPtr = module.child1
+    while (str_equals(relDeclPtr, "") == 0) {
+        let relStmt = ptr_to_node(relDeclPtr)
+        if (relStmt.kind == NodeKind.STRUCT_DECL) {
+            if (aif_type_releases(relStmt.s1) == 1) {
+                ir_declare_function_begin(releaseFnName(relStmt.s1), "void")
+                ir_declare_function_param("ptr")
+                ir_declare_function_end()
+            }
+        }
+        relDeclPtr = relStmt.next
+    }
+
+    ir_blank_line()
+
+    let mut relDefPtr = module.child1
+    while (str_equals(relDefPtr, "") == 0) {
+        let relStmt = ptr_to_node(relDefPtr)
+        if (relStmt.kind == NodeKind.STRUCT_DECL) {
+            if (aif_type_releases(relStmt.s1) == 1) {
+                generateReleaseFn(relStmt)
+            }
+        }
+        relDefPtr = relStmt.next
+    }
+
+    // CYCLES 2. Emitted only for types in a non-trivial SCC, so a program whose
+    // types have no cycle carries no collector machinery at all -- which is the
+    // document's headline result and is checkable from the type declarations
+    // alone, before any inference runs.
+    let mut cycDefPtr = module.child1
+    while (str_equals(cycDefPtr, "") == 0) {
+        let cycStmt = ptr_to_node(cycDefPtr)
+        if (cycStmt.kind == NodeKind.STRUCT_DECL) {
+            if (aif_type_in_cycle(cycStmt.s1) == 1) {
+                generateCyclicChildrenFn(cycStmt)
+            }
+        }
+        cycDefPtr = cycStmt.next
+    }
+
+    ir_blank_line()
+
+    // First pass: global variables + collect string literals
+    let mut stmtPtr = module.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        
+        if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            if (moduleHasFunction(module, stmt.s1) == false) {
+                declareExternFunction(stmt)
+            }
+        }
+        
+        if (stmt.kind == NodeKind.VARIABLE_DECL) {
+            let mut initVal = "0"
+            let mut varType = "i32"
+            let hasAnnotation = str_equals(stmt.child1, "") == 0
+            if (hasAnnotation) {
+                let typeNode = ptr_to_node(stmt.child1)
+                varType = mapTypeNode(typeNode)
+            }
+            if (str_equals(stmt.child2, "") == 0) {
+                let initNode = ptr_to_node(stmt.child2)
+                // Only infer from the initializer when there is no annotation.
+                // Taking the initializer's type unconditionally declared
+                // `let g: I64 = 5` as an i32 global, disagreeing with sema.
+                if (hasAnnotation == false) {
+                    varType = getExprType(initNode)
+                }
+                if (initNode.kind == NodeKind.LITERAL_EXPR) {
+                    if (initNode.i1 == TokenType.STRING_LITERAL) {
+                        // A global initializer sits outside every function, so the
+                        // per-function string pre-pass never reaches it. Give the
+                        // literal its global here and point the variable at it;
+                        // emitting initNode.s1 raw produced
+                        // `@g =  global ptr hello world`, which llc rejects.
+                        collectStringsExpr(initNode)
+                        initVal = str_concat("@", initNode.s2)
+                    } else {
+                        initVal = initNode.s1
+                    }
+                } else {
+                    // Unreachable: sema rejects a non-constant global initializer
+                    // (see semaPredeclareGlobal) and codegen only runs when
+                    // sema reported nothing. Kept as a guard because the
+                    // alternative -- falling back to 0 -- made `let g = compute()`
+                    // silently become a zero global with the call never emitted.
+                    println("internal error: non-constant global initializer reached codegen")
+                    exit(1)
+                }
+            }
+            ir_global_var(stmt.s1, storageType(varType), initVal, 0)
+            ir_register_global_name(stmt.s1)
+            // Must be declared as a global, not a local: codegen asks
+            // ir_var_is_global() to choose between @name and a stack slot, and
+            // a global recorded as a local would be looked up as an alloca that
+            // does not exist.
+            ir_set_global_var_type(stmt.s1, varType)
+        }
+        
+        if (stmt.kind == NodeKind.FUNCTION) {
+            let mut retType = getDeclaredReturnType(stmt, stmt.child3)
+            if (str_equals(stmt.s1, "main") == 1) {
+                retType = "i32"
+            }
+            ir_set_var_type(fnKey(functionSymbolName(stmt)), retType)
+            collectStringsFunction(stmt)
+        }
+        
+        stmtPtr = stmt.next
+    }
+    
+    ir_blank_line()
+    
+    // Second pass: functions
+    let mut stmtPtr2 = module.child1
+    while (str_equals(stmtPtr2, "") == 0) {
+        let stmt2 = ptr_to_node(stmtPtr2)
+        
+        if (stmt2.kind == NodeKind.FUNCTION) {
+            generateFunction(stmt2)
+        }
+        
+        stmtPtr2 = stmt2.next
+    }
+    
+    ir_module_end()
+}

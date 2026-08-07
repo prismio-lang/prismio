@@ -1,0 +1,251 @@
+// Name mangling, the function symbol table, and overload resolution.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import ir.bridge
+import common.diagnostics
+
+fn semaFnKey(name: String) -> String {
+    return str_concat("$fn$", name)
+}
+
+fn semaMangleType(t: TypeInfo) -> String {
+    if (t.kind == TypeKind.VOID) { return "Void" }
+    if (t.kind == TypeKind.INT) { return t.name }
+    if (t.kind == TypeKind.FLOAT) { return "Float" }
+    if (t.kind == TypeKind.BOOL) { return "Bool" }
+    if (t.kind == TypeKind.CHAR) { return "Char" }
+    if (t.kind == TypeKind.STRING) { return "String" }
+    if (t.kind == TypeKind.PTR) { return "Ptr" }
+    if (t.kind == TypeKind.STRUCT) { return str_concat("Struct_", t.name) }
+    if (t.kind == TypeKind.ENUM) { return str_concat("Enum_", t.name) }
+    if (t.kind == TypeKind.ARRAY) {
+        if (str_equals(t.child, "") == 0) {
+            return str_concat("Array_", semaMangleType(ptr_to_type(t.child)))
+        }
+        return "Array_Invalid"
+    }
+    if (t.kind == TypeKind.LIST) {
+        if (str_equals(t.child, "") == 0) {
+            return str_concat("List_", semaMangleType(ptr_to_type(t.child)))
+        }
+        return "List_Invalid"
+    }
+    return "Invalid"
+}
+
+fn semaParamSignature(module: ASTNode, paramPtr: String) -> String {
+    let mut sig = ""
+    let mut curr = paramPtr
+    while (str_equals(curr, "") == 0) {
+        let mut param = ptr_to_node(curr)
+        let paramT = semaAnnotationType(module, ptr_to_node(param.child1))
+        if (str_equals(sig, "") == 1) {
+            sig = semaMangleType(paramT)
+        } else {
+            sig = str_concat(str_concat(sig, "_"), semaMangleType(paramT))
+        }
+        curr = param.next
+    }
+    if (str_equals(sig, "") == 1) { return "Void" }
+    return sig
+}
+
+fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
+    if (fnNode.kind == NodeKind.EXTERN_FUNCTION) {
+        return fnNode.s1
+    }
+    if (str_equals(fnNode.s1, "main") == 1) {
+        return "main"
+    }
+    return str_concat(str_concat(fnNode.s1, "__"), semaParamSignature(module, fnNode.child1))
+}
+
+// Compares the symbol cached on each node by semaCacheFunctionSymbols()
+// rather than re-mangling. Mangling walks a function's parameter list and reads
+// a type annotation per parameter, so doing it inside this loop -- which is
+// itself called once per function -- made predeclaration cubic in the number of
+// functions.
+fn semaFunctionSymbolCount(module: ASTNode, symbol: String) -> Int {
+    let mut count = 0
+    let mut stmtPtr = module.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            if (str_equals(stmt.s2, symbol) == 1) {
+                count = count + 1
+            }
+        }
+        stmtPtr = stmt.next
+    }
+    return count
+}
+
+// Mangles every function's symbol once and stores it on the node, so the
+// duplicate-detection passes can compare strings instead of recomputing.
+fn semaCacheFunctionSymbols(module: ASTNode) {
+    let mut stmtPtr = module.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            stmt.s2 = semaFunctionSymbol(module, stmt)
+        }
+        stmtPtr = stmt.next
+    }
+}
+
+fn semaOverloadKey(module: ASTNode, fnNode: ASTNode) -> String {
+    return semaFnKey(semaFunctionSymbol(module, fnNode))
+}
+
+fn semaSamePosition(a: ASTNode, b: ASTNode) -> Bool {
+    return a.file == b.file and a.line == b.line and a.col == b.col
+}
+
+// The earliest declaration whose mangled symbol is `symbol`. Used to point a
+// duplicate-definition diagnostic at the definition it collides with.
+fn semaFirstFunctionWithSymbol(module: ASTNode, symbol: String) -> ASTNode {
+    let mut stmtPtr = module.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            if (str_equals(stmt.s2, symbol) == 1) {
+                return stmt
+            }
+        }
+        stmtPtr = stmt.next
+    }
+    return createNode(NodeKind.MODULE)
+}
+
+fn semaFindFunction(module: ASTNode, name: String) -> ASTNode {
+    let mut stmtPtr = module.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        if ((stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) and str_equals(stmt.s1, name) == 1) {
+            return stmt
+        }
+        stmtPtr = stmt.next
+    }
+    return createNode(NodeKind.MODULE)
+}
+
+fn semaArgMatchesType(module: ASTNode, argNode: ASTNode, expected: TypeInfo) -> Bool {
+    if (typeIsValid(expected) and expected.kind == TypeKind.INT and semaIsIntLiteral(argNode)) {
+        return true
+    }
+    let actual = semaExpr(module, argNode)
+    return semaTypesMatch(expected, actual)
+}
+
+fn semaSignatureMatchesCall(module: ASTNode, fnNode: ASTNode, argPtr: String) -> Bool {
+    let mut arg = argPtr
+    let mut param = fnNode.child1
+    while (str_equals(arg, "") == 0 and str_equals(param, "") == 0) {
+        let argNode = ptr_to_node(arg)
+        let paramNode = ptr_to_node(param)
+        let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
+        if (semaArgMatchesType(module, argNode, paramT) == false) {
+            return false
+        }
+        arg = argNode.next
+        param = paramNode.next
+    }
+    return str_equals(arg, "") == 1 and str_equals(param, "") == 1
+}
+
+// True when the module contains a real `fn` body for `name`, as opposed to only an
+// `extern fn` declaration of it.
+fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
+    let mut scanPtr = module.child1
+    while (str_equals(scanPtr, "") == 0) {
+        let scan = ptr_to_node(scanPtr)
+        if (scan.kind == NodeKind.FUNCTION and str_equals(scan.s1, name) == 1) {
+            return true
+        }
+        scanPtr = scan.next
+    }
+    return false
+}
+
+// `call` is only ever used to place the diagnostic; resolution itself depends
+// on nothing but the name and the argument types.
+fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr: String) -> ASTNode {
+    // Track the winner as a pointer, not an ASTNode binding: `best = stmt` would
+    // move the move-only struct out of `stmt`, and the loop still needs `stmt.next`.
+    let mut bestPtr = ""
+    let mut matchCount = 0
+    let mut nameSeen = false
+
+    // parser.psm, ir.psm and sema.psm all forward-declare their mutually recursive
+    // functions with `extern fn` and then define them with `fn` in the same file.
+    // Both nodes carry the same name and signature, so counting both would report
+    // every such call as an ambiguous overload. Once a real definition exists the
+    // extern is only its forward declaration, so skip it -- generateModule()
+    // applies the same rule when deciding whether to emit a `declare`.
+    let definitionExists = semaHasFunctionDefinition(module, name)
+
+    let mut stmtPtr = module.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        let mut isCandidate = stmt.kind == NodeKind.FUNCTION
+        if (stmt.kind == NodeKind.EXTERN_FUNCTION and definitionExists == false) {
+            isCandidate = true
+        }
+        if (isCandidate and str_equals(stmt.s1, name) == 1) {
+            nameSeen = true
+            if (semaSignatureMatchesCall(module, stmt, argPtr)) {
+                bestPtr = stmtPtr
+                matchCount = matchCount + 1
+            }
+        }
+        stmtPtr = stmt.next
+    }
+
+    // Each of these used to fall through to the next, which was harmless only
+    // because semaError exited. Now that it returns, an ambiguous call would
+    // also be reported as having no matching overload and as being unknown.
+    if (matchCount > 1) {
+        semaErrorAt(call, str_concat(str_concat("ambiguous call to ", diagQuote(name)),
+                                       ": more than one overload matches these arguments"))
+        return ptr_to_node(bestPtr)
+    }
+    if (matchCount == 1) {
+        return ptr_to_node(bestPtr)
+    }
+    if (nameSeen) {
+        semaErrorAt(call, str_concat(str_concat("no overload of ", diagQuote(name)),
+                                       " accepts these argument types"))
+        return createNode(NodeKind.MODULE)
+    }
+    semaErrorAt(call, str_concat("unknown function ", diagQuote(name)))
+    return createNode(NodeKind.MODULE)
+}
+
+// Argument count for a builtin, counting the linked list of argument nodes.
+fn semaArgCount(argPtr: String) -> Int {
+    let mut count = 0
+    let mut curr = argPtr
+    while (str_equals(curr, "") == 0) {
+        count = count + 1
+        curr = ptr_to_node(curr).next
+    }
+    return count
+}
+
+// Reports a builtin called with the wrong number of arguments, and answers
+// whether the arity was right -- so the caller can stop before walking argument
+// nodes that are not there. Every one of these checks used to report and then
+// dereference the missing argument anyway, which only survived because
+// semaError exited the process.
+fn semaCheckArity(call: ASTNode, name: String, argPtr: String, expected: Int) -> Bool {
+    let actual = semaArgCount(argPtr)
+    if (actual == expected) { return true }
+
+    let mut noun = " arguments, found "
+    if (expected == 1) { noun = " argument, found " }
+    semaErrorAt(call, str_concat(str_concat(diagQuote(name), " expects "),
+                  str_concat(int_to_str(expected), str_concat(noun, int_to_str(actual)))))
+    return false
+}

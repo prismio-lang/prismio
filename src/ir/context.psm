@@ -1,0 +1,122 @@
+// IR generation state: the target flag, the tier and drop-kind constants the
+// AIF-driven emission switches on, and the bridge surface every other module in
+// this package calls into.
+
+import ast.types
+
+// IR Generator
+// Traverses the AST and emits LLVM IR via bridge.psm
+// Uses C-side global registry to avoid Prismio string globals
+
+import ast.types
+
+let mut irStringCounter = 0
+let mut irTargetWasm = false
+let mut irShortCircuitCounter = 0
+
+// The body of the function being generated, so a droppable candidate can ask
+// whether the binding is ever reassigned. See nodeAssignsName.
+let mut irFunctionBody = ""
+
+// AIF's T0. The only tier codegen currently acts on -- everything else keeps
+// the allocator hook it always used. Kept as a named constant here rather than
+// imported so that ir.psm depends on the memory model's *answer* and not on its
+// implementation; aif.psm owns the encoding.
+let AIF_TIER_T0 = 0
+
+// AIF Level 4. Which deallocator reclaims a droppable binding. Everything the
+// allocator seam handed out is IR_DROP_OBJECT; a List is two allocations and
+// needs the runtime's own release, so the drop list has to carry the answer --
+// by the time it is read, a String and a List are both `ptr`.
+let IR_DROP_OBJECT = 0
+let IR_DROP_LIST = 1
+// Struct-field ownership. The release is the type's own generated function, and
+// the drop list already carries the declared type -- so this needs no extra
+// storage, only a third case at every site that reads the kind.
+let IR_DROP_TYPED = 2
+
+// AIF item 3. What a container does with its elements when it is released, and
+// what a known callee's return leaves the caller owning. One encoding for both,
+// because both answer "which release does this pointer need" and both are
+// decided by the same per-site disposition in aif_support.c.
+let AIF_ELEM_NONE = 0
+let AIF_ELEM_OBJECT = 1
+let AIF_ELEM_LIST = 2
+let AIF_ELEM_RC = 3
+// Struct-field ownership. Not a mode the runtime can act on by itself: it names
+// a release that differs per type, which is why the generated function exists.
+let AIF_ELEM_TYPED = 4
+
+// Where a value the memory model inferred lives, keyed by the AST node that
+// allocates it -- both passes walk the same tree, so the node is a name for the
+// expression that cannot collide. -1 means no inference ran for this node; see
+// the use site in generateExpression.
+extern fn aif_tier_at_node(node: String borrow) -> Int
+
+// Whether the value this node allocates dies with the scope that allocates it,
+// which is what licenses a free at that scope's exits. Not derivable from the
+// tier: T1 is "some region", and it may be an enclosing one.
+extern fn aif_frees_at_scope_node(node: String borrow) -> Int
+
+// Whether it may come from the enclosing `region`'s arena instead of the heap.
+// Stricter than "is inside a region block": the value must also be unable to
+// outlive that region, which a nested region makes a real question.
+extern fn aif_arena_at_node(node: String borrow) -> Int
+
+// Whether the cost model placed an arena at this block (LAYOUT 7.1). A `region`
+// statement answers 0 here -- codegen already brackets that one by keyword, and
+// bracketing it twice would push two arenas and pop one.
+extern fn aif_auto_arena_at_node(node: String borrow) -> Int
+
+// AIF item 3. What the container allocated at this node owns: AIF_ELEM_NONE
+// unless every element site agrees on one release, because a teardown loop makes
+// one call per element and cannot dispatch per element.
+extern fn aif_elem_owner_at_node(node: String borrow) -> Int
+
+// AIF Level 5. Whether this node's value carries a reference count. Reads the
+// same predicate the element disposition does, because a container told its
+// elements are counted decrements every one of them -- so a site that reached it
+// without a header would be a write into someone else's allocation.
+extern fn aif_rc_at_node(node: String borrow) -> Int
+
+// LAYOUT 7.2. The i-th field of this struct in the physical order the search
+// chose, or "" when no inference ran.
+extern fn aif_layout_field(type: String, i: Int) -> String alias
+
+// Whether binding this call's result gives the binding something to release.
+// Answers the question the escape lattice structurally cannot: a returned value
+// is Caller and stays Caller, however briefly the caller keeps it.
+extern fn aif_owns_call_result_at_node(node: String borrow) -> Int
+
+// Struct-field ownership. Whether this type owns anything, and what each field
+// needs. Per field, because a struct mixes -- `World` is five owned Lists and an
+// Int, and one answer for the whole type would have to be "nothing" for all six.
+extern fn aif_type_releases(type: String) -> Int
+extern fn aif_field_release(type: String, field: String) -> Int
+
+// The element type of a container whose elements are released by type. Read from
+// the sites, because `list_new()` types as `List<Invalid>` and the annotation is
+// not always there to read.
+extern fn aif_elem_type_at_node(node: String borrow) -> String alias
+
+// AIF T4b (CYCLES). Whether this node's value is collected as a possible cycle
+// member, and which of a type's fields are the cyclic edges the collector walks.
+extern fn aif_cycle_at_node(node: String borrow) -> Int
+extern fn aif_type_in_cycle(type: String) -> Int
+extern fn aif_field_is_cyclic(type: String, field: String) -> Int
+
+// Whether a store into this field moves a count. Trial deletion subtracts the
+// edges it traverses, so an edge nobody counted makes it subtract a reference
+// that was never added -- which reads a live object as unreachable.
+extern fn aif_field_is_counted(type: String, field: String) -> Int
+
+extern fn exit(code: Int)
+
+fn irSetTargetWasm(enabled: Bool) {
+    irTargetWasm = enabled
+}
+
+fn irPtrIntType() -> String {
+    if (irTargetWasm) { return "i32" }
+    return "i64"
+}

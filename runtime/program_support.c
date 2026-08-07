@@ -90,10 +90,107 @@ char* get_directory(const char* path) {
     return result;
 }
 
+// Separators in the result are normalised to the host's, including any the
+// caller had already embedded in `filename`. That matters for module paths: a
+// dotted import (`import ir.expr`) becomes "ir/expr.psm" in the frontend, which
+// knows nothing about the host, and the joined path is then what every
+// diagnostic about that module prints. Both separators open a file on Windows,
+// so this is about how the path reads, not whether it resolves.
 char* join_path(const char* directory, const char* filename) {
     int len = (int)strlen(directory) + 1 + (int)strlen(filename) + 1;
     char* result = (char*)malloc(len);
     sprintf(result, "%s%c%s", directory, PRISMIO_PATH_SEP, filename);
+
+    for (char* c = result; *c; c++) {
+        if (*c == '/' || *c == '\\') *c = PRISMIO_PATH_SEP;
+    }
+    return result;
+}
+
+// ============================================
+// Listing a module directory
+// ============================================
+
+static int compare_names(const void* a, const void* b) {
+    return strcmp(*(const char* const*)a, *(const char* const*)b);
+}
+
+// Records `filename` as a module name, minus its .psm suffix; ignores anything
+// else. The suffix is re-checked here rather than trusted to the Win32 search
+// pattern, which also matches 8.3 short names and would let through a file whose
+// real extension is longer.
+static void append_module_name(char*** names, int* count, int* capacity,
+                               const char* filename) {
+    size_t len = strlen(filename);
+    if (len <= 4 || strcmp(filename + len - 4, ".psm") != 0) return;
+
+    if (*count == *capacity) {
+        *capacity = *capacity ? *capacity * 2 : 16;
+        *names = (char**)realloc(*names, (size_t)*capacity * sizeof(char*));
+        if (!*names) {
+            fprintf(stderr, "prismio: out of memory listing modules\n");
+            exit(1);
+        }
+    }
+
+    char* stem = (char*)malloc(len - 3);
+    memcpy(stem, filename, len - 4);
+    stem[len - 4] = '\0';
+    (*names)[(*count)++] = stem;
+}
+
+// The module names in `directory`, newline-separated, without the .psm suffix.
+// Empty string when the directory does not exist or holds no modules -- the
+// frontend reports that, because only it knows which `import` asked.
+//
+// **Sorted, and that is load-bearing.** This backs `import pkg.*`, so the order
+// here becomes the order those modules are merged into the AST, which becomes
+// the order their functions are emitted into the IR. Readdir order is a
+// filesystem artefact that differs between machines and between a fresh checkout
+// and a rebuilt one; taking it raw would mean two hosts building byte-different
+// compilers from identical sources, breaking the fixpoint check and the seed.
+char* list_modules(const char* directory) {
+    char** names = NULL;
+    int count = 0;
+    int capacity = 0;
+
+#ifdef _WIN32
+    char pattern[1024];
+    snprintf(pattern, sizeof(pattern), "%s%c*.psm", directory, PRISMIO_PATH_SEP);
+
+    WIN32_FIND_DATAA entry;
+    HANDLE search = FindFirstFileA(pattern, &entry);
+    if (search != INVALID_HANDLE_VALUE) {
+        do {
+            if (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            append_module_name(&names, &count, &capacity, entry.cFileName);
+        } while (FindNextFileA(search, &entry));
+        FindClose(search);
+    }
+#else
+    DIR* dir = opendir(directory);
+    if (dir) {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != NULL) {
+            append_module_name(&names, &count, &capacity, entry->d_name);
+        }
+        closedir(dir);
+    }
+#endif
+
+    if (count > 1) qsort(names, count, sizeof(char*), compare_names);
+
+    size_t total = 1;
+    for (int i = 0; i < count; i++) total += strlen(names[i]) + 1;
+
+    char* result = (char*)malloc(total);
+    result[0] = '\0';
+    for (int i = 0; i < count; i++) {
+        if (i > 0) strcat(result, "\n");
+        strcat(result, names[i]);
+        free(names[i]);
+    }
+    free(names);
     return result;
 }
 

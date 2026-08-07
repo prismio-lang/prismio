@@ -1,0 +1,656 @@
+// Lowering expressions to values.
+
+import ast.nodes
+import ast.types
+import common.text
+import common.diagnostics
+
+// `and` / `or` with the right-hand side evaluated only when it can change the
+// answer. Previously both operands were generated unconditionally and combined
+// with a plain `and`/`or` instruction, so `p != "" and deref(p)` evaluated
+// deref(p) even when p was empty. That is a semantics bug rather than a missed
+// optimisation, and the compiler's own guards in sema.psm are written assuming
+// short-circuiting -- `print()` with no arguments used to segfault the compiler
+// for exactly this reason.
+//
+// The result travels through a stack slot rather than a phi: the bridge has no
+// phi primitive, and mem2reg turns this back into one anyway. The slot is named
+// with a dot, which no Prismio identifier can contain, so it can never collide
+// with a user variable.
+fn generateShortCircuit(expr: ASTNode) -> String {
+    let isAnd = str_equals(expr.s1, "and") == 1
+
+    let slot = str_concat("sc.", int_to_str(irShortCircuitCounter))
+    irShortCircuitCounter = irShortCircuitCounter + 1
+    ir_alloca("i1", slot)
+
+    let rhsLabel = ir_get_label()
+    let doneLabel = ir_get_label()
+
+    // Seed the slot with the left result, so the short-circuit path already has
+    // the right answer: `false and _` is false, `true or _` is true.
+    let leftVal = generateExpression(ptr_to_node(expr.child1))
+    ir_store("i1", leftVal, slot)
+    if (isAnd) {
+        ir_cond_br_numbered(leftVal, rhsLabel, doneLabel)
+    } else {
+        ir_cond_br_numbered(leftVal, doneLabel, rhsLabel)
+    }
+
+    ir_label_numbered(rhsLabel)
+    let rightVal = generateExpression(ptr_to_node(expr.child2))
+    ir_store("i1", rightVal, slot)
+    ir_br_numbered(doneLabel)
+
+    ir_label_numbered(doneLabel)
+    let resultId = ir_load("i1", slot)
+    return ir_get_temp_name(resultId)
+}
+
+// Whether `name` is ever the target of an assignment inside the function being
+// generated.
+//
+// A binding is droppable because its *initialiser* allocated something this
+// scope owns -- but what the drop frees is the slot, and an assignment can put
+// something else in it. `s = node.name` leaves a borrowed pointer where the exit
+// expects an owned one, which is a free of a value the AST still holds. AIF
+// Level 4 made that reachable everywhere: strings are reassigned constantly and
+// a field read is a borrow.
+//
+// Asked at the declaration rather than at the assignment, because codegen is a
+// single forward walk and the run-time order is not the source order: a `break`
+// written above the assignment still executes after it on the second iteration.
+//
+// Deliberately syntactic and deliberately blunt. A reassigned binding is not
+// droppable even when every value it receives is owned -- that case leaks today
+// regardless, since there is no drop on reassignment, so the strictness costs
+// nothing that is not already lost.
+fn nodeAssignsName(nodePtr: String, name: String) -> Bool {
+    if (str_equals(nodePtr, "") == 1) { return false }
+    let n = ptr_to_node(nodePtr)
+
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        if (str_equals(n.child1, "") == 0) {
+            let target = ptr_to_node(n.child1)
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and str_equals(target.s1, name) == 1) {
+                return true
+            }
+        }
+    }
+
+    if (chainAssignsName(n.child1, name)) { return true }
+    if (chainAssignsName(n.child2, name)) { return true }
+    return chainAssignsName(n.child3, name)
+}
+
+fn chainAssignsName(head: String, name: String) -> Bool {
+    let mut p = head
+    while (str_equals(p, "") == 0) {
+        let n = ptr_to_node(p)
+        if (nodeAssignsName(p, name)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+// Whether `name` is ever returned from the function being generated.
+//
+// Only asked of a binding made droppable by aif_owns_call_result_at_node, and it
+// is the guard the escape fact supplies for every other droppable binding: for a
+// value allocated *here*, `return x` raises E to Caller and the drop predicate
+// declines. A value allocated in a callee is already at Caller, so that test says
+// nothing and this has to say it instead.
+//
+// Syntactic and blunt for the same reason nodeAssignsName is -- codegen is a
+// forward walk, and a `return` written above the binding's last use still runs
+// after it.
+fn nodeReturnsName(nodePtr: String, name: String) -> Bool {
+    if (str_equals(nodePtr, "") == 1) { return false }
+    let n = ptr_to_node(nodePtr)
+
+    if (n.kind == NodeKind.RETURN_STATEMENT) {
+        if (str_equals(n.child1, "") == 0) {
+            let value = ptr_to_node(n.child1)
+            if (value.kind == NodeKind.IDENTIFIER_EXPR and str_equals(value.s1, name) == 1) {
+                return true
+            }
+        }
+    }
+
+    if (chainReturnsName(n.child1, name)) { return true }
+    if (chainReturnsName(n.child2, name)) { return true }
+    return chainReturnsName(n.child3, name)
+}
+
+fn chainReturnsName(head: String, name: String) -> Bool {
+    let mut p = head
+    while (str_equals(p, "") == 0) {
+        let n = ptr_to_node(p)
+        if (nodeReturnsName(p, name)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+fn generateExpression(expr: ASTNode) -> String {
+    if (expr.kind == NodeKind.LITERAL_EXPR) {
+        if (expr.i1 == TokenType.NUMBER_LITERAL) {
+            return expr.s1
+        }
+        if (expr.i1 == TokenType.FLOAT_LITERAL) {
+            return expr.s1
+        }
+        if (expr.i1 == TokenType.BOOL_LITERAL) {
+            if (str_equals(expr.s1, "true") == 1) { return "1" }
+            return "0"
+        }
+        if (expr.i1 == TokenType.CHAR_LITERAL) {
+            return expr.s1
+        }
+        if (expr.i1 == TokenType.STRING_LITERAL) {
+            // The literal's global was named by the collect_strings pre-pass.
+            return ir_get_temp_name(ir_string_ptr(expr.s2))
+        }
+    }
+
+    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+        let structName = expr.s1
+
+        // AIF decides where this value lives. T0 means the analysis proved it
+        // does not outlive the frame that creates it, so it gets a stack slot
+        // and no allocation call at all; every other tier still goes through the
+        // backend's allocator hook, which is what it did before AIF existed.
+        //
+        // A tier of -1 is "no information" -- a build that ran no inference, or
+        // an expression the walk never reached. That has to keep the old
+        // behaviour exactly, because it is what makes SPEC 7.1's zero-analysis
+        // mode behaviourally identical rather than merely intended to be.
+        let mut allocTemp = 0
+        if (aif_arena_at_node(node_to_ptr(expr)) == 1) {
+            // T1 inside a `region` it cannot outlive: bump from the arena, and
+            // the whole block goes back at the region's exit rather than one
+            // object at a time.
+            allocTemp = ir_alloc_region(structName)
+        } else if (aif_tier_at_node(node_to_ptr(expr)) == AIF_TIER_T0) {
+            allocTemp = ir_alloc_stack(structName)
+        } else if (aif_rc_at_node(node_to_ptr(expr)) == 1) {
+            // AIF Level 5. T3, held by more than one container, so no single
+            // teardown can decide when it dies. The count goes in a prefix header,
+            // which leaves the struct's own layout -- and therefore every field
+            // index below -- exactly as it was.
+            allocTemp = ir_alloc_rc(structName)
+        } else if (aif_cycle_at_node(node_to_ptr(expr)) == 1) {
+            // AIF T4b. Shared, fully escaping, and of a type that lies in a
+            // non-trivial SCC -- so a count alone cannot reclaim it and the
+            // collector has to be able to walk it. Header in front, as for T3.
+            allocTemp = ir_alloc_cycle(structName)
+        } else {
+            allocTemp = ir_alloc_object(structName)
+        }
+        let memName = ir_get_temp_name(allocTemp)
+
+        // CYCLES 3. The object is told how to find its cyclic children and how
+        // to release itself, for the same reason a container is told its element
+        // disposition: at collection time it is a bare pointer, and reading a
+        // descriptor out of it would be reading memory we did not put there.
+        if (aif_cycle_at_node(node_to_ptr(expr)) == 1) {
+            let childrenPtr = ir_func_addr(cyclicChildrenFnName(structName))
+            ir_call_begin()
+            ir_call_arg("ptr", memName)
+            ir_call_arg("ptr", ir_get_temp_name(childrenPtr))
+            if (aif_type_releases(structName) == 1) {
+                let releasePtr = ir_func_addr(releaseFnName(structName))
+                ir_call_arg("ptr", ir_get_temp_name(releasePtr))
+            } else {
+                ir_call_arg("ptr", "null")
+            }
+            ir_call_end("void", "cyc_set_type")
+        }
+
+        let mut fieldPtr = expr.child1
+        while (str_equals(fieldPtr, "") == 0) {
+            let field = ptr_to_node(fieldPtr)
+            let fieldVal = generateExpression(ptr_to_node(field.child1))
+            let fieldType = storageType(ir_get_struct_field_type(structName, field.s1))
+            let fieldIndex = ir_get_struct_field_index(structName, field.s1)
+            let slot = ir_struct_field_ptr(structName, memName, fieldIndex)
+            // CYCLES 3. A cyclic edge is an edge the collector *traverses*, so it
+            // has to be one the count knows about -- trial deletion subtracts
+            // internal edges and reads the remainder as "held from outside". No
+            // release of the old value here: the field is uninitialised.
+            if (aif_field_is_counted(structName, field.s1) == 1) {
+                ir_call_begin()
+                ir_call_arg("ptr", fieldVal)
+                ir_call_end("void", "cyc_retain")
+            }
+            ir_store_ptr(fieldType, fieldVal, ir_get_temp_name(slot))
+            fieldPtr = field.next
+        }
+
+        return memName
+    }
+    
+    if (expr.kind == NodeKind.IDENTIFIER_EXPR) {
+        let valType = ir_get_var_type(expr.s1)
+        let loadType = storageType(valType)
+        // Shadowing-aware: a local named the same as a global must read from
+        // the local's slot. Asking a flat "is this name a global?" registry
+        // instead meant writes went to the local and reads came from the global.
+        if (ir_var_is_global(expr.s1) == 1) {
+            return ir_get_temp_name(ir_load_global(loadType, expr.s1))
+        }
+        return ir_get_temp_name(ir_load(loadType, ir_get_var_slot(expr.s1)))
+    }
+
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let objectNode = ptr_to_node(expr.child1)
+        if (objectNode.kind == NodeKind.IDENTIFIER_EXPR) {
+            let enumVal = ir_get_enum_variant(objectNode.s1, expr.s1)
+            if (enumVal >= 0) {
+                return int_to_str(enumVal)
+            }
+        }
+
+        let objectVal = generateExpression(objectNode)
+        let objectType = getExprType(objectNode)
+        let structName = structTypeName(objectType)
+        let fieldIndex = ir_get_struct_field_index(structName, expr.s1)
+        let fieldType = storageType(ir_get_struct_field_type(structName, expr.s1))
+
+        let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
+        return ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
+    }
+
+    if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+        let elemCount = countListNodes(expr.child1)
+        let firstElem = ptr_to_node(expr.child1)
+
+        // The element type comes from sema, which knows what the elements
+        // actually are. It used to be hardcoded to i32 (or ptr for an array of
+        // arrays), so ["a", "b"] stored pointers into i32 slots -- truncating
+        // them -- and [1.5, 2.5] stored doubles into i32 slots.
+        let arrT = nodeGetType(expr)
+        let mut elemType = "i32"
+        if (str_equals(arrT.child, "") == 0) {
+            elemType = storageType(typeIrKey(ptr_to_type(arrT.child)))
+        } else if (firstElem.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+            elemType = "ptr"
+        }
+
+        let base = ir_get_temp_name(ir_array_alloca(elemType, elemCount))
+
+        let mut elemPtr = expr.child1
+        let mut elemIndex = 0
+        while (str_equals(elemPtr, "") == 0) {
+            let elemNode = ptr_to_node(elemPtr)
+            let elemVal = generateExpression(elemNode)
+            let slot = ir_elem_ptr(elemType, base, int_to_str(elemIndex))
+            ir_store_ptr(elemType, elemVal, ir_get_temp_name(slot))
+            elemIndex = elemIndex + 1
+            elemPtr = elemNode.next
+        }
+
+        return base
+    }
+
+    if (expr.kind == NodeKind.INDEX_EXPR) {
+        let arrayVal = generateExpression(ptr_to_node(expr.child1))
+        let indexVal = generateExpression(ptr_to_node(expr.child2))
+
+        // sema types the index expression as the array's element type, so this
+        // reads the right width and stride. Hardcoding i32 here loaded four
+        // bytes out of an array of pointers or doubles.
+        let mut elemType = storageType(getExprType(expr))
+        if (str_equals(elemType, "") == 1) {
+            elemType = "i32"
+        }
+
+        let slot = ir_elem_ptr(elemType, arrayVal, indexVal)
+        return ir_get_temp_name(ir_load_ptr(elemType, ir_get_temp_name(slot)))
+    }
+    
+    if (expr.kind == NodeKind.CAST_EXPR) {
+        let source = ptr_to_node(expr.child1)
+        let val = generateExpression(source)
+
+        let fromT = nodeGetType(source)
+        let toT = nodeGetType(expr)
+        let fromKey = typeIrKey(fromT)
+        let toKey = typeIrKey(toT)
+
+        // Same representation: Enum to Int, or between same-width integer types
+        // of different signedness. Nothing to emit.
+        if (str_equals(fromKey, toKey) == 1) {
+            return val
+        }
+
+        if (str_equals(toKey, "double") == 1) {
+            if (typeIntIsUnsigned(fromT)) {
+                return ir_get_temp_name(ir_uitofp(fromKey, val, toKey))
+            }
+            return ir_get_temp_name(ir_sitofp(fromKey, val, toKey))
+        }
+
+        if (str_equals(fromKey, "double") == 1) {
+            if (typeIntIsUnsigned(toT)) {
+                return ir_get_temp_name(ir_fptoui(fromKey, val, toKey))
+            }
+            return ir_get_temp_name(ir_fptosi(fromKey, val, toKey))
+        }
+
+        // Integer-shaped on both sides, so the only question is width.
+        if (typeIntBits(fromT) > typeIntBits(toT)) {
+            return ir_get_temp_name(ir_trunc(fromKey, val, toKey))
+        }
+
+        // Widening. Char and Bool are zero-extended: a Char is a byte value, so
+        // 'A' as Int must be 65 and never a negative number.
+        let zeroExtend = typeIntIsUnsigned(fromT)
+                          or fromT.kind == TypeKind.CHAR
+                          or fromT.kind == TypeKind.BOOL
+        if (zeroExtend) {
+            return ir_get_temp_name(ir_zext(fromKey, val, toKey))
+        }
+        return ir_get_temp_name(ir_sext(fromKey, val, toKey))
+    }
+
+    if (expr.kind == NodeKind.UNARY_EXPR) {
+        let operandNode = ptr_to_node(expr.child1)
+        let operandVal = generateExpression(operandNode)
+        let uop = expr.s1
+
+        if (str_equals(uop, "!") == 1) {
+            // Logical not. Comparing against 0 rather than xor-ing with true:
+            // the bridge has an icmp primitive and no xor, and the two are
+            // equivalent for i1.
+            let notId = ir_icmp_eq("i1", operandVal, "0")
+            return ir_get_temp_name(notId)
+        }
+
+        if (str_equals(uop, "~") == 1) {
+            let intType = getExprType(operandNode)
+            return ir_get_temp_name(ir_not(intType, operandVal))
+        }
+
+        if (str_equals(uop, "-") == 1) {
+            let operandType = getExprType(operandNode)
+            // ir_neg emits an integer `sub 0, x`, which is not valid for a
+            // double -- floats need fsub.
+            if (str_equals(operandType, "double") == 1) {
+                let fnegId = ir_fsub("double", "0.0", operandVal)
+                return ir_get_temp_name(fnegId)
+            }
+            let negId = ir_neg(operandType, operandVal)
+            return ir_get_temp_name(negId)
+        }
+    }
+
+    // REQUIREMENTS 4. `none` is a null pointer, and that is the choice the
+    // punned-slot hazard forces. This compiler already spells "empty slot" as a
+    // pointer to `""`, tested with str_equals -- which reads the first byte of
+    // the pointed-to object, so a live value whose first field is zero *is* an
+    // empty slot (test_41, and the reason the layout search pins field 0). A
+    // null comparison reads no byte of any object, so nothing can collide with
+    // it. See typeOptional in types.psm.
+    if (expr.kind == NodeKind.NONE_LITERAL_EXPR) {
+        return "null"
+    }
+
+    if (expr.kind == NodeKind.BINARY_EXPR) {
+        // Handled before either operand is generated -- that is the whole point.
+        if (str_equals(expr.s1, "and") == 1 or str_equals(expr.s1, "or") == 1) {
+            return generateShortCircuit(expr)
+        }
+
+        let leftVal = generateExpression(ptr_to_node(expr.child1))
+        let rightVal = generateExpression(ptr_to_node(expr.child2))
+
+        let op = expr.s1
+        let mut tempId = 0
+        let leftNode = ptr_to_node(expr.child1)
+        let opType = getExprType(leftNode)
+        let mut isUnsigned = false
+        if (nodeHasType(leftNode)) {
+            isUnsigned = typeIntIsUnsigned(nodeGetType(leftNode))
+        }
+        if (str_equals(opType, "double") == 1) {
+            if (str_equals(op, "+") == 1) { tempId = ir_fadd(opType, leftVal, rightVal) }
+            if (str_equals(op, "-") == 1) { tempId = ir_fsub(opType, leftVal, rightVal) }
+            if (str_equals(op, "*") == 1) { tempId = ir_fmul(opType, leftVal, rightVal) }
+            if (str_equals(op, "/") == 1) { tempId = ir_fdiv(opType, leftVal, rightVal) }
+            if (str_equals(op, "==") == 1) { tempId = ir_fcmp_oeq(opType, leftVal, rightVal) }
+            if (str_equals(op, "!=") == 1) { tempId = ir_fcmp_one(opType, leftVal, rightVal) }
+            if (str_equals(op, "<") == 1) { tempId = ir_fcmp_olt(opType, leftVal, rightVal) }
+            if (str_equals(op, "<=") == 1) { tempId = ir_fcmp_ole(opType, leftVal, rightVal) }
+            if (str_equals(op, ">") == 1) { tempId = ir_fcmp_ogt(opType, leftVal, rightVal) }
+            if (str_equals(op, ">=") == 1) { tempId = ir_fcmp_oge(opType, leftVal, rightVal) }
+        } else {
+            if (str_equals(op, "+") == 1) { tempId = ir_add(opType, leftVal, rightVal) }
+            if (str_equals(op, "-") == 1) { tempId = ir_sub(opType, leftVal, rightVal) }
+            if (str_equals(op, "*") == 1) { tempId = ir_mul(opType, leftVal, rightVal) }
+            if (str_equals(op, "==") == 1) { tempId = ir_icmp_eq(opType, leftVal, rightVal) }
+            if (str_equals(op, "!=") == 1) { tempId = ir_icmp_ne(opType, leftVal, rightVal) }
+            if (isUnsigned) {
+                if (str_equals(op, "/") == 1) { tempId = ir_udiv(opType, leftVal, rightVal) }
+                if (str_equals(op, "<") == 1) { tempId = ir_icmp_ult(opType, leftVal, rightVal) }
+                if (str_equals(op, "<=") == 1) { tempId = ir_icmp_ule(opType, leftVal, rightVal) }
+                if (str_equals(op, ">") == 1) { tempId = ir_icmp_ugt(opType, leftVal, rightVal) }
+                if (str_equals(op, ">=") == 1) { tempId = ir_icmp_uge(opType, leftVal, rightVal) }
+            } else {
+                if (str_equals(op, "/") == 1) { tempId = ir_sdiv(opType, leftVal, rightVal) }
+                if (str_equals(op, "<") == 1) { tempId = ir_icmp_slt(opType, leftVal, rightVal) }
+                if (str_equals(op, "<=") == 1) { tempId = ir_icmp_sle(opType, leftVal, rightVal) }
+                if (str_equals(op, ">") == 1) { tempId = ir_icmp_sgt(opType, leftVal, rightVal) }
+                if (str_equals(op, ">=") == 1) { tempId = ir_icmp_sge(opType, leftVal, rightVal) }
+            }
+        }
+        if (str_equals(op, "%") == 1) {
+            if (isUnsigned) { tempId = ir_urem(opType, leftVal, rightVal) }
+            else { tempId = ir_srem(opType, leftVal, rightVal) }
+        }
+
+        if (str_equals(op, "&") == 1) { tempId = ir_and(opType, leftVal, rightVal) }
+        if (str_equals(op, "|") == 1) { tempId = ir_or(opType, leftVal, rightVal) }
+        if (str_equals(op, "^") == 1) { tempId = ir_xor(opType, leftVal, rightVal) }
+        if (str_equals(op, "<<") == 1) { tempId = ir_shl(opType, leftVal, rightVal) }
+        // Right shift follows the left operand's signedness: logical for
+        // unsigned so the sign bit is not smeared, arithmetic for signed.
+        if (str_equals(op, ">>") == 1) {
+            if (isUnsigned) { tempId = ir_lshr(opType, leftVal, rightVal) }
+            else { tempId = ir_ashr(opType, leftVal, rightVal) }
+        }
+        // `and`/`or` never reach here -- generateShortCircuit handles them
+        // above, before either operand has been evaluated.
+
+        return ir_get_temp_name(tempId)
+    }
+    
+    if (expr.kind == NodeKind.CALL_EXPR) {
+        let callee = ptr_to_node(expr.child1)
+        let funcName = callee.s1
+
+        // drop(x): release the owned heap value. Ownership/move checking in sema
+        // guarantees this runs at most once per value.
+        //
+        // Through ir_free_object rather than a call to `free` by name, because
+        // the deallocator is policy: a verify build routes it to a shim that
+        // checks the value was live, and an arena build will not be able to use
+        // libc free at all. Calling `free` directly here made explicit drops
+        // invisible to both.
+        if (str_equals(funcName, "drop") == 1) {
+            let dropArg = expr.child2
+            if (str_equals(dropArg, "") == 0) {
+                let argNode = ptr_to_node(dropArg)
+                let value = generateExpression(argNode)
+                let kind = dropKindOf(argNode)
+                if (kind == IR_DROP_LIST) {
+                    ir_free_list(value)
+                } else if (kind == IR_DROP_TYPED) {
+                    ir_free_typed(value, releaseFnName(structTypeName(getExprType(argNode))))
+                } else {
+                    ir_free_object(value)
+                }
+            }
+            return ""
+        }
+
+        // Bool lowers to i1, but the C runtime declares print_bool(int) and the
+        // module declares it as taking i32. Passing the i1 straight through left
+        // the call disagreeing with its own declaration and the upper bits of the
+        // argument register undefined -- it only worked by luck. Widen explicitly.
+        let mut isPrintBool = 0
+        if (str_equals(funcName, "print_bool") == 1) { isPrintBool = 1 }
+        if (str_equals(funcName, "println_bool") == 1) { isPrintBool = 2 }
+
+        if (isPrintBool > 0) {
+            let boolArgPtr = expr.child2
+            if (str_equals(boolArgPtr, "") == 0) {
+                let boolArg = ptr_to_node(boolArgPtr)
+                let boolVal = generateExpression(boolArg)
+                let widened = ir_zext("i1", boolVal, "i32")
+                ir_call_begin()
+                ir_call_arg("i32", ir_get_temp_name(widened))
+                if (isPrintBool == 1) {
+                    ir_call_end("void", "print_bool")
+                } else {
+                    ir_call_end("void", "println_bool")
+                }
+            }
+            return ""
+        }
+
+        let mut isPrint = 0
+        if (str_equals(funcName, "print") == 1) { isPrint = 1 }
+        if (str_equals(funcName, "println") == 1) { isPrint = 2 }
+        
+        if (isPrint > 0) {
+            let mut argPtr = expr.child2
+            if (str_equals(argPtr, "") == 0) {
+                let argNode = ptr_to_node(argPtr)
+                let argVal = generateExpression(argNode)
+                let argType = getExprType(argNode)
+                
+                ir_call_begin()
+                if (str_equals(argType, "ptr") == 1) {
+                    ir_call_arg("ptr", argVal)
+                    if (isPrint == 1) {
+                        ir_call_end("void", "print")
+                    } else {
+                        ir_call_end("void", "println")
+                    }
+                } else if (str_equals(argType, "double") == 1) {
+                    ir_call_arg("double", argVal)
+                    if (isPrint == 1) {
+                        ir_call_end("void", "print_float")
+                    } else {
+                        ir_call_end("void", "println_float")
+                    }
+                } else {
+                    ir_call_arg(storageType(argType), argVal)
+                    if (isPrint == 1) {
+                        ir_call_end("void", "print_int")
+                    } else {
+                        ir_call_end("void", "println_int")
+                    }
+                }
+            }
+            return ""
+        }
+        
+        // Regular function call
+        ir_call_begin()
+        // REQUIREMENTS 20. `list_push` and `list_set` take the element as `ptr`,
+        // so a scalar has to reach the slot as one -- without this the call
+        // disagrees with its own declaration and the module fails verification.
+        let elemArg = listElementArgIndex(funcName)
+        let mut argPtr = expr.child2
+        let mut argIndex = 0
+        while (str_equals(argPtr, "") == 0) {
+            let argNode = ptr_to_node(argPtr)
+            let argVal = generateExpression(argNode)
+            let argStore = storageType(getExprType(argNode))
+            if (argIndex == elemArg) {
+                ir_call_arg("ptr", scalarToSlot(argStore, argVal))
+            } else {
+                ir_call_arg(argStore, argVal)
+            }
+            argPtr = argNode.next
+            argIndex = argIndex + 1
+        }
+        
+        let mut callName = funcName
+        if (str_equals(expr.s2, "") == 0) {
+            callName = expr.s2
+        }
+        // REQUIREMENTS 4. The checked unwrap is an ordinary call that returns
+        // its argument, which is why it needs no new control flow here: the
+        // runtime aborts on a null rather than codegen branching around one.
+        if (str_equals(funcName, "expect") == 1) {
+            callName = "prismio_expect"
+        }
+
+        let mut retType = storageType(getExprType(expr))
+        if (str_equals(retType, "void") == 1) {
+            ir_call_end("void", callName)
+            return ""
+        }
+
+        // REQUIREMENTS 20, the other end. `list_get` is declared to return `ptr`
+        // and sema types it as the element type, so for a scalar element the two
+        // disagree and the value has to come back out of the slot. Handled here
+        // rather than below because the call's own type is `ptr` whatever the
+        // element is -- and a scalar element is never arena-placed or refcounted,
+        // since it registers no site to place or count.
+        if (str_equals(funcName, "list_get") == 1 and str_equals(retType, "ptr") == 0) {
+            let slot = ir_get_temp_name(ir_call_end("ptr", callName))
+            return slotToScalar(retType, slot)
+        }
+
+        // AIF Level 4. The value this call produces may belong to an enclosing
+        // `region`, and it is allocated inside the runtime rather than through
+        // ir_alloc_region -- so the arena is chosen here, around the call, and
+        // the runtime bumps instead of calling malloc.
+        //
+        // aif_arena_at_node is the whole gate, and it is sufficient rather than
+        // merely convenient. A site exists on a call node only when the callee is
+        // opaque to this compilation; the analysis raised it to T1 with an escape
+        // at or below the region, which an `alias` return or an undeclared one
+        // never gets. So this fires exactly on FFI `produce` calls inside a region
+        // whose result cannot outlive it.
+        let arenaPlaced = aif_arena_at_node(node_to_ptr(expr)) == 1
+        if (arenaPlaced) { ir_arena_hint_begin() }
+        let mut tempId = ir_call_end(retType, callName)
+        if (arenaPlaced) { ir_arena_hint_end() }
+        let result = ir_get_temp_name(tempId)
+
+        // AIF item 3. A container is told what it owns at construction, because
+        // at teardown its elements are bare pointers and reading a header in
+        // front of one would be reading memory this compilation did not allocate.
+        // Stamped on the allocating call, which is the only place the site -- and
+        // therefore the disposition -- is named.
+        let elemOwn = aif_elem_owner_at_node(node_to_ptr(expr))
+        if (elemOwn != AIF_ELEM_NONE) {
+            ir_call_begin()
+            ir_call_arg("ptr", result)
+            ir_call_arg("i32", int_to_str(elemOwn))
+            ir_call_end("void", "list_set_elem_owner")
+
+            // Struct-field ownership. An int cannot name a type, and a container
+            // of structs that own their fields needs one release per element
+            // type -- so this one is told the function as well as the mode.
+            if (elemOwn == AIF_ELEM_TYPED) {
+                let etype = aif_elem_type_at_node(node_to_ptr(expr))
+                if (str_equals(etype, "") == 0) {
+                    let fnPtr = ir_func_addr(releaseFnName(etype))
+                    ir_call_begin()
+                    ir_call_arg("ptr", result)
+                    ir_call_arg("ptr", ir_get_temp_name(fnPtr))
+                    ir_call_end("void", "list_set_elem_releaser")
+                }
+            }
+        }
+        return result
+    }
+    
+    return "0"
+}

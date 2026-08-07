@@ -1,0 +1,440 @@
+// The scanner: source text in, a linked list of tokens out.
+//
+// Same two-prefix convention as the parser. `lexerX` is the scanner's own
+// machinery -- look at a byte, consume one, complain about one. `lexX` is a token
+// production, named after what it produces, and each captures its own start
+// position because it is entered sitting on the token's first character.
+
+import lexer.token
+import common.text
+import common.diagnostics
+
+extern fn exit(code: Int)
+extern fn str_from_char(c: Char) -> String
+extern fn str_byte_at(s: String, index: Int) -> Char
+
+// `length` is the input's size, measured once. Every character read used to go
+// through str_char_at, which calls strlen -- so scanning a file cost O(n) per
+// character and O(n^2) overall. Holding the length here lets the reads below
+// bound-check in constant time and use str_byte_at instead.
+struct Lexer {
+    input: String,
+    pos: Int,
+    line: Int,
+    col: Int,
+    file: Int,
+    length: Int
+}
+
+fn createLexer(input: String, file: Int) -> Lexer {
+    // Skip a UTF-8 byte order mark. Most Windows editors write one by default
+    // (PowerShell's -Encoding utf8 among them), and without this the first token
+    // is garbage and the file fails with "Unknown declaration" -- a baffling
+    // error for a file that looks perfectly fine.
+    let mut start = 0
+    if (charCode(str_char_at(input, 0)) == 239) {
+        if (charCode(str_char_at(input, 1)) == 187 and charCode(str_char_at(input, 2)) == 191) {
+            start = 3
+        }
+    }
+
+    return Lexer {
+        input: input,
+        pos: start,
+        line: 1,
+        col: 1,
+        file: file,
+        length: str_length(input)
+    }
+}
+
+// Every token is built here, so none can be produced without a span. `startPos`
+// is where the token began, which is what makes `len` the token's real source
+// width -- including the quotes of a string literal and any escape that decoded
+// to a shorter value.
+fn lexerToken(lex: Lexer, t: TokenType, value: String, startLine: Int, startCol: Int, startPos: Int) -> Token {
+    return Token {
+        type: t,
+        value: value,
+        line: startLine,
+        col: startCol,
+        len: lex.pos - startPos,
+        file: lex.file,
+        tokNext: ""
+    }
+}
+
+// A lexer error, reported against the span that is open at the time. The scanner
+// has no way to resynchronise -- it cannot know what the malformed text was meant
+// to be -- so this is the one place in the frontend that still stops at the first
+// error rather than recovering.
+fn lexerFatal(lex: Lexer, line: Int, col: Int, message: String) {
+    diag_error_at(lex.file, line, col, 1, message)
+    diag_finish()
+    exit(1)
+}
+
+fn lexerPeek(lex: Lexer, offset: Int) -> Char {
+    let at = lex.pos + offset
+    if (at < 0 or at > lex.length) { return '\0' }
+    return str_byte_at(lex.input, at)
+}
+
+fn lexerCurrent(lex: Lexer) -> Char {
+    if (lex.pos < 0 or lex.pos > lex.length) { return '\0' }
+    return str_byte_at(lex.input, lex.pos)
+}
+
+fn lexerAdvance(lex: Lexer) {
+    lex.pos = lex.pos + 1
+    lex.col = lex.col + 1
+}
+
+// A newline inside a token still has to move the line counter, or every
+// diagnostic after it points at the wrong line.
+fn lexerNewline(lex: Lexer) {
+    lex.line = lex.line + 1
+    lex.col = 0
+}
+
+fn lexerSkipWhitespace(lex: Lexer) {
+    loop {
+        if (isSpace(lexerCurrent(lex))) {
+            if (lexerCurrent(lex) == '\n') { lexerNewline(lex) }
+            lexerAdvance(lex)
+        } else if (lexerCurrent(lex) == '/' and lexerPeek(lex, 1) == '/') {
+            while (lexerCurrent(lex) != '\n' and lexerCurrent(lex) != '\0') {
+                lexerAdvance(lex)
+            }
+        } else {
+            break
+        }
+    }
+}
+
+// Turns the raw text between the quotes into the string's actual value. Char
+// literals have always decoded their escapes; string literals did not, so the two
+// disagreed and there was no way at all to put a newline, a tab or a quote inside
+// a string -- the backslash simply survived into the output.
+//
+// A NUL escape is rejected rather than supported: String is a NUL-terminated C
+// pointer, so an embedded NUL would silently truncate the value instead of
+// storing it. Better to say so than to lose half the string.
+//
+// `baseCol` is the column of the first character inside the quotes, so an
+// offending escape can be pointed at exactly rather than blamed on the literal as
+// a whole.
+fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) -> String {
+    let mut out = ""
+    let mut i = 0
+    let n = str_length(raw)
+
+    while (i < n) {
+        let ch = str_char_at(raw, i)
+
+        if (ch == '\\' and i + 1 < n) {
+            let esc = str_char_at(raw, i + 1)
+            let mut decoded = esc
+            let mut known = true
+
+            if (esc == 'n') { decoded = '\n' }
+            else if (esc == 't') { decoded = '\t' }
+            else if (esc == 'r') { decoded = '\r' }
+            else if (esc == '\\') { decoded = '\\' }
+            else if (esc == '"') { decoded = '"' }
+            else if (esc == '\'') { decoded = '\'' }
+            else if (esc == '0') {
+                lexerFatal(lex, line, baseCol + i,
+                    "a NUL escape cannot appear in a string literal, because String is NUL-terminated")
+            }
+            else { known = false }
+
+            if (known == false) {
+                lexerFatal(lex, line, baseCol + i,
+                    str_concat("unknown escape sequence \\", str_from_char(esc)))
+            }
+
+            out = str_concat(out, str_from_char(decoded))
+            i = i + 2
+        } else {
+            out = str_concat(out, str_from_char(ch))
+            i = i + 1
+        }
+    }
+
+    return out
+}
+
+fn lexIdentifier(lex: Lexer) -> Token {
+    let line = lex.line
+    let col = lex.col
+    let start = lex.pos
+
+    while (isAlnum(lexerCurrent(lex))) {
+        lexerAdvance(lex)
+    }
+    let value = str_substring(lex.input, start, lex.pos - start)
+
+    if (isKeyword(value)) {
+        if (isBoolean(value)) {
+            return lexerToken(lex, TokenType.BOOL_LITERAL, value, line, col, start)
+        }
+        return lexerToken(lex, TokenType.KEYWORD, value, line, col, start)
+    }
+    return lexerToken(lex, TokenType.IDENTIFIER, value, line, col, start)
+}
+
+// A '.' only continues the number when a digit follows it, so `0..n` scans as
+// `0`, `..`, `n` rather than as the float `0.` followed by `.n`.
+fn lexNumber(lex: Lexer) -> Token {
+    let line = lex.line
+    let col = lex.col
+    let start = lex.pos
+    let mut isFloat = false
+
+    while (isDigit(lexerCurrent(lex))) {
+        lexerAdvance(lex)
+    }
+
+    if (lexerCurrent(lex) == '.' and isDigit(lexerPeek(lex, 1))) {
+        isFloat = true
+        lexerAdvance(lex)
+        while (isDigit(lexerCurrent(lex))) {
+            lexerAdvance(lex)
+        }
+    }
+
+    let value = str_substring(lex.input, start, lex.pos - start)
+    if (isFloat) {
+        return lexerToken(lex, TokenType.FLOAT_LITERAL, value, line, col, start)
+    }
+    return lexerToken(lex, TokenType.NUMBER_LITERAL, value, line, col, start)
+}
+
+// Two passes. The first finds the closing quote, stepping over backslash pairs so
+// an escaped quote does not end the literal. Escapes are then decoded only if the
+// literal actually contains one, which keeps the common case on the cheap
+// str_substring path instead of concatenating per character.
+fn lexString(lex: Lexer) -> Token {
+    let line = lex.line
+    let col = lex.col
+    let start = lex.pos
+
+    lexerAdvance(lex)
+    let bodyStart = lex.pos
+    let bodyCol = lex.col
+    let mut hasEscape = false
+
+    while (lexerCurrent(lex) != '"' and lex.pos < lex.length) {
+        if (lexerCurrent(lex) == '\\') {
+            hasEscape = true
+            lexerAdvance(lex) // consume the backslash; the pair is skipped below
+        }
+        if (lexerCurrent(lex) == '\n') { lexerNewline(lex) }
+        lexerAdvance(lex)
+    }
+
+    let mut value = str_substring(lex.input, bodyStart, lex.pos - bodyStart)
+
+    if (lexerCurrent(lex) == '"') {
+        lexerAdvance(lex)
+    } else {
+        lexerFatal(lex, line, col, "unterminated string literal")
+    }
+
+    // Decoded in place rather than through a second `raw` binding: strings are
+    // affine, so `let value = raw` moves and the decode call would then be
+    // reading a moved-from name.
+    if (hasEscape) {
+        value = lexerDecodeEscapes(lex, value, line, bodyCol)
+    }
+
+    return lexerToken(lex, TokenType.STRING_LITERAL, value, line, col, start)
+}
+
+// The value is stored as the character's numeric code, not as its text, so that
+// everything downstream treats a Char as the integer it lowers to.
+fn lexChar(lex: Lexer) -> Token {
+    let line = lex.line
+    let col = lex.col
+    let start = lex.pos
+
+    lexerAdvance(lex)
+    let mut value = lexerCurrent(lex)
+
+    if (value == '\\') {
+        lexerAdvance(lex)
+        let esc = lexerCurrent(lex)
+        if (esc == 'n') { value = '\n' }
+        if (esc == 't') { value = '\t' }
+        if (esc == 'r') { value = '\r' }
+        if (esc == '0') { value = '\0' }
+        if (esc == '\\') { value = '\\' }
+        if (esc == '\'') { value = '\'' }
+        if (esc == '"') { value = '"' }
+    }
+
+    lexerAdvance(lex)
+    if (lexerCurrent(lex) == '\'') {
+        lexerAdvance(lex)
+    } else {
+        lexerFatal(lex, line, col,
+            "unterminated character literal (a Char holds exactly one character)")
+    }
+
+    return lexerToken(lex, TokenType.CHAR_LITERAL, int_to_str(charCode(value)), line, col, start)
+}
+
+// Whether `first` followed by `second` is a two-character operator. Shifts are
+// included: `>>` also closes two nested generic arguments, which the parser
+// splits back apart when it expects a single '>'.
+fn isTwoCharOperator(first: Char, second: Char) -> Bool {
+    if (first == '=' and second == '=') { return true }
+    if (first == '!' and second == '=') { return true }
+    if (first == '<' and second == '=') { return true }
+    if (first == '>' and second == '=') { return true }
+    if (first == '&' and second == '&') { return true }
+    if (first == '|' and second == '|') { return true }
+    if (first == '-' and second == '>') { return true }
+    if (first == '=' and second == '>') { return true }
+    if (first == '<' and second == '<') { return true }
+    if (first == '>' and second == '>') { return true }
+
+    // Compound assignment. Desugared by the parser into a read-modify-write.
+    if (second == '=') {
+        if (first == '+' or first == '-' or first == '*' or first == '/' or first == '%') { return true }
+        if (first == '&' or first == '|' or first == '^') { return true }
+    }
+
+    return false
+}
+
+fn twoCharOperatorType(value: String) -> TokenType {
+    if (str_equals(value, "==") == 1 or str_equals(value, "!=") == 1
+        or str_equals(value, "<=") == 1 or str_equals(value, ">=") == 1) {
+        return TokenType.RELATIONAL_OPERATOR
+    }
+    if (str_equals(value, "=>") == 1) { return TokenType.FAT_ARROW }
+    if (str_equals(value, "->") == 1) { return TokenType.ARROW }
+
+    // `x op= y` is an assignment: the second character is '=' and the first is
+    // not, which distinguishes it from ==, !=, <= and >= handled above.
+    if (str_char_at(value, 1) == '=' and str_char_at(value, 0) != '=') {
+        return TokenType.ASSIGNMENT_OPERATOR
+    }
+
+    return TokenType.ARITHMETIC_OPERATOR
+}
+
+fn oneCharOperatorType(c: Char) -> TokenType {
+    if (c == '<' or c == '>') { return TokenType.RELATIONAL_OPERATOR }
+    if (c == '=') { return TokenType.ASSIGNMENT_OPERATOR }
+    if (c == '!') { return TokenType.NEGATION }
+    return TokenType.ARITHMETIC_OPERATOR
+}
+
+fn lexOperator(lex: Lexer) -> Token {
+    let line = lex.line
+    let col = lex.col
+    let start = lex.pos
+
+    let first = lexerCurrent(lex)
+    lexerAdvance(lex)
+    if (isTwoCharOperator(first, lexerCurrent(lex))) {
+        lexerAdvance(lex)
+    }
+
+    let value = str_substring(lex.input, start, lex.pos - start)
+    let mut type = oneCharOperatorType(first)
+    if (lex.pos - start == 2) {
+        type = twoCharOperatorType(value)
+    }
+
+    return lexerToken(lex, type, value, line, col, start)
+}
+
+fn lexSeparator(lex: Lexer) -> Token {
+    let line = lex.line
+    let col = lex.col
+    let start = lex.pos
+
+    let value = str_substring(lex.input, start, 1)
+    lexerAdvance(lex)
+    return lexerToken(lex, TokenType.SEPARATOR, value, line, col, start)
+}
+
+fn lexRange(lex: Lexer) -> Token {
+    let line = lex.line
+    let col = lex.col
+    let start = lex.pos
+
+    lexerAdvance(lex)
+    lexerAdvance(lex)
+    return lexerToken(lex, TokenType.RANGE, "..", line, col, start)
+}
+
+// This used to produce an UNKNOWN token and carry on, which meant a stray
+// character surfaced much later as "Unknown declaration" pointing at something
+// entirely innocent. Say what was actually wrong, where.
+fn lexUnexpected(lex: Lexer, c: Char) -> Token {
+    let line = lex.line
+    let col = lex.col
+    let start = lex.pos
+
+    lexerAdvance(lex)
+    lexerFatal(lex, line, col, str_concat("unexpected character ", diagQuote(str_from_char(c))))
+    return lexerToken(lex, TokenType.UNKNOWN, "?", line, col, start)
+}
+
+fn lexerNextToken(lex: Lexer) -> Token {
+    lexerSkipWhitespace(lex)
+
+    if (lex.pos >= lex.length) {
+        return lexerToken(lex, TokenType.EOF, "EOF", lex.line, lex.col, lex.pos)
+    }
+
+    let c = lexerCurrent(lex)
+
+    if (isAlpha(c)) { return lexIdentifier(lex) }
+    if (isDigit(c)) { return lexNumber(lex) }
+    if (c == '"') { return lexString(lex) }
+    if (c == '\'') { return lexChar(lex) }
+    // Before the separator check, and after the operator check, because '.' is a
+    // separator but ".." is not.
+    if (isOperator(c)) { return lexOperator(lex) }
+    if (c == '.' and lexerPeek(lex, 1) == '.') { return lexRange(lex) }
+    if (isSeparator(c)) { return lexSeparator(lex) }
+
+    return lexUnexpected(lex, c)
+}
+
+// Both are `void* f(void* p) { return p; }` in lang_runtime.c, so the result is
+// the argument; without the contracts every Token reads as an opaque extern.
+extern fn ptr_to_token(ptr: String borrow) -> Token alias
+extern fn token_to_ptr(tok: Token borrow) -> String alias
+
+// Token is a struct and therefore move-only, so walking the list with a second
+// Token binding (`let current = head`) would move `head` and make the final
+// `return head` a use-after-move. Thread the list through pointers instead: the
+// bindings stay local to one iteration and the chain itself is built the same way.
+fn lexAllTokens(lex: Lexer) -> Token {
+    // The head stays a Token rather than a second pointer binding. Pointers are
+    // Strings here, and AIF Level 4 made those affine too, so
+    // `let mut currentPtr = head_ptr` moved the head and the return read a
+    // moved-from name. `token_to_ptr` takes a borrow, so naming it twice costs
+    // nothing.
+    let head = lexerNextToken(lex)
+    let mut currentPtr = token_to_ptr(head)
+
+    loop {
+        let current = ptr_to_token(currentPtr)
+        if (current.type == TokenType.EOF) { break }
+
+        current.tokNext = token_to_ptr(lexerNextToken(lex))
+        // Read back through the field rather than keeping a second binding: the
+        // store already moved the pointer into the token.
+        currentPtr = current.tokNext
+    }
+
+    return head
+}

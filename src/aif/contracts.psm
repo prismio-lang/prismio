@@ -1,0 +1,172 @@
+// FFI ownership contracts, as declared on an extern and as the runtime is known
+// to behave. What a foreign call does to provenance is the single largest source
+// of imprecision, so both halves are read here rather than assumed.
+
+import ast.nodes
+import ast.types
+import common.text
+import common.diagnostics
+
+// ---------------------------------------------------------------------------
+// FFI ownership contracts (FFI 5)
+//
+// These describe the Prismio runtime surface. They cannot be inferred -- the
+// callee is C -- and both available guesses are wrong: `borrow` everywhere is
+// unsound where a callee does retain, and `retain` everywhere sinks every value
+// that ever touches a runtime call.
+//
+// `retain_in(k)` is the entry that matters and it is not in FFI.md's vocabulary
+// yet: `list_push` is neither `borrow` nor `retain`, and collections are the
+// most common FFI shape in a systems language. Without it every element pushed
+// into a list looks like it never escapes, which is optimistic, i.e. unsound.
+// ---------------------------------------------------------------------------
+
+// Decodes what an `extern` declaration said, if it said anything.
+// Returns -1 when there is no declared contract, so the caller can fall through
+// to the runtime table and then to the default.
+fn aifDeclaredContract(name: String, index: Int) -> Int {
+    let text = aif_extern_contract(name, index)
+    if (str_equals(text, "") == 1) { return 0 - 1 }
+
+    if (str_equals(text, "borrow") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(text, "retain") == 1) { return AIF_FFI_RETAIN }
+    if (str_equals(text, "consume") == 1) { return AIF_FFI_CONSUME }
+    if (str_equals(text, "out") == 1) { return AIF_FFI_OUT }
+
+    if (str_starts_with(text, "retain_in:") == 1) {
+        let k = str_to_int(str_substring(text, 10, str_length(text) - 10))
+        return AIF_FFI_RETAIN_IN_BASE + k
+    }
+
+    // `alias` and `produce` are return contracts and sema has already rejected
+    // them on a parameter, so reaching here means the declaration was malformed
+    // and never got past the checker. Default rather than guess.
+    return 0 - 1
+}
+
+// The ownership semantics of the Prismio runtime's own surface.
+//
+// **This is a fallback, not the source of truth.** A declared contract wins;
+// this only answers for a call whose `extern` says nothing, and it exists
+// because these functions' semantics are a property of the runtime rather than
+// of any one program's declaration of it -- every corpus program declares
+// `list_push` itself, and none of them should have to get it right for the
+// analysis to be sound. FFI 5.3a is the measurement that made `retain_in`
+// necessary in the first place.
+//
+// It should shrink as declarations gain contracts, and the entry that matters is
+// `list_push`: without it every element pushed into a list appears never to
+// escape, which is optimistic and therefore unsound.
+fn aifRuntimeContract(name: String, index: Int) -> Int {
+    if (str_equals(name, "list_push") == 1) {
+        if (index == 1) { return AIF_FFI_RETAIN_IN_BASE + 0 }
+        return AIF_FFI_BORROW
+    }
+    // `list_set(list, index, value)` -- the stored value is argument **2**.
+    // Argument 1 is the integer index, and naming it here said the *index*
+    // escapes into the container while the value only borrows: optimistic, and
+    // therefore exactly the unsoundness the comment above warns about. Both this
+    // and the oracle had it, identically, which is how a differential test agrees
+    // on a wrong answer. Latent until Level 5, when a stored value that appeared
+    // not to escape took a stack slot and list_set wrote a frame pointer into a
+    // container that outlives the frame.
+    if (str_equals(name, "list_set") == 1) {
+        if (index == 2) { return AIF_FFI_RETAIN_IN_BASE + 0 }
+        return AIF_FFI_BORROW
+    }
+    if (str_equals(name, "list_get") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "list_len") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "str_concat") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "str_equals") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "str_length") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "str_substring") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "str_index_of") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "str_contains") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "str_starts_with") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "str_ends_with") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "str_char_at") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "str_byte_at") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "print") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "println") == 1) { return AIF_FFI_BORROW }
+    return aifFfiDefault
+}
+
+// Declared contract, then the runtime table, then FFI 5.1's default.
+fn aifFfiContract(name: String, index: Int) -> Int {
+    let declared = aifDeclaredContract(name, index)
+    if (declared >= 0) {
+        return declared
+    }
+    return aifRuntimeContract(name, index)
+}
+
+// FFI 5.2 `alias`: the return is an existing value reached through an argument,
+// not a fresh allocation. Modelled by returning that argument's own sites.
+//
+// `list_get` is deliberately NOT here any more, and the reason is a soundness
+// bug this comment used to describe as fixed: it claimed "an element read back
+// out of a list is the element rather than a new object", and returning the
+// argument's value set does not do that -- it returns *the list*. Reading an
+// element and pushing it into a second container then recorded the container as
+// the element, so A-CONTAIN never saw the sharing and the second container was
+// told its elements were lists when they were structs. Elements go through
+// aifElemKey now, which is what makes that sentence true.
+fn aifFfiAliasOf(name: String) -> Int {
+    // REQUIREMENTS 4. `expect(x)` is the identity on a pointer -- it checks and
+    // hands back the same one -- so its result is argument 0's sites. Without
+    // this it reads as an opaque extern return: a fresh site, escape raised to
+    // Caller, and the unwrapped value would stop being reclaimable by whatever
+    // owned the optional.
+    if (str_equals(name, "expect") == 1) { return 0 }
+    return 0 - 1
+}
+
+// Which argument's element field a call reads, or -1. The counterpart of
+// `retain_in(k)` on the way out: one says a value was stored into the container
+// at k, this says the result came back out of it.
+fn aifFfiReadsElement(name: String) -> Int {
+    if (str_equals(name, "list_get") == 1) { return 0 }
+    return 0 - 1
+}
+
+// The static type of a call's k-th argument. Walking the argument list again is
+// safe only because reading a type creates nothing; evaluating one creates sites,
+// which is why the values go through the argv stack instead.
+fn aifArgTypeAt(call: ASTNode, index: Int) -> String {
+    let mut i = 0
+    let mut aPtr = call.child2
+    while (nodeExists(aPtr)) {
+        let a = ptr_to_node(aPtr)
+        if (i == index) { return aifNodeType(a) }
+        i = i + 1
+        aPtr = a.next
+    }
+    return ""
+}
+
+// FFI 5.2's return contracts, read off the declaration. `alias` says the return
+// borrows from an argument or from static storage rather than being a fresh
+// allocation, so it must not be modelled as one; `produce` says the caller owns
+// it, which is exactly what the undeclared case cannot assume.
+fn aifDeclaredReturnIsProduce(name: String) -> Bool {
+    return str_starts_with(aif_extern_contract(name, 0 - 1), "produce") == 1
+}
+
+fn aifDeclaredReturnIsAlias(name: String) -> Bool {
+    return str_equals(aif_extern_contract(name, 0 - 1), "alias") == 1
+}
+
+// FFI 5.2 `produce`: a fresh owned value the caller must release. Anything
+// undeclared has unknown provenance -- it may already be shared and may already
+// outlive this frame -- and is handled by the `opaque` constraint instead.
+fn aifFfiProduces(name: String) -> Bool {
+    if (str_equals(name, "list_new") == 1) { return true }
+    if (str_equals(name, "str_concat") == 1) { return true }
+    if (str_equals(name, "str_substring") == 1) { return true }
+    if (str_equals(name, "str_from_char") == 1) { return true }
+    if (str_equals(name, "int_to_str") == 1) { return true }
+    if (str_equals(name, "read_file") == 1) { return true }
+    if (str_equals(name, "get_directory") == 1) { return true }
+    if (str_equals(name, "join_path") == 1) { return true }
+    return false
+}

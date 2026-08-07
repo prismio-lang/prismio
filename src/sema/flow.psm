@@ -1,0 +1,120 @@
+// Structured control-flow analysis: can control fall out of the bottom of this
+// statement, and does this loop have a break. Both feed definite-return and
+// unreachable-code checking.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import ir.bridge
+import common.diagnostics
+
+import ast.nodes
+import lexer.token
+import ast.types
+import ir.bridge
+import common.diagnostics
+
+extern fn exit(code: Int)
+
+// --- structured control-flow analysis ---------------------------------------
+//
+// Prismio's control flow is fully structured -- no goto, no labeled break -- so
+// "can control fall out of the bottom of this statement?" is answerable from the
+// AST alone, without building a CFG. That is what definite-return and
+// unreachable-code checking need.
+//
+// Both answers are deliberately conservative in the safe direction: when in
+// doubt, report that control *can* fall through. That risks demanding a return
+// the programmer knows is unreachable, which is an annoyance; the opposite
+// error would let a function fall off its end, which is a miscompile.
+
+fn semaBlockHasBreak(block: ASTNode) -> Bool {
+    let mut stmtPtr = block.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+
+        if (stmt.kind == NodeKind.BREAK_STATEMENT) { return true }
+
+        // Nested loops own their own breaks, but descending into them anyway
+        // only makes this more conservative, never less.
+        if (stmt.kind == NodeKind.IF_STATEMENT) {
+            if (semaIfHasBreak(stmt)) { return true }
+        }
+        if (stmt.kind == NodeKind.WHILE_STATEMENTorstmt.kind == NodeKind.LOOP_STATEMENT) {
+            let mut body = ptr_to_node(stmt.child1)
+            if (stmt.kind == NodeKind.WHILE_STATEMENT) { body = ptr_to_node(stmt.child2) }
+            if (semaBlockHasBreak(body)) { return true }
+        }
+        if (stmt.kind == NodeKind.FOR_STATEMENT) {
+            if (semaBlockHasBreak(ptr_to_node(stmt.child3))) { return true }
+        }
+        // A region is not a loop, so a `break` inside one belongs to the loop
+        // enclosing it and has to be visible through the block.
+        if (stmt.kind == NodeKind.REGION_STATEMENT) {
+            if (semaBlockHasBreak(ptr_to_node(stmt.child1))) { return true }
+        }
+        if (stmt.kind == NodeKind.MATCH_STATEMENT) {
+            let mut armPtr = stmt.child2
+            while (str_equals(armPtr, "") == 0) {
+                let arm = ptr_to_node(armPtr)
+                if (semaBlockHasBreak(ptr_to_node(arm.child2))) { return true }
+                armPtr = arm.next
+            }
+        }
+
+        stmtPtr = stmt.next
+    }
+    return false
+}
+
+// A whole `if` / `else if` / `else` chain. Recurses through the chain rather
+// than being inlined into the walk above, which had the same eight lines written
+// out twice -- once for the statement and once for the else-if that follows it.
+fn semaIfHasBreak(stmt: ASTNode) -> Bool {
+    if (semaBlockHasBreak(ptr_to_node(stmt.child2))) { return true }
+    if (nodeIsNull(stmt.child3)) { return false }
+
+    let elseNode = ptr_to_node(stmt.child3)
+    if (elseNode.kind == NodeKind.IF_STATEMENT) {
+        return semaIfHasBreak(elseNode)
+    }
+    return semaBlockHasBreak(elseNode)
+}
+
+// True when control cannot continue past this statement.
+fn semaStmtDiverges(stmt: ASTNode) -> Bool {
+    if (stmt.kind == NodeKind.RETURN_STATEMENT) { return true }
+    if (stmt.kind == NodeKind.BREAK_STATEMENT) { return true }
+    if (stmt.kind == NodeKind.CONTINUE_STATEMENT) { return true }
+
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        // Only when there is an else and *both* sides diverge.
+        if (str_equals(stmt.child3, "") == 1) { return false }
+        let elseNode = ptr_to_node(stmt.child3)
+        let mut elseDiverges = false
+        if (elseNode.kind == NodeKind.IF_STATEMENT) {
+            elseDiverges = semaStmtDiverges(elseNode)
+        } else {
+            elseDiverges = semaBlockDiverges(elseNode)
+        }
+        return semaBlockDiverges(ptr_to_node(stmt.child2)) andelseDiverges
+    }
+
+    // A `loop` with no break never finishes. A `while` or `for` may run zero
+    // times, so neither ever counts as diverging.
+    if (stmt.kind == NodeKind.LOOP_STATEMENT) {
+        return semaBlockHasBreak(ptr_to_node(stmt.child1)) == false
+    }
+
+    return false
+}
+
+fn semaBlockDiverges(block: ASTNode) -> Bool {
+    let mut stmtPtr = block.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        if (semaStmtDiverges(stmt)) { return true }
+        stmtPtr = stmt.next
+    }
+    return false
+}

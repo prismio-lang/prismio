@@ -256,53 +256,6 @@ void println_char(char c) {
     wasm_host_println(buffer);
 }
 
-// Array structure
-typedef struct {
-    void* data;
-    int length;
-    int capacity;
-} Array;
-
-// Create array
-Array* array_new(int element_size, int initial_capacity) {
-    Array* arr = (Array*)malloc(sizeof(Array));
-    arr->length = 0;
-    arr->capacity = initial_capacity;
-    arr->data = malloc(element_size * initial_capacity);
-    return arr;
-}
-
-// Free array
-void array_free(Array* arr) {
-    free(arr->data);
-    free(arr);
-}
-
-// Push element (generic)
-void array_push(Array* arr, void* element, int element_size) {
-    if (arr->length >= arr->capacity) {
-        arr->capacity *= 2;
-        arr->data = realloc(arr->data, element_size * arr->capacity);
-    }
-
-    char* dest = (char*)arr->data + (arr->length * element_size);
-    memcpy(dest, element, element_size);
-    arr->length++;
-}
-
-// Get element
-void* array_get(Array* arr, int index, int element_size) {
-    if (index < 0 || index >= arr->length) {
-        return NULL;
-    }
-    return (char*)arr->data + (index * element_size);
-}
-
-// Array length
-int array_len(Array* arr) {
-    return arr->length;
-}
-
 int str_equals(const char* s1, const char* s2) {
     return strcmp(s1, s2) == 0 ? 1 : 0;
 }
@@ -633,55 +586,6 @@ void print_char(char c) {
 void println_char(char c) {
     printf("%c\n", c);
     fflush(stdout);
-}
-
-// Array structure
-typedef struct {
-    void* data;
-    int length;
-    int capacity;
-} Array;
-
-// Create array
-Array* array_new(int element_size, int initial_capacity) {
-    Array* arr = (Array*)malloc(sizeof(Array));
-    arr->length = 0;
-    arr->capacity = initial_capacity;
-    arr->data = malloc(element_size * initial_capacity);
-    return arr;
-}
-
-// Free array
-void array_free(Array* arr) {
-    free(arr->data);
-    free(arr);
-}
-
-// Push element (generic)
-void array_push(Array* arr, void* element, int element_size) {
-    if (arr->length >= arr->capacity) {
-        // Resize
-        arr->capacity *= 2;
-        arr->data = realloc(arr->data, element_size * arr->capacity);
-    }
-
-    // Copy element to end
-    char* dest = (char*)arr->data + (arr->length * element_size);
-    memcpy(dest, element, element_size);
-    arr->length++;
-}
-
-// Get element
-void* array_get(Array* arr, int index, int element_size) {
-    if (index < 0 || index >= arr->length) {
-        return NULL;
-    }
-    return (char*)arr->data + (index * element_size);
-}
-
-// Array length
-int array_len(Array* arr) {
-    return arr->length;
 }
 
 // ============================================

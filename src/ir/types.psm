@@ -1,0 +1,278 @@
+// Mapping Prismio types onto LLVM types, and the symbol names that go with them.
+
+import ast.nodes
+import ast.types
+import common.text
+import common.diagnostics
+
+fn mapType(t: String) -> String {
+    if (str_equals(t, "Int") == 1) { return "i32" }
+    if (str_equals(t, "Float") == 1) { return "double" }
+    if (str_equals(t, "Bool") == 1) { return "i1" }
+    if (str_equals(t, "String") == 1) { return "ptr" }
+    if (str_equals(t, "Char") == 1) { return "i8" }
+    if (str_equals(t, "I8") == 1) { return "i8" }
+    if (str_equals(t, "I16") == 1) { return "i16" }
+    if (str_equals(t, "I64") == 1) { return "i64" }
+    if (str_equals(t, "Isize") == 1) { return irPtrIntType() }
+    if (str_equals(t, "U8") == 1) { return "i8" }
+    if (str_equals(t, "U16") == 1) { return "i16" }
+    if (str_equals(t, "U32") == 1) { return "i32" }
+    if (str_equals(t, "U64") == 1) { return "i64" }
+    if (str_equals(t, "Usize") == 1) { return irPtrIntType() }
+    if (str_equals(t, "") == 1) { return "void" }
+    return "i32"
+}
+
+fn structTypeKey(name: String) -> String {
+    return str_concat("struct:", name)
+}
+
+fn isStructTypeKey(t: String) -> Bool {
+    return str_starts_with(t, "struct:") == 1
+}
+
+fn structTypeName(t: String) -> String {
+    return str_substring(t, 7, str_length(t) - 7)
+}
+
+fn llvmTypeName(t: String) -> String {
+    if (isStructTypeKey(t)) {
+        return str_concat("%", structTypeName(t))
+    }
+    return t
+}
+
+fn mapTypeNode(tn: ASTNode) -> String {
+    // REQUIREMENTS 4. `T?` is one pointer and is deliberately *not* keyed as
+    // `struct:T`: an optional slot must not reach ir_struct_field_ptr without an
+    // unwrap, and an opaque key is what keeps that a type error rather than a
+    // null dereference at run time.
+    if (tn.i3 == 1) {
+        return "ptr"
+    }
+    if (tn.i2 == 1) {
+        return "ptr"            // List<T>
+    }
+    if (tn.i1 == 1) {
+        if (str_equals(tn.child1, "") == 0) {
+            let elem = ptr_to_node(tn.child1)
+            if (elem.i1 == 1) {
+                return "ptrptr"
+            }
+        }
+        return "ptr"
+    }
+    if (ir_is_struct_type_name(tn.s1) == 1) {
+        return structTypeKey(tn.s1)
+    }
+    return mapType(tn.s1)
+}
+
+fn storageType(t: String) -> String {
+    if (str_equals(t, "ptrptr") == 1) { return "ptr" }
+    if (isStructTypeKey(t)) { return "ptr" }
+    return t
+}
+
+fn countListNodes(firstPtr: String) -> Int {
+    let mut count = 0
+    let mut curr = firstPtr
+    while (str_equals(curr, "") == 0) {
+        let node = ptr_to_node(curr)
+        count = count + 1
+        curr = node.next
+    }
+    return count
+}
+
+fn fnKey(name: String) -> String {
+    return str_concat("$fn$", name)
+}
+
+fn functionSymbolName(func: ASTNode) -> String {
+    if (str_equals(func.s2, "") == 0) {
+        return func.s2
+    }
+    return func.s1
+}
+
+fn getDeclaredReturnType(node: ASTNode, retChild: String) -> String {
+    if (str_equals(retChild, "") == 0) {
+        let retNode = ptr_to_node(retChild)
+        return mapTypeNode(retNode)
+    }
+    return "void"
+}
+
+fn getExprType(expr: ASTNode) -> String {
+    if (nodeHasType(expr)) {
+        return typeIrKey(nodeGetType(expr))
+    }
+
+    if (expr.kind == NodeKind.LITERAL_EXPR) {
+        if (expr.i1 == TokenType.NUMBER_LITERAL) { return "i32" }
+        if (expr.i1 == TokenType.FLOAT_LITERAL) { return "double" }
+        if (expr.i1 == TokenType.BOOL_LITERAL) { return "i1" }
+        if (expr.i1 == TokenType.CHAR_LITERAL) { return "i8" }
+        if (expr.i1 == TokenType.STRING_LITERAL) { return "ptr" }
+    }
+
+    if (expr.kind == NodeKind.IDENTIFIER_EXPR) {
+        return ir_get_var_type(expr.s1)
+    }
+
+    if (expr.kind == NodeKind.UNARY_EXPR) {
+        if (str_equals(expr.s1, "!") == 1) { return "i1" }
+        return getExprType(ptr_to_node(expr.child1))
+    }
+
+    if (expr.kind == NodeKind.CAST_EXPR) {
+        // sema records the target type on the node; this is only the fallback.
+        return mapTypeNode(ptr_to_node(expr.child2))
+    }
+
+    if (expr.kind == NodeKind.BINARY_EXPR) {
+        let op = expr.s1
+        if (str_equals(op, "==") == 1 or str_equals(op, "!=") == 1) { return "i1" }
+        if (str_equals(op, "<") == 1 or str_equals(op, "<=") == 1) { return "i1" }
+        if (str_equals(op, ">") == 1 or str_equals(op, ">=") == 1) { return "i1" }
+        if (str_equals(op, "and") == 1 or str_equals(op, "or") == 1) { return "i1" }
+        return getExprType(ptr_to_node(expr.child1))
+    }
+
+    if (expr.kind == NodeKind.CALL_EXPR) {
+        let callee = ptr_to_node(expr.child1)
+        let funcName = callee.s1
+        if (str_equals(funcName, "print") == 1 or str_equals(funcName, "println") == 1) {
+            return "void"
+        }
+        if (str_equals(funcName, "print_int") == 1 or str_equals(funcName, "println_int") == 1) {
+            return "void"
+        }
+        if (str_equals(funcName, "print_float") == 1 or str_equals(funcName, "println_float") == 1) {
+            return "void"
+        }
+        if (str_equals(funcName, "println_char") == 1 or str_equals(funcName, "print_char") == 1) {
+            return "void"
+        }
+        if (str_equals(funcName, "println_bool") == 1 or str_equals(funcName, "print_bool") == 1) {
+            return "void"
+        }
+        if (str_equals(expr.s2, "") == 0) {
+            return ir_get_var_type(fnKey(expr.s2))
+        }
+        return ir_get_var_type(fnKey(funcName))
+    }
+
+    if (expr.kind == NodeKind.INDEX_EXPR) {
+        let objType = getExprType(ptr_to_node(expr.child1))
+        if (str_equals(objType, "ptrptr") == 1) {
+            return "ptr"
+        }
+        return "i32"
+    }
+
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let objectNode = ptr_to_node(expr.child1)
+        if (objectNode.kind == NodeKind.IDENTIFIER_EXPR) {
+            let enumVal = ir_get_enum_variant(objectNode.s1, expr.s1)
+            if (enumVal >= 0) {
+                return "i32"
+            }
+        }
+        let objectType = getExprType(objectNode)
+        if (isStructTypeKey(objectType)) {
+            return ir_get_struct_field_type(structTypeName(objectType), expr.s1)
+        }
+        return "i32"
+    }
+
+    if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+        return "ptr"
+    }
+
+    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+        return structTypeKey(expr.s1)
+    }
+
+    return "i32"
+}
+
+// Which deallocator an expression's value needs. Read from sema's type rather
+// than the storage type, which has already collapsed String, List and every
+// struct to `ptr`.
+// REQUIREMENTS 20. A `List<T>` stores pointer-sized slots, and a scalar element
+// rides in one rather than being boxed.
+//
+// Boxing was the alternative and it is worse twice over: an allocation per
+// element, and the container would then have something to *own* -- which is
+// exactly what a scalar element is not. Nothing allocates, so the element
+// registers no site, so `aif_elem_owner_at_node` answers NONE and the teardown
+// steps over the whole list. The memory model needs no case for this, which is
+// the property that makes the representation the right one.
+//
+// The integer family widens to pointer width and reinterprets. A `Float` is 64
+// bits of payload rather than a number to convert, so it bitcasts first -- an
+// `fptosi` here would round 0.5 to 0 and store that.
+fn scalarBitsOf(t: String) -> Int {
+    if (str_equals(t, "i1") == 1) { return 1 }
+    if (str_equals(t, "i8") == 1) { return 8 }
+    if (str_equals(t, "i16") == 1) { return 16 }
+    if (str_equals(t, "i32") == 1) { return 32 }
+    if (str_equals(t, "i64") == 1) { return 64 }
+    if (str_equals(t, "double") == 1) { return 64 }
+    return 0
+}
+
+fn scalarToSlot(storeType: String, value: String) -> String {
+    if (str_equals(storeType, "ptr") == 1) { return value }
+    let pi = irPtrIntType()
+
+    if (str_equals(storeType, "double") == 1) {
+        let bits = ir_get_temp_name(ir_bitcast("double", value, "i64"))
+        return ir_get_temp_name(ir_int_to_ptr("i64", bits))
+    }
+
+    let mut widened = value
+    if (scalarBitsOf(storeType) < scalarBitsOf(pi)) {
+        widened = ir_get_temp_name(ir_zext(storeType, value, pi))
+    }
+    return ir_get_temp_name(ir_int_to_ptr(pi, widened))
+}
+
+fn slotToScalar(storeType: String, value: String) -> String {
+    if (str_equals(storeType, "ptr") == 1) { return value }
+    let pi = irPtrIntType()
+
+    if (str_equals(storeType, "double") == 1) {
+        let bits = ir_get_temp_name(ir_ptr_to_int(value, "i64"))
+        return ir_get_temp_name(ir_bitcast("i64", bits, "double"))
+    }
+
+    let raw = ir_get_temp_name(ir_ptr_to_int(value, pi))
+    if (scalarBitsOf(storeType) < scalarBitsOf(pi)) {
+        return ir_get_temp_name(ir_trunc(pi, raw, storeType))
+    }
+    return raw
+}
+
+// Which argument of a container call carries the element, or -1. The element is
+// the one that has to cross into a pointer-sized slot; the list handle and the
+// index are already the widths the runtime declares.
+fn listElementArgIndex(funcName: String) -> Int {
+    if (str_equals(funcName, "list_push") == 1) { return 1 }
+    if (str_equals(funcName, "list_set") == 1) { return 2 }
+    return -1
+}
+
+fn dropKindOf(expr: ASTNode) -> Int {
+    if (nodeGetType(expr).kind == TypeKind.LIST) { return IR_DROP_LIST }
+    // Struct-field ownership. Freeing the object alone would leak every field it
+    // owns, so a type the model generated a release for is reclaimed by that.
+    let ty = getExprType(expr)
+    if (isStructTypeKey(ty)) {
+        if (aif_type_releases(structTypeName(ty)) == 1) { return IR_DROP_TYPED }
+    }
+    return IR_DROP_OBJECT
+}

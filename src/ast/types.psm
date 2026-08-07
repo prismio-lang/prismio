@@ -1,11 +1,11 @@
-import ast
-import utils
+import ast.nodes
+import common.text
 
 // As with NodeKind (ast.psm), **nothing may take ordinal 0**: a TypeInfo is
 // punned as a String and `kind` is its first field, so a zero-valued kind makes
 // a live TypeInfo read as an empty slot. `INVALID` at ordinal 0 used to make
-// node_has_type answer false for a node that did carry a type. That happened to
-// cancel out -- node_get_type returns type_invalid() either way -- which is
+// nodeHasType answer false for a node that did carry a type. That happened to
+// cancel out -- nodeGetType returns typeInvalid() either way -- which is
 // exactly why it survived.
 enum TypeKind {
     // Not a type. Keeps every real kind's low byte non-zero.
@@ -44,7 +44,7 @@ struct TypeInfo {
 extern fn ptr_to_type(ptr: String borrow) -> TypeInfo alias
 extern fn type_to_ptr(t: TypeInfo borrow) -> String alias
 
-fn type_make(kind: TypeKind, name: String, llvm: String) -> TypeInfo {
+fn typeMake(kind: TypeKind, name: String, llvm: String) -> TypeInfo {
     return TypeInfo {
         kind: kind,
         name: name,
@@ -58,37 +58,37 @@ fn type_make(kind: TypeKind, name: String, llvm: String) -> TypeInfo {
 // ownership and makes the original unusable. A TypeInfo is a descriptor, not an owned
 // resource: where the intent is "these two names describe the same type", take an
 // independent copy instead of aliasing.
-fn type_copy(t: TypeInfo) -> TypeInfo {
-    let dup = type_make(t.kind, t.name, t.llvm)
+fn typeCopy(t: TypeInfo) -> TypeInfo {
+    let dup = typeMake(t.kind, t.name, t.llvm)
     dup.child = t.child
     dup.next = t.next
     return dup
 }
 
-fn type_invalid() -> TypeInfo { return type_make(TypeKind.INVALID, "Invalid", "") }
-fn type_void() -> TypeInfo { return type_make(TypeKind.VOID, "Void", "void") }
-fn type_int() -> TypeInfo { return type_make(TypeKind.INT, "Int", "i32") }
-fn type_float() -> TypeInfo { return type_make(TypeKind.FLOAT, "Float", "double") }
-fn type_bool() -> TypeInfo { return type_make(TypeKind.BOOL, "Bool", "i1") }
-fn type_char() -> TypeInfo { return type_make(TypeKind.CHAR, "Char", "i8") }
-fn type_string() -> TypeInfo { return type_make(TypeKind.STRING, "String", "ptr") }
-fn type_ptr() -> TypeInfo { return type_make(TypeKind.PTR, "Ptr", "ptr") }
+fn typeInvalid() -> TypeInfo { return typeMake(TypeKind.INVALID, "Invalid", "") }
+fn typeVoid() -> TypeInfo { return typeMake(TypeKind.VOID, "Void", "void") }
+fn typeInt() -> TypeInfo { return typeMake(TypeKind.INT, "Int", "i32") }
+fn typeFloat() -> TypeInfo { return typeMake(TypeKind.FLOAT, "Float", "double") }
+fn typeBool() -> TypeInfo { return typeMake(TypeKind.BOOL, "Bool", "i1") }
+fn typeChar() -> TypeInfo { return typeMake(TypeKind.CHAR, "Char", "i8") }
+fn typeString() -> TypeInfo { return typeMake(TypeKind.STRING, "String", "ptr") }
+fn typePtr() -> TypeInfo { return typeMake(TypeKind.PTR, "Ptr", "ptr") }
 
 // Sized integers. `Int` is the 32-bit signed default. Unsigned names start with "U";
 // usize/isize are pointer-width (i64 on native; the wasm target lowers these to i32).
-fn type_i8() -> TypeInfo { return type_make(TypeKind.INT, "I8", "i8") }
-fn type_i16() -> TypeInfo { return type_make(TypeKind.INT, "I16", "i16") }
-fn type_i64() -> TypeInfo { return type_make(TypeKind.INT, "I64", "i64") }
-fn type_isize() -> TypeInfo { return type_make(TypeKind.INT, "Isize", "i64") }
-fn type_u8() -> TypeInfo { return type_make(TypeKind.INT, "U8", "i8") }
-fn type_u16() -> TypeInfo { return type_make(TypeKind.INT, "U16", "i16") }
-fn type_u32() -> TypeInfo { return type_make(TypeKind.INT, "U32", "i32") }
-fn type_u64() -> TypeInfo { return type_make(TypeKind.INT, "U64", "i64") }
-fn type_usize() -> TypeInfo { return type_make(TypeKind.INT, "Usize", "i64") }
+fn typeI8() -> TypeInfo { return typeMake(TypeKind.INT, "I8", "i8") }
+fn typeI16() -> TypeInfo { return typeMake(TypeKind.INT, "I16", "i16") }
+fn typeI64() -> TypeInfo { return typeMake(TypeKind.INT, "I64", "i64") }
+fn typeIsize() -> TypeInfo { return typeMake(TypeKind.INT, "Isize", "i64") }
+fn typeU8() -> TypeInfo { return typeMake(TypeKind.INT, "U8", "i8") }
+fn typeU16() -> TypeInfo { return typeMake(TypeKind.INT, "U16", "i16") }
+fn typeU32() -> TypeInfo { return typeMake(TypeKind.INT, "U32", "i32") }
+fn typeU64() -> TypeInfo { return typeMake(TypeKind.INT, "U64", "i64") }
+fn typeUsize() -> TypeInfo { return typeMake(TypeKind.INT, "Usize", "i64") }
 
 // Bit width of an integer type, from its LLVM spelling. Casting needs it to
 // choose between truncation and extension.
-fn type_int_bits(t: TypeInfo) -> Int {
+fn typeIntBits(t: TypeInfo) -> Int {
     if (str_equals(t.llvm, "i1") == 1) { return 1 }
     if (str_equals(t.llvm, "i8") == 1) { return 8 }
     if (str_equals(t.llvm, "i16") == 1) { return 16 }
@@ -97,7 +97,7 @@ fn type_int_bits(t: TypeInfo) -> Int {
     return 0
 }
 
-fn type_int_is_unsigned(t: TypeInfo) -> Bool {
+fn typeIntIsUnsigned(t: TypeInfo) -> Bool {
     if (t.kind != TypeKind.INT) { return false }
     return str_starts_with(t.name, "U") == 1
 }
@@ -114,20 +114,20 @@ fn type_int_is_unsigned(t: TypeInfo) -> Bool {
 // is frame storage: there is no allocation to own, nothing for a drop to
 // reclaim, and `drop(arr)` would hand a stack pointer to the deallocator.
 // Making them affine would buy the aliasing rule and cost that hazard.
-fn type_is_move_only(t: TypeInfo) -> Bool {
+fn typeIsMoveOnly(t: TypeInfo) -> Bool {
     if (t.kind == TypeKind.STRUCT) { return true }
     if (t.kind == TypeKind.STRING) { return true }
     // REQUIREMENTS 4. `T?` owns whatever `T` owns; being absent is a state of
     // the slot, not a different kind of ownership.
     if (t.kind == TypeKind.OPTIONAL) {
-        if (str_equals(t.child, "") == 0) { return type_is_move_only(ptr_to_type(t.child)) }
+        if (str_equals(t.child, "") == 0) { return typeIsMoveOnly(ptr_to_type(t.child)) }
         return false
     }
     return t.kind == TypeKind.LIST
 }
 
-fn type_struct(name: String) -> TypeInfo {
-    return type_make(TypeKind.STRUCT, name, "ptr")
+fn typeStruct(name: String) -> TypeInfo {
+    return typeMake(TypeKind.STRUCT, name, "ptr")
 }
 
 // ---------------------------------------------------------------------------
@@ -153,78 +153,78 @@ fn type_struct(name: String) -> TypeInfo {
 // ---------------------------------------------------------------------------
 
 // The type of a bare `none`: optional, with no inner type to speak of. Its empty
-// `child` is what makes type_equals match it against any `T?`, which is how the
+// `child` is what makes typeEquals match it against any `T?`, which is how the
 // literal reaches a typed slot without an inference pass to give it one.
-fn type_none() -> TypeInfo { return type_make(TypeKind.OPTIONAL, "none", "ptr") }
+fn typeNone() -> TypeInfo { return typeMake(TypeKind.OPTIONAL, "none", "ptr") }
 
-fn type_optional(inner: TypeInfo) -> TypeInfo {
-    let t = type_make(TypeKind.OPTIONAL, str_concat(inner.name, "?"), "ptr")
+fn typeOptional(inner: TypeInfo) -> TypeInfo {
+    let t = typeMake(TypeKind.OPTIONAL, str_concat(inner.name, "?"), "ptr")
     t.child = type_to_ptr(inner)
     return t
 }
 
-fn type_optional_inner(t: TypeInfo) -> TypeInfo {
+fn typeOptionalInner(t: TypeInfo) -> TypeInfo {
     if (t.kind == TypeKind.OPTIONAL and str_equals(t.child, "") == 0) {
         return ptr_to_type(t.child)
     }
-    return type_invalid()
+    return typeInvalid()
 }
 
 // Only a reference can be absent. A scalar has no spare representation -- 0 is a
 // perfectly good Int -- so `Int?` would need a second word and is refused rather
 // than silently given one.
-fn type_can_be_optional(t: TypeInfo) -> Bool {
+fn typeCanBeOptional(t: TypeInfo) -> Bool {
     if (t.kind == TypeKind.STRUCT) { return true }
     if (t.kind == TypeKind.STRING) { return true }
     if (t.kind == TypeKind.LIST) { return true }
     return t.kind == TypeKind.PTR
 }
 
-fn type_enum(name: String) -> TypeInfo {
-    return type_make(TypeKind.ENUM, name, "i32")
+fn typeEnum(name: String) -> TypeInfo {
+    return typeMake(TypeKind.ENUM, name, "i32")
 }
 
-fn type_array(elem: TypeInfo) -> TypeInfo {
-    let mut t = type_make(TypeKind.ARRAY, "Array", "ptr")
+fn typeArray(elem: TypeInfo) -> TypeInfo {
+    let mut t = typeMake(TypeKind.ARRAY, "Array", "ptr")
     t.child = type_to_ptr(elem)
     return t
 }
 
-fn type_list(elem: TypeInfo) -> TypeInfo {
-    let mut t = type_make(TypeKind.LIST, "List", "ptr")
+fn typeList(elem: TypeInfo) -> TypeInfo {
+    let mut t = typeMake(TypeKind.LIST, "List", "ptr")
     t.child = type_to_ptr(elem)
     return t
 }
 
-fn type_is_valid(t: TypeInfo) -> Bool {
+fn typeIsValid(t: TypeInfo) -> Bool {
     return t.kind != TypeKind.INVALID
 }
 
-fn type_display(t: TypeInfo) -> String {
+fn typeDisplay(t: TypeInfo) -> String {
     if (t.kind == TypeKind.STRUCT) { return t.name }
     if (t.kind == TypeKind.ENUM) { return t.name }
     if (t.kind == TypeKind.ARRAY) {
         if (str_equals(t.child, "") == 0) {
-            return str_concat(str_concat("[", type_display(ptr_to_type(t.child))), "]")
+            return str_concat(str_concat("[", typeDisplay(ptr_to_type(t.child))), "]")
         }
         return "[Invalid]"
     }
     if (t.kind == TypeKind.LIST) {
         if (str_equals(t.child, "") == 0) {
-            return str_concat(str_concat("List<", type_display(ptr_to_type(t.child))), ">")
+            return str_concat(str_concat("List<", typeDisplay(ptr_to_type(t.child))), ">")
         }
         return "List"
     }
     if (t.kind == TypeKind.OPTIONAL) {
         if (str_equals(t.child, "") == 0) {
-            return str_concat(type_display(ptr_to_type(t.child)), "?")
+            return str_concat(typeDisplay(ptr_to_type(t.child)), "?")
         }
         return "none"
     }
     return t.name
 }
 
-fn type_equals(a: TypeInfo, b: TypeInfo) -> Bool {
+fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
     if (a.kind != b.kind) { return false }
     if (a.kind == TypeKind.STRUCT or a.kind == TypeKind.ENUM) {
         return str_equals(a.name, b.name) == 1
@@ -236,31 +236,31 @@ fn type_equals(a: TypeInfo, b: TypeInfo) -> Bool {
         if (str_equals(a.child, "") == 1 or str_equals(b.child, "") == 1) {
             return str_equals(a.child, b.child) == 1
         }
-        return type_equals(ptr_to_type(a.child), ptr_to_type(b.child))
+        return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
     }
     if (a.kind == TypeKind.LIST) {
         // A list with an unknown element type (from list_new()) matches any list.
         if (str_equals(a.child, "") == 1 or str_equals(b.child, "") == 1) { return true }
         let ac = ptr_to_type(a.child)
         let bc = ptr_to_type(b.child)
-        if (type_is_valid(ac) == false or type_is_valid(bc) == false) { return true }
-        return type_equals(ac, bc)
+        if (typeIsValid(ac) == false or typeIsValid(bc) == false) { return true }
+        return typeEquals(ac, bc)
     }
     if (a.kind == TypeKind.OPTIONAL) {
         // A bare `none` carries no inner type, so it matches any optional. That
         // is what lets `none` be written wherever a `T?` is wanted without an
         // inference pass to give it one.
         if (str_equals(a.child, "") == 1 or str_equals(b.child, "") == 1) { return true }
-        return type_equals(ptr_to_type(a.child), ptr_to_type(b.child))
+        return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
     }
     return true
 }
 
-fn type_is_numeric(t: TypeInfo) -> Bool {
+fn typeIsNumeric(t: TypeInfo) -> Bool {
     return t.kind == TypeKind.INT or t.kind == TypeKind.FLOAT
 }
 
-fn type_ir_key(t: TypeInfo) -> String {
+fn typeIrKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.VOID) { return "void" }
     if (t.kind == TypeKind.INT) { return t.llvm }
     if (t.kind == TypeKind.FLOAT) { return "double" }
@@ -287,7 +287,7 @@ fn type_ir_key(t: TypeInfo) -> String {
     return ""
 }
 
-fn type_sem_key(t: TypeInfo) -> String {
+fn typeSemKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.VOID) { return "Void" }
     if (t.kind == TypeKind.INT) { return t.name }
     if (t.kind == TypeKind.FLOAT) { return "Float" }
@@ -299,120 +299,120 @@ fn type_sem_key(t: TypeInfo) -> String {
     if (t.kind == TypeKind.ENUM) { return str_concat("enum:", t.name) }
     if (t.kind == TypeKind.ARRAY) {
         if (str_equals(t.child, "") == 0) {
-            return str_concat("array:", type_sem_key(ptr_to_type(t.child)))
+            return str_concat("array:", typeSemKey(ptr_to_type(t.child)))
         }
         return "array:Invalid"
     }
     if (t.kind == TypeKind.LIST) {
         if (str_equals(t.child, "") == 0) {
-            return str_concat("list:", type_sem_key(ptr_to_type(t.child)))
+            return str_concat("list:", typeSemKey(ptr_to_type(t.child)))
         }
         return "list:Invalid"
     }
     if (t.kind == TypeKind.OPTIONAL) {
         if (str_equals(t.child, "") == 0) {
-            return str_concat("opt:", type_sem_key(ptr_to_type(t.child)))
+            return str_concat("opt:", typeSemKey(ptr_to_type(t.child)))
         }
         return "opt:Invalid"
     }
     return "Invalid"
 }
 
-fn type_storage_key(t: TypeInfo) -> String {
-    let key = type_ir_key(t)
+fn typeStorageKey(t: TypeInfo) -> String {
+    let key = typeIrKey(t)
     if (str_equals(key, "ptrptr") == 1) { return "ptr" }
     if (str_starts_with(key, "struct:") == 1) { return "ptr" }
     return key
 }
 
-fn type_from_annotation(tn: ASTNode) -> TypeInfo {
+fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
     if (tn.i1 == 1) {
         if (str_equals(tn.child1, "") == 0) {
-            return type_array(type_from_annotation(ptr_to_node(tn.child1)))
+            return typeArray(typeFromAnnotation(ptr_to_node(tn.child1)))
         }
-        return type_array(type_invalid())
+        return typeArray(typeInvalid())
     }
 
-    if (str_equals(tn.s1, "Int") == 1) { return type_int() }
-    if (str_equals(tn.s1, "Float") == 1) { return type_float() }
-    if (str_equals(tn.s1, "Bool") == 1) { return type_bool() }
-    if (str_equals(tn.s1, "String") == 1) { return type_string() }
-    if (str_equals(tn.s1, "Char") == 1) { return type_char() }
-    if (str_equals(tn.s1, "I8") == 1) { return type_i8() }
-    if (str_equals(tn.s1, "I16") == 1) { return type_i16() }
-    if (str_equals(tn.s1, "I64") == 1) { return type_i64() }
-    if (str_equals(tn.s1, "Isize") == 1) { return type_isize() }
-    if (str_equals(tn.s1, "U8") == 1) { return type_u8() }
-    if (str_equals(tn.s1, "U16") == 1) { return type_u16() }
-    if (str_equals(tn.s1, "U32") == 1) { return type_u32() }
-    if (str_equals(tn.s1, "U64") == 1) { return type_u64() }
-    if (str_equals(tn.s1, "Usize") == 1) { return type_usize() }
-    if (str_equals(tn.s1, "") == 1) { return type_void() }
-    return type_struct(tn.s1)
+    if (str_equals(tn.s1, "Int") == 1) { return typeInt() }
+    if (str_equals(tn.s1, "Float") == 1) { return typeFloat() }
+    if (str_equals(tn.s1, "Bool") == 1) { return typeBool() }
+    if (str_equals(tn.s1, "String") == 1) { return typeString() }
+    if (str_equals(tn.s1, "Char") == 1) { return typeChar() }
+    if (str_equals(tn.s1, "I8") == 1) { return typeI8() }
+    if (str_equals(tn.s1, "I16") == 1) { return typeI16() }
+    if (str_equals(tn.s1, "I64") == 1) { return typeI64() }
+    if (str_equals(tn.s1, "Isize") == 1) { return typeIsize() }
+    if (str_equals(tn.s1, "U8") == 1) { return typeU8() }
+    if (str_equals(tn.s1, "U16") == 1) { return typeU16() }
+    if (str_equals(tn.s1, "U32") == 1) { return typeU32() }
+    if (str_equals(tn.s1, "U64") == 1) { return typeU64() }
+    if (str_equals(tn.s1, "Usize") == 1) { return typeUsize() }
+    if (str_equals(tn.s1, "") == 1) { return typeVoid() }
+    return typeStruct(tn.s1)
 }
 
-fn type_from_ir_key(key: String) -> TypeInfo {
-    if (str_equals(key, "i32") == 1) { return type_int() }
-    if (str_equals(key, "double") == 1) { return type_float() }
-    if (str_equals(key, "i1") == 1) { return type_bool() }
-    if (str_equals(key, "i8") == 1) { return type_char() }
-    if (str_equals(key, "ptr") == 1) { return type_ptr() }
-    if (str_equals(key, "void") == 1) { return type_void() }
+fn typeFromIrKey(key: String) -> TypeInfo {
+    if (str_equals(key, "i32") == 1) { return typeInt() }
+    if (str_equals(key, "double") == 1) { return typeFloat() }
+    if (str_equals(key, "i1") == 1) { return typeBool() }
+    if (str_equals(key, "i8") == 1) { return typeChar() }
+    if (str_equals(key, "ptr") == 1) { return typePtr() }
+    if (str_equals(key, "void") == 1) { return typeVoid() }
     if (str_starts_with(key, "struct:") == 1) {
-        return type_struct(str_substring(key, 7, str_length(key) - 7))
+        return typeStruct(str_substring(key, 7, str_length(key) - 7))
     }
-    return type_invalid()
+    return typeInvalid()
 }
 
-fn type_from_sem_key(key: String) -> TypeInfo {
-    if (str_equals(key, "Int") == 1) { return type_int() }
-    if (str_equals(key, "Float") == 1) { return type_float() }
-    if (str_equals(key, "Bool") == 1) { return type_bool() }
-    if (str_equals(key, "Char") == 1) { return type_char() }
-    if (str_equals(key, "String") == 1) { return type_string() }
-    if (str_equals(key, "Ptr") == 1) { return type_ptr() }
-    if (str_equals(key, "Void") == 1) { return type_void() }
-    if (str_equals(key, "I8") == 1) { return type_i8() }
-    if (str_equals(key, "I16") == 1) { return type_i16() }
-    if (str_equals(key, "I64") == 1) { return type_i64() }
-    if (str_equals(key, "Isize") == 1) { return type_isize() }
-    if (str_equals(key, "U8") == 1) { return type_u8() }
-    if (str_equals(key, "U16") == 1) { return type_u16() }
-    if (str_equals(key, "U32") == 1) { return type_u32() }
-    if (str_equals(key, "U64") == 1) { return type_u64() }
-    if (str_equals(key, "Usize") == 1) { return type_usize() }
+fn typeFromSemKey(key: String) -> TypeInfo {
+    if (str_equals(key, "Int") == 1) { return typeInt() }
+    if (str_equals(key, "Float") == 1) { return typeFloat() }
+    if (str_equals(key, "Bool") == 1) { return typeBool() }
+    if (str_equals(key, "Char") == 1) { return typeChar() }
+    if (str_equals(key, "String") == 1) { return typeString() }
+    if (str_equals(key, "Ptr") == 1) { return typePtr() }
+    if (str_equals(key, "Void") == 1) { return typeVoid() }
+    if (str_equals(key, "I8") == 1) { return typeI8() }
+    if (str_equals(key, "I16") == 1) { return typeI16() }
+    if (str_equals(key, "I64") == 1) { return typeI64() }
+    if (str_equals(key, "Isize") == 1) { return typeIsize() }
+    if (str_equals(key, "U8") == 1) { return typeU8() }
+    if (str_equals(key, "U16") == 1) { return typeU16() }
+    if (str_equals(key, "U32") == 1) { return typeU32() }
+    if (str_equals(key, "U64") == 1) { return typeU64() }
+    if (str_equals(key, "Usize") == 1) { return typeUsize() }
     if (str_starts_with(key, "struct:") == 1) {
-        return type_struct(str_substring(key, 7, str_length(key) - 7))
+        return typeStruct(str_substring(key, 7, str_length(key) - 7))
     }
     if (str_starts_with(key, "enum:") == 1) {
-        return type_enum(str_substring(key, 5, str_length(key) - 5))
+        return typeEnum(str_substring(key, 5, str_length(key) - 5))
     }
     if (str_starts_with(key, "array:") == 1) {
-        return type_array(type_from_sem_key(str_substring(key, 6, str_length(key) - 6)))
+        return typeArray(typeFromSemKey(str_substring(key, 6, str_length(key) - 6)))
     }
     if (str_starts_with(key, "list:") == 1) {
-        return type_list(type_from_sem_key(str_substring(key, 5, str_length(key) - 5)))
+        return typeList(typeFromSemKey(str_substring(key, 5, str_length(key) - 5)))
     }
-    return type_invalid()
+    return typeInvalid()
 }
 
-fn node_set_type(node: ASTNode, t: TypeInfo) {
-    node.type_info = type_to_ptr(t)
+fn nodeSetType(node: ASTNode, t: TypeInfo) {
+    node.typeInfo = type_to_ptr(t)
 }
 
-// `node_exists` rather than `str_equals(type_info, "")`: a TypeInfo begins with
+// `nodeExists` rather than `str_equals(typeInfo, "")`: a TypeInfo begins with
 // its `kind`, and `TypeKind.INVALID` is 0, so a node carrying an invalid type
-// used to report as carrying none. That happened to be harmless -- node_get_type
-// returns type_invalid() on both paths -- but it was the same latent bug as the
+// used to report as carrying none. That happened to be harmless -- nodeGetType
+// returns typeInvalid() on both paths -- but it was the same latent bug as the
 // module root, and "wrong in a way that currently cancels out" is not a state to
 // leave a predicate in. See ptr_is_null in ast.psm.
-fn node_has_type(node: ASTNode) -> Bool {
-    return node_exists(node.type_info)
+fn nodeHasType(node: ASTNode) -> Bool {
+    return nodeExists(node.typeInfo)
 }
 
-fn node_get_type(node: ASTNode) -> TypeInfo {
-    if (node_has_type(node)) {
-        return ptr_to_type(node.type_info)
+fn nodeGetType(node: ASTNode) -> TypeInfo {
+    if (nodeHasType(node)) {
+        return ptr_to_type(node.typeInfo)
     }
-    return type_invalid()
+    return typeInvalid()
 }

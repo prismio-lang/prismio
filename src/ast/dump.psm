@@ -13,10 +13,10 @@
 //
 // Used by `prismio dump-ast`. Produces no IR and touches no codegen.
 
-import ast
-import types
-import utils
-import diag
+import ast.nodes
+import ast.types
+import common.text
+import common.diagnostics
 
 extern fn str_length(s: String) -> Int
 extern fn str_byte_at(s: String, index: Int) -> Char
@@ -24,7 +24,7 @@ extern fn str_from_char(c: Char) -> String
 extern fn str_equals(s1: String, s2: String) -> Int
 extern fn int_to_str(value: Int) -> String
 
-fn hex_digit(v: Int) -> String {
+fn hexDigit(v: Int) -> String {
     if (v == 0) { return "0" }
     else if (v == 1) { return "1" }
     else if (v == 2) { return "2" }
@@ -46,13 +46,13 @@ fn hex_digit(v: Int) -> String {
 // Bytes, not characters: emitting one byte at a time reproduces the original
 // UTF-8 sequence unchanged, so non-ASCII in a string literal or an identifier
 // survives without needing to be decoded first.
-fn json_string(s: String) {
+fn jsonString(s: String) {
     print("\"")
     let n = str_length(s)
     let mut i = 0
     while (i < n) {
         let b = str_byte_at(s, i)
-        let c = char_code(b)
+        let c = charCode(b)
         if (c == 34) { print("\\\"") }
         else if (c == 92) { print("\\\\") }
         else if (c == 10) { print("\\n") }
@@ -61,8 +61,8 @@ fn json_string(s: String) {
         else if (c >= 0 and c < 32) {
             print("\\u00")
             let hi = c / 16
-            print(hex_digit(hi))
-            print(hex_digit(c - hi * 16))
+            print(hexDigit(hi))
+            print(hexDigit(c - hi * 16))
         }
         else { print(str_from_char(b)) }
         i = i + 1
@@ -70,14 +70,14 @@ fn json_string(s: String) {
     print("\"")
 }
 
-fn json_field_str(name: String, value: String) {
+fn jsonFieldStr(name: String, value: String) {
     print("\"")
     print(name)
     print("\":")
-    json_string(value)
+    jsonString(value)
 }
 
-fn json_field_int(name: String, value: Int) {
+fn jsonFieldInt(name: String, value: Int) {
     print("\"")
     print(name)
     print("\":")
@@ -87,7 +87,7 @@ fn json_field_int(name: String, value: Int) {
 // Names rather than ordinals, so the consumer never depends on the declaration
 // order of NodeKind in ast.psm. Adding a kind without adding it here yields
 // "UNKNOWN", which the consumer rejects loudly rather than silently misreading.
-fn node_kind_name(k: NodeKind) -> String {
+fn nodeKindName(k: NodeKind) -> String {
     if (k == NodeKind.MODULE) { return "MODULE" }
     else if (k == NodeKind.IMPORT_STATEMENT) { return "IMPORT_STATEMENT" }
     else if (k == NodeKind.EXTERN_FUNCTION) { return "EXTERN_FUNCTION" }
@@ -128,64 +128,64 @@ fn node_kind_name(k: NodeKind) -> String {
     return "UNKNOWN"
 }
 
-fn dump_chain(head: String) {
+fn dumpChain(head: String) {
     print("[")
     let mut p = head
     let mut first = true
-    while (node_exists(p)) {
+    while (nodeExists(p)) {
         if (first == false) { print(",") }
         first = false
         let node = ptr_to_node(p)
-        dump_node(p)
+        dumpNode(p)
         p = node.next
     }
     print("]")
 }
 
-fn dump_node(ptr: String) {
+fn dumpNode(ptr: String) {
     let n = ptr_to_node(ptr)
 
     print("{")
-    json_field_str("k", node_kind_name(n.kind))
+    jsonFieldStr("k", nodeKindName(n.kind))
     print(",")
-    json_field_str("s1", n.s1)
+    jsonFieldStr("s1", n.s1)
     print(",")
-    json_field_str("s2", n.s2)
+    jsonFieldStr("s2", n.s2)
     print(",")
-    json_field_int("i1", n.i1)
+    jsonFieldInt("i1", n.i1)
     print(",")
-    json_field_int("i2", n.i2)
+    jsonFieldInt("i2", n.i2)
     print(",")
-    json_field_int("ln", n.line)
+    jsonFieldInt("ln", n.line)
     print(",")
-    json_field_int("co", n.col)
+    jsonFieldInt("co", n.col)
     print(",")
-    json_field_int("le", n.len)
+    jsonFieldInt("le", n.len)
     print(",")
-    json_field_int("fi", n.file)
+    jsonFieldInt("fi", n.file)
 
     // The type sema resolved for this node, rendered the way diagnostics render
     // it. Absent on nodes sema does not type (statements, declarations).
     print(",")
-    if (node_exists(n.type_info)) {
-        json_field_str("ty", type_display(ptr_to_type(n.type_info)))
+    if (nodeExists(n.typeInfo)) {
+        jsonFieldStr("ty", typeDisplay(ptr_to_type(n.typeInfo)))
     } else {
-        json_field_str("ty", "")
+        jsonFieldStr("ty", "")
     }
 
     print(",\"c1\":")
-    dump_chain(n.child1)
+    dumpChain(n.child1)
     print(",\"c2\":")
-    dump_chain(n.child2)
+    dumpChain(n.child2)
     print(",\"c3\":")
-    dump_chain(n.child3)
+    dumpChain(n.child3)
     print("}")
 }
 
 // Probing rather than counting: the registry has no size accessor. An
 // unregistered id reports "<unknown>" rather than an empty string, so both are
 // treated as the end. 4096 is far past any real import graph.
-fn dump_file_table() {
+fn dumpFileTable() {
     print("[")
     let mut i = 0
     let mut first = true
@@ -197,9 +197,9 @@ fn dump_file_table() {
             if (first == false) { print(",") }
             first = false
             print("{")
-            json_field_int("id", i)
+            jsonFieldInt("id", i)
             print(",")
-            json_field_str("path", path)
+            jsonFieldStr("path", path)
             print("}")
             i = i + 1
         }
@@ -207,18 +207,18 @@ fn dump_file_table() {
     print("]")
 }
 
-fn dump_ast_json(root: ASTNode, source_path: String, compiler_version: String) {
+fn dumpAstJson(root: ASTNode, sourcePath: String, compilerVersion: String) {
     print("{")
-    json_field_str("format", "aif-ast")
+    jsonFieldStr("format", "aif-ast")
     print(",")
-    json_field_int("version", 1)
+    jsonFieldInt("version", 1)
     print(",")
-    json_field_str("source", source_path)
+    jsonFieldStr("source", sourcePath)
     print(",")
-    json_field_str("compiler", compiler_version)
+    jsonFieldStr("compiler", compilerVersion)
     print(",\"files\":")
-    dump_file_table()
+    dumpFileTable()
     print(",\"decls\":")
-    dump_chain(root.child1)
+    dumpChain(root.child1)
     println("}")
 }

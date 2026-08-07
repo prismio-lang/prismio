@@ -2,7 +2,7 @@
 //
 // The renderer lives in runtime/diagnostics.c because it needs the original text
 // of the file a node came from, which the frontend has thrown away by the time it
-// reports anything -- and because `resolve_imports` flattens every module into a
+// reports anything -- and because `resolveImports` flattens every module into a
 // single AST, so "which file" has to travel on the node itself as an id into the
 // registry rather than being implied by context.
 //
@@ -39,6 +39,6 @@ extern fn diag_reset()
 
 // Quotes a name the way every message in the compiler quotes one, so the style
 // cannot drift between call sites.
-fn diag_quote(name: String) -> String {
+fn diagQuote(name: String) -> String {
     return str_concat(str_concat("`", name), "`")
 }

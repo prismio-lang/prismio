@@ -1,0 +1,242 @@
+// Statements: blocks, control flow, assignment.
+
+import lexer.token
+import common.text
+import ast.nodes
+import common.diagnostics
+
+extern fn exit(code: Int)
+
+fn parseBlock(p: Parser) -> ASTNode {
+    let open = parserCurrent(p)
+    parserExpectVal(p, TokenType.SEPARATOR, "{", "block")
+    let blockNode = parserNode(p, NodeKind.BLOCK)
+
+    let statements = nodeList()
+    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
+        // Without this the loop spins at EOF until some inner parser happens to
+        // fail, and blames whatever it was looking at instead of the brace that
+        // was never closed.
+        if (parserCheck(p, TokenType.EOF)) {
+            diag_error_at(open.file, open.line, open.col, open.len,
+                          "this block is never closed; reached end of file looking for `}`")
+            diag_finish()
+            exit(1)
+        }
+        nodeListPush(statements, parseStatement(p))
+    }
+
+    parserExpectVal(p, TokenType.SEPARATOR, "}", "block")
+    blockNode.child1 = statements.head
+    return blockNode
+}
+
+fn parseIfStatement(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "if", "if statement")
+    let ifNode = parserNode(p, NodeKind.IF_STATEMENT)
+
+    parserExpectVal(p, TokenType.SEPARATOR, "(", "if condition")
+    ifNode.child1 = node_to_ptr(parseExpression(p, 0))
+    parserExpectVal(p, TokenType.SEPARATOR, ")", "if condition")
+
+    ifNode.child2 = node_to_ptr(parseBlock(p))
+
+    if (parserMatchVal(p, TokenType.KEYWORD, "else")) {
+        if (parserCheckVal(p, TokenType.KEYWORD, "if")) {
+            ifNode.child3 = node_to_ptr(parseIfStatement(p))
+        } else {
+            ifNode.child3 = node_to_ptr(parseBlock(p))
+        }
+    }
+
+    return ifNode
+}
+
+fn parseWhileStatement(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "while", "while statement")
+    let whileNode = parserNode(p, NodeKind.WHILE_STATEMENT)
+
+    parserExpectVal(p, TokenType.SEPARATOR, "(", "while condition")
+    whileNode.child1 = node_to_ptr(parseExpression(p, 0))
+    parserExpectVal(p, TokenType.SEPARATOR, ")", "while condition")
+
+    whileNode.child2 = node_to_ptr(parseBlock(p))
+    return whileNode
+}
+
+fn parseLoopStatement(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "loop", "loop statement")
+    let loopNode = parserNode(p, NodeKind.LOOP_STATEMENT)
+    loopNode.child1 = node_to_ptr(parseBlock(p))
+    return loopNode
+}
+
+// `region <name> { ... }` (SPEC 5.2). The name is a label, not a binding: it
+// identifies the arena in the manifest so that a reader can tell which `region`
+// in the source a `region:parse` placement refers to.
+fn parseRegionStatement(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "region", "region statement")
+
+    let regionNode = parserNode(p, NodeKind.REGION_STATEMENT)
+    let name = parserCurrent(p)
+    if (name.type == TokenType.IDENTIFIER) {
+        regionNode.s1 = name.value
+        parserAdvance(p)
+    } else {
+        parserFatal(p, str_concat("expected a name for the region, found ",
+                                   parserDescribe(name)))
+    }
+
+    // REQUIREMENTS 19. `region work pin(4096) { … }` asserts a byte cap on what
+    // this region's arena serves, and the build fails when the static estimate
+    // exceeds it. A cap belongs on a region rather than on a binding because a
+    // budget is a property of a block's peak, not of one value -- which is the
+    // one place SPEC 5.4's `pin` had nothing to say.
+    //
+    // Contextual, like every other use of `pin`: only an annotation when a `(`
+    // follows, so a region may still be called `pin`.
+    if (parserAtAnnotation(p, "pin")) {
+        parserAdvance(p)
+        parserExpectVal(p, TokenType.SEPARATOR, "(", "region budget")
+        let cap = parserCurrent(p)
+        if (cap.type != TokenType.NUMBER_LITERAL) {
+            parserFatal(p, str_concat("expected a byte budget, found ", parserDescribe(cap)))
+        }
+        regionNode.i1 = str_to_int(cap.value)
+        parserAdvance(p)
+        parserExpectVal(p, TokenType.SEPARATOR, ")", "region budget")
+    }
+
+    regionNode.child1 = node_to_ptr(parseBlock(p))
+    return regionNode
+}
+
+fn parseForStatement(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "for", "for statement")
+    let forNode = parserNode(p, NodeKind.FOR_STATEMENT)
+
+    let name = parserCurrent(p)
+    forNode.s1 = name.value
+    parserExpect(p, TokenType.IDENTIFIER, "for loop variable")
+    parserExpectVal(p, TokenType.KEYWORD, "in", "for ... in")
+
+    // Otherwise `for i in 0..n { ... }` reads `n { ... }` as a struct literal and
+    // swallows the body.
+    p.allowStructLit = 0
+    forNode.child1 = node_to_ptr(parseExpression(p, 0))
+    parserExpectVal(p, TokenType.RANGE, "..", "for range")
+    forNode.child2 = node_to_ptr(parseExpression(p, 0))
+    p.allowStructLit = 1
+
+    forNode.child3 = node_to_ptr(parseBlock(p))
+    return forNode
+}
+
+fn parseMatchArm(p: Parser) -> ASTNode {
+    let arm = parserNode(p, NodeKind.MATCH_ARM)
+    if (parserMatchVal(p, TokenType.IDENTIFIER, "_")) {
+        arm.s1 = "_"
+    } else {
+        arm.child1 = node_to_ptr(parseExpression(p, 0))
+    }
+    parserExpectVal(p, TokenType.FAT_ARROW, "=>", "match arm")
+    arm.child2 = node_to_ptr(parseBlock(p))
+    return arm
+}
+
+fn parseMatchStatement(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "match", "match statement")
+    let matchNode = parserNode(p, NodeKind.MATCH_STATEMENT)
+
+    parserExpectVal(p, TokenType.SEPARATOR, "(", "match scrutinee")
+    matchNode.child1 = node_to_ptr(parseExpression(p, 0))
+    parserExpectVal(p, TokenType.SEPARATOR, ")", "match scrutinee")
+
+    parserExpectVal(p, TokenType.SEPARATOR, "{", "match body")
+    let arms = nodeList()
+    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
+        nodeListPush(arms, parseMatchArm(p))
+        parserMatchVal(p, TokenType.SEPARATOR, ",")
+    }
+    parserExpectVal(p, TokenType.SEPARATOR, "}", "match body")
+
+    matchNode.child2 = arms.head
+    return matchNode
+}
+
+fn parseReturnStatement(p: Parser) -> ASTNode {
+    let retNode = parserNode(p, NodeKind.RETURN_STATEMENT)
+    let next = parserCurrent(p)
+    if (next.type != TokenType.SEPARATOR or str_equals(next.value, "}") == 0) {
+        retNode.child1 = node_to_ptr(parseExpression(p, 0))
+    }
+    return retNode
+}
+
+// `x op= e` becomes `x = x op e`.
+//
+// Restricted to a plain variable on the left. The desugaring names the target
+// twice, so a target with a subexpression -- `a[i()] += 1`, or `f().field += 1`
+// -- would evaluate that subexpression twice. Rejecting those is better than
+// silently doing it, and the workaround is to write the assignment out in full.
+fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: Token) -> ASTNode {
+    let op = str_substring(operatorToken.value, 0, 1)
+    parserAdvance(p)
+
+    if (target.kind != NodeKind.IDENTIFIER_EXPR) {
+        diag_error_at(target.file, target.line, target.col, target.len,
+            str_concat(str_concat("compound assignment ", diagQuote(operatorToken.value)),
+                       " requires a plain variable on the left"))
+        diag_note("the desugaring names the target twice, so a subexpression here would be evaluated twice; write the assignment out in full instead")
+        diag_finish()
+        exit(1)
+    }
+
+    let combined = parserNode(p, NodeKind.BINARY_EXPR)
+    combined.s1 = op
+    combined.child1 = node_to_ptr(target)
+    combined.child2 = node_to_ptr(parseExpression(p, 0))
+
+    let compound = parserNode(p, NodeKind.ASSIGNMENT_STATEMENT)
+    compound.child1 = node_to_ptr(target)
+    compound.child2 = node_to_ptr(combined)
+    return compound
+}
+
+fn parseStatement(p: Parser) -> ASTNode {
+    if (parserCheckVal(p, TokenType.KEYWORD, "if")) { return parseIfStatement(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "while")) { return parseWhileStatement(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "loop")) { return parseLoopStatement(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "match")) { return parseMatchStatement(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "for")) { return parseForStatement(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "region")) { return parseRegionStatement(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
+
+    if (parserMatchVal(p, TokenType.KEYWORD, "break")) {
+        return parserNode(p, NodeKind.BREAK_STATEMENT)
+    }
+    if (parserMatchVal(p, TokenType.KEYWORD, "continue")) {
+        return parserNode(p, NodeKind.CONTINUE_STATEMENT)
+    }
+    if (parserMatchVal(p, TokenType.KEYWORD, "return")) {
+        return parseReturnStatement(p)
+    }
+
+    let expr = parseExpression(p, 0)
+
+    if (parserMatchVal(p, TokenType.ASSIGNMENT_OPERATOR, "=")) {
+        let assignment = parserNode(p, NodeKind.ASSIGNMENT_STATEMENT)
+        assignment.child1 = node_to_ptr(expr)
+        assignment.child2 = node_to_ptr(parseExpression(p, 0))
+        return assignment
+    }
+
+    let operatorToken = parserCurrent(p)
+    if (operatorToken.type == TokenType.ASSIGNMENT_OPERATOR and str_length(operatorToken.value) == 2) {
+        return parseCompoundAssignment(p, expr, operatorToken)
+    }
+
+    let stmt = parserNode(p, NodeKind.EXPRESSION_STATEMENT)
+    stmt.child1 = node_to_ptr(expr)
+    return stmt
+}

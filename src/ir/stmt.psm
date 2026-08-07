@@ -1,0 +1,406 @@
+// Lowering statements, and the scope and region unwinding that leaving one implies.
+
+import ast.nodes
+import ast.types
+import common.text
+import common.diagnostics
+
+fn generateStatement(stmt: ASTNode) {
+    if (stmt.kind == NodeKind.VARIABLE_DECL) {
+        let varName = stmt.s1
+        let mut varType = "i32"
+        if (str_equals(stmt.child1, "") == 0) {
+            let typeNode = ptr_to_node(stmt.child1)
+            varType = mapTypeNode(typeNode)
+        } else {
+            if (str_equals(stmt.child2, "") == 0) {
+                varType = getExprType(ptr_to_node(stmt.child2))
+            }
+        }
+
+        // The initializer is generated before the binding is declared, so that
+        // `let x = x + 1` reads the *outer* x rather than the one being defined.
+        let mut initVal = ""
+        let hasInit = str_equals(stmt.child2, "") == 0
+        if (hasInit) {
+            initVal = generateExpression(ptr_to_node(stmt.child2))
+        }
+
+        // A fresh binding with its own slot. Two `let x` in sibling blocks get
+        // separate stack slots, so they can hold different types without one
+        // being written through a slot sized for the other.
+        ir_set_var_type(varName, varType)
+        let slot = ir_get_var_slot(varName)
+        let storeType = storageType(varType)
+        ir_alloca(storeType, slot)
+
+        if (hasInit) {
+            ir_store(storeType, initVal, slot)
+
+            // AIF Level 2. Only a binding whose initialiser *is* the allocation
+            // is droppable: `let b = a` has an identifier for an initialiser,
+            // so it registers no site and gets no entry -- and `a` is moved by
+            // it, so `a` gets skipped too. That leaks rather than double-frees,
+            // and it is what an ownership-transferring move would fix.
+            if (aif_frees_at_scope_node(stmt.child2) == 1
+                and chainAssignsName(irFunctionBody, varName) == false) {
+                ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
+            } else {
+                // AIF item 3. The initialiser is not an allocation here -- it is a
+                // call to a function that made one and handed it over. That is the
+                // ownership the escape lattice cannot express, so it is asked of
+                // the converged facts (the callee kept nothing, and allocated what
+                // it returned) plus the two syntactic guards the facts leave open.
+                let owned = aif_owns_call_result_at_node(stmt.child2)
+                if (owned != AIF_ELEM_NONE
+                    and chainAssignsName(irFunctionBody, varName) == false
+                    and chainReturnsName(irFunctionBody, varName) == false) {
+                    if (owned == AIF_ELEM_LIST) {
+                        ir_mark_droppable(varName, IR_DROP_LIST)
+                    } else if (owned == AIF_ELEM_TYPED) {
+                        ir_mark_droppable(varName, IR_DROP_TYPED)
+                    } else {
+                        ir_mark_droppable(varName, IR_DROP_OBJECT)
+                    }
+                }
+            }
+        }
+    }
+    
+    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        let targetNode = ptr_to_node(stmt.child1)
+        if (targetNode.kind == NodeKind.IDENTIFIER_EXPR) {
+            let varName = targetNode.s1
+            let mut varType = ir_get_var_type(varName)
+            let storeType = storageType(varType)
+            let val = generateExpression(ptr_to_node(stmt.child2))
+            if (ir_var_is_global(varName) == 1) {
+                ir_store_global(storeType, val, varName)
+            } else {
+                ir_store(storeType, val, ir_get_var_slot(varName))
+            }
+        }
+        if (targetNode.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+            let objectNode = ptr_to_node(targetNode.child1)
+            let objectVal = generateExpression(objectNode)
+            let objectType = getExprType(objectNode)
+            let structName = structTypeName(objectType)
+            let fieldIndex = ir_get_struct_field_index(structName, targetNode.s1)
+            let fieldType = storageType(ir_get_struct_field_type(structName, targetNode.s1))
+            let val = generateExpression(ptr_to_node(stmt.child2))
+
+            let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
+            // CYCLES 3, the assignment half. Retain before releasing, so a store
+            // of a value into the slot it already occupies does not free it
+            // between the two.
+            if (aif_field_is_counted(structName, targetNode.s1) == 1) {
+                let old = ir_get_temp_name(ir_load_ptr("ptr", ir_get_temp_name(slot)))
+                ir_call_begin()
+                ir_call_arg("ptr", val)
+                ir_call_end("void", "cyc_retain")
+                ir_call_begin()
+                ir_call_arg("ptr", old)
+                ir_call_end("void", "cyc_release")
+            }
+            ir_store_ptr(fieldType, val, ir_get_temp_name(slot))
+        }
+    }
+    
+    if (stmt.kind == NodeKind.RETURN_STATEMENT) {
+        // Every scope in the function unwinds at once, so the floor is 0. The
+        // returned value is never among them: returning it puts its escape at
+        // Caller, and nothing with that escape is droppable here.
+        if (str_equals(stmt.child1, "") == 0) {
+            let retVal = generateExpression(ptr_to_node(stmt.child1))
+            let retType = storageType(getExprType(ptr_to_node(stmt.child1)))
+            generateScopeDrops(0)
+            generateRegionExits(ir_region_depth())
+            ir_ret(retType, retVal)
+        } else {
+            generateScopeDrops(0)
+            generateRegionExits(ir_region_depth())
+            ir_ret_void()
+        }
+        ir_set_returned()
+    }
+    
+    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
+        if (str_equals(stmt.child1, "") == 0) {
+            generateExpression(ptr_to_node(stmt.child1))
+        }
+    }
+    
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        let condVal = generateExpression(ptr_to_node(stmt.child1))
+        
+        let thenLabel = ir_get_label()
+        let elseLabel = ir_get_label()
+        let endLabel = ir_get_label()
+        
+        if (str_equals(stmt.child3, "") == 0) {
+            ir_cond_br_numbered(condVal, thenLabel, elseLabel)
+        } else {
+            ir_cond_br_numbered(condVal, thenLabel, endLabel)
+        }
+        
+        ir_label_numbered(thenLabel)
+        generateBlock(ptr_to_node(stmt.child2))
+        if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
+        ir_clear_returned()
+        
+        if (str_equals(stmt.child3, "") == 0) {
+            ir_label_numbered(elseLabel)
+            
+            let elseNode = ptr_to_node(stmt.child3)
+            if (elseNode.kind == NodeKind.IF_STATEMENT) {
+                generateStatement(elseNode)
+            } else {
+                generateBlock(elseNode)
+            }
+            if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
+            ir_clear_returned()
+        }
+        
+        ir_label_numbered(endLabel)
+    }
+    
+    if (stmt.kind == NodeKind.WHILE_STATEMENT) {
+        let condLabel = ir_get_label()
+        let bodyLabel = ir_get_label()
+        let endLabel = ir_get_label()
+
+        ir_br_numbered(condLabel)
+        ir_label_numbered(condLabel)
+
+        let condVal = generateExpression(ptr_to_node(stmt.child1))
+        ir_cond_br_numbered(condVal, bodyLabel, endLabel)
+
+        ir_label_numbered(bodyLabel)
+        ir_loop_push(condLabel, endLabel)
+        ir_drop_barrier_push()
+        generateBlock(ptr_to_node(stmt.child2))
+        ir_drop_barrier_pop()
+        ir_loop_pop()
+
+        if (ir_has_returned() == 0) { ir_br_numbered(condLabel) }
+        ir_clear_returned()
+
+        ir_label_numbered(endLabel)
+    }
+
+    if (stmt.kind == NodeKind.LOOP_STATEMENT) {
+        let bodyLabel = ir_get_label()
+        let endLabel = ir_get_label()
+
+        ir_br_numbered(bodyLabel)
+        ir_label_numbered(bodyLabel)
+        ir_loop_push(bodyLabel, endLabel)
+        ir_drop_barrier_push()
+        generateBlock(ptr_to_node(stmt.child1))
+        ir_drop_barrier_pop()
+        ir_loop_pop()
+
+        if (ir_has_returned() == 0) { ir_br_numbered(bodyLabel) }
+        ir_clear_returned()
+
+        ir_label_numbered(endLabel)
+    }
+
+    if (stmt.kind == NodeKind.FOR_STATEMENT) {
+        // Scoped to the loop, matching sema.
+        ir_scope_push()
+        ir_set_var_type(stmt.s1, "i32")
+        let loopVar = ir_get_var_slot(stmt.s1)
+        ir_alloca("i32", loopVar)
+
+        let startVal = generateExpression(ptr_to_node(stmt.child1))
+        ir_store("i32", startVal, loopVar)
+
+        let condLabel = ir_get_label()
+        let bodyLabel = ir_get_label()
+        let incrLabel = ir_get_label()
+        let endLabel = ir_get_label()
+
+        ir_br_numbered(condLabel)
+        ir_label_numbered(condLabel)
+        let iv = ir_load("i32", loopVar)
+        let endVal = generateExpression(ptr_to_node(stmt.child2))
+        let cmp = ir_icmp_slt("i32", ir_get_temp_name(iv), endVal)
+        ir_cond_br_numbered(ir_get_temp_name(cmp), bodyLabel, endLabel)
+
+        ir_label_numbered(bodyLabel)
+        ir_loop_push(incrLabel, endLabel)   // continue jumps to the increment step
+        ir_drop_barrier_push()
+        generateBlock(ptr_to_node(stmt.child3))
+        ir_drop_barrier_pop()
+        ir_loop_pop()
+        if (ir_has_returned() == 0) { ir_br_numbered(incrLabel) }
+        ir_clear_returned()
+
+        ir_label_numbered(incrLabel)
+        let iv2 = ir_load("i32", loopVar)
+        let next = ir_add("i32", ir_get_temp_name(iv2), "1")
+        ir_store("i32", ir_get_temp_name(next), loopVar)
+        ir_br_numbered(condLabel)
+
+        ir_label_numbered(endLabel)
+        ir_scope_pop()
+    }
+
+    // SPEC 5.2. The arena is pushed on entry and popped on every exit; the
+    // block inside is otherwise ordinary, and the escape facts that decide what
+    // it serves were the same before the keyword was written.
+    if (stmt.kind == NodeKind.REGION_STATEMENT) {
+        ir_region_begin()
+        ir_region_enter()
+        generateBlock(ptr_to_node(stmt.child1))
+        // Only on fall-through -- a `return` or `break` inside already popped it
+        // on its way out, and popping twice releases the caller's arena.
+        if (ir_has_returned() == 0) { ir_region_end() }
+        ir_region_exit()
+    }
+
+    // Both leave every scope between here and the loop body, so the loop's
+    // watermark is the floor. Bindings the loop inherited are above it and stay.
+    if (stmt.kind == NodeKind.BREAK_STATEMENT) {
+        let target = ir_loop_break_label()
+        if (target >= 0) {
+            generateScopeDrops(ir_loop_drop_floor())
+            generateRegionExits(ir_region_depth() - ir_loop_region_depth())
+            ir_br_numbered(target)
+            ir_set_returned()
+        }
+    }
+
+    if (stmt.kind == NodeKind.CONTINUE_STATEMENT) {
+        let target = ir_loop_continue_label()
+        if (target >= 0) {
+            generateScopeDrops(ir_loop_drop_floor())
+            generateRegionExits(ir_region_depth() - ir_loop_region_depth())
+            ir_br_numbered(target)
+            ir_set_returned()
+        }
+    }
+
+    if (stmt.kind == NodeKind.MATCH_STATEMENT) {
+        let scrutVal = generateExpression(ptr_to_node(stmt.child1))
+        let scrutType = getExprType(ptr_to_node(stmt.child1))
+        let endLabel = ir_get_label()
+        let mut needsFinalBr = true
+
+        let mut armPtr = stmt.child2
+        while (str_equals(armPtr, "") == 0) {
+            let arm = ptr_to_node(armPtr)
+            if (str_equals(arm.s1, "_") == 1) {
+                // wildcard: runs in the current fall-through block
+                generateBlock(ptr_to_node(arm.child2))
+                if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
+                ir_clear_returned()
+                needsFinalBr = false
+            } else {
+                let patVal = generateExpression(ptr_to_node(arm.child1))
+                let cmp = ir_icmp_eq(scrutType, scrutVal, patVal)
+                let armLabel = ir_get_label()
+                let nextLabel = ir_get_label()
+                ir_cond_br_numbered(ir_get_temp_name(cmp), armLabel, nextLabel)
+
+                ir_label_numbered(armLabel)
+                generateBlock(ptr_to_node(arm.child2))
+                if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
+                ir_clear_returned()
+
+                ir_label_numbered(nextLabel)
+                needsFinalBr = true
+            }
+            armPtr = arm.next
+        }
+
+        if (needsFinalBr) { ir_br_numbered(endLabel) }
+        ir_label_numbered(endLabel)
+    }
+}
+
+// AIF Level 2. Frees every droppable binding at or above `floor`, newest first.
+//
+// There is deliberately no "was it moved?" test here. Move state belongs to
+// sema, which clears it per function long before codegen runs, so asking
+// ir_is_moved at this point reads an answer about some other function. Every
+// case it would have caught is a fact instead: moving a value outward raises its
+// escape past this scope, and an explicit `drop` marks the site, so neither
+// reaches this list. A binding that merely receives a move (`let b = a`) never
+// enters it, because its initialiser allocates nothing -- so the value is still
+// freed exactly once, through `a`.
+// Closes `count` open regions. Emitted at every exit that leaves them, in the
+// same places and for the same reason as the drops -- an arena that is never
+// popped holds its chunks for the rest of the program.
+fn generateRegionExits(count: Int) {
+    let mut i = 0
+    while (i < count) {
+        ir_region_end()
+        i = i + 1
+    }
+}
+
+fn generateScopeDrops(floor: Int) {
+    let n = ir_drop_count(floor)
+    let mut i = 0
+    while (i < n) {
+        let declType = ir_drop_type(floor, i)
+        let storeType = storageType(declType)
+        let loaded = ir_load(storeType, ir_drop_slot(floor, i))
+        let value = ir_get_temp_name(loaded)
+        let kind = ir_drop_kind(floor, i)
+        if (kind == IR_DROP_LIST) {
+            ir_free_list(value)
+        } else if (kind == IR_DROP_TYPED) {
+            // The drop list keeps the declared type, so the generated release is
+            // named from it rather than stored a second time.
+            ir_free_typed(value, releaseFnName(structTypeName(declType)))
+        } else {
+            ir_free_object(value)
+        }
+        i = i + 1
+    }
+}
+
+fn generateBlock(block: ASTNode) {
+    // LAYOUT 7.1. The cost model may have placed an arena here, in which case
+    // the block is bracketed exactly as a `region` statement is -- same runtime,
+    // same early-exit handling through ir_region_depth. The only difference is
+    // who decided.
+    let arena = aif_auto_arena_at_node(node_to_ptr(block)) == 1
+    if (arena) {
+        ir_region_begin()
+        ir_region_enter()
+    }
+
+    // Mirrors semaBlock: the same scopes must be pushed and popped in the same
+    // order, so that a name resolves to the same binding -- and therefore the
+    // same slot -- in both passes.
+    ir_scope_push()
+
+    let mut stmtPtr = block.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        generateStatement(stmt)
+        stmtPtr = stmt.next
+    }
+
+    // Only on fall-through. A block that returned or branched away already
+    // emitted its drops at that statement, and emitting them again here would
+    // be unreachable code after a terminator -- or, worse, reachable and a
+    // double free.
+    if (ir_has_returned() == 0) {
+        generateScopeDrops(ir_scope_drop_floor())
+    }
+
+    ir_scope_pop()
+
+    if (arena) {
+        // Only on fall-through, for the same reason the drops are: a `return` or
+        // `break` inside already popped every arena between itself and its
+        // target, and popping twice releases the caller's.
+        if (ir_has_returned() == 0) { ir_region_end() }
+        ir_region_exit()
+    }
+}

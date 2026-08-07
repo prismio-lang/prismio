@@ -1,0 +1,171 @@
+// The calls the compiler knows the shape of without a declaration.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import ir.bridge
+import common.diagnostics
+
+fn semaBuiltinCallType(name: String, argPtr: String) -> TypeInfo {
+    if (str_equals(name, "print") == 1 or str_equals(name, "println") == 1) {
+        return typeVoid()
+    }
+    if (str_equals(name, "print_int") == 1 or str_equals(name, "println_int") == 1) { return typeVoid() }
+    if (str_equals(name, "print_float") == 1 or str_equals(name, "println_float") == 1) { return typeVoid() }
+    if (str_equals(name, "print_bool") == 1 or str_equals(name, "println_bool") == 1) { return typeVoid() }
+    if (str_equals(name, "print_char") == 1 or str_equals(name, "println_char") == 1) { return typeVoid() }
+    if (str_equals(name, "drop") == 1) { return typeVoid() }
+
+    // REQUIREMENTS 4. The narrowing half. `T?` cannot be used as a `T` -- that
+    // is what the type buys -- so there has to be one way across, and this is it.
+    //
+    // Deliberately a *checked* unwrap rather than flow narrowing. Narrowing
+    // `if (x != none) { ... }` would need flow-sensitive types in sema, which is
+    // a real feature and not this item; a checked unwrap costs one branch and
+    // fails loudly where narrowing would have failed silently. It is also the
+    // idiom the compiler already writes by hand -- `if (nodeExists(p)) { let n =
+    // ptr_to_node(p) }` is exactly this shape.
+    if (str_equals(name, "expect") == 1) {
+        if (str_equals(argPtr, "") == 0) {
+            let ot = nodeGetType(ptr_to_node(argPtr))
+            if (ot.kind == TypeKind.OPTIONAL) { return typeOptionalInner(ot) }
+        }
+        return typeInvalid()
+    }
+
+    if (str_equals(name, "list_new") == 1) { return typeList(typeInvalid()) }
+    if (str_equals(name, "list_len") == 1) { return typeInt() }
+    if (str_equals(name, "list_push") == 1) { return typeVoid() }
+    if (str_equals(name, "list_set") == 1) { return typeVoid() }
+    if (str_equals(name, "list_get") == 1) {
+        if (str_equals(argPtr, "") == 0) {
+            let lt = nodeGetType(ptr_to_node(argPtr))
+            if (lt.kind == TypeKind.LIST and str_equals(lt.child, "") == 0) {
+                return ptr_to_type(lt.child)
+            }
+        }
+        return typeInvalid()
+    }
+    return typeInvalid()
+}
+
+fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: String) -> Bool {
+    if (str_equals(name, "print") == 1 or str_equals(name, "println") == 1) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        semaExpr(module, ptr_to_node(argPtr))
+        return true
+    }
+
+    // drop(x): deterministic, safe free. Consumes (moves) an owned value, so
+    // use-after-drop and double-drop are caught by move tracking.
+    if (str_equals(name, "drop") == 1) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let mut arg = ptr_to_node(argPtr)
+        let mut t = semaExpr(module, arg)
+        if (typeIsMoveOnly(t) == false) {
+            semaErrorAt(arg, str_concat("drop requires an owned (move-only) value, found ", typeDisplay(t)))
+            return true
+        }
+        semaConsumeOperand(arg)
+        return true
+    }
+
+    // REQUIREMENTS 4. The checked unwrap. Its operand is *borrowed*, not
+    // consumed: `expect` reads the slot and hands back the pointer it already
+    // held, so it transfers no ownership and the optional stays usable. Treating
+    // it as a move would make `if (p != none) { use(expect(p)) }` fail on the
+    // second visit to a loop body.
+    if (str_equals(name, "expect") == 1) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let ot = semaExpr(module, a0)
+        if (ot.kind != TypeKind.OPTIONAL) {
+            semaErrorAt(a0, str_concat("expect requires an optional value, found ",
+                                         typeDisplay(ot)))
+            return true
+        }
+        if (str_equals(ot.child, "") == 1) {
+            semaErrorAt(a0, "expect needs to know what it is unwrapping; `none` on its own has no type")
+        }
+        return true
+    }
+
+    if (str_equals(name, "list_new") == 1) {
+        semaCheckArity(call, name, argPtr, 0)
+        return true
+    }
+    if (str_equals(name, "list_len") == 1) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let lt = semaExpr(module, a0)
+        if (lt.kind != TypeKind.LIST) {
+            semaErrorAt(a0, str_concat("list_len expects a List, found ", typeDisplay(lt)))
+        }
+        return true
+    }
+    if (str_equals(name, "list_get") == 1) {
+        if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let lt = semaExpr(module, a0)
+        if (lt.kind != TypeKind.LIST) {
+            semaErrorAt(a0, str_concat("list_get expects a List, found ", typeDisplay(lt)))
+            return true
+        }
+        semaCheckValue(module, ptr_to_node(a0.next), typeInt(), "list_get index")
+        return true
+    }
+    if (str_equals(name, "list_push") == 1) {
+        if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let lt = semaExpr(module, a0)
+        if (lt.kind != TypeKind.LIST) {
+            semaErrorAt(a0, str_concat("list_push expects a List, found ", typeDisplay(lt)))
+            return true
+        }
+        semaCheckValue(module, ptr_to_node(a0.next), semaListElementType(lt), "list_push value")
+        // AIF item 3. The list owns what is pushed into it and releases it at
+        // teardown, so a push is an ownership transfer and has to be move-checked
+        // as one. Two pushes of the same name would otherwise put one value under
+        // one owner twice, which no fact can see: `list_push` is a call, and the
+        // aliasing module counts *containers*, not stores into one.
+        //
+        // This also recovers the loop case for free -- `ir_binding_predates_loop`
+        // already refuses a move that repeats on the next iteration, which is the
+        // same double release written differently.
+        semaConsumeOperand(ptr_to_node(a0.next))
+        return true
+    }
+    if (str_equals(name, "list_set") == 1) {
+        if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let lt = semaExpr(module, a0)
+        if (lt.kind != TypeKind.LIST) {
+            semaErrorAt(a0, str_concat("list_set expects a List, found ", typeDisplay(lt)))
+            return true
+        }
+        let a1 = ptr_to_node(a0.next)
+        semaCheckValue(module, a1, typeInt(), "list_set index")
+        semaCheckValue(module, ptr_to_node(a1.next), semaListElementType(lt), "list_set value")
+        // Same transfer as list_push. What it does *not* do is release whatever
+        // occupied the slot: an overwritten element leaks, and closing that needs
+        // a release the container can only make if it owns the old value, which
+        // is the question this level answers for teardown and not for overwrite.
+        semaConsumeOperand(ptr_to_node(a1.next))
+        return true
+    }
+
+    let mut expected = typeInvalid()
+    if (str_equals(name, "print_int") == 1 or str_equals(name, "println_int") == 1) { expected = typeInt() }
+    if (str_equals(name, "print_float") == 1 or str_equals(name, "println_float") == 1) { expected = typeFloat() }
+    if (str_equals(name, "print_bool") == 1 or str_equals(name, "println_bool") == 1) { expected = typeBool() }
+    if (str_equals(name, "print_char") == 1 or str_equals(name, "println_char") == 1) { expected = typeChar() }
+
+    if (typeIsValid(expected)) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let actual = semaExpr(module, ptr_to_node(argPtr))
+        semaExpectAssignable(ptr_to_node(argPtr), str_concat(diagQuote(name), " argument"), expected, actual)
+        return true
+    }
+
+    return false
+}

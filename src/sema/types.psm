@@ -1,0 +1,239 @@
+// Resolving type annotations, and the assignability rules between the types they
+// name.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import ir.bridge
+import common.diagnostics
+
+// ---------------------------------------------------------------------------
+// AIF annotations (SPEC 5)
+//
+// The parser stores them on the declaration's `s2` as space-separated text --
+// `unique `, `pin:T1 ` -- the same encoding the FFI contracts use, and for the
+// same reason: one free slot, and an argument to carry.
+// ---------------------------------------------------------------------------
+
+fn semaAnnotationHas(encoded: String, name: String) -> Bool {
+    return str_contains(encoded, str_concat(name, " ")) == 1
+}
+
+// The tier a `pin(...)` named, or "" if there is no pin.
+fn semaAnnotationPinTier(encoded: String) -> String {
+    let at = str_index_of(encoded, "pin:")
+    if (at < 0) { return "" }
+    let rest = str_substring(encoded, at + 4, str_length(encoded) - at - 4)
+    let space = str_index_of(rest, " ")
+    if (space < 0) { return rest }
+    return str_substring(rest, 0, space)
+}
+
+fn semaIsTierName(name: String) -> Bool {
+    if (str_equals(name, "T0") == 1) { return true }
+    if (str_equals(name, "T1") == 1) { return true }
+    if (str_equals(name, "T2") == 1) { return true }
+    if (str_equals(name, "T3") == 1) { return true }
+    return str_equals(name, "T4b") == 1
+}
+
+// Checked here rather than in AIF because a misspelled tier is a source
+// question, and because AIF must not report anything (SPEC 1: it cannot fail a
+// build). Everything that survives this is a tier the solver can compare against.
+fn semaCheckAnnotations(stmt: ASTNode, varT: TypeInfo) {
+    let encoded = stmt.s2
+    if (str_equals(encoded, "") == 1) { return }
+
+    if (semaAnnotationHas(encoded, "unique")) {
+        // A Copyable value has no ownership to be unique about, so the axiom
+        // asserts nothing and would silently do nothing.
+        if (typeIsMoveOnly(varT) == false and typeIsValid(varT)) {
+            semaWarningAt(stmt, str_concat("`unique` has no effect on ", typeDisplay(varT)))
+            diag_note("only owned values -- structs, strings and lists -- carry an aliasing fact")
+        }
+    }
+
+    let tier = semaAnnotationPinTier(encoded)
+    if (str_equals(tier, "") == 0 and semaIsTierName(tier) == false) {
+        semaWarningAt(stmt, str_concat(str_concat("unknown tier ", diagQuote(tier)), " in `pin`"))
+        diag_note("the tiers are T0, T1, T2, T3 and T4b")
+    }
+}
+
+// Both answer from the registry semaRegisterNamedTypes() fills before any
+// checking runs, rather than by walking the module. The `module` parameter is
+// kept so the many call sites read the same as before -- and because the
+// registry is a cache of exactly what a walk of `module` would have found.
+fn semaHasStruct(module: ASTNode, name: String) -> Bool {
+    return ir_named_type_kind(name) == 1
+}
+
+fn semaHasEnum(module: ASTNode, name: String) -> Bool {
+    return ir_named_type_kind(name) == 2
+}
+
+fn semaRegisterNamedTypes(module: ASTNode) {
+    ir_reset_named_types()
+    let mut stmtPtr = module.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        if (stmt.kind == NodeKind.STRUCT_DECL) { ir_declare_named_type(stmt.s1, 1) }
+        if (stmt.kind == NodeKind.ENUM_DECL) { ir_declare_named_type(stmt.s1, 2) }
+        stmtPtr = stmt.next
+    }
+}
+
+fn semaAnnotationType(module: ASTNode, tn: ASTNode) -> TypeInfo {
+    // REQUIREMENTS 4. `T?` wraps whatever the rest of the annotation says, so
+    // the suffix is peeled here once rather than in each branch below.
+    if (tn.i3 == 1) {
+        let inner = semaAnnotationInner(module, tn)
+        if (typeCanBeOptional(inner) == false) {
+            if (typeIsValid(inner)) {
+                semaErrorAt(tn, str_concat(str_concat("only a reference can be optional, and ",
+                                                        typeDisplay(inner)),
+                                             " is not one"))
+            }
+            return inner
+        }
+        return typeOptional(inner)
+    }
+    return semaAnnotationInner(module, tn)
+}
+
+fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
+    if (tn.i1 == 1) {
+        if (str_equals(tn.child1, "") == 0) {
+            return typeArray(semaAnnotationType(module, ptr_to_node(tn.child1)))
+        }
+        return typeArray(typeInvalid())
+    }
+
+    if (tn.i2 == 1) {
+        if (str_equals(tn.child1, "") == 0) {
+            return typeList(semaAnnotationType(module, ptr_to_node(tn.child1)))
+        }
+        return typeList(typeInvalid())
+    }
+
+    if (str_equals(tn.s1, "Int") == 1) { return typeInt() }
+    if (str_equals(tn.s1, "Float") == 1) { return typeFloat() }
+    if (str_equals(tn.s1, "Bool") == 1) { return typeBool() }
+    if (str_equals(tn.s1, "String") == 1) { return typeString() }
+    if (str_equals(tn.s1, "Char") == 1) { return typeChar() }
+    if (str_equals(tn.s1, "I8") == 1) { return typeI8() }
+    if (str_equals(tn.s1, "I16") == 1) { return typeI16() }
+    if (str_equals(tn.s1, "I64") == 1) { return typeI64() }
+    if (str_equals(tn.s1, "Isize") == 1) { return typeIsize() }
+    if (str_equals(tn.s1, "U8") == 1) { return typeU8() }
+    if (str_equals(tn.s1, "U16") == 1) { return typeU16() }
+    if (str_equals(tn.s1, "U32") == 1) { return typeU32() }
+    if (str_equals(tn.s1, "U64") == 1) { return typeU64() }
+    if (str_equals(tn.s1, "Usize") == 1) { return typeUsize() }
+    if (str_equals(tn.s1, "") == 1) { return typeVoid() }
+    if (semaHasEnum(module, tn.s1)) { return typeEnum(tn.s1) }
+    if (semaHasStruct(module, tn.s1)) { return typeStruct(tn.s1) }
+
+    semaErrorAt(tn, str_concat("unknown type ", diagQuote(tn.s1)))
+    return typeInvalid()
+}
+
+fn semaDeclaredReturnType(module: ASTNode, retChild: String) -> TypeInfo {
+    if (str_equals(retChild, "") == 0) {
+        return semaAnnotationType(module, ptr_to_node(retChild))
+    }
+    return typeVoid()
+}
+
+// Enum values are i32-backed (see typeEnum in types.psm), and an enum variant
+// expression such as `TokenType.EOF` types as plain Int (see MEMBER_ACCESS_EXPR in
+// semaExpr). So an enum-typed binding compared against one of its own variants
+// reads as Enum-vs-Int here, and the compiler's own AST does the mirror image:
+// it stores kinds in plain Int fields (ASTNode.i1) and compares them to variants.
+// Both directions are the intended, pervasive spelling, so treat Enum and Int as
+// interchangeable. Only the default 32-bit `Int` qualifies — a sized integer such
+// as I64 still has to match exactly.
+fn semaEnumMatchesInt(a: TypeInfo, b: TypeInfo) -> Bool {
+    if (a.kind != TypeKind.ENUM) { return false }
+    if (b.kind != TypeKind.INT) { return false }
+    return str_equals(b.name, "Int") == 1
+}
+
+fn semaTypesMatch(expected: TypeInfo, actual: TypeInfo) -> Bool {
+    if (typeEquals(expected, actual)) { return true }
+    if (semaEnumMatchesInt(expected, actual)) { return true }
+    if (semaEnumMatchesInt(actual, expected)) { return true }
+    // REQUIREMENTS 4. A present value goes into an optional slot without
+    // ceremony; the reverse does not, and that asymmetry is the whole guarantee.
+    // Widening is safe because the representations are identical -- a `T?` is one
+    // pointer, and a present `T` is that pointer with a non-null value.
+    if (expected.kind == TypeKind.OPTIONAL and actual.kind != TypeKind.OPTIONAL) {
+        return semaTypesMatch(typeOptionalInner(expected), actual)
+    }
+    return false
+}
+
+fn semaExpectAssignable(node: ASTNode, context: String, expected: TypeInfo, actual: TypeInfo) {
+    // An invalid type is the *result* of an error already reported. Checking
+    // against it would blame this expression for a mistake made somewhere else,
+    // which is how one real error turns into a screenful of noise now that sema
+    // no longer stops at the first.
+    if (typeIsValid(expected) == false or typeIsValid(actual) == false) {
+        return
+    }
+    if (semaTypesMatch(expected, actual) == false) {
+        semaTypeErrorAt(node, context, expected, actual)
+    }
+}
+
+fn semaIsIntLiteral(e: ASTNode) -> Bool {
+    return e.kind == NodeKind.LITERAL_EXPR and e.i1 == TokenType.NUMBER_LITERAL
+}
+
+fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: String, fieldName: String) -> TypeInfo {
+    let mut stmtPtr = module.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        if (stmt.kind == NodeKind.STRUCT_DECL and str_equals(stmt.s1, structName) == 1) {
+            let mut fieldPtr = stmt.child1
+            while (str_equals(fieldPtr, "") == 0) {
+                let field = ptr_to_node(fieldPtr)
+                if (str_equals(field.s1, fieldName) == 1) {
+                    return semaAnnotationType(module, ptr_to_node(field.child1))
+                }
+                fieldPtr = field.next
+            }
+        }
+        stmtPtr = stmt.next
+    }
+
+    semaErrorAt(at, str_concat(str_concat("struct ", diagQuote(structName)),
+                                 str_concat(" has no field ", diagQuote(fieldName))))
+    return typeInvalid()
+}
+
+fn semaEnumHasVariant(module: ASTNode, enumName: String, variantName: String) -> Bool {
+    let mut stmtPtr = module.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        if (stmt.kind == NodeKind.ENUM_DECL and str_equals(stmt.s1, enumName) == 1) {
+            let mut variantPtr = stmt.child1
+            while (str_equals(variantPtr, "") == 0) {
+                let variant = ptr_to_node(variantPtr)
+                if (str_equals(variant.s1, variantName) == 1) {
+                    return true
+                }
+                variantPtr = variant.next
+            }
+        }
+        stmtPtr = stmt.next
+    }
+    return false
+}
+
+fn semaListElementType(lt: TypeInfo) -> TypeInfo {
+    if (lt.kind == TypeKind.LIST and str_equals(lt.child, "") == 0) {
+        return ptr_to_type(lt.child)
+    }
+    return typeInvalid()
+}

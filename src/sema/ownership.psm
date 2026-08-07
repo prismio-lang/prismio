@@ -1,0 +1,206 @@
+// Move, borrow and drop enforcement, plus the FFI contracts that describe what
+// foreign code does to ownership.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import ir.bridge
+import common.diagnostics
+
+// Whether binding this expression to a name produces a *borrow* rather than an
+// owned value.
+//
+// AIF Level 4 made String and List affine, and that turned the compiler's own
+// commonest idiom -- `let mut p = node.child1`, walking a chain of pointers
+// punned as strings -- into "use of moved value" everywhere. It is not a move:
+// reading a field yields a reference the container still owns, and so does
+// naming a binding that was already a borrow. Both stay borrows.
+//
+// This is also what keeps it sound rather than merely quiet. A borrowed binding's
+// initialiser registers no allocation site, so aif_frees_at_scope_node never
+// admits it and nothing frees a value it does not own.
+fn semaBindingIsBorrow(node: ASTNode) -> Bool {
+    if (node.kind == NodeKind.MEMBER_ACCESS_EXPR) { return true }
+    if (node.kind == NodeKind.INDEX_EXPR) { return true }
+    if (node.kind == NodeKind.IDENTIFIER_EXPR) {
+        return ir_is_borrowed(node.s1) == 1
+    }
+    return false
+}
+
+// If `node` is a move-only value referenced by name, transfer ownership out of it:
+// any later use of that binding becomes a "use of moved value" error.
+//
+// A borrowed operand is reborrowed instead -- the caller marks the new binding
+// borrowed in turn. Consuming one is still an error; that goes through
+// semaConsumeOperand.
+fn semaMoveOperand(node: ASTNode) {
+    if (node.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (typeIsMoveOnly(nodeGetType(node))) {
+            if (ir_is_borrowed(node.s1) == 1) { return }
+            // Move state is tracked per name over the AST in source order, so a
+            // move inside a loop body is seen once but executes on every
+            // iteration. If the binding was created outside the loop, that is a
+            // use-after-move -- and for drop(), a double free that crashes at
+            // run time with nothing reported at compile time.
+            if (ir_binding_predates_loop(node.s1) == 1) {
+                semaErrorAt(node, str_concat(diagQuote(node.s1), " is moved inside a loop, so the move would repeat on the next iteration"))
+            }
+            ir_mark_moved(node.s1)
+        }
+    }
+}
+
+// A move that destroys: `drop(x)` and a `sink` parameter both end the value's
+// life here, so a borrow cannot supply one -- the owner would be left with a
+// dangling binding. This is the check semaMoveOperand used to make for every
+// caller, kept for the two that still need it.
+fn semaConsumeOperand(node: ASTNode) {
+    if (node.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (typeIsMoveOnly(nodeGetType(node))) {
+            if (ir_is_borrowed(node.s1) == 1) {
+                semaErrorAt(node, str_concat("cannot move out of borrowed value ", diagQuote(node.s1)))
+                return
+            }
+        }
+    }
+    semaMoveOperand(node)
+}
+
+// Type-check a value against an expected type, allowing a bare integer literal to
+// take on any sized integer type (so `let x: U8 = 200` and `f(200)` type-check).
+fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo, context: String) -> TypeInfo {
+    if (typeIsValid(expected) and expected.kind == TypeKind.INT and semaIsIntLiteral(valNode)) {
+        nodeSetType(valNode, expected)
+        return expected
+    }
+
+    // An array literal takes its element type from the annotation when there is
+    // one, for the same reason a bare integer literal does above.
+    //
+    // Without this, `let x: [I64] = [1, 2]` was rejected: the elements are bare
+    // integer literals, which infer as Int, so the literal typed as [Int] and
+    // did not match the declared [I64] -- even though every element would have
+    // coerced happily on its own had it been written `let y: I64 = 1`.
+    if (typeIsValid(expected) and expected.kind == TypeKind.ARRAY
+        and valNode.kind == NodeKind.ARRAY_LITERAL_EXPR
+        and str_equals(expected.child, "") == 0) {
+        let elemExpected = ptr_to_type(expected.child)
+        let mut elemPtr = valNode.child1
+        while (str_equals(elemPtr, "") == 0) {
+            let elem = ptr_to_node(elemPtr)
+            semaCheckValue(module, elem, elemExpected, context)
+            elemPtr = elem.next
+        }
+        nodeSetType(valNode, expected)
+        return expected
+    }
+    let actual = semaExpr(module, valNode)
+    semaExpectAssignable(valNode, context, expected, actual)
+    return actual
+}
+
+// FFI ownership contracts (aif/spec/FFI.md 5), checked where they are written.
+//
+// FFI 1 is blunt about why this matters: an `extern` contract describes opaque
+// foreign code and cannot be verified, so **the FFI boundary is the one place in
+// AIF where being wrong is unsafe rather than slow.** Nothing downstream can
+// catch a `retain_in(9)` on a two-argument function or an `alias` on a
+// parameter; the analysis would read a contract that means nothing and quietly
+// apply a default instead. So the declaration is the only place these can be
+// rejected, and they are rejected here rather than warned about.
+fn semaContractName(encoded: String) -> String {
+    let at = str_index_of(encoded, ":")
+    if (at < 0) {
+        return encoded
+    }
+    return str_substring(encoded, 0, at)
+}
+
+fn semaContractArgument(encoded: String) -> String {
+    let at = str_index_of(encoded, ":")
+    if (at < 0) {
+        return ""
+    }
+    return str_substring(encoded, at + 1, str_length(encoded) - at - 1)
+}
+
+fn semaIsParameterContract(name: String) -> Bool {
+    if (str_equals(name, "borrow") == 1) { return true }
+    if (str_equals(name, "retain") == 1) { return true }
+    if (str_equals(name, "retain_in") == 1) { return true }
+    if (str_equals(name, "consume") == 1) { return true }
+    if (str_equals(name, "out") == 1) { return true }
+    return false
+}
+
+fn semaCheckExternContracts(extNode: ASTNode) {
+    // Counted first: `retain_in(k)` names another parameter by index, so the
+    // arity has to be known before any of them can be checked.
+    let mut arity = 0
+    let mut countPtr = extNode.child1
+    while (str_equals(countPtr, "") == 0) {
+        let param = ptr_to_node(countPtr)
+        if (param.kind == NodeKind.FUNCTION_PARAMETER) {
+            arity = arity + 1
+        }
+        countPtr = param.next
+    }
+
+    let mut index = 0
+    let mut paramPtr = extNode.child1
+    while (str_equals(paramPtr, "") == 0) {
+        let param = ptr_to_node(paramPtr)
+        if (param.kind == NodeKind.FUNCTION_PARAMETER and str_equals(param.child1, "") == 0) {
+            let annotation = ptr_to_node(param.child1)
+            let encoded = annotation.s2
+
+            if (str_equals(encoded, "") == 0) {
+                let name = semaContractName(encoded)
+
+                if (semaIsParameterContract(name) == false) {
+                    diag_error_at(param.file, param.line, param.col, str_length(param.s1),
+                        str_concat(str_concat(diagQuote(name),
+                                   " is a return contract and cannot appear on parameter "),
+                                   diagQuote(param.s1)))
+                    diag_note("parameters take `borrow`, `retain`, `retain_in(k)`, `consume` or `out`")
+                } else if (str_equals(name, "retain_in") == 1) {
+                    let target = str_to_int(semaContractArgument(encoded))
+                    if (target < 0 or target >= arity) {
+                        diag_error_at(param.file, param.line, param.col, str_length(param.s1),
+                            str_concat(str_concat("`retain_in` names argument ",
+                                       semaContractArgument(encoded)),
+                                       str_concat(", but this function takes ", int_to_str(arity))))
+                        diag_note("the index is zero-based and names the container this argument is stored into")
+                    } else if (target == index) {
+                        diag_error_at(param.file, param.line, param.col, str_length(param.s1),
+                            str_concat(str_concat("`retain_in` on ", diagQuote(param.s1)),
+                                       " names itself"))
+                        diag_note("it names the *other* argument this one is stored into; a value cannot contain itself")
+                    }
+                }
+            }
+            index = index + 1
+        }
+        paramPtr = param.next
+    }
+
+    if (str_equals(extNode.child2, "") == 0) {
+        let ret = ptr_to_node(extNode.child2)
+        if (str_equals(ret.s2, "") == 0) {
+            let name = semaContractName(ret.s2)
+            if (str_equals(name, "alias") == 0 and str_equals(name, "produce") == 0) {
+                diag_error_at(extNode.file, extNode.line, extNode.col, str_length(extNode.s1),
+                    str_concat(diagQuote(name),
+                               " is a parameter contract and cannot appear on a return type"))
+                diag_note("returns take `alias` or `produce(free_fn)`")
+            } else if (str_equals(name, "produce") == 1) {
+                if (str_equals(semaContractArgument(ret.s2), "") == 1) {
+                    diag_error_at(extNode.file, extNode.line, extNode.col, str_length(extNode.s1),
+                        "`produce` requires the name of the function that releases the value")
+                    diag_note("FFI 5.2: calling `free` on something from a custom allocator is the bug this prevents")
+                }
+            }
+        }
+    }
+}

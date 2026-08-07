@@ -1,18 +1,20 @@
-import lexer
-import token
-import utils
-import ast
-import parser
-import bridge
-import ir
-import sema
-import diag
-import dumpast
-import aif
+import lexer.scanner
+import lexer.token
+import common.text
+import ast.nodes
+import parse.*
+import ir.*
+import sema.*
+import common.diagnostics
+import ast.dump
+import aif.*
 
 extern fn read_file(path: String) -> String
 extern fn get_directory(path: String) -> String
 extern fn join_path(directory: String, filename: String) -> String
+// Newline-separated module names in a directory, sorted. Mallocs the buffer
+// and hands it over; backs `import pkg.*`.
+extern fn list_modules(directory: String) -> String produce(free)
 extern fn cli_arg_count() -> Int
 // argv, which the C runtime owns and outlives every use of it. Not an
 // allocation, and freeing one would be a free of memory this program never got.
@@ -21,18 +23,15 @@ extern fn str_ends_with(s: String, suffix: String) -> Int
 // Both malloc and hand the buffer over: compiler_default_exe_path sprintfs into
 // a fresh block, compiler_temp_ir_path goes through compiler_temp_path which
 // does the same. The caller owns them.
-extern fn compiler_default_exe_path(source_path: String) -> String produce(free)
-extern fn compiler_temp_ir_path(source_path: String) -> String produce(free)
-extern fn compiler_build_executable(ir_file: String, exe_file: String) -> Int
+extern fn compiler_default_exe_path(sourcePath: String) -> String produce(free)
+extern fn compiler_temp_ir_path(sourcePath: String) -> String produce(free)
+extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
 // SPEC 7.3. Tells the build to compile the runtime with its own allocator
 // pointed at the verify shims, so the strings and lists it allocates are in the
 // same accounting as everything ir_alloc_object handed out.
 extern fn compiler_set_verify_mode(on: Int)
-extern fn aif_report_pins() -> Int
-extern fn aif_report_budgets(converged: Bool) -> Int
-extern fn aif_explain(symbol: String, converged: Bool) -> Int
-extern fn compiler_bootstrap_executable(ir_file: String, exe_file: String) -> Int
-extern fn compiler_run_executable(exe_file: String) -> Int
+extern fn compiler_bootstrap_executable(irFile: String, exeFile: String) -> Int
+extern fn compiler_run_executable(exeFile: String) -> Int
 // Every path through both mallocs, including the failure paths, which allocate a
 // one-byte empty string rather than returning a literal. That is the same
 // invariant Level 4 had to give str_substring and str_trim -- anything declared
@@ -48,7 +47,7 @@ extern fn ir_llvm_version() -> String alias
 // Prismio targets one LLVM major, and the C API is not stable across them.
 let PRISMIO_VERSION = "0.1.0"
 
-fn is_named_top_level(stmt: ASTNode) -> Bool {
+fn isNamedTopLevel(stmt: ASTNode) -> Bool {
     if (stmt.kind == NodeKind.EXTERN_FUNCTION) { return true }
     if (stmt.kind == NodeKind.VARIABLE_DECL) { return true }
     if (stmt.kind == NodeKind.FUNCTION) { return true }
@@ -70,9 +69,9 @@ fn is_named_top_level(stmt: ASTNode) -> Bool {
 // This does not disturb the forward-declaration idiom in ir.psm/parser.psm/
 // sema.psm, where an `extern fn` declares a function the same file also defines:
 // that pairs an EXTERN_FUNCTION with a FUNCTION, so the kind check above already
-// treats them as distinct (and generate_module skips the `declare` when a real
+// treats them as distinct (and generateModule skips the `declare` when a real
 // `define` exists).
-fn same_top_level_name(a: ASTNode, b: ASTNode) -> Bool {
+fn sameTopLevelName(a: ASTNode, b: ASTNode) -> Bool {
     if (a.kind != b.kind) { return false }
     if (str_equals(a.s1, b.s1) == 0) { return false }
     if (a.kind == NodeKind.FUNCTION) {
@@ -81,128 +80,216 @@ fn same_top_level_name(a: ASTNode, b: ASTNode) -> Bool {
     return true
 }
 
-fn has_named_top_level(module: ASTNode, stmt: ASTNode) -> Bool {
-    if (is_named_top_level(stmt) == false) {
+fn hasNamedTopLevel(module: ASTNode, stmt: ASTNode) -> Bool {
+    if (isNamedTopLevel(stmt) == false) {
         return false
     }
 
-    let mut scan_ptr = module.child1
-    while (node_exists(scan_ptr)) {
-        let scan = ptr_to_node(scan_ptr)
-        if (same_top_level_name(scan, stmt)) {
+    let mut scanPtr = module.child1
+    while (nodeExists(scanPtr)) {
+        let scan = ptr_to_node(scanPtr)
+        if (sameTopLevelName(scan, stmt)) {
             return true
         }
-        scan_ptr = scan.next
+        scanPtr = scan.next
     }
 
     return false
 }
 
-fn parse_source(content: String, file: Int) -> ASTNode {
-    let lex = create_lexer(content, file)
-    let head_token = lex_all_tokens(lex)
-    let p = parser_create(head_token)
-    return parse_module(p)
+fn parseSource(content: String, file: Int) -> ASTNode {
+    let lex = createLexer(content, file)
+    let headToken = lexAllTokens(lex)
+    let p = parserCreate(headToken)
+    return parseModule(p)
 }
 
-fn append_statement(module: ASTNode, stmt: ASTNode) {
-    if (has_named_top_level(module, stmt)) {
+fn appendStatement(module: ASTNode, stmt: ASTNode) {
+    if (hasNamedTopLevel(module, stmt)) {
         return
     }
 
-    if (node_is_null(module.child1)) {
+    if (nodeIsNull(module.child1)) {
         module.child1 = node_to_ptr(stmt)
         return
     }
 
-    let mut tail_ptr = module.child1
+    let mut tailPtr = module.child1
     let mut searching = true
     while (searching) {
-        let tail = ptr_to_node(tail_ptr)
-        if (node_is_null(tail.next)) {
+        let tail = ptr_to_node(tailPtr)
+        if (nodeIsNull(tail.next)) {
             tail.next = node_to_ptr(stmt)
             searching = false
         } else {
-            tail_ptr = tail.next
+            tailPtr = tail.next
         }
     }
 }
 
-fn join_import_path(base_dir: String, module_name: String) -> String {
-    let module_file = str_concat(module_name, ".psm")
-    if (str_equals(base_dir, ".") == 1) {
-        return module_file
+// A dotted module name is a directory path: `ir.expr` becomes `ir/expr`.
+//
+// '/' is emitted unconditionally because the frontend has no way to ask what the
+// host's separator is; join_path normalises the joined result.
+fn moduleRelativePath(moduleName: String) -> String {
+    let mut relative = ""
+    let mut i = 0
+    let length = str_length(moduleName)
+    while (i < length) {
+        let c = str_char_at(moduleName, i)
+        if (c == '.') {
+            relative = str_concat(relative, "/")
+        } else {
+            relative = str_concat(relative, str_from_char(c))
+        }
+        i = i + 1
     }
-    return join_path(base_dir, module_file)
+    return relative
+}
+
+// Everything an import names is resolved against the directory of the file being
+// compiled, not against the importing module -- so a module path means the same
+// thing written anywhere in the tree. The `.` case exists because there is
+// nothing to join to.
+fn resolveUnder(baseDir: String, relative: String) -> String {
+    if (str_equals(baseDir, ".") == 1) {
+        return relative
+    }
+    return join_path(baseDir, relative)
+}
+
+fn joinImportPath(baseDir: String, moduleName: String) -> String {
+    return resolveUnder(baseDir, str_concat(moduleRelativePath(moduleName), ".psm"))
+}
+
+fn joinImportDir(baseDir: String, packageName: String) -> String {
+    return resolveUnder(baseDir, moduleRelativePath(packageName))
 }
 
 // Memo key for an already-resolved module. Paths are wrapped in "|" so that a
 // substring search can never match a partial path (e.g. "src\ir.psm" must not be
 // found inside "src\dir.psm").
-fn import_memo_key(import_path: String) -> String {
-    return str_concat(str_concat("|", import_path), "|")
+fn importMemoKey(importPath: String) -> String {
+    return str_concat(str_concat("|", importPath), "|")
+}
+
+// Resolves one named module into `merged`, unless it has already been resolved.
+//
+// Resolving each path once is what keeps a diamond-shaped import graph correct:
+// src/main.psm reaches common/text.psm through five distinct paths, and without
+// this every one of that module's functions and extern declarations would be
+// merged five times, emitting duplicate LLVM `define`/`declare` lines that llc
+// rejects outright ("invalid redefinition of function"). Marking a path before
+// recursing into it also makes an import cycle terminate instead of recursing
+// forever.
+//
+// `site` is the import that asked, and is only used to place the diagnostic.
+fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
+                      baseDir: String, visited: String) -> String {
+    let importPath = joinImportPath(baseDir, moduleName)
+    let key = importMemoKey(importPath)
+    if (str_contains(visited, key) == 1) {
+        return visited
+    }
+
+    let seen = str_concat(visited, key)
+
+    let content = read_file(importPath)
+    if (str_equals(content, "") == 1) {
+        diag_error_at(site.file, site.line, site.col, site.len,
+            str_concat(str_concat("cannot read imported module ", diagQuote(moduleName)),
+                       str_concat(": no such file ", importPath)))
+        diag_finish()
+        exit(1)
+    }
+
+    // Registered before parsing so every token from this file carries an id that
+    // resolves back to its text, long after the merge has erased which module a
+    // declaration came from.
+    let file = diag_add_file(importPath, content)
+    return mergeModuleImports(merged, parseSource(content, file), baseDir, seen)
+}
+
+// `import pkg.*` -- every module directly inside `pkg`, in the order
+// list_modules sorted them.
+//
+// Non-recursive, like Kotlin's: a nested package is a separate import. A
+// directory with no modules in it is an error rather than a no-op, because the
+// only ways to reach it are a typo in the package name and a package that has
+// been emptied, and both are worth hearing about.
+fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
+                        visited: String) -> String {
+    let dirPath = joinImportDir(baseDir, site.s1)
+    let listing = list_modules(dirPath)
+
+    if (str_equals(listing, "") == 1) {
+        diag_error_at(site.file, site.line, site.col, site.len,
+            str_concat(str_concat("package ", diagQuote(site.s1)),
+                       str_concat(" contains no modules: ", dirPath)))
+        diag_finish()
+        exit(1)
+    }
+
+    let mut seen = visited
+    let mut name = ""
+    let mut i = 0
+    let length = str_length(listing)
+
+    while (i < length) {
+        let c = str_char_at(listing, i)
+        if (c == '\n') {
+            let qualified = str_concat(str_concat(site.s1, "."), name)
+            seen = mergeNamedModule(merged, site, qualified, baseDir, seen)
+            name = ""
+        } else {
+            name = str_concat(name, str_from_char(c))
+        }
+        i = i + 1
+    }
+
+    let last = str_concat(str_concat(site.s1, "."), name)
+    return mergeNamedModule(merged, site, last, baseDir, seen)
 }
 
 // Walks `module`, appending its non-import declarations into the shared `merged`
-// accumulator and recursing into each import exactly once. `visited` carries the
-// set of already-resolved import paths through the recursion and is returned so
-// sibling imports see what earlier ones resolved.
-//
-// Resolving each path once is what keeps a diamond-shaped import graph correct:
-// src/main.psm reaches utils.psm through five distinct paths, and without this
-// every one of utils.psm's functions and extern declarations would be merged five
-// times, emitting duplicate LLVM `define`/`declare` lines that llc rejects
-// outright ("invalid redefinition of function"). Marking a path before recursing
-// into it also makes an import cycle terminate instead of recursing forever.
-fn merge_module_imports(merged: ASTNode, module: ASTNode, base_dir: String, visited: String) -> String {
+// accumulator and resolving each import it carries. `visited` threads the set of
+// already-resolved paths through the recursion and is returned so sibling
+// imports see what earlier ones resolved.
+fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited: String) -> String {
     let mut seen = visited
 
-    let mut stmt_ptr = module.child1
-    while (node_exists(stmt_ptr)) {
-        let stmt = ptr_to_node(stmt_ptr)
-        let next_stmt = stmt.next
+    let mut stmtPtr = module.child1
+    while (nodeExists(stmtPtr)) {
+        let stmt = ptr_to_node(stmtPtr)
+        let nextStmt = stmt.next
         stmt.next = ""
 
         if (stmt.kind == NodeKind.IMPORT_STATEMENT) {
-            let import_path = join_import_path(base_dir, stmt.s1)
-            let key = import_memo_key(import_path)
-
-            if (str_contains(seen, key) == 0) {
-                seen = str_concat(seen, key)
-
-                let import_content = read_file(import_path)
-                if (str_equals(import_content, "") == 1) {
-                    diag_error_at(stmt.file, stmt.line, stmt.col, stmt.len,
-                        str_concat(str_concat("cannot read imported module ", diag_quote(stmt.s1)),
-                                   str_concat(": no such file ", import_path)))
-                    diag_finish()
-                    exit(1)
-                }
-
-                // Registered before parsing so every token from this file carries
-                // an id that resolves back to its text, long after the merge has
-                // erased which module a declaration came from.
-                let import_file = diag_add_file(import_path, import_content)
-                let imported_module = parse_source(import_content, import_file)
-                seen = merge_module_imports(merged, imported_module, base_dir, seen)
+            if (stmt.i1 == 1) {
+                seen = mergePackageImport(merged, stmt, baseDir, seen)
+            } else {
+                seen = mergeNamedModule(merged, stmt, stmt.s1, baseDir, seen)
             }
         } else {
-            append_statement(merged, stmt)
+            appendStatement(merged, stmt)
         }
 
-        stmt_ptr = next_stmt
+        stmtPtr = nextStmt
     }
 
     return seen
 }
 
-fn resolve_imports(module: ASTNode, base_dir: String) -> ASTNode {
-    let merged = create_node(NodeKind.MODULE)
-    merge_module_imports(merged, module, base_dir, "")
+// The entry file is marked resolved before the walk begins, so that a package
+// import naming the package it lives in cannot pull it in a second time and
+// duplicate every function it defines.
+fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNode {
+    let merged = createNode(NodeKind.MODULE)
+    mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))
     return merged
 }
 
-fn print_usage() {
+fn printUsage() {
     println("Usage:")
     println("  prismio build <source.psm> [-o output.exe] [--verify]")
     println("  prismio run <source.psm> [-o output.exe] [--verify]")
@@ -222,7 +309,7 @@ fn print_usage() {
 // program being compiled would silently link a runtime that no longer matches the
 // code in front of you. Content hashes rather than timestamps, so a fresh checkout
 // or a file copy does not read as a change.
-fn check_runtime_freshness() {
+fn checkRuntimeFreshness() {
     let installed = compiler_installed_runtime_hash()
     if (str_equals(installed, "") == 1) {
         return
@@ -247,10 +334,10 @@ fn check_runtime_freshness() {
     exit(1)
 }
 
-// Front half of compile_source -- lex, parse, resolve imports, type check -- and
+// Front half of compileSource -- lex, parse, resolve imports, type check -- and
 // nothing after it. The commands that analyse rather than build all need exactly
 // this and none of them may proceed past a diagnostic, so it is one function
-// rather than a flag threaded through compile_source: the build path keeps no
+// rather than a flag threaded through compileSource: the build path keeps no
 // branch that only an analysis command takes.
 //
 // Failure is signalled through the diagnostic count rather than through the
@@ -264,48 +351,48 @@ fn check_runtime_freshness() {
 // compiler uses -- and it silently reported every successful parse as a failure,
 // because a punned pointer compares as a string and an ASTNode begins with its
 // `kind`, of which MODULE is 0. See ast.psm.
-fn analyzed_module(path: String) -> ASTNode {
+fn analyzedModule(path: String) -> ASTNode {
     let content = read_file(path)
     if (str_equals(content, "") == 1) {
         diag_error(str_concat("cannot read ", path))
-        return create_node(NodeKind.MODULE)
+        return createNode(NodeKind.MODULE)
     }
 
-    let root_file = diag_add_file(path, content)
-    let lex = create_lexer(content, root_file)
-    let head_token = lex_all_tokens(lex)
-    let p = parser_create(head_token)
-    let ast_root = parse_module(p)
+    let rootFile = diag_add_file(path, content)
+    let lex = createLexer(content, rootFile)
+    let headToken = lexAllTokens(lex)
+    let p = parserCreate(headToken)
+    let astRoot = parseModule(p)
 
-    let base_dir = get_directory(path)
-    let merged_ast = resolve_imports(ast_root, base_dir)
+    let baseDir = get_directory(path)
+    let mergedAst = resolveImports(astRoot, baseDir, path)
 
     // Parsing recovers, so errors may already be waiting here. Type checking a
     // module with a declaration missing produces cascades, not information.
     if (diag_error_count() > 0) {
         diag_finish()
-        return merged_ast
+        return mergedAst
     }
 
-    analyze_module(merged_ast)
+    analyzeModule(mergedAst)
 
     if (diag_error_count() > 0) {
         diag_finish()
     }
 
-    return merged_ast
+    return mergedAst
 }
 
 // Emits the post-sema AST as JSON. Sema has to have run: the dump carries each
 // node's resolved type, and without it the `ty` field would be empty on every
 // node.
-fn dump_ast_command(path: String) -> Int {
-    let merged = analyzed_module(path)
+fn dumpAstCommand(path: String) -> Int {
+    let merged = analyzedModule(path)
     if (diag_error_count() > 0) {
         return 1
     }
 
-    dump_ast_json(merged, path, PRISMIO_VERSION)
+    dumpAstJson(merged, path, PRISMIO_VERSION)
     return 0
 }
 
@@ -313,9 +400,9 @@ fn dump_ast_command(path: String) -> Int {
 // Produces no IR and touches no codegen, so it cannot change what `build`
 // generates -- which is the point at this stage: the tier distribution becomes
 // measurable before any of it is risked on the self-host.
-fn aif_command(path: String, summary: Bool, owned_collections: Bool, theta_fields: Bool,
+fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: Bool,
                budget: Int, why: String) -> Int {
-    let merged = analyzed_module(path)
+    let merged = analyzedModule(path)
     if (diag_error_count() > 0) {
         return 1
     }
@@ -324,36 +411,36 @@ fn aif_command(path: String, summary: Bool, owned_collections: Bool, theta_field
     // same inference -- the derivation is a by-product of the solve, not a
     // second pass -- so the answer describes the build a plain run would give.
     if (str_equals(why, "") == 0) {
-        let converged = aif_run(merged, owned_collections, theta_fields, budget)
-        return 1 - aif_explain(why, converged)
+        let converged = aifRun(merged, ownedCollections, thetaFields, budget)
+        return 1 - aifExplain(why, converged)
     }
 
-    aif_analyze(merged, path, PRISMIO_VERSION, owned_collections, summary, theta_fields, budget)
+    aifAnalyze(merged, path, PRISMIO_VERSION, ownedCollections, summary, thetaFields, budget)
     return 0
 }
 
-fn compile_source(path: String, output_file: String, run_after_build: Bool, bootstrap_mode: Bool,
-                  verify_mode: Bool, debug_mode: Bool) -> Int {
-    let mut out_file = ""
-    let mut emit_ir_only = false
+fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstrapMode: Bool,
+                  verifyMode: Bool, debugMode: Bool) -> Int {
+    let mut outFile = ""
+    let mut emitIrOnly = false
 
     // Bootstrap deliberately skips this: it never consults the installed libraries
     // at all, so their freshness cannot affect the result.
-    if (bootstrap_mode == false) {
-        check_runtime_freshness()
+    if (bootstrapMode == false) {
+        checkRuntimeFreshness()
     }
 
-    if (str_ends_with(output_file, ".ll") == 1) {
-        out_file = output_file
-        emit_ir_only = true
+    if (str_ends_with(outputFile, ".ll") == 1) {
+        outFile = outputFile
+        emitIrOnly = true
     } else {
-        out_file = compiler_temp_ir_path(path)
+        outFile = compiler_temp_ir_path(path)
     }
 
     let content = read_file(path)
     if (str_equals(content, "") == 1) {
         diag_error(str_concat("cannot read ", path))
-        if (bootstrap_mode) {
+        if (bootstrapMode) {
             println("  bootstrap compiles the Prismio compiler from a source checkout.")
             println("  Run it from the repository root, or give the source path explicitly:")
             println("      prismio bootstrap path/to/src/main.psm")
@@ -361,14 +448,14 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
         return 1
     }
 
-    let root_file = diag_add_file(path, content)
-    let lex = create_lexer(content, root_file)
-    let head_token = lex_all_tokens(lex)
-    let p = parser_create(head_token)
-    let ast_root = parse_module(p)
+    let rootFile = diag_add_file(path, content)
+    let lex = createLexer(content, rootFile)
+    let headToken = lexAllTokens(lex)
+    let p = parserCreate(headToken)
+    let astRoot = parseModule(p)
 
-    let base_dir = get_directory(path)
-    let merged_ast = resolve_imports(ast_root, base_dir)
+    let baseDir = get_directory(path)
+    let mergedAst = resolveImports(astRoot, baseDir, path)
 
     // Parsing recovers, so errors may already be waiting here. Type checking a
     // module with a declaration missing produces cascades, not information.
@@ -377,7 +464,7 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
         return 1
     }
 
-    analyze_module(merged_ast)
+    analyzeModule(mergedAst)
 
     // Sema reports every error it finds rather than stopping at the first, so the
     // decision to give up belongs here rather than inside the checker.
@@ -406,8 +493,8 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
     // 7.2's "a level SHALL NOT change which programs compile" true: a refuted
     // `pin` is still diagnosed.
     let mut aif_rounds = AIF_DEFAULT_ROUNDS
-    if (debug_mode) { aif_rounds = 0 }
-    let aif_converged = aif_run(merged_ast, true, false, aif_rounds)
+    if (debugMode) { aif_rounds = 0 }
+    let aifConverged = aifRun(mergedAst, true, false, aif_rounds)
 
     // The one thing AIF can fail a build for, and SPEC 5.4.1 is explicit that it
     // is not a violation of SPEC 1: a pin a *converged* analysis refutes is a
@@ -416,7 +503,7 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
     // REQUIREMENTS 19's gate joins it, and for the same reason: a budget the
     // converged estimate exceeds is a false assertion about one's own program,
     // which SPEC 5.4.1 separates from an inference failure.
-    if (aif_report_pins() + aif_report_budgets(aif_converged) > 0) {
+    if (aifReportPins() + aifReportBudgets(aifConverged) > 0) {
         diag_finish()
         return 1
     }
@@ -428,7 +515,7 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
     // runtime/lang_runtime.c and check that every object is released exactly
     // once, poisoning it on the way out so a read that should not have happened
     // returns a pattern instead of plausible data.
-    if (verify_mode) {
+    if (verifyMode) {
         ir_set_alloc_function("aif_verify_alloc")
         ir_set_free_function("aif_verify_release")
         // The other half of the swap. Strings and lists are affine as of Level 4
@@ -438,40 +525,40 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
         compiler_set_verify_mode(1)
     }
 
-    generate_module(merged_ast)
+    generateModule(mergedAst)
 
-    if (ir_write_file(out_file) != 0) {
-        diag_error(str_concat("cannot write LLVM IR to ", out_file))
+    if (ir_write_file(outFile) != 0) {
+        diag_error(str_concat("cannot write LLVM IR to ", outFile))
         return 1
     }
 
-    if (emit_ir_only) {
+    if (emitIrOnly) {
         print("Wrote LLVM IR: ")
-        println(out_file)
+        println(outFile)
         return 0
     }
 
-    let mut build_failed = 0
-    if (bootstrap_mode) {
-        build_failed = compiler_bootstrap_executable(out_file, output_file)
+    let mut buildFailed = 0
+    if (bootstrapMode) {
+        buildFailed = compiler_bootstrap_executable(outFile, outputFile)
     } else {
-        build_failed = compiler_build_executable(out_file, output_file)
+        buildFailed = compiler_build_executable(outFile, outputFile)
     }
 
-    if (build_failed != 0) {
-        delete_file(out_file)
+    if (buildFailed != 0) {
+        delete_file(outFile)
         diag_error("the native build step failed (llc/clang); see the output above")
         return 1
     }
 
-    delete_file(out_file)
+    delete_file(outFile)
 
     print("Built ")
-    println(output_file)
+    println(outputFile)
 
-    if (run_after_build) {
-        if (compiler_run_executable(output_file) != 0) {
-            diag_error(str_concat(output_file, " exited with a failure status"))
+    if (runAfterBuild) {
+        if (compiler_run_executable(outputFile) != 0) {
+            diag_error(str_concat(outputFile, " exited with a failure status"))
             return 1
         }
     }
@@ -481,23 +568,23 @@ fn compile_source(path: String, output_file: String, run_after_build: Bool, boot
 
 fn main() -> Int {
     let mut path = ""
-    let mut output_file = ""
+    let mut outputFile = ""
     let mut command = ""
-    let mut run_after_build = false
-    let mut bootstrap_mode = false
-    let mut verify_mode = false
-    let mut debug_mode = false
-    let mut arg_index = 0
+    let mut runAfterBuild = false
+    let mut bootstrapMode = false
+    let mut verifyMode = false
+    let mut debugMode = false
+    let mut argIndex = 0
 
     if (cli_arg_count() <= 1) {
-        print_usage()
+        printUsage()
         return 1
     }
 
     let first = cli_arg(1)
 
     if (str_equals(first, "--help") == 1 or str_equals(first, "-h") == 1) {
-        print_usage()
+        printUsage()
         return 0
     }
 
@@ -516,12 +603,12 @@ fn main() -> Int {
     // that hash defined in exactly one place -- here, in C -- rather than
     // reimplemented in the packaging script.
     if (str_equals(first, "runtime-hash") == 1) {
-        let source_hash = compiler_runtime_source_hash()
-        if (str_equals(source_hash, "") == 1) {
+        let sourceHash = compiler_runtime_source_hash()
+        if (str_equals(sourceHash, "") == 1) {
             diag_error("cannot find the Prismio runtime sources to hash")
             return 1
         }
-        println(source_hash)
+        println(sourceHash)
         return 0
     }
 
@@ -531,10 +618,10 @@ fn main() -> Int {
     if (str_equals(first, "dump-ast") == 1) {
         if (cli_arg_count() <= 2) {
             diag_error("missing source file")
-            print_usage()
+            printUsage()
             return 1
         }
-        return dump_ast_command(cli_arg(2))
+        return dumpAstCommand(cli_arg(2))
     }
 
     // The memory model. `--summary` prints the tier distribution in the form
@@ -544,32 +631,32 @@ fn main() -> Int {
     if (str_equals(first, "aif") == 1) {
         if (cli_arg_count() <= 2) {
             diag_error("missing source file")
-            print_usage()
+            printUsage()
             return 1
         }
 
-        let mut aif_summary = false
-        let mut aif_owned = false
-        let mut aif_theta_fields = false
-        let mut aif_why = ""
-        let mut aif_budget_arg = AIF_DEFAULT_ROUNDS
-        let mut aif_arg = 3
-        while (aif_arg < cli_arg_count()) {
-            let flag = cli_arg(aif_arg)
+        let mut aifSummary = false
+        let mut aifOwned = false
+        let mut aifThetaFields = false
+        let mut aifWhy = ""
+        let mut aifBudgetArg = AIF_DEFAULT_ROUNDS
+        let mut aifArg = 3
+        while (aifArg < cli_arg_count()) {
+            let flag = cli_arg(aifArg)
             if (str_equals(flag, "--summary") == 1) {
-                aif_summary = true
+                aifSummary = true
             } else if (str_starts_with(flag, "--why=") == 1) {
                 // SPEC 6.3's minimal cause for one record. The symbol is the one
                 // the manifest prints, so it can be copied straight out of a
                 // diff -- which is where a reader will have found it.
-                aif_why = str_substring(flag, 6, str_length(flag) - 6)
+                aifWhy = str_substring(flag, 6, str_length(flag) - 6)
             } else if (str_starts_with(flag, "--budget=") == 1) {
                 // INFERENCE 5.3's truncation path is unreachable at the default
                 // of 200 rounds, and an unreachable path is where a bug lives
                 // undisturbed. This makes it reachable, which is what
                 // tests/test_43 uses to check that widening only ever raises.
-                aif_budget_arg = str_to_int(str_substring(flag, 9, str_length(flag) - 9))
-                if (aif_budget_arg < 1) {
+                aifBudgetArg = str_to_int(str_substring(flag, 9, str_length(flag) - 9))
+                if (aifBudgetArg < 1) {
                     diag_error("--budget= must be at least 1 round")
                     return 1
                 }
@@ -579,22 +666,22 @@ fn main() -> Int {
                 // layout. tools/aif_differential.py passes this so the two are
                 // compared on their inference rather than on a threshold only
                 // one of them can evaluate.
-                aif_theta_fields = true
+                aifThetaFields = true
             } else if (str_equals(flag, "--owned-collections") == 1) {
                 // Treat String/List/Array as move-only, as SPEC 11 item 10
                 // specifies rather than as types.psm currently implements. This
                 // one property is 100% of the measured T3 residue, so it is a
                 // switch: the difference it makes is the measurement.
-                aif_owned = true
+                aifOwned = true
             } else {
-                diag_error(str_concat("unknown argument ", diag_quote(flag)))
-                print_usage()
+                diag_error(str_concat("unknown argument ", diagQuote(flag)))
+                printUsage()
                 return 1
             }
-            aif_arg = aif_arg + 1
+            aifArg = aifArg + 1
         }
 
-        return aif_command(cli_arg(2), aif_summary, aif_owned, aif_theta_fields, aif_budget_arg, aif_why)
+        return aifCommand(cli_arg(2), aifSummary, aifOwned, aifThetaFields, aifBudgetArg, aifWhy)
     }
 
     // Compiler development. The command itself selects the build mode -- there is no
@@ -602,48 +689,48 @@ fn main() -> Int {
     // against the installed runtime and still bootstrap against repository sources.
     if (str_equals(first, "bootstrap") == 1) {
         command = "bootstrap"
-        bootstrap_mode = true
-        run_after_build = false
+        bootstrapMode = true
+        runAfterBuild = false
         path = "src/main.psm"
-        arg_index = 2
+        argIndex = 2
 
         if (cli_arg_count() > 2) {
             let candidate = cli_arg(2)
             if (str_equals(candidate, "-o") == 0 and str_equals(candidate, "--target") == 0) {
                 path = candidate
-                arg_index = 3
+                argIndex = 3
             }
         }
 
-        output_file = compiler_default_exe_path(path)
+        outputFile = compiler_default_exe_path(path)
 
-        while (arg_index < cli_arg_count()) {
-            let barg = cli_arg(arg_index)
+        while (argIndex < cli_arg_count()) {
+            let barg = cli_arg(argIndex)
             if (str_equals(barg, "-o") == 1) {
-                if (arg_index + 1 >= cli_arg_count()) {
+                if (argIndex + 1 >= cli_arg_count()) {
                     diag_error("`-o` requires an output path")
                     return 1
                 }
-                output_file = cli_arg(arg_index + 1)
-                arg_index = arg_index + 2
+                outputFile = cli_arg(argIndex + 1)
+                argIndex = argIndex + 2
             } else {
-                diag_error(str_concat("unknown argument ", diag_quote(barg)))
-                print_usage()
+                diag_error(str_concat("unknown argument ", diagQuote(barg)))
+                printUsage()
                 return 1
             }
         }
 
-        return compile_source(path, output_file, run_after_build, bootstrap_mode, false, false)
+        return compileSource(path, outputFile, runAfterBuild, bootstrapMode, false, false)
     }
 
     if (str_equals(first, "build") == 1) {
         command = "build"
-        run_after_build = false
-        arg_index = 3
+        runAfterBuild = false
+        argIndex = 3
 
         if (cli_arg_count() <= 2) {
             diag_error("missing source file")
-            print_usage()
+            printUsage()
             return 1
         }
 
@@ -655,12 +742,12 @@ fn main() -> Int {
     } else {
         if (str_equals(first, "run") == 1) {
             command = "run"
-            run_after_build = true
-            arg_index = 3
+            runAfterBuild = true
+            argIndex = 3
 
             if (cli_arg_count() <= 2) {
                 diag_error("missing source file")
-                print_usage()
+                printUsage()
                 return 1
             }
 
@@ -671,75 +758,75 @@ fn main() -> Int {
             }
         } else {
             command = "build"
-            run_after_build = false
+            runAfterBuild = false
             path = first
-            arg_index = 2
+            argIndex = 2
         }
     }
 
-    output_file = compiler_default_exe_path(path)
+    outputFile = compiler_default_exe_path(path)
 
-    while (arg_index < cli_arg_count()) {
-        let mut arg = cli_arg(arg_index)
+    while (argIndex < cli_arg_count()) {
+        let mut arg = cli_arg(argIndex)
 
         if (str_equals(arg, "-o") == 1) {
-            if (arg_index + 1 >= cli_arg_count()) {
+            if (argIndex + 1 >= cli_arg_count()) {
                 diag_error("`-o` requires an output path")
                 return 1
             }
-            output_file = cli_arg(arg_index + 1)
-            arg_index = arg_index + 2
+            outputFile = cli_arg(argIndex + 1)
+            argIndex = argIndex + 2
         } else if (str_starts_with(arg, "-O") == 1 and str_length(arg) == 3) {
             // -O0..-O3. Runs LLVM's standard pipeline over the module before it
             // is written; without it the output keeps a load/store per binding.
             let level = str_to_int(str_substring(arg, 2, 1))
             if (level < 0 or level > 3) {
-                diag_error(str_concat("unknown optimization level ", diag_quote(arg)))
+                diag_error(str_concat("unknown optimization level ", diagQuote(arg)))
                 return 1
             }
             ir_set_opt_level(level)
-            arg_index = arg_index + 1
+            argIndex = argIndex + 1
         } else if (str_equals(arg, "--target") == 1) {
-            if (arg_index + 1 >= cli_arg_count()) {
+            if (argIndex + 1 >= cli_arg_count()) {
                 diag_error("`--target` requires a value (e.g. wasm32)")
                 return 1
             }
-            if (str_equals(cli_arg(arg_index + 1), "wasm32") == 1) {
-                ir_set_target_wasm(true)
+            if (str_equals(cli_arg(argIndex + 1), "wasm32") == 1) {
+                irSetTargetWasm(true)
             }
-            arg_index = arg_index + 2
+            argIndex = argIndex + 2
         } else if (str_equals(arg, "--verify") == 1) {
             // SPEC 7.3. Slower and heavier by design: the mode exists to be run
             // by CI, not by users.
-            verify_mode = true
-            arg_index = arg_index + 1
+            verifyMode = true
+            argIndex = argIndex + 1
         } else if (str_equals(arg, "--debug") == 1) {
             // SPEC 7.1/7.2's zero-analysis level. `max` is deliberately not
             // offered: with today's engine it would be byte-identical to
             // `release` -- the bounds it raises are never reached and there is no
             // monomorphization cap to raise -- and a flag whose settings cannot
             // be told apart is a check that cannot fail.
-            debug_mode = true
-            arg_index = arg_index + 1
+            debugMode = true
+            argIndex = argIndex + 1
         } else {
             if (str_equals(arg, "build") == 1 or str_equals(arg, "run") == 1) {
                 diag_error("use either `build` or `run`, not both")
                 return 1
             }
 
-            if (str_equals(command, "build") == 1 and arg_index == 2) {
-                // Re-read rather than `output_file = arg`: that moves `arg`, and
+            if (str_equals(command, "build") == 1 and argIndex == 2) {
+                // Re-read rather than `outputFile = arg`: that moves `arg`, and
                 // move state is per name for the whole body, so the `else` below
                 // would report a use of a moved value on a path that never ran.
-                output_file = cli_arg(arg_index)
-                arg_index = arg_index + 1
+                outputFile = cli_arg(argIndex)
+                argIndex = argIndex + 1
             } else {
-                diag_error(str_concat("unknown argument ", diag_quote(arg)))
-                print_usage()
+                diag_error(str_concat("unknown argument ", diagQuote(arg)))
+                printUsage()
                 return 1
             }
         }
     }
 
-    return compile_source(path, output_file, run_after_build, bootstrap_mode, verify_mode, debug_mode)
+    return compileSource(path, outputFile, runAfterBuild, bootstrapMode, verifyMode, debugMode)
 }

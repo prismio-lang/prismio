@@ -215,8 +215,8 @@ def run_punned_slot_invariant_test():
     print(f"\n{BLUE}--- Running punned_slot_invariant ---{RESET}")
 
     checks = [
-        (PROJECT_ROOT / "src" / "ast.psm", "NodeKind"),
-        (PROJECT_ROOT / "src" / "types.psm", "TypeKind"),
+        (PROJECT_ROOT / "src" / "ast" / "nodes.psm", "NodeKind"),
+        (PROJECT_ROOT / "src" / "ast" / "types.psm", "TypeKind"),
     ]
 
     problems = []
@@ -239,7 +239,7 @@ def run_punned_slot_invariant_test():
         print(f"{RED}[FAIL] punned-pointer invariant broken{RESET}")
         for p in problems:
             print(f"  {p}")
-        print("  see the invariant in src/ast.psm")
+        print("  see the invariant in src/ast/nodes.psm")
         return False
 
     print(f"{GREEN}[PASS] NodeKind and TypeKind both reserve ordinal 0{RESET}")
@@ -443,7 +443,7 @@ def run_aif_layout_test():
     # Enums lower to i32; everything else that is not a scalar is a pointer.
     # Read the declarations rather than guessing from the name -- `TokenType` is
     # an enum and does not look like one.
-    sources = {p: p.read_text(encoding="utf-8") for p in sorted(src_dir.glob("*.psm"))}
+    sources = {p: p.read_text(encoding="utf-8") for p in sorted(src_dir.rglob("*.psm"))}
     enums = {m.group(1) for text in sources.values()
              for m in re.finditer(r"enum\s+(\w+)\s*\{", text)}
 

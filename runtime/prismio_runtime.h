@@ -21,6 +21,7 @@ char* read_file(const char* path);
 char* get_directory(const char* path);
 char* join_path(const char* directory, const char* filename);
 int delete_file(const char* path);
+char* list_modules(const char* directory);
 
 // Directory containing the running executable. executable_directory() falls back
 // to "." so callers always get a usable string; prismio_executable_directory()

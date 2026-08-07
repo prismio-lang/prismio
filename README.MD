@@ -64,21 +64,23 @@ The README intentionally avoids embedding extensive language examples or syntax 
 Source (.psm)
      │
      ▼
-  Lexer                   ← src/lexer.psm
+  Lexer                   ← src/lexer/
      │  Token stream
      ▼
-  Parser                  ← src/parser.psm
+  Parser                  ← src/parse/
      │  Untyped AST
      ▼
   Import Resolver         ← src/main.psm
      │  Flattens transitive imports into a single module AST
      ▼
-  Semantic Analysis        ← src/sema.psm
+  Semantic Analysis       ← src/sema/
      │  Type checking + move/borrow/drop ownership enforcement
      ▼
-  IR Generator            ← src/ir.psm
-     │  AST walk → LLVM IR text (.ll)
-     │  Delegates emission to llvm-bridge (C, via extern fn)
+  Allocation Inference    ← src/aif/
+     │  Assigns every allocation site a tier; drives what codegen emits
+     ▼
+  IR Generator            ← src/ir/
+     │  AST walk → LLVM IR, built through the LLVM C API
      ▼
   llvm-llc
      │  Object file (.obj / .o)
@@ -89,9 +91,25 @@ Source (.psm)
   Native binary
 ```
 
-IR emission is handled by `llvm-bridge.c` — a C library that constructs LLVM IR as formatted text. The compiler calls into it exclusively via `extern fn` declarations in `src/bridge.psm`. There is no direct LLVM API dependency in the Prismio source.
+IR is built through the LLVM C API by `runtime/llvm-api-backend.c`. The compiler calls into it
+exclusively via the `extern fn` declarations in `src/ir/bridge.psm`, so the Prismio source has no
+direct LLVM dependency of its own and a second backend can be linked in its place.
 
-The compiler runs a dedicated semantic analysis pass (`src/sema.psm`) between parsing and IR generation, performing type checking and enforcing move/borrow/drop ownership rules before any IR is generated.
+### Source layout
+
+Each stage of the pipeline is a directory, and a module's path is its import path — `src/ir/expr.psm`
+is `import ir.expr`, and `import ir.*` takes the whole package.
+
+| Directory | Contents |
+|---|---|
+| `src/common/` | String and character primitives; the diagnostics FFI |
+| `src/lexer/` | The token vocabulary and the scanner |
+| `src/ast/` | Node and type representations, plus the AST dump used by the AIF oracle |
+| `src/parse/` | Declarations, statements, expressions, and the parser itself |
+| `src/sema/` | Type checking, overload resolution, ownership enforcement, control-flow analysis |
+| `src/aif/` | Allocation inference: the model, the walk, layout, and reporting |
+| `src/ir/` | Type lowering, expression and statement emission, and the LLVM bridge |
+| `src/main.psm` | CLI, import resolution, and the build driver |
 
 For a full breakdown of compiler internals, see [Architecture](https://docs.prismio.org/architecture)
 

@@ -1,0 +1,407 @@
+// The AIF model: tier and rule constants, how a type is classified, and the
+// value sets and allocation sites the solver works over.
+
+import ast.nodes
+import ast.types
+import common.text
+import common.diagnostics
+
+// AIF — the Adaptive Inference Framework, Prismio's memory model.
+//
+// This is the pass aif/implementation/COMPILER-AUDIT.md 4.1 says the compiler
+// does not have and needs first:
+//
+//     sema  ->  [ fact graph -> inference -> tier assignment -> manifest ]  ->  ir
+//
+// It runs after analyzeModule and before generateModule, and at this level it
+// **changes no codegen**. Every allocation still goes through ir_alloc_object;
+// what this produces is the manifest (SPEC 6), which is the artifact that makes
+// the tier distribution measurable before any of it is risked on the self-host.
+// That is COMPILER-AUDIT 5's Level 0, and it is deliberately the whole scope:
+// if the distribution is bad, the model is falsified cheaply and no codegen was
+// written against it.
+//
+// WHAT IT IMPLEMENTS
+//   INFERENCE 2      the E / A / C lattices  (T is vacuous -- see below)
+//   INFERENCE 3-4    the fact graph and the escape, aliasing and cyclicity
+//                    transfer rules
+//   INFERENCE 5      round iteration to a fixed point, with the mandatory
+//                    widening on budget exhaustion
+//   SPEC 4.2         tier derivation, clause for clause
+//   SPEC 6.2         the manifest, in the normative sorted line-oriented form
+//   FFI 5            ownership contracts for the runtime surface
+//
+// APPROXIMATIONS. Each makes the answer more conservative -- a higher tier --
+// never less, so a good number here is trustworthy and a bad one may be
+// pessimistic. They are the prototype's, kept identical on purpose (see
+// "THE ORACLE" below).
+//
+//   A1  Flow-insensitive: a value's facts are the join over all program points.
+//       INFERENCE 11.3 already accepts this for loops; here it is everywhere.
+//   A2  Field-sensitive, object-insensitive -- one node per (struct, field),
+//       as INFERENCE 3.1 specifies. INFERENCE 11.1 is the known cost.
+//   A3  Context-insensitive: every function is analysed at the TOP context.
+//       Ownership contexts (SPEC 2.2) are AIF-2 work and contributed zero to
+//       every measured tier number.
+//   A4  Thread affinity is vacuous: the language has no tasks, so every value
+//       is Isolated and T4a is unreachable by construction.
+//   A5  Struct size is approximated by field count for the T0/T1 split. The
+//       AST carries no layout, and SPEC 4.2 leaves Theta_stack implementation-
+//       defined and requires only that it be documented -- it is, in the
+//       manifest header.
+//
+// THE ORACLE. aif/prototype/aif.py implements the same rules against the JSON
+// from `prismio dump-ast`. Both must produce the same distribution over the
+// same source. That is differential testing against an independent
+// implementation, and it is the only reliable defence against a transfer
+// function that is subtly wrong and yields a silently wrong tier rather than a
+// crash. Where the prototype approximates, this file approximates identically
+// and says so at the site -- a deliberate, documented divergence would be fine;
+// an accidental one would destroy the test.
+//
+// The containers live in runtime/aif_support.c. That file's header says why.
+
+import ast.nodes
+import ast.types
+import common.text
+import common.diagnostics
+
+// ---------------------------------------------------------------------------
+// runtime/aif_support.c
+// ---------------------------------------------------------------------------
+
+extern fn aif_reset()
+
+extern fn aif_scope_new(parent: Int, owner: Int) -> Int
+extern fn aif_scope_set_region(scope: Int, name: String borrow)
+extern fn aif_region_name_at_site(id: Int) -> String alias
+extern fn aif_site_arena_is_pinned(id: Int) -> Int
+
+// SPEC 5's annotations. `unique` cuts the aliasing graph at a site; `pin`
+// constrains the tier after convergence, and its verdict is one of AIF_PIN_*.
+extern fn aif_con_unique(vs: Int)
+extern fn aif_con_pin(vs: Int, tier: Int)
+extern fn aif_check_pins(converged: Int)
+extern fn aif_site_pin_verdict(id: Int) -> Int
+extern fn aif_site_pin_tier(id: Int) -> Int
+extern fn aif_site_derived_tier(id: Int) -> Int
+extern fn aif_site_alias_axiom(id: Int) -> Int
+
+// INFERENCE 5.6 / SPEC 6.3. The derivation, read back as a witness path.
+extern fn aif_con_at(file: Int, line: Int, col: Int)
+extern fn aif_cause_domain_for(id: Int) -> Int
+extern fn aif_cause_build(id: Int, domain: Int) -> Int
+extern fn aif_cause_site(i: Int) -> Int
+extern fn aif_cause_rule(i: Int) -> Int
+extern fn aif_cause_value(i: Int) -> Int
+extern fn aif_cause_file(i: Int) -> Int
+extern fn aif_cause_line(i: Int) -> Int
+extern fn aif_cause_col(i: Int) -> Int
+extern fn aif_rule_name(rule: Int) -> String alias
+extern fn aif_escape_name(value: Int) -> String alias
+extern fn aif_alias_name(value: Int) -> String alias
+
+// LAYOUT 7.1. The scope carries the block it came from, so codegen can ask a
+// block whether an arena was placed there, and its loop depth, which is what
+// weights a site's contribution to the benefit.
+extern fn aif_scope_note_node(scope: Int, node: String borrow)
+extern fn aif_scope_set_loop_depth(scope: Int, depth: Int)
+extern fn aif_place_arenas()
+
+extern fn aif_fn_new(symbol: String, name: String, file: Int) -> Int
+extern fn aif_fn_lookup(symbol: String) -> Int
+extern fn aif_fn_count() -> Int
+extern fn aif_fn_symbol(f: Int) -> String alias
+extern fn aif_fn_name(f: Int) -> String
+extern fn aif_fn_is_sealed(f: Int) -> Int
+
+extern fn aif_struct_new(name: String)
+extern fn aif_enum_new(name: String)
+extern fn aif_struct_add_field(name: String, field: String, type: String, bytes: Int)
+
+// LAYOUT 2.1's access profile, statically estimated, and 7.2's search over it.
+// `weight` is AIF_LOOP_ITERS per enclosing loop -- the same estimator automatic
+// arena placement uses for allocs_in(s).
+extern fn aif_field_access(type: String, field: String, weight: Int)
+extern fn aif_layout_select()
+extern fn aif_layout_field(type: String, i: Int) -> String alias
+extern fn aif_layout_field_bytes(type: String, i: Int) -> Int
+extern fn aif_layout_reordered(type: String) -> Int
+extern fn aif_struct_set_size(name: String, bytes: Int)
+extern fn aif_struct_size(name: String) -> Int
+extern fn aif_is_struct(name: String) -> Int
+extern fn aif_is_enum(name: String) -> Int
+extern fn aif_struct_nfields(name: String) -> Int
+extern fn aif_type_edge(from: String, to: String)
+extern fn aif_compute_type_acyclic()
+extern fn aif_nominal_count() -> Int
+extern fn aif_nominal_name(i: Int) -> String
+extern fn aif_nominal_is_struct(i: Int) -> Int
+extern fn aif_nominal_acyclic(i: Int) -> Int
+
+// CYCLES 2. How many types lie in a non-trivial SCC, and how many sites reach
+// T4b. Zero cyclic types means the collector is omitted from the binary.
+// REQUIREMENTS 19. The arena high-water mark, statically estimated, and the
+// `region name pin(N)` caps that gate on it.
+extern fn aif_scope_set_budget(scope: Int, bytes: Int, file: Int, line: Int, col: Int)
+extern fn aif_arena_high_water() -> Int
+extern fn aif_arena_unsized_sites() -> Int
+extern fn aif_budget_count() -> Int
+extern fn aif_scope_budget(s: Int) -> Int
+extern fn aif_scope_served(s: Int) -> Int
+extern fn aif_scope_region(s: Int) -> String alias
+extern fn aif_scope_budget_file(s: Int) -> Int
+extern fn aif_scope_budget_line(s: Int) -> Int
+extern fn aif_scope_budget_col(s: Int) -> Int
+
+extern fn aif_scc_type_count() -> Int
+extern fn aif_t4b_site_count() -> Int
+extern fn aif_site_is_cyclic(id: Int) -> Int
+
+extern fn aif_site_new(type: String, kind: Int, fnId: Int, scope: Int,
+                       file: Int, line: Int, col: Int, nfields: Int) -> Int
+extern fn aif_site_count() -> Int
+extern fn aif_site_type(id: Int) -> String alias
+extern fn aif_site_kind(id: Int) -> Int
+extern fn aif_site_file(id: Int) -> Int
+extern fn aif_site_line(id: Int) -> Int
+extern fn aif_site_col(id: Int) -> Int
+extern fn aif_site_fn(id: Int) -> Int
+extern fn aif_site_ordinal(id: Int) -> Int
+
+extern fn aif_vs_new() -> Int
+extern fn aif_vs_site(vs: Int, site: Int)
+extern fn aif_vs_key(vs: Int, key: Int)
+extern fn aif_vs_union(a: Int, b: Int) -> Int
+extern fn aif_vs_is_empty(vs: Int) -> Int
+
+extern fn aif_key_var(fnId: Int, name: String) -> Int
+extern fn aif_var_note_scope(fnId: Int, name: String, scope: Int)
+extern fn aif_var_scope(fnId: Int, name: String) -> Int
+extern fn aif_extern_contract_set(fnName: String, index: Int, contract: String)
+extern fn aif_extern_contract(fnName: String, index: Int) -> String alias
+extern fn aif_key_field(type: String, field: String) -> Int
+extern fn aif_key_ret(fnId: Int) -> Int
+extern fn aif_key_param(fnId: Int, index: Int) -> Int
+
+extern fn aif_argv_begin() -> Int
+extern fn aif_argv_push(vs: Int)
+extern fn aif_argv_count(base: Int) -> Int
+extern fn aif_argv_get(base: Int, i: Int) -> Int
+extern fn aif_argv_end(base: Int)
+
+extern fn aif_con_bind(key: Int, vs: Int)
+extern fn aif_con_arg(key: Int, vs: Int)
+extern fn aif_con_store(key: Int, vs: Int, owners: Int)
+extern fn aif_con_live_in(vs: Int, scope: Int, fnId: Int)
+extern fn aif_con_opaque(vs: Int)
+extern fn aif_con_retain_in(vs: Int, holder: Int)
+extern fn aif_con_borrow(vs: Int)
+extern fn aif_con_escape_caller(vs: Int)
+extern fn aif_con_escape_global(vs: Int)
+extern fn aif_con_no_stack(vs: Int)
+extern fn aif_con_count() -> Int
+
+extern fn aif_set_owned_collections(on: Int)
+extern fn aif_solve(maxRounds: Int) -> Int
+extern fn aif_rounds() -> Int
+extern fn aif_widen()
+extern fn aif_site_widened(id: Int) -> Int
+extern fn aif_pt_rounds() -> Int
+extern fn aif_tier_of(site: Int) -> Int
+extern fn aif_theta_stack() -> Int
+extern fn aif_set_theta_mode(mode: Int)
+extern fn aif_theta_mode() -> Int
+extern fn aif_site_note_node(site: Int, node: String borrow)
+extern fn aif_note_call_result(node: String borrow, vs: Int, fnId: Int)
+extern fn aif_site_is_rc(site: Int) -> Int
+
+extern fn aif_order_add(symbol: String, site: Int)
+extern fn aif_order_sort()
+extern fn aif_order_count() -> Int
+extern fn aif_order_symbol(i: Int) -> String alias
+extern fn aif_order_site(i: Int) -> Int
+
+// The string surface comes from utils.psm; only what it does not declare is
+// declared here. Redeclaring one with a different signature would be merged
+// away silently by resolveImports -- whichever module was reached first wins.
+extern fn ir_llvm_version() -> String alias
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+// Site kinds, mirroring runtime/aif_support.c. Only "struct" is load-bearing --
+// the T0 clause and the copy rule test it -- but the manifest reports the split
+// because it is where the residue turns out to live.
+let AIF_KIND_STRUCT = 0
+let AIF_KIND_STRING = 1
+let AIF_KIND_ARRAY = 2
+let AIF_KIND_LIST = 3
+let AIF_KIND_OPAQUE = 4
+
+// Default round budget. INFERENCE 5.7 makes the budget the only difference
+// between optimisation levels; 200 is far past what any observed program needs
+// (the compiler's own source converges in single digits), so exhausting it is a
+// signal rather than a routine outcome.
+let AIF_DEFAULT_ROUNDS = 200
+
+// FFI contract codes. 0 and 1 are FFI 5.1's `borrow` and `retain`; anything >= 2
+// is `retain_in(k)` with k = code - 2, which says the callee stores this
+// argument into argument k, so it escapes exactly as far as that container does
+// and no further.
+let AIF_FFI_BORROW = 0
+let AIF_FFI_RETAIN = 1
+// The callee takes ownership and frees it. Nothing on a stack or in an arena can
+// be handed to a free, so this bars T0 the way an explicit `drop` does, and the
+// value leaves this frame's control so its escape rises with it.
+let AIF_FFI_CONSUME = 2
+// The callee writes through the pointer and does not read what was there. No
+// ownership consequence at all, so it behaves as `borrow`.
+let AIF_FFI_OUT = 3
+let AIF_FFI_RETAIN_IN_BASE = 100
+
+// Counters the manifest reports. They exist so that what the model *excludes*
+// is visible rather than silent -- an exclusion nobody can see is indistinguish-
+// able from a bug.
+let mut aifLiteralStrings = 0
+let mut aifExternAlloc = 0
+let mut aifOpaqueReturns = 0
+let mut aifStaticReturns = 0
+
+// The budget this run was given, so the manifest header reports what was
+// actually enforced rather than the default.
+let mut aifBudget = 200
+
+// How many loops enclose the statement being walked. LAYOUT 7.1 weights a site's
+// contribution to an arena's benefit by the loops between them.
+let mut aifLoopDepth = 0
+
+// SPEC 5.4's verdicts, mirroring AIF_PIN_* in runtime/aif_support.c.
+let AIF_PIN_NONE = 0
+let AIF_PIN_HONOURED = 1
+let AIF_PIN_REFUTED = 2
+let AIF_PIN_UNPROVEN = 3
+
+// The derivation's root, mirroring AIF_RULE_ALLOC in runtime/aif_support.c: the
+// fact was never raised and is still where the allocation put it.
+let AIF_RULE_ALLOC = 14
+
+// FFI 5.4: the default contract for an extern nobody declared one for. `borrow`
+// is optimistic, `retain` costs 33 points of tier distribution on this
+// compiler's own source (RESULTS-L0 4.1). Kept switchable because that
+// measurement is the argument for the default.
+let mut aifFfiDefault = 0
+
+// The empty value set. -1 rather than an allocated empty one, because
+// aif_support.c reads any out-of-range value set as empty and the walk produces
+// a great many of these.
+fn aifVsEmpty() -> Int {
+    return 0 - 1
+}
+
+// ---------------------------------------------------------------------------
+// Type classification
+// ---------------------------------------------------------------------------
+
+// The type a node was given by sema, spelled the way diagnostics spell it.
+// Empty for nodes sema does not type -- statements and declarations.
+fn aifNodeType(node: ASTNode) -> String {
+    if (nodeExists(node.typeInfo)) {
+        return typeDisplay(ptr_to_type(node.typeInfo))
+    }
+    return ""
+}
+
+// `List<Token>` -> `List`. Field keys are per nominal type, so a generic
+// container's fields are shared across its instantiations -- object-insensitive
+// in the type argument as well as in the object (INFERENCE 11.1).
+fn aifBaseType(ty: String) -> String {
+    let at = str_index_of(ty, "<")
+    if (at < 0) {
+        return ty
+    }
+    return str_substring(ty, 0, at)
+}
+
+// Does a value of this type participate in the memory model at all? Scalars and
+// enums do not: they are registers, they are copied, and there is nothing to
+// reclaim.
+fn aifIsRef(ty: String) -> Bool {
+    if (str_equals(ty, "") == 1) { return false }
+    if (str_equals(ty, "Int") == 1) { return false }
+    if (str_equals(ty, "I8") == 1) { return false }
+    if (str_equals(ty, "I16") == 1) { return false }
+    if (str_equals(ty, "I32") == 1) { return false }
+    if (str_equals(ty, "I64") == 1) { return false }
+    if (str_equals(ty, "U8") == 1) { return false }
+    if (str_equals(ty, "U16") == 1) { return false }
+    if (str_equals(ty, "U32") == 1) { return false }
+    if (str_equals(ty, "U64") == 1) { return false }
+    if (str_equals(ty, "Isize") == 1) { return false }
+    if (str_equals(ty, "Usize") == 1) { return false }
+    if (str_equals(ty, "Float") == 1) { return false }
+    if (str_equals(ty, "Bool") == 1) { return false }
+    if (str_equals(ty, "Char") == 1) { return false }
+    if (str_equals(ty, "Void") == 1) { return false }
+    if (aif_is_enum(ty) == 1) { return false }
+    return true
+}
+
+fn aifKindOf(ty: String) -> Int {
+    if (aif_is_struct(ty) == 1) { return AIF_KIND_STRUCT }
+    if (str_equals(ty, "String") == 1) { return AIF_KIND_STRING }
+    if (str_equals(aifBaseType(ty), "List") == 1) { return AIF_KIND_LIST }
+    if (str_starts_with(ty, "[") == 1) { return AIF_KIND_ARRAY }
+    if (str_equals(ty, "Array") == 1) { return AIF_KIND_ARRAY }
+    return AIF_KIND_OPAQUE
+}
+
+fn aifKindName(kind: Int) -> String {
+    if (kind == AIF_KIND_STRUCT) { return "struct" }
+    if (kind == AIF_KIND_STRING) { return "string" }
+    if (kind == AIF_KIND_ARRAY) { return "array" }
+    if (kind == AIF_KIND_LIST) { return "list" }
+    return "opaque"
+}
+
+// A container's contents, as a field key.
+//
+// Elements are a field of the container, and treating them as one gets the whole
+// of INFERENCE 3.1's field-sensitivity for free: object-insensitive, so every
+// `List` shares an element key, exactly as `Lexer.source` is one key across every
+// Lexer. Through aifBaseType for the same reason its own comment gives --
+// merging `List<Token>` with `List<Node>` is imprecise and sound, and keying on
+// the spelled type would be neither, because `list_new()` types as `List<Invalid>`
+// and an annotated binding does not. Two spellings of one container that did not
+// share a key would lose edges, and a lost edge is the unsound direction.
+fn aifElemKey(containerType: String) -> Int {
+    return aif_key_field(aifBaseType(containerType), "@elem")
+}
+
+// ---------------------------------------------------------------------------
+// Value-set helpers
+// ---------------------------------------------------------------------------
+
+fn aifVsOfSite(site: Int) -> Int {
+    let v = aif_vs_new()
+    aif_vs_site(v, site)
+    return v
+}
+
+fn aifVsOfKey(key: Int) -> Int {
+    let v = aif_vs_new()
+    aif_vs_key(v, key)
+    return v
+}
+
+// The node pointer is what codegen later looks the tier up by, so it is
+// registered here rather than derived: the two passes walk the same tree in the
+// same process, and one node names one site exactly.
+fn aifNewSite(ty: String, fnId: Int, scope: Int, nodePtr: String) -> Int {
+    let node = ptr_to_node(nodePtr)
+    let sid = aif_site_new(ty, aifKindOf(ty), fnId, scope,
+                           node.file, node.line, node.col, aif_struct_nfields(ty))
+    aif_site_note_node(sid, nodePtr)
+    return sid
+}

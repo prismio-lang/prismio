@@ -9,8 +9,8 @@ extern fn ir_append_line(text: String)
 extern fn ir_get_temp() -> Int
 
 // Module
-extern fn ir_module_start(module_name: String)
-extern fn ir_module_start_wasm(module_name: String)
+extern fn ir_module_start(moduleName: String)
+extern fn ir_module_start_wasm(moduleName: String)
 extern fn ir_module_end()
 
 // Types
@@ -22,29 +22,29 @@ extern fn ir_type_i64() -> String alias
 extern fn ir_type_i8_ptr() -> String alias
 
 // Function Builders
-extern fn ir_declare_function_begin(name: String, ret_type: String)
-extern fn ir_declare_function_param(param_type: String)
+extern fn ir_declare_function_begin(name: String, retType: String)
+extern fn ir_declare_function_param(paramType: String)
 extern fn ir_declare_function_end()
 
-extern fn ir_function_begin(name: String, ret_type: String)
-extern fn ir_function_param(param_type: String, param_name: String)
+extern fn ir_function_begin(name: String, retType: String)
+extern fn ir_function_param(paramType: String, paramName: String)
 extern fn ir_function_body_start()
 extern fn ir_function_end()
 
 // Call Builder
 extern fn ir_call_begin()
-extern fn ir_call_arg(arg_type: String, arg_value: String)
-extern fn ir_call_end(ret_type: String, func_name: String) -> Int
+extern fn ir_call_arg(argType: String, argValue: String)
+extern fn ir_call_end(retType: String, funcName: String) -> Int
 
 // Basic Blocks
 extern fn ir_get_label() -> Int
-extern fn ir_label(label_name: String)
-extern fn ir_label_numbered(label_num: Int)
+extern fn ir_label(labelName: String)
+extern fn ir_label_numbered(labelNum: Int)
 
 // Memory
 extern fn ir_alloca(type: String, name: String) -> Int
-extern fn ir_load(type: String, ptr_name: String) -> Int
-extern fn ir_store(type: String, value: String, ptr_name: String)
+extern fn ir_load(type: String, ptrName: String) -> Int
+extern fn ir_store(type: String, value: String, ptrName: String)
 extern fn ir_load_global(type: String, name: String) -> Int
 extern fn ir_store_global(type: String, value: String, name: String)
 
@@ -63,13 +63,13 @@ extern fn ir_fdiv(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_neg(type: String, value: String) -> Int
 
 // Width conversions
-extern fn ir_zext(from_type: String, value: String, to_type: String) -> Int
-extern fn ir_sext(from_type: String, value: String, to_type: String) -> Int
-extern fn ir_trunc(from_type: String, value: String, to_type: String) -> Int
-extern fn ir_sitofp(from_type: String, value: String, to_type: String) -> Int
-extern fn ir_uitofp(from_type: String, value: String, to_type: String) -> Int
-extern fn ir_fptosi(from_type: String, value: String, to_type: String) -> Int
-extern fn ir_fptoui(from_type: String, value: String, to_type: String) -> Int
+extern fn ir_zext(fromType: String, value: String, toType: String) -> Int
+extern fn ir_sext(fromType: String, value: String, toType: String) -> Int
+extern fn ir_trunc(fromType: String, value: String, toType: String) -> Int
+extern fn ir_sitofp(fromType: String, value: String, toType: String) -> Int
+extern fn ir_uitofp(fromType: String, value: String, toType: String) -> Int
+extern fn ir_fptosi(fromType: String, value: String, toType: String) -> Int
+extern fn ir_fptoui(fromType: String, value: String, toType: String) -> Int
 extern fn ir_and(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_or(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_xor(type: String, lhs: String, rhs: String) -> Int
@@ -100,12 +100,12 @@ extern fn ir_fcmp_oge(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_ret(type: String, value: String)
 extern fn ir_ret_void()
 extern fn ir_br(label: String)
-extern fn ir_br_numbered(label_num: Int)
-extern fn ir_cond_br(condition: String, true_label: String, false_label: String)
-extern fn ir_cond_br_numbered(condition: String, true_label: Int, false_label: Int)
+extern fn ir_br_numbered(labelNum: Int)
+extern fn ir_cond_br(condition: String, trueLabel: String, falseLabel: String)
+extern fn ir_cond_br_numbered(condition: String, trueLabel: Int, falseLabel: Int)
 
 // Loop context (break/continue targets)
-extern fn ir_loop_push(continue_label: Int, break_label: Int)
+extern fn ir_loop_push(continueLabel: Int, breakLabel: Int)
 extern fn ir_loop_pop()
 extern fn ir_loop_continue_label() -> Int
 extern fn ir_loop_break_label() -> Int
@@ -123,8 +123,8 @@ extern fn ir_unmark_borrowed(name: String)
 extern fn ir_is_borrowed(name: String) -> Int
 
 // Globals
-extern fn ir_global_string(name: String, str_content: String)
-extern fn ir_global_var(name: String, type: String, init_value: String, is_const: Int)
+extern fn ir_global_string(name: String, strContent: String)
+extern fn ir_global_var(name: String, type: String, initValue: String, isConst: Int)
 
 // Typed structural builders.
 // Both backends implement these identically. The frontend must build structs,
@@ -142,21 +142,21 @@ extern fn ir_set_free_function(name: String)
 extern fn ir_get_alloc_function() -> String alias
 extern fn ir_get_free_function() -> String alias
 extern fn ir_struct_type_begin(name: String)
-extern fn ir_struct_type_field(field_type: String)
+extern fn ir_struct_type_field(fieldType: String)
 extern fn ir_struct_type_end()
-extern fn ir_alloc_object(struct_name: String) -> Int
+extern fn ir_alloc_object(structName: String) -> Int
 
 // The T0 half of the seam. aif/implementation/COMPILER-AUDIT.md 3 explains why
 // one hook could never express the whole ladder: T0 is an instruction, not a
 // call, and no choice of allocator name produces an `alloca`. T1's arena hook is
 // the third and does not exist yet.
-extern fn ir_alloc_stack(struct_name: String) -> Int
+extern fn ir_alloc_stack(structName: String) -> Int
 
 // The third hook, and the one 3 said did not exist. `region r { ... }` brackets
 // the block with ir_region_begin/ir_region_end, and a value the analysis proved
 // cannot outlive r bumps from that arena. The handle is dynamically scoped, so
 // this stays fn(size) -> ptr like the other two.
-extern fn ir_alloc_region(struct_name: String) -> Int
+extern fn ir_alloc_region(structName: String) -> Int
 extern fn ir_region_begin()
 extern fn ir_region_end()
 
@@ -164,12 +164,12 @@ extern fn ir_region_end()
 // that a count word changes struct layout and every ir_struct_field_ptr index
 // with it. It does not, because the count goes in front of the pointer rather
 // than inside the object, so this really is just another fn(size) -> ptr.
-extern fn ir_alloc_rc(struct_name: String) -> Int
+extern fn ir_alloc_rc(structName: String) -> Int
 
 // The fifth, for T4b. Like ir_alloc_rc it is a fn(size) -> ptr: the colour bits
 // and the per-type descriptor go in front of the pointer, so the LLVM struct
 // type is untouched and cyc_set_type fills them in afterwards.
-extern fn ir_alloc_cycle(struct_name: String) -> Int
+extern fn ir_alloc_cycle(structName: String) -> Int
 
 // Level 4's arena path for values the runtime allocates. `ir_alloc_region` only
 // serves struct literals; a string comes out of str_concat, which cannot know
@@ -191,7 +191,7 @@ extern fn ir_free_list(value: String)
 // function generated for its type, so the deallocator is named rather than
 // fixed. Still behind the seam: the generated body frees through ir_free_object
 // and its siblings, so a verify build sees every one of them.
-extern fn ir_free_typed(value: String, fn_name: String)
+extern fn ir_free_typed(value: String, fnName: String)
 extern fn ir_free_rc(value: String)
 
 // The address of a named function, as a value. A container of structs that own
@@ -201,24 +201,24 @@ extern fn ir_func_addr(name: String) -> Int
 
 // An indirect call to a `fn(ptr) -> void`. The collector's visitor differs per
 // traversal phase, so its callee is a value rather than a name.
-extern fn ir_call_indirect_ptr(fn_value: String, arg: String)
+extern fn ir_call_indirect_ptr(fnValue: String, arg: String)
 
 // REQUIREMENTS 20. A `List<T>` stores pointer-sized slots, so a scalar element
 // rides in one. Boxing it would cost an allocation per element and hand the
 // container something to own, which is exactly what a scalar element is not.
-extern fn ir_int_to_ptr(from_type: String, value: String) -> Int
-extern fn ir_ptr_to_int(value: String, to_type: String) -> Int
-extern fn ir_bitcast(from_type: String, value: String, to_type: String) -> Int
-extern fn ir_struct_field_ptr(struct_name: String, object: String, field_index: Int) -> Int
-extern fn ir_elem_ptr(elem_type: String, base: String, index: String) -> Int
-extern fn ir_array_alloca(elem_type: String, count: Int) -> Int
-extern fn ir_string_ptr(global_name: String) -> Int
-extern fn ir_load_ptr(type: String, ptr_value: String) -> Int
-extern fn ir_store_ptr(type: String, value: String, ptr_value: String)
+extern fn ir_int_to_ptr(fromType: String, value: String) -> Int
+extern fn ir_ptr_to_int(value: String, toType: String) -> Int
+extern fn ir_bitcast(fromType: String, value: String, toType: String) -> Int
+extern fn ir_struct_field_ptr(structName: String, object: String, fieldIndex: Int) -> Int
+extern fn ir_elem_ptr(elemType: String, base: String, index: String) -> Int
+extern fn ir_array_alloca(elemType: String, count: Int) -> Int
+extern fn ir_string_ptr(globalName: String) -> Int
+extern fn ir_load_ptr(type: String, ptrValue: String) -> Int
+extern fn ir_store_ptr(type: String, value: String, ptrValue: String)
 
 // Helpers
-extern fn ir_get_temp_name(temp_num: Int) -> String produce(free)
-extern fn ir_get_label_name(label_num: Int) -> String produce(free)
+extern fn ir_get_temp_name(tempNum: Int) -> String produce(free)
+extern fn ir_get_label_name(labelNum: Int) -> String produce(free)
 extern fn ir_register_global_name(name: String)
 extern fn ir_is_global_name(name: String) -> Int
 extern fn ir_reset_globals()
@@ -232,17 +232,17 @@ extern fn ir_named_type_kind(name: String) -> Int
 extern fn ir_reset_named_types()
 
 extern fn ir_register_struct(name: String)
-extern fn ir_register_struct_field(struct_name: String, field_name: String, field_type: String)
+extern fn ir_register_struct_field(structName: String, fieldName: String, fieldType: String)
 extern fn ir_is_struct_type_name(name: String) -> Int
-extern fn ir_get_struct_field_index(struct_name: String, field_name: String) -> Int
+extern fn ir_get_struct_field_index(structName: String, fieldName: String) -> Int
 // Both return an *interned* type name -- ir_add_struct_field and add_binding
 // each store ir_intern(type), and the fallbacks ("i32", "i64") are literals. No
 // branch allocates, so neither is a value the caller could release.
-extern fn ir_get_struct_field_type(struct_name: String, field_name: String) -> String alias
-extern fn ir_register_enum_variant(enum_name: String, variant_name: String, value: Int)
-extern fn ir_get_enum_variant(enum_name: String, variant_name: String) -> Int
-extern fn ir_set_var_type(name: String, var_type: String)
-extern fn ir_set_global_var_type(name: String, var_type: String)
+extern fn ir_get_struct_field_type(structName: String, fieldName: String) -> String alias
+extern fn ir_register_enum_variant(enumName: String, variantName: String, value: Int)
+extern fn ir_get_enum_variant(enumName: String, variantName: String) -> Int
+extern fn ir_set_var_type(name: String, varType: String)
+extern fn ir_set_global_var_type(name: String, varType: String)
 extern fn ir_get_var_type(name: String) -> String alias
 extern fn ir_has_var_type(name: String) -> Int
 

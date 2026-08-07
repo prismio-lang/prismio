@@ -1,7 +1,7 @@
 // AST Node Kinds
 //
 // **NEVER_ZERO must stay first, and nothing may take ordinal 0.** See
-// node_exists below: an ASTNode is punned as a String, an absent slot is the
+// nodeExists below: an ASTNode is punned as a String, an absent slot is the
 // empty string, and a node whose first byte is NUL is indistinguishable from
 // one. `kind` is the first field, so a zero-valued kind makes a live node read
 // as an empty slot -- which is what `MODULE` at ordinal 0 used to do to every
@@ -61,7 +61,7 @@ enum NodeKind {
     MATCH_ARM,
 
     // Placeholder for a declaration the parser could not make sense of. It is
-    // dropped by parse_module rather than appended, so nothing downstream ever
+    // dropped by parseModule rather than appended, so nothing downstream ever
     // sees one -- it exists only so recovery has something to return.
     ERROR_NODE
 }
@@ -70,7 +70,7 @@ enum NodeKind {
 //
 // The trailing four fields are the source span: where this node started, and how
 // wide its first token was. `file` is an id into the registry in
-// runtime/diagnostics.c rather than a path, because `resolve_imports` flattens
+// runtime/diagnostics.c rather than a path, because `resolveImports` flattens
 // every module into one AST -- after that, a node's file is knowable only from
 // the node itself.
 struct ASTNode {
@@ -87,7 +87,7 @@ struct ASTNode {
     child2: String, // ASTNode
     child3: String, // ASTNode
     next: String,   // ASTNode (for linked lists)
-    type_info: String, // TypeInfo assigned by sema
+    typeInfo: String, // TypeInfo assigned by sema
     line: Int,
     col: Int,
     len: Int,
@@ -113,7 +113,7 @@ extern fn str_equals(s1: String, s2: String) -> Int
 // the spelling is long, but because it is only correct under an invariant that
 // has to be written down somewhere, and this is that place.
 //
-// An absent slot is the **empty string** -- create_node initialises every
+// An absent slot is the **empty string** -- createNode initialises every
 // pointer slot to "" -- so a null-pointer test is the wrong question and would
 // report an empty slot as present. `str_equals` is the right question. The trap
 // is the other direction: a punned pointer is a `char*`, so str_equals compares
@@ -135,21 +135,19 @@ extern fn str_equals(s1: String, s2: String) -> Int
 // this. Moving pointer slots from "" to a real null pointer would fix both and
 // is the right eventual answer; it touches every slot assignment in the frontend
 // and is not this change.
-fn node_exists(ptr: String) -> Bool {
+fn nodeExists(ptr: String) -> Bool {
     return str_equals(ptr, "") == 0
 }
 
-fn node_is_null(ptr: String) -> Bool {
+fn nodeIsNull(ptr: String) -> Bool {
     return str_equals(ptr, "") == 1
 }
 
-// Helper to create an empty node.
-//
 // The span is left at zero. Anything the parser builds should come from
-// parser_node() instead, which stamps the current token; a zero span here means
+// parserNode() instead, which stamps the current token; a zero span here means
 // "synthesised, no source to point at", and the renderer degrades to a message
 // with no snippet rather than pointing somewhere wrong.
-fn create_node(kind: NodeKind) -> ASTNode {
+fn createNode(kind: NodeKind) -> ASTNode {
     return ASTNode {
         kind: kind,
         s1: "",
@@ -161,7 +159,7 @@ fn create_node(kind: NodeKind) -> ASTNode {
         child2: "",
         child3: "",
         next: "",
-        type_info: "",
+        typeInfo: "",
         line: 0,
         col: 0,
         len: 0,
@@ -172,9 +170,39 @@ fn create_node(kind: NodeKind) -> ASTNode {
 // Copies a span from one node to another. Used where a node is built from
 // another's position -- desugaring `x += 1`, or attributing a synthesised node to
 // the construct that implied it.
-fn node_span_from(target: ASTNode, source: ASTNode) {
+fn nodeSpanFrom(target: ASTNode, source: ASTNode) {
     target.line = source.line
     target.col = source.col
     target.len = source.len
     target.file = source.file
+}
+
+// A sibling chain under construction.
+//
+// Every list in the AST -- parameters, fields, variants, statements, arguments,
+// match arms, array elements -- is a `next`-linked chain hanging off a child
+// slot. Building one is four lines of "is this the first, or does it go after the
+// tail", and the parser had written those four lines out ten times. Each copy is
+// individually trivial and collectively the easiest place in the frontend to make
+// a silent mistake: link through the wrong tail and the list simply ends early,
+// with no diagnostic and no crash.
+struct NodeList {
+    head: String,
+    tail: String
+}
+
+fn nodeList() -> NodeList {
+    return NodeList { head: "", tail: "" }
+}
+
+// node_to_ptr is the identity on a borrow, so naming it three times costs
+// nothing and avoids moving a pointer that both slots need.
+fn nodeListPush(list: NodeList, node: ASTNode) {
+    if (nodeIsNull(list.head)) {
+        list.head = node_to_ptr(node)
+    } else {
+        let tail = ptr_to_node(list.tail)
+        tail.next = node_to_ptr(node)
+    }
+    list.tail = node_to_ptr(node)
 }

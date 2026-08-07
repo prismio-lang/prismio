@@ -26,6 +26,7 @@
 #define PRISMIO_RMDIR(path) _rmdir(path)
 #define PRISMIO_PATH_SEP '\\'
 #else
+#include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #ifdef __APPLE__

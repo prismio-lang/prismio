@@ -1,0 +1,769 @@
+// The checking passes themselves: expressions, statements, functions, and the
+// module-level walk that drives them.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import ir.bridge
+import common.diagnostics
+
+// Sema reports and keeps going. Stopping at the first type error meant one
+// diagnostic per run, so fixing a file was a sequence of edit-rebuild rounds --
+// which is also why enforcing `mut` needed the check shipped as a warning first
+// to collect all 75 violations at once. The decision to give up belongs to
+// compileSource(), which checks diag_error_count() before running codegen.
+//
+// Continuing is only safe because every caller of a checking function treats an
+// invalid type as "already reported" (see semaExpectAssignable) and because
+// the sites that would otherwise walk a null child return early instead.
+fn semaErrorAt(node: ASTNode, message: String) {
+    diag_error_at(node.file, node.line, node.col, node.len, message)
+}
+
+// For the few errors that belong to no particular node.
+fn semaError(message: String) {
+    diag_error(message)
+}
+
+// SPEC 5: being wrong about an annotation is a diagnostic of severity *warning*
+// and never fails compilation -- the annotation is discarded and the value is
+// inferred normally. The one exception is a pin a converged analysis refutes
+// (SPEC 5.4.1), which is a program error and goes through semaErrorAt.
+fn semaWarningAt(node: ASTNode, message: String) {
+    diag_warning_at(node.file, node.line, node.col, node.len, message)
+}
+
+fn semaTypeErrorAt(node: ASTNode, context: String, expected: TypeInfo, actual: TypeInfo) {
+    semaErrorAt(node, str_concat(str_concat(context, ": expected "),
+                  str_concat(typeDisplay(expected), str_concat(", found ", typeDisplay(actual)))))
+}
+
+fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    if (nodeHasType(expr)) {
+        return nodeGetType(expr)
+    }
+
+    if (expr.kind == NodeKind.LITERAL_EXPR) {
+        let mut t = typeInvalid()
+        if (expr.i1 == TokenType.NUMBER_LITERAL) { t = typeInt() }
+        if (expr.i1 == TokenType.FLOAT_LITERAL) { t = typeFloat() }
+        if (expr.i1 == TokenType.BOOL_LITERAL) { t = typeBool() }
+        if (expr.i1 == TokenType.CHAR_LITERAL) { t = typeChar() }
+        if (expr.i1 == TokenType.STRING_LITERAL) { t = typeString() }
+        nodeSetType(expr, t)
+        return t
+    }
+
+    if (expr.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (ir_has_var_type(expr.s1) == 0) {
+            semaErrorAt(expr, str_concat("unknown identifier ", diagQuote(expr.s1)))
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+        if (ir_is_moved(expr.s1) == 1) {
+            semaErrorAt(expr, str_concat("use of moved value ", diagQuote(expr.s1)))
+        }
+        let mut t = typeFromSemKey(ir_get_var_type(expr.s1))
+        nodeSetType(expr, t)
+        return t
+    }
+
+    // REQUIREMENTS 4. `none` is absent-of-anything: an optional with no inner
+    // type, which typeEquals matches against every `T?`. It registers no
+    // allocation site, which is what keeps the memory model out of this -- there
+    // is nothing to place, count or release.
+    if (expr.kind == NodeKind.NONE_LITERAL_EXPR) {
+        let nt = typeNone()
+        nodeSetType(expr, nt)
+        return nt
+    }
+
+    // `expr as T`. Explicit conversion between scalar types -- the only way to
+    // move between integer widths, or between integers and floats, at all.
+    // Deliberately narrow: only conversions with an unambiguous meaning are
+    // allowed, so a cast never quietly reinterprets memory.
+    if (expr.kind == NodeKind.CAST_EXPR) {
+        let source = ptr_to_node(expr.child1)
+        let fromT = semaExpr(module, source)
+        let toT = semaAnnotationType(module, ptr_to_node(expr.child2))
+
+        let fromScalar = fromT.kind == TypeKind.INT or fromT.kind == TypeKind.FLOAT
+                          or fromT.kind == TypeKind.CHAR or fromT.kind == TypeKind.BOOL
+                          or fromT.kind == TypeKind.ENUM
+        // Bool is included here so the check below reports the specific reason
+        // rather than falling into the generic "expected X, got Y".
+        let toScalar = toT.kind == TypeKind.INT or toT.kind == TypeKind.FLOAT
+                        or toT.kind == TypeKind.CHAR or toT.kind == TypeKind.ENUM
+                        or toT.kind == TypeKind.BOOL
+
+        // Bool converts out to a number but nothing converts *to* Bool: an
+        // implicit "non-zero is true" rule is exactly the kind of silent
+        // coercion this language avoids. Write `x != 0`.
+        if (toT.kind == TypeKind.BOOL) {
+            semaErrorAt(expr, "cannot cast to Bool; compare explicitly instead, as in `x != 0`")
+            nodeSetType(expr, toT)
+            return toT
+        }
+
+        if (fromScalar == false or toScalar == false) {
+            semaTypeErrorAt(expr, "cast", toT, fromT)
+        }
+
+        nodeSetType(expr, toT)
+        return toT
+    }
+
+    if (expr.kind == NodeKind.UNARY_EXPR) {
+        let operand = ptr_to_node(expr.child1)
+        let operandT = semaExpr(module, operand)
+        let uop = expr.s1
+
+        if (str_equals(uop, "!") == 1) {
+            semaExpectAssignable(operand, "operator `!`", typeBool(), operandT)
+            nodeSetType(expr, typeBool())
+            return typeBool()
+        }
+
+        if (str_equals(uop, "~") == 1) {
+            if (operandT.kind != TypeKind.INT and operandT.kind != TypeKind.CHAR) {
+                semaErrorAt(operand, "unary `~` requires an integer operand")
+            }
+            nodeSetType(expr, operandT)
+            return operandT
+        }
+
+        if (str_equals(uop, "-") == 1) {
+            if (typeIsNumeric(operandT) == false) {
+                semaErrorAt(operand, "unary `-` requires a numeric operand")
+            }
+            // Negating an unsigned value is almost always a mistake, and the
+            // result is not representable in the operand's own type. Reject it
+            // rather than silently wrapping.
+            if (typeIntIsUnsigned(operandT)) {
+                semaErrorAt(operand, str_concat("cannot apply unary `-` to unsigned type ", typeDisplay(operandT)))
+            }
+            nodeSetType(expr, operandT)
+            return operandT
+        }
+
+        semaErrorAt(expr, str_concat("unknown unary operator ", diagQuote(uop)))
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+
+    if (expr.kind == NodeKind.BINARY_EXPR) {
+        let leftNode = ptr_to_node(expr.child1)
+        let rightNode = ptr_to_node(expr.child2)
+        let mut leftT = semaExpr(module, leftNode)
+        let mut rightT = semaExpr(module, rightNode)
+
+        // Coerce a bare integer literal to the other operand's integer type so
+        // mixing a sized int with a literal (e.g. `n <= 0`, `u / 7`) type-checks.
+        if (leftT.kind == TypeKind.INT and rightT.kind == TypeKind.INT and typeEquals(leftT, rightT) == false) {
+            if (semaIsIntLiteral(rightNode)) {
+                nodeSetType(rightNode, leftT)
+                rightT = typeCopy(leftT)
+            } else if (semaIsIntLiteral(leftNode)) {
+                nodeSetType(leftNode, rightT)
+                leftT = typeCopy(rightT)
+            }
+        }
+
+        let op = expr.s1
+
+        if (str_equals(op, "and") == 1 or str_equals(op, "or") == 1) {
+            semaExpectAssignable(leftNode, "boolean operator left operand", typeBool(), leftT)
+            semaExpectAssignable(rightNode, "boolean operator right operand", typeBool(), rightT)
+            nodeSetType(expr, typeBool())
+            return typeBool()
+        }
+
+        if (str_equals(op, "+") == 1 or str_equals(op, "-") == 1 or str_equals(op, "*") == 1 or str_equals(op, "/") == 1) {
+            if (typeIsNumeric(leftT) == false) {
+                semaErrorAt(leftNode, str_concat(str_concat("operator ", diagQuote(op)), " requires numeric operands"))
+            }
+            semaExpectAssignable(rightNode, str_concat("operator ", diagQuote(op)), leftT, rightT)
+            nodeSetType(expr, leftT)
+            return leftT
+        }
+
+        // Modulo follows the same rule as + - * /: the left operand drives the
+        // result type, so it works on every sized integer type. Hardcoding
+        // typeInt() here rejected `u % 7` for any u that was not a plain Int,
+        // even though codegen has always emitted the right urem/srem for it.
+        // Still integer-only -- there is no frem in codegen.
+        if (str_equals(op, "%") == 1) {
+            if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.ENUM) {
+                semaErrorAt(leftNode, "operator `%` requires integer operands")
+            }
+            semaExpectAssignable(rightNode, "operator `%`", leftT, rightT)
+            nodeSetType(expr, leftT)
+            return leftT
+        }
+
+        // Bitwise and/or/xor: integer-shaped operands of the same type.
+        if (str_equals(op, "&") == 1 or str_equals(op, "|") == 1 or str_equals(op, "^") == 1) {
+            if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.ENUM and leftT.kind != TypeKind.CHAR) {
+                semaErrorAt(leftNode, str_concat(str_concat("bitwise operator ", diagQuote(op)), " requires integer operands"))
+            }
+            semaExpectAssignable(rightNode, str_concat("operator ", diagQuote(op)), leftT, rightT)
+            nodeSetType(expr, leftT)
+            return leftT
+        }
+
+        // Shifts. The result takes the left operand's type, and the shift amount
+        // is an independent integer rather than something that has to match it.
+        if (str_equals(op, "<<") == 1 or str_equals(op, ">>") == 1) {
+            if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.CHAR) {
+                semaErrorAt(leftNode, str_concat(str_concat("shift ", diagQuote(op)), " requires an integer left operand"))
+            }
+            if (rightT.kind != TypeKind.INT) {
+                semaErrorAt(rightNode, str_concat(str_concat("the shift amount of ", diagQuote(op)), " must be an integer"))
+            }
+            nodeSetType(expr, leftT)
+            return leftT
+        }
+
+        if (str_equals(op, "==") == 1 or str_equals(op, "!=") == 1 or str_equals(op, "<") == 1 or str_equals(op, "<=") == 1 or str_equals(op, ">") == 1 or str_equals(op, ">=") == 1) {
+            // REQUIREMENTS 4. `x == none` is the presence test, and it is
+            // checked before the String and struct rejections below -- a
+            // `String?` compared against `none` is a null test and not the
+            // address comparison those exist to forbid.
+            //
+            // Only equality: an optional has no order, and `<` on one would be
+            // comparing addresses, which is exactly the silent wrong answer the
+            // next two rules are about.
+            if (leftT.kind == TypeKind.OPTIONAL or rightT.kind == TypeKind.OPTIONAL) {
+                if (str_equals(op, "==") == 0 and str_equals(op, "!=") == 0) {
+                    semaErrorAt(expr, str_concat(str_concat("cannot order optional values with ",
+                                                              diagQuote(op)),
+                                                   "; compare with `none` instead"))
+                } else if (leftT.kind != TypeKind.OPTIONAL or rightT.kind != TypeKind.OPTIONAL) {
+                    // Comparing `T?` to a present `T` would be an address
+                    // comparison, which is the thing the String rule forbids.
+                    semaErrorAt(expr, "an optional can only be compared with `none`")
+                }
+                nodeSetType(expr, typeBool())
+                return typeBool()
+            }
+
+            // String and struct values are pointers, so a comparison would
+            // compare addresses and quietly answer "not equal" for two equal
+            // strings. That was a silent wrong answer with no diagnostic -- and
+            // the reason this compiler is written with str_equals(a, b) == 1
+            // everywhere. Reject it and name the alternative.
+            if (leftT.kind == TypeKind.STRING or rightT.kind == TypeKind.STRING) {
+                semaErrorAt(expr, "cannot compare String values directly; use `str_equals(a, b) == 1`")
+                nodeSetType(expr, typeBool())
+                return typeBool()
+            }
+            if (leftT.kind == TypeKind.STRUCT or rightT.kind == TypeKind.STRUCT) {
+                semaErrorAt(expr, "cannot compare struct values directly; compare their fields")
+                nodeSetType(expr, typeBool())
+                return typeBool()
+            }
+
+            semaExpectAssignable(rightNode, str_concat("comparison ", diagQuote(op)), leftT, rightT)
+            nodeSetType(expr, typeBool())
+            return typeBool()
+        }
+
+        semaErrorAt(expr, str_concat("unknown operator ", diagQuote(op)))
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+
+    if (expr.kind == NodeKind.CALL_EXPR) {
+        let callee = ptr_to_node(expr.child1)
+        let name = callee.s1
+
+        if (semaCheckBuiltinCall(module, expr, name, expr.child2)) {
+            let builtinT = semaBuiltinCallType(name, expr.child2)
+            nodeSetType(expr, builtinT)
+            return builtinT
+        }
+
+        let fnNode = semaFindFunctionOverload(module, expr, name, expr.child2)
+
+        let mut argPtr = expr.child2
+        let mut paramPtr = fnNode.child1
+        while (str_equals(argPtr, "") == 0 and str_equals(paramPtr, "") == 0) {
+            let argNode = ptr_to_node(argPtr)
+            let paramNode = ptr_to_node(paramPtr)
+            let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
+            semaCheckValue(module, argNode, paramT, str_concat(diagQuote(name), " argument"))
+            // Only `sink` parameters take ownership; `let`/`inout` borrow.
+            if (str_equals(paramNode.s2, "sink") == 1) {
+                semaConsumeOperand(argNode)
+            }
+            argPtr = argNode.next
+            paramPtr = paramNode.next
+        }
+
+        let mut retT = typeVoid()
+        if (fnNode.kind == NodeKind.FUNCTION) {
+            retT = semaDeclaredReturnType(module, fnNode.child3)
+            if (str_equals(name, "main") == 1) { retT = typeInt() }
+        } else {
+            retT = semaDeclaredReturnType(module, fnNode.child2)
+        }
+        expr.s2 = semaFunctionSymbol(module, fnNode)
+        nodeSetType(expr, retT)
+        return retT
+    }
+
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let objectNode = ptr_to_node(expr.child1)
+        if (objectNode.kind == NodeKind.IDENTIFIER_EXPR and semaEnumHasVariant(module, objectNode.s1, expr.s1)) {
+            nodeSetType(expr, typeInt())
+            return typeInt()
+        }
+
+        let objectT = semaExpr(module, objectNode)
+        if (objectT.kind != TypeKind.STRUCT) {
+            semaErrorAt(objectNode, str_concat("member access requires a struct value, found ", typeDisplay(objectT)))
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+        let fieldT = semaFindStructFieldType(module, expr, objectT.name, expr.s1)
+        nodeSetType(expr, fieldT)
+        return fieldT
+    }
+
+    if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+        let mut elemPtr = expr.child1
+        if (str_equals(elemPtr, "") == 1) {
+            let arrT = typeArray(typeInvalid())
+            nodeSetType(expr, arrT)
+            return arrT
+        }
+
+        let firstT = semaExpr(module, ptr_to_node(elemPtr))
+        elemPtr = ptr_to_node(elemPtr).next
+        while (str_equals(elemPtr, "") == 0) {
+            let elem = ptr_to_node(elemPtr)
+            let elemT = semaExpr(module, elem)
+            semaExpectAssignable(elem, "array literal element", firstT, elemT)
+            elemPtr = elem.next
+        }
+
+        let arrT2 = typeArray(firstT)
+        nodeSetType(expr, arrT2)
+        return arrT2
+    }
+
+    if (expr.kind == NodeKind.INDEX_EXPR) {
+        let arrayT = semaExpr(module, ptr_to_node(expr.child1))
+        let indexT = semaExpr(module, ptr_to_node(expr.child2))
+        semaExpectAssignable(ptr_to_node(expr.child2), "array index", typeInt(), indexT)
+        if (arrayT.kind != TypeKind.ARRAY) {
+            semaErrorAt(expr, str_concat("indexing requires an array, found ", typeDisplay(arrayT)))
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+        let elemT = ptr_to_type(arrayT.child)
+        nodeSetType(expr, elemT)
+        return elemT
+    }
+
+    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+        if (semaHasStruct(module, expr.s1) == false) {
+            semaErrorAt(expr, str_concat("unknown struct ", diagQuote(expr.s1)))
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+        let mut fieldPtr = expr.child1
+        while (str_equals(fieldPtr, "") == 0) {
+            let field = ptr_to_node(fieldPtr)
+            let mut expected = semaFindStructFieldType(module, field, expr.s1, field.s1)
+            semaCheckValue(module, ptr_to_node(field.child1), expected, str_concat("struct field ", diagQuote(field.s1)))
+            semaMoveOperand(ptr_to_node(field.child1))
+            fieldPtr = field.next
+        }
+        let structT = typeStruct(expr.s1)
+        nodeSetType(expr, structT)
+        return structT
+    }
+
+    semaErrorAt(expr, "unsupported expression")
+    return typeInvalid()
+}
+
+fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
+    if (stmt.kind == NodeKind.VARIABLE_DECL) {
+        let mut varT = typeInvalid()
+        let hasAnnotation = str_equals(stmt.child1, "") == 0
+        let hasInit = str_equals(stmt.child2, "") == 0
+
+        if (hasAnnotation) {
+            varT = semaAnnotationType(module, ptr_to_node(stmt.child1))
+        }
+        if (hasInit) {
+            if (hasAnnotation) {
+                semaCheckValue(module, ptr_to_node(stmt.child2), varT, str_concat("initializer for ", diagQuote(stmt.s1)))
+            } else {
+                varT = semaExpr(module, ptr_to_node(stmt.child2))
+            }
+            semaMoveOperand(ptr_to_node(stmt.child2))
+        }
+        // Only genuinely uninferrable declarations are reported. If there *was*
+        // an annotation or an initializer, its own error has already been
+        // reported and the invalid type is that error's shadow -- saying "cannot
+        // infer" as well blames the declaration for a mistake in its right-hand
+        // side.
+        if (typeIsValid(varT) == false) {
+            if (hasAnnotation == false and hasInit == false) {
+                semaErrorAt(stmt, str_concat(str_concat("cannot infer a type for ", diagQuote(stmt.s1)),
+                                               "; add a type annotation or an initializer"))
+            }
+        }
+
+        semaCheckAnnotations(stmt, varT)
+
+        // This `let` binds a fresh value, so drop any moved-from state left over
+        // from an earlier binding of the same name (see ir_unmark_moved).
+        ir_unmark_moved(stmt.s1)
+        // ...and any borrow state, for the same reason. Whether *this* binding is
+        // a borrow is decided by its own initialiser.
+        ir_unmark_borrowed(stmt.s1)
+        if (hasInit) {
+            if (semaBindingIsBorrow(ptr_to_node(stmt.child2))) {
+                ir_mark_borrowed(stmt.s1)
+            }
+        }
+        ir_set_var_type(stmt.s1, typeSemKey(varT))
+        // i1 carries `mut` from the parser. Nothing read it before, so
+        // "explicit mutability" was advertised and entirely unenforced.
+        if (stmt.i1 == 1) {
+            ir_mark_mutable(stmt.s1)
+        }
+        nodeSetType(stmt, varT)
+    }
+
+    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        let target = ptr_to_node(stmt.child1)
+
+        // Only a direct rebinding is checked. Assigning through a struct field
+        // is mutation of a heap object reached by pointer, which is a separate
+        // question from whether the binding itself may be reseated.
+        if (target.kind == NodeKind.IDENTIFIER_EXPR) {
+            if (ir_var_is_mutable(target.s1) == 0) {
+                semaErrorAt(target, str_concat(str_concat("cannot assign to ", diagQuote(target.s1)),
+                                                 ", which is not declared `mut`"))
+                diag_note("change its declaration to `let mut`")
+            }
+        }
+
+        let targetT = semaExpr(module, target)
+        let valueT = semaExpr(module, ptr_to_node(stmt.child2))
+        semaExpectAssignable(ptr_to_node(stmt.child2), "assignment", targetT, valueT)
+        semaMoveOperand(ptr_to_node(stmt.child2))
+
+        // Reborrowing through an assignment. Marked but never unmarked: an
+        // assignment in one branch says nothing about the other, and a binding
+        // that might hold a borrow must not be consumable. Erring towards
+        // "borrowed" refuses a `drop`; erring the other way permits one.
+        if (target.kind == NodeKind.IDENTIFIER_EXPR) {
+            if (semaBindingIsBorrow(ptr_to_node(stmt.child2))) {
+                ir_mark_borrowed(target.s1)
+            }
+        }
+    }
+
+    if (stmt.kind == NodeKind.RETURN_STATEMENT) {
+        if (str_equals(stmt.child1, "") == 0) {
+            // Deliberately no semaMoveOperand() here. Ownership does leave the
+            // function, but move state is tracked per name for the whole function
+            // body rather than per control-flow path, so marking the returned name
+            // moved poisons it for every *other* path: a function with `return x`
+            // in one branch and a use of `x` in another reports a bogus "use of
+            // moved value" (parseTypeAnnotation in parser.psm does exactly this).
+            // It also made `return expected` inside semaCheckValue report "cannot
+            // move out of borrowed value" for an ordinary borrowed parameter.
+            // Nothing can use a value after it has been returned on the same path,
+            // so skipping the mark loses no real diagnostic.
+            semaCheckValue(module, ptr_to_node(stmt.child1), expectedReturn, "return")
+
+            // An array is a stack allocation (ir_array_alloca), so returning one
+            // the function itself created hands back a pointer into a frame that
+            // no longer exists. This compiled clean and appeared to work --
+            // reading the dead frame usually still finds the values -- which is
+            // the worst possible failure mode for it.
+            //
+            // Returning an array that came *in* as a borrowed parameter is fine:
+            // the caller owns that storage and it outlives the call.
+            if (expectedReturn.kind == TypeKind.ARRAY) {
+                let returned = ptr_to_node(stmt.child1)
+                let mut isBorrowedParam = false
+                if (returned.kind == NodeKind.IDENTIFIER_EXPR) {
+                    isBorrowedParam = ir_is_borrowed(returned.s1) == 1
+                }
+                if (isBorrowedParam == false) {
+                    semaErrorAt(returned, "cannot return an array created in this function; it lives on the stack frame that is about to be discarded")
+                    diag_note("return an array that was passed in, or write into one the caller provides")
+                }
+            }
+        } else {
+            semaExpectAssignable(stmt, "return", expectedReturn, typeVoid())
+        }
+    }
+
+    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
+        if (str_equals(stmt.child1, "") == 0) {
+            semaExpr(module, ptr_to_node(stmt.child1))
+        }
+    }
+
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        let condT = semaExpr(module, ptr_to_node(stmt.child1))
+        semaExpectAssignable(ptr_to_node(stmt.child1), "if condition", typeBool(), condT)
+        semaBlock(module, ptr_to_node(stmt.child2), expectedReturn)
+        if (str_equals(stmt.child3, "") == 0) {
+            let elseNode = ptr_to_node(stmt.child3)
+            if (elseNode.kind == NodeKind.IF_STATEMENT) {
+                semaStatement(module, elseNode, expectedReturn)
+            } else {
+                semaBlock(module, elseNode, expectedReturn)
+            }
+        }
+    }
+
+    if (stmt.kind == NodeKind.WHILE_STATEMENT) {
+        let condT2 = semaExpr(module, ptr_to_node(stmt.child1))
+        semaExpectAssignable(ptr_to_node(stmt.child1), "while condition", typeBool(), condT2)
+        ir_loop_barrier_push()
+        semaBlock(module, ptr_to_node(stmt.child2), expectedReturn)
+        ir_loop_barrier_pop()
+    }
+
+    if (stmt.kind == NodeKind.LOOP_STATEMENT) {
+        ir_loop_barrier_push()
+        semaBlock(module, ptr_to_node(stmt.child1), expectedReturn)
+        ir_loop_barrier_pop()
+    }
+
+    // A region is an ordinary block as far as checking goes. It says nothing
+    // about types or ownership -- SPEC 5.2 makes it a placement pin, and the
+    // escape fact it would assert is one the analysis already has.
+    if (stmt.kind == NodeKind.REGION_STATEMENT) {
+        semaBlock(module, ptr_to_node(stmt.child1), expectedReturn)
+    }
+
+    if (stmt.kind == NodeKind.FOR_STATEMENT) {
+        let startT = semaExpr(module, ptr_to_node(stmt.child1))
+        semaExpectAssignable(ptr_to_node(stmt.child1), "for range start", typeInt(), startT)
+        let endT = semaExpr(module, ptr_to_node(stmt.child2))
+        semaExpectAssignable(ptr_to_node(stmt.child2), "for range end", typeInt(), endT)
+        // The loop variable belongs to the loop, not to the enclosing block.
+        ir_scope_push()
+        ir_set_var_type(stmt.s1, typeSemKey(typeInt()))
+        ir_loop_barrier_push()
+        semaBlock(module, ptr_to_node(stmt.child3), expectedReturn)
+        ir_loop_barrier_pop()
+        ir_scope_pop()
+    }
+
+    if (stmt.kind == NodeKind.MATCH_STATEMENT) {
+        let scrutT = semaExpr(module, ptr_to_node(stmt.child1))
+        if (scrutT.kind != TypeKind.INT and scrutT.kind != TypeKind.ENUM) {
+            semaErrorAt(ptr_to_node(stmt.child1), str_concat("match scrutinee must be an integer or enum value, found ", typeDisplay(scrutT)))
+        }
+        let mut patExpected = typeCopy(scrutT)
+        if (scrutT.kind == TypeKind.ENUM) { patExpected = typeInt() }
+        let mut armPtr = stmt.child2
+        while (str_equals(armPtr, "") == 0) {
+            let arm = ptr_to_node(armPtr)
+            if (str_equals(arm.s1, "_") == 0) {
+                semaCheckValue(module, ptr_to_node(arm.child1), patExpected, "match pattern")
+            }
+            semaBlock(module, ptr_to_node(arm.child2), expectedReturn)
+            armPtr = arm.next
+        }
+    }
+}
+
+// A block is a scope: anything declared inside it stops being visible at the
+// closing brace, and a `let` that repeats an outer name shadows it for the rest
+// of the block rather than overwriting it.
+fn semaBlock(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
+    ir_scope_push()
+
+    let mut stmtPtr = block.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        semaStatement(module, stmt, expectedReturn)
+
+        // Anything after a statement control cannot continue past is dead. It
+        // used to be emitted anyway, producing instructions after a terminator
+        // -- invalid IR that surfaced as a confusing backend error rather than
+        // as the source-level mistake it is.
+        if (semaStmtDiverges(stmt) and str_equals(stmt.next, "") == 0) {
+            semaErrorAt(ptr_to_node(stmt.next), "unreachable code: control cannot continue past the previous statement")
+        }
+
+        stmtPtr = stmt.next
+    }
+
+    ir_scope_pop()
+}
+
+fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
+    let mut retT = typeVoid()
+    if (fnNode.kind == NodeKind.FUNCTION) {
+        retT = semaDeclaredReturnType(module, fnNode.child3)
+        if (str_equals(fnNode.s1, "main") == 1) { retT = typeInt() }
+    } else {
+        retT = semaDeclaredReturnType(module, fnNode.child2)
+    }
+    // Already mangled and cached by semaCacheFunctionSymbols().
+    let symbol = fnNode.s2
+    let overloadKey = semaFnKey(symbol)
+
+    // Reported against the *later* definition only, with a note pointing at the
+    // one it collides with. Counting instead meant a single clash produced two
+    // identical errors, neither of which said where the other definition was.
+    if (semaFunctionSymbolCount(module, symbol) > 1) {
+        let first = semaFirstFunctionWithSymbol(module, symbol)
+        // Identity by source position, not by pointer: node_to_ptr() puns a
+        // pointer into a String, and str_equals is strcmp -- it would compare
+        // the bytes of the two nodes rather than their addresses. Two
+        // declarations cannot begin at the same file, line and column, so this
+        // is exact.
+        if (semaSamePosition(first, fnNode) == false) {
+            semaErrorAt(fnNode, str_concat(str_concat("duplicate definition of ", diagQuote(fnNode.s1)),
+                                              " with the same parameter types"))
+            diag_note_at(first.file, first.line, first.col, first.len, "the first definition is here")
+        }
+    }
+    ir_set_var_type(overloadKey, typeSemKey(retT))
+}
+
+fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
+    let mut varT = typeInvalid()
+    if (str_equals(varNode.child1, "") == 0) {
+        varT = semaAnnotationType(module, ptr_to_node(varNode.child1))
+    }
+    if (str_equals(varNode.child2, "") == 0) {
+        if (typeIsValid(varT)) {
+            semaCheckValue(module, ptr_to_node(varNode.child2), varT, str_concat("initializer for global ", diagQuote(varNode.s1)))
+        } else {
+            varT = semaExpr(module, ptr_to_node(varNode.child2))
+        }
+
+        // A global is emitted as an LLVM global with a static initializer, and
+        // there is no pass that runs code before main. This was caught in
+        // codegen, which meant it was reported without a span, after every other
+        // check had passed, and only for whichever global came first.
+        //
+        // `-5` is fine: the parser folds a leading minus into the literal itself
+        // (see parseUnary), so negative constants are still LITERAL_EXPR.
+        let init = ptr_to_node(varNode.child2)
+        if (init.kind != NodeKind.LITERAL_EXPR) {
+            semaErrorAt(init, str_concat(str_concat("global ", diagQuote(varNode.s1)),
+                                           " needs a constant initializer"))
+            diag_note("nothing runs before main, so a global cannot be initialized by an expression; move the computation into a function")
+        }
+    }
+    if (typeIsValid(varT) == false) {
+        if (str_equals(varNode.child1, "") == 1 and str_equals(varNode.child2, "") == 1) {
+            semaErrorAt(varNode, str_concat(str_concat("cannot infer a type for global ", diagQuote(varNode.s1)),
+                                               "; add a type annotation or an initializer"))
+        }
+    }
+    ir_register_global_name(varNode.s1)
+    ir_set_global_var_type(varNode.s1, typeSemKey(varT))
+    if (varNode.i1 == 1) {
+        ir_mark_mutable(varNode.s1)
+    }
+    nodeSetType(varNode, varT)
+}
+
+fn semaFunction(module: ASTNode, fnNode: ASTNode) {
+    ir_clear_local_var_types()
+    ir_clear_moved()
+    ir_clear_borrowed()
+
+    // Parameters live in a scope of their own, outside the body block, so the
+    // body may shadow a parameter name without clobbering it.
+    ir_scope_push()
+
+    let mut expectedReturn = semaDeclaredReturnType(module, fnNode.child3)
+    if (str_equals(fnNode.s1, "main") == 1) { expectedReturn = typeInt() }
+
+    let mut paramPtr = fnNode.child1
+    while (str_equals(paramPtr, "") == 0) {
+        let mut param = ptr_to_node(paramPtr)
+        let paramT = semaAnnotationType(module, ptr_to_node(param.child1))
+        if (str_equals(param.s2, "inout") == 1 and typeIsMoveOnly(paramT) == false) {
+            semaErrorAt(param, str_concat(str_concat("inout parameter ", diagQuote(param.s1)), " must be a struct (reference) type"))
+        }
+        // let/inout params are non-owning borrows; sink params own their value.
+        if (str_equals(param.s2, "sink") == 0) {
+            ir_mark_borrowed(param.s1)
+        }
+        ir_set_var_type(param.s1, typeSemKey(paramT))
+        nodeSetType(param, paramT)
+        paramPtr = param.next
+    }
+
+    if (str_equals(fnNode.child2, "") == 0) {
+        let mut body = ptr_to_node(fnNode.child2)
+        semaBlock(module, body, expectedReturn)
+
+        // Every path out of a value-returning function must return. Falling off
+        // the end used to emit `ret <type> 0`, which silently returned zero for
+        // an Int and produced invalid IR (`ret ptr 0`) for anything pointer-
+        // shaped.
+        if (expectedReturn.kind != TypeKind.VOID) {
+            if (semaBlockDiverges(body) == false) {
+                semaErrorAt(fnNode, str_concat(str_concat("function ", diagQuote(fnNode.s1)),
+                              str_concat(str_concat(" must return ", typeDisplay(expectedReturn)),
+                                         " on every path, but control can reach its closing brace")))
+            }
+        }
+    }
+
+    ir_scope_pop()
+}
+
+fn analyzeModule(module: ASTNode) {
+    ir_clear_var_types()
+    ir_reset_globals()
+
+    // Both of these must run before anything is checked. The first lets a type
+    // annotation be resolved without walking the module; the second mangles each
+    // function's symbol once instead of once per comparison. Together they take
+    // predeclaration from cubic to quadratic in the number of declarations.
+    semaRegisterNamedTypes(module)
+    semaCacheFunctionSymbols(module)
+
+    let mut fnPtr = module.child1
+    while (str_equals(fnPtr, "") == 0) {
+        let stmt = ptr_to_node(fnPtr)
+        if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            semaPredeclareFunction(module, stmt)
+        }
+        if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            semaCheckExternContracts(stmt)
+        }
+        fnPtr = stmt.next
+    }
+
+    let mut globalPtr = module.child1
+    while (str_equals(globalPtr, "") == 0) {
+        let stmt2 = ptr_to_node(globalPtr)
+        if (stmt2.kind == NodeKind.VARIABLE_DECL) {
+            semaPredeclareGlobal(module, stmt2)
+        }
+        globalPtr = stmt2.next
+    }
+
+    let mut stmtPtr = module.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt3 = ptr_to_node(stmtPtr)
+        if (stmt3.kind == NodeKind.FUNCTION) {
+            semaFunction(module, stmt3)
+        }
+        stmtPtr = stmt3.next
+    }
+}

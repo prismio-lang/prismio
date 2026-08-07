@@ -1,0 +1,244 @@
+// Parser state, token access, error recovery, and the module entry point.
+//
+// The grammar itself lives beside this file: declarations in decl.psm,
+// statements in stmt.psm, expressions in expr.psm. They call each other freely
+// and need no forward declarations -- sema registers every function in the merged
+// module before it checks any of them.
+//
+// Two prefixes, kept apart on purpose. `parserX` is the parser's own machinery:
+// look at a token, consume one, complain about one. `parseX` is a grammar
+// production and is named after the thing it parses.
+
+import lexer.scanner
+import lexer.token
+import common.text
+import ast.nodes
+import common.diagnostics
+
+extern fn exit(code: Int)
+
+// `allowStructLit` is off while reading the bounds of a `for`, so that
+// `for i in 0..n { ... }` reads the body as a block rather than `n { ... }` as a
+// struct literal. It was a module-level global until it became clear it is
+// simply parser state, and parser state belongs on the parser.
+struct Parser {
+    current: String, // Token pointer
+    allowStructLit: Int
+}
+
+fn parserCreate(tokens: Token) -> Parser {
+    return Parser { current: token_to_ptr(tokens), allowStructLit: 1 }
+}
+
+fn parserCurrent(p: Parser) -> Token {
+    return ptr_to_token(p.current)
+}
+
+fn parserPeek(p: Parser) -> Token {
+    let current = ptr_to_token(p.current)
+    return ptr_to_token(current.tokNext)
+}
+
+fn parserAdvance(p: Parser) {
+    let current = ptr_to_token(p.current)
+    if (current.type != TokenType.EOF) {
+        p.current = current.tokNext
+    }
+}
+
+fn parserCheck(p: Parser, t: TokenType) -> Bool {
+    let current = parserCurrent(p)
+    return current.type == t
+}
+
+fn parserCheckVal(p: Parser, t: TokenType, val: String) -> Bool {
+    let current = parserCurrent(p)
+    return current.type == t and str_equals(current.value, val) == 1
+}
+
+fn parserMatch(p: Parser, t: TokenType) -> Bool {
+    if (parserCheck(p, t)) {
+        parserAdvance(p)
+        return true
+    }
+    return false
+}
+
+fn parserMatchVal(p: Parser, t: TokenType, val: String) -> Bool {
+    if (parserCheckVal(p, t, val)) {
+        parserAdvance(p)
+        return true
+    }
+    return false
+}
+
+// Creates a node already stamped with the position of the token the parser is
+// sitting on. Every node the parser builds comes from here rather than from
+// createNode(), so a node without a span means "synthesised", not "forgotten".
+fn parserNode(p: Parser, kind: NodeKind) -> ASTNode {
+    let node = createNode(kind)
+    let tok = parserCurrent(p)
+    node.line = tok.line
+    node.col = tok.col
+    node.len = tok.len
+    node.file = tok.file
+    return node
+}
+
+// Reports against the token the parser is looking at -- which is the token that
+// was *unexpected*, and so the one worth underlining.
+fn parserError(p: Parser, message: String) {
+    let tok = parserCurrent(p)
+    diag_error_at(tok.file, tok.line, tok.col, tok.len, message)
+}
+
+// How the offending token reads in a message. EOF has no source text, so name it
+// rather than quoting the empty string.
+fn parserDescribe(tok: Token) -> String {
+    if (tok.type == TokenType.EOF) {
+        return "end of file"
+    }
+    return diagQuote(tok.value)
+}
+
+// A parse error the parser cannot recover from locally. Reports, then stops:
+// continuing past a malformed type or parameter list means handing sema an AST
+// whose shape does not match what its callers assume, and a crash there is a
+// worse experience than one honest error.
+fn parserFatal(p: Parser, message: String) {
+    parserError(p, message)
+    diag_finish()
+    exit(1)
+}
+
+fn parserExpect(p: Parser, t: TokenType, context: String) {
+    if (parserCheck(p, t) == false) {
+        let tok = parserCurrent(p)
+        parserFatal(p, str_concat(str_concat(str_concat("expected ", typeToString(t)),
+                     str_concat(" in ", context)),
+                     str_concat(", found ", parserDescribe(tok))))
+    }
+    parserAdvance(p)
+}
+
+fn parserExpectVal(p: Parser, t: TokenType, val: String, context: String) {
+    if (parserCheckVal(p, t, val) == false) {
+        let tok = parserCurrent(p)
+        parserFatal(p, str_concat(str_concat(str_concat("expected ", diagQuote(val)),
+                     str_concat(" in ", context)),
+                     str_concat(", found ", parserDescribe(tok))))
+    }
+    parserAdvance(p)
+}
+
+// Whether this keyword can only begin a construct, and so is a safe place for
+// recovery to resume.
+fn startsConstruct(word: String) -> Bool {
+    if (str_equals(word, "fn") == 1) { return true }
+    if (str_equals(word, "let") == 1) { return true }
+    if (str_equals(word, "struct") == 1) { return true }
+    if (str_equals(word, "enum") == 1) { return true }
+    if (str_equals(word, "extern") == 1) { return true }
+    if (str_equals(word, "import") == 1) { return true }
+    if (str_equals(word, "impl") == 1) { return true }
+    if (str_equals(word, "trait") == 1) { return true }
+    if (str_equals(word, "if") == 1) { return true }
+    if (str_equals(word, "while") == 1) { return true }
+    if (str_equals(word, "for") == 1) { return true }
+    if (str_equals(word, "loop") == 1) { return true }
+    if (str_equals(word, "match") == 1) { return true }
+    if (str_equals(word, "return") == 1) { return true }
+    if (str_equals(word, "region") == 1) { return true }
+    return false
+}
+
+// Drops tokens until something that plausibly begins a new declaration or
+// statement, so one syntax error does not turn the rest of the file into noise.
+//
+// Prismio has no statement terminator, so the anchors are the keywords above plus
+// '}', which can only end a construct. Two properties matter: it always consumes
+// at least one token (otherwise the parser loops forever on the token it could
+// not handle), and it stops *before* the anchor so the caller resumes by parsing
+// it normally.
+fn parserSynchronize(p: Parser) {
+    parserAdvance(p)
+
+    loop {
+        let tok = parserCurrent(p)
+        if (tok.type == TokenType.EOF) { break }
+        if (tok.type == TokenType.SEPARATOR and str_equals(tok.value, "}") == 1) { break }
+        if (tok.type == TokenType.KEYWORD and startsConstruct(tok.value)) { break }
+        parserAdvance(p)
+    }
+}
+
+// One segment of a dotted module path. A keyword is accepted as well as an
+// identifier: `import ir.match` is a reasonable module name, and in this position
+// there is nothing for a keyword to be ambiguous with.
+fn parseModuleSegment(p: Parser) -> String {
+    let segment = parserCurrent(p)
+    if (segment.type != TokenType.IDENTIFIER and segment.type != TokenType.KEYWORD) {
+        parserFatal(p, str_concat("expected a module name after `import`, found ",
+                                   parserDescribe(segment)))
+    }
+    parserAdvance(p)
+    return segment.value
+}
+
+// `import ir.expr` names the module in src/ir/expr.psm; `import ir.*` names every
+// module directly inside src/ir/, and sets `i1`.
+//
+// Dotted rather than slashed because a module name is an identifier path, not a
+// file path: mapping it onto a directory is joinImportPath's business, and
+// keeping the separator out of the token stream means no operator has to change
+// meaning inside an import. The name is stored as written, dots and all, so a
+// diagnostic quotes what the programmer typed rather than a resolved path.
+//
+// The wildcard is only ever a whole final segment, so `import ir.ex*` is a syntax
+// error rather than a prefix match. Matching on partial names would make the set
+// of modules a program depends on a function of what the directory happens to
+// contain, which is exactly what a reader cannot see from the import.
+fn parseImportStatement(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "import", "import statement")
+
+    let importNode = parserNode(p, NodeKind.IMPORT_STATEMENT)
+    let first = parserCurrent(p)
+    importNode.s1 = parseModuleSegment(p)
+
+    // The node's span starts at the first segment and has to be stretched over
+    // the rest, or a diagnostic about `import lexer.token` underlines `lexer`.
+    let mut endCol = first.col + first.len
+
+    while (parserMatchVal(p, TokenType.SEPARATOR, ".")) {
+        let segment = parserCurrent(p)
+        endCol = segment.col + segment.len
+        if (parserMatchVal(p, TokenType.ARITHMETIC_OPERATOR, "*")) {
+            importNode.i1 = 1
+            break
+        }
+        importNode.s1 = str_concat(str_concat(importNode.s1, "."), parseModuleSegment(p))
+    }
+
+    importNode.len = endCol - importNode.col
+    return importNode
+}
+
+fn parseModule(p: Parser) -> ASTNode {
+    let module = parserNode(p, NodeKind.MODULE)
+    let declarations = nodeList()
+
+    loop {
+        if (parserCheck(p, TokenType.EOF)) { break }
+
+        let stmt = parseDeclaration(p)
+        // A placeholder from recovery. Dropping it here is what keeps every later
+        // pass free of the question -- nothing downstream has to know that
+        // recovery exists.
+        if (stmt.kind != NodeKind.ERROR_NODE) {
+            nodeListPush(declarations, stmt)
+        }
+    }
+
+    module.child1 = declarations.head
+    return module
+}

@@ -77,18 +77,42 @@ Make sure `prismio` is installed and available on your system `PATH` before cont
 ```
 prismio/
 ├── src/
-│   ├── main.psm          # Entry point, import resolver
-│   ├── lexer.psm         # Tokenizer
-│   ├── token.psm         # Token type definitions
-│   ├── keywords.psm      # Keyword definitions
-│   ├── parser.psm        # Parser (declarations, statements, expressions)
-│   ├── ast.psm           # AST node definitions
-│   ├── sema.psm          # Semantic analysis (type checking, move/borrow/drop)
-│   ├── types.psm         # Type system
-│   ├── ir.psm            # IR generator (AST → LLVM IR)
-│   ├── diag.psm          # extern fn declarations for the diagnostics engine
-│   ├── bridge.psm        # extern fn declarations for the LLVM C API backend
-│   └── utils.psm         # Shared utilities
+│   ├── main.psm           # Entry point, CLI, import resolver, build driver
+│   ├── common/
+│   │   ├── text.psm       # String and character primitives
+│   │   └── diagnostics.psm# extern fn declarations for the diagnostics engine
+│   ├── lexer/
+│   │   ├── token.psm      # Token kinds, the Token struct, the keyword set
+│   │   └── scanner.psm    # Source text → token list
+│   ├── ast/
+│   │   ├── nodes.psm      # AST node definitions
+│   │   ├── types.psm      # Type system
+│   │   └── dump.psm       # AST → JSON, read by the AIF oracle
+│   ├── parse/
+│   │   ├── parser.psm     # Parser state, recovery, module entry
+│   │   ├── decl.psm       # Declarations, type annotations, FFI contracts
+│   │   ├── stmt.psm       # Statements
+│   │   └── expr.psm       # Expressions
+│   ├── sema/
+│   │   ├── checker.psm    # The checking passes
+│   │   ├── symbols.psm    # Mangling and overload resolution
+│   │   ├── types.psm      # Annotation resolution and assignability
+│   │   ├── ownership.psm  # Move/borrow/drop, FFI contracts
+│   │   ├── flow.psm       # Divergence and break analysis
+│   │   └── builtins.psm   # Calls with a known shape
+│   ├── aif/
+│   │   ├── model.psm      # Tiers, site classification, value sets
+│   │   ├── contracts.psm  # FFI ownership contracts
+│   │   ├── walk.psm       # Site discovery and the fixpoint
+│   │   ├── layout.psm     # Struct sizes and the type graph
+│   │   └── report.psm     # Manifest, summary, minimal cause
+│   └── ir/
+│       ├── context.psm    # Emission state and constants
+│       ├── types.psm      # Prismio types → LLVM types
+│       ├── expr.psm       # Expression lowering
+│       ├── stmt.psm       # Statement lowering, scope and region unwinding
+│       ├── module.psm     # Functions, structs, whole-module emission
+│       └── bridge.psm     # extern fn declarations for the LLVM C API backend
 ├── tests/
 │   ├── test_runner.py    # Python test runner
 │   ├── test_*.psm        # Language test cases (positive)
@@ -97,7 +121,10 @@ prismio/
 └── runtime/               # Runtime library
 ```
 
-The compiler runs a dedicated semantic analysis pass (`src/sema.psm`) between parsing and IR
+A module's import path is its location: `src/ir/expr.psm` is `import ir.expr`, and `import ir.*`
+takes every module in the package. Paths are always relative to `src/`, never to the importing file.
+
+The compiler runs a dedicated semantic analysis pass (`src/sema/`) between parsing and IR
 generation — it performs type checking and enforces move/borrow/drop ownership rules before any IR
 is generated.
 
