@@ -536,6 +536,37 @@ cannot help on two thirds of the corpus. On the two that do, the arena is worth 
 - **Do not let one measurement of a representation stand for the class.** The boxed diagnostic reads
   1.09× on g1 and 2.58× on g4. Assuming g1's answer would have attributed g4's gap to the backend.
 
+### The `region` annotation is inert on g2, and that is the sharpest result here
+
+The language is not inference-only — `region`, `unique`, `pin`, `drop` exist so a programmer can tune
+a hot scope by hand. That escape hatch was measured for the first time.
+`aif/evidence/xlang/prismio/g2_region.psm` is `g2.psm` with `region frame_arena { … }` around the
+frame body and nothing else changed:
+
+| | plain | `+ region` |
+|---|---|---|
+| loop time | 101.3 ms | **175.5 ms (1.73×)** |
+| allocations served by the arena | — | **0 of 10 201 215** |
+| regions entered | — | 20 000 |
+| manifest | T2 owned ×4 | **byte-identical** |
+
+**Not unimplemented — inert.** The region is created and destroyed 20 000 times and serves nothing,
+for the cause already recorded above: `aif_arena_at_node` rejects on `in_container` *before* it looks
+at escape, and g2's `DrawCmd` reaches `list_push` with `retain_in(0)`. The exclusion is correct in
+itself; it fires regardless of what the programmer asked for.
+
+The 1.73× is ≈7 ns per allocation over 10.2 M, which points at a per-allocation arena check that is
+paid then declined rather than at the 20 000 push/pops. **Inferred from the arithmetic, not proven** —
+confirm before optimising.
+
+Two consequences:
+
+- **The `CallerRegion` + container-disposition item unblocks both tiers, not just inference.** That
+  changes its value: it is the only thing standing between users and *any* working tuning story on
+  container-bound values.
+- **`region` should warn when it serves zero allocations.** Today a user writes the annotation, reads
+  a manifest that says nothing changed, and gets a 1.73× slowdown with no diagnostic.
+
 ### Next, re-ranked on this session's measurements
 
 1. **Inline element storage for `List<T>`** — the `Vec<T>` representation, which needs views/slices to
@@ -544,7 +575,10 @@ cannot help on two thirds of the corpus. On the two that do, the arena is worth 
    this list, and a prerequisite for the layout work.
 2. **Caller-scope `E` plus container disposition** (designed two sessions ago, still not built).
    Measured prize **up to 9.9× on g2**, ~0 on four of six programs. Large and narrow — and it partly
-   overlaps item 1, which removes most of g2's allocations by itself.
+   overlaps item 1, which removes most of g2's allocations by itself. **Re-valued upward by the
+   `region` result above**: it is what makes the annotation tier work at all, not only the inference
+   tier. Consider shipping the zero-allocation warning ahead of it, since that is cheap and the
+   current silence is a user-visible trap.
 3. **Layout search / SoA.** The largest measured headroom in the suite: `g1_tuned.rs` is *pure* SoA
    with no arena and no algorithmic change and runs at **0.26×** of idiomatic Rust. That is the only
    measured path to *beating* Rust rather than matching it, and it is the first evidence for

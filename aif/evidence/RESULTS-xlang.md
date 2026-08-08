@@ -406,18 +406,59 @@ Three caveats, all load-bearing:
   a program that iterates whole records is a regression, and LAYOUT §7.2's access profile is
   statically estimated — `workload` (measured frequencies) is deliberately unbuilt.
 
-**(c) Beat hand-tuned Rust — no, and it should not claim to.**
+**(c) Beat hand-tuned Rust — the annotations are the right answer, and today they do not work.**
 
-`g5_tuned.rs` is 0.15×, and most of that is an *algorithmic* change: bucketing entities by material
-so each frame visits 2 000 entities instead of 24 000. No memory model produces that. `g6_tuned.rs`
-reuses the world across scenarios, which is a statement about what the program means. The honest
-ceiling against a competent, motivated Rust programmer is "close", not "ahead".
+The language is not inference-only: `region`, `unique`, `pin` and `drop` exist so a programmer can
+tune a hot scope by hand while the rest of the program stays untouched. That is the correct answer to
+hand-tuned Rust — a one-word annotation against a rewrite — and it means the ceiling is set by what
+the language can *express*, not by what the analysis can *prove*.
+
+So it was measured. `prismio/g2_region.psm` is `g2.psm` with `region frame_arena { … }` around the
+frame body and nothing else changed. G2 is the right test: its corpus header says *"This is the T1
+case in its purest form… If these allocations do not land T1, the escape analysis is wrong"*, and
+they land T2. A programmer reading that manifest would reach for exactly this annotation.
+
+| | plain | `+ region` |
+|---|---|---|
+| loop time | 101.3 ms | **175.5 ms (1.73×)** |
+| allocations served by the arena | — | **0 of 10 201 215** |
+| regions entered | — | 20 000 |
+| tier/disposition of the four sites | T2 owned | **T2 owned — byte-identical manifest** |
+
+**The annotation is not unimplemented — it is inert.** The region is created and destroyed 20 000
+times, and serves nothing. The cause is the one already recorded in HANDOFF: `aif_arena_at_node`
+rejects a site on `in_container` *before* it ever looks at escape, and g2's `DrawCmd` reaches
+`list_push`, whose `retain_in(0)` sets `in_container`. The exclusion is correct in itself — a
+container tears its elements down through the deallocator, and an interior arena pointer is not
+something `free` can take — but it fires regardless of what the programmer asked for.
+
+The 1.73× is the second half of the result. 74 ms over 10.2 M allocations is ≈7 ns each, which points
+at a per-allocation arena check that is paid and then declined, rather than at the 20 000 region
+push/pops (those would have to cost 3.7 µs each). That mechanism is inferred from the arithmetic, not
+proven; it is worth confirming before anyone optimises it.
+
+**This is the finding that most changes the plan.** The two-tier story — auto inference for most code,
+annotations for the hot path — has a hole exactly where the corpus says it matters most: the escape
+hatch is blocked by the same gate that blocks inference, so a programmer cannot tune their way out
+either. And unlike the inference gap, this one is *visible to users*: they write the annotation, the
+manifest tells them nothing changed, and the program gets slower.
+
+Fixing it is the `CallerRegion` + container-disposition item (ranking §7 item 3), which was already
+the plan — but it should now be understood as unblocking **both** tiers, not just inference. Until it
+lands, `region` should probably warn when it serves zero allocations rather than silently costing
+1.73×.
+
+What annotations will *not* reach, even fixed: `g5_tuned.rs` at 0.15× is mostly an algorithmic change
+— bucketing entities by material so each frame visits 2 000 instead of 24 000 — and `g6_tuned.rs`
+reuses the world across scenarios, which is a statement about what the program means. Those stay with
+the programmer in any language.
 
 **On the three features named in the question specifically:**
 
 | | measured basis | projection |
 |---|---|---|
 | **Views & slices** | the enabler for inline `List<T>`; representation costs 1.09×–8.88× today | the highest-value item in the project — parity with idiomatic Rust |
+| **`@` annotations** | `region` on g2: 0 allocations served, 1.73× slower, manifest unchanged | the escape hatch is inert on the corpus's canonical case; unblocking it is the same work as unblocking inference |
 | **Full layout search + `workload`** | `g1_tuned` = 0.26×, pure SoA | the only path to *beating* Rust, ~3× where layout dominates; blocked behind handles |
 | **Concurrency + T-domains** | **nothing** — the corpus is single-threaded, six programs, zero threads | no evidence in either direction, and it is the axis where Rust's claim is strongest |
 
@@ -427,9 +468,13 @@ page falsifying. If it matters to the product, the corpus needs a concurrent pro
 feature gets a ranking.
 
 **The claim the numbers actually support** is not "faster than Rust". It is **"tuned-Rust behaviour
-from untuned code"**: the arena that `g2_arena.rs` gets from bumpalo plus explicit lifetimes, and the
-layout that `g1_tuned.rs` gets from hand-written SoA, obtained from source that looks like
-`aif/corpus/`. Against *idiomatic* Rust that is worth 0.26×–0.90× on the programs where it applies
-and nothing on the rest. Against *hand-tuned* Rust it is worth nothing on speed and quite a lot on
-effort. That is a smaller claim than BENCHMARKS §4.1's 0.71×, and unlike it, each half is attached to
-a measurement.
+from untuned code, with an annotation when that is not enough"**: the arena that `g2_arena.rs` gets
+from bumpalo plus explicit lifetimes, and the layout that `g1_tuned.rs` gets from hand-written SoA,
+obtained from source that looks like `aif/corpus/`. Against *idiomatic* Rust that is worth 0.26×–0.90×
+on the programs where it applies and nothing on the rest.
+
+Both halves of that claim are currently unclaimed, and they are blocked on the same two items. The
+inference half needs `CallerRegion` + container disposition; **the annotation half needs the identical
+change**, which is what §9(c) measured. That is good news for sequencing — one project unblocks both
+tiers — and it means the two-tier design has not actually been tested yet on any program where it
+would matter.
