@@ -471,26 +471,29 @@ apparatus is [`aif/evidence/xlang/`](aif/evidence/xlang/README.md) and re-runs i
 python3 aif/evidence/xlang/bench.py --compiler build/gen2 --runs 20
 ```
 
-**Prismio is 2.97×–8.88× idiomatic Rust and 4.8×–52× hand-tuned Rust.** Every speed projection in
-BENCHMARKS §4 is falsified, most by an order of magnitude; §4.2's kill criteria for object graphs
-and data-parallel bulk are both met. Read RESULTS-xlang before re-ranking anything.
+**With an optimiser on, Prismio is 1.15×–5.79× idiomatic Rust. As `prismio build` ships today it is
+2.94×–9.00×.** Every speed projection in BENCHMARKS §4 is falsified either way, and §4.2's kill
+criteria for object graphs and data-parallel bulk are both met. Read RESULTS-xlang before re-ranking
+anything.
 
-**The finding that matters is not the gap, it is what the gap is made of.** Three things, and only
-one belongs to the memory model:
+**The gap is made of three things and only one belongs to the memory model:**
 
-1. **`prismio build` runs no optimiser, on either stage.** `build_driver.c:509` is
-   `llc <ir> -filetype=obj` with no flags — llc runs the codegen pipeline but *not* the IR pipeline,
-   so mem2reg, SROA, GVN, LICM, inlining and vectorisation never touch a user program. And
-   `build_driver.c:638` compiles the runtime with `clang -c` and **no `-O`**, so `list_get`,
-   `list_push` and the allocator are all -O0. Turning both on is worth **1.45×–2.90×**
-   (`aif/evidence/xlang/optgap.py`, checksums identical in all four cells of every row). g3 and g1
-   go to **1.16×** and **1.37×** of idiomatic Rust on those two flags alone.
+1. **`prismio build` runs no optimiser, on either stage** — a build defect, not a design result.
+   `build_driver.c:509` is `llc <ir> -filetype=obj` with no flags, so mem2reg, SROA, GVN, LICM,
+   inlining and vectorisation never touch a user program; `build_driver.c:638` compiles the runtime
+   with `clang -c` and **no `-O`**, so `list_get`, `list_push` and the allocator are all -O0.
+   Turning both on is worth **1.43×–2.97×**, costs ~35% compile time, and *saves* 16 KB of binary.
+   `bench.py` now measures both configurations as separate variants; `optgap.py` splits the two
+   flags apart. Checksums identical throughout.
 2. **The representation** — `List<T>` as a vector of pointers to individually malloc'd records —
-   costs 1.09× on a 96-byte record, 2.51× on 24-byte components, 8.84× where the record is allocated
+   costs 1.08× on a 96-byte record, 2.67× on 24-byte components, 8.92× where the record is allocated
    per frame. Measured by holding it fixed in Rust (`g1_boxed.rs`, `g2_boxed.rs`, `g4_boxed.rs`) and
-   letting rustc emit the code.
-3. **A residual of ~1.2×**, consistent across g1 and g4, which is the only part that is a statement
-   about the design rather than the build.
+   letting rustc emit the code. **After item 1 this is the entire remaining gap on four of six
+   programs.**
+3. **A residual of 1.12×–1.27×** — with the optimiser on and the representation held constant, this
+   compiler is within about 20% of rustc. That is the only figure that is a statement about the
+   design rather than the build or the containers, and it is small. On g2 it is *0.65×*: Prismio
+   beats rustc's own code for the same allocation profile.
 
 **Four of six corpus programs allocate nothing per frame** (g1, g3, g4, g5), so the memory model
 cannot help on two thirds of the corpus and the whole gap there is 1 + 2 + 3. On the two that do
@@ -499,15 +502,15 @@ prize the `CallerRegion` + container-disposition item is aiming at, now measured
 
 Three results that went the other way, and are worth keeping:
 
-- **The tail held.** p99/p50 is 1.29–1.88 against a 3× kill criterion, and p999/p50 is *lower* than
-  idiomatic Rust's on all six programs. The model adds no hitch of its own. Read it as a ratio only:
-  Prismio's absolute p99 on g2 is 10.40 µs against Rust's 1.12 µs.
-- **Peak RSS is 0.84–1.01× of idiomatic Rust**, against a 1.0–1.2× prediction — better, and for the
+- **The tail held.** With the optimiser on, p99/p50 is 1.25–1.78 against a 3× kill criterion —
+  within 0.03 of idiomatic Rust's on five of six programs — and p999/p50 is *lower* than Rust's on
+  all six. The model adds no hitch of its own. Read it as a ratio only: Prismio's absolute p99 on g2
+  is 6.75 µs against Rust's 1.12 µs.
+- **Peak RSS is 0.84–1.00× of idiomatic Rust**, against a 1.0–1.2× prediction — better, and for the
   opposite reason to the one assumed. Per-object allocation has no geometric slack; a `Vec` that
   doubled to 1 000 elements holds up to 2× what it needs.
-- **56 KB executables** against Rust's 458–476 KB, and cold compile at parity with rustc and 2.5×
-  faster than swiftc (on 100–300 line programs; not a scaling claim, and this number will *rise* when
-  item 1 is fixed).
+- **39 KB executables** against Rust's 458–476 KB, and cold compile at 1.4× rustc and 1.8× faster
+  than swiftc *with the optimiser on* (100–300 line programs; not a scaling claim).
 
 ### Four things to carry forward
 
@@ -529,18 +532,19 @@ Three results that went the other way, and are worth keeping:
 
 ### Next, re-ranked on this session's measurements
 
-1. **Turn the optimiser on** — `opt -O2` on the program IR, `-O2` on the runtime. Two flags,
-   1.45×–2.90×, no design risk. It changes the compiler's own build, so it needs the full workflow:
-   two generations, fixpoint warm and cold, 92/92, and a seed refresh. Until it is done **every
-   benchmark this project runs is measuring the build pipeline**, which is what this one turned out
-   to be doing.
-2. **Re-run `xlang/bench.py`** against the optimised baseline. Nothing below can be trusted until it
-   has been re-measured; the ordering of 3 and 4 in particular may invert.
-3. **Inline element storage for `List<T>`.** Unranked and unstudied until now, worth 1.09×–8.84×
-   depending on the record, and probably a larger lever than anything previously on this list. It
-   interacts with handles (COMPILER-AUDIT finding 6) rather than avoiding them.
-4. **Caller-scope `E` plus container disposition** (designed two sessions ago, still not built). Now
-   carries a measured prize: **up to 9.8× on g2**, ~0 on four of six programs. Large, and narrow.
+1. **Turn the optimiser on** — `opt -O2` on the program IR, `-O2` on the runtime; two string
+   literals in `build_driver.c`. Worth 1.43×–2.97×, costs ~35% compile time, saves 16 KB. It changes
+   the compiler's own build, so it needs the full workflow: two generations, fixpoint warm and cold,
+   92/92, and a seed refresh. Do it first — not because it is the biggest lever but because until it
+   lands every benchmark measures the build pipeline, which is what this one spent most of its effort
+   discovering.
+2. **Inline element storage for `List<T>`** — the `Vec<T>` representation. Unranked and unstudied
+   until now, and after item 1 it is **the whole remaining gap** on four of six programs: worth
+   1.08×–8.92× depending on the record. Bigger than anything previously on this list. It interacts
+   with handles (COMPILER-AUDIT finding 6) rather than avoiding them.
+3. **Caller-scope `E` plus container disposition** (designed two sessions ago, still not built). Now
+   carries a measured prize: **up to 10× on g2**, ~0 on four of six programs. Large, and narrow.
+4. Re-run `xlang/bench.py` after each of the above; the ordering of 2 and 3 may invert once 1 lands.
 
 ---
 

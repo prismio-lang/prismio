@@ -20,6 +20,7 @@ writes `results.json`. `--only g2` restricts to one program; `--skip-build` reus
 | | |
 |---|---|
 | `prismio/g1..g6.psm` | the corpus programs, workload functions **verbatim**, with a timing `main()` |
+| — built two ways | `Prismio shipped` is `prismio build`; `Prismio +opt` adds the two `-O` flags it is missing |
 | `rust/g*_idiomatic.rs` | `Vec<T>` with values inline — what a competent Rust programmer writes first |
 | `rust/g*_arena.rs` | bumpalo 3.20.3 — what they write after a profile (g1, g2, g6) |
 | `rust/g*_tuned.rs` | whatever it takes: SoA, fused loops, reused buffers, bucketing |
@@ -30,6 +31,27 @@ writes `results.json`. `--only g2` restricts to one program; `--skip-build` reus
 
 29 programs. Every one of them prints the same checksums as the Prismio original, and `bench.py`
 refuses to measure a program whose variants disagree.
+
+## Prismio is measured twice, and the optimised row is the headline
+
+`prismio build` runs no optimiser: `build_driver.c:509` invokes `llc` with no flags (so the LLVM *IR*
+pipeline never runs on a user program) and `build_driver.c:638` compiles the runtime with no `-O` at
+all. That is an oversight nobody intends to ship, so measuring only it would benchmark an artifact
+that disappears in one commit.
+
+So there are two Prismio rows:
+
+| | |
+|---|---|
+| `Prismio shipped` | exactly `prismio build`, unmodified. What a user gets today. |
+| `Prismio +opt` | the compiler's own emitted IR through `opt -O2`, linked against the same two runtime sources at `-O2`. What the same compiler produces once those two flags exist. |
+
+`+opt` is a **harness-side reconstruction, not the compiler's code path**, and it is never labelled
+plain "Prismio" for that reason — a row describing a binary nobody builds is a mistake this project
+has recorded twice. Two things keep it honest: with the flags removed it reproduces `prismio build`
+to within 1.6%, and it recompiles the runtime per program the way `build_from_toolchain_sources` does,
+so its cold compile time is comparable rather than flattered. (Reusing prebuilt runtime objects made
+`+opt` look *faster* to compile than shipped, which is backwards; it costs ~35%.)
 
 ## The four decisions worth arguing with
 
