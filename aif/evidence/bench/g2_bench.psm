@@ -1,0 +1,112 @@
+// G2 -- frame loop with per-frame transient allocation.
+//
+// The dominant allocation pattern in a real-time renderer: every frame builds a
+// batch of draw commands, consumes them, and throws the whole batch away. Nothing
+// built inside a frame outlives it.
+//
+// This is the T1 case in its purest form, and it is the one AIF should get right
+// without any annotation at all -- the frame body is a scope, every scope is an
+// implicit region (SPEC 4.1), and nothing allocated inside escapes it. If these
+// allocations do not land T1, the escape analysis is wrong.
+//
+// The `culled` list is the interesting part: it is built per frame, passed to a
+// consumer, and dropped. A call boundary must not be enough to make it escape.
+
+struct DrawCmd {
+    mesh_id: Int,
+    material_id: Int,
+    depth: Float,
+    visible: Bool
+}
+
+struct Renderable {
+    mesh_id: Int,
+    material_id: Int,
+    x: Float,
+    y: Float,
+    z: Float,
+    radius: Float
+}
+
+struct Stats {
+    submitted: Int,
+    culled: Int
+}
+
+fn build_scene(count: Int) -> List<Renderable> {
+    let mut scene: List<Renderable> = list_new()
+    let mut i = 0
+    let mut f = 0.0
+    while (i < count) {
+        list_push(scene, Renderable {
+            mesh_id: i,
+            material_id: i,
+            x: f,
+            y: f,
+            z: f,
+            radius: 1.0
+        })
+        f = f + 1.0
+        i = i + 1
+    }
+    return scene
+}
+
+// Allocates a fresh command list every call. Returns it, so it escapes to the
+// caller -- but only as far as the caller's frame scope.
+fn cull(scene: List<Renderable>, near: Float, far: Float) -> List<DrawCmd> {
+    let mut cmds: List<DrawCmd> = list_new()
+    let n = list_len(scene)
+    let mut i = 0
+    while (i < n) {
+        let r = list_get(scene, i)
+        if (r.z >= near and r.z <= far) {
+            list_push(cmds, DrawCmd {
+                mesh_id: r.mesh_id,
+                material_id: r.material_id,
+                depth: r.z,
+                visible: true
+            })
+        }
+        i = i + 1
+    }
+    return cmds
+}
+
+// Consumes the batch without retaining anything from it. A borrow, in FFI terms.
+fn submit(cmds: List<DrawCmd>) -> Int {
+    let n = list_len(cmds)
+    let mut drawn = 0
+    let mut i = 0
+    while (i < n) {
+        let c = list_get(cmds, i)
+        if (c.visible) {
+            drawn = drawn + 1
+        }
+        i = i + 1
+    }
+    return drawn
+}
+
+fn main() -> Int {
+    let scene = build_scene(1000)
+
+    let mut totals = Stats { submitted: 0, culled: 0 }
+    let mut frame = 0
+
+    while (frame < 20000) {
+        // Everything below this line is transient: allocated this frame,
+        // dead by the next. The whole body is one implicit region.
+        let cmds = cull(scene, 0.0, 500.0)
+        let drawn = submit(cmds)
+        totals.submitted = totals.submitted + drawn
+        totals.culled = totals.culled + (1000 - drawn)
+        frame = frame + 1
+    }
+
+    print("submitted: ")
+    println_int(totals.submitted)
+    print("culled: ")
+    println_int(totals.culled)
+    return 0
+}

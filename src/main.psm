@@ -296,7 +296,7 @@ fn printUsage() {
     println("  prismio bootstrap [source.psm] [-o output.exe]")
     println("  prismio runtime-hash")
     println("  prismio dump-ast <source.psm>")
-    println("  prismio aif <source.psm> [--summary] [--owned-collections] [--theta-fields] [--budget=N]")
+    println("  prismio aif <source.psm> [--summary] [--copyable-collections] [--theta-fields] [--budget=N]")
     println("  prismio aif <source.psm> --why=<symbol>   why one record has the tier it has")
     println("")
     println("build/run link against the installed Prismio runtime only.")
@@ -410,6 +410,9 @@ fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: 
     // `--why` explains one record instead of printing the manifest. It runs the
     // same inference -- the derivation is a by-product of the solve, not a
     // second pass -- so the answer describes the build a plain run would give.
+    // That last clause was false while ownedCollections defaulted to off: the
+    // derivation explained a tier from a model the build does not use, and
+    // A-COPY was the answer to every "why is this T3" the compiler could ask.
     if (str_equals(why, "") == 0) {
         let converged = aifRun(merged, ownedCollections, thetaFields, budget)
         return 1 - aifExplain(why, converged)
@@ -636,7 +639,14 @@ fn main() -> Int {
         }
 
         let mut aifSummary = false
-        let mut aifOwned = false
+        // The manifest has to describe the build, and the build analyses with
+        // collections owned -- aifRun(mergedAst, true, ..) in compileSource.
+        // This defaulted to false until 2026-08-08, so `prismio aif` reported a
+        // pre-Level-4 language: strings copyable, A-COPY firing on any string
+        // site with two holders, and 82 T3 records over src/main.psm that the
+        // binary it purported to describe does not contain. Two sessions of
+        // handoff notes were written off that number.
+        let mut aifOwned = true
         let mut aifThetaFields = false
         let mut aifWhy = ""
         let mut aifBudgetArg = AIF_DEFAULT_ROUNDS
@@ -668,11 +678,16 @@ fn main() -> Int {
                 // one of them can evaluate.
                 aifThetaFields = true
             } else if (str_equals(flag, "--owned-collections") == 1) {
-                // Treat String/List/Array as move-only, as SPEC 11 item 10
-                // specifies rather than as types.psm currently implements. This
-                // one property is 100% of the measured T3 residue, so it is a
-                // switch: the difference it makes is the measurement.
+                // The default since Level 4 made String and List move-only.
+                // Accepted so existing scripts keep working, and because saying
+                // so explicitly costs nothing.
                 aifOwned = true
+            } else if (str_equals(flag, "--copyable-collections") == 1) {
+                // The pre-Level-4 language, where only structs were move-only.
+                // Kept because it is the differential's second arm, not because
+                // anything still compiles that way -- `prismio build` always
+                // analyses with collections owned (see aifRun below).
+                aifOwned = false
             } else {
                 diag_error(str_concat("unknown argument ", diagQuote(flag)))
                 printUsage()

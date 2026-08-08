@@ -402,11 +402,14 @@ void ir_module_end(void) { /* nothing to flush -- the module is already built */
 // Functions
 // ============================================================================
 
+static int g_pending_param_noalias[MAX_PENDING_PARAMS];
+
 void ir_function_begin(const char *name, const char *ret_type) {
     strncpy(g_pending_fn_name, name, NAME_LEN - 1);
     g_pending_fn_name[NAME_LEN - 1] = '\0';
     g_pending_ret = type_from_key(ret_type);
     g_pending_param_count = 0;
+    memset(g_pending_param_noalias, 0, sizeof(g_pending_param_noalias));
     g_declaring = 0;
 }
 
@@ -429,6 +432,30 @@ void ir_declare_function_param(const char *param_type) {
     ir_function_param(param_type, "");
 }
 
+// SPEC 5.1's `unique`, which already means "exactly one reference exists, and it
+// owns". `noalias` is that fact spelled for LLVM, so this is a lowering of an
+// existing annotation rather than a new one -- SPEC 11 item 7's four stay four.
+//
+// It is an axiom, not a proof: the solver takes A = Unique as given and the
+// affine discipline discharges the local half, but nothing checks that a caller
+// passes distinct pointers. semaCheckUniqueArgs rejects the reachable half of
+// that -- the same name given to two `unique` parameters of one call.
+void ir_function_param_unique(const char *param_type, const char *param_name) {
+    int i = g_pending_param_count;
+    ir_function_param(param_type, param_name);
+    if (i < MAX_PENDING_PARAMS) g_pending_param_noalias[i] = 1;
+}
+
+static void apply_param_attrs(LLVMValueRef fn) {
+    unsigned kind = LLVMGetEnumAttributeKindForName("noalias", 7);
+    if (!kind) return;
+    for (int i = 0; i < g_pending_param_count; i++) {
+        if (!g_pending_param_noalias[i]) continue;
+        LLVMAddAttributeAtIndex(fn, (unsigned)(i + 1),
+                                LLVMCreateEnumAttribute(g_ctx, kind, 0));
+    }
+}
+
 static LLVMValueRef materialize_function(void) {
     LLVMTypeRef fnty = LLVMFunctionType(g_pending_ret, g_pending_params,
                                         (unsigned)g_pending_param_count, 0);
@@ -441,6 +468,7 @@ void ir_declare_function_end(void) { materialize_function(); }
 
 void ir_function_body_start(void) {
     g_function = materialize_function();
+    apply_param_attrs(g_function);
     g_alloca_count = 0;
     g_param_count = 0;
     g_has_returned = 0;
@@ -589,6 +617,23 @@ int ir_load_ptr(const char *type, const char *ptr_value) {
 void ir_store_ptr(const char *type, const char *value, const char *ptr_value) {
     if (block_done()) return;
     LLVMBuildStore(g_builder, resolve_value(value, type), resolve_value(ptr_value, "ptr"));
+}
+
+// An inline struct field is storage, not a slot holding an address, so writing
+// one copies bytes. The counterpart of ir_store_ptr for a field whose registered
+// type is `struct:T` rather than `ptr`.
+//
+// The alignment is read back from the module's data layout rather than assumed,
+// because it is the number LLVM placed the field at -- see the note on
+// LLVMBuildMemCpy in prismio_llvm.h for the case that makes 8 wrong.
+void ir_copy_struct(const char *struct_name, const char *dest, const char *src) {
+    if (block_done()) return;
+    LLVMTypeRef sty = named_struct(struct_name);
+    unsigned align = LLVMABIAlignmentOfType(LLVMGetModuleDataLayout(g_module), sty);
+    LLVMBuildMemCpy(g_builder,
+                    resolve_value(dest, "ptr"), align,
+                    resolve_value(src, "ptr"), align,
+                    LLVMSizeOf(sty));
 }
 
 static LLVMValueRef global_named(const char *name, LLVMTypeRef ty) {

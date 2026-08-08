@@ -945,12 +945,27 @@ static long arena_bytes_served, arena_objects_served, arena_regions_entered;
 // Only default-sized chunks are pooled. An oversized one was cut for a single
 // large allocation and holding it would keep an arbitrary amount of memory live
 // for the rest of the program.
+//
+// The pool is capped, and the cap is the difference between "pooled" and
+// "never returned to the OS". Uncapped, a program's peak arena footprint stays
+// resident for the rest of its life: one pass that nests deeply or chains many
+// chunks sets a high-water mark nothing ever gives back, and peak RSS carries it
+// to exit. Trimming rather than removing, because removing the pool is what the
+// note above says would stop automatic placement firing at all.
+//
+// ARENA_POOL_MAX * ARENA_CHUNK_MIN is the resident ceiling: 64 KB. The cap has
+// to clear ordinary *nesting* -- chunks held by live regions are on the stack,
+// not in the pool, so it only has to cover what a single pop hands back plus
+// reuse across iterations, and a loop entering one region reuses one chunk.
+#define ARENA_POOL_MAX 8
 static ArenaChunk* arena_pool;
+static int arena_pool_count;
 
 static ArenaChunk* arena_chunk_new(size_t need) {
     if (need <= ARENA_CHUNK_MIN && arena_pool) {
         ArenaChunk* c = arena_pool;
         arena_pool = c->next;
+        arena_pool_count--;
         c->used = 0;
         c->next = NULL;
         return c;
@@ -984,9 +999,10 @@ void arena_pop(void) {
     ArenaChunk* c = arena_stack[--arena_depth];
     while (c) {
         ArenaChunk* next = c->next;
-        if (c->cap == ARENA_CHUNK_MIN) {
+        if (c->cap == ARENA_CHUNK_MIN && arena_pool_count < ARENA_POOL_MAX) {
             c->next = arena_pool;
             arena_pool = c;
+            arena_pool_count++;
         } else {
             free(c->base);
             free(c);

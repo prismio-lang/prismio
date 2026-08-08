@@ -40,7 +40,7 @@ fn semaBlockHasBreak(block: ASTNode) -> Bool {
         if (stmt.kind == NodeKind.IF_STATEMENT) {
             if (semaIfHasBreak(stmt)) { return true }
         }
-        if (stmt.kind == NodeKind.WHILE_STATEMENTorstmt.kind == NodeKind.LOOP_STATEMENT) {
+        if (stmt.kind == NodeKind.WHILE_STATEMENT or stmt.kind == NodeKind.LOOP_STATEMENT) {
             let mut body = ptr_to_node(stmt.child1)
             if (stmt.kind == NodeKind.WHILE_STATEMENT) { body = ptr_to_node(stmt.child2) }
             if (semaBlockHasBreak(body)) { return true }
@@ -97,7 +97,7 @@ fn semaStmtDiverges(stmt: ASTNode) -> Bool {
         } else {
             elseDiverges = semaBlockDiverges(elseNode)
         }
-        return semaBlockDiverges(ptr_to_node(stmt.child2)) andelseDiverges
+        return semaBlockDiverges(ptr_to_node(stmt.child2)) and elseDiverges
     }
 
     // A `loop` with no break never finishes. A `while` or `for` may run zero

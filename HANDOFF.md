@@ -23,6 +23,14 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 ### File roles
 
+> **Stale as of `f791ab0` (2026-08-08).** That commit split every one of these into a directory and
+> renamed the identifiers to camelCase: `src/sema.psm` → `src/sema/{checker,flow,ownership,symbols,
+> types,builtins}.psm`, `src/ir.psm` → `src/ir/{module,expr,stmt,types,context}.psm`, `src/aif.psm`
+> → `src/aif/{walk,model,report,contracts,layout}.psm`, `src/lexer.psm` → `src/lexer/`,
+> `src/parser.psm` → `src/parse/`, `src/ast.psm` → `src/ast/nodes.psm`, `src/bridge.psm` →
+> `src/ir/bridge.psm`, `src/diag.psm` → `src/common/diagnostics.psm`. The *roles* below are still
+> accurate; the paths are not.
+
 | File | Role |
 |---|---|
 | `src/lexer.psm` | tokens with spans, string/char escapes |
@@ -450,6 +458,385 @@ What landed:
   called a live object unreachable. Container edges were counted (Level 5's design); field edges
   were not.
 
+---
+
+## Session of 2026-08-09 — inline struct fields, and two measured non-results
+
+Three items landed and handles slipped. **Two of the three moved no number, and that is the
+finding in both cases** — read the measurements, not the fact that the code exists.
+
+Suite **92/92** (was 91). Fixpoint holds warm and cold, cold == warm, seed refreshed twice (the FFI
+surface grew `ir_copy_struct` and `ir_function_param_unique`), the oracle agrees on all 12 sources,
+source lists agree. Compiler peak RSS **30.3 → 30.7 MB**.
+
+> The 27.3 MB baseline quoted in the brief is not reproducible here: the pre-session binary measures
+> **30.3 MB** by polling `PeakWorkingSet64` and refreshing once more after exit. All figures in this
+> section use that method, so the deltas are comparable to each other and not to the 27.3.
+
+### 1. Inline struct fields — landed, 4× fewer allocations, one regression
+
+`aifTypeBytes` returning 8 for every struct was the *symptom*; the cause was `storageType`
+collapsing `struct:T` to `ptr` for fields. The registry now keeps `struct:T`, so the LLVM body
+embeds by value and every access reaches the field by GEP.
+
+New fixture `aif/evidence/bench/g7_particles.psm`, same source through the old and new compiler:
+
+| | allocations | median | layout |
+|---|---|---|---|
+| pointer fields | 80 015 | 175.8 ms | `%Particle = { ptr, ptr, ptr, double }` |
+| **inline fields** | **20 015** | **129.1 ms** | `%Particle = { %Vec3, %Vec3, %Vec3, double }` |
+
+**Inline is restricted to plain data** — a field whose type transitively owns nothing. Anything
+holding a `String`, `List`, array or `T?` keeps a pointer, because an inline field has no allocation
+of its own for `__aif_release_T` to free. `Crate.inner: Inventory` correctly stayed a pointer.
+
+Five things worth carrying:
+
+- **The containment/reference split was already in the language.** A scan of `src/`, `tests/` and
+  `aif/corpus/` found **no** self-referential plain struct field: every recursive type already
+  spells itself `T?`, which is a pointer. So plain = containment, `T?`/`List`/`[T]` = reference,
+  and requiring containment acyclic rejects nothing that exists. `typeAnnIsPod` is defined **once**
+  in `src/ast/types.psm` because codegen picks the layout and AIF sizes it — if they disagreed,
+  Θ_stack would describe a different object than LLVM emits.
+- **Layout had to reach construction, not just declaration.** The first build laid fields out inline
+  and left the nested literal allocating, copying in, and abandoning — 22 leaks in test_49.
+  `generateStructLiteralFields` builds an inline field *in place*, so `Particle { position: Vec3 {…} }`
+  allocates nothing for the Vec3. That is also where the 4× comes from.
+- **The inline decision must not read AIF.** It is taken from declarations alone. A layout that
+  depended on the analysis would differ between `--debug` and a release build, and SPEC 7.2 requires
+  a level to change no observable behaviour — two physical layouts for one program is the largest
+  observable difference there is.
+- **Trap 5 fired exactly as predicted.** `Inventory` lost a free because `lead: Slot` stopped being
+  an allocation site. Baseline regenerated with the reason written at the expectation.
+- **The interior pointer is real and escapes.** A struct-typed field read returns the GEP. SPEC 11
+  item 5 forbids that escaping and nothing stops it, because references are raw `ptr`. Recorded at
+  the site in `src/ir/expr.psm`, not papered over.
+
+**The regression: `g3_scene_graph` 0 → 4095 leaked, 0 violations.** `make_node` writes
+`Node { local: t, world: identity_transform(), bounds: unit_bounds(), … }`; all three are allocated
+in a callee and returned. The pointer layout made `Node` their accidental owner, and copying removes
+that without providing another. E-RETURN gives them `Caller` unconditionally, so they have no free
+point — the pre-existing T2-return class, previously masked.
+
+**It cannot be fixed by freeing the source after the copy.** `world_transform(w,h)` in the same
+corpus is `return list_get(w.transforms, h)` — a struct-returning function that yields an *alias
+into a container*. So "a struct-returning call produces an owned value" is false, and a guard built
+on it is a double free. This is the same soundness note already recorded for String returns.
+
+### 2. By-value POD returns — designed, deliberately not built
+
+The fix for the above, and the reason it is not a codegen tweak. The chain, worked out against the
+code:
+
+1. A POD return by value means the callee's literal is copied out, so it must stop being an escape —
+   otherwise it stays T2/heap and leaks exactly as now.
+2. Once it stops escaping it is T0 in the callee, so the **caller** needs storage for the result.
+3. That storage cannot be an alloca. `Node` is itself POD and `g3_scene_graph.psm:96` is
+   `list_push(nodes, make_node(…))` — an alloca there stores a frame pointer into a container that
+   outlives the frame. **Use after free.**
+4. It cannot be untracked heap either: nothing would free it, so the leak moves rather than closes.
+5. So the **call expression must become an AIF allocation site in the caller**, tiered like a struct
+   literal — and identically in `aif/prototype/aif.py`, or the differential stops meaning anything.
+
+Step 5 is a site *migrating across a call boundary*, which nothing in the current model expresses:
+every site today is where a literal is written. It is the same shape as the caller-scope `E` item
+below, and it has a use-after-free failure mode. `ir_copy_struct` and `LLVMBuildMemCpy` are already
+in place for whoever picks it up.
+
+### 3. A footprint term in the arena cost model — landed and provably inert
+
+Added exactly as LAYOUT 4 writes it, with λ kept as the ratio 2/100 because the model is integer:
+
+```
+ArenaBenefit(s) = allocs_in(s)·(α_T2 − α_T1) − entries(s)·arenaSetupCost − λ·(bytes_held − peak_live)
+```
+
+`bytes_held − peak_live` is `Σ bytes·(weight − 1)`: exactly the bytes a scope allocates and abandons
+while still holding them. **It changed no decision — 261 arenas before and after — for two
+independent reasons, and the second is the interesting one:**
+
+- Every arena-served site in the compiler is dynamically sized (`261 dynamically-sized site(s)
+  excluded`). They are strings, so both new inputs contribute 0 rather than a guess — the same rule
+  the peak-bytes report already uses.
+- **At λ = 0.02 the term cannot fire in this compiler at all.** Break-even is
+  `size > (α_T2 − α_T1)/λ ≈ 87/0.02 ≈ 4350` bytes per object, and the backend caps a struct at 64
+  fields, so the largest struct expressible is **512 bytes**. The term is unreachable by
+  construction, not merely unexercised.
+
+λ was **not** retuned to make it bite. LAYOUT 4 states the constant; measuring it says the constant
+is wrong for this cost model, or that the term should price something other than bytes. Inventing a
+replacement would be fabricating the input.
+
+**The chunk pool is trimmed, not removed** — `ARENA_POOL_MAX 8`, a 64 KB resident ceiling. Removing
+pooling is what would stop automatic placement firing at all (a region serving one allocation would
+pay a malloc and a free). Compiler peak RSS **30.7 → 30.7 MB, unchanged**: the pool high-water here
+is ~1 chunk, because regions are entered and left sequentially so each pop's chunk is reused by the
+next push. The unbounded pool was a theoretical risk for this compiler, not a measured one; the cap
+makes the ceiling explicit without changing behaviour.
+
+**The differential is not the safety net for this item.** The oracle does not model arena placement
+and the differential compares tiers and counters only, so its agreement confirms tier-neutrality and
+nothing else. Coverage was the arena counts, peak RSS and the corpus.
+
+### 4. `unique` on a parameter → `noalias` — landed, guarded, win unproven
+
+`unique` was **already parsed** on parameters (`parseParameter`, `param.i2`) and simply never
+reached codegen. It now lowers through `ir_function_param_unique`.
+
+**Governance:** this is a lowering of an existing annotation, so SPEC 11 item 7's four stay four and
+nothing needed amending. Deleting it still changes no observable behaviour of a correct program.
+
+**It needed a guard, and that is the part worth reading.** `noalias` makes `unique` the one
+annotation whose falsehood is undefined behaviour rather than a lost optimisation. The axiom's local
+half is discharged by the affine discipline, but parameters *borrow*, so `f(x, x)` is two perfectly
+legal borrows handing one object to two parameters each asserting it is the only one.
+`semaCheckUniqueArgs` rejects that; `neg_24_unique_aliased_args.psm` pins it. What it still does not
+catch is aliasing through two different names — which is what `unique` being an axiom means, and is
+why deleting it is always safe.
+
+**Measured, and this is a non-result:** no reliable win on either shape tested.
+
+| shape | plain | `unique` |
+|---|---|---|
+| callee inlined into the loop | 777.6 ms | 812.9 ms |
+| loop inside the callee | 422.7 ms | 418.7 ms |
+
+The first is inlined, after which LLVM already knows the two allocas are distinct; the second is
+within run-to-run noise. The brief called this "the cheapest real codegen win available" — it is
+certainly cheap, and it has not been shown to be a win. Whoever revisits it should find a shape
+where the callee is *not* inlined and the aliasing question actually blocks a reorder.
+
+### Handles slipped, and here is the cost that says why
+
+Counted rather than estimated. COMPILER-AUDIT finding 6 said "~104 externs"; the refactor grew it:
+
+| | |
+|---|---|
+| `extern fn` declarations naming `String`/`Ptr` (a raw pointer at the C boundary) | **235** |
+| `ptr_to_node` / `node_to_ptr` and siblings — currently the **identity** on a pointer | 8 |
+| `ptr_to_node(` / `nodeExists(` call sites, each one a dereference | **337** |
+| punned empty-slot tests, `str_equals(x, "")` — "empty" is a zero first byte | **190** |
+| runtime sites reading a header *in front of* a raw pointer (`rc_of`, T3's mechanism) | 1 |
+| `--verify` accounting sites keyed on raw addresses | 12 |
+| field-access choke points (`ir_struct_field_ptr`) — the one piece of good news | 1 |
+| `src/` total | 10 217 lines |
+
+The 190 punned tests are the real obstacle and they are not mechanical: with handles, "empty" would
+become handle 0, which is *cleaner* than a zero first byte and would retire `test_41`'s invariant
+rather than preserve it — but every one of those sites is a place where the current encoding is load
+bearing, and `NodeKind`/`TypeKind` reserving ordinal 0 exists only to serve it. Handles are a
+rewrite of how this compiler represents its own AST, not a change to how it emits code.
+
+Item 1 makes this worse, not better, and that should be said plainly: inline fields create interior
+pointers, which is exactly what handles exist to prevent, so the debt grew this session.
+
+### Next, re-ranked on this session's measurements
+
+1. **By-value POD returns**, via the AIF site migration in §2. It closes g3's 4095 leaks, removes the
+   last allocation from the inline-field win, and is the only item here with a measured prize.
+2. **Caller-scope `E`** (previous session, still designed-not-built). Same shape of change, and the
+   two would share most of the machinery — do them together or do §1 first and reuse it.
+3. **Handles.** Costed above. A project, and now a slightly larger one.
+4. `workload`, SoA, hot/cold: unchanged, still behind handles.
+
+### Three things to carry forward
+
+- **A layout change reaches construction.** Laying a field out inline and leaving the initialiser
+  allocating produced a program that was correct, slower, and leaked — the copy took ownership of
+  nothing. Any change to where a value lives has to be followed to where it is *made*.
+- **Read the gate before designing for it.** The caller-scope `E` fix was fully designed last
+  session and would have emitted a byte-identical binary, because `aif_arena_at_node` rejects on
+  `in_container` before it ever reads escape. Same lesson twice now: the clause you are aiming at is
+  rarely the only clause.
+- **Two of three items here moved no number.** Both were implemented exactly as specified and both
+  are inert for reasons only measurement could give: λ is off by an order of magnitude against a
+  512-byte ceiling, and `noalias` is redundant wherever LLVM has already inlined. Implementing a
+  specified thing is not evidence that it pays.
+
+---
+
+## Session of 2026-08-08 — the tree did not compile, and the T3 residue was never real
+
+Four things, in the order they have to be read. **Nothing in the "Next, in order of measured value"
+list below survived contact with measurement**, so read this section before that one.
+
+### 0. HEAD did not compile, and that is not in any previous handoff
+
+Commit `f791ab0` "Humanised" refactored `src/` into directories and renamed every identifier to
+camelCase — so **the file-roles table above is stale** (`src/sema.psm` is now `src/sema/`, `src/ir.psm`
+is `src/ir/`, `src/aif.psm` is `src/aif/`, and so on). That commit also left two eaten spaces:
+
+| | |
+|---|---|
+| `src/sema/flow.psm:43` | `NodeKind.WHILE_STATEMENTorstmt.kind` |
+| `src/sema/flow.psm:100` | `andelseDiverges` |
+
+`59a0960` has ` or ` and ` and ` in both places, so this is corruption introduced by the rename and
+not a design change. Two-line repair. **The committed tree could not build itself for a whole
+commit, and no check caught it** — CI would have, on its first step.
+
+A scan for glued keywords across `src/` found only these two (everything else it flagged —
+`initValue`, `expectedReturn`, `astRoot` — is a real name). The compiler is the reliable detector.
+
+### 1. The 79 T3 sites were a stale reporting default, not a residue
+
+**Both claims in this document were true; they were about different runs of the same binary.**
+
+`site_is_move_only` gates `String`/`List` behind `owned_collections`. `prismio build` has always
+passed `true` (`aifRun(mergedAst, true, ..)` in `compileSource`). The `aif` *reporting* command
+defaulted it to **false** — the pre-Level-4 language, where strings are copyable, so A-COPY fires on
+any string site with two holders. Same binary, same source, same day:
+
+| `prismio aif src/main.psm` | T1 | T2 | T3 |
+|---|---|---|---|
+| default, as it was (copyable) | 260 | 18 | **82** |
+| `--owned-collections` (what `build` uses) | 260 | 100 | **0** |
+
+So the manifest — the thing SPEC item 8 exists to make the build describable — was describing a
+binary nobody builds, and `--why`'s "the answer describes the build a plain run would give" was
+false. **Two sessions of handoff notes were written off that number.**
+
+The archaeology, because the arithmetic in the FFI section above is still worth trusting. The
+compiler *of that era*, rebuilt from `40438a7`'s own seed, reports 324 sites with T3 = 107 =
+**37 E-OPAQUE + 70 A-COPY**. The twelve declarations did exactly what that section claims —
+E-OPAQUE 37 → 0, reproducible — but it reported that subset as the whole T3 population. The 70
+A-COPY were the flag, and were never counted.
+
+**The default is inverted now**, in `src/main.psm` and identically in `aif/prototype/aif.py`.
+`--copyable-collections` selects the old model and **the differential's second arm passes it** —
+without that the two arms run the same analysis and agree by construction, which is worse than one
+arm. Verified that the arms still differ (0 T3 vs 82 T3) and that a misspelled flag is still
+rejected.
+
+`prismio build` output is **byte-identical** across all 16 programs in `tests/` and `aif/corpus/`
+before and after. Only the report moved.
+
+### 2. What ownership contexts would buy, measured
+
+The upper bound, from the derivation's own maximal contributor (`--why`) over every site. A site can
+only be improved by contexts if its fact crossed a call boundary — E-RETURN, A-CALL, E-OPAQUE,
+A-RETAIN; everything else is decided inside one function and is already as precise as it will get.
+
+| | sites | call-boundary-determined | what they would become |
+|---|---|---|---|
+| `src/main.psm` | 360 | **41 (11%)** — all E-RETURN | all T2 → T1 |
+| corpus g1–g6 + test_47/48 | 73 | **27 (37%)** | all T2 → T1 |
+
+**Not one site would move to or from T3.** Contexts buy no correctness on this corpus, confirming
+the previous session's re-ranking, and they buy exactly one transition: T2 → T1.
+
+**The mechanism is not a join, and this is the part worth keeping.** E-RETURN raises to `Caller`
+*unconditionally*. A struct allocated in the scope that consumes it is **T0**; the same struct
+returned from a function with **exactly one caller** is **T2**. There is no caller disagreement to
+blame — `E` simply has no value meaning "the caller's scope", which is the third of the three
+recorded limitations, and it is the whole of the effect.
+
+**The bound is loose in the other direction.** Realising it needs the transfer to survive more than
+one hop. In `g3_scene_graph`, `identity_transform()` and `unit_bounds()` are stored into the `Node`
+that `make_node` returns, so they escape onward; only `build_hierarchy`'s list dies in its immediate
+caller. **1 of 4 at k=1**, against 4 of 4 in the bound.
+
+**The element-key cliff is smaller than recorded.** The audit says merging `test_47` and `test_48`
+makes all seventeen of test_47's sites T3. Measured: **10 of test_47's 14 sites** move T2 → T3
+(3 T1 sites and 1 T2 are untouched). Real cliff, overstated number.
+
+### 3. The benchmark, and it falsifies a claim the corpus makes about itself
+
+`aif/evidence/bench/` — four baselines in BENCHMARKS §3.2's order, ≥30 runs, median and p99.
+Peak RSS is beside the time because the control is not like-for-like on memory.
+
+```bash
+python aif/evidence/bench/bench.py --runs 40
+```
+
+| G2 frame loop | median | p99 | rel | peak RSS |
+|---|---|---|---|---|
+| C `-O2` idiomatic | 633.1 ms | 728.6 | 1.00× | 3.9 MB |
+| **C `-O2` arena** | **56.1 ms** | 79.3 | **0.09×** | 3.8 MB |
+| Prismio (inference) | 774.4 ms | 880.2 | 1.22× | 3.9 MB |
+| Prismio `--debug` | 709.1 ms | 775.0 | 1.12× | **392.2 MB** |
+
+| G6 engine+gameplay | median | p99 | rel | peak RSS |
+|---|---|---|---|---|
+| C `-O2` idiomatic | 1042.0 ms | 1126.2 | 1.00× | 4.0 MB |
+| **C `-O2` arena** | **310.0 ms** | 366.6 | **0.30×** | 4.0 MB |
+| Prismio (inference) | 1640.4 ms | 1778.5 | 1.57× | 4.1 MB |
+| Prismio `--debug` | 1847.4 ms | 2009.8 | 1.77× | **823.3 MB** |
+
+Read three things off this.
+
+- **`--debug` is faster on G2 and slower on G6, and both are the same fact.** SPEC 7.1's zero level
+  never frees (all sites T4b/`cycle:none`: heap, no drop, no arena, no count, no collector). On G2
+  that buys 8% by skipping the frees; on G6 the 823 MB costs more in page faults than the frees
+  would. **Leaking stops paying somewhere between 392 MB and 823 MB.** Anyone quoting the internal
+  control as "AIF costs 6%" is quoting G2 and not reading the RSS column.
+- **The arena column is the prize, and it is 11× on G2 and 3.3× on G6** — the same program, same
+  data model, with only the transient batch bump-allocated. That is the transformation T1 exists to
+  perform.
+- **G2 does not get it.** Its four sites are **T2**, and `g2_frame_loop.psm`'s own header says
+  *"This is the T1 case in its purest form… If these allocations do not land T1, the escape analysis
+  is wrong."* By the corpus's own stated criterion, the escape analysis is wrong. AIF's projection
+  (BENCHMARKS §4.1) is 0.70× of idiomatic C; it is at 1.22× and 1.57×.
+
+### The fix, designed and deliberately not built
+
+The measured defect is one line's worth of lattice: `escape_join` collapses any two scopes with
+different owners to `Caller`, and `AIF_CON_ESCAPE_CALLER` raises to `Caller` with no idea which
+function it is returning *from*.
+
+The design that follows, worked out against the code:
+
+- `AIF_E_CALLER_REGION` (−3), ordered `Region(s) ⊏ CallerRegion ⊏ Caller ⊏ Global`, joined in
+  `escape_join`. `widen_sites` needs nothing — it goes straight to `Global`.
+- `AIF_CON_ESCAPE_CALLER` must carry the emitting function (**an FFI-surface change**, so seed
+  refresh and cold start). Then `sites[s].fn == k->b` → `CallerRegion` (one hop); otherwise
+  `Caller` (returned again, so it escaped beyond one hop). That is "ownership transfer surviving
+  one hop", closed to depth 1.
+- `AIF_CON_LIVE_IN`'s cross-function arm becomes `CallerRegion` instead of `Caller`. Sound in both
+  directions: for a value passed *down*, bounding it by its own caller's activation is longer than
+  the truth, so conservative.
+- `aif_tier_of` already returns T1 for anything that is not `Caller`/`Global`, so it needs nothing.
+- **And the identical change in `aif/prototype/aif.py`**, or the differential stops meaning anything.
+
+**Why it was not built.** `aif_arena_at_node` bars a site from an arena on `in_container` *before*
+it ever looks at escape — and g2's hot site, the `DrawCmd` at 10.02M allocations, reaches
+`list_push`, whose `retain_in(0)` sets `in_container`. The exclusion is correct: a container tears
+its elements down through the deallocator, and an interior arena pointer is not something `free` can
+take. So **the E change alone moves g2 from T2 to T1 and emits the identical binary**, plus a
+manifest claiming a `region` placement that did not happen.
+
+The prize needs the E change *and* the container-disposition change together: an arena-placed
+element must make its container's element release a `NONE` disposition, the mechanism the
+container-ownership work already has. Two coupled changes on the path where the failure mode is a
+use-after-free. That is a project, not a narrow fix, and half of it is worse than none — which is
+what this document has recorded twice already.
+
+### Four things to carry forward
+
+- **A committed tree that does not compile is a thing that happens.** Build before reading. The
+  whole session's premise was numbers from a binary whose source no longer built.
+- **A default is an input.** "Reach for the input before the mechanism" got its third outing, and
+  the missing input was not a declaration this time — it was a flag whose default had been correct
+  when it was written and was silently wrong two levels later. When a level changes what the
+  language *is*, grep for the flags that describe what it *was*.
+- **A control must be read with its cost column.** `--debug` looks like a 6% result and is a 112×
+  memory result. The direction even flips with scale.
+- **Read the gate before designing for it.** The E-lattice fix was fully designed and correct, and
+  would have produced a byte-identical binary, because a different clause in `aif_arena_at_node`
+  rejects the site first.
+
+### Next, re-ranked on this session's measurements
+
+1. **The caller-scope `E` value *plus* container disposition.** Now the highest-value item and the
+   only one with a measured prize attached: 11× on G2, 3.3× on G6, against a corpus program that
+   already declares landing T2 a falsification. Designed above. Do both halves or neither.
+2. **Full ownership contexts (INFERENCE §6–7).** Still a project, and now known to be worth
+   68/433 sites, all T2 → T1, with k=1 realising perhaps a quarter of that (1 of 4 on g3). Item 1
+   above is the cheap subset of it; do that first and re-measure.
+3. **`workload` and the rest of LAYOUT.** Unchanged — needs handles.
+4. **Perceus elision.** Unchanged, and still nearly nothing to elide: T3 is 0 everywhere except
+   `test_48`.
+
 ### Not started: ownership contexts (INFERENCE §6–7)
 
 Deliberately not begun rather than half-landed. Reading §6–7 against the current code, it needs
@@ -470,11 +857,11 @@ than inheriting the old order.
 1. **Ownership contexts (INFERENCE §6–7).** Still the highest-value *analysis* work, and still a
    project. See the note above for why its value changed. **Measure first** — the corpus is at zero
    leaks, so the question is now how much precision is left on the table, and nobody has that number.
-2. **The undeclared-boundary residue.** The compiler reports **79 T3 sites** over `src/main.psm`,
+2. ~~**The undeclared-boundary residue.** The compiler reports **79 T3 sites** over `src/main.psm`,
    and this document's earlier "100% T0–T2, T3 residue 0" claim does not match the tree as it
-   stands. That discrepancy pre-dates this session (the baseline binary reports the same 79) and was
-   not chased. It is the cheapest measured win available if it is the same undeclared-extern shape
-   as last time — **reach for the input before the mechanism**, twice recorded.
+   stands.~~ **Closed 2026-08-08 and there was no residue.** The 79 was `prismio aif`'s
+   `owned_collections` default modelling the pre-Level-4 language; `prismio build` never used it.
+   Both claims were true and about different runs. See the 2026-08-08 section.
 3. **`workload` and the rest of LAYOUT.** Unchanged: the runner needs a build-time instrumented
    compile-link-run, and SoA/hot-cold need handles. Do not build the syntax alone.
 4. **Perceus-style elision** for T3. Needs a reference-level IR the AST walk does not have.

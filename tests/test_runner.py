@@ -698,10 +698,13 @@ def run_aif_struct_field_test():
     # includes the object's own storage, which is always the last statement --
     # that is what keeps the struct itself behind the allocator seam.
     want = {
-        # lead: Slot (a plain free) + items: List (list_release) + the object.
+        # items: List (list_release) + the object. `lead: Slot` used to be a
+        # third: it was a pointer to a separate allocation. Slot is plain data,
+        # so it is laid out inline now and lives inside Inventory's own storage
+        # -- freeing it would hand a deallocator the middle of our own object.
         # capacity and version are scalars and contribute nothing, which is the
         # per-field claim.
-        "Inventory": (2, 1, 0),
+        "Inventory": (1, 1, 0),
         # inner: Inventory, which owns things of its own, so this is a call to
         # that type's release rather than a free -- freeing it here would leak
         # everything hanging off it.

@@ -132,6 +132,49 @@ fn chainReturnsName(head: String, name: String) -> Bool {
     return false
 }
 
+// The initialisers of a struct literal, written into an object that already
+// exists. Split out so an inline field can be built *in place*: its bytes belong
+// to the enclosing object, so `Node { local: Transform { .. } }` writes the
+// Transform's fields straight into Node's storage and allocates nothing for it.
+//
+// Without that, the nested literal allocates, gets copied in, and is abandoned
+// -- the copy having taken ownership of nothing. That is 22 leaked allocations
+// in test_49 and it is the whole reason inlining has to reach construction and
+// not only layout.
+fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: String) {
+    let mut fieldPtr = expr.child1
+    while (str_equals(fieldPtr, "") == 0) {
+        let field = ptr_to_node(fieldPtr)
+        let fieldType = fieldStorageType(ir_get_struct_field_type(structName, field.s1))
+        let fieldIndex = ir_get_struct_field_index(structName, field.s1)
+
+        if (isStructTypeKey(fieldType)) {
+            let slot = ir_struct_field_ptr(structName, destPtr, fieldIndex)
+            let init = ptr_to_node(field.child1)
+            let innerName = structTypeName(fieldType)
+            if (init.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+                generateStructLiteralFields(init, innerName, ir_get_temp_name(slot))
+            } else {
+                ir_copy_struct(innerName, ir_get_temp_name(slot), generateExpression(init))
+            }
+        } else {
+            let fieldVal = generateExpression(ptr_to_node(field.child1))
+            let slot = ir_struct_field_ptr(structName, destPtr, fieldIndex)
+            // CYCLES 3. A cyclic edge is an edge the collector *traverses*, so it
+            // has to be one the count knows about -- trial deletion subtracts
+            // internal edges and reads the remainder as "held from outside". No
+            // release of the old value here: the field is uninitialised.
+            if (aif_field_is_counted(structName, field.s1) == 1) {
+                ir_call_begin()
+                ir_call_arg("ptr", fieldVal)
+                ir_call_end("void", "cyc_retain")
+            }
+            ir_store_ptr(fieldType, fieldVal, ir_get_temp_name(slot))
+        }
+        fieldPtr = field.next
+    }
+}
+
 fn generateExpression(expr: ASTNode) -> String {
     if (expr.kind == NodeKind.LITERAL_EXPR) {
         if (expr.i1 == TokenType.NUMBER_LITERAL) {
@@ -207,26 +250,7 @@ fn generateExpression(expr: ASTNode) -> String {
             ir_call_end("void", "cyc_set_type")
         }
 
-        let mut fieldPtr = expr.child1
-        while (str_equals(fieldPtr, "") == 0) {
-            let field = ptr_to_node(fieldPtr)
-            let fieldVal = generateExpression(ptr_to_node(field.child1))
-            let fieldType = storageType(ir_get_struct_field_type(structName, field.s1))
-            let fieldIndex = ir_get_struct_field_index(structName, field.s1)
-            let slot = ir_struct_field_ptr(structName, memName, fieldIndex)
-            // CYCLES 3. A cyclic edge is an edge the collector *traverses*, so it
-            // has to be one the count knows about -- trial deletion subtracts
-            // internal edges and reads the remainder as "held from outside". No
-            // release of the old value here: the field is uninitialised.
-            if (aif_field_is_counted(structName, field.s1) == 1) {
-                ir_call_begin()
-                ir_call_arg("ptr", fieldVal)
-                ir_call_end("void", "cyc_retain")
-            }
-            ir_store_ptr(fieldType, fieldVal, ir_get_temp_name(slot))
-            fieldPtr = field.next
-        }
-
+        generateStructLiteralFields(expr, structName, memName)
         return memName
     }
     
@@ -255,9 +279,18 @@ fn generateExpression(expr: ASTNode) -> String {
         let objectType = getExprType(objectNode)
         let structName = structTypeName(objectType)
         let fieldIndex = ir_get_struct_field_index(structName, expr.s1)
-        let fieldType = storageType(ir_get_struct_field_type(structName, expr.s1))
+        let fieldType = fieldStorageType(ir_get_struct_field_type(structName, expr.s1))
 
         let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
+        // An inline field *is* the storage, so the GEP already is the value and
+        // loading would read the struct rather than address it. This is where the
+        // interior pointer SPEC 11 item 5 forbids escaping is created, and it
+        // does escape: references are raw `ptr`, so nothing downstream can tell
+        // this apart from an address the allocator returned. Handles are the fix
+        // and are not built -- see the note in HANDOFF.md.
+        if (isStructTypeKey(fieldType)) {
+            return ir_get_temp_name(slot)
+        }
         return ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
     }
 

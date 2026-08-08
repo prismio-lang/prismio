@@ -190,6 +190,23 @@ LLVMValueRef LLVMBuildArrayAlloca(LLVMBuilderRef, LLVMTypeRef Ty, LLVMValueRef V
 LLVMValueRef LLVMBuildLoad2(LLVMBuilderRef, LLVMTypeRef Ty, LLVMValueRef PointerVal,
                             const char *Name);
 LLVMValueRef LLVMBuildStore(LLVMBuilderRef, LLVMValueRef Val, LLVMValueRef Ptr);
+// Writing an inline struct field copies bytes rather than storing an address.
+//
+// The alignment has to be the one LLVM actually placed the field at, not a
+// convenient 8: a nested struct of three i32 has ABI alignment 4, so the second
+// of two lands at offset 12, and promising 8 there licenses an aligned move that
+// faults. LLVMABIAlignmentOfType is the same number LLVMStructSetBody used.
+LLVMValueRef LLVMBuildMemCpy(LLVMBuilderRef, LLVMValueRef Dst, unsigned DstAlign,
+                             LLVMValueRef Src, unsigned SrcAlign, LLVMValueRef Size);
+// SPEC 5.1's `unique` on a parameter, lowered as the aliasing fact it already
+// asserts. Parameter indices are 1-based; 0 is the return value.
+typedef struct LLVMOpaqueAttributeRef *LLVMAttributeRef;
+unsigned LLVMGetEnumAttributeKindForName(const char *Name, size_t SLen);
+LLVMAttributeRef LLVMCreateEnumAttribute(LLVMContextRef, unsigned KindID, unsigned long long Val);
+void LLVMAddAttributeAtIndex(LLVMValueRef F, unsigned Idx, LLVMAttributeRef A);
+typedef struct LLVMOpaqueTargetData *LLVMTargetDataRef;
+LLVMTargetDataRef LLVMGetModuleDataLayout(LLVMModuleRef M);
+unsigned LLVMABIAlignmentOfType(LLVMTargetDataRef, LLVMTypeRef Ty);
 LLVMValueRef LLVMBuildGEP2(LLVMBuilderRef, LLVMTypeRef Ty, LLVMValueRef Pointer,
                            LLVMValueRef *Indices, unsigned NumIndices, const char *Name);
 LLVMValueRef LLVMBuildInBoundsGEP2(LLVMBuilderRef, LLVMTypeRef Ty, LLVMValueRef Pointer,

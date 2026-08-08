@@ -416,3 +416,73 @@ fn nodeGetType(node: ASTNode) -> TypeInfo {
     }
     return typeInvalid()
 }
+
+// ---------------------------------------------------------------------------
+// Containment: which struct-typed fields are laid out inline
+// ---------------------------------------------------------------------------
+//
+// A field whose type owns nothing -- every field of it, transitively, a scalar --
+// is stored inline in its owner rather than as a pointer to a separate
+// allocation. `Transform { position: Vec3, rotation: Quat }` is then one
+// contiguous object instead of three.
+//
+// Restricted to plain data on purpose. Anything owning a String, a List, an
+// array or a `T?` has a release, and an inline field has no allocation of its
+// own for the generated __aif_release_T to free -- inlining one would either
+// leak it or hand a deallocator an interior pointer.
+//
+// This lives here, rather than beside either caller, because codegen and AIF
+// have to agree exactly: ir/module.psm asks it to choose the physical layout and
+// aif/layout.psm asks it to size that layout. If one said inline and the other
+// said one word, Theta_stack would describe a different object than LLVM emits
+// and the T0 clause would read it.
+//
+// `[T]`, `List<T>` and `T?` are pointers, so they are *reference* edges rather
+// than containment ones. That distinction is what lets a recursive type be
+// spelled `T?` -- the only spelling for one -- and therefore what lets
+// containment be required acyclic without rejecting any program.
+extern fn ir_is_struct_type_name(name: String) -> Int
+
+fn findStructDeclNamed(module: ASTNode, name: String) -> ASTNode {
+    let mut p = module.child1
+    while (str_equals(p, "") == 0) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.STRUCT_DECL) {
+            if (str_equals(stmt.s1, name) == 1) { return stmt }
+        }
+        p = stmt.next
+    }
+    return ptr_to_node("")
+}
+
+fn typeAnnIsPod(module: ASTNode, ann: ASTNode, depth: Int) -> Bool {
+    // A containment cycle would not terminate. semaCheckStructContainment
+    // rejects one before this runs, so the cap is reached only by a program that
+    // has already failed, and answering false keeps that path on the old layout.
+    if (depth > 16) { return false }
+    if (ann.i1 == 1) { return false }
+    if (ann.i2 == 1) { return false }
+    if (ann.i3 == 1) { return false }
+    if (ir_is_struct_type_name(ann.s1) == 1) {
+        return structDeclIsPod(module, ann.s1, depth + 1)
+    }
+    if (str_equals(ann.s1, "String") == 1) { return false }
+    if (str_equals(ann.s1, "Ptr") == 1) { return false }
+    return true
+}
+
+fn structDeclIsPod(module: ASTNode, name: String, depth: Int) -> Bool {
+    if (depth > 16) { return false }
+    let decl = findStructDeclNamed(module, name)
+    if (nodeExists(node_to_ptr(decl)) == false) { return false }
+    let mut p = decl.child1
+    while (str_equals(p, "") == 0) {
+        let f = ptr_to_node(p)
+        if (f.kind == NodeKind.STRUCT_FIELD) {
+            if (nodeExists(f.child1) == false) { return false }
+            if (typeAnnIsPod(module, ptr_to_node(f.child1), depth) == false) { return false }
+        }
+        p = f.next
+    }
+    return true
+}

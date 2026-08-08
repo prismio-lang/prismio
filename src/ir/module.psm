@@ -36,7 +36,16 @@ fn generateFunction(func: ASTNode) {
     while (str_equals(paramPtr, "") == 0) {
         let paramNode = ptr_to_node(paramPtr)
         let pTypeNode = ptr_to_node(paramNode.child1)
-        ir_function_param(storageType(mapTypeNode(pTypeNode)), str_concat("p_", paramNode.s1))
+        // SPEC 5.1's `unique`, parsed into i2 by parseParameter. It already
+        // asserts exactly the fact `noalias` states, so lowering it is a use of
+        // an existing annotation rather than a fifth one.
+        let pStore = storageType(mapTypeNode(pTypeNode))
+        let pName = str_concat("p_", paramNode.s1)
+        if (paramNode.i2 == 1) {
+            ir_function_param_unique(pStore, pName)
+        } else {
+            ir_function_param(pStore, pName)
+        }
         paramPtr = paramNode.next
     }
 
@@ -202,13 +211,65 @@ fn registerStructName(structNode: ASTNode) {
     ir_register_struct(structNode.s1)
 }
 
-fn generateStructDecl(structNode: ASTNode) {
+// The declaration whose name is `name`, or a node that does not exist.
+fn findStructDecl(module: ASTNode, name: String) -> ASTNode {
+    let mut p = module.child1
+    while (str_equals(p, "") == 0) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.STRUCT_DECL) {
+            if (str_equals(stmt.s1, name) == 1) { return stmt }
+        }
+        p = stmt.next
+    }
+    return ptr_to_node("")
+}
+
+// The registered type of a field, which is what decides its physical layout:
+// `struct:T` for an inline field and `ptr` for a reference. typeAnnIsPod
+// (ast/types.psm) is the single definition both this and AIF's sizing ask, and
+// it is decided from declarations alone -- never from AIF, because a layout that
+// depended on the analysis would differ between `--debug` and a release build,
+// and SPEC 7.2 requires a level to change no observable behaviour.
+fn fieldTypeFor(module: ASTNode, typeNode: ASTNode) -> String {
+    let t = mapTypeNode(typeNode)
+    if (isStructTypeKey(t)) {
+        if (typeAnnIsPod(module, typeNode, 0)) {
+            return fieldStorageType(t)
+        }
+        return storageType(t)
+    }
+    return fieldStorageType(t)
+}
+
+fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
     let firstFieldPtr = structNode.child1
     if (str_equals(firstFieldPtr, "") == 0) {
         let firstField = ptr_to_node(firstFieldPtr)
         if (ir_get_struct_field_index(structNode.s1, firstField.s1) >= 0) {
             return
         }
+    }
+
+    // LLVMStructSetBody needs every element type sized, so a struct that embeds
+    // another has to wait for it. Declaration order does not supply that -- a
+    // program may name `Transform` before `Vec3` -- so the containment edges are
+    // followed first. The guard above is what makes this terminate on a diamond
+    // and what keeps it linear; a containment *cycle* is rejected by
+    // semaCheckStructContainment before codegen runs, so it cannot arrive here.
+    let mut depPtr = structNode.child1
+    while (str_equals(depPtr, "") == 0) {
+        let depField = ptr_to_node(depPtr)
+        let depType = fieldTypeFor(module, ptr_to_node(depField.child1))
+        if (isStructTypeKey(depType)) {
+            let depName = structTypeName(depType)
+            if (str_equals(depName, structNode.s1) == 0) {
+                let depDecl = findStructDecl(module, depName)
+                if (nodeExists(node_to_ptr(depDecl))) {
+                    generateStructDecl(depDecl, module)
+                }
+            }
+        }
+        depPtr = depField.next
     }
 
     ir_struct_type_begin(structNode.s1)
@@ -232,7 +293,7 @@ fn generateStructDecl(structNode: ASTNode) {
         if (str_equals(chosen, "") == 0) {
             let field = findStructField(structNode, chosen)
             if (nodeExists(node_to_ptr(field))) {
-                let fieldType = storageType(mapTypeNode(ptr_to_node(field.child1)))
+                let fieldType = fieldTypeFor(module, ptr_to_node(field.child1))
                 ir_register_struct_field(structNode.s1, field.s1, fieldType)
                 ir_struct_type_field(fieldType)
                 emitted = emitted + 1
@@ -246,7 +307,7 @@ fn generateStructDecl(structNode: ASTNode) {
         while (str_equals(fieldPtr, "") == 0) {
             let field = ptr_to_node(fieldPtr)
             let typeNode = ptr_to_node(field.child1)
-            let fieldType = storageType(mapTypeNode(typeNode))
+            let fieldType = fieldTypeFor(module, typeNode)
             ir_register_struct_field(structNode.s1, field.s1, fieldType)
             ir_struct_type_field(fieldType)
             fieldPtr = field.next
@@ -295,7 +356,16 @@ fn generateReleaseFn(structNode: ASTNode) {
     while (i >= 0) {
         let field = nthStructField(structNode, i)
         if (nodeExists(node_to_ptr(field))) {
-            let disp = aif_field_release(tname, field.s1)
+            // An inline field is storage inside this object, not a pointer to
+            // one, so there is nothing to release and the address is interior --
+            // handing it to a deallocator would be a free of the middle of our
+            // own allocation. The registry is asked rather than AIF because the
+            // registry is what decided the layout. Inline implies plain data
+            // (structIsPod), so there is never a nested release to run either.
+            let mut disp = aif_field_release(tname, field.s1)
+            if (isStructTypeKey(ir_get_struct_field_type(tname, field.s1))) {
+                disp = AIF_ELEM_NONE
+            }
             if (disp != AIF_ELEM_NONE) {
                 let idx = ir_get_struct_field_index(tname, field.s1)
                 let slot = ir_struct_field_ptr(tname, "%p_obj", idx)
@@ -521,7 +591,7 @@ fn generateModule(module: ASTNode) {
     while (str_equals(structStmtPtr, "") == 0) {
         let structStmt = ptr_to_node(structStmtPtr)
         if (structStmt.kind == NodeKind.STRUCT_DECL) {
-            generateStructDecl(structStmt)
+            generateStructDecl(structStmt, module)
         }
         structStmtPtr = structStmt.next
     }

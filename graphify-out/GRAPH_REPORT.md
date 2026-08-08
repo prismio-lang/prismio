@@ -1,30 +1,32 @@
 # Graph Report - self  (2026-08-08)
 
 ## Corpus Check
-- 64 files · ~210,282 words
+- 70 files · ~219,451 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1544 nodes · 2569 edges · 110 communities (104 shown, 6 thin omitted)
-- Extraction: 91% EXTRACTED · 9% INFERRED · 0% AMBIGUOUS · INFERRED: 222 edges (avg confidence: 0.82)
+- 1626 nodes · 2749 edges · 116 communities (110 shown, 6 thin omitted)
+- Extraction: 91% EXTRACTED · 9% INFERRED · 0% AMBIGUOUS · INFERRED: 242 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `59a09601`
+- Built from commit: `f791ab03`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- program_support.c
-- fn compile_source(path, output_file, run_after_build) -> Int
-- str_split
-- ir_symbols.c
 - malloc
+- fn compile_source(path, output_file, run_after_build) -> Int
+- g6_bench.c
+- ir_symbols.c
+- free
 - lang_runtime.c
 - SECURITY.md
 - Borrow Checking
 - Prismio — Compiler Audit
 - use_globals() function
+- g2_bench_arena.c
+- bench.py
 - ir_intern
 - setup_llvm.py
 - arena_would_serve
@@ -47,7 +49,6 @@
 - bad_value() function (neg_01_type_mismatch)
 - Prismio — Compiler Status
 - Prismio — Bootstrap & Runtime-Linking Architecture Audit
-- strlen
 - main
 - Struct (Custom Data Type) Declarations
 - aif_tier_of
@@ -60,10 +61,14 @@
 - main
 - Prismio Toolchain Architecture Refactor — Session Handoff
 - add_binding
+- g2_bench.c
+- strcmp
+- strlen
+- The G2 / G6 benchmark set
 - Building Prismio on macOS (and Linux)
 - struct Counter
 - struct Res
-- Handoff — continuing the Prismio work
+- Session of 2026-08-08 — the tree did not compile, and the T3 residue was never real
 - aif_str
 - Code style
 - bootstrap.sh
@@ -120,13 +125,13 @@
 - aif_manifest_diff.py
 
 ## God Nodes (most connected - your core abstractions)
-1. `main()` - 37 edges
-2. `strlen()` - 34 edges
-3. `malloc()` - 32 edges
-4. `intern_value()` - 32 edges
-5. `type_from_key()` - 32 edges
-6. `resolve_value()` - 30 edges
-7. `free()` - 29 edges
+1. `malloc()` - 44 edges
+2. `main()` - 37 edges
+3. `free()` - 35 edges
+4. `strlen()` - 34 edges
+5. `intern_value()` - 32 edges
+6. `type_from_key()` - 32 edges
+7. `resolve_value()` - 31 edges
 8. `aif_intern()` - 25 edges
 9. `backend_fail()` - 23 edges
 10. `xrealloc()` - 20 edges
@@ -134,14 +139,14 @@
 ## Surprising Connections (you probably didn't know these)
 - `Test naming convention (test_<NN>_<description>.psm)` --conceptually_related_to--> `fn main() -> Int`  [AMBIGUOUS]
   CONTRIBUTING.md → src/main.psm
-- `diag_reset()` --calls--> `free()`  [INFERRED]
-  runtime/diagnostics.c → runtime/lang_runtime.c
-- `compare_names()` --calls--> `strcmp()`  [INFERRED]
-  runtime/program_support.c → runtime/lang_runtime.c
-- `Prismio Project Structure (src/ layout)` --references--> `fn main() -> Int`  [EXTRACTED]
-  CONTRIBUTING.md → src/main.psm
-- `Documented Compiler Pipeline (README architecture diagram)` --references--> `fn resolve_imports(module, base_dir) -> ASTNode`  [EXTRACTED]
-  README.MD → src/main.psm
+- `list_init()` --calls--> `malloc()`  [INFERRED]
+  aif/evidence/bench/g2_bench.c → runtime/lang_runtime.c
+- `list_push()` --calls--> `realloc()`  [INFERRED]
+  aif/evidence/bench/g2_bench.c → runtime/lang_runtime.c
+- `build_scene()` --calls--> `malloc()`  [INFERRED]
+  aif/evidence/bench/g2_bench.c → runtime/lang_runtime.c
+- `cull()` --calls--> `malloc()`  [INFERRED]
+  aif/evidence/bench/g2_bench.c → runtime/lang_runtime.c
 
 ## Import Cycles
 - None detected.
@@ -152,31 +157,31 @@
 - **Shared fail(message) test-harness helper pattern across feature tests** — tests_test_01_variables_fail, tests_test_02_if_else_fail, tests_test_03_while_loops_fail, tests_test_04_structs_fail, tests_test_05_enums_fail, tests_test_06_recursion_fail, tests_test_07_booleans_fail, tests_test_08_mutability_fail, tests_test_09_strings_fail, tests_test_10_expressions_fail, tests_test_11_returns_fail, tests_test_12_imports_fail, tests_test_13_globals_fail [INFERRED 0.95]
 - **Prismio Ownership System (Move/Drop/Borrow) Demonstration** — tests_test_23_move_main, tests_test_24_drop_main, tests_test_25_conventions_main, tests_test_26_borrow_reuse_main [INFERRED 0.85]
 
-## Communities (110 total, 6 thin omitted)
+## Communities (116 total, 6 thin omitted)
 
-### Community 0 - "program_support.c"
-Cohesion: 0.19
-Nodes (8): str_clone(), strcpy(), compare_names(), executable_directory(), execute_command(), get_directory(), join_path(), prismio_executable_directory()
+### Community 0 - "malloc"
+Cohesion: 0.14
+Nodes (17): compiler_installed_runtime_hash(), compiler_runtime_source_hash(), fnv1a_bytes(), malloc(), str_split(), str_split_free(), strcpy(), wasm_align8() (+9 more)
 
 ### Community 1 - "fn compile_source(path, output_file, run_after_build) -> Int"
 Cohesion: 0.07
 Nodes (30): Contributor Covenant Code of Conduct, Conventional Commits convention, Prismio Project Structure (src/ layout), Claim: no dedicated semantic analysis pass (planned), Test naming convention (test_<NN>_<description>.psm), POST_INSTALL.txt (install success message), Documented Compiler Pipeline (README architecture diagram), Contributor Covenant (README reference) (+22 more)
 
-### Community 2 - "str_split"
-Cohesion: 0.67
-Nodes (3): str_split(), str_split_free(), StringArray
+### Community 2 - "g6_bench.c"
+Cohesion: 0.19
+Nodes (28): Actor, apply_orders(), arena_alloc(), arena_reserve(), arena_reset(), List, list_free_all(), list_new() (+20 more)
 
 ### Community 3 - "ir_symbols.c"
 Cohesion: 0.07
 Nodes (4): drop_index(), ir_drop_kind(), ir_drop_slot(), ir_drop_type()
 
-### Community 4 - "malloc"
-Cohesion: 0.14
-Nodes (38): FILE, accept_if_exists(), build_from_toolchain_sources(), compile_ir_to_object(), compiler_bootstrap_executable(), compiler_build_executable(), compiler_default_exe_path(), compiler_installed_runtime_hash() (+30 more)
+### Community 4 - "free"
+Cohesion: 0.18
+Nodes (27): FILE, accept_if_exists(), build_from_toolchain_sources(), compile_ir_to_object(), compiler_bootstrap_executable(), compiler_build_executable(), compiler_prepare_output_path(), compiler_run_executable() (+19 more)
 
 ### Community 5 - "lang_runtime.c"
-Cohesion: 0.04
-Nodes (34): ArenaChunk, ir_clear_local_var_types(), aif_live_hash(), aif_verify_alloc(), aif_verify_arm(), aif_verify_release(), arena_alloc(), arena_chunk_new() (+26 more)
+Cohesion: 0.05
+Nodes (27): ArenaChunk, aif_live_hash(), aif_verify_alloc(), aif_verify_arm(), aif_verify_release(), arena_alloc(), arena_chunk_new(), arena_pop() (+19 more)
 
 ### Community 7 - "Borrow Checking"
 Cohesion: 0.08
@@ -189,6 +194,14 @@ Nodes (26): 0. Headline, 1.10 MEDIUM — `%` is rejected on every sized integer 
 ### Community 9 - "use_globals() function"
 Cohesion: 0.09
 Nodes (27): Arithmetic Operators, Global Variables, Mutability (mut bindings), Operator Precedence / Expression Evaluation, Variable Declarations, bump_global(amount) function, fail(message) function (test_01_variables), main() function (test_01_variables) (+19 more)
+
+### Community 10 - "g2_bench_arena.c"
+Cohesion: 0.42
+Nodes (10): arena_alloc(), arena_reserve(), arena_reset(), build_scene(), List, cull(), list_init(), list_push() (+2 more)
+
+### Community 11 - "bench.py"
+Cohesion: 0.43
+Nodes (7): main(), pct(), PROCESS_MEMORY_COUNTERS, Run the AIF benchmark set and report to BENCHMARKS 3.2's protocol. python…, One run: wall milliseconds, and peak working set in MB. The counters stay…, run_once(), suite()
 
 ### Community 12 - "ir_intern"
 Cohesion: 0.17
@@ -232,7 +245,7 @@ Nodes (3): add_c_string(), escape_c_string(), main()
 
 ### Community 22 - "llvm-api-backend.c"
 Cohesion: 0.05
-Nodes (99): LLVMBasicBlockRef, LLVMTypeRef, LLVMValueRef, NamedValue, strcmp(), strncpy(), backend_fail(), block_done() (+91 more)
+Nodes (101): LLVMBasicBlockRef, LLVMTypeRef, LLVMValueRef, NamedValue, strncpy(), apply_param_attrs(), backend_fail(), block_done() (+93 more)
 
 ### Community 23 - "Enum Types"
 Cohesion: 0.24
@@ -247,7 +260,7 @@ Cohesion: 0.26
 Nodes (13): candidates(), field_align(), field_width(), Layout, main(), min_size(), mu_for(), grouping in {AoS, SoA, AoSoA(w)}; `hot` is the field subset kept in the primary… (+5 more)
 
 ### Community 26 - "diagnostics.c"
-Cohesion: 0.18
+Cohesion: 0.17
 Nodes (11): diag_digits(), diag_emit(), diag_error(), diag_error_at(), diag_line_length(), diag_line_start(), diag_note_at(), diag_render_span() (+3 more)
 
 ### Community 27 - "test_runner.py"
@@ -277,10 +290,6 @@ Nodes (8): Cross-platform audit (macOS support), How this was produced, Prismio 
 ### Community 33 - "Prismio — Bootstrap & Runtime-Linking Architecture Audit"
 Cohesion: 0.13
 Nodes (14): 1.1 Pipeline trace: `prismio build file.psm` → executable, 1.2 How runtime libraries are included: embedded, external, or both?, 1.3 Every file and function responsible, 1. Current behavior, 2.1 What happens when the compiler compiles itself (`prismio build src/main.psm`)?, 2.2 Duplicate runtime linkage — two separate risks, at two separate layers, 2. Compiler self-hosting, 3. Architecture evaluation against the desired design (+6 more)
-
-### Community 34 - "strlen"
-Cohesion: 0.22
-Nodes (13): diag_add_file(), diag_strdup(), cyc_walk_push(), memcpy(), realloc(), str_char_at(), str_concat(), str_ends_with() (+5 more)
 
 ### Community 35 - "main"
 Cohesion: 0.47
@@ -330,13 +339,29 @@ Nodes (12): Confirmed design decisions (from this session's clarifying questions
 Cohesion: 0.40
 Nodes (5): add_binding(), ir_set_global_var_type(), ir_set_var_type(), symbols_oom(), xmalloc()
 
+### Community 48 - "g2_bench.c"
+Cohesion: 0.64
+Nodes (7): build_scene(), List, cull(), list_init(), list_push(), main(), submit()
+
+### Community 49 - "strcmp"
+Cohesion: 0.22
+Nodes (11): diag_add_file(), diag_strdup(), cyc_walk_push(), memcpy(), realloc(), str_compare(), str_ends_with(), str_equals() (+3 more)
+
+### Community 50 - "strlen"
+Cohesion: 0.19
+Nodes (15): compiler_default_exe_path(), path_without_extension(), ir_clear_local_var_types(), str_char_at(), str_concat(), str_contains(), str_index_of(), str_length() (+7 more)
+
+### Community 51 - "The G2 / G6 benchmark set"
+Cohesion: 0.40
+Nodes (4): Fidelity, The G2 / G6 benchmark set, What it found, What the variants are
+
 ### Community 63 - "Building Prismio on macOS (and Linux)"
 Cohesion: 0.20
 Nodes (9): Build it, Building Prismio on macOS (and Linux), Check you reached a fixed point, Cross-compiling from Windows, Refreshing the seed, Test, package, verify, Troubleshooting, What you need (+1 more)
 
-### Community 70 - "Handoff — continuing the Prismio work"
-Cohesion: 0.18
-Nodes (10): Current state, File roles, Five rules learned the hard way, Handoff — continuing the Prismio work, Known gaps, documented rather than fixed, Not started: ownership contexts (INFERENCE §6–7), Session of 2026-08-07 (second) — the corpus reaches zero, Three things to carry forward (+2 more)
+### Community 70 - "Session of 2026-08-08 — the tree did not compile, and the T3 residue was never real"
+Cohesion: 0.07
+Nodes (26): 0. HEAD did not compile, and that is not in any previous handoff, 1. Inline struct fields — landed, 4× fewer allocations, one regression, 1. The 79 T3 sites were a stale reporting default, not a residue, 2. By-value POD returns — designed, deliberately not built, 2. What ownership contexts would buy, measured, 3. A footprint term in the arena cost model — landed and provably inert, 3. The benchmark, and it falsifies a claim the corpus makes about itself, 4. `unique` on a parameter → `noalias` — landed, guarded, win unproven (+18 more)
 
 ### Community 71 - "aif_str"
 Cohesion: 0.22
@@ -432,7 +457,7 @@ Nodes (10): 8.1 Handles, 8.2 The compiler owns layout, 8.3 The static region, 8.
 
 ### Community 102 - "aif.py"
 Cohesion: 0.15
-Nodes (15): base_type(), elem_key(), escape_join(), escape_le(), main(), measure_masks(), H4 leading indicator: how many of a function's reference parameters can…, `List<Token>` -> `List`. Field keys are per nominal type, so a generic… (+7 more)
+Nodes (15): base_type(), elem_key(), escape_join(), escape_le(), main(), measure_masks(), `List<Token>` -> `List`. Field keys are per nominal type, so a generic…, H4 leading indicator: how many of a function's reference parameters can… (+7 more)
 
 ### Community 103 - "nominal_find"
 Cohesion: 0.09
@@ -547,7 +572,7 @@ Nodes (6): explain(), main(), parse(), (header key -> value, symbol -> Record). 
   CONTRIBUTING.md · relation: conceptually_related_to
 
 ## Knowledge Gaps
-- **492 isolated node(s):** `1.1 Pipeline trace: `prismio build file.psm` → executable`, `1.2 How runtime libraries are included: embedded, external, or both?`, `1.3 Every file and function responsible`, `2.1 What happens when the compiler compiles itself (`prismio build src/main.psm`)?`, `2.2 Duplicate runtime linkage — two separate risks, at two separate layers` (+487 more)
+- **509 isolated node(s):** `1.1 Pipeline trace: `prismio build file.psm` → executable`, `1.2 How runtime libraries are included: embedded, external, or both?`, `1.3 Every file and function responsible`, `2.1 What happens when the compiler compiles itself (`prismio build src/main.psm`)?`, `2.2 Duplicate runtime linkage — two separate risks, at two separate layers` (+504 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **6 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -556,15 +581,15 @@ _Questions this graph is uniquely positioned to answer:_
 
 - **What is the exact relationship between `Test naming convention (test_<NN>_<description>.psm)` and `fn main() -> Int`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
-- **Why does `strcmp()` connect `llvm-api-backend.c` to `program_support.c`, `strlen`, `malloc`, `lang_runtime.c`, `aif_str`, `ir_intern`, `aif_intern`?**
-  _High betweenness centrality (0.111) - this node is a cross-community bridge._
-- **Why does `aif_intern()` connect `aif_intern` to `strlen`, `aif_tier_of`, `nominal_find`, `aif_support.c`, `llvm-api-backend.c`?**
-  _High betweenness centrality (0.068) - this node is a cross-community bridge._
-- **Why does `AIF — Adaptive Inference Framework` connect `AIF — Adaptive Inference Framework` to `8.4 Views — slices and element references`, `5 · Annotations`, `11 · Conformance boundary`, `3 · The tier ladder`, `RESULTS-L0-tiers.md`, `2 · The objects of the model`, `4 · Tier derivation`, `7 · Two-speed compilation`, `6 · The tier manifest`?**
-  _High betweenness centrality (0.060) - this node is a cross-community bridge._
+- **Why does `strcmp()` connect `strcmp` to `free`, `lang_runtime.c`, `aif_str`, `ir_intern`, `llvm-api-backend.c`, `aif_intern`?**
+  _High betweenness centrality (0.113) - this node is a cross-community bridge._
+- **Why does `aif_intern()` connect `aif_intern` to `aif_tier_of`, `nominal_find`, `aif_support.c`, `strcmp`, `strlen`?**
+  _High betweenness centrality (0.067) - this node is a cross-community bridge._
+- **Why does `malloc()` connect `malloc` to `g6_bench.c`, `free`, `aif_tier_of`, `lang_runtime.c`, `g2_bench_arena.c`, `add_binding`, `cyc_hdr`, `g2_bench.c`, `strcmp`, `strlen`, `llvm-api-backend.c`?**
+  _High betweenness centrality (0.063) - this node is a cross-community bridge._
+- **Are the 36 inferred relationships involving `malloc()` (e.g. with `arena_reserve()` and `build_scene()`) actually correct?**
+  _`malloc()` has 36 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 36 inferred relationships involving `main()` (e.g. with `ir_alloc_object()` and `ir_alloca()`) actually correct?**
   _`main()` has 36 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 22 inferred relationships involving `strlen()` (e.g. with `aif_intern()` and `build_from_toolchain_sources()`) actually correct?**
-  _`strlen()` has 22 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 24 inferred relationships involving `malloc()` (e.g. with `xmalloc()` and `build_from_toolchain_sources()`) actually correct?**
-  _`malloc()` has 24 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 28 inferred relationships involving `free()` (e.g. with `arena_reserve()` and `main()`) actually correct?**
+  _`free()` has 28 INFERRED edges - model-reasoned connections that need verification._

@@ -78,7 +78,11 @@ def run(cmd, **kw):
 
 
 def compare(compiler, source, owned, dumps):
-    flags = ["--owned-collections"] if owned else []
+    # Both implementations default to owned collections as of 2026-08-08, which
+    # is what `prismio build` analyses with. The second arm has to *ask* for the
+    # pre-Level-4 model now; passing nothing would run the same analysis twice
+    # and the pass would agree by construction.
+    flags = [] if owned else ["--copyable-collections"]
 
     # The compiler's Theta_stack is in bytes; the oracle reads a JSON dump with
     # no layout in it and can only count fields. Comparing in fields mode keeps

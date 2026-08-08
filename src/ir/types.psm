@@ -75,6 +75,27 @@ fn storageType(t: String) -> String {
     return t
 }
 
+// What a *field* of this type occupies in its owner, which is not what a local
+// or a parameter of the same type occupies.
+//
+// A struct-typed field is storage: `struct:T` survives into the registered type,
+// the LLVM body embeds %T by value, and every access reaches it by GEP instead
+// of by loading an address. `storageType` collapsing it to `ptr` is what made
+// `Transform { position: Vec3, rotation: Quat }` three pointers and three
+// allocations rather than one contiguous object.
+//
+// Locals and parameters deliberately keep `storageType`. A T0 local already gets
+// an alloca that SROA promotes to registers, and widening the calling convention
+// to pass structs by value is a separate change with its own ABI questions.
+//
+// `T?` is not a containment edge -- mapTypeNode returns `ptr` for it before this
+// is reached. That is what gives the language a reference edge to spell a
+// recursive type with, and therefore what lets containment be required acyclic.
+fn fieldStorageType(t: String) -> String {
+    if (str_equals(t, "ptrptr") == 1) { return "ptr" }
+    return t
+}
+
 fn countListNodes(firstPtr: String) -> Int {
     let mut count = 0
     let mut curr = firstPtr

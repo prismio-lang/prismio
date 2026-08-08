@@ -1,0 +1,168 @@
+// G6 gameplay module -- written the way gameplay code should be written.
+//
+// No memory concepts appear anywhere below. No annotations, no lifetimes, no
+// ownership vocabulary. It allocates freely, calls engine APIs constantly, and
+// builds transient per-tick structures. That is the ergonomic claim TARGET.md
+// 2.1 makes: the annotation budget belongs to the engine, and gameplay stays
+// clean and is still fast.
+//
+// The measurement question (TARGET 2.3): do tiers survive the crossing? Gameplay
+// values flow into engine APIs that store them forever (`world_spawn`), and
+// engine values flow back out (`world_transform`). If the boundary is opaque,
+// everything on both sides sinks.
+
+import g6_engine
+
+// Per-member gameplay state. Holds an engine handle plus data the engine knows
+// nothing about -- which is the normal shape, and sidesteps `List<Int>`, which
+// today's compiler miscompiles (see COMPILER-TODO 20).
+struct Member {
+    actor: Int,
+    role: Int,
+    kills: Int
+}
+
+// A gameplay-owned aggregate holding engine handles. Owns no engine storage.
+struct Squad {
+    members: List<Member>,
+    team: Int,
+    morale: Int,
+    rally_x: Float,
+    rally_y: Float
+}
+
+// Transient, rebuilt every tick, dead by the next.
+struct Order {
+    target: Int,
+    dx: Float,
+    dy: Float,
+    priority: Int
+}
+
+fn make_squad(team: Int, rx: Float, ry: Float) -> Squad {
+    let m: List<Member> = list_new()
+    return Squad {
+        members: m,
+        team: team,
+        morale: 100,
+        rally_x: rx,
+        rally_y: ry
+    }
+}
+
+// Gameplay creates entities through the engine and keeps only handles.
+fn recruit(w: World, s: Squad, count: Int) {
+    let mut i = 0
+    let mut f = 0.0
+    while (i < count) {
+        let h = world_spawn(w, s.rally_x + f, s.rally_y + f, s.team)
+        list_push(s.members, Member { actor: h, role: 0, kills: 0 })
+        f = f + 2.0
+        i = i + 1
+    }
+}
+
+// Per-tick transient allocation: build an order list, consume it, discard it.
+// Nothing here outlives the tick.
+fn plan_orders(w: World, s: Squad) -> List<Order> {
+    let mut orders: List<Order> = list_new()
+    let n = list_len(s.members)
+    let mut i = 0
+    while (i < n) {
+        let mem = list_get(s.members, i)
+        let h = mem.actor
+        let a = world_actor(w, h)
+        if (a.alive) {
+            let t = world_transform(w, h)
+            let dx = s.rally_x - t.x
+            let dy = s.rally_y - t.y
+            let mut pri = 1
+            if (a.health < 50) {
+                pri = 3
+            }
+            list_push(orders, Order { target: h, dx: dx, dy: dy, priority: pri })
+        }
+        i = i + 1
+    }
+    return orders
+}
+
+fn apply_orders(w: World, orders: List<Order>, speed: Float) -> Int {
+    let n = list_len(orders)
+    let mut applied = 0
+    let mut i = 0
+    while (i < n) {
+        let o = list_get(orders, i)
+        world_set_velocity(w, o.target, o.dx * speed, o.dy * speed)
+        applied = applied + 1
+        i = i + 1
+    }
+    return applied
+}
+
+fn resolve_combat(w: World, a: Squad, b: Squad) -> Int {
+    let na = list_len(a.members)
+    let nb = list_len(b.members)
+    let mut kills = 0
+    let mut i = 0
+    while (i < na and i < nb) {
+        let am = list_get(a.members, i)
+        let bm = list_get(b.members, i)
+        let att = world_actor(w, am.actor)
+        if (att.alive) {
+            if (world_damage(w, bm.actor, 7)) {
+                am.kills = am.kills + 1
+                kills = kills + 1
+            }
+        }
+        i = i + 1
+    }
+    if (kills > 0) {
+        b.morale = b.morale - kills
+    }
+    return kills
+}
+
+
+// The corpus program runs one scenario, which is over in ~11 ms -- almost all of
+// it process startup. The benchmark runs the identical scenario RUNS times and
+// sums the same three numbers, so the shape, the tiers and the allocation
+// profile are unchanged and only the sample size moves.
+fn scenario() -> Int {
+    let w = world_create()
+
+    let red = make_squad(0, 0.0, 0.0)
+    let blue = make_squad(1, 100.0, 100.0)
+    recruit(w, red, 400)
+    recruit(w, blue, 400)
+
+    let dt = 0.016
+    let mut tick = 0
+    let mut total_orders = 0
+    let mut total_kills = 0
+
+    while (tick < 100) {
+        let red_orders = plan_orders(w, red)
+        let blue_orders = plan_orders(w, blue)
+        total_orders = total_orders + apply_orders(w, red_orders, 1.0)
+        total_orders = total_orders + apply_orders(w, blue_orders, 1.0)
+
+        world_step(w, dt)
+        total_kills = total_kills + resolve_combat(w, red, blue)
+        tick = tick + 1
+    }
+
+    return world_count_alive(w) + total_orders + total_kills
+}
+
+fn main() -> Int {
+    let mut acc = 0
+    let mut run = 0
+    while (run < 300) {
+        acc = acc + scenario()
+        run = run + 1
+    }
+    print("checksum: ")
+    println_int(acc)
+    return 0
+}

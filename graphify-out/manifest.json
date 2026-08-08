@@ -1,17 +1,17 @@
 {
   "runtime/embedded_sources.h": {
-    "mtime": 1786128423.8568873,
-    "ast_hash": "ce692a3e9f194a08ee4ef63a1fb66ef4",
+    "mtime": 1786198744.1353624,
+    "ast_hash": "a0445e7b35a9c4cc850c4bbf6f52311c",
     "semantic_hash": ""
   },
   "runtime/lang_runtime.c": {
-    "mtime": 1786128406.559469,
-    "ast_hash": "44cacdf040c591d9958c44c3cf7aa18e",
+    "mtime": 1786198244.9354908,
+    "ast_hash": "b6cf7e0d84ddb57279c9e9bdd6d3d502",
     "semantic_hash": ""
   },
   "tests/test_runner.py": {
-    "mtime": 1786126464.5092642,
-    "ast_hash": "87c8abf708c620e18d46efd1187c803b",
+    "mtime": 1786196219.198269,
+    "ast_hash": "63c8f6ac305d340b9b543c3fb92fc9d2",
     "semantic_hash": ""
   },
   "CONTRIBUTING.md": {
@@ -70,13 +70,13 @@
     "semantic_hash": ""
   },
   "runtime/llvm-api-backend.c": {
-    "mtime": 1786109644.513644,
-    "ast_hash": "6b2d81405fca2d4c5cb13cbf0480ccb3",
+    "mtime": 1786198727.7679985,
+    "ast_hash": "35f77252f95a87aeb6e4d6a042ec5d1c",
     "semantic_hash": ""
   },
   "runtime/prismio_llvm.h": {
-    "mtime": 1786107246.0443964,
-    "ast_hash": "b7e1e94c562a6e5bd6c34ff20d65c35b",
+    "mtime": 1786198672.28798,
+    "ast_hash": "c4da94281067441fc8b2cc1de0018a92",
     "semantic_hash": ""
   },
   "runtime/prismio_platform.h": {
@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1786112492.1693892,
-    "ast_hash": "ff988a2f49884eae7cff22aabc548239",
+    "mtime": 1786199403.5872593,
+    "ast_hash": "963ad6b4cdd4d05f3b48227758da5670",
     "semantic_hash": ""
   },
   "PORTING.md": {
@@ -190,8 +190,8 @@
     "semantic_hash": ""
   },
   "aif/prototype/aif.py": {
-    "mtime": 1786096174.0881224,
-    "ast_hash": "1d8a857f9f5d8658ea9c7d694b738df1",
+    "mtime": 1786191660.7045944,
+    "ast_hash": "8ac6aed094fa27d51d6575977db4b8e2",
     "semantic_hash": ""
   },
   "aif/prototype/layout.py": {
@@ -200,13 +200,13 @@
     "semantic_hash": ""
   },
   "runtime/aif_support.c": {
-    "mtime": 1786111064.1959927,
-    "ast_hash": "a03728b1c6509ebfc7e8fe64a6e451c6",
+    "mtime": 1786198184.9504685,
+    "ast_hash": "f3c0d1e3bd06b68fbe7e11b2daefa2f8",
     "semantic_hash": ""
   },
   "tools/aif_differential.py": {
-    "mtime": 1786095442.94427,
-    "ast_hash": "72e68e580a594b0ef52c3ce188dbfc14",
+    "mtime": 1786191703.8768451,
+    "ast_hash": "c414cedd868be13b573ea8087789f871",
     "semantic_hash": ""
   },
   "aif/README.md": {
@@ -327,6 +327,36 @@
   "CODE_STYLE.md": {
     "mtime": 1786129184.9567356,
     "ast_hash": "a593d3825714471071de7c39e8ee5444",
+    "semantic_hash": ""
+  },
+  "aif/evidence/bench/bench.py": {
+    "mtime": 1786193341.553152,
+    "ast_hash": "62a0b5a24436f7fd444262832d3b751f",
+    "semantic_hash": ""
+  },
+  "aif/evidence/bench/g2_bench.c": {
+    "mtime": 1786192684.3758917,
+    "ast_hash": "51ccafc99a2c3382d3ee60c1fe2cce21",
+    "semantic_hash": ""
+  },
+  "aif/evidence/bench/g2_bench_arena.c": {
+    "mtime": 1786192705.7211711,
+    "ast_hash": "94e0a5fa891c540d82192793c4d25875",
+    "semantic_hash": ""
+  },
+  "aif/evidence/bench/g6_bench.c": {
+    "mtime": 1786193286.4850852,
+    "ast_hash": "1792a663159b6fc89a39d3a12ff32457",
+    "semantic_hash": ""
+  },
+  "aif/evidence/bench/noop.c": {
+    "mtime": 1786192760.2042813,
+    "ast_hash": "8548451c0f59b8a8a487fc0d599d9f51",
+    "semantic_hash": ""
+  },
+  "aif/evidence/bench/README.md": {
+    "mtime": 1786194077.5421154,
+    "ast_hash": "3c3a8d547b8a71501c84e7e14d09d75f",
     "semantic_hash": ""
   }
 }

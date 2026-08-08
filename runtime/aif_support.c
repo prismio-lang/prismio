@@ -2087,7 +2087,9 @@ static int enclosing_region(int scope) {
 // ============================================================================
 // Automatic arena placement (LAYOUT 7.1)
 //
-//     ArenaBenefit(s) = allocs_in(s)·(α_T2 − α_T1) − entries(s)·arenaSetupCost
+//     ArenaBenefit(s) = allocs_in(s)·(α_T2 − α_T1)
+//                     − entries(s)·arenaSetupCost
+//                     − λ·(bytes_held(s) − peak_live_bytes(s))
 //
 // Every scope is already an implicit region (SPEC 4.1), so the question is not
 // which scopes *could* have an arena but which ones are worth the setup. Both
@@ -2102,6 +2104,26 @@ static int enclosing_region(int scope) {
 //   allocs_in(s)   per entry: one per site the arena would serve, weighted by
 //                  AIF_LOOP_ITERS for each loop between the site and s, since a
 //                  site in a loop inside s allocates many times per entry.
+//   bytes_held(s)  what the arena accumulates over one entry: the same weighted
+//                  sum, in bytes. An arena reclaims nothing until its scope
+//                  exits, so this is what it is holding at the end.
+//   peak_live(s)   what would be live at once if each value were reclaimed when
+//                  it died: one instance per site, unweighted. Two sites in one
+//                  loop body are both live, so it is a sum over sites and not a
+//                  maximum over them.
+//
+// The third term is the footprint one, and it is the only term that can make a
+// scope decline an arena on grounds other than speed. Their difference is
+// Σ bytes·(weight − 1): exactly the bytes a scope allocates and then abandons
+// while holding on to them. A scope that allocates a great deal in a loop and
+// keeps almost none of it live now takes individual objects, which is the
+// trade LAYOUT 4 defines λ for and which the first two terms alone cannot see --
+// they are both counts, so arena-vs-object was decided purely on speed.
+//
+// Both new inputs are static estimates, like allocs_in above: bytes come from
+// the computed layout and the weight from AIF_LOOP_ITERS. A site whose size is
+// not statically known contributes 0 to both, so it moves the decision by
+// nothing rather than by a guess -- the same rule the peak-bytes report uses.
 //
 // Placement is greedy innermost-first, which needs no separate nesting rule.
 // A site can only be served by an arena its escape bottoms at or below, so an
@@ -2116,6 +2138,10 @@ static int enclosing_region(int scope) {
 #define AIF_ALPHA_T1        3     // LAYOUT 4: allocation cycles at T1 (bump)
 #define AIF_ALPHA_T2        90    //           and at T2 (a general allocator)
 #define AIF_ARENA_SETUP    40     // LAYOUT 4: ~one block acquisition plus reset
+// LAYOUT 4's λ, cache-pressure cost per wasted live byte. Kept as a ratio
+// because the whole model is integer: 0.02 exactly, not a rounded 0.
+#define AIF_LAMBDA_NUM      2
+#define AIF_LAMBDA_DEN      100
 
 // Loops between `inner` and its ancestor `outer`, or 0 if unrelated.
 static int loops_between(int inner, int outer) {
@@ -2184,12 +2210,20 @@ void aif_place_arenas(void) {
         if (pinned_above) continue;
 
         long served = 0;
+        long held = 0;
+        long live = 0;
         for (int k = 0; k < site_count; k++) {
-            if (arena_would_serve(k, s)) served += weight_of(sites[k].scope, s);
+            if (!arena_would_serve(k, s)) continue;
+            long w = weight_of(sites[k].scope, s);
+            served += w;
+            held += (long)sites[k].bytes * w;
+            live += (long)sites[k].bytes;
         }
         if (served == 0) continue;
 
-        long benefit = served * (AIF_ALPHA_T2 - AIF_ALPHA_T1) - (long)AIF_ARENA_SETUP;
+        long benefit = served * (AIF_ALPHA_T2 - AIF_ALPHA_T1)
+                     - (long)AIF_ARENA_SETUP
+                     - (AIF_LAMBDA_NUM * (held - live)) / AIF_LAMBDA_DEN;
         if (benefit > 0) scopes[s].arena = 1;
     }
 }

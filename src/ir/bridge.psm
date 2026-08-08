@@ -28,6 +28,7 @@ extern fn ir_declare_function_end()
 
 extern fn ir_function_begin(name: String, retType: String)
 extern fn ir_function_param(paramType: String, paramName: String)
+extern fn ir_function_param_unique(paramType: String, paramName: String)
 extern fn ir_function_body_start()
 extern fn ir_function_end()
 
@@ -215,6 +216,7 @@ extern fn ir_array_alloca(elemType: String, count: Int) -> Int
 extern fn ir_string_ptr(globalName: String) -> Int
 extern fn ir_load_ptr(type: String, ptrValue: String) -> Int
 extern fn ir_store_ptr(type: String, value: String, ptrValue: String)
+extern fn ir_copy_struct(structName: String, dest: String, src: String)
 
 // Helpers
 extern fn ir_get_temp_name(tempNum: Int) -> String produce(free)

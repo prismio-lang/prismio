@@ -1,0 +1,92 @@
+// G7 -- the scalar shape inline struct fields exist for.
+//
+// A particle carries a position, a velocity and an acceleration, each a Vec3.
+// With struct-typed fields lowered as pointers that is one object plus three,
+// four allocations and a pointer chase per axis per step. Laid out inline it is
+// one object of 72 contiguous bytes and the whole update is loads and stores at
+// constant offsets.
+//
+// Nothing here is annotated and nothing mentions memory: the shape is the point.
+// If inlining does not move this program it does not move anything.
+
+struct Vec3 {
+    x: Float,
+    y: Float,
+    z: Float
+}
+
+struct Particle {
+    position: Vec3,
+    velocity: Vec3,
+    acceleration: Vec3,
+    life: Float
+}
+
+fn make_particle(i: Float) -> Particle {
+    return Particle {
+        position: Vec3 { x: i, y: i, z: i },
+        velocity: Vec3 { x: 1.0, y: 0.5, z: 0.25 },
+        acceleration: Vec3 { x: 0.0, y: 0.0 - 9.8, z: 0.0 },
+        life: 1.0
+    }
+}
+
+fn build(count: Int) -> List<Particle> {
+    let mut ps: List<Particle> = list_new()
+    let mut i = 0
+    let mut f = 0.0
+    while (i < count) {
+        list_push(ps, make_particle(f))
+        f = f + 1.0
+        i = i + 1
+    }
+    return ps
+}
+
+// Three field reads and three field writes per axis. Every one of them is a
+// getelementptr on the particle when the Vec3 is inline, and a load of a pointer
+// followed by a getelementptr on that when it is not.
+fn step(ps: List<Particle>, dt: Float) {
+    let n = list_len(ps)
+    let mut i = 0
+    while (i < n) {
+        let p = list_get(ps, i)
+        p.velocity.x = p.velocity.x + p.acceleration.x * dt
+        p.velocity.y = p.velocity.y + p.acceleration.y * dt
+        p.velocity.z = p.velocity.z + p.acceleration.z * dt
+        p.position.x = p.position.x + p.velocity.x * dt
+        p.position.y = p.position.y + p.velocity.y * dt
+        p.position.z = p.position.z + p.velocity.z * dt
+        p.life = p.life - dt
+        i = i + 1
+    }
+}
+
+fn alive(ps: List<Particle>) -> Int {
+    let n = list_len(ps)
+    let mut count = 0
+    let mut i = 0
+    while (i < n) {
+        let p = list_get(ps, i)
+        if (p.life > 0.0) { count = count + 1 }
+        i = i + 1
+    }
+    return count
+}
+
+fn main() -> Int {
+    let ps = build(20000)
+
+    let dt = 0.001
+    let mut frame = 0
+    let mut total = 0
+    while (frame < 400) {
+        step(ps, dt)
+        total = total + alive(ps)
+        frame = frame + 1
+    }
+
+    print("alive-sum: ")
+    println_int(total)
+    return 0
+}

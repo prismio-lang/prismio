@@ -253,10 +253,18 @@ class Model:
             return False
         return True
 
-    # Set by --owned-collections. Today's Prismio makes only structs move-only
-    # (types.psm), which is scaffolding: AIF specifies affine references for
-    # every heap value (SPEC 11 item 10). This flag measures the difference.
-    owned_collections = False
+    # Cleared by --copyable-collections. Level 4 made String and List move-only
+    # (types.psm), so this is what the language *is*, not an experiment -- and it
+    # is what `prismio build` analyses with (main.psm's aifRun(.., true, ..)).
+    #
+    # It defaulted to False until 2026-08-08, describing the pre-Level-4 language.
+    # That is not merely stale: with strings copyable, A-COPY fires on any string
+    # site with two holders, so a plain `prismio aif` reported 82 T3 sites over
+    # the compiler that the build it describes does not have. The flag inverted
+    # rather than being deleted because the copyable model is still the second
+    # arm of the differential, and an arm that agrees by construction is worse
+    # than no arm.
+    owned_collections = True
 
     def is_move_only(self, ty):
         if ty in self.structs:
@@ -1132,8 +1140,11 @@ def main():
                          "substring as sealed (PIR 5): bodies invisible, "
                          "default contracts applied")
     ap.add_argument('--owned-collections', action='store_true',
-                    help="treat String/List/Array as move-only, as AIF specifies "
-                         "rather than as today's compiler implements")
+                    help="treat String/List/Array as move-only (the default "
+                         "since Level 4; accepted for compatibility)")
+    ap.add_argument('--copyable-collections', action='store_true',
+                    help="model String/List/Array as copyable, i.e. the "
+                         "pre-Level-4 language -- the differential's second arm")
     args = ap.parse_args()
 
     sys.setrecursionlimit(200000)
@@ -1143,7 +1154,7 @@ def main():
         sys.exit("not an aif-ast dump")
 
     model = Model(dump)
-    model.owned_collections = args.owned_collections
+    model.owned_collections = not args.copyable_collections
     if args.seal:
         for sym, fid in model.fn_file.items():
             if args.seal in model.files.get(fid, ''):

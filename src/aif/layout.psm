@@ -69,10 +69,53 @@ fn aifTypeBytes(ann: ASTNode) -> Int {
     if (str_equals(n, "Float") == 1) { return 8 }
     if (aif_is_enum(n) == 1) { return 4 }
 
-    // String, Ptr, and every struct: a pointer. Structs have reference
-    // semantics here, so a struct-typed field is one word rather than the
-    // nested layout (COMPILER-AUDIT 2.2).
+    // String, Ptr, and a struct field that is a reference edge: one pointer.
+    // A struct field that is a *containment* edge is its own size instead, and
+    // aifStructFieldBytes is where that is asked -- this function has no module
+    // to resolve the name against.
     return 8
+}
+
+// The bytes a field occupies in its owner. An inline field contributes the whole
+// nested layout; everything else contributes what aifTypeBytes says.
+//
+// aif_struct_size is read back rather than recomputed, which is why
+// aifComputeSizes has to size a nested struct before its container.
+fn aifStructFieldBytes(module: ASTNode, ann: ASTNode) -> Int {
+    if (typeAnnIsPod(module, ann, 0)) {
+        if (ir_is_struct_type_name(ann.s1) == 1) {
+            let inner = aif_struct_size(ann.s1)
+            if (inner > 0) { return inner }
+        }
+    }
+    return aifTypeBytes(ann)
+}
+
+// A struct aligns to its widest scalar, not to its size: three i32 inline is 12
+// bytes aligned to 4, and the next field lands at 12. Using the size as the
+// alignment would put it at 16 and disagree with what LLVM lays out.
+fn aifTypeAlign(module: ASTNode, ann: ASTNode) -> Int {
+    if (typeAnnIsPod(module, ann, 0)) {
+        if (ir_is_struct_type_name(ann.s1) == 1) {
+            let decl = findStructDeclNamed(module, ann.s1)
+            let mut best = 1
+            if (nodeExists(node_to_ptr(decl))) {
+                let mut p = decl.child1
+                while (str_equals(p, "") == 0) {
+                    let f = ptr_to_node(p)
+                    if (f.kind == NodeKind.STRUCT_FIELD) {
+                        if (nodeExists(f.child1)) {
+                            let a = aifTypeAlign(module, ptr_to_node(f.child1))
+                            if (a > best) { best = a }
+                        }
+                    }
+                    p = f.next
+                }
+            }
+            return best
+        }
+    }
+    return aifTypeBytes(ann)
 }
 
 fn aifAlignUp(offset: Int, align: Int) -> Int {
@@ -85,17 +128,32 @@ fn aifAlignUp(offset: Int, align: Int) -> Int {
 // emit rather than in declaration order. That is the whole measurable effect of
 // the search on this compiler: sorting by descending width removes interior
 // padding, and the size it removes feeds Theta_stack, which is what decides T0.
-fn aifComputeStructSize(decl: ASTNode) {
+fn aifComputeStructSize(decl: ASTNode, module: ASTNode) {
     let mut offset = 0
     let mut maxAlign = 1
 
     let n = aif_struct_nfields(decl.s1)
     let mut i = 0
     while (i < n) {
-        let width = aif_layout_field_bytes(decl.s1, i)
+        // The physical order is the search's, so the field at position i is
+        // named by aif_layout_field. Its declaration is what carries the type,
+        // and an inline field's width is the nested size rather than a word.
+        let mut width = aif_layout_field_bytes(decl.s1, i)
+        let mut align = width
+        let chosen = aif_layout_field(decl.s1, i)
+        if (str_equals(chosen, "") == 0) {
+            let f = findStructField(decl, chosen)
+            if (nodeExists(node_to_ptr(f))) {
+                if (nodeExists(f.child1)) {
+                    let ann = ptr_to_node(f.child1)
+                    width = aifStructFieldBytes(module, ann)
+                    align = aifTypeAlign(module, ann)
+                }
+            }
+        }
         if (width > 0) {
-            offset = aifAlignUp(offset, width) + width
-            if (width > maxAlign) { maxAlign = width }
+            offset = aifAlignUp(offset, align) + width
+            if (align > maxAlign) { maxAlign = align }
         }
         i = i + 1
     }
@@ -145,12 +203,42 @@ fn aifRegisterTypeEdges(decl: ASTNode) {
 // Still after the declaration pass, for the reason that placement already had: a
 // field typed by an enum declared later in the file must be sized as an i32
 // rather than as a pointer.
+// An inline field contributes the nested size, so the nested struct has to be
+// sized first and declaration order does not supply that. Containment edges are
+// followed first, exactly as generateStructDecl follows them to order
+// LLVMStructSetBody -- the two walks have to agree, and they agree because both
+// ask typeAnnIsPod which edges exist.
+fn aifComputeSizesOf(module: ASTNode, d: ASTNode) {
+    if (aif_struct_size(d.s1) > 0) { return }
+    let mut dp = d.child1
+    while (str_equals(dp, "") == 0) {
+        let f = ptr_to_node(dp)
+        if (f.kind == NodeKind.STRUCT_FIELD) {
+            if (nodeExists(f.child1)) {
+                let ann = ptr_to_node(f.child1)
+                if (typeAnnIsPod(module, ann, 0)) {
+                    if (ir_is_struct_type_name(ann.s1) == 1) {
+                        if (str_equals(ann.s1, d.s1) == 0) {
+                            let dep = findStructDeclNamed(module, ann.s1)
+                            if (nodeExists(node_to_ptr(dep))) {
+                                aifComputeSizesOf(module, dep)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        dp = f.next
+    }
+    aifComputeStructSize(d, module)
+}
+
 fn aifComputeSizes(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {
         let d = ptr_to_node(p)
         if (d.kind == NodeKind.STRUCT_DECL) {
-            aifComputeStructSize(d)
+            aifComputeSizesOf(module, d)
         }
         p = d.next
     }

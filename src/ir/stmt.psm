@@ -86,7 +86,7 @@ fn generateStatement(stmt: ASTNode) {
             let objectType = getExprType(objectNode)
             let structName = structTypeName(objectType)
             let fieldIndex = ir_get_struct_field_index(structName, targetNode.s1)
-            let fieldType = storageType(ir_get_struct_field_type(structName, targetNode.s1))
+            let fieldType = fieldStorageType(ir_get_struct_field_type(structName, targetNode.s1))
             let val = generateExpression(ptr_to_node(stmt.child2))
 
             let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
@@ -102,7 +102,15 @@ fn generateStatement(stmt: ASTNode) {
                 ir_call_arg("ptr", old)
                 ir_call_end("void", "cyc_release")
             }
-            ir_store_ptr(fieldType, val, ir_get_temp_name(slot))
+            // Assigning an inline field overwrites storage rather than swapping
+            // an address, so it copies. A counted field is never inline: the
+            // count sits in a header in front of an allocation, and an inline
+            // field has no allocation of its own to put one in front of.
+            if (isStructTypeKey(fieldType)) {
+                ir_copy_struct(structTypeName(fieldType), ir_get_temp_name(slot), val)
+            } else {
+                ir_store_ptr(fieldType, val, ir_get_temp_name(slot))
+            }
         }
     }
     

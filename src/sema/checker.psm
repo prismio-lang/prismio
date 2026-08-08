@@ -38,6 +38,47 @@ fn semaTypeErrorAt(node: ASTNode, context: String, expected: TypeInfo, actual: T
                   str_concat(typeDisplay(expected), str_concat(", found ", typeDisplay(actual)))))
 }
 
+// SPEC 5.1's `unique` on a parameter lowers to `noalias`, which makes it the one
+// annotation whose falsehood is undefined behaviour rather than a lost
+// optimisation. The axiom's local half is discharged by the affine discipline --
+// a second owning reference in the declaring scope is already `use of moved
+// value` -- but parameters borrow, so `f(x, x)` is two legal borrows and no rule
+// above notices that it hands one object to two `unique` parameters.
+//
+// This is the reachable half of that hole, and it is the half worth having:
+// aliasing through two *different* names still is not detected, which is what
+// `unique` being an axiom means and is why deleting the annotation is always
+// safe. Without this the annotation would be exactly the unsafe-not-slow error
+// FFI 1 warns about, asserted by the programmer and trusted by LLVM with nothing
+// in between.
+fn semaCheckUniqueArgs(expr: ASTNode, fnNode: ASTNode, name: String) {
+    let mut outerArg = expr.child2
+    let mut outerParam = fnNode.child1
+    while (str_equals(outerArg, "") == 0 and str_equals(outerParam, "") == 0) {
+        let a = ptr_to_node(outerArg)
+        let pa = ptr_to_node(outerParam)
+        if (pa.i2 == 1 and a.kind == NodeKind.IDENTIFIER_EXPR) {
+            let mut innerArg = a.next
+            let mut innerParam = pa.next
+            while (str_equals(innerArg, "") == 0 and str_equals(innerParam, "") == 0) {
+                let b = ptr_to_node(innerArg)
+                let pb = ptr_to_node(innerParam)
+                if (pb.i2 == 1 and b.kind == NodeKind.IDENTIFIER_EXPR) {
+                    if (str_equals(a.s1, b.s1) == 1) {
+                        semaErrorAt(b, str_concat(str_concat("`", a.s1),
+                            str_concat("` is passed to two `unique` parameters of ", diagQuote(name))))
+                        diag_note("`unique` asserts exactly one reference exists, and this call makes two")
+                    }
+                }
+                innerArg = b.next
+                innerParam = pb.next
+            }
+        }
+        outerArg = a.next
+        outerParam = pa.next
+    }
+}
+
 fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     if (nodeHasType(expr)) {
         return nodeGetType(expr)
@@ -299,6 +340,7 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             argPtr = argNode.next
             paramPtr = paramNode.next
         }
+        semaCheckUniqueArgs(expr, fnNode, name)
 
         let mut retT = typeVoid()
         if (fnNode.kind == NodeKind.FUNCTION) {

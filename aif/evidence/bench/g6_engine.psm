@@ -1,0 +1,143 @@
+// G6 engine module -- the API surface gameplay code sees.
+//
+// Everything here is engine-layer per TARGET.md 1: component storage, the
+// spawn/query/step API, and the lifetime of every entity in the game. It owns
+// all the arrays; gameplay owns none of them.
+//
+// The API is deliberately handle-based. `world_spawn` returns an Int, and every
+// subsequent call takes that Int back. Gameplay never holds a reference into
+// engine storage -- which is how engines are written, and which RESULTS-L0 3a
+// found is why T3 never arises.
+//
+// The point of the module split: when this ships as source or PIR, whole-program
+// inference sees these bodies and every store in them. When it ships sealed
+// (PIR.md 5), the bodies are gone and every argument gets the default contract.
+// `layout.py --seal g6_engine` measures that difference.
+
+struct Transform {
+    x: Float,
+    y: Float,
+    z: Float,
+    yaw: Float
+}
+
+struct Velocity {
+    dx: Float,
+    dy: Float,
+    dz: Float
+}
+
+struct Actor {
+    transform: Int,
+    velocity: Int,
+    health: Int,
+    max_health: Int,
+    team: Int,
+    alive: Bool
+}
+
+struct World {
+    actors: List<Actor>,
+    transforms: List<Transform>,
+    velocities: List<Velocity>,
+    tick: Int,
+    spawned: Int,
+    killed: Int
+}
+
+fn world_create() -> World {
+    let a: List<Actor> = list_new()
+    let t: List<Transform> = list_new()
+    let v: List<Velocity> = list_new()
+    return World {
+        actors: a,
+        transforms: t,
+        velocities: v,
+        tick: 0,
+        spawned: 0,
+        killed: 0
+    }
+}
+
+// The retaining API: gameplay hands over data, the engine stores it forever.
+// Returns a handle, not a reference.
+fn world_spawn(w: World, x: Float, y: Float, team: Int) -> Int {
+    let handle = list_len(w.actors)
+    list_push(w.transforms, Transform { x: x, y: y, z: 0.0, yaw: 0.0 })
+    list_push(w.velocities, Velocity { dx: 0.0, dy: 0.0, dz: 0.0 })
+    list_push(w.actors, Actor {
+        transform: handle,
+        velocity: handle,
+        health: 100,
+        max_health: 100,
+        team: team,
+        alive: true
+    })
+    w.spawned = w.spawned + 1
+    return handle
+}
+
+// Borrowing accessors. The returned value is engine-owned storage; gameplay
+// reads through it and does not keep it.
+fn world_transform(w: World, h: Int) -> Transform {
+    return list_get(w.transforms, h)
+}
+
+fn world_actor(w: World, h: Int) -> Actor {
+    return list_get(w.actors, h)
+}
+
+fn world_set_velocity(w: World, h: Int, dx: Float, dy: Float) {
+    let v = list_get(w.velocities, h)
+    v.dx = dx
+    v.dy = dy
+}
+
+fn world_damage(w: World, h: Int, amount: Int) -> Bool {
+    let a = list_get(w.actors, h)
+    if (a.alive == false) {
+        return false
+    }
+    a.health = a.health - amount
+    if (a.health <= 0) {
+        a.health = 0
+        a.alive = false
+        w.killed = w.killed + 1
+        return true
+    }
+    return false
+}
+
+// Integration over the component arrays. Sequential, touches 3 of 4 Transform
+// fields and all 3 of Velocity.
+fn world_step(w: World, dt: Float) {
+    let n = list_len(w.actors)
+    let mut i = 0
+    while (i < n) {
+        let a = list_get(w.actors, i)
+        if (a.alive) {
+            let t = list_get(w.transforms, a.transform)
+            let v = list_get(w.velocities, a.velocity)
+            t.x = t.x + v.dx * dt
+            t.y = t.y + v.dy * dt
+            t.z = t.z + v.dz * dt
+        }
+        i = i + 1
+    }
+    w.tick = w.tick + 1
+}
+
+// Reads 1 of 6 Actor fields -- the streaming query case.
+fn world_count_alive(w: World) -> Int {
+    let n = list_len(w.actors)
+    let mut alive = 0
+    let mut i = 0
+    while (i < n) {
+        let a = list_get(w.actors, i)
+        if (a.alive) {
+            alive = alive + 1
+        }
+        i = i + 1
+    }
+    return alive
+}

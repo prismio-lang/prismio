@@ -1,0 +1,31 @@
+// expect-error: is passed to two `unique` parameters
+// SPEC 5.1. `unique` on a parameter lowers to LLVM `noalias`, which makes it the
+// one annotation whose falsehood is undefined behaviour rather than a missed
+// optimisation -- so the reachable way of making it false has to be an error.
+//
+// The axiom's local half is discharged by the language: a second *owning*
+// reference in the declaring scope is already `use of moved value`. Parameters
+// borrow, though, so `bump(p, p)` is two perfectly legal borrows, and nothing
+// else in sema notices that it hands one object to two parameters each asserting
+// it is the only one.
+//
+// What this does not catch is aliasing through two different names, which is
+// what `unique` being an axiom rather than a proof means. That is also why
+// deleting the annotation is always safe (SPEC 11 item 7): it can only ever
+// remove an assertion, never add one.
+struct Buf {
+    a: Int,
+    b: Int
+}
+
+fn bump(unique x: Buf, unique y: Buf) -> Int {
+    x.a = x.a + 1
+    y.a = y.a + 1
+    return x.a + y.a
+}
+
+fn main() -> Int {
+    let p = Buf { a: 1, b: 2 }
+    println_int(bump(p, p))
+    return 0
+}
