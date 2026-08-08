@@ -3,24 +3,25 @@
 
     python3 aif/evidence/xlang/optgap.py --compiler build/gen2
 
-`prismio build` leaves two separate stages unoptimised, and neither is a memory
-model decision (runtime/build_driver.c):
+Until 2026-08-08 `prismio build` left two separate stages unoptimised, and
+neither was a memory model decision. Both now pass -O2; this script still builds
+the 2x2 so the flags cannot be removed without the cost showing up
+(runtime/build_driver.c):
 
-  1. `compile_ir_to_object` runs `llc <ir> -filetype=obj` with no flags. llc runs
+  1. `compile_ir_to_object` ran `llc <ir> -filetype=obj` with no flags. llc runs
      the *codegen* pipeline -- isel, scheduling, register allocation -- but not
      the IR pipeline. mem2reg, SROA, GVN, LICM, inlining and vectorisation never
-     touch a user program, so every local stays a stack slot and every field read
-     is reloaded from memory.
+     touched a user program, so every local stayed a stack slot and every field
+     read was reloaded from memory.
 
-  2. `build_from_toolchain_sources` compiles the runtime with
-     `clang -Wno-deprecated-declarations -c` and no `-O`, i.e. at -O0. That is
-     where `list_get`, `list_push` and the allocator live, and they are called
-     millions of times per run.
+  2. `build_from_toolchain_sources` compiled the runtime with no `-O`, i.e. at
+     -O0. That is where `list_get`, `list_push` and the allocator live, and they
+     are called millions of times per run.
 
 This script builds a 2x2 over those two stages from the compiler's own emitted
 IR, unmodified. Same frontend, same backend, same IR, same runtime source, same
-linker -- the only variables are the two optimisation flags. `shipped` is exactly
-what `prismio build` produces today.
+linker -- the only variables are the two optimisation flags. `both` is what
+`prismio build` produces today; `-O0 both` is what it produced before.
 
 It changes nothing in the compiler. It exists to split the cross-language gap
 into the part the memory model owns and the part it does not.
@@ -40,7 +41,7 @@ PROGRAMS = ["g1", "g2", "g3", "g4", "g5", "g6"]
 
 # (label, runtime -O level, run opt -O2 on the program IR)
 CONFIGS = [
-    ("shipped",       "-O0", False),
+    ("-O0 both",      "-O0", False),
     ("runtime -O2",   "-O2", False),
     ("program opt",   "-O0", True),
     ("both",          "-O2", True),
@@ -98,7 +99,7 @@ def main():
         runtime_objs[lvl] = objs
 
     print(f"{'program':<9}" + "".join(f"{label:>15}" for label, _, _ in CONFIGS)
-          + f"{'both/shipped':>15}")
+          + f"{'total':>15}")
     print("-" * (9 + 15 * (len(CONFIGS) + 1)))
 
     results = {}
@@ -124,7 +125,7 @@ def main():
             row[label] = {"ms": med, "min": lo, "max": hi,
                           "exe_bytes": os.path.getsize(exe)}
 
-        base = row["shipped"]["ms"]
+        base = row["-O0 both"]["ms"]
         results[prog] = {"configs": row, "checksums": reference,
                          "total_speedup": base / row["both"]["ms"]}
         print(f"{prog:<9}" + "".join(f"{row[l]['ms']:13.1f}ms" for l, _, _ in CONFIGS)

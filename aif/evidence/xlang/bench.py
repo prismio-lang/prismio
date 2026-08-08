@@ -36,6 +36,13 @@ WHAT IS MEASURED, AND HOW
 
   exe size                  Stat of the linked binary.
 
+  NOTE  Until 2026-08-08 `prismio build` ran no optimiser on either the program
+        IR or the runtime, and this harness carried a second "Prismio +opt" row
+        reconstructing what the missing flags were worth (1.4x-3.0x). The flags
+        landed in runtime/build_driver.c, the shipped binary now matches that
+        reconstruction to within 4%, and the row is gone. optgap.py still builds
+        the 2x2 over both flags, as a regression detector.
+
   cold compile              Median of 3 compiles with no prior output artifact.
                             "Cold" means no incremental cache to reuse; it does not
                             mean a cold OS page cache.
@@ -74,8 +81,7 @@ PROGRAMS = ["g1", "g2", "g3", "g4", "g5", "g6"]
 # vs Rust gap into "the representation" and "everything else". It exists only
 # for g1 and g2, the two programs where that split carries the argument.
 VARIANTS = [
-    ("prismio_opt",   "Prismio +opt",    "prismio_opt"),
-    ("prismio",       "Prismio shipped", "prismio"),
+    ("prismio",       "Prismio",         "prismio"),
     ("rust_idiomatic", "Rust idiomatic",  "rust"),
     ("rust_arena",    "Rust arena",      "rust"),
     ("rust_tuned",    "Rust hand-tuned", "rust"),
@@ -102,23 +108,11 @@ def rust_sources():
     return found
 
 
-def runtime_objects(opt):
-    """The two runtime sources a user build links, per prismio_toolchain_files[].
-
-    `opt` is the -O level. `prismio build` passes none, i.e. -O0
-    (build_driver.c:638); the +opt variant passes -O2.
-    """
-    objs = []
-    for c in ("lang_runtime.c", "program_support.c"):
-        objs.append(os.path.join(OUT, f"{c[:-2]}{opt}.o"))
-    return objs
-
-
 def targets(compiler):
     """Every (program, variant) that has a source, with its build command(s).
 
-    A build is a list of argv lists, because the +opt variant is four steps
-    rather than one and its cold compile time has to cover all of them.
+    A build is a list of argv lists rather than one, so a variant that needs
+    several steps can have its cold compile time cover all of them.
     """
     out = []
     rust = rust_sources()
@@ -128,37 +122,6 @@ def targets(compiler):
             if lang == "prismio":
                 src = os.path.join(HERE, "prismio", f"{prog}.psm")
                 cmd = [compiler, "build", src, "-o", exe]
-            elif lang == "prismio_opt":
-                # What `prismio build` would produce if build_driver.c ran an
-                # optimiser: the compiler's own IR, unmodified, through the LLVM
-                # middle-end, linked against a runtime compiled at -O2.
-                #
-                # A harness-side reconstruction, not the compiler's code path --
-                # so it is labelled "+opt" and never plain "Prismio". It
-                # reproduces `prismio build` to within 1.6% when the two -O
-                # flags are removed, which is what says it is faithful.
-                src = os.path.join(HERE, "prismio", f"{prog}.psm")
-                ll = os.path.join(OUT, f"{prog}.opt.ll")
-                bc = os.path.join(OUT, f"{prog}.opt.bc")
-                obj = os.path.join(OUT, f"{prog}.opt.o")
-                # The runtime is recompiled here, per program, because that is
-                # what `prismio build` does when no runtime.lib is installed
-                # (build_from_toolchain_sources). Reusing prebuilt objects would
-                # make this variant's cold compile time incomparable to the
-                # shipped one -- and at -O2 the runtime is the expensive part,
-                # so the omission flatters exactly the number in question.
-                rt = []
-                steps = [[compiler, "build", src, "-o", ll],
-                         ["opt", "-O2", ll, "-o", bc],
-                         ["llc", bc, "-filetype=obj", "-o", obj]]
-                for c in ("lang_runtime.c", "program_support.c"):
-                    o = os.path.join(OUT, f"{prog}.{c[:-2]}.O2.o")
-                    steps.append(["clang", "-O2", "-Wno-deprecated-declarations",
-                                  "-c", os.path.join(REPO, "runtime", c), "-o", o])
-                    rt.append(o)
-                steps.append(["clang", obj] + rt + ["-o", exe])
-                out.append((prog, key, label, lang, exe, steps))
-                continue
             elif lang == "rust":
                 src = rust.get((prog, key))
                 if src is None:
@@ -224,16 +187,6 @@ def build_all(compiler, compile_runs=3):
             "-fPIC", os.path.join(HERE, "allocount.c"), "-o", dylib])
     if r.returncode != 0:
         sys.exit("allocount build failed:\n" + r.stderr)
-
-    # The runtime half, at both -O levels. Compiled once and outside the timed
-    # region: `prismio build` links a runtime it has already built, so folding
-    # its compile time into every program's would be counting it six times.
-    for lvl in ("-O0", "-O2"):
-        for c, obj in zip(("lang_runtime.c", "program_support.c"), runtime_objects(lvl)):
-            r = sh(["clang", lvl, "-Wno-deprecated-declarations", "-c",
-                    os.path.join(REPO, "runtime", c), "-o", obj])
-            if r.returncode != 0:
-                sys.exit(f"runtime build failed ({c} {lvl}):\n{r.stderr}")
 
     compile_ms = {}
     for prog, key, label, lang, exe, cmds in targets(compiler):

@@ -9,7 +9,7 @@ whether there is a performance claim at all: **if tuned Rust ties us everywhere,
 One command:
 
 ```bash
-python3 aif/evidence/xlang/bench.py --compiler build/gen2 --runs 20
+python3 aif/evidence/xlang/bench.py --compiler build/gen4 --runs 20
 ```
 
 It builds everything, asserts every variant of a program prints identical checksums, measures, and
@@ -20,38 +20,33 @@ writes `results.json`. `--only g2` restricts to one program; `--skip-build` reus
 | | |
 |---|---|
 | `prismio/g1..g6.psm` | the corpus programs, workload functions **verbatim**, with a timing `main()` |
-| — built two ways | `Prismio shipped` is `prismio build`; `Prismio +opt` adds the two `-O` flags it is missing |
 | `rust/g*_idiomatic.rs` | `Vec<T>` with values inline — what a competent Rust programmer writes first |
 | `rust/g*_arena.rs` | bumpalo 3.20.3 — what they write after a profile (g1, g2, g6) |
 | `rust/g*_tuned.rs` | whatever it takes: SoA, fused loops, reused buffers, bucketing |
-| `rust/g*_boxed.rs` | **diagnostic, not a variant** — Prismio's representation, rustc's codegen (g1, g2) |
+| `rust/g*_boxed.rs` | **diagnostic, not a variant** — Prismio's representation, rustc's codegen (g1, g2, g4) |
 | `swift/g*.swift` | one idiomatic variant: structs in Arrays, `final class` for owned aggregates |
 | `allocount.c` | malloc/free counter, loaded by interposition into any language's binary |
-| `vendor/libbumpalo.rlib` | bumpalo prebuilt, so cold compile time measures the program and not the crate |
+| `vendor/libbumpalo.rlib` | built on first run by `bench.py`; not committed, since an .rlib is host- and rustc-specific |
 
 29 programs. Every one of them prints the same checksums as the Prismio original, and `bench.py`
 refuses to measure a program whose variants disagree.
 
-## Prismio is measured twice, and the optimised row is the headline
+## A note on what this suite found and changed
 
-`prismio build` runs no optimiser: `build_driver.c:509` invokes `llc` with no flags (so the LLVM *IR*
-pipeline never runs on a user program) and `build_driver.c:638` compiles the runtime with no `-O` at
-all. That is an oversight nobody intends to ship, so measuring only it would benchmark an artifact
-that disappears in one commit.
+When it was first run, `prismio build` ran **no optimiser**: `compile_ir_to_object` invoked `llc` with
+no flags, so the LLVM *IR* pipeline never touched a user program, and the runtime was compiled with no
+`-O` at all. The harness carried a second `Prismio +opt` row reconstructing what the missing flags
+were worth — 1.43×–2.91× across the corpus.
 
-So there are two Prismio rows:
+Both flags landed in `runtime/build_driver.c` and in both bootstrap scripts, the shipped binary then
+matched the reconstruction to within 4%, and the extra row was removed. `optgap.py` still builds the
+2×2 over the two flags so that removing them shows up as a measurable regression, and `optlevel.py`
+holds the evidence for `-O2` over `-O3`/`-Os`/LTO (all within noise on speed).
 
-| | |
-|---|---|
-| `Prismio shipped` | exactly `prismio build`, unmodified. What a user gets today. |
-| `Prismio +opt` | the compiler's own emitted IR through `opt -O2`, linked against the same two runtime sources at `-O2`. What the same compiler produces once those two flags exist. |
-
-`+opt` is a **harness-side reconstruction, not the compiler's code path**, and it is never labelled
-plain "Prismio" for that reason — a row describing a binary nobody builds is a mistake this project
-has recorded twice. Two things keep it honest: with the flags removed it reproduces `prismio build`
-to within 1.6%, and it recompiles the runtime per program the way `build_from_toolchain_sources` does,
-so its cold compile time is comparable rather than flattered. (Reusing prebuilt runtime objects made
-`+opt` look *faster* to compile than shipped, which is backwards; it costs ~35%.)
+One methodological trap from that work, worth keeping: the reconstruction initially reused prebuilt
+runtime objects, which made the optimised build look *faster* to compile than the unoptimised one.
+`prismio build` recompiles the runtime per program when no `runtime.lib` is installed, so the
+reconstruction had to as well. It costs ~35%, not −40%.
 
 ## The four decisions worth arguing with
 
@@ -120,8 +115,8 @@ the perturbation is exactly that one site: the tier, disposition and layout of e
 allocation site is unchanged from the corpus program.
 
 `clock_gettime_nsec_np` is declared with `extern fn` in the `.psm` files rather than added to the
-runtime, because this session was not permitted a compiler change and an `extern` declaration is a
-language feature rather than one.
+runtime. Nothing in the benchmark set needs a builtin, and keeping the clock out of the runtime means
+the ports do not depend on a runtime version.
 
 Frame counts are raised from corpus size (where a whole run is ~11 ms, most of it process startup)
 to something that gives the tail enough samples: g1 6 000, g2 20 000, g3 10 000, g4 10 000, g5

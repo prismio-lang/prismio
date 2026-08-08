@@ -500,13 +500,30 @@ static int g_verify_mode = 0;
 
 void compiler_set_verify_mode(int on) { g_verify_mode = on ? 1 : 0; }
 
+// IR -> object.
+//
+// This was `llc <ir> -filetype=obj` for a long time, and that ran the *codegen*
+// pipeline only -- isel, scheduling, register allocation. llc does not run the
+// IR pipeline, so mem2reg, SROA, GVN, LICM, inlining and vectorisation never
+// touched a user program: every local stayed a stack slot and every field read
+// was reloaded. Measured at 1.4x-3.0x across aif/corpus (RESULTS-xlang 3.1).
+//
+// clang runs both pipelines in one process, is already required for the link,
+// and takes .ll directly -- which is why compiler_temp_ir_path spells the
+// suffix `.ll`. It also drops llc from the user-build path entirely.
+//
+// -O2 rather than -O3: measured across the corpus, -O3 lands between 0.98x and
+// 1.03x of -O2, which is noise, and costs the same compile time
+// (aif/evidence/xlang/optlevel.py). -flto is speed-neutral too and worth ~15%
+// of binary size, but needs linker plugin support that is not portable enough
+// to make a default.
 static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     char* q_ir = command_quote_arg(ir_file);
     char* q_obj = command_quote_arg(program_obj);
     int len = (int)(strlen(q_ir) + strlen(q_obj) + 64);
     char* command = (char*)malloc(len);
 
-    snprintf(command, len, "llc %s -filetype=obj -o %s", q_ir, q_obj);
+    snprintf(command, len, "clang -O2 -c %s -o %s", q_ir, q_obj);
     int result = run_build_command(command);
 
     free(command);
@@ -635,7 +652,11 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
         objs[i] = compiler_temp_obj_path(exe_file, prismio_toolchain_files[i].role);
         q_objs[i] = command_quote_arg(objs[i]);
         char* q_src = command_quote_arg(source_paths[i]);
-        snprintf(command, command_len, "clang -Wno-deprecated-declarations %s-c %s -o %s",
+        // -O2 here matters more than it does on the program's own IR: this is
+        // where list_get, list_push and the allocator live, and a user program
+        // calls them millions of times. Compiling them at -O0 was worth more of
+        // the corpus gap than the missing IR pipeline was (RESULTS-xlang 3.1).
+        snprintf(command, command_len, "clang -O2 -Wno-deprecated-declarations %s-c %s -o %s",
                  g_verify_mode ? "-DPRISMIO_AIF_VERIFY " : "", q_src, q_objs[i]);
         if (run_build_command(command) != 0) result = 1;
         free(q_src);
