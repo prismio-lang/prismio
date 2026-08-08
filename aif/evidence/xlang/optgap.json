@@ -1,0 +1,207 @@
+{
+  "runs": 20,
+  "results": {
+    "g1": {
+      "configs": {
+        "shipped": {
+          "ms": 56.043561499999996,
+          "min": 52.244154,
+          "max": 85.238318,
+          "exe_bytes": 57544
+        },
+        "runtime -O2": {
+          "ms": 33.6019505,
+          "min": 31.071313,
+          "max": 59.006836,
+          "exe_bytes": 40848
+        },
+        "program opt": {
+          "ms": 39.572,
+          "min": 39.102814,
+          "max": 68.792417,
+          "exe_bytes": 57552
+        },
+        "both": {
+          "ms": 25.402396500000002,
+          "min": 22.935119,
+          "max": 47.583036,
+          "exe_bytes": 40840
+        }
+      },
+      "checksums": [
+        "checksum alive 2000",
+        "checksum beyond 1095"
+      ],
+      "total_speedup": 2.206231270344906
+    },
+    "g2": {
+      "configs": {
+        "shipped": {
+          "ms": 154.978201,
+          "min": 152.546827,
+          "max": 175.476716,
+          "exe_bytes": 57256
+        },
+        "runtime -O2": {
+          "ms": 124.4757485,
+          "min": 122.281315,
+          "max": 135.440943,
+          "exe_bytes": 40560
+        },
+        "program opt": {
+          "ms": 125.897096,
+          "min": 124.451922,
+          "max": 148.845807,
+          "exe_bytes": 57264
+        },
+        "both": {
+          "ms": 107.032017,
+          "min": 103.413617,
+          "max": 125.498968,
+          "exe_bytes": 40552
+        }
+      },
+      "checksums": [
+        "checksum submitted 10020000",
+        "checksum culled 9980000"
+      ],
+      "total_speedup": 1.4479611367129521
+    },
+    "g3": {
+      "configs": {
+        "shipped": {
+          "ms": 148.8063535,
+          "min": 142.782731,
+          "max": 180.528417,
+          "exe_bytes": 57704
+        },
+        "runtime -O2": {
+          "ms": 93.452499,
+          "min": 91.404283,
+          "max": 123.527263,
+          "exe_bytes": 41008
+        },
+        "program opt": {
+          "ms": 100.0138195,
+          "min": 91.289497,
+          "max": 127.134616,
+          "exe_bytes": 57712
+        },
+        "both": {
+          "ms": 52.642164,
+          "min": 51.525119,
+          "max": 81.021581,
+          "exe_bytes": 40984
+        }
+      },
+      "checksums": [
+        "checksum nodes 1365",
+        "checksum visited 1365",
+        "checksum visible 1365"
+      ],
+      "total_speedup": 2.8267522114022516
+    },
+    "g4": {
+      "configs": {
+        "shipped": {
+          "ms": 194.858386,
+          "min": 191.453655,
+          "max": 223.585769,
+          "exe_bytes": 57560
+        },
+        "runtime -O2": {
+          "ms": 101.5174285,
+          "min": 98.446216,
+          "max": 137.014792,
+          "exe_bytes": 40848
+        },
+        "program opt": {
+          "ms": 136.683323,
+          "min": 134.02323,
+          "max": 167.016562,
+          "exe_bytes": 57568
+        },
+        "both": {
+          "ms": 67.1134495,
+          "min": 63.856913,
+          "max": 98.139224,
+          "exe_bytes": 40840
+        }
+      },
+      "checksums": [
+        "checksum entities 1500",
+        "checksum draws 1215783"
+      ],
+      "total_speedup": 2.903417831324554
+    },
+    "g5": {
+      "configs": {
+        "shipped": {
+          "ms": 224.6054825,
+          "min": 221.596563,
+          "max": 259.47775,
+          "exe_bytes": 58088
+        },
+        "runtime -O2": {
+          "ms": 117.56238,
+          "min": 109.347389,
+          "max": 140.137536,
+          "exe_bytes": 41360
+        },
+        "program opt": {
+          "ms": 121.4688085,
+          "min": 119.581561,
+          "max": 153.646763,
+          "exe_bytes": 58096
+        },
+        "both": {
+          "ms": 77.4627055,
+          "min": 77.034066,
+          "max": 107.104627,
+          "exe_bytes": 41352
+        }
+      },
+      "checksums": [
+        "checksum entities 2000",
+        "checksum submitted 8000000",
+        "checksum batches 12",
+        "checksum evicted 0"
+      ],
+      "total_speedup": 2.8995305682939256
+    },
+    "g6": {
+      "configs": {
+        "shipped": {
+          "ms": 486.3502575,
+          "min": 480.616548,
+          "max": 516.156513,
+          "exe_bytes": 58440
+        },
+        "runtime -O2": {
+          "ms": 298.8271595,
+          "min": 290.126463,
+          "max": 327.586881,
+          "exe_bytes": 41744
+        },
+        "program opt": {
+          "ms": 370.496202,
+          "min": 369.040798,
+          "max": 398.709436,
+          "exe_bytes": 58480
+        },
+        "both": {
+          "ms": 224.52612499999998,
+          "min": 220.48643,
+          "max": 247.271656,
+          "exe_bytes": 41768
+        }
+      },
+      "checksums": [
+        "checksum alive 120000",
+        "checksum orders 13800000",
+        "checksum kills 120000"
+      ],
+      "total_speedup": 2.1661187868449607
+    }
+  }
+}

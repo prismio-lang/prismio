@@ -58,3 +58,7 @@ external/
 *~
 configuration/
 package.tar.xz
+
+# Cross-language benchmark artifacts (aif/evidence/xlang)
+aif/evidence/xlang/build/
+aif/evidence/xlang/vendor/
