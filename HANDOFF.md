@@ -460,6 +460,140 @@ What landed:
 
 ---
 
+## Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on
+
+The corpus g1–g6 was ported to Rust (idiomatic / bumpalo arena / hand-tuned) and Swift, 29 programs,
+all asserting identical checksums, and measured on every axis the project claims. Everything is in
+[`aif/evidence/RESULTS-xlang.md`](aif/evidence/RESULTS-xlang.md); the apparatus is
+[`aif/evidence/xlang/`](aif/evidence/xlang/README.md) and re-runs in one command:
+
+```bash
+python3 aif/evidence/xlang/bench.py --compiler build/gen4 --runs 20
+```
+
+**One compiler change landed, and it is a build-flag fix, not a design change.**
+
+### The defect: `prismio build` ran no optimiser, on either stage
+
+- `compile_ir_to_object` ran `llc <ir> -filetype=obj` with **no flags**. llc runs the codegen pipeline
+  but *not* the IR pipeline, so mem2reg, SROA, GVN, LICM, inlining and vectorisation never touched a
+  user program. In the emitted IR for `integrate`, `p` was reloaded from its stack slot **five times**
+  inside one `p.px = p.px + p.vx * dt`.
+- `build_from_toolchain_sources` compiled the runtime with **no `-O`**, i.e. -O0 — and that is where
+  `list_get`, `list_push` and the allocator live.
+- `tools/bootstrap.sh` and `.ps1` did the same, so the compiler itself was built unoptimised.
+
+All three now pass `-O2`, and the IR step uses `clang -O2 -c` rather than `llc` (clang runs both
+pipelines in one process, was already needed for the link, takes `.ll` directly, and this drops llc
+from the user-build path). Verified: **fixpoint warm and cold, cold == warm, 92/92, and the emitted
+IR is byte-identical to the pre-change compiler's** — the right outcome for a build flag. No seed
+refresh needed; the FFI surface did not move.
+
+| | |
+|---|---|
+| worth | **1.43×–2.91×** on the corpus (`optgap.py`, checksums identical in all four cells) |
+| costs | cold compile ~140 → ~190 ms per program (+35%) |
+| saves | executables 56 → 39 KB (−30%); the compiler's own frontend 103 → 80 ms (−22%) |
+
+**`-O3` was measured and rejected** — 0.98×–1.03× of `-O2` across the corpus, i.e. noise, at the same
+compile time (`optlevel.py`). `-Os` likewise. `-flto` is speed-neutral and worth ~15% of binary size
+but needs linker plugin support that is not portable enough to default to.
+
+### Where Prismio stands, after the fix
+
+**1.12×–5.57× idiomatic Rust; 1.7×–17.9× hand-tuned Rust.** Every speed projection in BENCHMARKS §4
+is falsified; §4.2's kill criteria for object graphs and data-parallel bulk are both met. The gap now
+has two parts:
+
+1. **The representation.** `List<T>` is a vector of pointers to individually malloc'd records; `Vec<T>`
+   stores inline. Measured by holding it fixed in Rust (`g1_boxed.rs`, `g2_boxed.rs`, `g4_boxed.rs`):
+   costs **1.09×** on a 96-byte record, **2.58×** on 24-byte components, **8.88×** where the record is
+   allocated per frame. This is now **the whole remaining gap on four of six programs**.
+2. **A residual of 1.20×–1.30×** — with the representation held constant this compiler is within a
+   quarter of rustc. The only figure that is a statement about the design. On g2 it is **0.63×**:
+   Prismio beats rustc's own code for the same allocation profile.
+
+Two results went the other way and are worth keeping: **p99/p50 is 1.22–1.75 against a 3× kill
+criterion, within 0.04 of idiomatic Rust on five of six programs**, and p999/p50 is *lower* than
+Rust's on all six — the model adds no tail of its own. **Peak RSS is 0.84–1.00× of idiomatic Rust**,
+against a 1.0–1.2× prediction, because per-object allocation has no geometric slack.
+
+**Four of six corpus programs allocate nothing per frame** (g1, g3, g4, g5), so the memory model
+cannot help on two thirds of the corpus. On the two that do, the arena is worth **9.9× on g2**.
+
+### Four things to carry forward
+
+- **The internal control cannot see a missing optimiser.** `--debug` was built to isolate AIF and it
+  does — which is why it never caught this: both sides of that comparison had the same -O0 runtime and
+  the same unoptimised IR. **A control that holds everything constant cannot detect what is constantly
+  wrong.** Every speed number this project recorded before today was taken against a baseline sharing
+  the defect.
+- **"Reach for the input before the mechanism" got its fourth outing, and the input was a build flag.**
+  Twice a missing declaration, once a stale default, now two `-O` flags that were never there.
+- **A prediction is also a claim about the baseline.** "Allocator churn 0.2–0.5×" was wrong by ~100×
+  not because AIF underperformed but because `Vec<T>` had already deleted that cost by inline storage.
+  Restate any allocator claim against inline-storage containers or it measures nothing.
+- **Do not let one measurement of a representation stand for the class.** The boxed diagnostic reads
+  1.09× on g1 and 2.58× on g4. Assuming g1's answer would have attributed g4's gap to the backend.
+
+### The `region` annotation is inert on g2, and that is the sharpest result here
+
+The language is not inference-only — `region`, `unique`, `pin`, `drop` exist so a programmer can tune
+a hot scope by hand. That escape hatch was measured for the first time.
+`aif/evidence/xlang/prismio/g2_region.psm` is `g2.psm` with `region frame_arena { … }` around the
+frame body and nothing else changed:
+
+| | plain | `+ region` |
+|---|---|---|
+| loop time | 101.3 ms | **175.5 ms (1.73×)** |
+| allocations served by the arena | — | **0 of 10 201 215** |
+| regions entered | — | 20 000 |
+| manifest | T2 owned ×4 | **byte-identical** |
+
+**Not unimplemented — inert.** The region is created and destroyed 20 000 times and serves nothing,
+for the cause already recorded above: `aif_arena_at_node` rejects on `in_container` *before* it looks
+at escape, and g2's `DrawCmd` reaches `list_push` with `retain_in(0)`. The exclusion is correct in
+itself; it fires regardless of what the programmer asked for.
+
+The 1.73× is ≈7 ns per allocation over 10.2 M, which points at a per-allocation arena check that is
+paid then declined rather than at the 20 000 push/pops. **Inferred from the arithmetic, not proven** —
+confirm before optimising.
+
+Two consequences:
+
+- **The `CallerRegion` + container-disposition item unblocks both tiers, not just inference.** That
+  changes its value: it is the only thing standing between users and *any* working tuning story on
+  container-bound values.
+- **`region` should warn when it serves zero allocations.** Today a user writes the annotation, reads
+  a manifest that says nothing changed, and gets a 1.73× slowdown with no diagnostic.
+
+### Next, re-ranked on this session's measurements
+
+1. **Inline element storage for `List<T>`** — the `Vec<T>` representation, which needs views/slices to
+   be expressible. Worth 1.09×–8.88× depending on the record, and RESULTS-xlang §9 projects it lands
+   Prismio at **~1.2–1.3× of idiomatic Rust across the board**. Bigger than anything previously on
+   this list, and a prerequisite for the layout work.
+2. **Caller-scope `E` plus container disposition** (designed two sessions ago, still not built).
+   Measured prize **up to 9.9× on g2**, ~0 on four of six programs. Large and narrow — and it partly
+   overlaps item 1, which removes most of g2's allocations by itself. **Re-valued upward by the
+   `region` result above**: it is what makes the annotation tier work at all, not only the inference
+   tier. Consider shipping the zero-allocation warning ahead of it, since that is cheap and the
+   current silence is a user-visible trap.
+3. **Layout search / SoA.** The largest measured headroom in the suite: `g1_tuned.rs` is *pure* SoA
+   with no arena and no algorithmic change and runs at **0.26×** of idiomatic Rust. That is the only
+   measured path to *beating* Rust rather than matching it, and it is the first evidence for
+   BENCHMARKS H2's budget rule. Still blocked behind handles.
+4. **Concurrency + T-domains: unmeasurable today.** The corpus is six single-threaded programs. Any
+   ranking of it would be exactly the kind of unmeasured projection this session spent its time
+   falsifying — the corpus needs a concurrent program first.
+
+RESULTS-xlang §9 works the "can we beat Rust" question through end to end. Short version: parity with
+idiomatic Rust is the realistic target for items 1–2; item 3 is the only large win available; beating
+*hand-tuned* Rust is not on the table, because `g5_tuned` at 0.15× is an algorithmic change no memory
+model produces.
+
+---
+
 ## Session of 2026-08-09 — inline struct fields, and two measured non-results
 
 Three items landed and handles slipped. **Two of the three moved no number, and that is the

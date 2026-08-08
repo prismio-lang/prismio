@@ -15,9 +15,9 @@
 # the only way out of the cycle. The seed carries no target triple, so llc targets
 # whatever host it runs on.
 #
-# Requires llc and clang on PATH. On macOS that means either Xcode Command Line
-# Tools plus a Homebrew llvm (`brew install llvm`, which is where llc comes from --
-# Apple's bundled clang ships no llc), or a full LLVM install.
+# Requires clang on PATH, and a clang new enough to read the seed's LLVM IR. On
+# macOS that means a Homebrew llvm (`brew install llvm`), not Apple's bundled
+# clang, because the two disagree on IR version.
 
 set -eu
 
@@ -50,7 +50,7 @@ if [ -z "$COMPILER" ] && [ -z "$SEED" ]; then
     exit 2
 fi
 
-for tool in llc clang; do
+for tool in clang; do
     command -v "$tool" >/dev/null 2>&1 || { echo "error: $tool not found on PATH" >&2; exit 1; }
 done
 
@@ -96,8 +96,13 @@ fi
 green "IR: $(wc -l < "$SYMS" | tr -d ' ') symbols, all unique"
 
 # 2. Backend: IR -> object. No target triple in the seed means the host default.
+#
+# clang rather than llc, and -O2, for the same reason compile_ir_to_object uses
+# them: llc runs the codegen pipeline but not the IR pipeline, so a compiler
+# built with it has every local in a stack slot. Worth 1.4x-3.0x on user
+# programs (RESULTS-xlang 3.1) and the compiler is a user program too.
 step "ll -> obj"
-llc "$LL" -filetype=obj -o "$WORK/program.o" || die "ll -> obj"
+clang -O2 -c "$LL" -o "$WORK/program.o" || die "ll -> obj"
 
 # 3. Runtime and backend C sources, compiled fresh from the working tree.
 # The backend is built on the LLVM C API, so this needs LLVM's headers and its C
@@ -116,7 +121,7 @@ OBJS="$WORK/program.o"
 for c in $RUNTIME_SOURCES; do
     obj="$WORK/${c%.c}.o"
     step "cc $c"
-    clang -DPRISMIO_LLVM_REAL_HEADERS -Wno-deprecated-declarations \
+    clang -O2 -DPRISMIO_LLVM_REAL_HEADERS -Wno-deprecated-declarations \
           -I"$LLVM_INC" -I"$REPO/runtime" \
           -c "$REPO/runtime/$c" -o "$obj" || die "cc $c"
     OBJS="$OBJS $obj"

@@ -110,7 +110,9 @@ Write-Host "IR: $($syms.Count) symbols, all unique" -ForegroundColor Green
 
 # 2. Backend: IR -> object.
 $programObj = Join-Path $work 'program.obj'
-Invoke-Step 'll -> obj' 'llc' @($ll, '-filetype=obj', '-o', $programObj)
+# clang -O2 rather than llc: llc runs the codegen pipeline but not the IR
+# pipeline, so a compiler built with it has every local in a stack slot.
+Invoke-Step 'll -> obj' 'clang' @('-O2', '-c', $ll, '-o', $programObj)
 
 # 3. Runtime and backend C sources, compiled fresh from the working tree.
 $llvm = Resolve-Llvm -Repo $Repo
@@ -118,7 +120,7 @@ $llvm = Resolve-Llvm -Repo $Repo
 $objs = @($programObj)
 foreach ($c in $runtimeSources) {
     $obj = Join-Path $work ([System.IO.Path]::GetFileNameWithoutExtension($c) + '.obj')
-    Invoke-Step "cc $c" 'clang' @('-DPRISMIO_LLVM_REAL_HEADERS', '-Wno-deprecated-declarations',
+    Invoke-Step "cc $c" 'clang' @('-O2', '-DPRISMIO_LLVM_REAL_HEADERS', '-Wno-deprecated-declarations',
                                   "-I$($llvm.include)", "-I$(Join-Path $Repo 'runtime')",
                                   '-c', (Join-Path $Repo "runtime\$c"), '-o', $obj)
     $objs += $obj
