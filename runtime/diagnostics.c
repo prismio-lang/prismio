@@ -37,6 +37,12 @@ static DiagFile g_files[DIAG_MAX_FILES];
 static int g_file_count = 0;
 static int g_error_count = 0;
 static int g_warning_count = 0;
+static int g_json_mode = 0;
+static int g_finished = 0;
+
+void diag_set_json_mode(int on) {
+    g_json_mode = on != 0;
+}
 
 static char* diag_strdup(const char* s) {
     if (!s) s = "";
@@ -119,6 +125,58 @@ static void diag_spaces(int n) {
     for (int i = 0; i < n; i++) fputc(' ', stderr);
 }
 
+// JSON Lines is used instead of one enclosing array so an IDE can consume each
+// diagnostic as soon as the compiler reports it. Strings are written directly:
+// diagnostics are already complete UTF-8 messages, and allocating an escaped
+// copy here would make error reporting itself another failure path.
+static void diag_json_string(const char* text) {
+    if (!text) text = "";
+
+    fputc('"', stderr);
+    for (const unsigned char* p = (const unsigned char*)text; *p; p++) {
+        switch (*p) {
+            case '"': fputs("\\\"", stderr); break;
+            case '\\': fputs("\\\\", stderr); break;
+            case '\b': fputs("\\b", stderr); break;
+            case '\f': fputs("\\f", stderr); break;
+            case '\n': fputs("\\n", stderr); break;
+            case '\r': fputs("\\r", stderr); break;
+            case '\t': fputs("\\t", stderr); break;
+            default:
+                if (*p < 0x20) {
+                    fprintf(stderr, "\\u%04x", (unsigned int)*p);
+                } else {
+                    fputc(*p, stderr);
+                }
+                break;
+        }
+    }
+    fputc('"', stderr);
+}
+
+static void diag_emit_json(const char* severity, int file, int line, int col,
+                           int len, const char* message) {
+    fputs("{\"kind\":\"diagnostic\",\"schemaVersion\":1,\"severity\":", stderr);
+    diag_json_string(severity);
+    fputs(",\"file\":", stderr);
+    if (file >= 0 && file < g_file_count) {
+        diag_json_string(g_files[file].path);
+    } else {
+        fputs("null", stderr);
+    }
+    fprintf(stderr, ",\"line\":%d,\"column\":%d,\"length\":%d,\"message\":",
+            line, col, len);
+    diag_json_string(message);
+    fputs("}\n", stderr);
+}
+
+static void diag_emit_json_summary(void) {
+    fprintf(stderr,
+            "{\"kind\":\"summary\",\"schemaVersion\":1,\"errors\":%d,\"warnings\":%d}\n",
+            g_error_count, g_warning_count);
+    fflush(stderr);
+}
+
 // The snippet block, in the rustc shape:
 //
 //      --> src/foo.psm:12:5
@@ -171,15 +229,28 @@ static void diag_render_span(int file, int line, int col, int len) {
 }
 
 static void diag_emit(const char* severity, int file, int line, int col, int len, const char* message) {
+    if (g_json_mode) {
+        diag_emit_json(severity, file, line, col, len, message);
+        fflush(stderr);
+        return;
+    }
+
     fprintf(stderr, "%s: %s\n", severity, message ? message : "");
     diag_render_span(file, line, col, len);
     fflush(stderr);
 }
 
 void diag_error_at(int file, int line, int col, int len, const char* message) {
+    g_finished = 0;
     g_error_count++;
 
     if (g_error_count > DIAG_ERROR_LIMIT) {
+        if (g_json_mode) {
+            diag_emit_json("error", -1, 0, 0, 0,
+                           "too many errors; stopping after 25");
+            diag_emit_json_summary();
+            exit(1);
+        }
         fprintf(stderr, "error: too many errors; stopping after %d\n", DIAG_ERROR_LIMIT);
         fflush(stderr);
         exit(1);
@@ -193,6 +264,7 @@ void diag_error(const char* message) {
 }
 
 void diag_warning_at(int file, int line, int col, int len, const char* message) {
+    g_finished = 0;
     g_warning_count++;
     diag_emit("warning", file, line, col, len, message);
 }
@@ -201,12 +273,22 @@ void diag_warning_at(int file, int line, int col, int len, const char* message) 
 // declaration is here", "the loop starts here". Indented so it reads as
 // subordinate rather than as a second, unrelated error.
 void diag_note_at(int file, int line, int col, int len, const char* message) {
+    if (g_json_mode) {
+        diag_emit("note", file, line, col, len, message);
+        return;
+    }
+
     fprintf(stderr, "  note: %s\n", message ? message : "");
     diag_render_span(file, line, col, len);
     fflush(stderr);
 }
 
 void diag_note(const char* message) {
+    if (g_json_mode) {
+        diag_emit("note", -1, 0, 0, 0, message);
+        return;
+    }
+
     fprintf(stderr, "  note: %s\n", message ? message : "");
     fflush(stderr);
 }
@@ -224,6 +306,14 @@ int diag_warning_count(void) {
 // *rejected* the program, which a crash or a linker failure must not be able to
 // impersonate.
 void diag_finish(void) {
+    if (g_finished) return;
+    g_finished = 1;
+
+    if (g_json_mode) {
+        diag_emit_json_summary();
+        return;
+    }
+
     if (g_error_count <= 0) return;
 
     if (g_error_count == 1) {
@@ -244,4 +334,5 @@ void diag_reset(void) {
     g_file_count = 0;
     g_error_count = 0;
     g_warning_count = 0;
+    g_finished = 0;
 }

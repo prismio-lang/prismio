@@ -594,6 +594,183 @@ model produces.
 
 ---
 
+## Session of 2026-08-09 (second) — views: the safety half landed, the speed half was somewhere else
+
+Suite **94/94** (was 92). Fixpoint holds warm and cold, cold == warm, the oracle agrees on 13
+sources, source lists agree, and **65 of 65 programs in `tests/` and `aif/corpus/` compile to
+byte-identical IR** — the only program whose output changes is the new fixture that exercises the
+new rule. **The seed did not need refreshing**: no new syntax, and the FFI surface only grew
+(`aif_vs_view_of`, `str_slice`), so the committed seed still parses `src/` and still links. Cold
+start from it verified.
+
+**Read the brief for this session with two corrections.**
+
+- **Handles did not land.** The brief said they had, in "session 2". HEAD was the xlang-measurement
+  merge, the tree was clean, there is no handle table anywhere, and `ptr_to_node` is still
+  `return ptr`. The previous section of this document says so too. Nothing here depends on them,
+  and §1 below explains why views did not need them.
+- **"209 T1 string sites" is stale.** It is **266**, of which **264** are arena-served. More
+  importantly the number is the wrong measurement — see §3.
+
+### 1. SPEC 8.4's E-VIEW landed, and it closes a real use-after-free
+
+`list_get`'s result is a view of its container, and the container's escape now rises to cover it:
+
+```
+E-VIEW    v is a view of c    ⟹    E(c) ⊒ E(v)
+```
+
+**The bug it closes was live in the shipping compiler.** `tests/test_53_aif_views.psm`'s
+`view_escapes_by_return` compiled, before this session, to:
+
+```llvm
+%12 = call ptr @list_get(ptr %11, i32 0)   ; take a reference into the list
+call void @list_release(ptr %13)           ; free the list AND its elements
+ret ptr %12                                ; return the freed pointer
+```
+
+It ran, exited 0, printed **0 and 0** where the answers are 7 and 41, and reported
+`17 allocated, 17 released, 0 leaked, 0 violation(s)`.
+
+**`--verify` cannot see this class of bug, and that is worth carrying forward.** Its accounting is
+per allocation, and here every allocation *was* correctly released — reading one afterwards is a
+different property. This is "a check that cannot fail" in the sense rule 5 already records, reached
+from a new direction. The fixture asserts its values itself for exactly that reason, and exits 1 on
+the old compiler.
+
+Four things about the implementation, three of which are corrections of an earlier attempt:
+
+- **It is provenance, not a points-to edge, and not a constraint.** The element key stays exactly
+  what it was — a points-to edge saying *which values* a read returns. Provenance rides beside it
+  saying *how long the container must live*. Merging them is the bug this reconciles: putting the
+  container into the element set is what list_get used to do, and it made a receiving container call
+  `list_release` on a struct.
+- **Provenance must ride the points-to graph, not the value set.** A view is nearly always bound to
+  a name before it travels, and `return e` sees the value set of `e`, not of the `list_get`. So a
+  key accumulates the provenance of everything bound into it (`key_views`), grown in the points-to
+  phase because it reads no fact.
+- **The rule rides the rules that already bound a value's lifetime** — LIVE_IN, ESCAPE_CALLER,
+  ESCAPE_GLOBAL, OPAQUE, STORE, RETAIN_IN — rather than being its own constraint. The direction is
+  the opposite of every other rule in the solver: the *collection* is raised from the view.
+- **A is deliberately untouched.** SPEC 8.4 permits overlapping mutable views.
+
+**Three over-firings, each caught by measurement, each now a named control in `test_53`:**
+
+| what it coupled | cost, measured |
+|---|---|
+| reading the element key directly | 9 sites T1 → T2; the key is object-insensitive, so a read from any list was a view of every list in the file. Demoted three untouched containers in `test_47`. |
+| treating a scalar read as a view | `test_50`'s `List<Int>` demoted for returning an `Int` — a copy in a register that keeps nothing alive |
+| bounding by "the caller" across a function boundary | `g5_asset_cache` lost its `list_release` for a view taken in a callee, which cannot outlive the activation it was taken in |
+
+The last one is a **case analysis, not a shortcut**, and it is written at the site: a Region target
+names a scope of the binding's function, so when the collection was allocated elsewhere it reached
+that function as an argument (live across the call already), as a return (E-RETURN has it at Caller),
+or from static storage (E-STATIC has it Global). All three are already implied. A view that really
+outlives the callee arrives with a function-independent target instead.
+
+**Net effect on the corpus: zero sites move.** g1–g6, test_47, test_48, test_50, test_52 and
+`src/main.psm` are all untouched, and `test_53` moves exactly two. That is the correct answer, not
+an inert one — and it is why the fixture had to go into `tools/aif_differential.py`. Without it both
+arms would have agreed *by never running the rule*. Verified discriminating: the pre-session compiler
+disagrees with the current oracle on exactly those two sites.
+
+**The cost is 7 leaked allocations in `test_53`, and it is SPEC 8.4's stated trade** — the collection
+sinks a tier, and a T2 return has no free point in this compiler. A leak instead of a use-after-free
+is the sound direction. If that number drops, the container is being freed under a live reference
+again, and only `test_53`'s own exit code says so.
+
+**Handles were not needed, and the reason is a fact about the runtime.** A `List` is two
+allocations: the `XefyList*` handle, which is stable, and `data`, the element block, which is what
+`list_push` reallocs. So `(XefyList*, index)` already satisfies SPEC 8.4's invalidation clause
+verbatim — "reallocation moves the buffer; the handle still resolves". What general handles would
+additionally buy is object relocation and SoA element references, and SoA was out of scope.
+
+### 2. The speed half: it was never the malloc
+
+**`str_substring` cannot be linear.** A `String` is a NUL-terminated `char*`, so bounding `start` and
+clamping `length` costs `strlen(s)` — the whole source, **once per token**. Measured on a 21 KB
+buffer: **1.815 ms with the call, 0.031 ms with it removed — 98% of the tokenizer** — and doubling
+the input multiplies the time by ~2.9 rather than by 2.
+
+**This is the same defect `str_char_at` had, and half the fix was already in the tree.**
+`createLexer` measures the input once into `Lexer.length`, and the comment there says why: a
+per-character `strlen` made scanning quadratic. That fix reached the character reads and never
+reached the slices, which is where the tokens are cut.
+
+`str_slice(s, start, length, base_len)` takes the length the caller already has. One runtime
+function, five call sites in the lexer.
+
+| | before | after |
+|---|---|---|
+| g7 tokenizer, 21 KB | 1.833 ms | **0.074 ms** (24.8×) |
+| the compiler's own frontend on `src/main.psm` | 78.0 ms | **62.1 ms** (−20%) |
+| scaling, per doubling of input | ×2.9 | **×1.8** |
+
+### 3. The cross-language numbers, and the axis that did not exist
+
+**The harness had no string/parse workload.** g1–g6 are object-graph and numeric; BENCHMARKS §3.2
+lists this one as **B2** and marks it buildable; it was never built. The "1.1–1.4× Rust for
+string/parse" the brief asked for a delta against **is not recorded anywhere in this repository** —
+there was nothing to re-run and no projection to compare with. So the axis was built:
+`aif/evidence/xlang/{g7bench.py, prismio/g7.psm, prismio/g7_substring.psm, rust/g7_idiomatic.rs,
+rust/g7_owned.rs}`, all asserting `checksum tokens 427914`.
+
+| | median | rel |
+|---|---:|---:|
+| Rust idiomatic — `&src[a..b]`, no copy | 0.019 ms | 1.00× |
+| Rust owned — copy per token | 0.103 ms | 5.49× |
+| **Prismio — `str_slice`** (today) | **0.074 ms** | **3.92×** |
+| Prismio — `str_substring` (before) | 1.833 ms | **97.31×** |
+| Prismio — scan only, slicing removed | 0.031 ms | 1.78× |
+
+Full write-up in [`aif/evidence/RESULTS-string.md`](aif/evidence/RESULTS-string.md). Three readings:
+
+- **Prismio was 97× idiomatic Rust on string-heavy code** — by an order of magnitude the worst
+  number this project has recorded, on the one axis nothing measured.
+- **With the representation held constant this compiler beats rustc**: 3.92× against Rust-doing-the-
+  same-copy at 5.49× is **0.71×**, the same shape as g2's 0.63×. The scan-only row agrees
+  independently at 1.78×.
+- **The whole remaining gap is the copy** — 3.92× against 1.78×, so ~2.2×. That is what a view
+  deletes, measured rather than projected.
+
+**The manifest did not move at all: 367 sites, 266 T1 / 101 T2, byte-identical.** Not one allocation
+site disappeared, and the reason is the correction to the brief's question. The lexer's five
+per-token slice sites are **T2 `owned`** — malloc — not among the 264 arena-served T1 at all. A T1
+site is already a bump allocation and costs nearly nothing. **Views target the T2 population; the T1
+count was the wrong measurement of the right thing.** And `str_trim` has **no callers** — one mention
+in a comment — so making it non-allocating buys nothing and was not done.
+
+### Four things to carry forward
+
+- **"Reach for the input before the mechanism" got its fifth outing, and this time the input was a
+  length.** Twice a missing declaration, once a stale default, once two `-O` flags, now a parameter
+  that the caller already had in a struct field with a comment explaining why it was there.
+- **A fix can land on half of its own instances and read as complete.** The `Lexer.length` comment
+  states the principle correctly and the slices went on rescanning for however many sessions. Grep
+  for the *other* callers of the thing you just fixed.
+- **An unmeasured axis is not a small risk.** Six benchmark programs and not one of them touched a
+  string, in a project whose flagship program is a compiler. The gap there was 97×, and it was
+  invisible because nobody had a row for it.
+- **A rule that fires everywhere passes the positive half of its own test.** E-VIEW's first three
+  implementations all made `test_53`'s two escaping functions T2 and were all wrong. The controls
+  are the test.
+
+### Next, re-ranked on this session's measurements
+
+1. **Views proper — the `(base, offset, length)` value — together with by-value POD returns.**
+   They are the same project: a view is three words and this language has no by-value struct return,
+   which is exactly the chain designed-and-not-built last session, ending at "the call expression
+   must become an AIF allocation site in the caller" with a use-after-free failure mode. Now carries
+   a measured prize of ~2.2× on string/parse **and** the 1.09×–8.88× inline-`List<T>` prize, which
+   is what makes it worth the risk. `str_slice` took the cheap 24.8× that needed none of it.
+2. **Caller-scope `E` plus container disposition.** Unchanged, and E-VIEW gives it a second reason:
+   `test_53`'s 7 leaked allocations are the T2-return class, and views make that class bigger.
+3. **Handles.** Unchanged and still uncosted since last session's count. Views did not need them;
+   SoA still does.
+4. `workload`, SoA, hot/cold: unchanged, still behind handles.
+
+---
+
 ## Session of 2026-08-09 — inline struct fields, and two measured non-results
 
 Three items landed and handles slipped. **Two of the three moved no number, and that is the

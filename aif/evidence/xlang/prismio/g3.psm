@@ -173,16 +173,16 @@ fn main() -> Int {
     }
 
     print("checksum nodes ")
-    println_int(list_len(nodes))
+    println(list_len(nodes))
     print("checksum visited ")
-    println_int(visited)
+    println(visited)
     print("checksum visible ")
-    println_int(visible)
+    println(visible)
 
     let mut j = 0
     while (j < frames) {
         print("frame_ns ")
-        println_int(list_get(samples, j))
+        println(list_get(samples, j))
         j = j + 1
     }
     return 0

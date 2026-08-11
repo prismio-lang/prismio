@@ -1,0 +1,28 @@
+enum UmsDependencyScope {
+    UNKNOWN,
+    IMPLEMENTATION,
+    API,
+    TEST_IMPLEMENTATION
+}
+
+struct UmsDependency {
+    scope: UmsDependencyScope,
+    name: String,
+    constraint: String,
+    line: Int,
+    col: Int,
+    len: Int
+}
+
+fn umsDependencyFind(dependencies: List<UmsDependency>, scope: UmsDependencyScope,
+                     name: String) -> Int {
+    let mut i = 0
+    while (i < list_len(dependencies)) {
+        let dependency = list_get(dependencies, i)
+        if (dependency.scope == scope and str_equals(dependency.name, name) == 1) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}

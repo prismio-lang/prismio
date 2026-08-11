@@ -163,6 +163,6 @@ fn main() -> Int {
         run = run + 1
     }
     print("checksum: ")
-    println_int(acc)
+    println(acc)
     return 0
 }

@@ -1,0 +1,140 @@
+// SPEC 8.4 -- views, and the lifetime rule that makes them safe without
+// lifetimes.
+//
+// An element reference IS a view (SPEC 8.4, "Element references are views
+// too"), so `list_get` produces one, and E-VIEW says the collection must
+// outlive it:
+//
+//     E-VIEW    v is a view of c    =>    E(c) ⊒ E(v)
+//
+// The point of the rule is what it does *not* do. Rust rejects a view that
+// outlives its collection; AIF raises the collection's escape to match, the
+// collection sinks a tier, and compilation succeeds. The cost lands in the
+// manifest instead of in a diagnostic.
+//
+// What this file pins is that the rule fires exactly where a reference really
+// can outlive its container, and nowhere else. Three of the five functions
+// below must be *unaffected* by it, and they are the ones that regressed twice
+// while it was being built.
+
+struct Item {
+    value: Int
+}
+
+// ---------------------------------------------------------------------------
+// The hazard. Without E-VIEW this function frees `items` at the closing brace,
+// elements and all, and hands the caller a pointer into the wreckage -- a
+// use-after-free that nothing in the model noticed. `items` escapes to the
+// caller instead, so it sinks T1 -> T2 and the scope drop does not happen.
+// ---------------------------------------------------------------------------
+fn view_escapes_by_return(n: Int) -> Item {
+    let items: List<Item> = list_new()
+    list_push(items, Item { value: n })
+    list_push(items, Item { value: n + 1 })
+    return list_get(items, 0)
+}
+
+// The same escape one hop later. The view is bound to a name first, which is
+// why provenance has to ride the points-to graph: the `return` sees the value
+// set of `e`, not of the `list_get` that produced it.
+fn view_escapes_through_a_binding(n: Int) -> Item {
+    let items: List<Item> = list_new()
+    list_push(items, Item { value: n })
+    let e = list_get(items, 0)
+    return e
+}
+
+// ---------------------------------------------------------------------------
+// The three cases the rule must leave alone.
+// ---------------------------------------------------------------------------
+
+// A view used and discarded inside the scope that owns the collection. The
+// container is still reclaimed at the brace. This one demoted when E-VIEW read
+// the element key directly: the key is object-insensitive, so every element of
+// every list in the file resolved through it and one escaping list demoted all
+// the others.
+fn view_stays_local() -> Int {
+    let items: List<Item> = list_new()
+    list_push(items, Item { value: 3 })
+    list_push(items, Item { value: 4 })
+
+    let mut total = 0
+    let mut i = 0
+    while (i < list_len(items)) {
+        let e = list_get(items, i)
+        total = total + e.value
+        i = i + 1
+    }
+    return total
+}
+
+// A scalar read out of a container is a copy, not a view: it goes into a
+// register and keeps nothing alive. Returning one must not demote the list.
+fn scalar_read_is_not_a_view() -> Int {
+    let nums: List<Int> = list_new()
+    list_push(nums, 10)
+    list_push(nums, 32)
+    return list_get(nums, 0) + list_get(nums, 1)
+}
+
+// A view taken in a callee, of a collection its caller owns. The view dies with
+// this activation, which is nested inside the caller's, so the collection needs
+// no constraint from here -- it is already live across the call that passed it
+// down. Bounding it by "the caller" instead cost g5_asset_cache its release.
+fn sum_visible(items: List<Item>) -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < list_len(items)) {
+        let e = list_get(items, i)
+        total = total + e.value
+        i = i + 1
+    }
+    return total
+}
+
+fn view_in_a_callee() -> Int {
+    let items: List<Item> = list_new()
+    list_push(items, Item { value: 100 })
+    list_push(items, Item { value: 23 })
+    return sum_visible(items)
+}
+
+// The values are asserted rather than printed, and that is the point of the
+// fixture. Before E-VIEW existed this program compiled, ran, exited 0, and
+// reported `0 leaked, 0 violation(s)` under --verify -- while the first two
+// functions returned **0 instead of 7 and 41**, because the container was freed
+// with its elements before the caller read the pointer.
+//
+// So neither the suite's exit-code check nor the verify accounting could see
+// it: verify counts allocations, and here every allocation *was* correctly
+// released. Reading one afterwards is a different property, and only a value
+// comparison catches it.
+fn main() -> Int {
+    let first = view_escapes_by_return(7)
+    if (first.value != 7) {
+        println("FAIL: view_escapes_by_return read freed memory")
+        return 1
+    }
+
+    let second = view_escapes_through_a_binding(41)
+    if (second.value != 41) {
+        println("FAIL: view_escapes_through_a_binding read freed memory")
+        return 1
+    }
+
+    if (view_stays_local() != 7) {
+        println("FAIL: view_stays_local")
+        return 1
+    }
+    if (scalar_read_is_not_a_view() != 42) {
+        println("FAIL: scalar_read_is_not_a_view")
+        return 1
+    }
+    if (view_in_a_callee() != 123) {
+        println("FAIL: view_in_a_callee")
+        return 1
+    }
+
+    println("views ok")
+    return 0
+}

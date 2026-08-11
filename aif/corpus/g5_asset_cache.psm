@@ -281,12 +281,12 @@ fn main() -> Int {
     let evicted = evict_unused(scene.cache)
 
     print("entities: ")
-    println_int(list_len(scene.entities))
+    println(list_len(scene.entities))
     print("submitted: ")
-    println_int(total)
+    println(total)
     print("batches: ")
-    println_int(scene.batches)
+    println(scene.batches)
     print("evicted: ")
-    println_int(evicted)
+    println(evicted)
     return 0
 }

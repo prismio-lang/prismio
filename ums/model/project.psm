@@ -1,0 +1,46 @@
+import ums.targets.target
+import ums.dependency.dependency
+
+extern fn str_clone(value: String borrow) -> String produce(free)
+
+struct UmsProjectMetadata {
+    name: String,
+    version: String,
+    prismioVersion: String
+}
+
+// Build policy is intentionally not part of project metadata. Profiles and
+// cross-target settings can grow here without changing the project's identity.
+struct UmsBuildConfiguration {
+    profile: String,
+    stateDirectory: String,
+    buildDirectory: String
+}
+
+struct UmsProjectModel {
+    root: String,
+    manifestPath: String,
+    metadata: UmsProjectMetadata,
+    build: UmsBuildConfiguration,
+    targets: List<UmsTarget>,
+    dependencies: List<UmsDependency>
+}
+
+fn umsProjectModel(root: String, manifestPath: String, profile: String) -> UmsProjectModel {
+    return UmsProjectModel {
+        root: str_clone(root),
+        manifestPath: str_clone(manifestPath),
+        metadata: UmsProjectMetadata {
+            name: str_clone(""),
+            version: str_clone(""),
+            prismioVersion: str_clone("")
+        },
+        build: UmsBuildConfiguration {
+            profile: str_clone(profile),
+            stateDirectory: str_clone(".prismio"),
+            buildDirectory: str_clone("build")
+        },
+        targets: list_new(),
+        dependencies: list_new()
+    }
+}

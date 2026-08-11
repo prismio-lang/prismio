@@ -1,0 +1,4 @@
+fn main() -> Int {
+    println("UMS fixture")
+    return 0
+}

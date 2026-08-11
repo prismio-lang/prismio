@@ -7,13 +7,6 @@ import ir.bridge
 import common.diagnostics
 
 fn semaBuiltinCallType(name: String, argPtr: String) -> TypeInfo {
-    if (str_equals(name, "print") == 1 or str_equals(name, "println") == 1) {
-        return typeVoid()
-    }
-    if (str_equals(name, "print_int") == 1 or str_equals(name, "println_int") == 1) { return typeVoid() }
-    if (str_equals(name, "print_float") == 1 or str_equals(name, "println_float") == 1) { return typeVoid() }
-    if (str_equals(name, "print_bool") == 1 or str_equals(name, "println_bool") == 1) { return typeVoid() }
-    if (str_equals(name, "print_char") == 1 or str_equals(name, "println_char") == 1) { return typeVoid() }
     if (str_equals(name, "drop") == 1) { return typeVoid() }
 
     // REQUIREMENTS 4. The narrowing half. `T?` cannot be used as a `T` -- that
@@ -50,12 +43,6 @@ fn semaBuiltinCallType(name: String, argPtr: String) -> TypeInfo {
 }
 
 fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: String) -> Bool {
-    if (str_equals(name, "print") == 1 or str_equals(name, "println") == 1) {
-        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
-        semaExpr(module, ptr_to_node(argPtr))
-        return true
-    }
-
     // drop(x): deterministic, safe free. Consumes (moves) an owned value, so
     // use-after-drop and double-drop are caught by move tracking.
     if (str_equals(name, "drop") == 1) {
@@ -151,19 +138,6 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: St
         // a release the container can only make if it owns the old value, which
         // is the question this level answers for teardown and not for overwrite.
         semaConsumeOperand(ptr_to_node(a1.next))
-        return true
-    }
-
-    let mut expected = typeInvalid()
-    if (str_equals(name, "print_int") == 1 or str_equals(name, "println_int") == 1) { expected = typeInt() }
-    if (str_equals(name, "print_float") == 1 or str_equals(name, "println_float") == 1) { expected = typeFloat() }
-    if (str_equals(name, "print_bool") == 1 or str_equals(name, "println_bool") == 1) { expected = typeBool() }
-    if (str_equals(name, "print_char") == 1 or str_equals(name, "println_char") == 1) { expected = typeChar() }
-
-    if (typeIsValid(expected)) {
-        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
-        let actual = semaExpr(module, ptr_to_node(argPtr))
-        semaExpectAssignable(ptr_to_node(argPtr), str_concat(diagQuote(name), " argument"), expected, actual)
         return true
     }
 

@@ -1,7 +1,9 @@
+import json
 import re
 import subprocess
 import sys
 import os
+import tempfile
 from pathlib import Path
 from shutil import which
 
@@ -199,6 +201,90 @@ def run_cli_test():
     if result.stderr:
         print(result.stderr)
     return False
+
+
+def run_check_command_test():
+    """The analysis-only IDE boundary and its versioned JSON Lines output."""
+    print(f"\n{BLUE}--- Running cli_check_protocol ---{RESET}")
+
+    valid = TEST_DIR / "test_01_variables.psm"
+    invalid = TEST_DIR / "neg_01_type_mismatch.psm"
+    artifact = TEST_DIR / "test_01_variables.exe"
+    cleanup_files(artifact)
+
+    with tempfile.TemporaryDirectory(prefix="prismio-check-") as temp_dir:
+        empty = Path(temp_dir) / "empty.psm"
+        empty.write_text("", encoding="utf-8")
+        empty_result = run_command([str(PRISMIO_EXE), "check", str(empty)])
+    if empty_result.returncode != 0:
+        print(f"{RED}[FAIL] `prismio check` rejected an empty source file{RESET}")
+        print(empty_result.stdout or empty_result.stderr)
+        return False
+
+    human = run_command([str(PRISMIO_EXE), "check", str(valid)])
+    if human.returncode != 0:
+        print(f"{RED}[FAIL] `prismio check` rejected a valid program{RESET}")
+        print(human.stdout or human.stderr)
+        return False
+    if artifact.exists():
+        print(f"{RED}[FAIL] `prismio check` created a native artifact{RESET}")
+        cleanup_files(artifact)
+        return False
+
+    machine_ok = run_command([
+        str(PRISMIO_EXE), "check", str(valid), "--diagnostic-format=json"
+    ])
+    machine_bad = run_command([
+        str(PRISMIO_EXE), "check", str(invalid), "--diagnostic-format=json"
+    ])
+
+    def records(result):
+        try:
+            return [json.loads(line) for line in result.stderr.splitlines() if line]
+        except json.JSONDecodeError as error:
+            print(f"{RED}[FAIL] diagnostic stream is not JSON Lines: {error}{RESET}")
+            print(result.stderr)
+            return None
+
+    ok_records = records(machine_ok)
+    bad_records = records(machine_bad)
+    if ok_records is None or bad_records is None:
+        return False
+
+    if machine_ok.returncode != 0 or ok_records != [{
+        "kind": "summary", "schemaVersion": 1, "errors": 0, "warnings": 0
+    }]:
+        print(f"{RED}[FAIL] successful JSON check did not emit a clean summary{RESET}")
+        print(machine_ok.stderr)
+        return False
+
+    diagnostics = [r for r in bad_records if r.get("kind") == "diagnostic"]
+    summaries = [r for r in bad_records if r.get("kind") == "summary"]
+    located_errors = [
+        r for r in diagnostics
+        if r.get("severity") == "error"
+        and str(r.get("file", "")).endswith(invalid.name)
+        and r.get("line", 0) > 0
+        and r.get("column", 0) > 0
+        and r.get("length", 0) > 0
+        and r.get("message")
+    ]
+
+    if machine_bad.returncode == 0 or not located_errors:
+        print(f"{RED}[FAIL] rejected JSON check has no located error{RESET}")
+        print(machine_bad.stderr)
+        return False
+    if len(summaries) != 1 or summaries[0].get("errors", 0) < 1:
+        print(f"{RED}[FAIL] rejected JSON check has no final error summary{RESET}")
+        print(machine_bad.stderr)
+        return False
+    if "-->" in machine_bad.stderr or "aborting due to" in machine_bad.stderr:
+        print(f"{RED}[FAIL] human diagnostic rendering leaked into JSON mode{RESET}")
+        print(machine_bad.stderr)
+        return False
+
+    print(f"{GREEN}[PASS] check is analysis-only and emits schema v1 JSON Lines{RESET}")
+    return True
 
 
 def run_punned_slot_invariant_test():
@@ -405,6 +491,111 @@ def run_aif_rc_test():
         return False
 
     print(f"{GREEN}[PASS] T3 is counted where it is ours and nowhere else{RESET}")
+    return True
+
+
+def run_aif_view_test():
+    """SPEC 8.4's E-VIEW, checked in the manifest and in the IR.
+
+    Both halves are load-bearing and the *negative* one is what took three
+    attempts to get right. E-VIEW couples a collection's lifetime to a reference
+    read out of it, and the obvious implementations couple far too much:
+
+      - reading the element key directly makes every read a view of every list
+        in the file, because that key is object-insensitive. It demoted three
+        untouched containers in test_47.
+      - treating a scalar read as a view demoted a `List<Int>` for returning an
+        `Int`, which is a copy in a register and keeps nothing alive.
+      - bounding the collection by "the caller" when the view is bound in
+        another function cost g5_asset_cache its list_release, for a view that
+        cannot outlive the activation it was taken in.
+
+    So the assertion is exact: two sites rise, three named controls do not, and
+    the release disappears from the escaping function while staying in the local
+    one. A rule that fires everywhere passes the first half and is useless.
+    """
+    print(f"\n{BLUE}--- Running aif_view ---{RESET}")
+    problems = []
+    fixture = TEST_DIR / "test_53_aif_views.psm"
+
+    result = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    if result.returncode != 0:
+        print(f"{RED}[FAIL] aif exited {result.returncode}{RESET}")
+        print(result.stdout or result.stderr)
+        return False
+
+    tiers = {}
+    for line in result.stdout.splitlines():
+        m = re.match(r"^(\S+?)\s*(T[0-9])\s+(\S+)\s+(\S+)\s", line)
+        if m:
+            tiers[m.group(1)] = (m.group(2), m.group(3))
+
+    # The collection sinks a tier because a reference into it outlives the
+    # scope. SPEC 8.4: "The collection's escape rises to match."
+    for sym in ("view_escapes_by_return__Int#0",
+                "view_escapes_through_a_binding__Int#0"):
+        got = tiers.get(sym)
+        if got is None:
+            problems.append(f"{sym}: not in the manifest")
+        elif got[0] != "T2":
+            problems.append(f"{sym}: {got[0]}, expected T2 -- a reference into "
+                            "this list is returned, so the list must escape "
+                            "with it or the caller reads freed memory")
+
+    # ...and the three that must not move. Each one is a way the rule
+    # over-fired while it was being built.
+    for sym, why in (
+        ("view_stays_local__Void#0",
+         "the view never leaves the scope that owns the list"),
+        ("scalar_read_is_not_a_view__Void#0",
+         "an Int read out of a List<Int> is a copy, not a view"),
+        ("view_in_a_callee__Void#0",
+         "the view is taken in a callee, so it dies inside this activation"),
+    ):
+        got = tiers.get(sym)
+        if got is None:
+            problems.append(f"{sym}: not in the manifest")
+        elif got[0] != "T1":
+            problems.append(f"{sym}: {got[0]}, expected T1 -- {why}")
+
+    # The IR half. The tier is only interesting because of what it deletes.
+    out = TEST_DIR / "t53_view.ll"
+    result = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(out)])
+    if result.returncode != 0:
+        problems.append(f"build exited {result.returncode}")
+    else:
+        ir = out.read_text(encoding="utf-8", errors="replace")
+        cleanup_files(out)
+
+        def body(name):
+            # The mangled name carries the parameter suffix, and `\b` does not
+            # separate `return` from `__Int` -- an underscore is a word
+            # character. Match the whole symbol.
+            m = re.search(r"^define[^\n]*@" + re.escape(name) + r"\(.*?^}", ir,
+                          re.S | re.M)
+            return m.group(0) if m else ""
+
+        escaping = body("view_escapes_by_return__Int")
+        local = body("view_stays_local__Void")
+        if not escaping or not local:
+            problems.append("could not find the fixture's functions in the IR")
+        else:
+            if "list_release" in escaping:
+                problems.append("view_escapes_by_return still calls list_release "
+                                "-- it frees the list and its elements and then "
+                                "returns a pointer into them")
+            if "list_release" not in local:
+                problems.append("view_stays_local no longer calls list_release "
+                                "-- E-VIEW is over-firing and the container leaks")
+
+    if problems:
+        print(f"{RED}[FAIL] E-VIEW is not coupling what it should{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] a collection outlives every view of it, and only "
+          f"then{RESET}")
     return True
 
 
@@ -863,6 +1054,24 @@ def run_aif_verify_test():
         # deletion removed. Before field edges were counted this fixture
         # segfaulted -- the collector subtracted references nobody had added.
         "test_52_aif_cycle_collector": 0,
+        # SPEC 8.4 views, and the only entry in this table where a *rise* is the
+        # correct answer. The two functions that return a reference into a list
+        # they own make that list escape to the caller (E-VIEW), so the scope
+        # drop declines it -- 7 leaked, which is the two lists, their four Items
+        # and one Int.
+        #
+        # It was 0 before, and the 0 was wrong: the lists were freed with their
+        # elements and the pointers handed back anyway. **`--verify` cannot see
+        # that.** Its accounting is per allocation, and every one of these
+        # allocations *was* correctly released -- reading one afterwards is a
+        # different property. The fixture asserts the values itself for exactly
+        # that reason, and on the pre-E-VIEW compiler it exits 1 while this
+        # table reads 0 leaked, 0 violations.
+        #
+        # So a drop here is not progress. It means the container is being freed
+        # under a live reference again, and only test_53's own exit code says so.
+        # These 7 go to zero when a T2 return gains a free point, and not before.
+        "test_53_aif_views": 7,
     }
 
     exe = TEST_DIR / "aif_verify_probe.exe"
@@ -1141,6 +1350,11 @@ def main():
     else:
         failed += 1
 
+    if run_check_command_test():
+        passed += 1
+    else:
+        failed += 1
+
     if run_aif_test():
         passed += 1
     else:
@@ -1162,6 +1376,11 @@ def main():
         failed += 1
 
     if run_aif_rc_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_view_test():
         passed += 1
     else:
         failed += 1

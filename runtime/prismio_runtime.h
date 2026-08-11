@@ -20,6 +20,7 @@ int file_exists(const char* path);
 char* read_file(const char* path);
 char* get_directory(const char* path);
 char* join_path(const char* directory, const char* filename);
+char* current_directory(void);
 int delete_file(const char* path);
 char* list_modules(const char* directory);
 

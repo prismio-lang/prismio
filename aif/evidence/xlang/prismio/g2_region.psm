@@ -121,18 +121,18 @@ fn main() -> Int {
     }
 
     print("checksum submitted ")
-    println_int(totals.submitted)
+    println(totals.submitted)
     print("checksum culled ")
-    println_int(totals.culled)
+    println(totals.culled)
     print("arena_objects ")
-    println_int(arena_objects())
+    println(arena_objects())
     print("arena_regions ")
-    println_int(arena_regions())
+    println(arena_regions())
 
     let mut j = 0
     while (j < frames) {
         print("frame_ns ")
-        println_int(list_get(samples, j))
+        println(list_get(samples, j))
         j = j + 1
     }
     return 0

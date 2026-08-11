@@ -165,10 +165,10 @@ fn main() -> Int {
     let visible = count_visible(nodes, 1000.0)
 
     print("nodes: ")
-    println_int(list_len(nodes))
+    println(list_len(nodes))
     print("visited: ")
-    println_int(visited)
+    println(visited)
     print("visible: ")
-    println_int(visible)
+    println(visible)
     return 0
 }

@@ -1,0 +1,68 @@
+enum UmsAstValueKind {
+    UNKNOWN,
+    STRING,
+    INTEGER,
+    BOOLEAN,
+    IDENTIFIER
+}
+
+extern fn str_clone(value: String borrow) -> String produce(free)
+
+enum UmsAstStatementKind {
+    UNKNOWN,
+    ASSIGNMENT,
+    CALL
+}
+
+struct UmsAstValue {
+    kind: UmsAstValueKind,
+    text: String,
+    line: Int,
+    col: Int,
+    len: Int
+}
+
+struct UmsAstStatement {
+    kind: UmsAstStatementKind,
+    name: String,
+    value: UmsAstValue,
+    arguments: List<UmsAstValue>,
+    // Indices into UmsAstDocument.statements. Keeping syntax edges as indices
+    // avoids a recursive nominal type, so a manifest AST never needs runtime
+    // reference counting merely because blocks can nest.
+    children: List<Int>,
+    hasBlock: Bool,
+    line: Int,
+    col: Int,
+    len: Int
+}
+
+struct UmsAstDocument {
+    statements: List<UmsAstStatement>,
+    roots: List<Int>
+}
+
+fn umsAstEmptyValue() -> UmsAstValue {
+    return UmsAstValue {
+        kind: UmsAstValueKind.UNKNOWN,
+        text: str_clone(""),
+        line: 0,
+        col: 0,
+        len: 0
+    }
+}
+
+fn umsAstStatement(kind: UmsAstStatementKind, name: String,
+                   line: Int, col: Int, len: Int) -> UmsAstStatement {
+    return UmsAstStatement {
+        kind: kind,
+        name: str_clone(name),
+        value: umsAstEmptyValue(),
+        arguments: list_new(),
+        children: list_new(),
+        hasBlock: false,
+        line: line,
+        col: col,
+        len: len
+    }
+}

@@ -26,6 +26,6 @@ fn bump(unique x: Buf, unique y: Buf) -> Int {
 
 fn main() -> Int {
     let p = Buf { a: 1, b: 2 }
-    println_int(bump(p, p))
+    println(bump(p, p))
     return 0
 }

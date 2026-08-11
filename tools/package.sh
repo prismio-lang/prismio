@@ -86,17 +86,10 @@ esac
 printf '%s' "$RUNTIME_HASH" > "$LIB/runtime.hash"
 printf '  %-12s %s\n' "runtime.hash" "$RUNTIME_HASH"
 
-# stdlib/ is part of the published layout but has no content yet: Prismio has no
-# module library, only the runtime externs declared per-file in .psm source.
-if [ ! -f "$STDLIB/README.md" ]; then
-    cat > "$STDLIB/README.md" <<'EOF'
-# stdlib
-
-Reserved for the Prismio module library. Empty for now -- the language currently
-exposes runtime functionality through `extern fn` declarations resolved against
-runtime.a, not through importable stdlib modules.
-EOF
-fi
+# The self-hosted standard library ships as source and is loaded by the compiler.
+# Keep the directory name in the installed layout (`stdlib`) independent from
+# the repository's concise source root (`std`).
+cp "$REPO/std/"*.psm "$STDLIB/"
 
 green "Packaged toolchain at $OUTDIR"
 find "$OUTDIR" -type f | sed "s|^$OUTDIR/|  |"

@@ -137,14 +137,14 @@ fn main() -> Int {
     }
 
     print("checksum alive ")
-    println_int(count_alive(ps))
+    println(count_alive(ps))
     print("checksum beyond ")
-    println_int(count_beyond(ps, 1000.5))
+    println(count_beyond(ps, 1000.5))
 
     let mut j = 0
     while (j < frames) {
         print("frame_ns ")
-        println_int(list_get(samples, j))
+        println(list_get(samples, j))
         j = j + 1
     }
     return 0

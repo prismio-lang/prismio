@@ -148,10 +148,10 @@ fn main() -> Int {
     }
 
     print("alive: ")
-    println_int(world_count_alive(w))
+    println(world_count_alive(w))
     print("orders: ")
-    println_int(total_orders)
+    println(total_orders)
     print("kills: ")
-    println_int(total_kills)
+    println(total_kills)
     return 0
 }

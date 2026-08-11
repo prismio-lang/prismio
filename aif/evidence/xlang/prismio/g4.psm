@@ -174,14 +174,14 @@ fn main() -> Int {
     }
 
     print("checksum entities ")
-    println_int(w.entity_count)
+    println(w.entity_count)
     print("checksum draws ")
-    println_int(total_drawn)
+    println(total_drawn)
 
     let mut j = 0
     while (j < frames) {
         print("frame_ns ")
-        println_int(list_get(samples, j))
+        println(list_get(samples, j))
         j = j + 1
     }
     return 0

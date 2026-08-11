@@ -104,6 +104,6 @@ fn main() -> Int {
 
     let alive = count_alive(ps)
     print("alive: ")
-    println_int(alive)
+    println(alive)
     return 0
 }

@@ -96,12 +96,8 @@ try {
 Set-Content (Join-Path $lib 'runtime.hash') $runtimeHash -Encoding ascii -NoNewline
 Write-Host ("  {0,-12} {1}" -f 'runtime.hash', $runtimeHash) -ForegroundColor Green
 
-# stdlib/ is part of the published layout but has no content yet: Prismio has no
-# module library, only the runtime externs declared per-file in .psm source.
-$readme = Join-Path $stdlib 'README.md'
-if (-not (Test-Path $readme)) {
-    Set-Content $readme "# stdlib`n`nReserved for the Prismio module library. Empty for now -- the language currently`nexposes runtime functionality through `extern fn` declarations resolved against`nruntime.lib, not through importable stdlib modules.`n" -Encoding ascii
-}
+# The self-hosted standard library ships as source and is loaded by the compiler.
+Copy-Item (Join-Path $Repo 'std\*.psm') $stdlib -Force
 
 Write-Host "Packaged toolchain at $OutDir" -ForegroundColor Green
 Get-ChildItem $OutDir -Recurse -File | ForEach-Object {

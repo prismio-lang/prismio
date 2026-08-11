@@ -1,0 +1,56 @@
+import ums.model.project
+import ums.model.diagnostic
+
+extern fn join_path(directory: String borrow, child: String borrow) -> String produce(free)
+extern fn str_length(value: String) -> Int
+extern fn str_char_at(value: String, index: Int) -> Char
+extern fn str_concat(left: String, right: String) -> String
+extern fn str_clone(value: String borrow) -> String produce(free)
+
+struct UmsBuildPlan {
+    stateRoot: String,
+    artifactRoot: String
+}
+
+fn umsBuildProfileValid(profile: String) -> Bool {
+    if (str_length(profile) == 0) { return false }
+    let mut i = 0
+    while (i < str_length(profile)) {
+        let current = str_char_at(profile, i)
+        if (umsIsAlnum(current) == false and current != '-' and current != '_') {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+fn umsBuildPlanCreate(project: UmsProjectModel,
+                      diagnostics: List<UmsDiagnostic>) -> UmsBuildPlan {
+    if (umsBuildProfileValid(project.build.profile) == false) {
+        umsDiagnosticAdd(diagnostics, "UMS3001", project.manifestPath, 0, 0, 0,
+            str_concat(str_concat("invalid build profile '", project.build.profile), "'"))
+        return UmsBuildPlan { stateRoot: str_clone(""), artifactRoot: str_clone("") }
+    }
+
+    let stateRoot = join_path(project.root, project.build.stateDirectory)
+    let artifactRoot = join_path(stateRoot, project.build.buildDirectory)
+    let profileRoot = join_path(artifactRoot, project.build.profile)
+    let mut i = 0
+    while (i < list_len(project.targets)) {
+        let target = list_get(project.targets, i)
+        let planned = UmsTarget {
+            kind: target.kind,
+            name: str_clone(target.name),
+            entry: str_clone(target.entry),
+            sourcePath: join_path(project.root, target.entry),
+            outputPath: join_path(profileRoot, target.name),
+            line: target.line,
+            col: target.col,
+            len: target.len
+        }
+        list_set(project.targets, i, planned)
+        i = i + 1
+    }
+    return UmsBuildPlan { stateRoot: stateRoot, artifactRoot: artifactRoot }
+}

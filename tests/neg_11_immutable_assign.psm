@@ -8,6 +8,6 @@
 fn main() -> Int {
     let x = 5
     x = 6
-    println_int(x)
+    println(x)
     return 0
 }

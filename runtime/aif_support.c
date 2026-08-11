@@ -135,6 +135,13 @@ static void bits_clear(Bits* b) {
     if (b->nwords) memset(b->w, 0, (size_t)b->nwords * sizeof(Word));
 }
 
+static int bits_is_empty(const Bits* b) {
+    for (int i = 0; i < b->nwords; i++) {
+        if (b->w[i]) return 0;
+    }
+    return 1;
+}
+
 // dst |= src, reporting whether dst grew.
 static int bits_or(Bits* dst, const Bits* src, const char* what) {
     int changed = 0;
@@ -1014,6 +1021,11 @@ const char* aif_extern_contract(const char* fn, int index) {
 typedef struct {
     int* items;
     int len, cap;
+    // SPEC 8.4 view provenance: the collections these values are views *of*,
+    // held as value-set ids and resolved with everything else at solve time.
+    // Empty for every value set that is not a view, which is nearly all of them.
+    int* views;
+    int vlen, vcap;
 } ValueSet;
 
 static ValueSet* vsets;
@@ -1028,6 +1040,9 @@ int aif_vs_new(void) {
     v->items = NULL;
     v->len = 0;
     v->cap = 0;
+    v->views = NULL;
+    v->vlen = 0;
+    v->vcap = 0;
     return vs_count++;
 }
 
@@ -1047,6 +1062,29 @@ static void vs_push(int vs, int item) {
 void aif_vs_site(int vs, int site) { vs_push(vs, site * 2); }
 void aif_vs_key(int vs, int key)   { vs_push(vs, key * 2 + 1); }
 
+static void vs_push_view(int vs, int cvs) {
+    if (vs < 0 || vs >= vs_count || cvs < 0) return;
+    ValueSet* v = &vsets[vs];
+    for (int i = 0; i < v->vlen; i++) {
+        if (v->views[i] == cvs) return;
+    }
+    if (v->vlen == v->vcap) {
+        v->vcap = v->vcap ? v->vcap * 2 : 2;
+        v->views = (int*)xrealloc(v->views, (size_t)v->vcap * sizeof(int), "AIF view provenance");
+    }
+    v->views[v->vlen++] = cvs;
+}
+
+// SPEC 8.4. Mark this value set as denoting views of `container_vs`.
+//
+// Provenance rather than a points-to edge, and the difference is the whole of
+// item 3's reconciliation. The element key still says *which values* a read can
+// return -- that is what stores through the result need, and merging the
+// container into it is the bug that made a receiving container call
+// list_release on a struct. Provenance says something the points-to graph
+// cannot: *how long the container must live* for the reference to be legal.
+void aif_vs_view_of(int vs, int container_vs) { vs_push_view(vs, container_vs); }
+
 int aif_vs_is_empty(int vs) {
     return (vs < 0 || vs >= vs_count) ? 1 : (vsets[vs].len == 0);
 }
@@ -1055,9 +1093,11 @@ int aif_vs_union(int a, int b) {
     int out = aif_vs_new();
     if (a >= 0 && a < vs_count) {
         for (int i = 0; i < vsets[a].len; i++) vs_push(out, vsets[a].items[i]);
+        for (int i = 0; i < vsets[a].vlen; i++) vs_push_view(out, vsets[a].views[i]);
     }
     if (b >= 0 && b < vs_count) {
         for (int i = 0; i < vsets[b].len; i++) vs_push(out, vsets[b].items[i]);
+        for (int i = 0; i < vsets[b].vlen; i++) vs_push_view(out, vsets[b].views[i]);
     }
     return out;
 }
@@ -1124,6 +1164,14 @@ void aif_argv_end(int base) { argv.len = base; }
 #define AIF_RULE_ALLOC       14   // the root: this is where the value is made
 #define AIF_RULE_A_CONTAIN   15
 
+// SPEC 8.4. A view of a collection -- a slice, or a reference to one element.
+//
+// Appended after the synthetic rules rather than inserted beside the other
+// constraints because AIF_RULE_ALLOC's ordinal is spelled again in
+// src/aif/model.psm. Renumbering here would rename the derivation root there,
+// and the two would disagree without either one failing to build.
+#define AIF_CON_VIEW_OF      16
+
 typedef struct {
     int kind, a, b, c;
     // Where in the source this constraint came from. Carried so a manifest diff
@@ -1163,6 +1211,11 @@ void aif_con_escape_global(int vs)              { con_add(AIF_CON_ESCAPE_GLOBAL,
 void aif_con_unique(int vs)                     { con_add(AIF_CON_UNIQUE, vs, 0, 0); }
 void aif_con_pin(int vs, int tier)              { con_add(AIF_CON_PIN, vs, tier, 0); }
 
+// SPEC 8.4's E-VIEW is not a constraint. It rides the rules that already bound
+// how long a value lives, because that bound is exactly what its collection has
+// to satisfy -- see raise_view_owners. AIF_CON_VIEW_OF survives only as the
+// rule *name* the derivation prints; aif_vs_view_of is what attaches it.
+
 // `drop(x)` lowers to a free, and a stack slot is not a thing that can be freed.
 // A T0 value has no allocation to release -- its storage *is* the frame -- so
 // promoting a value the source explicitly drops turns a working program into
@@ -1193,9 +1246,22 @@ static Bits* holders;       // site id -> set of keys holding it
 // neither: `list_push` is a call, so nothing about it is a move, and two pushes
 // of one value are two owners the language never had to notice.
 static Bits* container_of;
+// SPEC 8.4. key id -> set of *collection sites* that values bound to this key
+// are views of. Provenance has to ride the points-to graph and not the value
+// set alone, because a view is nearly always bound to a name before it travels:
+//
+//     let e = list_get(items, i)      // provenance attaches to this value set
+//     return e                        // ...and must still be here
+//
+// The `return` sees the value set of the identifier `e`, which is a key
+// reference with no view of its own. So a key accumulates the provenance of
+// everything bound into it, and resolve_views unions the direct provenance with
+// every key's. Grown in the points-to phase, which reads no fact -- so this is
+// a points-to-shaped relation and it converges with the rest of that phase.
+static Bits* key_views;
 static int pt_len, holders_len;
-static Bits scratch_val, scratch_own;
-static IntVec vec_val, vec_own;
+static Bits scratch_val, scratch_own, scratch_views;
+static IntVec vec_val, vec_own, vec_views;
 static int solve_rounds;
 static int pt_rounds;       // of solve_rounds, how many the points-to phase used
 
@@ -1262,6 +1328,7 @@ static Deriv* deriv_e;      // why each site's E is what it is
 static Deriv* deriv_a;      // and its A
 static int cur_con = -1;    // the constraint being applied, for attribution
 static int synth_rule = -1; // ...or the rule, when there is no constraint
+static int force_rule = -1; // ...or E-VIEW, which rides other constraints (SPEC 8.4)
 
 // Where the constraint currently being *built* came from. Constraints are added
 // during the walk, one node at a time, so a sticky position costs nothing and
@@ -1275,7 +1342,13 @@ void aif_con_at(int file, int line, int col) {
 static void note_deriv(Deriv* d, int site, int from, int value) {
     if (!d) return;
     int live = (cur_con >= 0 && cur_con < con_count);
-    d[site].rule  = live ? cons[cur_con].kind : synth_rule;
+    // SPEC 8.4. A provenance raise is E-VIEW whichever constraint carried it --
+    // the constraint says where the view escaped to, the rule says why the
+    // collection had to follow. The file:line stays the constraint's, because
+    // "the read that produced the view" is not the useful place to point: the
+    // use that let it outlive the scope is.
+    d[site].rule  = (force_rule >= 0) ? force_rule
+                                      : (live ? cons[cur_con].kind : synth_rule);
     d[site].from  = from;
     d[site].value = value;
     d[site].file  = live ? cons[cur_con].file : sites[site].file;
@@ -1290,6 +1363,7 @@ static void solver_alloc(void) {
     pt = (Bits*)xcalloc((size_t)pt_len, sizeof(Bits), "AIF points-to");
     holders = (Bits*)xcalloc((size_t)holders_len, sizeof(Bits), "AIF holders");
     container_of = (Bits*)xcalloc((size_t)holders_len, sizeof(Bits), "AIF container holders");
+    key_views = (Bits*)xcalloc((size_t)pt_len, sizeof(Bits), "AIF view provenance");
     // INFERENCE 5.6 requires the derivation be retained through tier assignment.
     deriv_e = (Deriv*)xcalloc((size_t)site_count, sizeof(Deriv), "AIF derivation (E)");
     deriv_a = (Deriv*)xcalloc((size_t)site_count, sizeof(Deriv), "AIF derivation (A)");
@@ -1331,6 +1405,30 @@ static void resolve(int vs, Bits* out) {
     }
 }
 
+// SPEC 8.4. The collections whose lifetime this value set depends on: its own
+// provenance, plus that of every key it reads through.
+//
+// Not recursive past one key hop, and it does not need to be -- a key's set is
+// already the union of everything ever bound into it, provenance included, so
+// the transitive closure is taken by the points-to fixed point rather than here.
+static void resolve_views(int vs, Bits* out) {
+    bits_clear(out);
+    if (vs < 0 || vs >= vs_count) return;
+    ValueSet* v = &vsets[vs];
+    for (int i = 0; i < v->vlen; i++) {
+        static Bits tmp;                     // reentrancy is not possible: no rule nests this
+        resolve(v->views[i], &tmp);
+        bits_or(out, &tmp, "AIF view provenance");
+    }
+    for (int i = 0; i < v->len; i++) {
+        int item = v->items[i];
+        if (item & 1) {
+            int key = item >> 1;
+            if (key < pt_len) bits_or(out, &key_views[key], "AIF view provenance");
+        }
+    }
+}
+
 // Records the site in this round's delta and returns 1, so a rule reads
 // `if (raise_alias(s, X)) changed = moved(s);`.
 static int moved(int site) {
@@ -1344,6 +1442,62 @@ static int raise_escape(int site, int target, int from) {
     sites[site].E = j;
     note_deriv(deriv_e, site, from, j);
     return 1;
+}
+
+// SPEC 8.4 E-VIEW:  v is a view of c  =>  E(c) ⊒ E(v).
+//
+// Applied wherever a rule bounds how long the *view* lives, because that bound
+// is exactly what the collection has to satisfy. `target` is the escape the
+// caller's rule just established for the view; `in_fn` is the function that
+// bound is expressed in, or -1 when the target is function-independent.
+//
+// **The direction is the opposite of every other rule in this solver, and that
+// is the whole mechanism.** Everywhere else a value inherits a fact from
+// something holding it; here the *collection* is raised to cover the view,
+// because a view must not outlive what it views. A view that escapes to the
+// caller forces the collection to escape to the caller -- the collection sinks
+// a tier and compilation succeeds, where Rust's borrow checker would reject the
+// program. That is SPEC 1's invariant applied to views, and it is why `a[i]`
+// needs no lifetime annotation here.
+//
+// **A is deliberately untouched.** SPEC 8.4 permits overlapping mutable views:
+// a view is not a second holder, and two views of one collection in one task
+// threaten neither property this model claims (no use-after-free, no data
+// race). Raising A here would import Rust's no-aliasing property, which AIF
+// does not have and does not want.
+static int raise_view_owners(int vs, int target, int in_fn) {
+    resolve_views(vs, &scratch_views);
+    if (bits_is_empty(&scratch_views)) return 0;
+    bits_to_vec(&scratch_views, &vec_views);
+    int any = 0;
+    force_rule = AIF_CON_VIEW_OF;
+    for (int i = 0; i < vec_views.len; i++) {
+        int c = vec_views.v[i];
+        // A Region target is a scope id, and a scope id means something only
+        // inside the function that owns it. When the collection was allocated
+        // in a *different* function, this rule contributes nothing -- and that
+        // is a case analysis, not a shortcut. The view is bound in a scope of
+        // `in_fn`, so it dies with that activation, and the collection reached
+        // `in_fn` in exactly one of three ways:
+        //
+        //   - passed down as an argument, in which case it is live across the
+        //     call by construction and already outlives the view;
+        //   - returned up, in which case E-RETURN has it at Caller already;
+        //   - read from static storage, in which case E-STATIC has it Global.
+        //
+        // In all three the constraint is already implied. Raising to Caller
+        // "to be safe" is what demoted g5's `ents` -- a list `main` allocates
+        // and `render` reads -- costing it its list_release for nothing.
+        //
+        // A view that outlives `in_fn` is NOT this case: escaping one is a
+        // return, a store or a push, and those arrive here with a Caller,
+        // Global or holder-derived target, which is function-independent and
+        // passes straight through.
+        if (target >= 0 && in_fn >= 0 && sites[c].fn != in_fn) continue;
+        if (raise_escape(c, target, -1)) { any = 1; moved(c); }
+    }
+    force_rule = -1;
+    return any;
 }
 
 static int raise_alias(int site, int level, int from) {
@@ -1399,6 +1553,16 @@ static int solve_points_to(int max_rounds) {
 
             resolve(k->b, &scratch_val);
             if (bits_or(&pt[k->a], &scratch_val, "AIF points-to")) changed = 1;
+
+            // SPEC 8.4. View provenance flows with the value, into the key it
+            // is bound, passed or stored into. Grown here rather than in the
+            // fact loop because it reads only value sets and pt -- so it is a
+            // points-to-shaped relation, and the fact phase gets to run over a
+            // finished one, exactly as it does for pt itself.
+            resolve_views(k->b, &scratch_views);
+            if (!bits_is_empty(&scratch_views)) {
+                if (bits_or(&key_views[k->a], &scratch_views, "AIF view provenance")) changed = 1;
+            }
 
             // Passing a value as an argument does not make the parameter a
             // holder of it, so ARG records none.
@@ -1499,6 +1663,12 @@ int aif_solve(int max_rounds) {
                         if (raise_alias(s, sites[o].A, o)) changed = moved(s);
                     }
                 }
+                // E-VIEW: storing a view into a field makes the viewed
+                // collection live at least as long as the object holding it.
+                for (int j = 0; j < vec_own.len; j++) {
+                    if (raise_view_owners(k->b, sites[vec_own.v[j]].E,
+                                          sites[vec_own.v[j]].fn)) changed = 1;
+                }
 
             } else if (k->kind == AIF_CON_LIVE_IN) {
                 resolve(k->a, &scratch_val);
@@ -1511,6 +1681,9 @@ int aif_solve(int max_rounds) {
                     int target = (sites[s].fn == k->c) ? k->b : AIF_E_CALLER;
                     if (raise_escape(s, target, -1)) changed = moved(s);
                 }
+                // E-VIEW: this binding is how long the view lives, so it is how
+                // long the collection has to.
+                if (raise_view_owners(k->a, k->b, k->c)) changed = 1;
 
             } else if (k->kind == AIF_CON_OPAQUE) {
                 resolve(k->a, &scratch_val);
@@ -1520,6 +1693,8 @@ int aif_solve(int max_rounds) {
                     if (sites[s].E != AIF_E_GLOBAL && raise_escape(s, AIF_E_CALLER, -1)) changed = moved(s);
                     if (raise_alias(s, AIF_A_SHARED, -1)) changed = moved(s);
                 }
+                // A view handed to something we cannot see could be kept.
+                if (raise_view_owners(k->a, AIF_E_CALLER, -1)) changed = 1;
 
             } else if (k->kind == AIF_CON_RETAIN_IN) {
                 // E-STORE / A-STORE against a container reached through a call
@@ -1548,6 +1723,12 @@ int aif_solve(int max_rounds) {
                     }
                     if (raise_alias(s, AIF_A_BORROWED, -1)) changed = moved(s);
                 }
+                // E-VIEW: pushing a view into a container makes the viewed
+                // collection live at least as long as that container.
+                for (int j = 0; j < vec_own.len; j++) {
+                    if (raise_view_owners(k->a, sites[vec_own.v[j]].E,
+                                          sites[vec_own.v[j]].fn)) changed = 1;
+                }
 
             } else if (k->kind == AIF_CON_BORROW) {
                 // Raises A to Borrowed for the call's duration and nothing
@@ -1565,6 +1746,10 @@ int aif_solve(int max_rounds) {
                 for (int i = 0; i < vec_val.len; i++) {
                     if (raise_escape(vec_val.v[i], AIF_E_CALLER, -1)) changed = moved(vec_val.v[i]);
                 }
+                // E-VIEW, and the case the safety gap was actually about:
+                // `return list_get(l, i)` hands the caller a reference into a
+                // collection this frame owns. The collection follows it out.
+                if (raise_view_owners(k->a, AIF_E_CALLER, -1)) changed = 1;
 
             } else if (k->kind == AIF_CON_NO_STACK) {
                 resolve(k->a, &scratch_val);
@@ -1587,6 +1772,7 @@ int aif_solve(int max_rounds) {
                         changed = moved(s);
                     }
                 }
+
             }
         }
 
@@ -1989,6 +2175,7 @@ const char* aif_rule_name(int rule) {
     if (rule == AIF_RULE_A_ESCAPE)      return "A-ESCAPE";
     if (rule == AIF_RULE_A_COPY)        return "A-COPY";
     if (rule == AIF_RULE_A_CONTAIN)     return "A-CONTAIN";
+    if (rule == AIF_CON_VIEW_OF)        return "E-VIEW";
     if (rule == AIF_RULE_ALLOC)         return "ALLOC";
     return "?";
 }
@@ -3121,12 +3308,15 @@ void aif_reset(void) {
     for (int i = 0; i < pt_len; i++) bits_free(&pt[i]);
     for (int i = 0; i < holders_len; i++) bits_free(&holders[i]);
     for (int i = 0; i < holders_len; i++) bits_free(&container_of[i]);
+    if (key_views) { for (int i = 0; i < pt_len; i++) bits_free(&key_views[i]); }
     free(pt);
     free(holders);
     free(container_of);
+    free(key_views);
     pt = NULL;
     holders = NULL;
     container_of = NULL;
+    key_views = NULL;
     pt_len = 0;
     holders_len = 0;
 
@@ -3146,8 +3336,9 @@ void aif_reset(void) {
     cause_len = 0;
     cur_con = -1;
     synth_rule = -1;
+    force_rule = -1;
 
-    for (int i = 0; i < vs_count; i++) free(vsets[i].items);
+    for (int i = 0; i < vs_count; i++) { free(vsets[i].items); free(vsets[i].views); }
     vs_count = 0;
 
     for (int i = 0; i < nominal_count; i++) {

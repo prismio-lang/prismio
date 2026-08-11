@@ -1,0 +1,156 @@
+import ums.parser.ast
+import ums.parser.token
+import ums.model.diagnostic
+
+extern fn str_equals(left: String, right: String) -> Int
+extern fn str_concat(left: String, right: String) -> String
+extern fn str_clone(value: String borrow) -> String produce(free)
+
+struct UmsParser {
+    tokens: List<UmsToken>,
+    diagnostics: List<UmsDiagnostic>,
+    path: String,
+    current: Int
+}
+
+fn umsParserCurrent(parser: UmsParser) -> UmsToken {
+    return list_get(parser.tokens, parser.current)
+}
+
+fn umsParserAt(parser: UmsParser, kind: UmsTokenKind) -> Bool {
+    return umsParserCurrent(parser).kind == kind
+}
+
+fn umsParserAdvance(parser: UmsParser) -> UmsToken {
+    let token = umsParserCurrent(parser)
+    if (token.kind != UmsTokenKind.EOF) { parser.current = parser.current + 1 }
+    return token
+}
+
+fn umsParserTake(parser: UmsParser, kind: UmsTokenKind) -> Bool {
+    if (umsParserAt(parser, kind) == false) { return false }
+    umsParserAdvance(parser)
+    return true
+}
+
+fn umsParserError(parser: UmsParser, token: UmsToken, code: String, message: String) {
+    umsDiagnosticAdd(parser.diagnostics, code, parser.path,
+                     token.line, token.col, token.len, message)
+}
+
+fn umsParserExpected(parser: UmsParser, expected: String) {
+    let token = umsParserCurrent(parser)
+    umsParserError(parser, token, "UMS1101",
+        str_concat(str_concat("expected ", expected),
+                   str_concat(", found ", umsTokenKindName(token.kind))))
+}
+
+fn umsParseValue(parser: UmsParser) -> UmsAstValue {
+    let token = umsParserCurrent(parser)
+    let mut kind = UmsAstValueKind.UNKNOWN
+    if (token.kind == UmsTokenKind.STRING) { kind = UmsAstValueKind.STRING }
+    else if (token.kind == UmsTokenKind.INTEGER) { kind = UmsAstValueKind.INTEGER }
+    else if (token.kind == UmsTokenKind.BOOLEAN) { kind = UmsAstValueKind.BOOLEAN }
+    else if (token.kind == UmsTokenKind.IDENTIFIER) { kind = UmsAstValueKind.IDENTIFIER }
+    else {
+        umsParserExpected(parser, "a value")
+    }
+    if (token.kind != UmsTokenKind.EOF) { umsParserAdvance(parser) }
+    return UmsAstValue {
+        kind: kind,
+        text: str_clone(token.value),
+        line: token.line,
+        col: token.col,
+        len: token.len
+    }
+}
+
+fn umsParseArguments(parser: UmsParser, statement: UmsAstStatement) {
+    if (umsParserTake(parser, UmsTokenKind.RIGHT_PAREN)) { return }
+    loop {
+        list_push(statement.arguments, umsParseValue(parser))
+        if (umsParserTake(parser, UmsTokenKind.RIGHT_PAREN)) { break }
+        if (umsParserTake(parser, UmsTokenKind.COMMA) == false) {
+            umsParserExpected(parser, "',' or ')'")
+            while (umsParserAt(parser, UmsTokenKind.RIGHT_PAREN) == false and
+                   umsParserAt(parser, UmsTokenKind.LEFT_BRACE) == false and
+                   umsParserAt(parser, UmsTokenKind.EOF) == false) {
+                umsParserAdvance(parser)
+            }
+            umsParserTake(parser, UmsTokenKind.RIGHT_PAREN)
+            break
+        }
+    }
+}
+
+fn umsParseStatement(parser: UmsParser, document: UmsAstDocument) -> Int {
+    let token = umsParserCurrent(parser)
+    if (token.kind != UmsTokenKind.IDENTIFIER) {
+        umsParserExpected(parser, "a property or DSL block")
+        umsParserAdvance(parser)
+        return -1
+    }
+
+    let name = umsParserAdvance(parser)
+    if (umsParserTake(parser, UmsTokenKind.EQUAL)) {
+        let statement = umsAstStatement(UmsAstStatementKind.ASSIGNMENT, name.value,
+                                        name.line, name.col, name.len)
+        statement.value = umsParseValue(parser)
+        umsParserTake(parser, UmsTokenKind.SEMICOLON)
+        let index = list_len(document.statements)
+        list_push(document.statements, statement)
+        return index
+    }
+
+    let statement = umsAstStatement(UmsAstStatementKind.CALL, name.value,
+                                    name.line, name.col, name.len)
+    if (umsParserTake(parser, UmsTokenKind.LEFT_PAREN)) {
+        umsParseArguments(parser, statement)
+    }
+
+    if (umsParserTake(parser, UmsTokenKind.LEFT_BRACE)) {
+        statement.hasBlock = true
+        while (umsParserAt(parser, UmsTokenKind.RIGHT_BRACE) == false and
+               umsParserAt(parser, UmsTokenKind.EOF) == false) {
+            if (umsParserTake(parser, UmsTokenKind.SEMICOLON) == false) {
+                let child = umsParseStatement(parser, document)
+                if (child >= 0) {
+                    list_push(statement.children, child)
+                }
+            }
+        }
+        if (umsParserTake(parser, UmsTokenKind.RIGHT_BRACE) == false) {
+            umsParserExpected(parser, "'}'")
+        }
+    } else if (list_len(statement.arguments) == 0) {
+        umsParserError(parser, name, "UMS1102",
+            str_concat(str_concat("DSL element '", name.value),
+                       "' requires arguments or a block"))
+    }
+
+    umsParserTake(parser, UmsTokenKind.SEMICOLON)
+    let index = list_len(document.statements)
+    list_push(document.statements, statement)
+    return index
+}
+
+fn umsParse(tokens: List<UmsToken>, path: String,
+            diagnostics: List<UmsDiagnostic>) -> UmsAstDocument {
+    let parser = UmsParser {
+        tokens: tokens,
+        diagnostics: diagnostics,
+        path: path,
+        current: 0
+    }
+    let document = UmsAstDocument { statements: list_new(), roots: list_new() }
+
+    while (umsParserAt(parser, UmsTokenKind.EOF) == false) {
+        if (umsParserTake(parser, UmsTokenKind.SEMICOLON) == false) {
+            let statement = umsParseStatement(parser, document)
+            if (statement >= 0) {
+                list_push(document.roots, statement)
+            }
+        }
+    }
+    return document
+}

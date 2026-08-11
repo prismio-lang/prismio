@@ -153,6 +153,12 @@ def main():
         # out of one container and pushes it into another.
         sources.append(Path("tests/test_47_aif_containers.psm"))
         sources.append(Path("tests/test_48_aif_shared_elements.psm"))
+        # SPEC 8.4's E-VIEW moves nothing on any source above -- measured, 0 of
+        # 433 sites -- so without this the two arms would agree by never running
+        # the rule, which is the "check that cannot fail" failure mode. This
+        # fixture moves exactly two sites, and view provenance is the only thing
+        # that can move them.
+        sources.append(Path("tests/test_53_aif_views.psm"))
 
     dumps = {}
     failures = []

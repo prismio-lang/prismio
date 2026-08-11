@@ -283,18 +283,18 @@ fn main() -> Int {
     let evicted = evict_unused(scene.cache)
 
     print("checksum entities ")
-    println_int(list_len(scene.entities))
+    println(list_len(scene.entities))
     print("checksum submitted ")
-    println_int(total)
+    println(total)
     print("checksum batches ")
-    println_int(scene.batches)
+    println(scene.batches)
     print("checksum evicted ")
-    println_int(evicted)
+    println(evicted)
 
     let mut j = 0
     while (j < frames) {
         print("frame_ns ")
-        println_int(list_get(samples, j))
+        println(list_get(samples, j))
         j = j + 1
     }
     return 0

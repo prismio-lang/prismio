@@ -2,6 +2,12 @@ extern fn str_equals(s1: String, s2: String) -> Int
 extern fn str_length(s: String) -> Int
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn str_substring(s: String, start: Int, length: Int) -> String
+// The length-carrying slice. `str_substring` must strlen its whole input to
+// bound the range, so calling it once per token makes scanning O(n x tokens);
+// this takes the length the caller already has. See the native definition in
+// runtime/lang_runtime.c for the measurement, and for why it is only half of
+// SPEC 8.4's view -- it still allocates and copies.
+extern fn str_slice(s: String, start: Int, length: Int, baseLen: Int) -> String
 extern fn str_char_at(s: String, index: Int) -> Char
 extern fn str_contains(haystack: String, needle: String) -> Int
 extern fn str_starts_with(s: String, prefix: String) -> Int

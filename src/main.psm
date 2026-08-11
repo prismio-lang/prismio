@@ -8,10 +8,13 @@ import sema.*
 import common.diagnostics
 import ast.dump
 import aif.*
+import ums.ums
 
 extern fn read_file(path: String) -> String
 extern fn get_directory(path: String) -> String
 extern fn join_path(directory: String, filename: String) -> String
+extern fn file_exists(path: String) -> Int
+extern fn executable_directory() -> String produce(free)
 // Newline-separated module names in a directory, sorted. Mallocs the buffer
 // and hands it over; backs `import pkg.*`.
 extern fn list_modules(directory: String) -> String produce(free)
@@ -158,12 +161,28 @@ fn resolveUnder(baseDir: String, relative: String) -> String {
     return join_path(baseDir, relative)
 }
 
+// Compiler subsystems normally live below src/, which is also the source root.
+// UMS is deliberately different: it is a first-class toolchain subsystem beside
+// src/, not compiler implementation. Reserving the `ums` import root lets the
+// self-hosted CLI consume that subsystem without a mirror, symlink, or C bridge.
+// The rule is narrow on purpose so ordinary user module resolution remains
+// relative to the entry source exactly as before.
+
+
+fn importBaseDir(baseDir: String, moduleName: String) -> String {
+    if (str_equals(moduleName, "ums") == 1 or str_starts_with(moduleName, "ums.") == 1) {
+        return get_directory(baseDir)
+    }
+    return baseDir
+}
+
 fn joinImportPath(baseDir: String, moduleName: String) -> String {
-    return resolveUnder(baseDir, str_concat(moduleRelativePath(moduleName), ".psm"))
+    return resolveUnder(importBaseDir(baseDir, moduleName),
+                        str_concat(moduleRelativePath(moduleName), ".psm"))
 }
 
 fn joinImportDir(baseDir: String, packageName: String) -> String {
-    return resolveUnder(baseDir, moduleRelativePath(packageName))
+    return resolveUnder(importBaseDir(baseDir, packageName), moduleRelativePath(packageName))
 }
 
 // Memo key for an already-resolved module. Paths are wrapped in "|" so that a
@@ -195,7 +214,7 @@ fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     let seen = str_concat(visited, key)
 
     let content = read_file(importPath)
-    if (str_equals(content, "") == 1) {
+    if (str_equals(content, "") == 1 and file_exists(importPath) == 0) {
         diag_error_at(site.file, site.line, site.col, site.len,
             str_concat(str_concat("cannot read imported module ", diagQuote(moduleName)),
                        str_concat(": no such file ", importPath)))
@@ -280,19 +299,68 @@ fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited
     return seen
 }
 
+// Finds std/io.psm in a source checkout or an installed toolchain. Standard
+// modules are compiler-owned rather than relative to an application's entry
+// file, so a local `std/` directory cannot replace the shipped definitions.
+fn standardIoPath(baseDir: String) -> String {
+    let besideEntry = join_path(baseDir, "std/io.psm")
+    if (file_exists(besideEntry) == 1) { return besideEntry }
+
+    let sourceRoot = get_directory(baseDir)
+    let inSourceTree = join_path(sourceRoot, "std/io.psm")
+    if (file_exists(inSourceTree) == 1) { return inSourceTree }
+
+    let compilerDir = executable_directory()
+    let toolchainRoot = get_directory(compilerDir)
+
+    let installed = join_path(toolchainRoot, "stdlib/io.psm")
+    if (file_exists(installed) == 1) { return installed }
+
+    let besideBuild = join_path(toolchainRoot, "std/io.psm")
+    if (file_exists(besideBuild) == 1) { return besideBuild }
+
+    return ""
+}
+
+// std.io is the prelude's source-level I/O boundary. Loading it here gives every
+// program the same two overload sets without making the compiler special-case
+// either function during semantic analysis or IR generation.
+fn mergeStandardIo(merged: ASTNode, baseDir: String, visited: String) -> String {
+    let path = standardIoPath(baseDir)
+    if (str_equals(path, "") == 1) {
+        diag_error("cannot locate the Prismio standard module std.io")
+        return visited
+    }
+
+    let key = importMemoKey(path)
+    if (str_contains(visited, key) == 1) { return visited }
+
+    let content = read_file(path)
+    if (str_equals(content, "") == 1) {
+        diag_error(str_concat("cannot read Prismio standard module ", path))
+        return visited
+    }
+
+    let file = diag_add_file(path, content)
+    return mergeModuleImports(merged, parseSource(content, file),
+                              get_directory(path), str_concat(visited, key))
+}
+
 // The entry file is marked resolved before the walk begins, so that a package
 // import naming the package it lives in cannot pull it in a second time and
 // duplicate every function it defines.
 fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNode {
     let merged = createNode(NodeKind.MODULE)
-    mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))
+    let seen = mergeStandardIo(merged, baseDir, importMemoKey(entryPath))
+    mergeModuleImports(merged, module, baseDir, seen)
     return merged
 }
 
 fn printUsage() {
     println("Usage:")
-    println("  prismio build <source.psm> [-o output.exe] [--verify]")
+    println("  prismio build [source.psm] [-o output.exe] [--verify]")
     println("  prismio run <source.psm> [-o output.exe] [--verify]")
+    println("  prismio check <source.psm> [--diagnostic-format=json]")
     println("  prismio bootstrap [source.psm] [-o output.exe]")
     println("  prismio runtime-hash")
     println("  prismio dump-ast <source.psm>")
@@ -300,6 +368,7 @@ fn printUsage() {
     println("  prismio aif <source.psm> --why=<symbol>   why one record has the tier it has")
     println("")
     println("build/run link against the installed Prismio runtime only.")
+    println("build with no source discovers build.ums and delegates the project to UMS.")
     println("bootstrap builds the compiler itself from the repository sources,")
     println("linking the compiler backend as well and ignoring installed libraries.")
 }
@@ -353,7 +422,7 @@ fn checkRuntimeFreshness() {
 // `kind`, of which MODULE is 0. See ast.psm.
 fn analyzedModule(path: String) -> ASTNode {
     let content = read_file(path)
-    if (str_equals(content, "") == 1) {
+    if (str_equals(content, "") == 1 and file_exists(path) == 0) {
         diag_error(str_concat("cannot read ", path))
         return createNode(NodeKind.MODULE)
     }
@@ -393,6 +462,18 @@ fn dumpAstCommand(path: String) -> Int {
     }
 
     dumpAstJson(merged, path, PRISMIO_VERSION)
+    return 0
+}
+
+// The IDE-facing compile boundary: the complete frontend, with no AIF, IR,
+// native toolchain or output file. A successful JSON run still emits a summary,
+// which gives a long-lived client an explicit signal to clear stale diagnostics.
+fn checkCommand(path: String) -> Int {
+    analyzedModule(path)
+    diag_finish()
+    if (diag_error_count() > 0) {
+        return 1
+    }
     return 0
 }
 
@@ -441,7 +522,7 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
     }
 
     let content = read_file(path)
-    if (str_equals(content, "") == 1) {
+    if (str_equals(content, "") == 1 and file_exists(path) == 0) {
         diag_error(str_concat("cannot read ", path))
         if (bootstrapMode) {
             println("  bootstrap compiles the Prismio compiler from a source checkout.")
@@ -569,6 +650,29 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
     return 0
 }
 
+// Project mode is deliberately a thin adapter. UMS discovers, parses, validates
+// and plans the project; the compiler keeps the one responsibility it already
+// owns: compiling each planned Prismio entry source. Future run/test/clean
+// commands should call the same UMS model instead of growing parallel CLI logic.
+fn buildUmsProject() -> Int {
+    let workspace = umsLoadProject(".", "debug")
+    if (workspace.valid == false) {
+        umsDiagnosticsPrint(workspace.diagnostics)
+        return 1
+    }
+
+    let mut index = 0
+    while (index < umsWorkspaceTargetCount(workspace)) {
+        let target = umsWorkspaceTarget(workspace, index)
+        if (compileSource(target.sourcePath, target.outputPath,
+                          false, false, false, false) != 0) {
+            return 1
+        }
+        index = index + 1
+    }
+    return 0
+}
+
 fn main() -> Int {
     let mut path = ""
     let mut outputFile = ""
@@ -613,6 +717,29 @@ fn main() -> Int {
         }
         println(sourceHash)
         return 0
+    }
+
+    if (str_equals(first, "check") == 1) {
+        if (cli_arg_count() <= 2) {
+            diag_error("missing source file")
+            printUsage()
+            return 1
+        }
+
+        let mut checkArg = 3
+        while (checkArg < cli_arg_count()) {
+            let option = cli_arg(checkArg)
+            if (str_equals(option, "--diagnostic-format=json") == 1) {
+                diag_set_json_mode(1)
+            } else {
+                diag_error(str_concat("unknown argument ", diagQuote(option)))
+                printUsage()
+                return 1
+            }
+            checkArg = checkArg + 1
+        }
+
+        return checkCommand(cli_arg(2))
     }
 
     // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and
@@ -744,9 +871,7 @@ fn main() -> Int {
         argIndex = 3
 
         if (cli_arg_count() <= 2) {
-            diag_error("missing source file")
-            printUsage()
-            return 1
+            return buildUmsProject()
         }
 
         path = cli_arg(2)

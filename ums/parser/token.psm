@@ -1,0 +1,45 @@
+enum UmsTokenKind {
+    UNKNOWN,
+    IDENTIFIER,
+    STRING,
+    INTEGER,
+    BOOLEAN,
+    EQUAL,
+    LEFT_BRACE,
+    RIGHT_BRACE,
+    LEFT_PAREN,
+    RIGHT_PAREN,
+    COMMA,
+    SEMICOLON,
+    EOF
+}
+
+extern fn str_clone(value: String borrow) -> String produce(free)
+
+struct UmsToken {
+    kind: UmsTokenKind,
+    value: String,
+    line: Int,
+    col: Int,
+    len: Int
+}
+
+fn umsToken(kind: UmsTokenKind, value: String, line: Int, col: Int, len: Int) -> UmsToken {
+    return UmsToken { kind: kind, value: str_clone(value), line: line, col: col, len: len }
+}
+
+fn umsTokenKindName(kind: UmsTokenKind) -> String {
+    if (kind == UmsTokenKind.IDENTIFIER) { return "identifier" }
+    if (kind == UmsTokenKind.STRING) { return "string" }
+    if (kind == UmsTokenKind.INTEGER) { return "integer" }
+    if (kind == UmsTokenKind.BOOLEAN) { return "boolean" }
+    if (kind == UmsTokenKind.EQUAL) { return "'='" }
+    if (kind == UmsTokenKind.LEFT_BRACE) { return "'{'" }
+    if (kind == UmsTokenKind.RIGHT_BRACE) { return "'}'" }
+    if (kind == UmsTokenKind.LEFT_PAREN) { return "'('" }
+    if (kind == UmsTokenKind.RIGHT_PAREN) { return "')'" }
+    if (kind == UmsTokenKind.COMMA) { return "','" }
+    if (kind == UmsTokenKind.SEMICOLON) { return "';'" }
+    if (kind == UmsTokenKind.EOF) { return "end of file" }
+    return "token"
+}

@@ -1,0 +1,244 @@
+import ums.model.project
+import ums.model.diagnostic
+import ums.parser.ast
+
+extern fn str_equals(left: String, right: String) -> Int
+extern fn str_length(value: String) -> Int
+extern fn str_char_at(value: String, index: Int) -> Char
+extern fn str_concat(left: String, right: String) -> String
+extern fn str_clone(value: String borrow) -> String produce(free)
+
+fn umsLowerError(project: UmsProjectModel, diagnostics: List<UmsDiagnostic>,
+                 statement: UmsAstStatement, code: String, message: String) {
+    umsDiagnosticAdd(diagnostics, code, project.manifestPath,
+                     statement.line, statement.col, statement.len, message)
+}
+
+fn umsLowerString(project: UmsProjectModel, diagnostics: List<UmsDiagnostic>,
+                  statement: UmsAstStatement, description: String) -> Bool {
+    if (statement.value.kind == UmsAstValueKind.STRING) { return true }
+    umsLowerError(project, diagnostics, statement, "UMS2001",
+                  str_concat(description, " must be a string literal"))
+    return false
+}
+
+fn umsLowerMetadata(project: UmsProjectModel, document: UmsAstDocument,
+                    block: UmsAstStatement,
+                    diagnostics: List<UmsDiagnostic>) {
+    let mut i = 0
+    while (i < list_len(block.children)) {
+        let property = list_get(document.statements, list_get(block.children, i))
+        if (property.kind != UmsAstStatementKind.ASSIGNMENT) {
+            umsLowerError(project, diagnostics, property, "UMS2003",
+                          "project metadata contains properties, not nested DSL calls")
+        } else if (str_equals(property.name, "name") == 1) {
+            if (umsLowerString(project, diagnostics, property, "project.name")) {
+                if (str_length(project.metadata.name) > 0) {
+                    umsLowerError(project, diagnostics, property, "UMS2002",
+                                  "project.name is declared more than once")
+                } else {
+                    project.metadata.name = str_clone(property.value.text)
+                }
+            }
+        } else if (str_equals(property.name, "version") == 1) {
+            if (umsLowerString(project, diagnostics, property, "project.version")) {
+                if (str_length(project.metadata.version) > 0) {
+                    umsLowerError(project, diagnostics, property, "UMS2002",
+                                  "project.version is declared more than once")
+                } else {
+                    project.metadata.version = str_clone(property.value.text)
+                }
+            }
+        } else if (str_equals(property.name, "prismio") == 1) {
+            if (umsLowerString(project, diagnostics, property, "project.prismio")) {
+                if (str_length(project.metadata.prismioVersion) > 0) {
+                    umsLowerError(project, diagnostics, property, "UMS2002",
+                                  "project.prismio is declared more than once")
+                } else {
+                    project.metadata.prismioVersion = str_clone(property.value.text)
+                }
+            }
+        } else {
+            umsLowerError(project, diagnostics, property, "UMS2004",
+                str_concat(str_concat("unknown project property '", property.name), "'"))
+        }
+        i = i + 1
+    }
+}
+
+fn umsLowerTargetEntry(project: UmsProjectModel, document: UmsAstDocument,
+                       call: UmsAstStatement,
+                       diagnostics: List<UmsDiagnostic>) -> String {
+    let mut entry = ""
+    let mut i = 0
+    while (i < list_len(call.children)) {
+        let property = list_get(document.statements, list_get(call.children, i))
+        if (property.kind != UmsAstStatementKind.ASSIGNMENT or
+            str_equals(property.name, "entry") == 0) {
+            umsLowerError(project, diagnostics, property, "UMS2101",
+                str_concat(str_concat("unknown target property '", property.name),
+                           "'; expected 'entry'"))
+        } else if (umsLowerString(project, diagnostics, property, "target entry")) {
+            if (str_length(entry) > 0) {
+                umsLowerError(project, diagnostics, property, "UMS2102",
+                              "target entry is declared more than once")
+            } else {
+                entry = str_clone(property.value.text)
+            }
+        }
+        i = i + 1
+    }
+    return entry
+}
+
+fn umsLowerTarget(project: UmsProjectModel, document: UmsAstDocument,
+                  call: UmsAstStatement,
+                  diagnostics: List<UmsDiagnostic>) {
+    let mut kind = UmsTargetKind.UNKNOWN
+    if (str_equals(call.name, "executable") == 1) { kind = UmsTargetKind.EXECUTABLE }
+    else if (str_equals(call.name, "library") == 1) { kind = UmsTargetKind.LIBRARY }
+    else {
+        umsLowerError(project, diagnostics, call, "UMS2103",
+            str_concat(str_concat("unknown target kind '", call.name), "'"))
+        return
+    }
+
+    if (list_len(call.arguments) != 1) {
+        umsLowerError(project, diagnostics, call, "UMS2104",
+                      str_concat(call.name, " requires exactly one string name"))
+        return
+    }
+    let argument = list_get(call.arguments, 0)
+    if (argument.kind != UmsAstValueKind.STRING) {
+        umsLowerError(project, diagnostics, call, "UMS2104",
+                      str_concat(call.name, " requires exactly one string name"))
+        return
+    }
+    if (umsTargetFind(project.targets, argument.text) >= 0) {
+        umsLowerError(project, diagnostics, call, "UMS2105",
+            str_concat(str_concat("target '", argument.text), "' is declared more than once"))
+        return
+    }
+    list_push(project.targets, umsTarget(kind, argument.text,
+              umsLowerTargetEntry(project, document, call, diagnostics),
+              call.line, call.col, call.len))
+}
+
+fn umsLowerTargets(project: UmsProjectModel, document: UmsAstDocument,
+                   block: UmsAstStatement,
+                   diagnostics: List<UmsDiagnostic>) {
+    let mut i = 0
+    while (i < list_len(block.children)) {
+        let call = list_get(document.statements, list_get(block.children, i))
+        if (call.kind != UmsAstStatementKind.CALL) {
+            umsLowerError(project, diagnostics, call, "UMS2106",
+                          "targets contains executable(...) or library(...) declarations")
+        } else {
+            umsLowerTarget(project, document, call, diagnostics)
+        }
+        i = i + 1
+    }
+}
+
+fn umsDependencyScope(name: String) -> UmsDependencyScope {
+    if (str_equals(name, "implementation") == 1) {
+        return UmsDependencyScope.IMPLEMENTATION
+    }
+    if (str_equals(name, "api") == 1) { return UmsDependencyScope.API }
+    if (str_equals(name, "testImplementation") == 1) {
+        return UmsDependencyScope.TEST_IMPLEMENTATION
+    }
+    return UmsDependencyScope.UNKNOWN
+}
+
+fn umsLowerDependencies(project: UmsProjectModel, document: UmsAstDocument,
+                        block: UmsAstStatement,
+                        diagnostics: List<UmsDiagnostic>) {
+    let mut i = 0
+    while (i < list_len(block.children)) {
+        let call = list_get(document.statements, list_get(block.children, i))
+        let scope = umsDependencyScope(call.name)
+        if (call.kind != UmsAstStatementKind.CALL or scope == UmsDependencyScope.UNKNOWN) {
+            umsLowerError(project, diagnostics, call, "UMS2201",
+                str_concat(str_concat("unknown dependency declaration '", call.name), "'"))
+        } else if (list_len(call.arguments) != 2) {
+            umsLowerError(project, diagnostics, call, "UMS2202",
+                          str_concat(call.name,
+                                     " requires package name and version constraint strings"))
+        } else {
+            let name = list_get(call.arguments, 0)
+            let constraint = list_get(call.arguments, 1)
+            if (name.kind != UmsAstValueKind.STRING or
+                constraint.kind != UmsAstValueKind.STRING) {
+                umsLowerError(project, diagnostics, call, "UMS2202",
+                              str_concat(call.name,
+                                         " requires package name and version constraint strings"))
+            } else if (umsDependencyFind(project.dependencies, scope, name.text) >= 0) {
+                umsLowerError(project, diagnostics, call, "UMS2203",
+                    str_concat(str_concat("dependency '", name.text),
+                               "' is declared more than once in this scope"))
+            } else {
+                list_push(project.dependencies, UmsDependency {
+                    scope: scope,
+                    name: str_clone(name.text),
+                    constraint: str_clone(constraint.text),
+                    line: call.line,
+                    col: call.col,
+                    len: call.len
+                })
+            }
+        }
+        i = i + 1
+    }
+}
+
+fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPath: String,
+                    profile: String, diagnostics: List<UmsDiagnostic>) -> UmsProjectModel {
+    let project = umsProjectModel(root, manifestPath, profile)
+    let mut projectBlocks = 0
+    let mut targetBlocks = 0
+    let mut dependencyBlocks = 0
+    let mut i = 0
+
+    while (i < list_len(document.roots)) {
+        let block = list_get(document.statements, list_get(document.roots, i))
+        if (block.kind != UmsAstStatementKind.CALL or block.hasBlock == false or
+            list_len(block.arguments) != 0) {
+            umsLowerError(project, diagnostics, block, "UMS2005",
+                          "top-level elements must be named blocks")
+        } else if (str_equals(block.name, "project") == 1) {
+            projectBlocks = projectBlocks + 1
+            if (projectBlocks == 1) {
+                umsLowerMetadata(project, document, block, diagnostics)
+            }
+        } else if (str_equals(block.name, "targets") == 1) {
+            targetBlocks = targetBlocks + 1
+            if (targetBlocks == 1) {
+                umsLowerTargets(project, document, block, diagnostics)
+            }
+        } else if (str_equals(block.name, "dependencies") == 1) {
+            dependencyBlocks = dependencyBlocks + 1
+            if (dependencyBlocks == 1) {
+                umsLowerDependencies(project, document, block, diagnostics)
+            }
+        } else {
+            umsLowerError(project, diagnostics, block, "UMS2006",
+                str_concat(str_concat("unknown top-level block '", block.name), "'"))
+        }
+        i = i + 1
+    }
+
+    if (projectBlocks > 1) {
+        umsDiagnosticAdd(diagnostics, "UMS2007", manifestPath, 0, 0, 0,
+                         "build.ums may contain only one project block")
+    }
+    if (targetBlocks > 1) {
+        umsDiagnosticAdd(diagnostics, "UMS2008", manifestPath, 0, 0, 0,
+                         "build.ums may contain only one targets block")
+    }
+    if (dependencyBlocks > 1) {
+        umsDiagnosticAdd(diagnostics, "UMS2009", manifestPath, 0, 0, 0,
+                         "build.ums may contain only one dependencies block")
+    }
+    return project
+}

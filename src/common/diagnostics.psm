@@ -31,6 +31,11 @@ extern fn diag_note(message: String)
 extern fn diag_error_count() -> Int
 extern fn diag_warning_count() -> Int
 
+// Switches the renderer to the versioned JSON Lines protocol consumed by IDEs.
+// This changes presentation only; diagnostic accounting and exit status stay the
+// same as the human renderer.
+extern fn diag_set_json_mode(on: Int)
+
 // Prints the "aborting due to N previous errors" line. That wording is the
 // contract the negative tests match on: it distinguishes a program the compiler
 // deliberately rejected from one that made it crash.

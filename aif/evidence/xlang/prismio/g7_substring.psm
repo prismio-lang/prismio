@@ -1,0 +1,199 @@
+// G7 tokenizer -- the string/parse axis, which this harness did not have.
+//
+// BENCHMARKS §3.2 lists B2, "lex + parse a large generated source, string-heavy",
+// as a benchmark to build. g1-g6 are all object-graph or numeric, so every
+// cross-language number this project has recorded is from a workload that
+// barely touches a string. This is the missing axis.
+//
+// The workload is deliberately the shape of `src/lexer/scanner.psm`: scan a
+// buffer, and for each token cut its text out with `str_substring`. That one
+// call is the whole point of the benchmark. In Prismio it allocates and copies;
+// in the Rust port the equivalent is `&src[a..b]`, which does neither. The
+// third port, g7_owned.rs, makes Rust allocate a String per token instead, so
+// the copy can be priced on its own rather than mixed in with the backend gap.
+//
+// THIS IS THE DIAGNOSTIC VARIANT. It calls `str_substring`, which must strlen
+// its whole input to bound the range -- once per token, over the entire
+// source. g7.psm is the same program using `str_slice`, which takes the
+// length the caller already has. The pair prices the superlinear term on its
+// own, the way rust/g7_owned.rs prices the copy on its own.
+
+extern fn clock_gettime_nsec_np(clk: Int) -> Int
+
+extern fn str_length(s: String) -> Int
+extern fn str_concat(s1: String, s2: String) -> String
+extern fn str_substring(s: String, start: Int, length: Int) -> String
+// str_byte_at, not str_char_at: the latter calls strlen on every read, which
+// makes any scan quadratic. src/lexer/scanner.psm holds the length in the
+// Lexer struct and bound-checks against it for exactly this reason, and a
+// benchmark that used str_char_at would be measuring strlen -- 22.8 ms per
+// pass over 21 KB, against 0.6 ms once the length is carried.
+extern fn str_byte_at(s: String, index: Int) -> Char
+extern fn str_equals(s1: String, s2: String) -> Int
+
+// Token kinds, as small integers -- the checksum mixes them in, so a port that
+// classified differently could not agree.
+let TK_IDENT = 1
+let TK_NUMBER = 2
+let TK_OPERATOR = 3
+let TK_PUNCT = 4
+
+fn isDigit(c: Char) -> Bool {
+    return c >= '0' and c <= '9'
+}
+
+fn isAlpha(c: Char) -> Bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_'
+}
+
+fn isAlnum(c: Char) -> Bool {
+    return isAlpha(c) or isDigit(c)
+}
+
+fn isSpace(c: Char) -> Bool {
+    return c == ' ' or c == '\t' or c == '\n'
+}
+
+fn isOperator(c: Char) -> Bool {
+    return c == '+' or c == '-' or c == '*' or c == '/' or c == '='
+        or c == '<' or c == '>'
+}
+
+// A deterministic source buffer, built once and reused by every iteration so
+// that generation is outside the measured region. The shape is roughly what the
+// compiler's own lexer sees: short identifiers, small numbers, punctuation.
+//
+// Built with str_concat rather than read from a file, because file I/O differs
+// between the three languages in ways that have nothing to do with the model.
+fn buildSource(lines: Int) -> String {
+    let mut out = ""
+    let mut i = 0
+    while (i < lines) {
+        let n = i % 97
+        out = str_concat(out, "let value_")
+        out = str_concat(out, intToStr(n))
+        out = str_concat(out, " = alpha_")
+        out = str_concat(out, intToStr(n))
+        out = str_concat(out, " + beta * ")
+        out = str_concat(out, intToStr(n * 3))
+        out = str_concat(out, " - gamma_")
+        out = str_concat(out, intToStr(n))
+        out = str_concat(out, " / 7 ;\n")
+        i = i + 1
+    }
+    return out
+}
+
+fn intToStr(n: Int) -> String {
+    if (n == 0) { return "0" }
+    let mut digits = ""
+    let mut v = n
+    while (v > 0) {
+        let d = v % 10
+        if (d == 0) { digits = str_concat("0", digits) }
+        if (d == 1) { digits = str_concat("1", digits) }
+        if (d == 2) { digits = str_concat("2", digits) }
+        if (d == 3) { digits = str_concat("3", digits) }
+        if (d == 4) { digits = str_concat("4", digits) }
+        if (d == 5) { digits = str_concat("5", digits) }
+        if (d == 6) { digits = str_concat("6", digits) }
+        if (d == 7) { digits = str_concat("7", digits) }
+        if (d == 8) { digits = str_concat("8", digits) }
+        if (d == 9) { digits = str_concat("9", digits) }
+        v = v / 10
+    }
+    return digits
+}
+
+// The measured loop.
+//
+// One `str_substring` per token, exactly as lexIdentifier, lexNumber,
+// lexOperator and lexSeparator each do in src/lexer/scanner.psm. The text is
+// then used the way a real lexer uses it: compared against a keyword set, and
+// length-summed so that nothing can be optimised away.
+//
+// Returns a checksum over (kind, length, keyword hits) so that a port which
+// tokenized differently could not match.
+fn tokenize(src: String, srcLen: Int) -> Int {
+    let mut pos = 0
+    let mut sum = 0
+    let mut keywords = 0
+    let mut count = 0
+
+    while (pos < srcLen) {
+        let c = str_byte_at(src, pos)
+
+        if (isSpace(c)) {
+            pos = pos + 1
+        } else {
+            let start = pos
+            let mut kind = TK_PUNCT
+
+            if (isAlpha(c)) {
+                kind = TK_IDENT
+                while (pos < srcLen and isAlnum(str_byte_at(src, pos))) {
+                    pos = pos + 1
+                }
+            } else {
+                if (isDigit(c)) {
+                    kind = TK_NUMBER
+                    while (pos < srcLen and isDigit(str_byte_at(src, pos))) {
+                        pos = pos + 1
+                    }
+                } else {
+                    if (isOperator(c)) {
+                        kind = TK_OPERATOR
+                    }
+                    pos = pos + 1
+                }
+            }
+
+            // The line this benchmark exists for. One allocation and one copy
+            // per token; `&src[start..pos]` in the Rust port.
+            let text = str_substring(src, start, pos - start)
+
+            if (str_equals(text, "let") == 1) { keywords = keywords + 1 }
+            sum = sum + kind * (pos - start)
+            count = count + 1
+        }
+    }
+
+    return sum + keywords * 1000 + count
+}
+
+fn main() -> Int {
+    let iterations = 200
+    let src = buildSource(400)
+    let srcLen = str_length(src)
+
+    let mut samples: List<Int> = list_new()
+    let mut g = 0
+    while (g < iterations) {
+        list_push(samples, 0)
+        g = g + 1
+    }
+
+    let mut checksum = 0
+    let mut it = 0
+    while (it < iterations) {
+        let t0 = clock_gettime_nsec_np(4)
+        let s = tokenize(src, srcLen)
+        let t1 = clock_gettime_nsec_np(4)
+        checksum = s
+        list_set(samples, it, t1 - t0)
+        it = it + 1
+    }
+
+    print("checksum tokens ")
+    println(checksum)
+    print("checksum bytes ")
+    println(srcLen)
+
+    let mut j = 0
+    while (j < iterations) {
+        print("frame_ns ")
+        println(list_get(samples, j))
+        j = j + 1
+    }
+    return 0
+}

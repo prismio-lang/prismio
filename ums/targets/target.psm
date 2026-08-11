@@ -1,0 +1,41 @@
+enum UmsTargetKind {
+    UNKNOWN,
+    EXECUTABLE,
+    LIBRARY
+}
+
+extern fn str_clone(value: String borrow) -> String produce(free)
+
+struct UmsTarget {
+    kind: UmsTargetKind,
+    name: String,
+    entry: String,
+    sourcePath: String,
+    outputPath: String,
+    line: Int,
+    col: Int,
+    len: Int
+}
+
+fn umsTarget(kind: UmsTargetKind, name: String, entry: String,
+             line: Int, col: Int, len: Int) -> UmsTarget {
+    return UmsTarget {
+        kind: kind,
+        name: str_clone(name),
+        entry: str_clone(entry),
+        sourcePath: str_clone(""),
+        outputPath: str_clone(""),
+        line: line,
+        col: col,
+        len: len
+    }
+}
+
+fn umsTargetFind(targets: List<UmsTarget>, name: String) -> Int {
+    let mut i = 0
+    while (i < list_len(targets)) {
+        if (str_equals(list_get(targets, i).name, name) == 1) { return i }
+        i = i + 1
+    }
+    return -1
+}

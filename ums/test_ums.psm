@@ -1,0 +1,53 @@
+import ums.ums
+
+extern fn str_equals(left: String, right: String) -> Int
+
+fn umsTestFail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let workspace = umsLoadProject("ums/tests/fixtures/valid", "debug")
+    if (workspace.valid == false) {
+        umsDiagnosticsPrint(workspace.diagnostics)
+        return umsTestFail("valid fixture should load")
+    }
+    if (str_equals(workspace.project.metadata.name, "http") == 0) {
+        return umsTestFail("project name should be lowered")
+    }
+    if (str_equals(workspace.project.metadata.version, "1.0.0") == 0) {
+        return umsTestFail("project version should be lowered")
+    }
+    if (umsWorkspaceTargetCount(workspace) != 1) {
+        return umsTestFail("one target should be planned")
+    }
+    let target = umsWorkspaceTarget(workspace, 0)
+    if (target.kind != UmsTargetKind.EXECUTABLE) {
+        return umsTestFail("target kind should be executable")
+    }
+    if (str_equals(target.entry, "src/main.psm") == 0) {
+        return umsTestFail("target entry should be preserved")
+    }
+    if (list_len(workspace.project.dependencies) != 1) {
+        return umsTestFail("one dependency should be modeled")
+    }
+
+    let multi = umsLoadText(
+        "# multiple artifacts\nproject { name = \"multi\" version = \"1.0.0\" prismio = \"1.0\" } targets { executable(\"one\") { entry = \"src/main.psm\" } executable(\"two\") { entry = \"src/main.psm\" } }",
+        "memory:multi", "ums/tests/fixtures/valid", "release")
+    if (multi.valid == false or umsWorkspaceTargetCount(multi) != 2) {
+        return umsTestFail("multiple executable targets should produce one plan each")
+    }
+
+    let invalid = umsLoadText(
+        "project { name = \"broken\" } targets { executable(\"broken\") {} }",
+        "memory:invalid", "ums/tests/fixtures/valid", "debug")
+    if (invalid.valid or list_len(invalid.diagnostics) < 3) {
+        return umsTestFail("invalid manifest should collect useful diagnostics")
+    }
+
+    println("PASS: UMS parser, models, validation and build planning")
+    return 0
+}

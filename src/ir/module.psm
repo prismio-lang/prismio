@@ -671,46 +671,6 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_param("ptr")
     ir_declare_function_end()
     
-    ir_declare_function_begin("println", "void")
-    ir_declare_function_param("ptr")
-    ir_declare_function_end()
-    
-    ir_declare_function_begin("print", "void")
-    ir_declare_function_param("ptr")
-    ir_declare_function_end()
-    
-    ir_declare_function_begin("println_int", "void")
-    ir_declare_function_param("i32")
-    ir_declare_function_end()
-    
-    ir_declare_function_begin("print_int", "void")
-    ir_declare_function_param("i32")
-    ir_declare_function_end()
-
-    ir_declare_function_begin("println_float", "void")
-    ir_declare_function_param("double")
-    ir_declare_function_end()
-    
-    ir_declare_function_begin("print_float", "void")
-    ir_declare_function_param("double")
-    ir_declare_function_end()
-
-    ir_declare_function_begin("println_bool", "void")
-    ir_declare_function_param("i32")
-    ir_declare_function_end()
-    
-    ir_declare_function_begin("print_bool", "void")
-    ir_declare_function_param("i32")
-    ir_declare_function_end()
-
-    ir_declare_function_begin("println_char", "void")
-    ir_declare_function_param("i8")
-    ir_declare_function_end()
-    
-    ir_declare_function_begin("print_char", "void")
-    ir_declare_function_param("i8")
-    ir_declare_function_end()
-
     // Struct-field ownership. Declared before any is defined, because a type
     // whose field is another owning struct calls that type's release -- and the
     // declaration order of two structs says nothing about which needs the other.

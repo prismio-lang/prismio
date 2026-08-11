@@ -1,0 +1,65 @@
+import ums.model.project
+import ums.model.diagnostic
+import ums.model.lowering
+import ums.model.validation
+import ums.parser.lexer
+import ums.parser.parser
+import ums.resolver.discovery
+import ums.builder.build_plan
+
+extern fn read_file(path: String borrow) -> String produce(free)
+extern fn get_directory(path: String borrow) -> String produce(free)
+extern fn str_length(value: String) -> Int
+extern fn str_clone(value: String borrow) -> String produce(free)
+
+struct UmsWorkspace {
+    project: UmsProjectModel,
+    plan: UmsBuildPlan,
+    diagnostics: List<UmsDiagnostic>,
+    valid: Bool
+}
+
+fn umsEmptyWorkspace(diagnostics: List<UmsDiagnostic>) -> UmsWorkspace {
+    return UmsWorkspace {
+        project: umsProjectModel("", "", "debug"),
+        plan: UmsBuildPlan { stateRoot: str_clone(""), artifactRoot: str_clone("") },
+        diagnostics: diagnostics,
+        valid: false
+    }
+}
+
+fn umsLoadText(source: String, manifestPath: String, root: String,
+               profile: String) -> UmsWorkspace {
+    let diagnostics = umsDiagnostics()
+    let tokens = umsLex(source, manifestPath, diagnostics)
+    let document = umsParse(tokens, manifestPath, diagnostics)
+    let project = umsLowerDocument(document, root, manifestPath, profile, diagnostics)
+    umsProjectValidate(project, diagnostics)
+    let mut plan = UmsBuildPlan { stateRoot: str_clone(""), artifactRoot: str_clone("") }
+    if (list_len(diagnostics) == 0) {
+        plan = umsBuildPlanCreate(project, diagnostics)
+    }
+    let valid = list_len(diagnostics) == 0
+    return UmsWorkspace {
+        project: project,
+        plan: plan,
+        diagnostics: diagnostics,
+        valid: valid
+    }
+}
+
+fn umsLoadProject(startDirectory: String, profile: String) -> UmsWorkspace {
+    let diagnostics = umsDiagnostics()
+    let manifestPath = umsDiscoverManifest(startDirectory, diagnostics)
+    if (str_length(manifestPath) == 0) { return umsEmptyWorkspace(diagnostics) }
+    let root = get_directory(manifestPath)
+    return umsLoadText(read_file(manifestPath), manifestPath, root, profile)
+}
+
+fn umsWorkspaceTargetCount(workspace: UmsWorkspace) -> Int {
+    return list_len(workspace.project.targets)
+}
+
+fn umsWorkspaceTarget(workspace: UmsWorkspace, index: Int) -> UmsTarget {
+    return list_get(workspace.project.targets, index)
+}

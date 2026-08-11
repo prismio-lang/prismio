@@ -1,0 +1,45 @@
+// std/io.psm is loaded as source before sema. These calls must resolve through
+// ordinary exact-type overload selection, not compiler-known print branches.
+
+fn main() -> Int {
+    print("String=")
+    println("ok")
+
+    print("Int=")
+    println(42)
+
+    print("I8=")
+    println(-128 as I8)
+    print("I16=")
+    println(-32768 as I16)
+    print("I64=")
+    let signedNearMin: I64 = -9223372036854775807
+    println(signedNearMin)
+    print("I64.min=")
+    let signedMin: I64 = signedNearMin - 1
+    println(signedMin)
+    print("Isize=")
+    println(-42 as Isize)
+
+    print("U8=")
+    println(255 as U8)
+    print("U16=")
+    println(65535 as U16)
+    print("U32=")
+    println(4294967295 as U32)
+    print("U64=")
+    let unsignedMax: U64 = (0 as U64) - (1 as U64)
+    println(unsignedMax)
+    print("Usize=")
+    println(42 as Usize)
+
+    print("Float=")
+    println(3.5)
+
+    print("Bool=")
+    println(true)
+
+    print("Char=")
+    println('A')
+    return 0
+}

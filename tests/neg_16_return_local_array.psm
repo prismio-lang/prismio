@@ -16,6 +16,6 @@ fn make() -> [Int] {
 
 fn main() -> Int {
     let b = make()
-    println_int(b[0])
+    println(b[0])
     return 0
 }

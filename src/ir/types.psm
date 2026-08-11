@@ -165,21 +165,6 @@ fn getExprType(expr: ASTNode) -> String {
     if (expr.kind == NodeKind.CALL_EXPR) {
         let callee = ptr_to_node(expr.child1)
         let funcName = callee.s1
-        if (str_equals(funcName, "print") == 1 or str_equals(funcName, "println") == 1) {
-            return "void"
-        }
-        if (str_equals(funcName, "print_int") == 1 or str_equals(funcName, "println_int") == 1) {
-            return "void"
-        }
-        if (str_equals(funcName, "print_float") == 1 or str_equals(funcName, "println_float") == 1) {
-            return "void"
-        }
-        if (str_equals(funcName, "println_char") == 1 or str_equals(funcName, "print_char") == 1) {
-            return "void"
-        }
-        if (str_equals(funcName, "println_bool") == 1 or str_equals(funcName, "print_bool") == 1) {
-            return "void"
-        }
         if (str_equals(expr.s2, "") == 0) {
             return ir_get_var_type(fnKey(expr.s2))
         }

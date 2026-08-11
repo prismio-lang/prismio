@@ -1,0 +1,15 @@
+project {
+    name = "http"
+    version = "1.0.0"
+    prismio = "1.0"
+}
+
+targets {
+    executable("http") {
+        entry = "src/main.psm"
+    }
+}
+
+dependencies {
+    implementation("json", "1.2.0")
+}

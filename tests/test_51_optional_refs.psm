@@ -112,9 +112,9 @@ fn check(label: String, got: Int, want: Int) -> Int {
     print("FAIL ")
     print(label)
     print(": got ")
-    print_int(got)
+    print(got)
     print(" want ")
-    println_int(want)
+    println(want)
     return 1
 }
 

@@ -132,6 +132,13 @@ in `test_runner.py`).
 To verify changes against a local compiler build, put that build first on `PATH` for the session,
 e.g. `PATH="/path/to/local/build:$PATH" python test_runner.py`.
 
+### IDE integration
+
+Editors can run `prismio check <source.psm> --diagnostic-format=json` for
+analysis-only validation and versioned JSON Lines diagnostics. The command runs
+the full frontend without generating IR, invoking the native linker, or creating
+an output artifact. See [IDE_PROTOCOL.md](IDE_PROTOCOL.md) for the wire contract.
+
 ### Run the Test Suite
 
 ```bash

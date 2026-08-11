@@ -80,6 +80,7 @@ fn aifRuntimeContract(name: String, index: Int) -> Int {
     if (str_equals(name, "str_equals") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_length") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_substring") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "str_slice") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_index_of") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_contains") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_starts_with") == 1) { return AIF_FFI_BORROW }
@@ -163,6 +164,10 @@ fn aifFfiProduces(name: String) -> Bool {
     if (str_equals(name, "list_new") == 1) { return true }
     if (str_equals(name, "str_concat") == 1) { return true }
     if (str_equals(name, "str_substring") == 1) { return true }
+    // Same contract as str_substring, and for the same reason: **every**
+    // path allocates, including the out-of-range one, which returns an
+    // owned one-byte string rather than the literal "".
+    if (str_equals(name, "str_slice") == 1) { return true }
     if (str_equals(name, "str_from_char") == 1) { return true }
     if (str_equals(name, "int_to_str") == 1) { return true }
     if (str_equals(name, "read_file") == 1) { return true }

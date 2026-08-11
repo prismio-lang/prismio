@@ -1,0 +1,169 @@
+// Console output lives in Prismio source. The C runtime below this module is a
+// deliberately narrow ABI boundary: it writes text (and, until Float gains a
+// source-level formatter, one floating-point value). The public surface is the
+// two exact-type overload sets declared here.
+
+extern fn prismio_rt_print(text: String borrow)
+extern fn prismio_rt_println(text: String borrow)
+extern fn prismio_rt_print_float(value: Float)
+extern fn prismio_rt_println_float(value: Float)
+
+extern fn str_concat(left: String borrow, right: String borrow) -> String produce(free)
+extern fn str_from_char(value: Char) -> String produce(free)
+
+fn prismio_std_io_decimal_digit(value: U8) -> String {
+    if (value == 0) { return "0" }
+    if (value == 1) { return "1" }
+    if (value == 2) { return "2" }
+    if (value == 3) { return "3" }
+    if (value == 4) { return "4" }
+    if (value == 5) { return "5" }
+    if (value == 6) { return "6" }
+    if (value == 7) { return "7" }
+    if (value == 8) { return "8" }
+    return "9"
+}
+
+fn prismio_std_io_unsigned_integer(value: U64) -> String {
+    if (value == 0) { return "0" }
+
+    let mut remaining = value
+    let mut text = ""
+    while (remaining > 0) {
+        let digit = (remaining % 10) as U8
+        text = str_concat(prismio_std_io_decimal_digit(digit), text)
+        remaining = remaining / 10
+    }
+    return text
+}
+
+fn prismio_std_io_signed_integer(value: I64) -> String {
+    if (value >= 0) {
+        return prismio_std_io_unsigned_integer(value as U64)
+    }
+
+    // Negate after converting to unsigned. This also handles I64.min: its
+    // positive magnitude does not fit in I64, but it does fit in U64.
+    let magnitude = (0 as U64) - (value as U64)
+    return str_concat("-", prismio_std_io_unsigned_integer(magnitude))
+}
+
+fn print(value: String) {
+    prismio_rt_print(value)
+}
+
+fn print(value: Int) {
+    prismio_rt_print(prismio_std_io_signed_integer(value as I64))
+}
+
+fn print(value: I8) {
+    prismio_rt_print(prismio_std_io_signed_integer(value as I64))
+}
+
+fn print(value: I16) {
+    prismio_rt_print(prismio_std_io_signed_integer(value as I64))
+}
+
+fn print(value: I64) {
+    prismio_rt_print(prismio_std_io_signed_integer(value))
+}
+
+fn print(value: Isize) {
+    prismio_rt_print(prismio_std_io_signed_integer(value as I64))
+}
+
+fn print(value: U8) {
+    prismio_rt_print(prismio_std_io_unsigned_integer(value as U64))
+}
+
+fn print(value: U16) {
+    prismio_rt_print(prismio_std_io_unsigned_integer(value as U64))
+}
+
+fn print(value: U32) {
+    prismio_rt_print(prismio_std_io_unsigned_integer(value as U64))
+}
+
+fn print(value: U64) {
+    prismio_rt_print(prismio_std_io_unsigned_integer(value))
+}
+
+fn print(value: Usize) {
+    prismio_rt_print(prismio_std_io_unsigned_integer(value as U64))
+}
+
+fn print(value: Float) {
+    prismio_rt_print_float(value)
+}
+
+fn print(value: Bool) {
+    if (value) {
+        prismio_rt_print("true")
+    } else {
+        prismio_rt_print("false")
+    }
+}
+
+fn print(value: Char) {
+    prismio_rt_print(str_from_char(value))
+}
+
+fn println(value: String) {
+    prismio_rt_println(value)
+}
+
+fn println(value: Int) {
+    prismio_rt_println(prismio_std_io_signed_integer(value as I64))
+}
+
+fn println(value: I8) {
+    prismio_rt_println(prismio_std_io_signed_integer(value as I64))
+}
+
+fn println(value: I16) {
+    prismio_rt_println(prismio_std_io_signed_integer(value as I64))
+}
+
+fn println(value: I64) {
+    prismio_rt_println(prismio_std_io_signed_integer(value))
+}
+
+fn println(value: Isize) {
+    prismio_rt_println(prismio_std_io_signed_integer(value as I64))
+}
+
+fn println(value: U8) {
+    prismio_rt_println(prismio_std_io_unsigned_integer(value as U64))
+}
+
+fn println(value: U16) {
+    prismio_rt_println(prismio_std_io_unsigned_integer(value as U64))
+}
+
+fn println(value: U32) {
+    prismio_rt_println(prismio_std_io_unsigned_integer(value as U64))
+}
+
+fn println(value: U64) {
+    prismio_rt_println(prismio_std_io_unsigned_integer(value))
+}
+
+fn println(value: Usize) {
+    prismio_rt_println(prismio_std_io_unsigned_integer(value as U64))
+}
+
+fn println(value: Float) {
+    prismio_rt_println_float(value)
+}
+
+fn println(value: Bool) {
+    if (value) {
+        prismio_rt_println("true")
+    } else {
+        prismio_rt_println("false")
+    }
+}
+
+fn println(value: Char) {
+    prismio_rt_println(str_from_char(value))
+}

@@ -105,8 +105,8 @@ fn main() -> Int {
     }
 
     print("submitted: ")
-    println_int(totals.submitted)
+    println(totals.submitted)
     print("culled: ")
-    println_int(totals.culled)
+    println(totals.culled)
     return 0
 }

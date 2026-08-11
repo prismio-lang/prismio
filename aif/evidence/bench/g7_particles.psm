@@ -87,6 +87,6 @@ fn main() -> Int {
     }
 
     print("alive-sum: ")
-    println_int(total)
+    println(total)
     return 0
 }

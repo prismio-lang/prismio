@@ -5,7 +5,7 @@
 //    sized integer type even though codegen already emitted the right urem/srem.
 //  - a global initialized with a string literal emitted the raw text as the
 //    initializer (`@g =  global ptr hello`), which llc rejects.
-//  - print_bool was declared (i32) but called with an i1.
+//  - Bool output used to cross a mismatched i1/i32 runtime ABI directly.
 
 extern fn str_equals(s1: String, s2: String) -> Int
 
@@ -51,8 +51,8 @@ fn main() -> Int {
     }
 
     // Bool printing goes through a zext to match the C runtime's int parameter
-    print_bool(true)
-    print_bool(false)
+    print(true)
+    print(false)
     println("")
 
     println("PASS: sized int modulo and global strings")

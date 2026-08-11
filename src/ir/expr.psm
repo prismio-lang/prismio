@@ -527,69 +527,6 @@ fn generateExpression(expr: ASTNode) -> String {
             return ""
         }
 
-        // Bool lowers to i1, but the C runtime declares print_bool(int) and the
-        // module declares it as taking i32. Passing the i1 straight through left
-        // the call disagreeing with its own declaration and the upper bits of the
-        // argument register undefined -- it only worked by luck. Widen explicitly.
-        let mut isPrintBool = 0
-        if (str_equals(funcName, "print_bool") == 1) { isPrintBool = 1 }
-        if (str_equals(funcName, "println_bool") == 1) { isPrintBool = 2 }
-
-        if (isPrintBool > 0) {
-            let boolArgPtr = expr.child2
-            if (str_equals(boolArgPtr, "") == 0) {
-                let boolArg = ptr_to_node(boolArgPtr)
-                let boolVal = generateExpression(boolArg)
-                let widened = ir_zext("i1", boolVal, "i32")
-                ir_call_begin()
-                ir_call_arg("i32", ir_get_temp_name(widened))
-                if (isPrintBool == 1) {
-                    ir_call_end("void", "print_bool")
-                } else {
-                    ir_call_end("void", "println_bool")
-                }
-            }
-            return ""
-        }
-
-        let mut isPrint = 0
-        if (str_equals(funcName, "print") == 1) { isPrint = 1 }
-        if (str_equals(funcName, "println") == 1) { isPrint = 2 }
-        
-        if (isPrint > 0) {
-            let mut argPtr = expr.child2
-            if (str_equals(argPtr, "") == 0) {
-                let argNode = ptr_to_node(argPtr)
-                let argVal = generateExpression(argNode)
-                let argType = getExprType(argNode)
-                
-                ir_call_begin()
-                if (str_equals(argType, "ptr") == 1) {
-                    ir_call_arg("ptr", argVal)
-                    if (isPrint == 1) {
-                        ir_call_end("void", "print")
-                    } else {
-                        ir_call_end("void", "println")
-                    }
-                } else if (str_equals(argType, "double") == 1) {
-                    ir_call_arg("double", argVal)
-                    if (isPrint == 1) {
-                        ir_call_end("void", "print_float")
-                    } else {
-                        ir_call_end("void", "println_float")
-                    }
-                } else {
-                    ir_call_arg(storageType(argType), argVal)
-                    if (isPrint == 1) {
-                        ir_call_end("void", "print_int")
-                    } else {
-                        ir_call_end("void", "println_int")
-                    }
-                }
-            }
-            return ""
-        }
-        
         // Regular function call
         ir_call_begin()
         // REQUIREMENTS 20. `list_push` and `list_set` take the element as `ptr`,

@@ -30,7 +30,7 @@ fn main() -> Int {
         return fail("float comparisons should use ordered fcmp predicates")
     }
 
-    println_float(result)
+    println(result)
     println("PASS: floats")
     return 0
 }

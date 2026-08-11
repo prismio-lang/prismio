@@ -107,6 +107,22 @@ char* join_path(const char* directory, const char* filename) {
     return result;
 }
 
+// The OS owns the working directory; exposing it as an allocated String keeps
+// manifest discovery in native Prismio while limiting this runtime seam to the
+// one capability the language cannot implement itself.
+char* current_directory(void) {
+#ifdef _WIN32
+    char* path = _getcwd(NULL, 0);
+#else
+    char* path = getcwd(NULL, 0);
+#endif
+    if (path) return path;
+
+    char* fallback = (char*)malloc(2);
+    strcpy(fallback, ".");
+    return fallback;
+}
+
 // ============================================
 // Listing a module directory
 // ============================================

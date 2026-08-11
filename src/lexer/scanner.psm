@@ -173,7 +173,7 @@ fn lexIdentifier(lex: Lexer) -> Token {
     while (isAlnum(lexerCurrent(lex))) {
         lexerAdvance(lex)
     }
-    let value = str_substring(lex.input, start, lex.pos - start)
+    let value = str_slice(lex.input, start, lex.pos - start, lex.length)
 
     if (isKeyword(value)) {
         if (isBoolean(value)) {
@@ -204,7 +204,7 @@ fn lexNumber(lex: Lexer) -> Token {
         }
     }
 
-    let value = str_substring(lex.input, start, lex.pos - start)
+    let value = str_slice(lex.input, start, lex.pos - start, lex.length)
     if (isFloat) {
         return lexerToken(lex, TokenType.FLOAT_LITERAL, value, line, col, start)
     }
@@ -214,7 +214,7 @@ fn lexNumber(lex: Lexer) -> Token {
 // Two passes. The first finds the closing quote, stepping over backslash pairs so
 // an escaped quote does not end the literal. Escapes are then decoded only if the
 // literal actually contains one, which keeps the common case on the cheap
-// str_substring path instead of concatenating per character.
+// str_slice path instead of concatenating per character.
 fn lexString(lex: Lexer) -> Token {
     let line = lex.line
     let col = lex.col
@@ -234,7 +234,7 @@ fn lexString(lex: Lexer) -> Token {
         lexerAdvance(lex)
     }
 
-    let mut value = str_substring(lex.input, bodyStart, lex.pos - bodyStart)
+    let mut value = str_slice(lex.input, bodyStart, lex.pos - bodyStart, lex.length)
 
     if (lexerCurrent(lex) == '"') {
         lexerAdvance(lex)
@@ -344,7 +344,7 @@ fn lexOperator(lex: Lexer) -> Token {
         lexerAdvance(lex)
     }
 
-    let value = str_substring(lex.input, start, lex.pos - start)
+    let value = str_slice(lex.input, start, lex.pos - start, lex.length)
     let mut type = oneCharOperatorType(first)
     if (lex.pos - start == 2) {
         type = twoCharOperatorType(value)
@@ -358,7 +358,7 @@ fn lexSeparator(lex: Lexer) -> Token {
     let col = lex.col
     let start = lex.pos
 
-    let value = str_substring(lex.input, start, 1)
+    let value = str_slice(lex.input, start, 1, lex.length)
     lexerAdvance(lex)
     return lexerToken(lex, TokenType.SEPARATOR, value, line, col, start)
 }

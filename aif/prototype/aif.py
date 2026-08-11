@@ -77,6 +77,7 @@ FFI_CONTRACTS = {
     'str_equals':     {0: 'borrow', 1: 'borrow'},
     'str_length':     {0: 'borrow'},
     'str_substring':  {0: 'borrow'},
+    'str_slice':      {0: 'borrow'},
     'str_index_of':   {0: 'borrow', 1: 'borrow'},
     'str_contains':   {0: 'borrow', 1: 'borrow'},
     'str_starts_with': {0: 'borrow', 1: 'borrow'},
@@ -121,7 +122,8 @@ def elem_key(container_type):
 # release; anything undeclared has UNKNOWN provenance and must be treated
 # conservatively -- it may already be shared and may already outlive us.
 FFI_RETURNS_PRODUCE = {
-    'list_new', 'str_concat', 'str_substring', 'str_from_char', 'int_to_str',
+    'list_new', 'str_concat', 'str_substring', 'str_slice', 'str_from_char',
+    'int_to_str',
     'read_file', 'get_directory', 'join_path',
 }
 
@@ -356,19 +358,29 @@ class Model:
 # A value-set expression: concrete sites known now, plus deferred references to
 # points-to nodes whose contents are only known at the fixed point. Keeping both
 # in one type is what lets `sites_of` compose uniformly over any expression.
-VS_EMPTY = (frozenset(), frozenset())
+#
+# The third component is SPEC 8.4 view provenance: the collections these values
+# are views *of*, each itself a (sites, keys) pair resolved at the fixed point.
+# Empty for every value set that is not a view, which is nearly all of them.
+VS_EMPTY = (frozenset(), frozenset(), frozenset())
 
 
 def vs_sites(*ids):
-    return (frozenset(ids), frozenset())
+    return (frozenset(ids), frozenset(), frozenset())
 
 
 def vs_ref(key):
-    return (frozenset(), frozenset([key]))
+    return (frozenset(), frozenset([key]), frozenset())
 
 
 def vs_union(a, b):
-    return (a[0] | b[0], a[1] | b[1])
+    return (a[0] | b[0], a[1] | b[1], a[2] | b[2])
+
+
+def vs_view_of(v, container):
+    """SPEC 8.4. Mark `v` as denoting views of `container`. Provenance, not a
+    points-to edge -- see the same function in runtime/aif_support.c."""
+    return (v[0], v[1], v[2] | frozenset([(container[0], container[1])]))
 
 
 class Engine:
@@ -387,6 +399,17 @@ class Engine:
         # element is neither: list_push is a call, so nothing about it is a move,
         # and two pushes of one value are two owners the language never noticed.
         self.container_of = defaultdict(set)
+        # SPEC 8.4. key -> {collection sites that values bound to this key are
+        # views of}. Provenance has to ride the points-to graph and not the
+        # value set alone, because a view is nearly always bound to a name
+        # before it travels:
+        #
+        #     let e = list_get(items, i)   # provenance attaches to this value set
+        #     return e                     # ...and must still be here
+        #
+        # Grown in the points-to phase, which reads no fact. Mirrors key_views
+        # in aif_support.c.
+        self.key_views = defaultdict(set)
         self.E = {}                       # site -> escape
         self.A = {}                       # site -> alias
         self.C = {}                       # site -> cyclicity
@@ -536,7 +559,21 @@ class Engine:
             # at the fixed point, so the pushes may be walked after this read.
             elem_of = FFI_READS_ELEMENT_OF.get(plain)
             if elem_of is not None and elem_of < len(e['c2']):
-                return self.ref(elem_key(e['c2'][elem_of]['ty']))
+                element = self.ref(elem_key(e['c2'][elem_of]['ty']))
+                # SPEC 8.4: an element reference IS a view, so this read produces
+                # one. The element key stays exactly what it was -- a points-to
+                # edge saying *which values* can come back. Provenance is
+                # attached beside it, and says what the points-to graph cannot:
+                # how long the container must live for the reference to be
+                # legal. Both are needed; see the same comment in
+                # src/aif/walk.psm.
+                # Only a reference is a view. Reading an `Int` out of a
+                # `List<Int>` copies it into a register, and a copy that leaves
+                # the function keeps nothing alive. SPEC 8.4 says a view is a
+                # *reference* to part of a collection.
+                if elem_of < len(argvals) and self.m.is_ref(ty):
+                    element = vs_view_of(element, argvals[elem_of])
+                return element
             alias_of = FFI_RETURNS_ALIAS_OF.get(plain)
             if alias_of is not None and alias_of < len(argvals):
                 return argvals[alias_of]         # FFI 5.2 `alias`
@@ -689,6 +726,54 @@ class Engine:
             out |= self.pt[key]
         return out
 
+    def resolve_views(self, vs):
+        """SPEC 8.4. The collections whose lifetime this value set depends on:
+        its own provenance, plus that of every key it reads through.
+
+        Not recursive past one key hop, and it does not need to be -- a key's
+        set is already the union of everything ever bound into it, provenance
+        included, so the transitive closure is taken by the points-to fixed
+        point rather than here. Mirrors resolve_views in aif_support.c."""
+        out = set()
+        for csites, ckeys in vs[2]:
+            out |= self.resolve((csites, ckeys, frozenset()))
+        for key in vs[1]:
+            out |= self.key_views[key]
+        return out
+
+    def raise_view_owners(self, vs, target, in_fn):
+        """SPEC 8.4 E-VIEW:  v is a view of c  =>  E(c) ⊒ E(v).
+
+        Applied wherever a rule bounds how long the *view* lives, because that
+        bound is exactly what the collection has to satisfy. The direction is
+        the opposite of every other rule here: the collection is raised to cover
+        the view, because a view must not outlive what it views.
+
+        A is deliberately untouched -- SPEC 8.4 permits overlapping mutable
+        views. Mirrors raise_view_owners in aif_support.c."""
+        owners = self.resolve_views(vs)
+        if not owners:
+            return False
+        any_moved = False
+        for c in owners:
+            # A Region target names a scope of `in_fn`. When the collection was
+            # allocated in a different function this rule contributes nothing:
+            # the view dies with that activation, and the collection reached
+            # `in_fn` either as an argument (live across the call already),
+            # as a return (E-RETURN has it at Caller), or from static storage
+            # (E-STATIC has it Global). A view that outlives `in_fn` arrives
+            # here with a function-independent target instead. See the same
+            # case analysis in raise_view_owners in aif_support.c.
+            if (isinstance(target, tuple) and target[0] == 'R'
+                    and in_fn is not None and self.m.sites[c].fn != in_fn):
+                continue
+            j = escape_join(self.m.scopes, self.E[c], target)
+            if j != self.E[c]:
+                self.E[c] = j
+                self.moved(c)
+                any_moved = True
+        return any_moved
+
     def solve_points_to(self, max_rounds):
         """Every rule that writes pt or holders reads only pt, so points-to has
         a least fixed point independent of the facts. Reaching it first changes
@@ -705,6 +790,15 @@ class Engine:
                 v = self.resolve(val)
                 if not v <= self.pt[key]:
                     self.pt[key] |= v
+                    changed = True
+                # SPEC 8.4. View provenance flows with the value, into the key
+                # it is bound, passed or stored into. Grown here rather than in
+                # the fact loop because it reads only value sets and pt, so the
+                # fact phase gets to run over a finished relation -- exactly as
+                # it does for pt itself.
+                vw = self.resolve_views(val)
+                if vw and not vw <= self.key_views[key]:
+                    self.key_views[key] |= vw
                     changed = True
                 if kind == 'arg':       # passing does not make a holder
                     continue
@@ -788,6 +882,12 @@ class Engine:
                             if self.A[o] > self.A[s]:
                                 self.A[s] = self.A[o]
                                 changed = self.moved(s)
+                    # E-VIEW: storing a view into a field makes the viewed
+                    # collection live at least as long as the object holding it.
+                    for o in ow:
+                        if self.raise_view_owners(val, self.E[o],
+                                                  self.m.sites[o].fn):
+                            changed = True
 
                 elif kind == 'live_in':
                     _, val, scope, fn = c
@@ -800,6 +900,10 @@ class Engine:
                         if j != self.E[s]:
                             self.E[s] = j
                             changed = self.moved(s)
+                    # E-VIEW: this binding is how long the view lives, so it is
+                    # how long the collection has to.
+                    if self.raise_view_owners(val, ('R', scope), fn):
+                        changed = True
 
                 elif kind == 'opaque':
                     for s in self.resolve(c[1]):
@@ -811,6 +915,9 @@ class Engine:
                         if self.A[s] < SHARED:
                             self.A[s] = SHARED
                             changed = self.moved(s)
+                    # A view handed to something we cannot see could be kept.
+                    if self.raise_view_owners(c[1], CALLER, None):
+                        changed = True
 
                 elif kind == 'retain_in':
                     # E-STORE / A-STORE against a container reached through a
@@ -834,6 +941,12 @@ class Engine:
                         if self.A[s] < BORROWED:
                             self.A[s] = BORROWED
                             changed = self.moved(s)
+                    # E-VIEW: pushing a view into a container makes the viewed
+                    # collection live at least as long as that container.
+                    for h in hs:
+                        if self.raise_view_owners(val, self.E[h],
+                                                  self.m.sites[h].fn):
+                            changed = True
 
                 elif kind == 'borrow':
                     # Raises A to Borrowed for the call's duration and nothing
@@ -850,6 +963,11 @@ class Engine:
                         if j != self.E[s]:
                             self.E[s] = j
                             changed = self.moved(s)
+                    # E-VIEW, and the case the safety gap was actually about:
+                    # `return list_get(l, i)` hands the caller a reference into
+                    # a collection this frame owns. The collection follows.
+                    if self.raise_view_owners(c[1], CALLER, None):
+                        changed = True
 
                 elif kind == 'no_stack':
                     for s in self.resolve(c[1]):
@@ -862,6 +980,10 @@ class Engine:
                         if self.E[s] != GLOBAL:
                             self.E[s] = GLOBAL
                             changed = self.moved(s)
+                    # E-VIEW: a view kept forever keeps its collection forever.
+                    if self.raise_view_owners(c[1], GLOBAL, None):
+                        changed = True
+
 
             # A-ESCAPE and the copy rule, applied to every site each round.
             for s_id, site in enumerate(self.m.sites):
