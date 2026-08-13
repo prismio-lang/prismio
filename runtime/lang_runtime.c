@@ -1744,3 +1744,240 @@ int list_len(void* lp) {
     XefyList* l = (XefyList*)lp;
     return l->len;
 }
+
+// ============================================================================
+// LAYOUT 2 -- the measured access profile
+//
+// These counters exist only in a workload driver: an instrumented build the
+// compiler produces, runs and throws away (LAYOUT 3.2). A shipped program never
+// calls any of them, which is why they are compiled unconditionally rather than
+// behind a -D like PRISMIO_AIF_VERIFY. That define was needed because verify
+// changes allocation *pairing* and both ends have to swap together; profiling
+// changes nothing at all, it only counts, so a second runtime compile mode would
+// buy nothing and would be one more thing that can be half-applied.
+//
+// **W4 is what this arrangement is for.** "Two builds with different profiles
+// SHALL produce behaviourally identical programs" is not enforced here by
+// checking anything -- it holds because the profile reaches codegen only through
+// the layout search, and the shipped binary contains no call to any function
+// below. The instrumented binary is a different artifact with a different main.
+//
+// The counters are deliberately unsynchronised. A workload runs single-threaded
+// by construction (the driver is generated, and the corpus is single-threaded);
+// if that stops being true this is the line that breaks, and it should become a
+// per-task table merged at the end rather than a lock, so the measurement does
+// not serialise the thing it is measuring.
+// ============================================================================
+
+#define RT_PROF_SLOTS 8192
+
+typedef struct {
+    const char* type;
+    const char* field;
+    long long   reads;
+    long long   writes;
+    long long   lo;
+    long long   hi;
+    int         has_range;
+    int         used;
+} RtProfField;
+
+typedef struct {
+    const char* type;
+    long long   allocs;
+    long long   live;
+    long long   peak_live;
+    int         used;
+} RtProfType;
+
+static RtProfField g_prof_fields[RT_PROF_SLOTS];
+static RtProfType  g_prof_types[RT_PROF_SLOTS];
+
+// `setup` runs with this at 0 and `measure` with it at 1, which is the whole of
+// LAYOUT 3.1's "setup is excluded". It is a counter rather than a flag so a
+// nested measure region -- which the grammar does not have today -- could not
+// switch it off early.
+static int g_prof_depth = 0;
+
+static unsigned rt_prof_hash(const char* a, const char* b) {
+    unsigned h = 2166136261u;
+    for (const char* p = a; p && *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
+    h ^= '.'; h *= 16777619u;
+    for (const char* p = b; p && *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
+    return h;
+}
+
+// Linear probing, and a full table drops counts rather than growing. Dropping is
+// the right failure here: a profile is an estimate consumed by a cost model, and
+// a rehash in the middle of a measured region would cost more than the sample is
+// worth. RT_PROF_SLOTS is 8192 against a corpus whose largest program has 34
+// (type, field) pairs, so the table is three orders of magnitude oversized; if it
+// ever fills, the dropped counts make the profile wrong in the *conservative*
+// direction -- a field that looks colder than it is stays where the source put it.
+static RtProfField* rt_prof_slot(const char* type, const char* field) {
+    unsigned h = rt_prof_hash(type, field) & (RT_PROF_SLOTS - 1);
+    for (int probe = 0; probe < RT_PROF_SLOTS; probe++) {
+        RtProfField* s = &g_prof_fields[(h + probe) & (RT_PROF_SLOTS - 1)];
+        if (!s->used) {
+            s->used = 1;
+            s->type = type;
+            s->field = field;
+            return s;
+        }
+        if (strcmp(s->type, type) == 0 && strcmp(s->field, field) == 0) return s;
+    }
+    return 0;
+}
+
+static RtProfType* rt_prof_type_slot(const char* type) {
+    unsigned h = rt_prof_hash(type, "") & (RT_PROF_SLOTS - 1);
+    for (int probe = 0; probe < RT_PROF_SLOTS; probe++) {
+        RtProfType* s = &g_prof_types[(h + probe) & (RT_PROF_SLOTS - 1)];
+        if (!s->used) {
+            s->used = 1;
+            s->type = type;
+            return s;
+        }
+        if (strcmp(s->type, type) == 0) return s;
+    }
+    return 0;
+}
+
+void rt_profile_begin(void) { g_prof_depth++; }
+void rt_profile_end(void)   { if (g_prof_depth > 0) g_prof_depth--; }
+
+void rt_profile_field(const char* type, const char* field, int is_write) {
+    if (!g_prof_depth) return;
+    RtProfField* s = rt_prof_slot(type, field);
+    if (!s) return;
+    if (is_write) s->writes++; else s->reads++;
+}
+
+// LAYOUT 2.1 marks `range` **dynamic only**, and this is why: it is the observed
+// value range, which no amount of reading the source supplies. It is also the
+// only input bit-packing has -- without a workload there is nothing to pack
+// against, which is why the packing dimension could not be searched before now.
+//
+// Recorded on writes only. A read observes a value some write already put there,
+// so counting reads would weight the range by how often a field is looked at
+// rather than by what it can hold.
+void rt_profile_range(const char* type, const char* field, long long value) {
+    if (!g_prof_depth) return;
+    RtProfField* s = rt_prof_slot(type, field);
+    if (!s) return;
+    if (!s->has_range) {
+        s->has_range = 1;
+        s->lo = value;
+        s->hi = value;
+        return;
+    }
+    if (value < s->lo) s->lo = value;
+    if (value > s->hi) s->hi = value;
+}
+
+void rt_profile_alloc(const char* type) {
+    if (!g_prof_depth) return;
+    RtProfType* s = rt_prof_type_slot(type);
+    if (!s) return;
+    s->allocs++;
+    s->live++;
+    if (s->live > s->peak_live) s->peak_live = s->live;
+}
+
+// `live` is decremented wherever the object is released. It is best-effort by
+// construction: a value reclaimed with its arena is never individually freed, so
+// peak_live reads as the high-water of *allocations* for arena-served types
+// rather than of live instances. LAYOUT 2.1 wants peak live instances; this
+// over-reports it, which biases mu_for toward a larger footprint and therefore
+// toward the layout that touches fewer bytes. Conservative in the direction that
+// matters, and recorded here rather than presented as exact.
+void rt_profile_release(const char* type) {
+    if (!g_prof_depth) return;
+    RtProfType* s = rt_prof_type_slot(type);
+    if (!s) return;
+    if (s->live > 0) s->live--;
+}
+
+// LAYOUT 2.2's format, sorted, so two runs of the same workload produce
+// byte-identical files and the profile can be diffed and checked in.
+static int rt_prof_field_cmp(const void* a, const void* b) {
+    const RtProfField* x = *(const RtProfField* const*)a;
+    const RtProfField* y = *(const RtProfField* const*)b;
+    int c = strcmp(x->type, y->type);
+    return c ? c : strcmp(x->field, y->field);
+}
+
+static int rt_prof_type_cmp(const void* a, const void* b) {
+    const RtProfType* x = *(const RtProfType* const*)a;
+    const RtProfType* y = *(const RtProfType* const*)b;
+    return strcmp(x->type, y->type);
+}
+
+int rt_profile_dump(const char* path, const char* workload, int runs) {
+    FILE* f = fopen(path, "w");
+    if (!f) return 1;
+
+    fprintf(f, "aif-profile 1\n");
+    fprintf(f, "source      workload:%s\n", workload ? workload : "?");
+    fprintf(f, "runs        %d\n", runs);
+    fprintf(f, "#\n# type              allocs      live\n");
+
+    RtProfType* types[RT_PROF_SLOTS];
+    int ntypes = 0;
+    for (int i = 0; i < RT_PROF_SLOTS; i++) {
+        if (g_prof_types[i].used) types[ntypes++] = &g_prof_types[i];
+    }
+    qsort(types, (size_t)ntypes, sizeof(types[0]), rt_prof_type_cmp);
+    for (int i = 0; i < ntypes; i++) {
+        fprintf(f, "type  %-16s %10lld %9lld\n",
+                types[i]->type, types[i]->allocs, types[i]->peak_live);
+    }
+
+    fprintf(f, "#\n# type.field         reads       writes    range\n");
+    RtProfField* fields[RT_PROF_SLOTS];
+    int nfields = 0;
+    for (int i = 0; i < RT_PROF_SLOTS; i++) {
+        if (g_prof_fields[i].used) fields[nfields++] = &g_prof_fields[i];
+    }
+    qsort(fields, (size_t)nfields, sizeof(fields[0]), rt_prof_field_cmp);
+    for (int i = 0; i < nfields; i++) {
+        RtProfField* s = fields[i];
+        if (s->has_range) {
+            fprintf(f, "field %s.%-14s %10lld %10lld %lld..%lld\n",
+                    s->type, s->field, s->reads, s->writes, s->lo, s->hi);
+        } else {
+            fprintf(f, "field %s.%-14s %10lld %10lld -\n",
+                    s->type, s->field, s->reads, s->writes);
+        }
+    }
+
+    fclose(f);
+    return 0;
+}
+
+// W3. Every extern the workload's module declares that the Prismio runtime does
+// not itself define is replaced by a stub with this body, rather than linked
+// against whatever libc happens to export. A workload that calls `system` or
+// `fopen` is not reproducible, so it is not a workload -- but refusing to build
+// it would fail the build, which W2 forbids. Warning and returning zero is the
+// third option and the one the clause asks for.
+//
+// Warns once per symbol. A stubbed call inside the measured loop would otherwise
+// print millions of lines and turn a diagnostic into the dominant cost of the
+// run.
+#define RT_STUB_WARNED_MAX 64
+static const char* g_stub_warned[RT_STUB_WARNED_MAX];
+static int g_stub_warned_n = 0;
+
+long long rt_workload_stub(const char* name) {
+    for (int i = 0; i < g_stub_warned_n; i++) {
+        if (strcmp(g_stub_warned[i], name) == 0) return 0;
+    }
+    if (g_stub_warned_n < RT_STUB_WARNED_MAX) {
+        g_stub_warned[g_stub_warned_n++] = name;
+    }
+    fprintf(stderr,
+            "warning: workload called `%s`, which the build sandbox does not provide; "
+            "it returned 0\n", name);
+    return 0;
+}

@@ -43,4 +43,21 @@ int execute_command(const char* command);
 int cli_arg_count(void);
 char* cli_arg(int index);
 
+// --- LAYOUT 2/3: the measured access profile ---
+// Present in every binary and called only from a workload driver, which is an
+// instrumented build the compiler produces, runs and discards. A shipped program
+// contains no call to any of these -- see the block comment in lang_runtime.c for
+// why that, rather than a -D, is what keeps W4 true.
+void rt_profile_begin(void);
+void rt_profile_end(void);
+void rt_profile_field(const char* type, const char* field, int is_write);
+void rt_profile_range(const char* type, const char* field, long long value);
+void rt_profile_alloc(const char* type);
+void rt_profile_release(const char* type);
+int  rt_profile_dump(const char* path, const char* workload, int runs);
+
+// W3: the body every extern the sandbox cannot provide is given instead of a
+// link to whatever libc exports. Warns once per symbol and returns 0.
+long long rt_workload_stub(const char* name);
+
 #endif

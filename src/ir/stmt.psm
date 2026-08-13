@@ -90,6 +90,8 @@ fn generateStatement(stmt: ASTNode) {
             let val = generateExpression(ptr_to_node(stmt.child2))
 
             let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
+            irProfileField(structName, targetNode.s1, true)
+            irProfileRange(structName, targetNode.s1, fieldType, val)
             // CYCLES 3, the assignment half. Retain before releasing, so a store
             // of a value into the slot it already occupies does not free it
             // between the two.

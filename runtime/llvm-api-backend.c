@@ -1111,6 +1111,38 @@ void ir_global_string(const char *name, const char *content) {
     LLVMSetUnnamedAddr(g, 1);
 }
 
+// LAYOUT 2. A constant C string created on demand, for the type and field names
+// the profile instrumentation passes to rt_profile_field.
+//
+// Every other string in a generated module is named by the collect_strings
+// pre-pass, which walks the AST and gives each *source* literal a global. These
+// strings are not in the source -- they are the names of the things being
+// measured -- so there is nothing for that pre-pass to find, and adding a second
+// pre-pass for them would mean two walks that have to agree on a name.
+//
+// Interned by content, so a type touched at four hundred sites has one global.
+// The name is derived from the content rather than from a counter for the reason
+// every other generated name here is: a counter makes the IR depend on emission
+// order, and two builds of one program have to produce byte-identical output.
+int ir_const_cstring(const char *text) {
+    // FNV-1a of the content. A collision would alias two distinct names onto one
+    // global and mislabel a counter, so the name carries the length as well --
+    // two strings colliding in both are not something this compiler will meet.
+    unsigned h = 2166136261u;
+    for (const char *p = text; *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
+
+    char name[64];
+    snprintf(name, sizeof(name), ".aifprof.%08x.%u", h, (unsigned)strlen(text));
+
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (!g) {
+        ir_global_string(name, text);
+        g = LLVMGetNamedGlobal(g_module, name);
+        if (!g) backend_fail("could not create profile string", text);
+    }
+    return intern_value(g);
+}
+
 // Pointer to the first byte of a previously created string global.
 int ir_string_ptr(const char *global_name) {
     LLVMValueRef g = LLVMGetNamedGlobal(g_module, global_name);

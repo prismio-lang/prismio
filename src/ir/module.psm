@@ -183,6 +183,184 @@ fn declareExternFunction(ext: ASTNode) {
     ir_declare_function_end()
 }
 
+// ---------------------------------------------------------------------------
+// LAYOUT 3.2 -- W3, the sandbox's half that codegen owns
+//
+// A workload runs at build time, so an `extern fn` it can reach is a hole in the
+// build: `system`, `fopen` and `getenv` are all one declaration away, and none of
+// them is reproducible. W3 says such effects "SHALL be stubbed, and their use
+// SHALL warn" -- so the driver gets a *definition* whose body warns and returns
+// zero, in place of a declaration the linker would resolve against libc.
+//
+// **The test is provenance, not a blacklist**, and that direction is the point.
+// A blacklist of dangerous names is wrong the first time someone declares a
+// symbol nobody listed; asking instead "does the Prismio runtime define this?"
+// is closed, because the runtime is a fixed set of files this compiler ships.
+// Anything outside it is stubbed whether or not anyone thought of it.
+//
+// The cost is that a workload cannot call a legitimate foreign library. That is
+// the clause's intent read literally: a workload needing a real environment is
+// not reproducible and is therefore not a workload.
+fn irRuntimeProvides(name: String) -> Bool {
+    if (str_starts_with(name, "str_") == 1) { return true }
+    if (str_starts_with(name, "list_") == 1) { return true }
+    if (str_starts_with(name, "prismio_rt_") == 1) { return true }
+    if (str_starts_with(name, "rt_") == 1) { return true }
+    if (str_starts_with(name, "rc_") == 1) { return true }
+    if (str_starts_with(name, "arena_") == 1) { return true }
+    if (str_starts_with(name, "cyc_") == 1) { return true }
+    if (str_starts_with(name, "aif_verify_") == 1) { return true }
+    if (str_equals(name, "int_to_str") == 1) { return true }
+    if (str_equals(name, "float_to_str") == 1) { return true }
+    if (str_equals(name, "char_code") == 1) { return true }
+    if (str_equals(name, "malloc") == 1) { return true }
+    if (str_equals(name, "free") == 1) { return true }
+    // `exit` is deliberately provided. A workload that exits early has measured
+    // whatever ran before it, which is a smaller sample and not a broken one --
+    // stubbing it would turn a program that stops into one that runs on past the
+    // point its author meant it to stop, which is worse.
+    if (str_equals(name, "exit") == 1) { return true }
+    return false
+}
+
+// A stub's return is zero of whatever the declaration says. `ret void` for void;
+// `ret ptr null` for anything pointer-shaped, because a stubbed producer handing
+// back an integer 0 cast to a pointer is the same null but takes a cast to say
+// so; and a zero of the right width otherwise.
+fn generateExternStub(ext: ASTNode) {
+    let retType = getDeclaredReturnType(ext, ext.child2)
+    let retSig = storageType(retType)
+
+    ir_function_begin(functionSymbolName(ext), retSig)
+    let mut paramPtr = ext.child1
+    let mut i = 0
+    while (str_equals(paramPtr, "") == 0) {
+        let paramNode = ptr_to_node(paramPtr)
+        let pTypeNode = ptr_to_node(paramNode.child1)
+        ir_function_param(storageType(mapTypeNode(pTypeNode)), str_concat("p_s", int_to_str(i)))
+        i = i + 1
+        paramPtr = paramNode.next
+    }
+    ir_function_body_start()
+
+    ir_call_begin()
+    ir_call_arg("ptr", ir_get_temp_name(ir_const_cstring(ext.s1)))
+    ir_call_end("i64", "rt_workload_stub")
+
+    if (str_equals(retSig, "void") == 1) {
+        ir_ret_void()
+    } else if (str_equals(retSig, "ptr") == 1) {
+        ir_ret("ptr", "null")
+    } else {
+        ir_ret(retSig, "0")
+    }
+    ir_function_end()
+}
+
+// ---------------------------------------------------------------------------
+// LAYOUT 3.2 -- the workload driver
+//
+// The instrumented build's `main`. It replaces the program's own, which is why
+// the profile cannot be contaminated by whatever that main does: the driver runs
+// `setup`, turns counting on, runs `measure` the declared number of times, turns
+// it off, and writes the profile out.
+//
+// `setup` outside the counted region is LAYOUT 3.1's whole reason for the split
+// -- "input construction must not pollute the access counts of the code under
+// study" -- and it is one call either side of it rather than a flag threaded
+// through codegen, so there is no site that can forget.
+//
+// `setup` also runs *once*, outside the repeat loop, which is the reading of
+// 3.1 the wording forces: "runs once per execution and is excluded". Putting it
+// inside the loop would rebuild the input for every repetition and measure a
+// program nobody wrote.
+fn generateWorkloadDriver(workload: ASTNode, profilePath: String) {
+    ir_function_begin("main", "i32")
+    ir_function_param("i32", "p_argc")
+    ir_function_param("ptr", "p_argv")
+    ir_function_body_start()
+    ir_clear_local_var_types()
+    ir_clear_returned()
+
+    // Deliberately *not* stored into prismio_argc/prismio_argv, which is what
+    // generateFunction does for a real main. cli_arg() therefore reads the zero
+    // initialisers and a workload cannot branch on the compiler's own command
+    // line -- the profile is a function of the program, not of how it was built.
+    ir_scope_push()
+
+    if (nodeExists(workload.child1)) {
+        irFunctionBody = workload.child1
+        generateBlock(ptr_to_node(workload.child1))
+    }
+
+    ir_call_begin()
+    ir_call_end("void", "rt_profile_begin")
+
+    // `repeat` as a counted loop. Emitted here rather than by desugaring to a
+    // FOR_STATEMENT because a desugar would need a loop variable name, and any
+    // name it chose could collide with one the workload's own body declares.
+    let counterSlot = "%wl_i"
+    ir_alloca("i32", counterSlot)
+    ir_store("i32", "0", counterSlot)
+
+    let headLabel = ir_get_label()
+    let bodyLabel = ir_get_label()
+    let doneLabel = ir_get_label()
+
+    ir_br_numbered(headLabel)
+    ir_label_numbered(headLabel)
+    let cur = ir_get_temp_name(ir_load("i32", counterSlot))
+    let more = ir_get_temp_name(ir_icmp_slt("i32", cur, int_to_str(workload.i1)))
+    ir_cond_br_numbered(more, bodyLabel, doneLabel)
+
+    ir_label_numbered(bodyLabel)
+    if (nodeExists(workload.child2)) {
+        irFunctionBody = workload.child2
+        generateBlock(ptr_to_node(workload.child2))
+    }
+    let cur2 = ir_get_temp_name(ir_load("i32", counterSlot))
+    let next = ir_get_temp_name(ir_add("i32", cur2, "1"))
+    ir_store("i32", next, counterSlot)
+    ir_br_numbered(headLabel)
+
+    ir_label_numbered(doneLabel)
+    irFunctionBody = ""
+
+    ir_call_begin()
+    ir_call_end("void", "rt_profile_end")
+
+    ir_call_begin()
+    ir_call_arg("ptr", ir_get_temp_name(ir_const_cstring(profilePath)))
+    ir_call_arg("ptr", ir_get_temp_name(ir_const_cstring(workload.s1)))
+    ir_call_arg("i32", int_to_str(workload.i1))
+    ir_call_end("i32", "rt_profile_dump")
+
+    ir_scope_pop()
+    ir_ret("i32", "0")
+    ir_function_end()
+}
+
+fn findWorkload(module: ASTNode) -> ASTNode {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let d = ptr_to_node(p)
+        if (d.kind == NodeKind.WORKLOAD_DECL) { return d }
+        p = d.next
+    }
+    return ptr_to_node("")
+}
+
+fn moduleWorkloadCount(module: ASTNode) -> Int {
+    let mut n = 0
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let d = ptr_to_node(p)
+        if (d.kind == NodeKind.WORKLOAD_DECL) { n = n + 1 }
+        p = d.next
+    }
+    return n
+}
+
 fn moduleHasFunction(module: ASTNode, name: String) -> Bool {
     let mut stmtPtr = module.child1
     while (str_equals(stmtPtr, "") == 0) {
@@ -638,6 +816,44 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_param("ptr")
     ir_declare_function_end()
 
+    // LAYOUT 2. Declared only in a workload driver. A shipped module carries no
+    // declaration of them either, which is the strongest form of W1 available
+    // here: the instrumentation is absent from the IR rather than present and
+    // unreachable, so it cannot be re-enabled by a later pass or by a linker.
+    if (irProfileMode) {
+        ir_declare_function_begin("rt_profile_begin", "void")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("rt_profile_end", "void")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("rt_profile_field", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("rt_profile_range", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i64")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("rt_profile_alloc", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("rt_profile_dump", "i32")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("rt_workload_stub", "i64")
+        ir_declare_function_param("ptr")
+        ir_declare_function_end()
+    }
+
     ir_declare_function_begin("cyc_release", "void")
     ir_declare_function_param("ptr")
     ir_declare_function_end()
@@ -724,7 +940,25 @@ fn generateModule(module: ASTNode) {
         
         if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
             if (moduleHasFunction(module, stmt.s1) == false) {
-                declareExternFunction(stmt)
+                // W3. A foreign extern gets a stub *definition* below instead of
+                // this declaration. Emitting both would be a redefinition, so the
+                // choice has to be made here, and it is made by the same
+                // predicate the stub pass uses -- one function, asked twice.
+                if (irProfileMode and irRuntimeProvides(stmt.s1) == false) {
+                    // nothing here; generateExternStub defines it
+                } else {
+                    declareExternFunction(stmt)
+                }
+            }
+        }
+
+        // A workload's blocks hold string literals like any other code, and the
+        // pre-pass that names their globals walks functions only. Without this a
+        // driver whose `setup` prints anything fails on an unknown string global.
+        if (irProfileMode) {
+            if (stmt.kind == NodeKind.WORKLOAD_DECL) {
+                if (nodeExists(stmt.child1)) { collectStringsBlock(ptr_to_node(stmt.child1)) }
+                if (nodeExists(stmt.child2)) { collectStringsBlock(ptr_to_node(stmt.child2)) }
             }
         }
         
@@ -793,13 +1027,40 @@ fn generateModule(module: ASTNode) {
     let mut stmtPtr2 = module.child1
     while (str_equals(stmtPtr2, "") == 0) {
         let stmt2 = ptr_to_node(stmtPtr2)
-        
+
         if (stmt2.kind == NodeKind.FUNCTION) {
-            generateFunction(stmt2)
+            // The driver supplies `main` in a profile build, so the program's own
+            // is skipped rather than emitted and shadowed. Two definitions of one
+            // symbol is a link error, and picking which one wins by link order is
+            // exactly the kind of thing that works until it does not.
+            if (irProfileMode and str_equals(stmt2.s1, "main") == 1) {
+                // replaced by generateWorkloadDriver
+            } else {
+                generateFunction(stmt2)
+            }
         }
-        
+
+        // W3's other half. Definitions, so they must come after the declaration
+        // pass above has decided not to declare these.
+        if (irProfileMode) {
+            if (stmt2.kind == NodeKind.EXTERN_FUNCTION) {
+                if (moduleHasFunction(module, stmt2.s1) == false) {
+                    if (irRuntimeProvides(stmt2.s1) == false) {
+                        generateExternStub(stmt2)
+                    }
+                }
+            }
+        }
+
         stmtPtr2 = stmt2.next
     }
-    
+
+    if (irProfileMode) {
+        let wl = findWorkload(module)
+        if (nodeExists(node_to_ptr(wl))) {
+            generateWorkloadDriver(wl, irProfilePath)
+        }
+    }
+
     ir_module_end()
 }

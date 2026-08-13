@@ -12,7 +12,9 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
   IR for `src/main.psm` is byte-identical to the warm build's.
-- **76/76 tests**, of which 20 are negative and each asserts *which* diagnostic it expects.
+- **98/98 tests** as of 2026-08-13, of which 25 are negative and each asserts *which* diagnostic it
+  expects. (This line read "76/76" for six sessions after it stopped being true. If you change the
+  count, change it here.)
 - Backend is the **LLVM C API** (`runtime/llvm-api-backend.c`); the old text emitter is gone.
   `ir_append()` survives only as a loud failure guarding against raw text creeping back in.
 - Pinned to **LLVM 22.x**, enforced at build time (`tools/setup_llvm.py`) and at runtime
@@ -396,12 +398,245 @@ Measured: one struct shrank across the compiler and all six corpus programs (`g6
 32 → 24 bytes) and none grew. Small, and honest — declaration order was already near-optimal almost
 everywhere, which is worth knowing before budgeting for the SoA half.
 
-**`workload` is not built on purpose.** Its only contribution over the static estimate is *measured*
+~~**`workload` is not built on purpose.**~~ **Built on 2026-08-13** — see that session's entry at the
+top of this document. The reasoning below was right about what it needed and right that the choke
+point was `ir_struct_field_ptr`; the one thing it got wrong is that `ir_struct_field_ptr` cannot
+supply the read/write distinction, because a GEP is the same instruction either way.
+
+Its only contribution over the static estimate is *measured*
 frequencies, and that needs a build-time instrumented compile-link-run inside the compile plus
 LAYOUT §3.2's W3 sandbox obligations. Shipping the syntax without the runner is the same objection
 this item was ordered around, pointed the other way: a producer that produces nothing. The
 instrumentation point already exists when someone wants it — `ir_struct_field_ptr` is the single
 choke point for field access, the way `ir_alloc_object` is for allocation.
+
+---
+
+## Session of 2026-08-13 — `workload` lands; two of LAYOUT 6's dimensions are not blocked on what the brief said
+
+**Read this section's first two paragraphs before the brief for your own session.** The brief for
+this one opened by stating handles landed in "session 2", which is the second consecutive brief to
+say so and the second time it is false. `ptr_to_node` is still `return ptr`, there is no handle table
+in `src/` or `runtime/`, and the only 13 occurrences of "handle" in `src/` are comments. The
+2026-08-09 section below records the identical correction against the identical claim.
+
+**And HEAD did not compile, again.** `901b494` added a stray empty `/* */` block at
+`src/parse/decl.psm:9`, in a language with no block comments. Every binary in `build/` failed on it
+identically. Four lines, deleted. That is the second time a committed tree could not build itself
+(`f791ab0` was the first, two eaten spaces), and the second time no check caught it — **CI's first
+step would have, both times.**
+
+Suite **98/98** (was 96). Fixpoint holds warm and cold, cold == warm, the oracle agrees on 13
+sources, source lists agree, seed refreshed. **68 of 68 compilable programs in `tests/` and
+`aif/corpus/` emit byte-identical IR** before and after — the other 25 are the negative tests, which
+compile by design in neither.
+
+### 1. `workload` landed (LAYOUT 3, SPEC 11 item 7's fourth annotation)
+
+```prismio
+workload cell_traffic {
+    setup   { let warm = build(50) }     // excluded from the counts
+    measure { hot(cells) }               // the profiled region
+    repeat  3
+    weight  1
+}
+```
+
+The build-time pipeline is: run AIF over the module, generate a **second** program whose `main` is a
+driver, compile it, run it under a timeout with no argv, read the profile it wrote, then throw the
+whole thing away and do the real build with the measured counts in place of the static estimate.
+
+It works. `test_55`'s profile, measured:
+
+```
+field Cell.hits      12000  6150  0..40      <- 40x hotter than the cold traversal
+field Cell.scratch    6000  6150  0..869
+field Cell.label       300   150  0..49
+field Cell.kind          0   150  1..1
+```
+
+and the measured build puts `hits` and `scratch` at slots 1 and 2 where the static build scatters them
+to 1 and 4. **That difference is the test.** Six things to know:
+
+- **`workload` is contextual, not reserved**, unlike `region`. `region` opens a *statement*, where an
+  identifier followed by a block is otherwise an expression statement; at top level an identifier
+  cannot start a declaration at all, so there is no ambiguity to resolve and reserving the word would
+  break `let workload = 5` for nothing.
+- **W1 holds by absence, not by a guard.** Every top-level walk in codegen keys on
+  `== NodeKind.FUNCTION`, so a workload is skipped everywhere without a single new check, and the
+  `rt_profile_*` declarations are emitted *only* in a driver. The shipped IR contains no call to them
+  and no declaration of them, so there is nothing for a later pass or a linker to resolve.
+- **W4 holds because the profile has exactly one consumer.** It reaches codegen through
+  `aif_layout_select`'s field counts and nothing else, and a layout is not observable. This is
+  checkable by reading one assignment: `irSetProfileMode` is set true in one place.
+- **The instrumentation is beside `ir_struct_field_ptr`, not inside it**, and the previous handoff's
+  suggestion to put it inside is the one thing it got wrong. A GEP is the same instruction for a read
+  and a write; only the caller knows which, and LAYOUT 2.1 wants `read(f)` and `write(f)` as separate
+  columns. There are five call sites and two of them — the generated `__aif_release_T` and
+  `__aif_cyclic_children_T` — are deliberately **not** counted: that is the memory model's own
+  traffic, and counting it would let the layout decision be driven by the cost of the layout decision.
+- **W3's sandbox is mostly codegen's, and the test is provenance rather than a blacklist.** A workload
+  can declare `extern fn system(...)` like any other program, so every extern the Prismio runtime does
+  not itself define is given a *stub definition* — `rt_workload_stub`, warns once, returns zero —
+  instead of a declaration the linker would resolve against libc. A blacklist of dangerous names is
+  wrong the first time someone names one nobody listed; "is this ours?" is closed. What is left for
+  the runner is argv (empty, so a workload cannot see how the build was invoked), the working
+  directory, and a 60-second bound.
+- **`prismio aif` runs the workload too, and that is deliberate.** The manifest has to describe the
+  build. This is the `owned_collections` trap in a new place — that default made `prismio aif` analyse
+  one language while `prismio build` compiled another, both answers were true, and two sessions of
+  notes were written off the wrong one. A declared workload changes the `layout` column, so the
+  reporting command has to pay for it. It does: `prismio aif` on a program with a workload is now as
+  slow as a build.
+
+**One cost worth knowing before you use it.** A driver links the runtime **from source** rather than
+against an installed `runtime.lib`, because an installed one may predate `rt_profile_*` — the same
+shape as `--verify`'s reason, but about vintage rather than behaviour. So a build with a workload
+compiles the runtime twice. It is opt-in and build-time.
+
+**Two defects in this feature, both found after it "worked", both worth the shape rather than the
+detail:**
+
+- **The timeout was a floor, not a ceiling.** `compiler_run_workload` backgrounds a
+  `(sleep N; kill $p)` watchdog, and the subshell inherited the compiler's stdout. Any caller
+  capturing our output — the test runner, any CI — waits for EOF, and EOF needs *every* writer to
+  close, so a driver that finished in 40 ms still blocked the reader for the full 60 seconds. It
+  presented as the suite hanging with nothing using CPU. The watchdog's redirections
+  (`>/dev/null 2>&1 </dev/null`) are the fix and are load-bearing.
+- **Four early returns skipped the state restore, and one of them could have broken the shipped
+  program.** `runWorkloadProfile` leaves three things behind — the workload build mode, the verify
+  mode it cleared, and a struct registry the driver's own `generateModule` filled. W2 means most of
+  its exits are failures. `generateStructDecl` returns early on an already-registered struct, so a
+  workload that merely *failed to link* would have made the real build skip every struct body.
+  Every exit goes through `endWorkloadPass` now, and `run_workload_test` asserts it: a workload that
+  exits non-zero must warn, fall back, **and leave a program that still prints the right answer.**
+
+### 2. Two of LAYOUT 6's four remaining dimensions were never blocked on handles
+
+Full measurements in [`aif/evidence/RESULTS-layout.md`](aif/evidence/RESULTS-layout.md). The short
+version, from `aif/evidence/bench/layout_repr.c` on g1_particles' shape:
+
+| | rel. to today | needs |
+|---|---:|---|
+| boxed AoS — what is emitted today | 1.00× | — |
+| **boxed hot/cold** | **0.87×** | **nothing** |
+| inline AoS | 0.86× | inline `List<T>` |
+| inline hot/cold | 0.66× | inline `List<T>` |
+| SoA | **0.35×** | handles |
+
+- **Hot/cold does not need handles and pays 13% today.** The cold block hangs off the hot record, so
+  one pointer still reaches the object. I predicted it would be neutral on a pointer-vector runtime —
+  reasoning from LAYOUT 5's `footprint = N · resident`, which assumes contiguity — and **the
+  measurement refuted that**: the hot record goes 96 → 72 bytes and the allocator packs smaller blocks
+  closer together. Not built, by an explicit scope decision: a second allocation behind every object
+  touches all five allocator hooks, and T3 is where it cracks, because `rc_release` frees one block
+  and cannot name the type.
+- **Bit-packing is blocked by the specification, not by codegen.** LAYOUT 2.1 makes `range(f)` dynamic
+  and says it enables packing; LAYOUT 3.2's W4 says two builds with different profiles must be
+  behaviourally identical. **Both cannot hold**: an observed range is not a bound, so narrowing an
+  `Int` that held `0..40` breaks on the input that stores 300. Upper bound if it were legal and free:
+  **9.4% of struct bytes**, 12 of 48 structs, against a field-order search that shrank exactly one
+  struct in the whole corpus. Resolving it needs a value analysis or a fifth annotation, and a fifth
+  annotation is a governance change (SPEC 11 item 7 fixes the count at four). The compiler emits the
+  measurement as **advice** at the foot of the manifest rather than acting on it.
+- **SoA needs handles** (a reference becomes `(base, index)`) and **handle width is vacuous without
+  them** — there is no handle to narrow, so it is not deferred, it is not a decision.
+
+### 3. The harness re-run: no movement, which is the correct answer, and one thing it exposed
+
+`python3 aif/evidence/xlang/bench.py --compiler build/f3 --runs 20`, against the committed baseline:
+
+| | loop ms, baseline | loop ms, now | Δ | rel. idiomatic Rust |
+|---|---:|---:|---:|---|
+| g1 | 26.3 | 26.6 | +1.0% | 1.42× → 1.41× |
+| g2 | 103.4 | 104.4 | +0.9% | 5.57× → 5.68× |
+| g3 | 51.4 | 51.2 | −0.4% | 1.12× → 1.11× |
+| g4 | 67.6 | 67.8 | +0.3% | 3.09× → 3.07× |
+| g5 | 78.6 | 77.7 | −1.2% | 2.66× → 2.61× |
+| g6 | 233.3 | 223.8 | −4.1% | 4.22× → 3.98× |
+
+**Nothing moved, and nothing should have.** Neither SoA nor hot/cold landed — the brief named them as
+the levers for pointer-chasing and neither is in the tree — and every corpus program compiles to
+**byte-identical IR** before and after this session, including the fourteen under
+`aif/evidence/xlang/` and `aif/evidence/bench/` that the `tests/` + `aif/corpus/` check does not
+cover. So this is a regression check that passed, not a result.
+
+**The table above spans several sessions**, because the committed baseline was taken with `gen4` and
+the corpus sources changed in `901b494`. The true A/B for *this* session is the pre-session compiler
+against the post-session one, both measured back to back on an idle machine:
+
+| | loop ms, `s5c` | loop ms, `f3` | Δ | pre-run spread |
+|---|---:|---:|---:|---|
+| g1 | 26.2 | 26.5 | +1.1% | ±30% |
+| g2 | 101.4 | 104.6 | +3.1% | ±15% |
+| g3 | 49.6 | 50.3 | +1.3% | ±5% |
+| g4 | 66.0 | 67.2 | +1.8% | ±12% |
+| g5 | 77.1 | 77.7 | +0.8% | ±2% |
+| g6 | 222.8 | 226.1 | +1.5% | ±8% |
+
+Geometric mean against idiomatic Rust **2.540× → 2.580×**. Peak RSS is unchanged to 0.02 MB,
+allocation counts are identical to within 205 on 15 million, and binaries grew 0–1 KB (the
+never-called `rt_profile_*` code).
+
+**Every delta is inside the run-to-run spread of a single run, but all six have the same sign**, and
+that is worth saying rather than rounding away. The two runs were sequential, so ordering and thermal
+drift are the obvious explanation, and the decisive evidence that no *code* changed is upstream of
+the timer: byte-identical IR, unchanged allocations, unchanged RSS. If a future session wants the
+sign settled, interleave the two arms rather than running them back to back.
+
+**What it did expose is a measurement-hygiene defect in the harness, and it is not this session's.**
+The `allocs` column moved by an order of magnitude on four programs — g1 2,214 → 26,326, g3 5,675 →
+45,737, g4 7,760 → 47,896, g5 2,266 → 22,279 — with loop time unchanged. Chased to the cause:
+commit `901b494` rewrote the corpus's reporting loops from `println_int` to the overloaded
+`println`, which allocates a `String` per call. g1 prints 6,002 integers and gained 24,112
+allocations: **4.02 per print, exactly.**
+
+The allocations are real and they are *outside the measured region* — the reporting loop runs after
+the frame loop — which is why the timing is untouched. But it means **the harness counts allocations
+for a region it does not time**, so the `allocs` column and the `loop ms` column describe different
+parts of the program, and the two runs' allocation figures are not comparable. Anyone quoting
+"allocations per second" off this table is dividing reporting overhead by frame time. Fix the
+harness before the next allocation claim, not after.
+
+### 4. LAYOUT 8 is behind §7.2, not behind the runner
+
+§8 reads as though it needs a way to compile and run a workload at build time, which now exists. It is
+still not implementable, and the blocker is upstream: §8 ranks "the top-`k` candidates … by modelled
+cost", and **this compiler has neither a cost model nor candidate enumeration.** §7.2 specifies
+`argmin over candidates(τ) of Cost(…)`; `aif_layout_select` is a greedy best-fit placement that
+produces exactly one layout and never scores it. LAYOUT 5's cost model exists only in
+`aif/prototype/layout.py` and was never ported. So "top-`k`" names a set with one member.
+
+The genuinely new half of §8 — a build-time instrumented compile-link-run, sandboxed and bounded — is
+done and is reusable verbatim once the cost model lands.
+
+### Four things to carry forward
+
+- **A brief is not a source.** Two consecutive briefs asserted handles had landed; both were checked
+  in under a minute (`ptr_to_node` is `return ptr`) and both were wrong. The check is cheaper than any
+  work that would have rested on it.
+- **"Reach for the input before the mechanism" has an inverse, and this session hit it.** Twice now a
+  *measurement* has refuted an argument from the cost model: λ was unreachable against a 512-byte
+  ceiling, and hot/cold's contiguity argument was wrong by 13%. When the model says a thing cannot
+  pay, price the experiment before believing it — `layout_repr.c` is 250 lines and took minutes.
+- **A specification can be internally inconsistent, and the implementation is where that surfaces.**
+  §2.1 and W4 cannot both be honoured. This is the second such finding (SimdCredit was the first), and
+  both were found by trying to implement the clause rather than by reading it.
+- **A discriminating fixture has to be built to discriminate.** `test_55`'s first draft declared
+  `Cell`'s fields in frequency order, so the measured and static layouts came out identical and the
+  test passed while proving nothing. The fields are declared hot-last now, and every field is 4 bytes
+  so padding cannot decide anything — frequency is the only input left.
+
+### Next, re-ranked on this session's measurements
+
+1. **Hot/cold split.** 0.87× measured, emittable today, no missing mechanism. The T3 interaction is
+   the whole risk and it is nameable: give a split type a generated release and route every free
+   through it.
+2. **Port LAYOUT 5's cost model** from `aif/prototype/layout.py`. Precondition for §7.2 as written, for
+   §8's ranking, and for choosing a hot/cold cut by anything better than the frequency ranks.
+3. **Handles.** Still costed at 337 dereference sites + 190 punned empty-slot tests. Worth 0.35× on
+   g1's shape — more than everything else here combined, and still nobody has paid for it.
+4. **Resolve LAYOUT 2.1 against W4** in the specification before writing the packing transform.
 
 ---
 

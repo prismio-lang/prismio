@@ -1,0 +1,147 @@
+// LAYOUT 3 -- `workload`, and the four normative constraints on it.
+//
+// The shape is g1_particles', because that is the corpus's stated layout
+// discriminator: a wide record where one loop touches a narrow slice. What makes
+// it a *workload* test rather than a layout test is the asymmetry between the
+// two loops -- `hot` runs 40x more often than `cold`, and no static estimate can
+// see that. The static profile weights both by loop depth alone, so it reports
+// them as equally hot; only a measured run can tell them apart.
+//
+// What this fixture asserts, checked by run_workload_test in test_runner.py:
+//
+//   W1  the shipped binary contains no instrumentation -- no rt_profile_* call
+//       appears in the emitted IR.
+//   W2  a workload that cannot run warns and does not fail the build
+//       (neg_25 covers the diagnostic; here the build simply has to succeed).
+//   W4  two builds with different profiles are behaviourally identical -- this
+//       program prints the same checksum whether or not the workload ran.
+//
+// The values are asserted by the program itself, so a miscompile is an exit
+// code rather than a number nobody reads.
+
+extern fn print(s: String)
+extern fn println(s: String)
+extern fn int_to_str(n: Int) -> String produce(free)
+extern fn list_new() -> List<Cell>
+extern fn list_push(l: List<Cell>, item: Cell retain_in(0))
+extern fn list_get(l: List<Cell>, i: Int) -> Cell alias
+extern fn list_len(l: List<Cell>) -> Int
+extern fn exit(code: Int)
+
+// **The declaration order is chosen to be discriminating, and that is the point
+// of the fixture.** The two hot fields are declared last, so a search that reads
+// the profile moves them forward and one that does not leaves them where they
+// are. An earlier draft declared them in frequency order, which made the measured
+// answer and the source order identical -- the test passed while proving nothing,
+// because `reordered` stayed 0 either way.
+//
+// Every field is 4 bytes, so padding cannot decide anything here and frequency is
+// the only input left. That isolates what is under test: whether the counts
+// reaching the search are measured or estimated.
+struct Cell {
+    kind: Int,
+    spare1: Int,
+    spare2: Int,
+    label: Int,
+    hits: Int,
+    scratch: Int
+}
+
+fn make_cell(seed: Int) -> Cell {
+    return Cell {
+        kind: 1,
+        hits: 0,
+        scratch: seed,
+        label: seed,
+        spare1: 0,
+        spare2: 0
+    }
+}
+
+fn build(n: Int) -> List<Cell> {
+    let cells = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(cells, make_cell(i))
+        i = i + 1
+    }
+    return cells
+}
+
+// The hot traversal: touches `hits` and `scratch` only.
+fn hot(cells: List<Cell>) {
+    let mut i = 0
+    while (i < list_len(cells)) {
+        let c = list_get(cells, i)
+        c.hits = c.hits + 1
+        c.scratch = c.scratch + c.hits
+        i = i + 1
+    }
+}
+
+// The cold traversal: touches `label`, `spare1`, `spare2`. Declared so the
+// fields are read *somewhere* -- a field nothing touches is trivially cold and
+// would not discriminate between a measured profile and a static one.
+fn cold(cells: List<Cell>) {
+    let mut i = 0
+    while (i < list_len(cells)) {
+        let c = list_get(cells, i)
+        c.spare1 = c.label
+        c.spare2 = c.label + 1
+        i = i + 1
+    }
+}
+
+fn checksum(cells: List<Cell>) -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < list_len(cells)) {
+        let c = list_get(cells, i)
+        total = total + c.hits + c.spare2
+        i = i + 1
+    }
+    return total
+}
+
+// LAYOUT 3.1. `setup` builds the input and is excluded from the counts; only
+// `measure` is profiled. The 40:1 ratio between the two traversals is the whole
+// point -- see the header.
+workload cell_traffic {
+    setup {
+        let warm = build(50)
+        cold(warm)
+    }
+    measure {
+        let cells = build(50)
+        let mut r = 0
+        while (r < 40) {
+            hot(cells)
+            r = r + 1
+        }
+        cold(cells)
+    }
+    repeat 3
+}
+
+fn main() -> Int {
+    let cells = build(50)
+    let mut r = 0
+    while (r < 40) {
+        hot(cells)
+        r = r + 1
+    }
+    cold(cells)
+
+    // 50 cells, each hit 40 times, plus spare2 = label + 1 = i + 1.
+    // sum(hits) = 50*40 = 2000; sum(spare2) = sum(i+1 for i in 0..49) = 1275.
+    let got = checksum(cells)
+    print("checksum ")
+    println(int_to_str(got))
+    if (got != 3275) {
+        println("FAIL: checksum is wrong")
+        exit(1)
+    }
+
+    println("ok")
+    return 0
+}

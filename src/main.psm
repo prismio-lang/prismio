@@ -35,6 +35,16 @@ extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
 extern fn compiler_set_verify_mode(on: Int)
 extern fn compiler_bootstrap_executable(irFile: String, exeFile: String) -> Int
 extern fn compiler_run_executable(exeFile: String) -> Int
+// LAYOUT 3.2. Runs a workload driver with no argv and a wall-clock bound, so W2's
+// "times out" is a case that can actually occur rather than a clause nothing
+// implements.
+extern fn compiler_run_workload(exeFile: String, timeoutSeconds: Int) -> Int
+// Same ".prismio-<stem>-<suffix>" convention as compiler_temp_ir_path, and the
+// same malloc'd result.
+extern fn compiler_temp_path_for(sourcePath: String, suffix: String) -> String produce(free)
+// Forces the driver's link to compile the runtime rather than take an installed
+// runtime.lib, which may predate rt_profile_*. See the note at g_workload_mode.
+extern fn compiler_set_workload_mode(on: Int)
 // Every path through both mallocs, including the failure paths, which allocate a
 // one-byte empty string rather than returning a literal. That is the same
 // invariant Level 4 had to give str_substring and str_trim -- anything declared
@@ -56,6 +66,11 @@ fn isNamedTopLevel(stmt: ASTNode) -> Bool {
     if (stmt.kind == NodeKind.FUNCTION) { return true }
     if (stmt.kind == NodeKind.STRUCT_DECL) { return true }
     if (stmt.kind == NodeKind.ENUM_DECL) { return true }
+    // LAYOUT 3.1 merges several workloads *by summation*, so a workload that
+    // arrives twice through two import paths would weight itself twice over. It
+    // is named and it is not overloadable, so the existing rule is exactly right
+    // for it.
+    if (stmt.kind == NodeKind.WORKLOAD_DECL) { return true }
     return false
 }
 
@@ -74,6 +89,7 @@ fn isNamedTopLevel(stmt: ASTNode) -> Bool {
 // that pairs an EXTERN_FUNCTION with a FUNCTION, so the kind check above already
 // treats them as distinct (and generateModule skips the `declare` when a real
 // `define` exists).
+
 fn sameTopLevelName(a: ASTNode, b: ASTNode) -> Bool {
     if (a.kind != b.kind) { return false }
     if (str_equals(a.s1, b.s1) == 0) { return false }
@@ -488,6 +504,19 @@ fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: 
         return 1
     }
 
+    // **The manifest has to describe the build, and that means running the
+    // workload here too.** This is the same trap the `owned_collections` default
+    // fell into: `prismio aif` analysed one language and `prismio build` compiled
+    // another, both were true, and two sessions of notes were written off the
+    // wrong number. A declared workload changes the `layout` column, so reporting
+    // the static profile while the build measures one would put this command back
+    // in exactly that position.
+    //
+    // The cost is real and is the honest price: `prismio aif` on a program with a
+    // workload compiles and runs that workload, so it is as slow as a build. The
+    // alternative is a fast command that describes a binary nobody builds.
+    let profilePath = runWorkloadProfile(merged, path, false)
+
     // `--why` explains one record instead of printing the manifest. It runs the
     // same inference -- the derivation is a by-product of the solve, not a
     // second pass -- so the answer describes the build a plain run would give.
@@ -495,12 +524,139 @@ fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: 
     // derivation explained a tier from a model the build does not use, and
     // A-COPY was the answer to every "why is this T3" the compiler could ask.
     if (str_equals(why, "") == 0) {
-        let converged = aifRun(merged, ownedCollections, thetaFields, budget)
+        let converged = aifRunProfiled(merged, ownedCollections, thetaFields, budget,
+                                        profilePath)
         return 1 - aifExplain(why, converged)
     }
 
-    aifAnalyze(merged, path, PRISMIO_VERSION, ownedCollections, summary, thetaFields, budget)
+    aifAnalyzeProfiled(merged, path, PRISMIO_VERSION, ownedCollections, summary,
+                        thetaFields, budget, profilePath)
     return 0
+}
+
+// ---------------------------------------------------------------------------
+// LAYOUT 3.2 -- the workload runner
+//
+// Builds a second, instrumented program from the same module, runs it, and
+// returns the path of the profile it wrote. Returns "" for every failure, which
+// is W2: "SHALL cause a fallback to the static profile and a warning. It SHALL
+// NOT fail the build."
+//
+// **There is no path out of this function that returns non-zero**, and that is
+// the clause implemented rather than described. Every step below is checked and
+// every check warns and returns "". The one thing that would violate it is a
+// diagnostic *error*, so this raises none -- `diag_warning` throughout.
+//
+// The instrumented build deliberately reuses the ordinary pipeline rather than a
+// special one: same aifRun, same generateModule, same compiler_build_executable.
+// LAYOUT 3.2 requires the workload to run "under a baseline layout (AoS, source
+// field order, no packing)", which is what a run with no profile loaded already
+// produces -- so the baseline is the absence of an input rather than a second
+// code path that has to be kept in step with the first.
+fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> String {
+    let count = moduleWorkloadCount(module)
+    if (count == 0) { return "" }
+
+    // LAYOUT 3.1 permits several workloads, merged by summation. One runner
+    // handles one; the sum of several needs a merge step this does not have, so
+    // the honest thing is to run the first and say so rather than silently
+    // measure one and present it as all of them.
+    if (count > 1) {
+        diag_warning("this module declares more than one workload; only the first is measured (profiles are not merged yet)")
+    }
+
+    let wl = findWorkload(module)
+    let driverIr = compiler_temp_path_for(sourcePath, "workload.ll")
+    let driverExe = compiler_temp_path_for(sourcePath, "workload.exe")
+    let profilePath = compiler_temp_path_for(sourcePath, "profile.txt")
+
+    // A stale profile from a previous build would be loaded as this build's if
+    // the run below failed to write one -- the failure would then look like a
+    // success, which is the one way W2's fallback can go wrong silently.
+    delete_file(profilePath)
+
+    ir_reset()
+    // A verify build swaps the allocator names; the driver must not inherit that,
+    // or its counters measure a program with different allocation behaviour from
+    // the one being built.
+    compiler_set_verify_mode(0)
+    compiler_set_workload_mode(1)
+
+    // The instrumented pass runs the analysis over a module whose `main` is the
+    // driver, so the workload's own allocations are tiered like any other code.
+    // The layout search runs too and is *ignored*: its input is the static
+    // estimate, and its output is overwritten by the real pass. Suppressing it
+    // would be a second code path for no gain.
+    aifRun(module, true, false, AIF_DEFAULT_ROUNDS)
+
+    irSetProfileMode(true, profilePath)
+    generateModule(module)
+    irSetProfileMode(false, "")
+
+    // **Every exit below goes through endWorkloadPass, and it has to.** This
+    // function leaves three pieces of global state behind it -- the workload
+    // build mode, the verify mode it cleared, and a struct registry the driver's
+    // generateModule filled -- and W2 means most of its exits are failures. An
+    // early `return ""` that skipped the restore would hand the real build a
+    // registry that already has every struct in it, and generateStructDecl
+    // returns early on an already-registered struct: the shipped program would
+    // lose its type bodies because a *workload* failed to link.
+    //
+    // The language has no `defer`, so the discipline is one helper and a rule:
+    // nothing in this function returns without calling it.
+    let mut failure = ""
+    if (ir_write_file(driverIr) != 0) {
+        failure = "could not write the workload driver's IR; using the static profile"
+    }
+
+    if (str_equals(failure, "") == 1) {
+        if (compiler_build_executable(driverIr, driverExe) != 0) {
+            // The driver's IR is deliberately *kept* when it fails to build, and
+            // named in the warning. A workload that will not compile is a compiler
+            // bug far more often than a user one -- the driver is generated code --
+            // and deleting the only artifact that shows why would leave nothing to
+            // read but a linker's opinion of a file that no longer exists.
+            failure = str_concat(str_concat("the workload failed to build; using the static profile (driver IR kept at ",
+                                             driverIr), ")")
+        } else {
+            delete_file(driverIr)
+
+            // 60 seconds. A build-time budget has to be short enough that a
+            // runaway workload is an inconvenience rather than a hung CI job, and
+            // long enough that instrumentation -- a call per field access -- does
+            // not time out a workload that would finish. `repeat` is the knob for
+            // the second half.
+            let ran = compiler_run_workload(driverExe, 60)
+            delete_file(driverExe)
+            if (ran != 0) {
+                failure = "the workload exited with a failure status or timed out; using the static profile"
+            } else if (file_exists(profilePath) == 0) {
+                failure = "the workload ran but wrote no profile; using the static profile"
+            }
+        }
+    }
+
+    endWorkloadPass(verifyMode)
+
+    if (str_equals(failure, "") == 0) {
+        diag_warning(failure)
+        return ""
+    }
+    return profilePath
+}
+
+// Restores everything runWorkloadProfile disturbed. Called on every path out of
+// it, success or failure.
+//
+// `ir_reset` is the load-bearing one: the driver's generateModule filled the
+// struct registry and named every string global, and the real build's
+// generateModule would then skip the structs it thinks it has already emitted.
+fn endWorkloadPass(verifyMode: Bool) {
+    ir_reset()
+    compiler_set_workload_mode(0)
+    if (verifyMode) {
+        compiler_set_verify_mode(1)
+    }
 }
 
 fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstrapMode: Bool,
@@ -578,7 +734,36 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
     // `pin` is still diagnosed.
     let mut aif_rounds = AIF_DEFAULT_ROUNDS
     if (debugMode) { aif_rounds = 0 }
-    let aifConverged = aifRun(mergedAst, true, false, aif_rounds)
+
+    // LAYOUT 3. If the program declares a workload, measure it before the real
+    // analysis runs, and hand the measured profile to the layout search in place
+    // of the static estimate.
+    //
+    // **Everything about the ordering here is W2 and W4.**
+    //
+    // W2 -- "a workload that fails to build, fails to run, times out, or exceeds
+    // the budget SHALL cause a fallback to the static profile and a warning; it
+    // SHALL NOT fail the build." So this returns a path or "", nothing else. It
+    // cannot raise a diagnostic error, and `diag_error_count()` is deliberately
+    // not consulted after it: a build that got this far has a program that
+    // compiles, and the workload is an optimisation input.
+    //
+    // W4 -- "two builds with different profiles SHALL produce behaviourally
+    // identical programs." The profile reaches codegen through exactly one
+    // channel, aif_layout_select's field counts, and a layout is not observable.
+    // Nothing below reads the profile for any other purpose, and irProfileMode is
+    // false for the whole of the real build.
+    //
+    // Deliberately skipped in bootstrap mode. The compiler declares no workload,
+    // so this would be dead code there -- but it would also mean the bootstrap
+    // path could run a program at build time, and bootstrap's whole contract is
+    // that it builds from the checkout and does nothing else.
+    let mut profilePath = ""
+    if (bootstrapMode == false and debugMode == false) {
+        profilePath = runWorkloadProfile(mergedAst, path, verifyMode)
+    }
+
+    let aifConverged = aifRunProfiled(mergedAst, true, false, aif_rounds, profilePath)
 
     // The one thing AIF can fail a build for, and SPEC 5.4.1 is explicit that it
     // is not a violation of SPEC 1: a pin a *converged* analysis refutes is a

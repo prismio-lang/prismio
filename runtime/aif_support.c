@@ -479,6 +479,15 @@ typedef struct {
     int* order;         // order[i] is the declaration index placed i-th
     int field_cap;
     int reordered;
+    // LAYOUT 2.1's `range(f)`, which the table marks **dynamic only**. It is the
+    // observed value range and no reading of the source supplies it, which is why
+    // the bit-packing dimension had nothing to search against until `workload`
+    // existed. Zero when no profile was loaded, and the packer declines then --
+    // it must, because "no range recorded" and "range is 0..0" are the same bits
+    // and only one of them permits narrowing a field to nothing.
+    long long* field_lo;
+    long long* field_hi;
+    int* field_has_range;
 } Nominal;
 
 static Nominal* nominals;
@@ -531,6 +540,9 @@ static int nominal_intern(const char* name, int is_enum) {
     t->order = NULL;
     t->field_cap = 0;
     t->reordered = 0;
+    t->field_lo = NULL;
+    t->field_hi = NULL;
+    t->field_has_range = NULL;
     nominal_index_put(t->name, nominal_count);
     return nominal_count++;
 }
@@ -563,6 +575,12 @@ void aif_struct_add_field(const char* name, const char* field, const char* type,
         t->field_acc = (long long*)xrealloc(t->field_acc,
                                            (size_t)grow * sizeof(long long), "AIF field accesses");
         t->order = (int*)xrealloc(t->order, (size_t)grow * sizeof(int), "AIF field order");
+        t->field_lo = (long long*)xrealloc(t->field_lo,
+                                           (size_t)grow * sizeof(long long), "AIF field range lo");
+        t->field_hi = (long long*)xrealloc(t->field_hi,
+                                           (size_t)grow * sizeof(long long), "AIF field range hi");
+        t->field_has_range = (int*)xrealloc(t->field_has_range,
+                                            (size_t)grow * sizeof(int), "AIF field range flag");
         t->field_cap = grow;
     }
     int i = t->nfields++;
@@ -571,17 +589,27 @@ void aif_struct_add_field(const char* name, const char* field, const char* type,
     t->field_bytes[i] = bytes;
     t->field_acc[i] = 0;
     t->order[i] = i;
+    t->field_lo[i] = 0;
+    t->field_hi[i] = 0;
+    t->field_has_range[i] = 0;
 }
 
 // ============================================================================
 // The access profile (LAYOUT 2.1) and layout selection (LAYOUT 7.2)
 //
 // LAYOUT 2 wants the profile measured, by running a declared `workload` under
-// instrumentation. There is no workload runner, so this is the static estimate
+// instrumentation. When no workload is declared this is the static estimate
 // LAYOUT 10.4 names as the fallback -- one count per syntactic access, weighted
 // by AIF_LOOP_ITERS per enclosing loop, which is exactly how automatic arena
 // placement estimates allocs_in(s). Same estimator, same known crudeness, and
 // the same property that matters: it is deterministic and needs no profile file.
+//
+// When a workload *is* declared, aif_profile_load replaces the estimate with
+// measured counts. The two are not merged: a measured count and an estimated one
+// are in different units (AIF_LOOP_ITERS^depth against real iterations), and
+// adding them would produce a number that is neither. LAYOUT 2's diagram has the
+// same shape -- the two paths both produce *a profile*, and the cost model
+// consumes one of them.
 //
 // **Only one candidate dimension is searched, and the rest is not caution.**
 // LAYOUT 6's table lists grouping (AoS/SoA), a hot/cold split, field order,
@@ -593,6 +621,167 @@ void aif_struct_add_field(const char* name, const char* field, const char* type,
 // Choosing a layout codegen cannot produce would be a manifest that describes a
 // binary nobody built.
 // ============================================================================
+
+// ---------------------------------------------------------------------------
+// Reading a measured profile back (LAYOUT 2.2)
+//
+// The format is the one rt_profile_dump writes, and the parser is deliberately
+// forgiving: an unknown line is skipped rather than rejected. A profile is an
+// *input to codegen only* (W4), so a malformed one can make the layout worse and
+// can never make the program wrong -- which means failing the build over it would
+// trade a real cost for no correctness, exactly what W2 forbids.
+// ---------------------------------------------------------------------------
+
+static int g_profile_source = -1;      // interned "workload:NAME", or -1 for static
+static int g_profile_runs = 0;
+
+static void profile_set_field(const char* type, const char* field,
+                              long long reads, long long writes,
+                              int has_range, long long lo, long long hi) {
+    int id = nominal_find(type);
+    if (id < 0) return;
+    Nominal* t = &nominals[id];
+    int f = aif_intern(field);
+    for (int i = 0; i < t->nfields; i++) {
+        if (t->field_name[i] != f) continue;
+        t->field_acc[i] = reads + writes;
+        t->field_has_range[i] = has_range;
+        t->field_lo[i] = lo;
+        t->field_hi[i] = hi;
+        return;
+    }
+}
+
+// Returns 1 on success. A type or field the profile names but this module does
+// not declare is dropped rather than diagnosed: a checked-in profile outlives
+// edits to the source it was taken against (LAYOUT 10.3), and a renamed field is
+// a stale profile, not a broken build.
+int aif_profile_load(const char* path) {
+    FILE* f = fopen(path, "r");
+    if (!f) return 0;
+
+    char line[1024];
+    int any = 0;
+
+    // Every field this module declares that the profile does not mention was not
+    // touched by the measured region, and its count is therefore a measured
+    // *zero* -- not "unknown". Clearing first is what makes that true; without it
+    // an untouched field would keep the static estimate and read as hot, which
+    // is precisely backwards for the hot/cold cut the counts feed.
+    for (int n = 0; n < nominal_count; n++) {
+        for (int i = 0; i < nominals[n].nfields; i++) {
+            nominals[n].field_acc[i] = 0;
+            nominals[n].field_has_range[i] = 0;
+        }
+    }
+
+    while (fgets(line, (int)sizeof(line), f)) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+
+        char kind[32], a[256], b[256];
+        if (sscanf(line, "%31s", kind) != 1) continue;
+
+        if (strcmp(kind, "source") == 0) {
+            if (sscanf(line, "%31s %255s", kind, a) == 2) g_profile_source = aif_intern(a);
+            continue;
+        }
+        if (strcmp(kind, "runs") == 0) {
+            int r = 0;
+            if (sscanf(line, "%31s %d", kind, &r) == 2) g_profile_runs = r;
+            continue;
+        }
+        if (strcmp(kind, "field") == 0) {
+            long long reads = 0, writes = 0, lo = 0, hi = 0;
+            char range[64];
+            int got = sscanf(line, "%31s %255s %lld %lld %63s",
+                             kind, a, &reads, &writes, range);
+            if (got < 4) continue;
+            // "Type.field" -- split at the last dot, because a field name cannot
+            // contain one and a type name in this language cannot either, but
+            // splitting at the first would break if that ever changes.
+            char* dot = strrchr(a, '.');
+            if (!dot) continue;
+            *dot = '\0';
+            int has_range = 0;
+            if (got == 5 && sscanf(range, "%lld..%lld", &lo, &hi) == 2) has_range = 1;
+            profile_set_field(a, dot + 1, reads, writes, has_range, lo, hi);
+            any = 1;
+            continue;
+        }
+        if (strcmp(kind, "type") == 0) {
+            long long allocs = 0, live = 0;
+            if (sscanf(line, "%31s %255s %lld %lld", kind, b, &allocs, &live) == 4) {
+                any = 1;
+            }
+            continue;
+        }
+    }
+
+    fclose(f);
+    return any;
+}
+
+// For the manifest. LAYOUT 2.2: "An implementation SHALL ... record in the
+// manifest which was used."
+const char* aif_profile_source(void) {
+    return g_profile_source < 0 ? "static" : aif_str(g_profile_source);
+}
+
+int aif_profile_is_measured(void) { return g_profile_source >= 0 ? 1 : 0; }
+
+int aif_field_has_range(const char* type, const char* field) {
+    int id = nominal_find(type);
+    if (id < 0) return 0;
+    Nominal* t = &nominals[id];
+    int fn = aif_intern(field);
+    for (int i = 0; i < t->nfields; i++) {
+        if (t->field_name[i] == fn) return t->field_has_range[i];
+    }
+    return 0;
+}
+
+long long aif_field_range_lo(const char* type, const char* field) {
+    int id = nominal_find(type);
+    if (id < 0) return 0;
+    Nominal* t = &nominals[id];
+    int fn = aif_intern(field);
+    for (int i = 0; i < t->nfields; i++) {
+        if (t->field_name[i] == fn) return t->field_lo[i];
+    }
+    return 0;
+}
+
+long long aif_field_range_hi(const char* type, const char* field) {
+    int id = nominal_find(type);
+    if (id < 0) return 0;
+    Nominal* t = &nominals[id];
+    int fn = aif_intern(field);
+    for (int i = 0; i < t->nfields; i++) {
+        if (t->field_name[i] == fn) return t->field_hi[i];
+    }
+    return 0;
+}
+
+// The narrowest signed width that holds the measured range, in bytes.
+//
+// In C rather than in the frontend because Prismio's integer literals infer as
+// `Int` and the language does not widen across a comparison, so writing
+// `lo >= -2147483648` against an I64 is a type error and the workaround is six
+// annotated bindings. The arithmetic is the same either way; this is where it
+// reads as what it is.
+//
+// Signed even when the range is non-negative: the field's declared type is
+// signed, and a narrowing that changed signedness would change what a comparison
+// against it means.
+int aif_field_range_bytes(const char* type, const char* field) {
+    if (!aif_field_has_range(type, field)) return 8;
+    long long lo = aif_field_range_lo(type, field);
+    long long hi = aif_field_range_hi(type, field);
+    if (lo >= -128LL && hi <= 127LL) return 1;
+    if (lo >= -32768LL && hi <= 32767LL) return 2;
+    if (lo >= -2147483648LL && hi <= 2147483647LL) return 4;
+    return 8;
+}
 
 void aif_field_access(const char* type, const char* field, int loops) {
     int id = nominal_find(type);
@@ -3348,8 +3537,19 @@ void aif_reset(void) {
         free(nominals[i].field_bytes);
         free(nominals[i].field_acc);
         free(nominals[i].order);
+        free(nominals[i].field_lo);
+        free(nominals[i].field_hi);
+        free(nominals[i].field_has_range);
     }
     nominal_count = 0;
+
+    // Cleared, and the ordering is the reason it is safe to clear. The profile
+    // is loaded *into* the nominals table, so it can only be loaded after
+    // aifDeclare has repopulated that table -- which is in the second pass,
+    // after this reset. Keeping the old value across the reset would leave a
+    // manifest claiming `workload:NAME` if the second pass's load then failed.
+    g_profile_source = -1;
+    g_profile_runs = 0;
     for (int i = 0; i < nominal_by_name_cap; i++) nominal_by_name[i] = -1;
 
     for (int i = 0; i < fn_by_symbol_cap; i++) fn_by_symbol[i] = -1;

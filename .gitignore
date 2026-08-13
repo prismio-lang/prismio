@@ -40,6 +40,13 @@ build/
 # Project-local UMS build state and artifacts.
 .prismio/
 
+# Build temporaries the compiler writes beside the source it is compiling:
+# ".prismio-<stem>-<suffix>" (compiler_temp_path in runtime/build_driver.c).
+# Most are deleted on the way out; two are deliberately kept, so they need a rule
+# rather than luck -- a workload's measured profile, and a workload driver's IR
+# when it fails to build, which is kept precisely so someone can read it.
+.prismio-*
+
 # ...but the bootstrap seed is a committed artifact, not build output. It is the
 # only way to build a first compiler on a host that has no prismio binary yet, so
 # the *.ll rule above must not swallow it.

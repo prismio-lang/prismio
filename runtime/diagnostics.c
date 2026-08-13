@@ -269,6 +269,14 @@ void diag_warning_at(int file, int line, int col, int len, const char* message) 
     diag_emit("warning", file, line, col, len, message);
 }
 
+// Unlocated, the counterpart of diag_error above and reached the same way -- a
+// file of -1. LAYOUT 3.2's W2 is what needed it: a workload that fails to build
+// or times out has to warn, and the thing that went wrong is a build step rather
+// than a span of source, so there is no honest place to point a caret.
+void diag_warning(const char* message) {
+    diag_warning_at(-1, 0, 0, 0, message);
+}
+
 // A secondary span belonging to the diagnostic just reported -- "the first
 // declaration is here", "the loop starts here". Indented so it reads as
 // subordinate rather than as a second, unrelated error.

@@ -6,10 +6,6 @@ import common.text
 import ast.nodes
 import common.diagnostics
 
-/*
-
-*/
-
 fn parseDeclaration(p: Parser) -> ASTNode {
     if (parserCheckVal(p, TokenType.KEYWORD, "import")) { return parseImportStatement(p) }
     if (parserCheckVal(p, TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
@@ -17,6 +13,7 @@ fn parseDeclaration(p: Parser) -> ASTNode {
     if (parserCheckVal(p, TokenType.KEYWORD, "fn")) { return parseFunctionDecl(p) }
     if (parserCheckVal(p, TokenType.KEYWORD, "struct")) { return parseStructDecl(p) }
     if (parserCheckVal(p, TokenType.KEYWORD, "enum")) { return parseEnumDecl(p) }
+    if (parserAtWorkload(p)) { return parseWorkloadDecl(p) }
 
     // Nothing here starts a declaration. Report it, skip to the next thing that
     // could, and hand back a placeholder -- so a file with three broken functions
@@ -342,6 +339,119 @@ fn parseFunctionDecl(p: Parser) -> ASTNode {
     fnNode.child2 = node_to_ptr(parseBlock(p))
 
     return fnNode
+}
+
+// ---------------------------------------------------------
+// LAYOUT 3 -- `workload`
+// ---------------------------------------------------------
+
+// Contextual, not a reserved word, and the choice is forced rather than stylistic.
+//
+// `region` had to be a real keyword because it opens a *statement*, where an
+// identifier followed by a block is otherwise an expression statement. At top
+// level there is no such ambiguity: an identifier cannot start a declaration at
+// all, so `workload NAME {` is unambiguous and nothing else can spell it.
+//
+// The governance rule decides the rest. SPEC 5 requires that deleting an
+// annotation leave a working program, and LAYOUT 3.2's W1 says a workload is
+// build-time only -- so deleting one has to leave the program not merely working
+// but *identical*. Reserving the word would break `let workload = 5`, which is a
+// program this language accepts today: a strictly larger change than the feature
+// needs. `unique` and `pin` are contextual for the same reason.
+fn parserAtWorkload(p: Parser) -> Bool {
+    if (parserCheck(p, TokenType.IDENTIFIER) == false) { return false }
+    let current = parserCurrent(p)
+    if (str_equals(current.value, "workload") == 0) { return false }
+    return parserPeek(p).type == TokenType.IDENTIFIER
+}
+
+// workload NAME {
+//     setup   { ... }        // optional; excluded from the profile
+//     measure { ... }        // the profiled region
+//     repeat  200            // optional; defaults to 1
+// }
+//
+// **`weight` is deliberately not accepted.** LAYOUT 3.1 gives it as the merge
+// weight when a program declares several workloads, and this runner measures one
+// and warns about the rest -- so accepting the clause would be accepting an
+// annotation that provably does nothing. Add it with the merge, not before.
+//
+// The clauses are order-independent and each may appear once. LAYOUT 3.1 writes
+// them in a fixed order and says nothing about repetition; accepting any order
+// costs one loop and rejecting a duplicate is what stops `repeat 1 repeat 200`
+// from silently meaning one of the two.
+fn parseWorkloadDecl(p: Parser) -> ASTNode {
+    parserAdvance(p)                                  // `workload`
+    let node = parserNode(p, NodeKind.WORKLOAD_DECL)
+    let name = parserCurrent(p)
+    node.s1 = name.value
+    parserExpect(p, TokenType.IDENTIFIER, "workload name")
+
+    // `repeat` bounds build-time cost and is a hint (LAYOUT 3.1), so a default of
+    // 1 is the honest one: it runs `measure` exactly once and measures something
+    // rather than nothing.
+    node.i1 = 1
+    let mut sawMeasure = false
+
+    parserExpectVal(p, TokenType.SEPARATOR, "{", "workload body")
+    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
+        if (parserCheck(p, TokenType.EOF)) {
+            parserFatal(p, "this workload is never closed; reached end of file looking for `}`")
+        }
+
+        let clause = parserCurrent(p)
+        if (str_equals(clause.value, "setup") == 1) {
+            parserAdvance(p)
+            if (nodeExists(node.child1)) {
+                parserError(p, "duplicate `setup` in this workload")
+            }
+            node.child1 = node_to_ptr(parseBlock(p))
+        } else if (str_equals(clause.value, "measure") == 1) {
+            parserAdvance(p)
+            if (sawMeasure) {
+                parserError(p, "duplicate `measure` in this workload")
+            }
+            sawMeasure = true
+            node.child2 = node_to_ptr(parseBlock(p))
+        } else if (str_equals(clause.value, "repeat") == 1) {
+            parserAdvance(p)
+            node.i1 = parseWorkloadCount(p, "repeat")
+        } else {
+            parserError(p, str_concat(str_concat("expected `setup`, `measure` or `repeat`, found ",
+                                                  parserDescribe(clause)),
+                                       " in this workload"))
+            parserSynchronize(p)
+            return node
+        }
+    }
+    parserExpectVal(p, TokenType.SEPARATOR, "}", "workload body")
+
+    // `measure` is the profiled region, so a workload without one names nothing to
+    // profile. Diagnosed here rather than in sema because it is a shape error in
+    // the declaration, not a fact about the program it profiles.
+    if (sawMeasure == false) {
+        parserError(p, "this workload has no `measure` block; there is nothing to profile")
+    }
+
+    return node
+}
+
+fn parseWorkloadCount(p: Parser, clause: String) -> Int {
+    let tok = parserCurrent(p)
+    if (tok.type != TokenType.NUMBER_LITERAL) {
+        parserFatal(p, str_concat(str_concat("expected a count after `", clause), "`"))
+    }
+    let n = str_to_int(tok.value)
+    parserAdvance(p)
+    // Zero repeats profiles nothing and a negative one is meaningless; both would
+    // reach the runner and produce an empty profile that reads as a failed run.
+    // Rejecting here keeps W2's fallback meaning "the workload failed", not "the
+    // workload was written to do nothing".
+    if (n < 1) {
+        parserError(p, str_concat(str_concat("`", clause), "` must be at least 1"))
+        return 1
+    }
+    return n
 }
 
 fn parseStructDecl(p: Parser) -> ASTNode {

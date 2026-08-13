@@ -21,6 +21,11 @@ enum NodeKind {
     ENUM_DECL,
     TRAIT_DECL,
     IMPL_DECL,
+    // LAYOUT 3. A build-time declaration, never part of the shipped program
+    // (W1), so it is a declaration kind rather than a statement one: every walk
+    // that emits code has to answer "no" for it, and a kind is what those walks
+    // already switch on. Same reasoning NONE_LITERAL_EXPR records below.
+    WORKLOAD_DECL,
 
     // Statements
     BLOCK,

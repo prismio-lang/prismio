@@ -26,6 +26,7 @@ extern fn diag_note_at(file: Int, line: Int, col: Int, len: Int, message: String
 // Unlocated forms, for anything that is not about a particular piece of source:
 // a missing file, a bad command-line argument.
 extern fn diag_error(message: String)
+extern fn diag_warning(message: String)
 extern fn diag_note(message: String)
 
 extern fn diag_error_count() -> Int

@@ -806,6 +806,67 @@ fn analyzeModule(module: ASTNode) {
         if (stmt3.kind == NodeKind.FUNCTION) {
             semaFunction(module, stmt3)
         }
+        if (stmt3.kind == NodeKind.WORKLOAD_DECL) {
+            semaWorkload(module, stmt3)
+        }
         stmtPtr = stmt3.next
+    }
+}
+
+// LAYOUT 3. A workload is checked exactly as a `fn() { … }` body is, and it has
+// to be: it is compiled and run at build time, so a type error or a use of a
+// moved value in it is a build-time crash rather than a bad profile.
+//
+// Checking it is also the only thing that keeps W1 honest in the other
+// direction. The blocks are never reached by generateModule -- every top-level
+// walk keys on `== NodeKind.FUNCTION` and a workload is not one, so it costs
+// nothing to skip and cannot leak into the shipped binary by omission. What that
+// leaves is a body nobody would ever check, which is how a declaration rots.
+//
+// `setup` and `measure` are two blocks of one activation, not two functions: a
+// binding made in `setup` is what `measure` consumes, which is the whole point
+// of the split (LAYOUT 3.1 -- input construction must not pollute the counts).
+// So they share one scope, and the move state carries from one into the other.
+fn semaWorkload(module: ASTNode, node: ASTNode) {
+    ir_clear_local_var_types()
+    ir_clear_moved()
+    ir_clear_borrowed()
+    ir_scope_push()
+
+    // Void: a workload returns nothing and `return` inside one has nothing to
+    // return to. semaStatement reports a `return <value>` against this, which is
+    // the right diagnostic -- the alternative is codegen failing on a bare `ret`.
+    let expectedReturn = typeVoid()
+
+    // Deliberately *not* semaBlock for either: that pushes a scope of its own and
+    // pops it, which would put `setup`'s bindings out of scope before `measure`
+    // ran. LAYOUT 3.1's own example consumes a binding across the boundary
+    // (`setup` builds the input, `measure` parses it), so the two blocks are one
+    // scope with a barrier in the middle rather than two scopes.
+    if (nodeExists(node.child1)) {
+        semaWorkloadStatements(module, ptr_to_node(node.child1), expectedReturn)
+    }
+    if (nodeExists(node.child2)) {
+        // `measure` is emitted inside a `repeat` loop, so a `break` or `continue`
+        // written here would bind to a loop the source does not show. The barrier
+        // makes it the error it reads as.
+        ir_loop_barrier_push()
+        semaWorkloadStatements(module, ptr_to_node(node.child2), expectedReturn)
+        ir_loop_barrier_pop()
+    }
+
+    ir_scope_pop()
+}
+
+fn semaWorkloadStatements(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
+    let mut stmtPtr = block.child1
+    while (str_equals(stmtPtr, "") == 0) {
+        let stmt = ptr_to_node(stmtPtr)
+        semaStatement(module, stmt, expectedReturn)
+        if (semaStmtDiverges(stmt) and str_equals(stmt.next, "") == 0) {
+            semaErrorAt(ptr_to_node(stmt.next),
+                        "unreachable code: control cannot continue past the previous statement")
+        }
+        stmtPtr = stmt.next
     }
 }

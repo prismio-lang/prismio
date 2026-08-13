@@ -141,6 +141,82 @@ fn chainReturnsName(head: String, name: String) -> Bool {
 // -- the copy having taken ownership of nothing. That is 22 leaked allocations
 // in test_49 and it is the whole reason inlining has to reach construction and
 // not only layout.
+// ---------------------------------------------------------------------------
+// LAYOUT 2.1 -- profile instrumentation
+//
+// `ir_struct_field_ptr` is to field access what `ir_alloc_object` is to
+// allocation: every read and every write of a struct field computes its address
+// through it, so counting beside it counts everything and cannot drift.
+//
+// It is called *beside* rather than *inside*, and the reason is the one thing
+// the backend cannot supply. A GEP is the same instruction for a read and for a
+// write; only the caller knows which it is, and `read(f)`/`write(f)` are separate
+// columns in LAYOUT 2.1 because the cost model needs them separately -- a
+// write-only field in a traversal costs a store, not a load, and the hot/cold cut
+// reads the sum. Pushing the distinction into the backend would mean passing it
+// down anyway, through a parameter every other caller would have to answer.
+//
+// The two generated walks -- __aif_release_T and __aif_cyclic_children_T -- call
+// ir_struct_field_ptr too and are deliberately NOT instrumented. They are the
+// memory model's own traffic, not the program's, and counting them would let the
+// layout decision be driven by the cost of the layout decision.
+fn irProfileField(structName: String, fieldName: String, isWrite: Bool) {
+    if (irProfileMode == false) { return }
+    let tyName = ir_get_temp_name(ir_const_cstring(structName))
+    let fName = ir_get_temp_name(ir_const_cstring(fieldName))
+    ir_call_begin()
+    ir_call_arg("ptr", tyName)
+    ir_call_arg("ptr", fName)
+    if (isWrite) {
+        ir_call_arg("i32", "1")
+    } else {
+        ir_call_arg("i32", "0")
+    }
+    ir_call_end("void", "rt_profile_field")
+}
+
+// LAYOUT 2.1's `range(f)`, recorded on writes only -- a read observes a value
+// some write already put there, so counting reads would weight the range by how
+// often a field is looked at rather than by what it can hold.
+//
+// Integer fields only, which is what the table says ("observed value range, for
+// integer fields"). A Float has no bit-packing story here and a pointer's range
+// is an address, which is not a fact about the program.
+fn irProfileRange(structName: String, fieldName: String, fieldType: String, value: String) {
+    if (irProfileMode == false) { return }
+    if (irTypeIsProfilableInt(fieldType) == false) { return }
+    let tyName = ir_get_temp_name(ir_const_cstring(structName))
+    let fName = ir_get_temp_name(ir_const_cstring(fieldName))
+    // Widened to i64 so one runtime entry point takes every integer width. Signed
+    // extension, because a negative value has to stay negative: recording -1 as
+    // 4294967295 would make the observed range span the whole word and decline a
+    // packing that is in fact available.
+    let mut wide = value
+    if (str_equals(fieldType, "i64") == 0) {
+        wide = ir_get_temp_name(ir_sext(fieldType, value, "i64"))
+    }
+    ir_call_begin()
+    ir_call_arg("ptr", tyName)
+    ir_call_arg("ptr", fName)
+    ir_call_arg("i64", wide)
+    ir_call_end("void", "rt_profile_range")
+}
+
+fn irProfileAlloc(structName: String) {
+    if (irProfileMode == false) { return }
+    ir_call_begin()
+    ir_call_arg("ptr", ir_get_temp_name(ir_const_cstring(structName)))
+    ir_call_end("void", "rt_profile_alloc")
+}
+
+fn irTypeIsProfilableInt(t: String) -> Bool {
+    if (str_equals(t, "i8") == 1) { return true }
+    if (str_equals(t, "i16") == 1) { return true }
+    if (str_equals(t, "i32") == 1) { return true }
+    if (str_equals(t, "i64") == 1) { return true }
+    return false
+}
+
 fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: String) {
     let mut fieldPtr = expr.child1
     while (str_equals(fieldPtr, "") == 0) {
@@ -169,6 +245,10 @@ fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: Strin
                 ir_call_arg("ptr", fieldVal)
                 ir_call_end("void", "cyc_retain")
             }
+            // A literal's field initialiser is a write, and it is the write that
+            // establishes the value range every later read observes.
+            irProfileField(structName, field.s1, true)
+            irProfileRange(structName, field.s1, fieldType, fieldVal)
             ir_store_ptr(fieldType, fieldVal, ir_get_temp_name(slot))
         }
         fieldPtr = field.next
@@ -231,6 +311,13 @@ fn generateExpression(expr: ASTNode) -> String {
             allocTemp = ir_alloc_object(structName)
         }
         let memName = ir_get_temp_name(allocTemp)
+        // LAYOUT 2.1's alloc(tau). Counted after the tier has chosen an allocator
+        // rather than inside one of the five hooks, because the profile is about
+        // how many instances the program makes, not about which arena served them
+        // -- and a T0 site takes an alloca and calls no hook at all, so counting
+        // in the hooks would miss exactly the instances that are cheapest and
+        // most numerous.
+        irProfileAlloc(structName)
 
         // CYCLES 3. The object is told how to find its cyclic children and how
         // to release itself, for the same reason a container is told its element
@@ -282,6 +369,7 @@ fn generateExpression(expr: ASTNode) -> String {
         let fieldType = fieldStorageType(ir_get_struct_field_type(structName, expr.s1))
 
         let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
+        irProfileField(structName, expr.s1, false)
         // An inline field *is* the storage, so the GEP already is the value and
         // loading would read the struct rather than address it. This is where the
         // interior pointer SPEC 11 item 5 forbids escaping is created, and it

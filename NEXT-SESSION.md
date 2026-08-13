@@ -4,70 +4,80 @@ Copy the block below.
 
 ---
 
-Continue the Prismio AIF work. Read `HANDOFF.md` (start at "Session of 2026-08-07 (second)") and
-`aif/implementation/COMPILER-AUDIT.md` first. Struct-field ownership, `List<T>` for scalars,
-optional references, the T4b collector, the zero-analysis level and memory-budget reporting all
-landed on 2026-08-07 and are documented there. **The corpus is at 0 leaked / 0 violations across all
-six programs**, 91/91 tests, fixpoint holds cold and warm, cold == warm, the oracle agrees on 12
-sources, seed is current. Don't re-derive any of it.
+Continue the Prismio work. Read `HANDOFF.md` — start at "Session of 2026-08-13" — and
+`aif/evidence/RESULTS-layout.md`. Don't re-derive what's in them.
 
-The memory model is done to the point where benchmarking is the remaining work. So this session is
-about knowing what we have before adding to it.
+**Two corrections to inherit before you plan anything.**
 
-1. **The 79 T3 sites, and the claim that says there are none.** `prismio aif src/main.psm` reports
-   **79 T3** over the compiler's own source. `HANDOFF.md` has an older section asserting "100%
-   T0–T2 over 294 sites" and "the T3 residue from 37 to 0" after the FFI work. Both cannot be true.
-   The discrepancy pre-dates last session — the pre-session binary reports the same 79 — so it was
-   observed and deliberately not chased. Chase it now, and **find out which of the two is wrong
-   before changing anything**: either the tree regressed against its own documentation, or the
-   documentation was written against a state the tree no longer has (`git status` showed
-   uncommitted modifications to `src/aif.psm`, `src/bridge.psm` and others at the start of last
-   session, so the second is plausible). If it is the undeclared-extern shape again, it is the
-   cheapest measured win available — that lesson is now recorded twice, and this would be the third.
+- **Handles have not landed.** Two consecutive briefs have opened by saying they did.
+  `ptr_to_node` in `runtime/lang_runtime.c` is still `return ptr` and there is no handle table.
+  The check takes ten seconds; do it rather than trusting this paragraph either.
+- **Build HEAD before reading it.** Twice now the committed tree has not compiled — eaten spaces
+  from a rename, then a stray `/* */` in a language with no block comments. Both would have been
+  caught by CI's first step, and neither was caught by anything local.
 
-2. **Measure what ownership contexts would actually buy.** INFERENCE §6–7. It was ranked the
-   highest-value item left, on two grounds: three recorded limitations are one missing feature
-   (ownership transfer surviving one hop, the container element key having to be object-insensitive,
-   `E` unable to name a caller's scope), and `g4_ecs_world` would not move. **The second ground is
-   gone** — struct-field ownership took g4 to zero — so contexts now buy precision rather than
-   correctness on this corpus, and nobody has measured how much. Produce that number before
-   building: how many sites are T3/T4b *because of* a call-boundary join, and what would they become.
-   `test_47`/`test_48` merged into one file is the ready-made probe for the element-key half — the
-   audit records that merging them makes all seventeen of test_47's sites T3.
+State: suite 98/98, fixpoint holds warm and cold, cold == warm, the oracle agrees on 13 sources,
+seed refreshed, and 68 of 68 compilable programs in `tests/` and `aif/corpus/` emit byte-identical
+IR across the last change. `workload` (LAYOUT 3) is built and measured.
 
-   Do not start the implementation on inherited ranking. It needs per-context fact graphs,
-   demand-driven instantiation, a relevant-parameter mask, δ-based strategy selection, caps with
-   deterministic victim selection — **and an identical change to `aif/prototype/aif.py`, or the
-   differential stops meaning anything.** It was deliberately not begun last session rather than
-   half-landed.
+1. **The hot/cold split.** The one LAYOUT 6 dimension that is emittable today and pays: **0.87×**
+   measured on g1's shape, with no missing mechanism, because the cold block hangs off the hot
+   record so one pointer still reaches the object. `aif/evidence/bench/layout_repr.c` is the
+   measurement and re-runs in one command.
 
-3. **Then benchmark**, which is what the model was brought to this point for. `aif/spec/BENCHMARKS.md`
-   H1's 70% T0–T2 bar is already cleared on the compiler; what has never been measured is Prismio
-   against another language on the corpus. Pick the benchmark with COMPILER-AUDIT finding 9 in mind:
-   *the compiler leaks by design and exits, so it is already a one-region program and AIF's first win
-   on its own source will be small.* The corpus is the better target, and `g2_frame_loop` and
-   `g6_game` are the two with real allocation traffic.
+   The whole risk is release, and it is nameable rather than vague. A split object is *two*
+   allocations, so: all five allocator hooks must allocate both and wire the pointer; the type needs
+   a generated `__aif_release_T` even when it owns no fields, or the cold block leaks; every free
+   must route through it; `--verify`'s accounting must see both halves or every split object reads
+   as a violation. **T3 is where it cracks** — `rc_release` frees one block and cannot name the
+   type, which is the same shape as the problem `cyc_set_type` solves by telling the object its type
+   at construction. Do the release half or don't start: the failure mode is a leak on the good path
+   and a double free on the bad one.
 
-NOT this session: handles (REQUIREMENTS 12), concurrency (15), PIR (21), `workload`, SoA / hot-cold
-/ bit-packing. Each needs handles or a task model. Perceus elision needs a reference-level IR the
-AST walk does not have — and the corpus has almost no T3 to elide, so measure before building.
+   Two constraints that are not obvious. Field 0 must stay in the hot group — the punned-slot
+   invariant (`test_41`) is about the first byte of the object, and a cut by frequency rank would
+   happily put a never-read field there. And the split must not read AIF: `test_49`'s note records
+   why a layout that differed between `--debug` and a release build would break SPEC 7.2, and
+   `aif_layout_select` already runs before the solve for that reason.
+
+2. **Port LAYOUT 5's cost model** from `aif/prototype/layout.py`. It is the precondition for three
+   things at once: §7.2 as actually written (`argmin over candidates(τ) of Cost(…)` — the compiler
+   has no cost function and enumerates no candidates, it runs one greedy placement), §8's "top-`k`
+   ranked by modelled cost", and choosing a hot/cold cut by anything better than the frequency
+   ranks. Note the defect `layout.py` already records at `traversal_cost`: LAYOUT 5.4 subtracts
+   SimdCredit from a sum of memory costs, which lets the total go negative.
+
+3. **LAYOUT 8's empirical validation** follows item 2 and nothing else — the build-time
+   instrumented compile-link-run it needs is `workload`, and that is done. It is `compiler_run_workload`
+   plus a way to force a candidate layout.
+
+4. **Fix the harness's allocation accounting before quoting it.** `aif/evidence/xlang/bench.py`
+   counts allocations for the whole process but times only the frame loop, and commit `901b494`
+   moved the corpus's reporting loops onto the allocating `println` overload — so g1's `allocs`
+   column went 2,214 → 26,326 (4.02 per print over 6,002 prints) with the timing untouched. The
+   column is now reporting overhead, not workload behaviour.
+
+5. **Then re-measure.** `python3 aif/evidence/xlang/bench.py --compiler build/<gen> --runs 20`.
+   Hot/cold is the first layout change with a measured prize attached, so it is the first one whose
+   effect on the corpus is worth a number rather than a projection.
+
+NOT this session: incrementality, generics, concurrency. And **do not write the bit-packing
+transform** — LAYOUT 2.1 and 3.2's W4 contradict each other on it (an observed range is not a
+bound), and that is a specification question, not an implementation one. The measurement is already
+emitted as advice at the foot of the manifest; the upper bound if it were legal is 9.4% of struct
+bytes.
 
 Carry forward:
 
-- **Two generations before judging.** Earned its place again last session: the first struct-field
-  build emitted `__aif_release_String` (this compiler puns an `ASTNode` pointer as `String`), gen 1
-  linked because it was built by the *old* compiler, and gen 2 did not.
-- **A guard must establish what it assumes.** Barring a binding's drop because "some type's release
-  will take it" deletes the release when that type lives in the frame. 47 leaked → 2049, and the
-  leak count was the only detector.
-- **A mechanism must count every edge it traverses.** The first cycle collector segfaulted: trial
-  deletion subtracted field references nobody had incremented.
-- **The differential is not always the safety net.** It agreed on a wrong answer three times
-  historically, is blind to layout, and was blind to *everything* last session — no tier moved, so
-  its agreement confirmed tier-neutrality and nothing else. When you change something it cannot see,
-  say what the coverage is.
-- **Reach for the input before the mechanism.** Item 1 above is this lesson's third outing.
-
-After each item: two generations to fixpoint, full suite, `tools/aif_differential.py --compiler
-<exe>`, the corpus under `--verify` (leaks AND violations), and a cold start plus seed refresh if the
-FFI surface changed.
+- **A measurement is cheaper than an argument from the cost model, and has now refuted one twice.**
+  λ was provably inert against a 512-byte ceiling; hot/cold was argued to be neutral on a
+  pointer-vector runtime and is 13%. `layout_repr.c` took minutes to write.
+- **A fixture must be built to discriminate.** `test_55`'s first draft declared its fields in
+  frequency order, so the measured and static layouts came out identical and the test passed
+  without exercising anything.
+- **A watchdog inherits your pipes.** The workload timeout backgrounded a `sleep` that held the
+  compiler's stdout, so any caller capturing output blocked until it expired — a 60-second *floor*
+  wearing a ceiling's name, surfacing as a hung suite with nothing using CPU.
+- **The manifest has to describe the build.** `prismio aif` runs a declared workload for the same
+  reason the `owned_collections` default had to be inverted: a reporting command that analyses a
+  different program from the one `prismio build` compiles is worse than no command.

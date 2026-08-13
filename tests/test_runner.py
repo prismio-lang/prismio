@@ -599,6 +599,176 @@ def run_aif_view_test():
     return True
 
 
+def run_workload_test():
+    """LAYOUT 3 -- `workload`, and the three normative constraints that are
+    checkable from outside the compiler.
+
+    The discriminating assertion is the last one, and it is the only one that
+    can tell a workload that ran from a workload that was parsed and ignored.
+    `test_55`'s `Cell` declares its two hot fields **last** and makes every
+    field 4 bytes wide, so padding cannot decide the order and frequency is the
+    only input left. A measured profile knows `hot` runs 40x more often than
+    `cold` and pulls `hits`/`scratch` to the front; the static estimate weights
+    both loops by depth alone, cannot see the ratio, and produces a different
+    permutation. Comparing the two IRs is therefore a direct test of whether the
+    measured counts reached the search.
+
+    An earlier draft of the fixture declared the fields in frequency order. Both
+    profiles then produced the source order, both builds emitted the same IR,
+    and the test passed without exercising anything -- the same shape as
+    "a rule that fires everywhere passes the positive half of its own test".
+    """
+    print(f"\n{BLUE}--- Running workload ---{RESET}")
+    src = TEST_DIR / "test_55_workload_profile.psm"
+    if not src.exists():
+        print(f"{RED}[FAIL] {src.name} is missing{RESET}")
+        return False
+
+    measured_ll = TEST_DIR / "workload_measured.ll"
+    static_src = TEST_DIR / "workload_static_control.psm"
+    static_ll = TEST_DIR / "workload_static.ll"
+
+    # The control: the same program with the workload declaration deleted. That
+    # is the only difference, so any difference in the IR is the profile's.
+    text = src.read_text(encoding="utf-8")
+    stripped = re.sub(r"^workload\s+\w+\s*\{.*?^\}\s*$", "", text,
+                      flags=re.S | re.M)
+    if stripped == text:
+        print(f"{RED}[FAIL] could not find a workload declaration to strip{RESET}")
+        return False
+    static_src.write_text(stripped, encoding="utf-8")
+
+    ok = True
+    try:
+        r1 = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(measured_ll)])
+        if r1.returncode != 0:
+            print(f"{RED}[FAIL] the workload build exited {r1.returncode}{RESET}")
+            print(r1.stdout or r1.stderr)
+            return False
+        combined = (r1.stdout or "") + (r1.stderr or "")
+        # W2 in the direction that matters here: the workload is supposed to
+        # succeed on this fixture, so a fallback warning means the runner broke.
+        if "using the static profile" in combined:
+            print(f"{RED}[FAIL] the workload fell back to the static profile{RESET}")
+            print(combined)
+            return False
+
+        r2 = run_command([str(PRISMIO_EXE), "build", str(static_src), "-o", str(static_ll)])
+        if r2.returncode != 0:
+            print(f"{RED}[FAIL] the static control build exited {r2.returncode}{RESET}")
+            return False
+
+        measured = measured_ll.read_text(encoding="utf-8", errors="replace")
+        static = static_ll.read_text(encoding="utf-8", errors="replace")
+
+        problems = []
+
+        # W1: build-time only. Not one instrumentation call reaches the shipped
+        # program -- and none is even *declared*, so it cannot be reinstated by
+        # a later pass or resolved by a linker.
+        for symbol in ("rt_profile_field", "rt_profile_alloc", "rt_profile_begin",
+                       "rt_profile_dump", "rt_workload_stub"):
+            if symbol in measured:
+                problems.append(f"W1: {symbol} appears in the shipped IR")
+
+        # The workload's own bodies must not be emitted either. `cell_traffic`
+        # is the only caller of nothing, so the check is that no driver-only
+        # construct survives: the driver's counter slot is uniquely named.
+        if "%wl_i" in measured:
+            problems.append("W1: the workload driver's loop counter is in the shipped IR")
+
+        # The profile reached the search: the two builds disagree about where
+        # `Cell`'s fields live. Compared on the *stores in make_cell*, which is
+        # where a field's index is decided and is stable against renaming.
+        def cell_indices(ir):
+            body = re.search(r"define ptr @make_cell__Int.*?\n\}", ir, re.S)
+            if not body:
+                return None
+            return re.findall(r"getelementptr inbounds nuw %Cell[\w.]*, ptr %\w+, i32 0, i32 (\d+)",
+                              body.group(0))
+
+        mi, si = cell_indices(measured), cell_indices(static)
+        if mi is None or si is None:
+            problems.append("could not find make_cell in one of the two builds")
+        elif len(mi) != 6 or len(si) != 6:
+            problems.append(f"expected 6 field stores, got {len(mi or [])} and {len(si or [])}")
+        else:
+            # The literal writes kind, hits, scratch, label, spare1, spare2 in
+            # that order, so mi[1] and mi[2] are where `hits` and `scratch` went.
+            if mi[0] != "0":
+                problems.append(f"the pinned first field moved: kind is at index {mi[0]}")
+            if mi == si:
+                problems.append("the measured and static builds chose the same layout; "
+                                "the profile did not reach the search")
+            if not (mi[1] == "1" and mi[2] == "2"):
+                problems.append(f"measured layout did not put the hot fields first: "
+                                f"hits at {mi[1]}, scratch at {mi[2]}")
+
+        # W4: two builds with different profiles are behaviourally identical.
+        # Asserted by running both, because that is the property -- comparing
+        # the IR would only show that they differ, which they are supposed to.
+        for label, program in (("measured", src), ("static", static_src)):
+            exe = TEST_DIR / f"workload_{label}.exe"
+            b = run_command([str(PRISMIO_EXE), "build", str(program), "-o", str(exe)])
+            if b.returncode != 0:
+                problems.append(f"W4: the {label} build did not produce an executable")
+                continue
+            run = run_command([str(exe)])
+            cleanup_files(exe)
+            if run.returncode != 0:
+                problems.append(f"W4: the {label} build exited {run.returncode}")
+            elif "checksum 3275" not in (run.stdout or ""):
+                problems.append(f"W4: the {label} build printed {(run.stdout or '').strip()!r}")
+
+        # W2: a workload that fails to run warns, falls back, and **does not
+        # damage the program**. The second half is the one worth a test. The
+        # runner leaves global state behind it -- the struct registry that the
+        # driver's own generateModule filled -- and an early return that skipped
+        # restoring it made the real build skip every struct body it thought was
+        # already emitted. A workload that failed to link would then have
+        # silently broken the shipped program's types.
+        failing_src = TEST_DIR / "workload_failing.psm"
+        failing_exe = TEST_DIR / "workload_failing.exe"
+        failing_src.write_text(
+            text.replace("    measure {\n        let cells = build(50)",
+                         "    measure {\n        exit(3)\n        let cells = build(50)"),
+            encoding="utf-8")
+        try:
+            r3 = run_command([str(PRISMIO_EXE), "build", str(failing_src),
+                              "-o", str(failing_exe)])
+            combined3 = (r3.stdout or "") + (r3.stderr or "")
+            if r3.returncode != 0:
+                problems.append("W2: a failing workload failed the build")
+            elif "using the static profile" not in combined3:
+                problems.append("W2: a failing workload did not warn and fall back")
+            else:
+                run3 = run_command([str(failing_exe)])
+                if run3.returncode != 0 or "checksum 3275" not in (run3.stdout or ""):
+                    problems.append(
+                        f"W2: after a failing workload the program is wrong "
+                        f"(exit {run3.returncode}, {(run3.stdout or '').strip()!r})")
+        finally:
+            cleanup_files(failing_src, failing_exe)
+
+        if problems:
+            print(f"{RED}[FAIL] workload{RESET}")
+            for p in problems:
+                print(f"  {p}")
+            ok = False
+        else:
+            print(f"{GREEN}[PASS] a measured profile changes the layout, and nothing "
+                  f"else{RESET}")
+    finally:
+        cleanup_files(measured_ll, static_ll, static_src)
+        for leftover in TEST_DIR.glob(".prismio-*"):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+
+    return ok
+
+
 def run_aif_layout_test():
     """LAYOUT 7.2's field-order search, checked where it is decided: the IR.
 
@@ -1386,6 +1556,11 @@ def main():
         failed += 1
 
     if run_aif_layout_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_workload_test():
         passed += 1
     else:
         failed += 1

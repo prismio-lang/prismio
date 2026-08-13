@@ -116,7 +116,7 @@ fn aifSymbolOf(site: Int) -> String {
 
 // SPEC 6.2. Line-oriented UTF-8, records sorted byte-wise ascending by symbol --
 // the sort is normative, because an unstable order makes every diff useless.
-fn aifEmitManifest(sourcePath: String, version: String, converged: Bool) {
+fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converged: Bool) {
     let total = aif_site_count()
 
     println("aif-manifest 1")
@@ -163,6 +163,14 @@ fn aifEmitManifest(sourcePath: String, version: String, converged: Bool) {
                                             " dynamically-sized site(s) excluded"))
     }
     aifKv("peak-bytes", budgetNote)
+
+    // LAYOUT 2.2: "An implementation SHALL treat a missing profile as the static
+    // profile, and SHALL record in the manifest which was used." Both halves are
+    // load-bearing -- a manifest is how a build is made describable (SPEC item
+    // 8), and a layout chosen from measured counts is not reproducible from the
+    // source alone. Without this line a reader cannot tell whether the `layout`
+    // column below is a fact about the program or about a machine.
+    aifKv("profile", aif_profile_source())
 
     let sccTypes = aif_scc_type_count()
     if (sccTypes == 0) {
@@ -216,6 +224,84 @@ fn aifEmitManifest(sourcePath: String, version: String, converged: Bool) {
         print(aifPad(origin, 18))
         println(aifSitePosition(site))
         r = r + 1
+    }
+
+    aifEmitPackingAdvice(module)
+}
+
+// ---------------------------------------------------------------------------
+// LAYOUT 6's packing dimension, reported rather than performed -- and the reason
+// is a conflict between two clauses of this specification, not caution.
+//
+// LAYOUT 2.1 makes `range(f)` dynamic-only and says it "enables bit-packing".
+// LAYOUT 3.2's W4 says two builds with different profiles SHALL produce
+// behaviourally identical programs. Those cannot both hold for a narrowing
+// driven by an observed range: a workload that only ever stores 0..40 in an
+// `Int` field authorises an i8, and the *next* input that stores 300 gets 44 in
+// the packed build and 300 in the unpacked one. That is a behavioural difference
+// between two builds differing only in their profile, which is exactly what W4
+// forbids -- and it is a miscompile, not a lost optimisation, so SPEC 1 forbids
+// it independently.
+//
+// An observed range is not a bound. Making it one needs either a value analysis
+// that proves the bound, or a programmer annotation asserting it -- and a fifth
+// annotation is a governance change (SPEC 11 item 7 fixes the count at four),
+// which is not a decision an implementation gets to take on its own.
+//
+// So what is emitted is the measurement and the saving it would buy, as advice.
+// This is not the packing dimension implemented; it is the input to it, made
+// visible so it is not measured and thrown away. What it would be worth on this
+// corpus is in RESULTS-layout.md: an upper bound of 9.4% of struct bytes,
+// assuming every narrowing were free and legal.
+fn aifEmitPackingAdvice(module: ASTNode) {
+    if (aif_profile_is_measured() == 0) { return }
+
+    let mut shown = 0
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let d = ptr_to_node(p)
+        if (d.kind == NodeKind.STRUCT_DECL) {
+            let mut fPtr = d.child1
+            let mut index = 0
+            while (nodeExists(fPtr)) {
+                let f = ptr_to_node(fPtr)
+                if (f.kind == NodeKind.STRUCT_FIELD) {
+                    // Field 0 is pinned by the punned-slot invariant and is never
+                    // a packing candidate, so advising on it would be advice the
+                    // compiler could not take even with a proof.
+                    if (index > 0) {
+                        if (aif_field_has_range(d.s1, f.s1) == 1) {
+                            let declared = aifTypeBytes(ptr_to_node(f.child1))
+                            let lo = aif_field_range_lo(d.s1, f.s1)
+                            let hi = aif_field_range_hi(d.s1, f.s1)
+                            let needed = aif_field_range_bytes(d.s1, f.s1)
+                            if (needed < declared) {
+                                if (shown == 0) {
+                                    println("#")
+                                    println("# measured field ranges narrower than their declared type. Advice only:")
+                                    println("#   an observed range is not a bound, and narrowing on one would break W4.")
+                                    println("# type.field                    declared  observed range        fits in")
+                                }
+                                print("# ")
+                                print(aifPad(str_concat(str_concat(d.s1, "."), f.s1), 30))
+                                print(aifPad(str_concat(int_to_str(declared), " bytes"), 10))
+                                // Narrowed to Int for printing, which is exact
+                                // here and only here: this branch runs when the
+                                // range fits in 1 or 2 bytes, so both ends are
+                                // inside i32 by the test just above.
+                                print(aifPad(str_concat(str_concat(int_to_str(lo as Int), ".."),
+                                                         int_to_str(hi as Int)), 22))
+                                println(str_concat(int_to_str(needed), " bytes"))
+                                shown = shown + 1
+                            }
+                        }
+                    }
+                    index = index + 1
+                }
+                fPtr = f.next
+            }
+        }
+        p = d.next
     }
 }
 
@@ -370,6 +456,14 @@ fn aifEmitSummary(sourcePath: String, converged: Bool) {
 // above the true one.
 fn aifRun(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
            budget: Int) -> Bool {
+    return aifRunProfiled(module, ownedCollections, thetaFields, budget, "")
+}
+
+// LAYOUT 2's two paths into one profile. `profilePath` empty is the static
+// estimate -- what every caller but the build path wants, and what the build
+// path itself gets when no workload is declared or the run failed (W2).
+fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
+                   budget: Int, profilePath: String) -> Bool {
     aif_reset()
     aifLiteralStrings = 0
     aifExternAlloc = 0
@@ -402,6 +496,23 @@ fn aifRun(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
     // flag because 7.2 is explicit that the levels are budgets and not different
     // algorithms -- the same engine runs at every one of them. `--budget=` on the
     // `aif` command refuses anything below 1, so zero means this and only this.
+    //
+    // LAYOUT 2's measured profile replaces the estimate the walk just built, and
+    // it has to land in this gap: after aifBuild has registered every type and
+    // field (there is nothing to load counts *into* before that) and before the
+    // search reads them. Loading it earlier would write into a table aif_reset
+    // has emptied; later would search the estimate and then change the numbers
+    // underneath the answer.
+    if (str_equals(profilePath, "") == 0) {
+        if (aif_profile_load(profilePath) == 0) {
+            // A file that exists but names nothing this module declares. Stale
+            // against a rename, most likely (LAYOUT 10.3). W2's fallback, and it
+            // warns for the same reason the other three failures do -- a silent
+            // fallback is how a workload comes to be believed in and never run.
+            diag_warning("the workload profile matched no type in this module; using the static estimate")
+        }
+    }
+
     if (budget > 0) {
         aif_layout_select()
     }
@@ -646,11 +757,19 @@ fn aifReportBudgets(converged: Bool) -> Int {
 fn aifAnalyze(module: ASTNode, sourcePath: String, version: String,
                ownedCollections: Bool, summary: Bool, thetaFields: Bool,
                budget: Int) {
-    let converged = aifRun(module, ownedCollections, thetaFields, budget)
+    aifAnalyzeProfiled(module, sourcePath, version, ownedCollections, summary,
+                        thetaFields, budget, "")
+}
+
+fn aifAnalyzeProfiled(module: ASTNode, sourcePath: String, version: String,
+                       ownedCollections: Bool, summary: Bool, thetaFields: Bool,
+                       budget: Int, profilePath: String) {
+    let converged = aifRunProfiled(module, ownedCollections, thetaFields, budget,
+                                    profilePath)
 
     if (summary) {
         aifEmitSummary(sourcePath, converged)
     } else {
-        aifEmitManifest(sourcePath, version, converged)
+        aifEmitManifest(module, sourcePath, version, converged)
     }
 }

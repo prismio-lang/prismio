@@ -14,6 +14,27 @@ let mut irStringCounter = 0
 let mut irTargetWasm = false
 let mut irShortCircuitCounter = 0
 
+// LAYOUT 3.2. On only while generating a workload driver -- the instrumented
+// build the compiler produces, runs and discards. It gates every emission this
+// feature adds, and there is exactly one place it is set (runWorkloadProfile in
+// main.psm), which is what makes "a shipped binary contains no instrumentation"
+// checkable by reading one assignment rather than by trusting a dozen guards.
+//
+// **W1 and W4 both rest on this flag being false everywhere else.** A profile is
+// an input to codegen only; if this were ever true during the real build, the
+// two would stop being different artifacts and the guarantee would be gone.
+let mut irProfileMode = false
+
+// Where the driver writes the profile it measures. Baked into the driver as a
+// constant rather than read from argv, because the driver is run with no argv at
+// all (W3: a workload must not be able to see how the build was invoked).
+let mut irProfilePath = ""
+
+fn irSetProfileMode(enabled: Bool, profilePath: String) {
+    irProfileMode = enabled
+    irProfilePath = profilePath
+}
+
 // The body of the function being generated, so a droppable candidate can ask
 // whether the binding is ever reassigned. See nodeAssignsName.
 let mut irFunctionBody = ""

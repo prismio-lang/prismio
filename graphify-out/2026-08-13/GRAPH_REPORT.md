@@ -1,16 +1,16 @@
-# Graph Report - prismio  (2026-08-13)
+# Graph Report - prismio  (2026-08-12)
 
 ## Corpus Check
-- 116 files · ~274,232 words
+- 114 files · ~261,215 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2209 nodes · 3973 edges · 157 communities (149 shown, 8 thin omitted)
-- Extraction: 93% EXTRACTED · 7% INFERRED · 0% AMBIGUOUS · INFERRED: 295 edges (avg confidence: 0.82)
+- 2156 nodes · 3865 edges · 152 communities (144 shown, 8 thin omitted)
+- Extraction: 93% EXTRACTED · 7% INFERRED · 0% AMBIGUOUS · INFERRED: 279 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `901b4941`
+- Built from commit: `551b3fdd`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -159,34 +159,30 @@
 - optlevel.py
 - Scopes
 - Prismio IDE protocol
-- Session of 2026-08-13 — `workload` lands; two of LAYOUT 6's dimensions are not blocked on what the brief said
-- vs_push
-- arena_chunk_new
-- str_split
 
 ## God Nodes (most connected - your core abstractions)
 1. `main()` - 37 edges
-2. `strlen()` - 36 edges
-3. `malloc()` - 34 edges
-4. `intern_value()` - 33 edges
+2. `strlen()` - 34 edges
+3. `malloc()` - 33 edges
+4. `intern_value()` - 32 edges
 5. `type_from_key()` - 32 edges
 6. `resolve_value()` - 31 edges
-7. `aif_intern()` - 30 edges
-8. `free()` - 30 edges
-9. `strcmp()` - 24 edges
-10. `backend_fail()` - 24 edges
+7. `free()` - 29 edges
+8. `aif_intern()` - 25 edges
+9. `backend_fail()` - 23 edges
+10. `xrealloc()` - 21 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Test naming convention (test_<NN>_<description>.psm)` --conceptually_related_to--> `fn main() -> Int`  [AMBIGUOUS]
   CONTRIBUTING.md → src/main.psm
 - `xcalloc()` --calls--> `calloc()`  [INFERRED]
   runtime/aif_support.c → aif/evidence/xlang/allocount.c
-- `accept_if_exists()` --calls--> `file_exists()`  [INFERRED]
-  runtime/build_driver.c → runtime/program_support.c
-- `diag_reset()` --calls--> `free()`  [INFERRED]
-  runtime/diagnostics.c → runtime/lang_runtime.c
 - `Prismio Project Structure (src/ layout)` --references--> `fn main() -> Int`  [EXTRACTED]
   CONTRIBUTING.md → src/main.psm
+- `Documented Compiler Pipeline (README architecture diagram)` --references--> `fn resolve_imports(module, base_dir) -> ASTNode`  [EXTRACTED]
+  README.MD → src/main.psm
+- `Layout` --uses--> `Model`  [INFERRED]
+  aif/prototype/layout.py → aif/prototype/aif.py
 
 ## Import Cycles
 - None detected.
@@ -197,31 +193,31 @@
 - **Shared fail(message) test-harness helper pattern across feature tests** — tests_test_01_variables_fail, tests_test_02_if_else_fail, tests_test_03_while_loops_fail, tests_test_04_structs_fail, tests_test_05_enums_fail, tests_test_06_recursion_fail, tests_test_07_booleans_fail, tests_test_08_mutability_fail, tests_test_09_strings_fail, tests_test_10_expressions_fail, tests_test_11_returns_fail, tests_test_12_imports_fail, tests_test_13_globals_fail [INFERRED 0.95]
 - **Prismio Ownership System (Move/Drop/Borrow) Demonstration** — tests_test_23_move_main, tests_test_24_drop_main, tests_test_25_conventions_main, tests_test_26_borrow_reuse_main [INFERRED 0.85]
 
-## Communities (157 total, 8 thin omitted)
+## Communities (152 total, 8 thin omitted)
 
 ### Community 0 - "malloc"
-Cohesion: 0.33
-Nodes (14): Bounds, buildHierarchy(), countVisible(), G3, identityTransform(), linkChild(), makeNode(), Node (+6 more)
+Cohesion: 0.29
+Nodes (7): record_cmp(), diag_add_file(), str_compare(), str_ends_with(), str_equals(), strcmp(), compare_names()
 
 ### Community 1 - "fn compile_source(path, output_file, run_after_build) -> Int"
 Cohesion: 0.07
 Nodes (30): Contributor Covenant Code of Conduct, Conventional Commits convention, Prismio Project Structure (src/ layout), Claim: no dedicated semantic analysis pass (planned), Test naming convention (test_<NN>_<description>.psm), POST_INSTALL.txt (install success message), Documented Compiler Pipeline (README architecture diagram), Contributor Covenant (README reference) (+22 more)
 
 ### Community 2 - "g6_bench.c"
-Cohesion: 0.07
-Nodes (61): Actor, arena_alloc(), arena_reserve(), arena_reset(), build_scene(), List, cull(), list_init() (+53 more)
+Cohesion: 0.09
+Nodes (55): Actor, arena_alloc(), arena_reserve(), arena_reset(), build_scene(), List, cull(), list_init() (+47 more)
 
 ### Community 3 - "ir_symbols.c"
 Cohesion: 0.07
 Nodes (4): drop_index(), ir_drop_kind(), ir_drop_slot(), ir_drop_type()
 
 ### Community 4 - "free"
-Cohesion: 0.16
-Nodes (31): FILE, accept_if_exists(), build_from_toolchain_sources(), compile_ir_to_object(), compiler_bootstrap_executable(), compiler_build_executable(), compiler_default_exe_path(), compiler_prepare_output_path() (+23 more)
+Cohesion: 0.14
+Nodes (30): FILE, aif_reset(), bits_free(), accept_if_exists(), build_from_toolchain_sources(), compiler_bootstrap_executable(), compiler_build_executable(), compiler_default_exe_path() (+22 more)
 
 ### Community 5 - "lang_runtime.c"
 Cohesion: 0.04
-Nodes (41): RtProfField, RtProfType, aif_live_hash(), aif_verify_alloc(), aif_verify_arm(), aif_verify_release(), arena_pop(), arena_push() (+33 more)
+Nodes (38): ArenaChunk, aif_live_hash(), aif_verify_alloc(), aif_verify_arm(), aif_verify_release(), arena_alloc(), arena_chunk_new(), arena_push() (+30 more)
 
 ### Community 7 - "Borrow Checking"
 Cohesion: 0.08
@@ -236,8 +232,8 @@ Cohesion: 0.09
 Nodes (27): Arithmetic Operators, Global Variables, Mutability (mut bindings), Operator Precedence / Expression Evaluation, Variable Declarations, bump_global(amount) function, fail(message) function (test_01_variables), main() function (test_01_variables) (+19 more)
 
 ### Community 10 - "g2_bench_arena.c"
-Cohesion: 0.09
-Nodes (46): buildSystem(), countAlive(), countBeyond(), fade(), G1, integrate(), Particle, spawnParticle() (+38 more)
+Cohesion: 0.07
+Nodes (60): buildSystem(), countAlive(), countBeyond(), fade(), G1, integrate(), Particle, spawnParticle() (+52 more)
 
 ### Community 11 - "bench.py"
 Cohesion: 0.43
@@ -253,7 +249,7 @@ Nodes (20): candidate_roots(), detect_version(), download(), extract(), fetch(),
 
 ### Community 14 - "arena_would_serve"
 Cohesion: 0.22
-Nodes (11): aif_arena_high_water(), aif_arena_unsized_sites(), aif_oom(), aif_place_arenas(), aif_scope_served(), arena_bytes_of(), arena_would_serve(), is_ancestor_or_self() (+3 more)
+Nodes (11): aif_arena_high_water(), aif_arena_unsized_sites(), aif_place_arenas(), aif_scope_served(), arena_bytes_of(), arena_would_serve(), escape_join(), is_ancestor_or_self() (+3 more)
 
 ### Community 15 - "cyc_hdr"
 Cohesion: 0.22
@@ -285,7 +281,7 @@ Nodes (3): add_c_string(), escape_c_string(), main()
 
 ### Community 22 - "llvm-api-backend.c"
 Cohesion: 0.05
-Nodes (102): LLVMBasicBlockRef, LLVMTypeRef, LLVMValueRef, NamedValue, strncpy(), apply_param_attrs(), backend_fail(), block_done() (+94 more)
+Nodes (101): LLVMBasicBlockRef, LLVMTypeRef, LLVMValueRef, NamedValue, strncpy(), apply_param_attrs(), backend_fail(), block_done() (+93 more)
 
 ### Community 23 - "Enum Types"
 Cohesion: 0.24
@@ -300,12 +296,12 @@ Cohesion: 0.26
 Nodes (13): candidates(), field_align(), field_width(), Layout, main(), min_size(), mu_for(), grouping in {AoS, SoA, AoSoA(w)}; `hot` is the field subset kept in the     prim (+5 more)
 
 ### Community 26 - "diagnostics.c"
-Cohesion: 0.16
-Nodes (17): diag_digits(), diag_emit(), diag_emit_json(), diag_emit_json_summary(), diag_error(), diag_error_at(), diag_finish(), diag_json_string() (+9 more)
+Cohesion: 0.18
+Nodes (15): diag_digits(), diag_emit(), diag_emit_json(), diag_emit_json_summary(), diag_error(), diag_error_at(), diag_finish(), diag_json_string() (+7 more)
 
 ### Community 27 - "test_runner.py"
 Cohesion: 0.10
-Nodes (43): aif_records(), cleanup_files(), compile_prismio_file(), expected_errors(), main(), Struct-field ownership, read out of the emitted IR.      test_49 running clean p, SPEC 7.3's verify mode, run over the fixtures that allocate structs.      The ha, Substrings the diagnostics must contain, from `// expect-error:` lines.      Wit (+35 more)
+Nodes (41): aif_records(), cleanup_files(), compile_prismio_file(), expected_errors(), main(), SPEC 5's annotations, read back out of the manifest.      test_46 running clean, SPEC 6.3's witness path, checked for shape rather than for prose.      The inter, Substrings the diagnostics must contain, from `// expect-error:` lines.      Wit (+33 more)
 
 ### Community 28 - "check_source_lists.py"
 Cohesion: 0.21
@@ -345,7 +341,7 @@ Nodes (6): Struct (Custom Data Type) Declarations, struct Parser, struct Token, 
 
 ### Community 37 - "aif_tier_of"
 Cohesion: 0.13
-Nodes (22): aif_arena_at_node(), aif_cycle_at_node(), aif_elem_type_at_node(), aif_frees_at_scope_node(), aif_note_call_result(), aif_rc_at_node(), aif_region_name_at_site(), aif_site_arena_is_pinned() (+14 more)
+Nodes (27): aif_arena_at_node(), aif_compute_type_acyclic(), aif_cycle_at_node(), aif_elem_owner_at_node(), aif_elem_type_at_node(), aif_field_is_counted(), aif_frees_at_scope_node(), aif_note_call_result() (+19 more)
 
 ### Community 38 - "main() function (test_07_booleans)"
 Cohesion: 0.50
@@ -388,8 +384,8 @@ Cohesion: 0.20
 Nodes (27): applyOrders(), Actor, EngTransform, EngVelocity, Bool, Double, Int, World (+19 more)
 
 ### Community 49 - "strcmp"
-Cohesion: 0.16
-Nodes (14): compiler_installed_runtime_hash(), compiler_runtime_source_hash(), fnv1a_bytes(), malloc(), wasm_align8(), ir_get_label_name(), current_directory(), executable_directory() (+6 more)
+Cohesion: 0.14
+Nodes (27): compile_ir_to_object(), compiler_installed_runtime_hash(), compiler_run_executable(), link_against_runtime_library(), run_build_command(), run_command_path(), diag_strdup(), cyc_walk_push() (+19 more)
 
 ### Community 50 - "strlen"
 Cohesion: 0.23
@@ -424,8 +420,8 @@ Cohesion: 0.38
 Nodes (14): G4, Health, Physics, Position, spawn(), Sprite, Double, Int (+6 more)
 
 ### Community 59 - "strncpy"
-Cohesion: 0.11
-Nodes (27): diag_add_file(), diag_strdup(), ir_clear_local_var_types(), cyc_walk_push(), list_new(), memcpy(), realloc(), rt_alloc() (+19 more)
+Cohesion: 0.29
+Nodes (7): ir_clear_local_var_types(), str_contains(), str_index_of(), str_replace(), str_starts_with(), strncmp(), strstr()
 
 ### Community 60 - "g4_idiomatic.rs"
 Cohesion: 0.30
@@ -444,15 +440,15 @@ Cohesion: 0.20
 Nodes (9): Build it, Building Prismio on macOS (and Linux), Check you reached a fixed point, Cross-compiling from Windows, Refreshing the seed, Test, package, verify, Troubleshooting, What you need (+1 more)
 
 ### Community 64 - "Cross-language results — Prismio vs Rust vs Swift"
-Cohesion: 0.12
-Nodes (16): 0 · The one-paragraph answer, 1 · The headline table, 2 · Prediction vs measurement, per axis, 2a · "Allocator churn 0.2–0.5×" was wrong about the baseline, not about AIF, 2b · Peak RSS was wrong in our favour, and for the opposite reason to the one assumed, 2c · The tail held, and with the optimiser on it is indistinguishable from Rust's, 3.1 · The optimiser — found here, fixed in this branch, 3.2 · The representation, which is the real remaining gap (+8 more)
+Cohesion: 0.17
+Nodes (12): 0 · The one-paragraph answer, 1 · The headline table, 3.1 · The optimiser — found here, fixed in this branch, 3.2 · The representation, which is the real remaining gap, 3 · Where the remaining gap comes from, 4 · What the memory model is actually worth, measured, 5 · The axes nobody predicted, where the result is good, 6 · Which assumptions were wrong (+4 more)
 
 ### Community 65 - "g4_tuned.rs"
 Cohesion: 0.33
 Nodes (11): Health, main(), make_world(), Physics, Position, Vec, spawn(), Sprite (+3 more)
 
 ### Community 66 - "The cross-language suite — Prismio vs Rust vs Swift"
-Cohesion: 0.29
+Cohesion: 0.22
 Nodes (7): A note on what this suite found and changed, Fidelity notes, How each axis is measured, Results, The cross-language suite — Prismio vs Rust vs Swift, The four decisions worth arguing with, What is here
 
 ### Community 67 - "g1_arena.rs"
@@ -464,8 +460,8 @@ Cohesion: 0.20
 Nodes (10): 0. HEAD did not compile, and that is not in any previous handoff, 1. The 79 T3 sites were a stale reporting default, not a residue, 2. What ownership contexts would buy, measured, 3. The benchmark, and it falsifies a claim the corpus makes about itself, Four things to carry forward, Known gaps, documented rather than fixed, Next, re-ranked on this session's measurements, Not started: ownership contexts (INFERENCE §6–7) (+2 more)
 
 ### Community 71 - "aif_str"
-Cohesion: 0.20
-Nodes (10): aif_fn_name(), aif_fn_symbol(), aif_layout_field(), aif_nominal_name(), aif_order_symbol(), aif_profile_source(), aif_scope_region(), aif_site_type() (+2 more)
+Cohesion: 0.18
+Nodes (11): aif_fn_name(), aif_fn_symbol(), aif_layout_field(), aif_nominal_name(), aif_order_symbol(), aif_region_name_at_site(), aif_scope_region(), aif_site_arena_is_pinned() (+3 more)
 
 ### Community 72 - "Code style"
 Cohesion: 0.15
@@ -509,7 +505,7 @@ Nodes (21): 10 · Reporting, 1 · The one place being wrong is unsafe, 2 · C-co
 
 ### Community 90 - "aif_intern"
 Cohesion: 0.09
-Nodes (33): aif_enum_new(), aif_extern_contract_set(), aif_field_access(), aif_field_has_range(), aif_field_range_bytes(), aif_field_range_hi(), aif_field_range_lo(), aif_fn_lookup() (+25 more)
+Nodes (34): aif_enum_new(), aif_extern_contract(), aif_extern_contract_set(), aif_fn_lookup(), aif_fn_new(), aif_intern(), aif_key_field(), aif_key_param() (+26 more)
 
 ### Community 91 - "AIF — The T4 Cycle Collector"
 Cohesion: 0.11
@@ -524,8 +520,8 @@ Cohesion: 0.13
 Nodes (15): 1 · Why bodies must ship, 2.1 Not LLVM IR, 2 · Content model, 3 · Deterministic emission, 4 · Merging, 5.1 Sealed surfaces SHALL publish ownership contracts, 5 · Sealed functions, 6.1 Format versioning (+7 more)
 
 ### Community 94 - "aif_solve"
-Cohesion: 0.17
-Nodes (27): Bits, Deriv, IntVec, aif_argv_push(), aif_reset(), aif_solve(), aif_widen(), bits_clear() (+19 more)
+Cohesion: 0.19
+Nodes (25): Bits, Deriv, IntVec, aif_argv_push(), aif_solve(), aif_widen(), bits_clear(), bits_count_at_least_two() (+17 more)
 
 ### Community 95 - "AIF — Level 0 Results"
 Cohesion: 0.17
@@ -560,8 +556,8 @@ Cohesion: 0.14
 Nodes (16): ann_leaf_name(), base_type(), elem_key(), main(), measure_masks(), Model, `List<Token>` -> `List`. Field keys are per nominal type, so a generic     conta, A container's contents, as a field key.      Object-insensitive through base_typ (+8 more)
 
 ### Community 103 - "nominal_find"
-Cohesion: 0.13
-Nodes (27): Nominal, aif_compute_type_acyclic(), aif_elem_owner_at_node(), aif_field_is_counted(), aif_field_is_cyclic(), aif_field_release(), aif_owns_call_result_at_node(), aif_scc_type_count() (+19 more)
+Cohesion: 0.10
+Nodes (28): Nominal, aif_field_access(), aif_field_is_cyclic(), aif_field_release(), aif_is_enum(), aif_is_struct(), aif_layout_field_bytes(), aif_layout_reordered() (+20 more)
 
 ### Community 104 - "5 · Annotations"
 Cohesion: 0.22
@@ -708,12 +704,12 @@ Cohesion: 0.29
 Nodes (4): Frames, report(), Vec, Self
 
 ### Community 142 - "Session of 2026-08-09 — inline struct fields, and two measured non-results"
-Cohesion: 0.22
-Nodes (9): aif_extern_contract(), aif_key_field(), aif_key_param(), aif_key_ret(), aif_key_var(), aif_var_note_scope(), aif_var_scope(), key_intern() (+1 more)
+Cohesion: 0.25
+Nodes (8): 1. Inline struct fields — landed, 4× fewer allocations, one regression, 2. By-value POD returns — designed, deliberately not built, 3. A footprint term in the arena cost model — landed and provably inert, 4. `unique` on a parameter → `noalias` — landed, guarded, win unproven, Handles slipped, and here is the cost that says why, Next, re-ranked on this session's measurements, Session of 2026-08-09 — inline struct fields, and two measured non-results, Three things to carry forward
 
 ### Community 143 - "Handoff — continuing the Prismio work"
-Cohesion: 0.12
-Nodes (16): 1. Inline struct fields — landed, 4× fewer allocations, one regression, 2. By-value POD returns — designed, deliberately not built, 3. A footprint term in the arena cost model — landed and provably inert, 4. `unique` on a parameter → `noalias` — landed, guarded, win unproven, Current state, File roles, Five rules learned the hard way, Handles slipped, and here is the cost that says why (+8 more)
+Cohesion: 0.25
+Nodes (8): Current state, File roles, Five rules learned the hard way, Handoff — continuing the Prismio work, Session of 2026-08-07 (second) — the corpus reaches zero, Three things to carry forward, What's next, Workflow — do this for every change
 
 ### Community 144 - "Session of 2026-08-09 (second) — views: the safety half landed, the speed half was somewhere else"
 Cohesion: 0.33
@@ -728,8 +724,8 @@ Cohesion: 0.60
 Nodes (4): loop_ms(), main(), Median in-process loop time, from the program's own frame samples., sh()
 
 ### Community 147 - "2 · Prediction vs measurement, per axis"
-Cohesion: 0.29
-Nodes (6): 1 · Handles did not land, and two dimensions depend on them, 2 · Hot/cold does *not* need handles, and it pays, 3 · Bit-packing is blocked by the specification, not by codegen, 4 · Empirical validation (LAYOUT §8) is behind §7.2, not behind the runner, LAYOUT 6's candidate space, measured against what this compiler can emit, What to do with this
+Cohesion: 0.50
+Nodes (4): 2 · Prediction vs measurement, per axis, 2a · "Allocator churn 0.2–0.5×" was wrong about the baseline, not about AIF, 2b · Peak RSS was wrong in our favour, and for the opposite reason to the one assumed, 2c · The tail held, and with the optimiser on it is indistinguishable from Rust's
 
 ### Community 148 - "g7bench.py"
 Cohesion: 0.83
@@ -743,28 +739,12 @@ Nodes (3): loop_ms(), main(), sh()
 Cohesion: 0.50
 Nodes (3): Current boundary, JSON diagnostics, Prismio IDE protocol
 
-### Community 152 - "Session of 2026-08-13 — `workload` lands; two of LAYOUT 6's dimensions are not blocked on what the brief said"
-Cohesion: 0.29
-Nodes (7): 1. `workload` landed (LAYOUT 3, SPEC 11 item 7's fourth annotation), 2. Two of LAYOUT 6's four remaining dimensions were never blocked on handles, 3. The harness re-run: no movement, which is the correct answer, and one thing it exposed, 4. LAYOUT 8 is behind §7.2, not behind the runner, Four things to carry forward, Next, re-ranked on this session's measurements, Session of 2026-08-13 — `workload` lands; two of LAYOUT 6's dimensions are not blocked on what the brief said
-
-### Community 153 - "vs_push"
-Cohesion: 0.29
-Nodes (7): aif_vs_key(), aif_vs_new(), aif_vs_site(), aif_vs_union(), aif_vs_view_of(), vs_push(), vs_push_view()
-
-### Community 155 - "arena_chunk_new"
-Cohesion: 0.67
-Nodes (3): ArenaChunk, arena_alloc(), arena_chunk_new()
-
-### Community 156 - "str_split"
-Cohesion: 0.67
-Nodes (3): str_split(), str_split_free(), StringArray
-
 ## Ambiguous Edges - Review These
 - `Test naming convention (test_<NN>_<description>.psm)` → `fn main() -> Int`  [AMBIGUOUS]
   CONTRIBUTING.md · relation: conceptually_related_to
 
 ## Knowledge Gaps
-- **569 isolated node(s):** `Darwin`, `Foundation`, `1.1 Pipeline trace: `prismio build file.psm` → executable`, `1.2 How runtime libraries are included: embedded, external, or both?`, `1.3 Every file and function responsible` (+564 more)
+- **558 isolated node(s):** `Darwin`, `Foundation`, `1.1 Pipeline trace: `prismio build file.psm` → executable`, `1.2 How runtime libraries are included: embedded, external, or both?`, `1.3 Every file and function responsible` (+553 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **8 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -773,15 +753,15 @@ _Questions this graph is uniquely positioned to answer:_
 
 - **What is the exact relationship between `Test naming convention (test_<NN>_<description>.psm)` and `fn main() -> Int`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
-- **Why does `strcmp()` connect `lang_runtime.c` to `free`, `aif_str`, `ir_intern`, `llvm-api-backend.c`, `aif_intern`, `strncpy`?**
-  _High betweenness centrality (0.073) - this node is a cross-community bridge._
-- **Why does `strlen()` connect `strncpy` to `free`, `lang_runtime.c`, `ir_intern`, `add_binding`, `strcmp`, `llvm-api-backend.c`, `aif_intern`?**
-  _High betweenness centrality (0.046) - this node is a cross-community bridge._
-- **Why does `aif_intern()` connect `aif_intern` to `aif_tier_of`, `lang_runtime.c`, `nominal_find`, `aif_support.c`, `Session of 2026-08-09 — inline struct fields, and two measured non-results`, `strncpy`?**
-  _High betweenness centrality (0.038) - this node is a cross-community bridge._
+- **Why does `strcmp()` connect `malloc` to `free`, `lang_runtime.c`, `ir_intern`, `strcmp`, `llvm-api-backend.c`, `aif_intern`?**
+  _High betweenness centrality (0.072) - this node is a cross-community bridge._
+- **Why does `aif_intern()` connect `aif_intern` to `malloc`, `aif_tier_of`, `nominal_find`, `aif_support.c`, `strcmp`?**
+  _High betweenness centrality (0.043) - this node is a cross-community bridge._
+- **Why does `ir_intern()` connect `ir_intern` to `malloc`, `namelist_contains`, `find_binding`, `ir_symbols.c`, `add_binding`, `strcmp`?**
+  _High betweenness centrality (0.036) - this node is a cross-community bridge._
 - **Are the 36 inferred relationships involving `main()` (e.g. with `ir_alloc_object()` and `ir_alloca()`) actually correct?**
   _`main()` has 36 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 24 inferred relationships involving `strlen()` (e.g. with `aif_intern()` and `build_from_toolchain_sources()`) actually correct?**
-  _`strlen()` has 24 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 26 inferred relationships involving `malloc()` (e.g. with `xmalloc()` and `build_from_toolchain_sources()`) actually correct?**
-  _`malloc()` has 26 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 22 inferred relationships involving `strlen()` (e.g. with `aif_intern()` and `build_from_toolchain_sources()`) actually correct?**
+  _`strlen()` has 22 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 25 inferred relationships involving `malloc()` (e.g. with `xmalloc()` and `build_from_toolchain_sources()`) actually correct?**
+  _`malloc()` has 25 INFERRED edges - model-reasoned connections that need verification._

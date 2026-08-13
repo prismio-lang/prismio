@@ -214,6 +214,11 @@ extern fn ir_struct_field_ptr(structName: String, object: String, fieldIndex: In
 extern fn ir_elem_ptr(elemType: String, base: String, index: String) -> Int
 extern fn ir_array_alloca(elemType: String, count: Int) -> Int
 extern fn ir_string_ptr(globalName: String) -> Int
+// LAYOUT 2. A constant C string created on demand and interned by content, for
+// the type and field names the profile instrumentation passes. Distinct from
+// ir_string_ptr, which resolves a global the collect_strings pre-pass named:
+// these names are not source literals, so that pre-pass has nothing to find.
+extern fn ir_const_cstring(text: String) -> Int
 extern fn ir_load_ptr(type: String, ptrValue: String) -> Int
 extern fn ir_store_ptr(type: String, value: String, ptrValue: String)
 extern fn ir_copy_struct(structName: String, dest: String, src: String)

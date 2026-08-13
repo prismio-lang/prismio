@@ -182,7 +182,7 @@ The measured effect is in [RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md)'s cor
 58% T0–T2 on the compiler from four `alias` declarations, and 72% with affine collections — the
 first time this corpus clears H1's kill criterion.
 
-### 9. The four annotations — `unique`, `region`, `workload`, `pin` **[three done, 2026-08-07]**
+### 9. The four annotations — `unique`, `region`, `workload`, `pin` **[all four done, 2026-08-13]**
 
 ~~None exists in `keywords.psm`.~~ Per TARGET §2.1 these are engine-layer tools; gameplay code should
 never need them.

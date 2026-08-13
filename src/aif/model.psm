@@ -124,6 +124,25 @@ extern fn aif_struct_add_field(name: String, field: String, type: String, bytes:
 // arena placement uses for allocs_in(s).
 extern fn aif_field_access(type: String, field: String, weight: Int)
 extern fn aif_layout_select()
+
+// LAYOUT 2.2. A measured profile, replacing the static estimate above. Answers 1
+// when it read at least one record; 0 means no file, or a file naming nothing
+// this module declares, and the caller falls back (W2).
+extern fn aif_profile_load(path: String) -> Int
+// `static`, or `workload:NAME`. A `static char*` from the intern table.
+extern fn aif_profile_source() -> String alias
+extern fn aif_profile_is_measured() -> Int
+
+// LAYOUT 2.1's `range(f)`. Dynamic only, so these answer 0 under a static
+// profile -- which is why bit-packing declines without a workload rather than
+// packing against a range it invented.
+extern fn aif_field_has_range(type: String, field: String) -> Int
+extern fn aif_field_range_lo(type: String, field: String) -> I64
+extern fn aif_field_range_hi(type: String, field: String) -> I64
+// The narrowest signed width that holds the range, in bytes; 8 when there is
+// no range. In C because the comparison needs I64 literals -- see the note at
+// the definition.
+extern fn aif_field_range_bytes(type: String, field: String) -> Int
 extern fn aif_layout_field(type: String, i: Int) -> String alias
 extern fn aif_layout_field_bytes(type: String, i: Int) -> Int
 extern fn aif_layout_reordered(type: String) -> Int

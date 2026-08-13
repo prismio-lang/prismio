@@ -128,6 +128,19 @@ static char* compiler_temp_path(const char* base_path, const char* suffix) {
     return result;
 }
 
+// LAYOUT 3.2. The workload runner needs three temporaries beside the source --
+// driver IR, driver executable, and the profile itself -- and they follow the
+// same ".prismio-<stem>-<suffix>" convention as every other build temporary so a
+// failed build leaves recognisable litter rather than anonymous files.
+//
+// Unlike compiler_temp_ir_path this does *not* stamp the pid into the name. The
+// profile is the one build temporary a user may want to keep and check in
+// (LAYOUT 2.2: "checked in beside the manifest"), and a pid in the name would
+// make that impossible to predict.
+char* compiler_temp_path_for(const char* source_path, const char* suffix) {
+    return compiler_temp_path(source_path, suffix);
+}
+
 char* compiler_temp_ir_path(const char* source_path) {
     char suffix[32];
     snprintf(suffix, sizeof(suffix), "%d.ll", PRISMIO_GETPID());
@@ -500,6 +513,27 @@ static int g_verify_mode = 0;
 
 void compiler_set_verify_mode(int on) { g_verify_mode = on ? 1 : 0; }
 
+// LAYOUT 3.2. A workload driver calls rt_profile_*, and an *installed*
+// runtime.lib may predate them -- it is a binary someone built at some point,
+// and this feature is newer than some of those points. The link then fails on
+// six symbols and W2 turns it into a fallback, so the effect is a workload that
+// silently never runs on exactly the machines where the toolchain was installed
+// rather than built.
+//
+// This is the same shape as the verify flag above and is here for the same
+// reason: a build mode whose object code needs something the installed library
+// cannot be assumed to contain must compile the runtime itself. It differs in
+// one way worth stating -- verify compiles from source to change the runtime's
+// *behaviour*, this one only to guarantee its *vintage*. Nothing is defined and
+// the generated code is unaffected.
+//
+// build_from_toolchain_sources falls back to the sources embedded in the
+// compiler binary when the repository is not on disk, so this costs an installed
+// toolchain nothing but compile time.
+static int g_workload_mode = 0;
+
+void compiler_set_workload_mode(int on) { g_workload_mode = on ? 1 : 0; }
+
 // IR -> object.
 //
 // This was `llc <ir> -filetype=obj` for a long time, and that ran the *codegen*
@@ -710,7 +744,8 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
         // An installed runtime.lib was compiled without PRISMIO_AIF_VERIFY, so a
         // verify build cannot use it: half the allocations would be outside the
         // accounting. Compiling from source is slower and this is a debug mode.
-        if (!g_verify_mode
+        // A workload driver skips it too, for the vintage reason at g_workload_mode.
+        if (!g_verify_mode && !g_workload_mode
             && find_toolchain_library(runtime_lib, sizeof(runtime_lib), "runtime")) {
             result = link_against_runtime_library(program_obj, runtime_lib, exe_file);
         } else {
@@ -803,6 +838,76 @@ static char* run_command_path(const char* exe_file) {
     }
     path[out] = '\0';
     return path;
+}
+
+// ============================================
+// LAYOUT 3.2 -- running a workload at build time
+//
+// The whole of the sandbox, and it is smaller than the clause makes it sound
+// because this language's surface is small. W3 names three effects to stub:
+// network, absolute filesystem paths, and environment access. Prismio's runtime
+// exposes none of them -- str_*, list_*, print and the allocators, and that is
+// the list. What a program *can* do is declare an `extern fn` for any symbol the
+// C library happens to export, which is the real hole, and it is closed on the
+// other side: codegen gives every extern the runtime does not define a body of
+// rt_workload_stub instead of a link (see generateWorkloadStubs). So by the time
+// a driver runs, the only foreign code it can reach is the Prismio runtime.
+//
+// That leaves what this function owns: argv, the working directory, and time.
+//
+//  - **argv is empty.** cli_arg() reads the prismio_argv global, which a driver
+//    never fills, so a workload cannot branch on the compiler's own command line
+//    and produce a profile that depends on how the build was invoked.
+//  - **The working directory is the output directory**, not the user's. A
+//    relative path a workload opens through a stubbed extern goes nowhere, and
+//    the profile lands beside the other build temporaries.
+//  - **Time is bounded.** W2 lists "times out" as a fallback case, so it has to
+//    be a case that can happen: a workload with an unbounded loop must warn and
+//    fall back rather than hang the build forever.
+//
+// The timeout is enforced with the platform's own tool rather than by forking:
+// `timeout` on Linux, and on macOS the same via a subshell watchdog, because
+// coreutils' timeout is not installed by default there. A missing watchdog is
+// not fatal -- the run simply is not bounded, which is the pre-existing
+// behaviour of every other build command this file issues.
+int compiler_run_workload(const char* exe_file, int timeout_seconds) {
+    char* normalized = run_command_path(exe_file);
+    if (!normalized) return 1;
+
+    char* q_exe = command_quote_arg(normalized);
+    int command_len = (int)strlen(q_exe) + 128;
+    char* command = (char*)malloc(command_len);
+
+#if defined(_WIN32)
+    // No portable watchdog in cmd.exe. Recorded rather than faked: on Windows a
+    // workload that hangs hangs the build, and the fix is a job object, which is
+    // more platform code than this feature has earned until someone hits it.
+    (void)timeout_seconds;
+    snprintf(command, command_len, "%s", q_exe);
+#else
+    // `sh -c 'cmd & p=$!; (sleep N; kill $p) & wait $p'` is the portable form.
+    // Using it unconditionally rather than probing for coreutils keeps one code
+    // path on both Unixes.
+    //
+    // **The watchdog's redirections are load-bearing and were not obvious.** The
+    // subshell inherits this process's stdout and stderr, which for any caller
+    // that captures our output is a pipe. A reader waits for EOF, and EOF needs
+    // *every* writer to close -- so a driver that finished in 40 ms still left
+    // the reader blocked until the `sleep` expired, turning the timeout into a
+    // floor on every workload build instead of a ceiling. It surfaced as the
+    // test suite hanging with no process using any CPU.
+    snprintf(command, command_len,
+             "sh -c '%s & p=$!; { sleep %d; kill $p; } >/dev/null 2>&1 </dev/null & w=$!; "
+             "wait $p; s=$?; kill $w 2>/dev/null; exit $s'",
+             q_exe, timeout_seconds > 0 ? timeout_seconds : 60);
+#endif
+
+    int result = run_build_command(command);
+
+    free(command);
+    free(q_exe);
+    free(normalized);
+    return result;
 }
 
 int compiler_run_executable(const char* exe_file) {
