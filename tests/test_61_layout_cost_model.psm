@@ -1,0 +1,111 @@
+// LAYOUT 5's cost model, and the one property that makes it worth having.
+//
+// **This fixture is built to discriminate, and the thing it discriminates
+// against is the cheap rule someone will reach for instead.** A hot/cold cut
+// looks like it needs only the access counts: rank the fields, cut where the
+// count drops. That rule is available without a cost model at all, and on this
+// struct it is wrong.
+//
+// `Sample` has three access groups:
+//
+//   tag         pinned at field 0 by the punned-slot invariant (test_41)
+//   hot         a..f, touched by `advance`, the six-field loop
+//   warm        g, h, touched by `settle`
+//   cold        i..l, written once at construction and never read
+//
+// The counts come out `g`/`h` highest (settle touches each three times per
+// iteration), then a..f, then the four cold fields. So the FIRST frequency
+// boundary cuts after {tag, g, h} -- which pushes all six of `advance`'s fields
+// into the cold block, behind a pointer, and is far slower than not splitting.
+// The cut that pays is the LAST boundary, {tag, a..f, g, h}, which leaves the
+// four never-read fields cold and every loop touching only hot fields.
+//
+// A rule that cuts at the first boundary picks **2/13**, which the model scores
+// at 413 -- four times worse than not splitting. The model picks **9/13**, at
+// 76. Only the second is a layout anyone would want, and the gap between them is
+// the whole argument for scoring candidates rather than reading the ranking off
+// the counts.
+//
+// This mirrors `aif/corpus/g1_particles.psm`, where the same disagreement is
+// 2/12 against 8/12 and 8/12 is the cut `aif/evidence/bench/layout_repr.c`
+// measures at 0.87x. It is a fixture rather than a corpus program so that the
+// assertion can name exact numbers.
+
+struct Sample {
+    tag: Int,
+    a: Float,
+    b: Float,
+    c: Float,
+    d: Float,
+    e: Float,
+    f: Float,
+    g: Float,
+    h: Float,
+    i: Float,
+    j: Float,
+    k: Float,
+    l: Float
+}
+
+fn make(seed: Float) -> Sample {
+    return Sample {
+        tag: 1,
+        a: seed, b: seed, c: seed,
+        d: 1.0, e: 2.0, f: 3.0,
+        g: 1.0, h: 1.0,
+        i: 0.5, j: 0.5, k: 0.5, l: 0.5
+    }
+}
+
+fn build(count: Int) -> List<Sample> {
+    let mut xs: List<Sample> = list_new()
+    let mut n = 0
+    let mut seed = 0.0
+    while (n < count) {
+        list_push(xs, make(seed))
+        seed = seed + 1.0
+        n = n + 1
+    }
+    return xs
+}
+
+// Six fields, one pass. These must end up hot.
+fn advance(xs: List<Sample>, dt: Float) {
+    let n = list_len(xs)
+    let mut idx = 0
+    while (idx < n) {
+        let s = list_get(xs, idx)
+        s.a = s.a + s.d * dt
+        s.b = s.b + s.e * dt
+        s.c = s.c + s.f * dt
+        idx = idx + 1
+    }
+}
+
+// Two fields, touched more often each than any single field above -- which is
+// what makes the naive first-boundary cut land here and stop.
+fn settle(xs: List<Sample>) {
+    let n = list_len(xs)
+    let mut idx = 0
+    while (idx < n) {
+        let s = list_get(xs, idx)
+        s.g = s.g * 0.5
+        s.g = s.g + 1.0
+        s.h = s.h * 0.5
+        s.h = s.h + s.g
+        idx = idx + 1
+    }
+}
+
+fn main() -> Int {
+    let xs = build(64)
+    let mut frame = 0
+    while (frame < 4) {
+        advance(xs, 0.5)
+        settle(xs)
+        frame = frame + 1
+    }
+    let first = list_get(xs, 0)
+    println(first.tag)
+    return 0
+}

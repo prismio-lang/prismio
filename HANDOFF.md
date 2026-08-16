@@ -412,6 +412,320 @@ choke point for field access, the way `ir_alloc_object` is for allocation.
 
 ---
 
+## Session of 2026-08-16 (second) — call-site placement lands; `region` stops being inert on g2
+
+The previous session measured the repair and stopped at task 4. This one built it. **`region
+frame_arena` on `g2_region.psm` now serves 10 200 000 of 10 201 215 allocations, against 0**, and
+the "serves no allocation" warning that has followed that file for three sessions is silent.
+
+Suite **109/109** (was 108; `test_60_bracket_reset.psm` is the new one), fixpoint warm and cold,
+**cold == warm**, seed still parses `src/`, oracle agrees on **15** sources, and IR is
+byte-identical on every compilable program in `tests/`, `aif/corpus/` and `aif/evidence/` **except
+the three that were supposed to move**.
+
+### 1. There is no new codegen mechanism, and that is the shape of the result
+
+The brief expected the Prismio call to be wrapped in `ir_arena_hint_begin/end`. It is not, and it
+should not be. An arena is on a *dynamic* stack: `region` already emits `arena_push` at entry and
+`arena_pop` at every exit, so while a bracketed callee runs, the caller's arena is the top of that
+stack. The only thing missing was for the **analysis** to say a callee's site belongs to it — after
+which `ir_alloc_region` (Level 3) takes a struct literal there and `ir_arena_hint_begin/end`
+(Level 4) takes a producing runtime call there, both keyed on `aif_arena_at_node`, which is this
+file's one gate.
+
+Bracketing the Prismio call with the hint would have been **worse than unnecessary**: the hint is a
+dynamic depth, so it would have routed *every* runtime allocation in the extent to the arena,
+including the ones the per-site gate declines. Not one line of `src/ir/` changed.
+
+### 2. Obligation 3, and why `E` cannot answer it
+
+`AIF_CON_LIVE_IN` sets `E = Caller` for every site whose `fn` is not the binding function, by
+construction — a scope id in one function does not order against one in another. So every site in
+a bracketed extent has the *same* `E` whether or not it outlives the region, and a test on `E`
+passes both. `tests/test_58`'s `make` and `make_out` are that pair: byte-identical bodies,
+identical tiers, and the placement column is the only place the difference is visible.
+
+The fact wanted is the **caller-side binding**, and the points-to graph already carries it. The
+implementation asks two things of each extent site, both in `bracket_site_bounded`:
+
+* **every key that may hold it** is a binding/parameter/return in a function confined to the
+  region, or a binding in the bracketing caller declared at a scope at or below `r`. A `RET` key of
+  the bracketing caller is `return f(...)` straight past the region — the case `E` cannot see at
+  all.
+* **every owner site** that stores it is in the extent. A `FIELD` key is object-insensitive
+  (INFERENCE 3.1), so `Wrapper.list` says nothing about *which* Wrapper, and *which* is the whole
+  question.
+
+**One thing here was not in the brief and is load-bearing: `region_confined`.** The brief's
+formulation — "every caller binding is in the bracketing caller" — rejects `g2_region` itself.
+`submit(cmds)` takes the list `cull` returned, and the walk binds a parameter to a local of the
+same name, so `cmds` lands in a VAR key belonging to a function in no extent at all. Accepting that
+unconditionally would accept a function that also runs where the region does not. So a function
+joins the confined set when **every** call site of it is inside the region — the same closure
+discipline regime (a) uses one level down.
+
+### 3. The list needed the runtime, and a flag would have been wrong
+
+Lifting `is_list` for a bracketed extent is only 1.8% of g2's allocations (the struct literals are
+98.2%), and it is the half that could corrupt the heap. `list_push` doubles the element block and
+frees the old one long after the site that made it — which is exactly what the `is_list` clause
+says. So `XefyList` now records which arena it came from.
+
+**As a depth, not a flag**, and that distinction is the reason to read this paragraph:
+
+```
+region outer { let l = callee();  region inner { list_push(l, x) } }
+```
+
+with a flag the grown block comes from `inner` and dies at `inner`'s exit with `l` still pointing
+at it. `arena_alloc_at(slot, size)` allocates from a named arena instead of the innermost one.
+This is SPEC 5.2.1.1 resolution **(c) as a supplement to (a)** — which is what "(c) is never
+sufficient alone" means: the bare `DrawCmd` still relies on (a).
+
+### 4. Four mechanisms, each broken on purpose to confirm the check fails
+
+| broken | fixture | reads |
+|---|---|---|
+| obligation 3 (`bracket_site_bounded` → always true) | `test_58` `outlives_serves_nothing` | **50**, expected 0; runner also flags the missing warning |
+| regime (a) (`f_calls != 1` clause deleted) | `test_58` `shared_body_serves_nothing` | **51**, expected 0 |
+| placement teardown, flag left set + state freed | `test_60` | **0**, expected 50 — and `test_58` still 50, which is the "wrong only on profiled sources" signature |
+| placement teardown, flag *and* state left stale | `test_60` | **passes** — see below |
+
+The fourth is a check that **cannot** fail, and `test_60`'s header says so rather than implying
+otherwise. The second engine run analyses the same program, so the site ids are identical and last
+run's answer happens to be this run's. The stale state is still a use-after-free waiting for a
+program where the two runs disagree; what makes it safe today is that the teardown is complete, not
+that it is tested.
+
+### 5. The `--verify` comparison was vacuous the first time, and the fix changes the reading
+
+The ledger line is `N allocated, N released, N leaked, N violation(s)` — **the count comes before
+the word.** A comparison script written as `released\s+(\d+)` matched nothing on all 45 programs
+and reported every one of them "identical". That is the previous session's `allocated`/`leaked`
+lesson arriving through a different door: the column was not noisy, it was never read.
+
+With the regex fixed, the correct reading is **not** "identical", and the difference is the result
+rather than a regression:
+
+| `g2_region.psm`, `--verify` | before | after |
+|---|---:|---:|
+| allocated | 10 301 045 | 81 065 |
+| released | 10 201 025 | **1 025** |
+| violation(s) | 0 | **0** |
+
+`released` fell by exactly **10 200 000** — the number the arena serves. `ir_alloc_region` and
+`arena_alloc` deliberately bypass verify accounting (an arena releases in bulk and the ledger has
+nothing to pair a release with), so an arena-served allocation is counted neither as allocated nor
+as released. **`violation(s)` is the column that had to stay 0, and it is 0 on every program.** The
+`aif-verify: FAILED` verdict on the g2 family is leak-driven and pre-existing — the t3-built
+baseline prints it too.
+
+### 6. Timing — re-measured after the merge, and the flat line is still the stronger half
+
+The number taken during this session was contended: a second agent was benchmarking on the host,
+which is the exact condition RESULTS §6 says invalidates a timing number. It read 174.3 → 45.8 ms
+(0.263×) over 7 and 5 interleaved pairs, and was **directionally right and quantitatively wrong**.
+Re-measured on a quiet host against the merged compiler, 20 interleaved pairs with a warm pair
+discarded — this is the number to quote:
+
+| `g2_region.psm` whole-program, median of 20 | ms | ratio |
+|---|---:|---:|
+| before placement (`build/t3`) | 194.4 | 1.000 |
+| after placement (`build/mg3`) | **64.6** | **0.332** |
+
+**3.01× faster, distributions disjoint** — the slowest post run (66.2 ms) beats the fastest pre run
+(188.1 ms), so the result does not turn on the choice of statistic. Checksums identical on every
+run; `arena_objects` printed alongside, so a run that served nothing cannot pass as a fast one.
+
+The other half of the brief's prediction needs no timing: g1, g3, g4, g5, g6 and g6_engine are
+**byte-identical IR**, so nothing about them can have changed. That is a stronger flat line than
+any benchmark.
+
+### 7. What did not move, which is most of the point
+
+`PLACEABLE` in the census went 2 → **0**, and that is the success condition rather than a
+regression: a site that was placed is *served*, so it leaves the blocked column and the placeable
+one with it. The census now prints `BRACKETED` and `br_served` beside it, cross-checks the count
+against the manifest's required record on a second surface, and exits non-zero if they disagree.
+
+Every corpus program without a `region` is byte-identical — g1, g3, g4, g5, g6 and g6_engine did
+not move by one instruction, which is stronger than a flat timing line. `src/main.psm` moved
+because its *source* moved: the only new symbol is the manifest's bracket-recording function, and
+a normalised body-by-body diff shows the four functions that were edited and no others. No
+placement decision in the compiler itself changed.
+
+### 8. Known gap, recorded rather than papered over
+
+`peak-bytes` and the `region name pin(N)` gate now include bracketed sites, but their weight is a
+product of two *intra*-procedural loop-depth estimates — `weight_of` cannot span two functions
+because `loop_depth` is counted within one. `g2_region.psm` reports 6144 bytes where the arena
+really holds ~12 KB per frame. Right order, known bias, and it was **0** before, which was flatly
+wrong. A fixed-budget target should read it as an estimate with a stated direction.
+## Session of 2026-08-16 (layout) — the cost model lands, and it could not have ranked the cut it exists for
+
+> **Scope note for whoever merges this.** This section covers the **layout** task (NEXT-SESSION
+> prompt 2) only. It ran in parallel with the arena call-site-bracketing task (prompt 1) in a
+> separate tree; nothing here touches arena placement, and the two sessions' notes are independent.
+>
+> **Files both sessions plausibly touch**, with what the layout side did to each:
+> `runtime/aif_support.c` — added LAYOUT §5's cost model and a traversal table *after*
+> `aif_layout_select`, plus one call into it from `aif_field_access` and two teardown calls in
+> `aif_reset`; no arena predicate, no gate clause, and nothing in `site_arena_scope` or
+> `arena_would_serve`. `src/aif/walk.psm` — bracketed the three loop forms with
+> `aif_traversal_begin/end` and added a `list_get` element note in `VARIABLE_DECL`; no constraint or
+> site change. `src/aif/model.psm` — appended eleven `extern fn` declarations. `src/aif/report.psm`
+> — added `aifEmitLayout` and one branch in `aifAnalyzeProfiled`. `src/main.psm` — added the
+> `--layout` flag and threaded one `Bool` through `aifCommand`. `tests/test_runner.py` — appended
+> `run_layout_cost_model_test` and one registration. **`runtime/lang_runtime.c`,
+> `runtime/aif_support.c`'s arena section, `aif/prototype/aif.py` and `tools/aif_differential.py`
+> were not modified by this session at all.**
+>
+> **Test numbering:** this session's fixture is `tests/test_61_layout_cost_model.psm`. It was
+> renumbered from 60 because the arena session independently took 60.
+
+**Landed and verified: items 2 and 4** (LAYOUT §5's cost model; the benchmark harness's allocation
+accounting). **Item 1, the hot/cold split, was deliberately not started** — §4 says why, and the
+brief's own instruction is the reason: *do the release half or don't start*. **Item 3 (LAYOUT §8)
+stays blocked**, now on one thing instead of two. Suite **110/110** (was 108; +1 fixture, +1 runner
+check), fixpoint warm and cold, **cold == warm**, oracle agrees on **15** sources, cold start from
+the committed seed works, and IR is **byte-identical on all 89** compilable programs in `tests/`,
+`aif/corpus/` and `aif/evidence/` — the cost model is reported and changes no codegen, by design.
+
+### 1. The premise reproduces, and the headline number was worth re-running
+
+`layout_repr.c` re-run on this host: **B/A = 0.87×**, exactly as claimed. Worth noting because
+RESULTS-layout's own table reads 0.92× from a different run and the prose reads 0.87× — the prose is
+right and the table is one noisy run. The rest of the table reproduces within a point.
+
+### 2. Restricted to what codegen can emit, the model picks the measured cut
+
+This is the result the port exists to produce.
+
+`aif/prototype/layout.py` on `g1_particles.psm` ranks **SoA** and returns 5.37×. SoA needs handles,
+which do not exist, so a compiler ranking it would select a layout it cannot emit — the failure the
+search already forbids itself one function up. Restricted to AoS × the split cuts, the same model on
+the same program returns **`AoS+split(8/12)`**, which is exactly `layout_repr.c` variant B, the cut
+measured at **0.87×**.
+
+**And the cheap rule is wrong, which is why this is a cost model and not a comparison.** Cutting at
+the first frequency boundary — available with no cost model at all — picks **2/12** on the same
+program, pushing five of `integrate`'s six fields behind the cold pointer.
+`tests/test_61_layout_cost_model.psm` is built to discriminate exactly that: first boundary 2/13
+scoring 413, model picks 9/13 at 76.
+
+### 3. A linked split is not an indexed split, and the prototype cannot tell them apart
+
+The finding, and it is a specification defect rather than a porting detail. **LAYOUT §5.2.1 is new
+and normative.**
+
+`layout.py` prices a cold touch as `size(hot) + size(cold)` bytes scanned. That is right for an
+*indexed* split — cold[i] at a computed offset in a parallel block. This implementation's split is
+**linked**: the hot record points at a separately malloc'd cold block, which is precisely why
+hot/cold needs no handles. A cold touch is therefore a **dependent miss**, not a longer scan, and the
+hot record additionally pays 8 bytes for the link.
+
+Ported faithfully, that flips the answer on the one program the port exists for — the compiler scored
+**2/12 at 73 against 8/12 at 75**. Priced as a linked split: **75 against 300**, and 8/12 wins by a
+margin the model can carry.
+
+**The prototype is not safe here either — it is lucky.** Its own top two candidates on g1 score
+**1188M and 1180M**, 0.7% apart, and it prefers the good one by that margin. Add the link word this
+implementation actually pays and the order inverts. *A model that separates its best two candidates
+by less than its calibration error is not selecting a layout*; §7.2's `argmin` inherits whatever
+falls out of it. That is the general lesson and it is worth more than the cut.
+
+Verified discriminating: with the prototype's pricing restored, `test_61` fails on both assertions
+(chooses 3/13, and scores 2/13 at 88 — better than not splitting).
+
+### 4. Why the hot/cold split was not started, which is a scope decision and not a discovery
+
+The brief says *do the release half or don't start*, and this session did not start. That is the
+whole of it; nothing is half-landed, and the split's IR is byte-identical to the baseline everywhere
+because no codegen moved.
+
+The reason is the size of the *verification*, not of the transform. The transform is contained —
+`ir_struct_field_ptr` is the single choke point for field access and all five allocator hooks are
+backend functions, so the redirection is ~200 lines of C. What follows it is not contained:
+
+- `ASTNode` splits. The probe run this session says 13 of 16 types in `src/` have an admissible cut,
+  `ASTNode` (15 fields, 88 bytes) among them with 13 of them. So the first generation that emits
+  splits is a compiler whose own AST is split, and every `node_to_ptr`/`ptr_to_node` pun and the
+  punned-slot invariant ride on it. Field 0 stays hot, so it *should* hold — but "should" here is a
+  seed refresh, a cold start, and a self-host away from being known.
+- **T3 is where it cracks, and the shape of the fix is now specific.** `rc_release` frees one block
+  and cannot name the type. The fix is the one `cyc_set_type` already uses: tell the object at
+  construction. `RC_HDR` is 16 bytes with 8 in use, so the **cold-block offset fits in the spare
+  word** — no function pointer and no extra call, and `rc_release` frees the cold pointer at that
+  offset before the base. `cyc_alloc` already carries a per-type release; `list_release` already has
+  the element type. The type-blind frees that remain are codegen sites, where the type *is* known.
+- Which makes the release half one clause: **force `aif_type_releases(T)` true for any split `T`**,
+  so every drop routes through the generated `__aif_release_T` and the type-blind `ir_free_object`
+  never sees a split object. That is the "generated release even when the type owns no fields" the
+  brief names, arrived at from the other direction.
+
+None of that is speculative and none of it is built. It is written down so the next session starts
+from a design rather than from the row in LAYOUT §6.
+
+### 5. The `allocs` column was measuring the report, and now measures the workload
+
+`aif/evidence/xlang/bench.py` timed the frame loop and counted allocations for the whole process.
+Once commit `901b494` moved the corpus's reporting loops onto the allocating `println` overload, g1
+read **26,261** where the workload allocated **2,215** — ~4 allocations per print over 6,002 prints,
+with the timing untouched.
+
+Fixed in `allocount.c` by bracketing the window on the clock **every one of these programs already
+reads per frame** — Prismio via its `extern fn`, Rust via `harness::now_ns`, Swift via `nowNs`, all
+of them `clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)`. No program in any of the three languages
+changed. The window spans startup, setup and the loop and excludes the dump.
+
+**Setup is deliberately inside the window.** It is where a boxed representation costs — g1 is 2,215
+against Rust's 206, and almost all of Prismio's is `build_system`'s 2,000 individually malloc'd
+particles. A loop-only window reads ~0 on both sides and erases the one difference the column exists
+to show.
+
+Two independent checks that the window is where it is claimed: it reproduces the pre-`901b494`
+number (2,214) and it reproduces g2's separately documented **10,201,215** allocations. `clock_calls`
+is emitted so the harness can assert the bracket — these programs read the clock twice per frame, so
+anything outside `[2·frames, 2·frames+64]` exits loudly. Verified failing on a wrong frame count and
+on a stale dylib.
+
+**And the bias was one-sided, which is the part worth carrying.** Measured over the whole corpus, the
+inflation is **Prismio-only**: g1 11.8×, g5 9.8×, g3 8.3×, g4 6.2× — while every Rust and Swift port
+reads **1.0×**, because their `println` does not allocate and Prismio's allocates ~4 times per call.
+A harness that exists to compare languages was overstating one of them by an order of magnitude on
+four of seven programs.
+
+Concretely: g1's real counts are **2,215 for Prismio against 2,206 for `g1_rust_boxed`** — the same
+number, which is correct, because both box every particle. The old column read 26,226 against 2,209.
+It survived this long because g2 and g6 read 1.0× (their 10.2 M and 15.1 M workload allocations dwarf
+the dump), and those are the two programs the arena and capacity work has been aimed at. Full table
+in [RESULTS-layout.md §6](aif/evidence/RESULTS-layout.md).
+
+### 6. Two things that cost time and should not cost it twice
+
+- **`aif_reset` again.** The traversal table is accumulated per loop id, and a declared `workload`
+  runs the engine twice in one process. Left un-torn-down it does not merely double the counts — the
+  second run's loops get fresh ids, so they arrive as **extra traversals** and every candidate's cost
+  scales with the run count. Same defect class as the call graph in the session above, found by
+  asking the question that session's notes told me to ask. `test_61`'s workload assertion covers it;
+  verified reading 6 instead of 3 with the reset removed.
+- **Do not run the suite while editing `runtime/*.c`.** `prismio build` compiles the runtime fresh
+  into every program, so a suite run that straddles an edit compiles different fixtures against
+  different runtimes. That produced a phantom `no_inference` failure on three basic fixtures —
+  release and `--debug` builds of the same program straddling the swap. Nothing was wrong; the run
+  was. Re-run clean it is 110/110.
+
+### Next, ranked
+
+1. **The hot/cold split.** Unchanged as the largest item not blocked on anything, and now with the
+   cut chosen rather than guessed and the release path designed (§4).
+2. **LAYOUT §8's empirical validation.** Now blocked on exactly one thing: a way to *force* a
+   candidate layout, so the modelled ranking can be checked against measured runs. That is part of
+   item 1, so §8 follows it and nothing else.
+3. **Handles.** Still 0.35× on g1's shape and still the largest number in this document.
+
+---
+
 ## Session of 2026-08-16 — the repair is measured before it is built, and it is worth building
 
 Three sessions designed an arena fix from the source and each was refuted. This one **ran the tools

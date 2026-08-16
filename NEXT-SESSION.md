@@ -1,135 +1,286 @@
 # Prompts for the next sessions
 
-**Prompt 1 has been run.** Tasks 1-3 landed and were verified on 2026-08-16; **task 4 did not
-land, deliberately** -- see HANDOFF "Session of 2026-08-16" §5 for why and for the two pieces it
-needs, which are worked out and must not be re-derived. Prompt 1 below has been rewritten down to
-that residue. Prompt 2 is unchanged and was never blocked on prompt 1.
+**Both prompts have been run, in parallel, in separate trees, and merged.** Prompt 1 (arena
+call-site placement) landed in full: `region` is no longer inert on `g2_region.psm`, which serves
+**10 200 000 of 10 201 215** allocations against 0, measured at **0.332×** whole-program. Prompt 2
+(layout) landed items 2 and 4 and **deliberately did not start item 1, the hot/cold split** — the
+prize, and now the single largest piece of unbuilt work in the tree.
+
+**Read the merged-state warning in "The last-good generation" at the foot of this file before you
+quote any number.** The two sessions verified against half a tree each; only `build/mg3` has seen
+both changes, and the per-session generations they name (`build/v4`, `build/M4`) do not exist here.
+
+Everything left from both prompts is consolidated into the single prompt below. The two residual
+prompts further down are kept because they carry worked-out designs that **must not be re-derived**
+— but their "state inherited" paragraphs are pre-merge and are superseded by this one.
 
 ---
 
-# Prompt 1 (residual) -- call-site arena placement, the placement itself
+# The prompt for the next session
 
 Copy the block below.
 
 ---
 
-Continue the Prismio work. Read, and do not re-derive: `HANDOFF.md` from "Session of 2026-08-16"
-(especially §5), `aif/evidence/RESULTS-arena.md` §7 item 1 and §8, and SPEC 5.2.1 and **5.2.1.1**.
+Continue the Prismio work. Read, and do not re-derive: `HANDOFF.md` from "Session of 2026-08-16
+(second)" and "Session of 2026-08-16 (layout)", `aif/evidence/RESULTS-arena.md` §9,
+`aif/evidence/RESULTS-layout.md` §2 and §5, **SPEC 5.2.1.1** and **LAYOUT §5.2.1**. The two residual
+prompts in `NEXT-SESSION.md` carry the designs for tasks 1 and 2 below in full.
 
-**Run the tools before reading source**, and against a *current* compiler -- the 2026-08-16 session
-opened by running the census against a stale `build/gen6` and got 13 of 156 sites with every
-blocker column zero, which is what a compiler predating the `--why` placement section reports. The
-last-good generation is recorded at the end of this file; the census's own default (`build/gen2`)
-is stale and `aif_differential.py`'s (`build/aif2.exe`) does not exist.
+**Run the tools before reading source, and against `build/mg3`** — not `build/v4`, not `build/M4`,
+neither of which exists, and not either tool's own default, which are stale (`build/gen2`) or absent
+(`build/aif2.exe`). Two sessions have now opened against a stale binary and misread the result.
 
 ```bash
-python3 aif/evidence/arena_census.py --compiler build/<gen>   # whole corpus, ~1.5 s, two tables
-build/<gen> aif <file> --why=<symbol>                         # one site, every blocker + verdict
-build/<gen> aif <file> --summary                              # the per-function counts
+python3 aif/evidence/arena_census.py --compiler build/mg3      # whole corpus, two tables
+build/mg3 aif <file> --why=<symbol>                            # one site, every blocker + verdict
+build/mg3 aif <file> --layout                                  # ranked layout candidates per type
+python3 tools/ir_snapshot.py --compiler build/mg3 --out /tmp/ir # all three program trees
 ```
 
-**State inherited, all verified.** Suite 108/108, fixpoint warm and cold, cold == warm, oracle
-agrees on 15 sources, seed still parses `src/`, IR byte-identical on all 84 compilable programs in
-`tests/`, `aif/corpus/` and `aif/evidence/`. The summary (obligations 1, 2, 4 as a fixpoint over
-the call graph), the per-site `--why` verdict, the census's second table and the disposition clause
-in `elem_disposition_of` are all in and all inert -- no placement decision changed.
+**State inherited, all verified on the merged tree — this supersedes both residual prompts.** Suite
+**111/111**; warm fixpoint `mg2 == mg3`; cold fixpoint `mcold1 == mcold2`; **cold == warm**
+byte-identical on all **87** compilable programs; cold start from the committed seed works and the
+seed still parses `src/`; oracle agrees on **15** sources; `--verify` `released`/`violation(s)`
+identical to the pre-merge baseline on every corpus program except `g2_region` (which falls by
+exactly 10 200 000, because `arena_alloc` bypasses the ledger by design), with **0** violations
+everywhere. Census: 40 of 234 sites arena-served, 2 by a bracketed call, **PLACEABLE 0**.
 
-**The measurement, already done -- do not re-measure before starting.** 70 of the 196 blocked sites
-are in a function that clears every obligation; **2** of those are also called from inside a
-region, and both are `g2_region.psm`'s `cull` and `submit`. Every corpus program without a `region`
-contributes 0. `cull` is where the 10.02 M allocations are, and `--why` on its `DrawCmd` site
-already reports `yes -- every obligation holds ... 1 of 1 call sites lie inside a region`.
+## The tasks, ranked
 
-**The regime is settled and normative.** SPEC 5.2.1.1 chose (a) -- bracket only a callee with
-exactly one call site. Do not reopen it; if the measurement later says (b) is worth it, that is a
-new section, not an edit to this one.
+1. **The hot/cold split — the prize, and the reason this session exists.** Measured **0.87×** on g1's
+   shape, and the cost model independently selects exactly that cut (`split 8/12`). *Do the release
+   half or don't start* — the failure mode is a leak on the good path and a double free on the bad
+   one. The residual prompt "Prompt 2 (residual)" below has the four worked-out pieces: the transform
+   is contained at `ir_struct_field_ptr`, the release half is one clause (force `aif_type_releases(T)`
+   for split `T`), T3's fix has room already in `RC_HDR`'s spare word, and field 0 stays hot.
+   **Expect the self-host to be the hard part**: 13 of 16 types in `src/` have an admissible cut,
+   `ASTNode` among them, so the first splitting generation is a compiler whose own AST is split.
+   Budget a seed refresh and a cold start, and keep `build/mg3` and `build/mcold2` untouched — a
+   broken compiler can be unable to build the fix to its own bug.
 
-## The one task
+2. **`pin(<region-name>)`.** Deferred until placement landed, and it has. Regime (a) means **a second
+   call to a bracketed callee silently removes the placement** — the manifest already records every
+   bracket for exactly that reason; turn that record into an assertion a build can fail on. Small
+   next to task 1, and it is the one that makes the placement safe to depend on.
 
-**Call-site bracketing.** `ir_arena_hint_begin/end` already exists and already routes
-runtime-internal allocation to the arena; `ir_alloc_region` already exists for a struct literal.
-The new part is bracketing a *Prismio* call and making the callee's allocations reach the caller's
-arena. Three things are worked out and must not be re-derived -- HANDOFF §5 and RESULTS-arena §7
-item 1 state each with its reasoning:
+3. **The footprint estimate for bracketed sites.** `peak-bytes` and the `pin(N)` gate now count
+   bracketed sites, but the weight is a product of two *intra*-procedural loop-depth estimates:
+   `g2_region.psm` reports 6 144 bytes where the arena holds ~12 KB per frame. Right order, known
+   bias, and it was 0 before, which was flatly wrong. A cross-function trip-count estimator is the
+   real fix.
 
-1. **Obligation 3 is not readable from `E`.** `AIF_CON_LIVE_IN` sets `E = Caller` for any site
-   whose `fn` is not the binding function, by construction. Recover the **caller-side binding
-   scope** by walking `cons[]` for `AIF_CON_LIVE_IN` after the solve and recording
-   `(site, k->c, k->b)` where `sites[s].fn != k->c`. Obligation 3 is then: every caller binding is
-   in the bracketing caller, at a scope at or below `r`.
-2. **Bracket only into `region`-pinned arenas.** Cost-model-chosen ones are circular:
-   `enclosing_region` reads `scopes[].arena`, which `aif_place_arenas` sets from
-   `arena_would_serve`, which would have to count bracketed sites as benefit. A `region` sets the
-   flag before placement runs. This also leaves `arena_would_serve` -- the one clause-list copy
-   deliberately *not* behind `site_arena_scope` -- correct without change.
-3. **A bracketed site keeps its derived tier.** The manifest will read `T2  region:<name>`.
-   Promoting it to T1 moves the tier distribution, and the oracle does not model placement, so the
-   differential would fail on a difference that is not an inference difference.
+4. **The corpus re-measurement that was never run.** `bench.py --runs 20` has not been run since the
+   harness's allocation accounting was fixed. Do it once task 1 lands, so the number covers the
+   change with a measured prize attached. Interleaved, not back to back (RESULTS-arena §6).
 
-A site in a bracketed extent must also stop being rejected by `in_container` and `is_list`: under
-the bracket the container and its element block are in the same arena and die with it. The
-disposition half for that is already in `elem_disposition_of` and is the single clause every
-consumer reads -- do not add a second copy.
-
-**Acceptance.** `g2_region.psm` must serve a large fraction of 10 201 215 and the "serves no
-allocation" warning must stop firing. Add a fixture that asserts the served count **at run time**,
-the way `test_58` does -- `arena_objects()` is the only thing that can tell an arena pointer from a
-malloc'd one, and `ir_alloc_region` deliberately bypasses `--verify`'s accounting so the ledger
-cannot see it. `test_58_region_serves.psm` says in its own header that `serves_nothing` is the test
-that changes when this lands, and that it should change deliberately with the comment rewritten.
-
-**Then measure.** Four of six corpus programs allocate nothing per frame, so g1, g3, g4 and g5
-should move by ~0 -- and so should g6, which has no `region`: only `g2_region.psm` has region call
-sites reaching a bracketable callee, so it is the only program that can move at all. A large win
-there and a flat line everywhere else is the correct outcome. Interleaved runs, not back to back
-(RESULTS-arena §6). Update RESULTS-arena.md's §8 census.
-
-## Verify, in this order, and do not skip the last three
+## Verify, in this order
 
 * Two generations before judging. A `.psm` change takes effect in the generation after next; a
-  change to `runtime/*.c` is compiled fresh into every generation and takes effect immediately.
-* Fixpoint warm and cold, cold == warm, full suite (108/108).
-* IR for every program in `tests/`, `aif/corpus/` **and** `aif/evidence/` -- the last is not covered
-  by the usual check. This task is the first that *should* move IR, so the delta must be
-  characterised line by line rather than merely observed.
-* `--verify` on every corpus program. Compare **`released` and `violation(s)` only**:
-  `allocated` and `leaked` are run-to-run noise on the timing programs (~1500 allocations between
-  two runs of one binary), which cost the last session a false alarm on seven programs.
-* `test_58_region_serves.psm` must still report exactly 50 and exactly 0 unless you are changing it
-  on purpose, in which case rewrite its header.
-* The same change in `aif/prototype/aif.py` **if and only if** the analysis changes. Placement
-  alone does not: the oracle does not model arenas, and `region-calls` is already a recorded
-  divergence. If you move a tier, the oracle must move with it.
-* Seed refresh + cold start if the FFI surface moves at all.
+  `runtime/*.c` change is compiled fresh into every generation. **Do not run the suite while editing
+  `runtime/*.c`** — `prismio build` compiles the runtime into every program, and a run that straddles
+  an edit produces phantom failures.
+* Fixpoint warm and cold, cold == warm, full suite (**111/111**).
+* IR for every program in `tests/`, `aif/corpus/` **and** `aif/evidence/` — `tools/ir_snapshot.py`
+  walks all three in one command. Task 1 *should* move IR, so characterise the delta line by line.
+* `--verify` on every corpus program, comparing **`released` and `violation(s)` only**. A split
+  object is two allocations, so this is the check that catches a leaked cold block — and `allocated`
+  will move legitimately, which is why it is not compared.
+* Seed refresh + cold start if the FFI surface moves at all. For task 1 assume it does.
+* `test_61_layout_cost_model.psm` asserts the manifest still reports AoS. **That assertion is the one
+  task 1 deliberately changes** — rewrite it and its header when the split lands, the way
+  `test_58_region_serves.psm` was rewritten when placement landed.
 
 ## Carry forward
 
-* Read the whole gate, not the clause that explained last time. `--why` and `arena_census.py` exist
-  so the fifth session cannot repeat it; use them, and against a current binary.
-* **A check that cannot fail is the defect this project produces most.** Last session added four
-  mechanisms and broke each one on purpose to confirm the check failed -- the oracle's obligation 2
-  (`br-param: compiler=1 oracle=0`), the closure fixpoint (`br-drop` 3 → 2), the census's verdict
-  guard (exit 1 on a compiler without the section), and the `aif_reset` teardown (`sole-regime` 0
-  on a workload source). Do the same for anything you add.
-* **A fixture must be built to discriminate**, and check that it does. `test_59`'s obligation-4 case
-  had `main` calling `drops` directly at first and discriminated *nothing*, because a one-step walk
-  finds a direct callee. `middle` between them is the minimum that fails.
+* **Read the whole gate, not the clause that explained last time.** `--why`, `--layout` and
+  `arena_census.py` exist so the seventh session cannot repeat it; use them, against a current binary.
+* **A check that cannot fail is the defect this project produces most**, and it has now happened in
+  the *measuring* code as well as the compiler: the `--verify` ledger prints `N released`, a
+  comparison script asked for `released N`, and it reported all 45 programs "identical" while
+  matching nothing on any of them. Assert that your instrument matched something.
+* **A fixture must be built to discriminate, and where it cannot, say so.** `test_60` catches one of
+  the two ways to get the placement teardown wrong and passes on the other; its header states which.
+* **A timing number taken on a contended host is worth re-taking, not discarding.** The placement win
+  first read 0.263× while another job ran, and 0.332× on a quiet host over 20 interleaved pairs —
+  directionally right, quantitatively wrong, which is the usual shape.
+* **A generated file merges cleanly and is still wrong.** `runtime/embedded_sources.h` took a clean
+  three-way merge whose output did not match what `generate_embedded_sources.py` produces from the
+  merged sources. Regenerate generated files; never merge them.
 * Price the experiment before building the feature.
 * An annotation that does nothing is worse than no annotation.
 
 ## Not this session
 
-Layout (prompt 2), incrementality, generics, concurrency. `pin(<region-name>)` becomes worth
-building the day this lands -- so the session after this one, not this one.
+Incrementality, generics, concurrency. Bit-packing — LAYOUT §2.1 and §3.2's W4 still contradict each
+other and that is a specification question, not an implementation one. SPEC 5.2.1.1 regime (b)
+(specialisation) is ranked behind all four above; `br-shared` is the dominant blocker (102 of the
+function-level counts) and is the only one that is a restriction rather than a soundness obligation,
+so it is the next real feature after these — measure `br_shared` against "called from a region at
+all" before building it.
+
+---
+
+# Prompt 1 is done — what it unblocked
+
+## What landed, so it is not re-derived
+
+* **Call-site placement (SPEC 5.2.1.1, regime (a)).** A call inside a `region` is bracketed when its
+  callee clears the obligations and has exactly one call site; every allocation in the extent is
+  then served by the caller's arena. `aif_support.c`'s `bracket_place` decides it,
+  `site_arena_scope_full` applies it, and **no codegen changed** — the arena is on a dynamic stack,
+  so `region`'s existing `arena_push`/`arena_pop` is the bracket and the two existing hooks
+  (`ir_alloc_region`, `ir_arena_hint_begin/end`) route each site.
+* **Obligation 3 comes from the points-to graph, never from `E`.** Every site in an extent has
+  `E = Caller` by construction, so `E` cannot separate the sound case from the unsound one.
+* **`region_confined`** — the piece the previous session's write-up did not have. A function joins
+  when *every* call site of it is inside the region; without it `submit(cmds)` rejects
+  `g2_region.psm` itself, because the walk binds a parameter to a local of the same name.
+* **A list records which arena it came from, as a depth.** Needed for `is_list`; a flag is wrong
+  under a nested `region`. SPEC 5.2.1.1 (c) supplementing (a).
+
+## Next, ranked
+
+1. **`pin(<region-name>)`.** This is the one the previous session deferred until placement landed,
+   and it has landed. A `region` that serves something is now worth pinning: the failure mode it
+   guards is real, because regime (a) means **a second call to a bracketed callee silently removes
+   the placement**. The manifest records every bracket for exactly that reason — turn that record
+   into an assertion a build can fail on.
+2. **SPEC 5.2.1.1 regime (b), specialisation.** `br-shared` is the dominant blocker in every corpus
+   program (102 of the function-level counts), and it is the only one that is a *restriction* rather
+   than a soundness obligation. Measure before building: the census's `br_shared` column is the
+   population, and the question is how many of those functions are called from a region at all.
+3. **The footprint estimate for bracketed sites.** `peak-bytes` and the `pin(N)` gate now count
+   them, but the weight is a product of two intra-procedural loop-depth estimates —
+   `g2_region.psm` reports 6144 bytes where the arena holds ~12 KB per frame. Right order, known
+   bias, and it was 0 before. A cross-function trip-count estimator is the real fix.
+
+## Carry forward
+
+* Read the whole gate, not the clause that explained last time. `--why` and `arena_census.py` exist
+  so the sixth session cannot repeat it; use them, and against a current binary.
+* **A check that cannot fail is the defect this project produces most**, and it happened again this
+  session in the *measuring* code rather than the compiler: the `--verify` ledger prints
+  `N released`, a comparison script asked for `released N`, and it reported all 45 programs
+  "identical" while matching nothing on any of them. Both halves of the lesson apply — assert that
+  your instrument matched something, and re-read the output format rather than the previous script.
+* **A fixture must be built to discriminate, and where it cannot, say so.** `test_60` catches one of
+  the two ways to get the placement teardown wrong and passes on the other; its header states which
+  and why, instead of implying it covers both.
+* Price the experiment before building the feature.
+* An annotation that does nothing is worse than no annotation.
+
+## Not this session
+
+Layout (prompt 2), incrementality, generics, concurrency.
 
 ---
 
 # Prompt 2 — layout
 
-Runs after prompt 1, or before it if you would rather have the measured 0.87x first. Not blocked on
-prompt 1.
+**Prompt 2 has been run (2026-08-16, layout session).** Items 2 and 4 landed and were verified;
+**item 1, the hot/cold split, did not land and was deliberately not started** — see HANDOFF "Session
+of 2026-08-16 (layout)" §4 for why, and for the release-path design it worked out, which must not be
+re-derived. Item 3 stays blocked, now on one thing instead of two. The residual prompt is below,
+rewritten down to what is left; the original follows it unchanged for reference.
+
+---
+
+# Prompt 2 (residual) — the hot/cold split, and only that
 
 Copy the block below.
+
+---
+
+Continue the Prismio work. Read, and do not re-derive: `HANDOFF.md` from "Session of 2026-08-16
+(layout)" (especially §3 and §4), `aif/evidence/RESULTS-layout.md` §2 and §5, and **LAYOUT §5.2.1**,
+which is new and normative.
+
+**Run the tool before reading source.** `prismio aif <file> --layout` prints LAYOUT §7.2's ranked
+candidate set for every type in the program — the cut, the hot/cold byte split, and the modelled
+cost against not splitting. The cost model is in and is *reported only*; nothing emits a split.
+
+```bash
+build/<gen> aif aif/corpus/g1_particles.psm --layout
+python3 aif/evidence/xlang/bench.py --compiler build/<gen> --runs 20
+clang -O2 aif/evidence/bench/layout_repr.c -o build/layout_repr && ./build/layout_repr
+```
+
+> **Superseded — do not quote these numbers.** This paragraph records the *layout tree before the
+> merge* (suite 110/110, 89 programs, 46 ledgers, `build/M4`). The merged tree reads 111/111 over 87
+> programs against `build/mg3`; see "The prompt for the next session" at the top of this file. The
+> technical content below it is current; only the state line is not.
+
+**State inherited, all verified.** Suite 110/110, fixpoint warm and cold, cold == warm, oracle agrees
+on 15 sources, cold start from the committed seed works, seed still parses `src/`, IR byte-identical
+on all 89 compilable programs, `--verify` identical on `released`/`violations` across all 46 programs
+with a ledger.
+
+**The measurement and the cut, already done — do not re-derive.** `layout_repr.c` variant B measures
+**0.87×** on g1's shape. The cost model, restricted to what codegen can emit, independently selects
+**exactly that cut** (`split 8/12`, hot 72 B / cold 32 B). The naive "cut at the first frequency
+boundary" rule selects 2/12 and is badly wrong; `tests/test_61_layout_cost_model.psm` asserts the
+difference and is verified discriminating.
+
+## The one task
+
+**Emit the split, with its release path.** *Do the release half or don't start* — the failure mode is
+a leak on the good path and a double free on the bad one. Four things are worked out in HANDOFF §4
+and must not be re-derived:
+
+1. **The transform is contained.** `ir_struct_field_ptr` is the single choke point for field access
+   and all five allocator hooks are backend functions, so redirection and dual allocation are ~200
+   lines of C in `runtime/llvm-api-backend.c`. The five `.psm` call sites need no change.
+2. **The release half is one clause.** Force `aif_type_releases(T)` true for any split `T`. Every
+   drop then routes through the generated `__aif_release_T`, and the type-blind `ir_free_object`
+   never sees a split object. That is the "generated release even when the type owns no fields"
+   the original brief names.
+3. **T3 is where it cracks, and the fix has room already.** `rc_release` frees one block and cannot
+   name the type. `RC_HDR` is 16 bytes with 8 in use — put the **cold-block offset** in the spare
+   word at `rc_alloc`, and `rc_release` frees the cold pointer before the base. No function pointer,
+   no extra call. `cyc_alloc` already carries a per-type release and `list_release` already has the
+   element type, so those two need nothing.
+4. **Field 0 stays hot, and the split must not read AIF.** The punned-slot invariant (`test_41`) is
+   about the first byte of the object; `aif_layout_select` already runs before the solve so that a
+   layout cannot differ between `--debug` and release (SPEC 7.2, `test_49`'s note).
+
+**Expect the self-host to be the hard part.** 13 of 16 types in `src/` have an admissible cut,
+`ASTNode` among them. The first generation that emits splits is a compiler whose own AST is split.
+Budget a seed refresh and a cold start, and keep `build/` known-good generations — a broken compiler
+can be unable to build the fix to its own bug.
+
+**Then measure.** `bench.py --runs 20`, interleaved (RESULTS-arena §6). g1 is the program with the
+measured prize; the others should move little. Update RESULTS-layout §2.
+
+## Verify, in this order
+
+* Two generations before judging. A `.psm` change takes effect in the generation after next; a
+  `runtime/*.c` change is compiled fresh into every generation. **Do not run the suite while editing
+  `runtime/*.c`** — `prismio build` compiles the runtime into every program, and a run that straddles
+  an edit produces phantom failures (HANDOFF §6).
+* Fixpoint warm and cold, cold == warm, full suite (**111/111** on the merged tree; this line read
+  110/110 pre-merge).
+* IR for every program in `tests/`, `aif/corpus/` **and** `aif/evidence/`. This task *should* move
+  IR, so characterise the delta rather than observing it.
+* `--verify` on every corpus program, comparing **`released` and `violation(s)` only**. A split
+  object is two allocations, so this is the check that catches a leaked cold block — and `allocated`
+  will move legitimately, which is why it is not compared.
+* Seed refresh + cold start if the FFI surface moves at all.
+* `test_61_layout_cost_model.psm` asserts the manifest still reports AoS. **That assertion is the one
+  you are deliberately changing** — rewrite it and its header when the split lands, the way
+  `test_58_region_serves.psm` is written to be changed on purpose.
+
+## Not this session
+
+Incrementality, generics, concurrency. Bit-packing — LAYOUT §2.1 and §3.2's W4 still contradict each
+other and that is a specification question. Handles, unless you are choosing them over this.
+
+---
+
+# Prompt 2 (original, for reference)
+
+Runs after prompt 1, or before it if you would rather have the measured 0.87x first. Not blocked on
+prompt 1.
 
 ---
 
@@ -246,13 +397,27 @@ Carry forward:
   column or a longer symbol scheme, that test is the one that catches you.
 
 ---
+---
 
 # The last-good generation
 
-**`build/t3`** (2026-08-16), with **`build/cold_t2`** its cold-start twin — the two produce
-byte-identical IR for `src/main.psm`, which is what "cold == warm" means. Keep both; a broken
-compiler can be unable to build the fix to its own bug, and recovery is to build from the previous
-good generation.
+**`build/mg3`** (2026-08-16, the merge of the arena and layout sessions), with **`build/mcold2`**
+its cold-start twin — the two produce byte-identical IR for **all 87** compilable programs, which is
+what "cold == warm" means here. Keep both; a broken compiler can be unable to build the fix to its
+own bug, and recovery is to build from the previous good generation. `build/t3` is the generation
+before both sessions, and it is the one to diff against when asking what they changed.
+
+> **Read this before quoting a per-session number.** The arena and layout tasks ran in parallel in
+> separate trees and were merged afterwards. Their own last-good generations — arena's `build/v4`,
+> layout's `build/M4` — **do not exist in this tree**, and each was verified against only half of
+> what is now here. `build/mg3` is the only binary that has seen both changes. The merged gate:
+> suite **111/111**, warm fixpoint `mg2 == mg3`, cold fixpoint `mcold1 == mcold2`, `cold == warm`
+> on all 87 programs, seed still parses `src/`, oracle agrees on **15** sources, `--verify`
+> `released`/`violation(s)` identical to `build/t3` on every corpus program **except `g2_region`**,
+> which falls by exactly 10 200 000 because `arena_alloc` bypasses the ledger by design, with **0**
+> violations on both sides. IR moves on exactly three programs — `g2_region.psm`, `test_58`,
+> `src/main.psm` — plus the two new fixtures; the layout cost-model port is inert *in the merged
+> tree*, not merely in its own.
 
 Pass it explicitly. **Both tools default to something that will mislead you:**
 
@@ -264,12 +429,14 @@ Pass it explicitly. **Both tools default to something that will mislead you:**
 The 2026-08-16 session opened by running the census against `build/gen6` and read **13 of 156 sites
 with every blocker column zero** — not a result, a stale binary whose `--why` prints no placement
 section for the parser to match. The census now exits non-zero when no `--why` prints a bracketing
-verdict, which catches exactly that; the tier columns have no such guard.
+verdict *and* when `--summary` and the manifest disagree about how many calls were bracketed; the
+tier columns still have no such guard.
 
 ```bash
-python3 aif/evidence/arena_census.py --compiler build/t3
-python3 tools/aif_differential.py --compiler build/t3
-cd tests && PRISMIO=../build/t3 python3 test_runner.py
+python3 aif/evidence/arena_census.py --compiler build/mg3
+python3 tools/aif_differential.py --compiler build/mg3
+cd tests && PRISMIO=../build/mg3 python3 test_runner.py     # 111/111
+python3 tools/ir_snapshot.py --compiler build/mg3 --out /tmp/ir   # all three trees, for the IR diff
 ```
 
 Everything under `build/` is a working artefact and none of it is committed. If the directory is

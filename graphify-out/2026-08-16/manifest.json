@@ -1,7 +1,7 @@
 {
   "runtime/embedded_sources.h": {
-    "mtime": 1786620020.5428984,
-    "ast_hash": "61a93607fe2a0131a735ae8921580ea5",
+    "mtime": 1786833360.949079,
+    "ast_hash": "49d75a453e3b5b6d9c9872101845b836",
     "semantic_hash": ""
   },
   "runtime/lang_runtime.c": {
@@ -10,8 +10,8 @@
     "semantic_hash": ""
   },
   "tests/test_runner.py": {
-    "mtime": 1786620590.158597,
-    "ast_hash": "16fc6c7c1c899e4a7508aa22cf21adc8",
+    "mtime": 1786833400.2474241,
+    "ast_hash": "a6cc086dd2133bd3a3a3bc2c76fb77d8",
     "semantic_hash": ""
   },
   "CONTRIBUTING.md": {
@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1786620992.195295,
-    "ast_hash": "a03e850cfbab1b35493e5cb8207a2d2d",
+    "mtime": 1786834143.6385674,
+    "ast_hash": "07cfb69f14be015cbbfbe5560ae54783",
     "semantic_hash": ""
   },
   "PORTING.md": {
@@ -190,8 +190,8 @@
     "semantic_hash": ""
   },
   "aif/prototype/aif.py": {
-    "mtime": 1786620882.4759316,
-    "ast_hash": "4dd92242619e0963c59c581028e26771",
+    "mtime": 1786832525.1595128,
+    "ast_hash": "d341a2abd6aca8c4d7cdb79229d9215b",
     "semantic_hash": ""
   },
   "aif/prototype/layout.py": {
@@ -200,13 +200,13 @@
     "semantic_hash": ""
   },
   "runtime/aif_support.c": {
-    "mtime": 1786619955.6270332,
-    "ast_hash": "3e35e8d692cb22e601df2f0caa2f557a",
+    "mtime": 1786833339.4584696,
+    "ast_hash": "fcb1990bb2ff4d4c23c4db9b8360c807",
     "semantic_hash": ""
   },
   "tools/aif_differential.py": {
-    "mtime": 1786620467.6585276,
-    "ast_hash": "d09502deb281edf61ae64f8c6c8a184b",
+    "mtime": 1786832506.9648824,
+    "ast_hash": "51b36baadd9da0ff98d6c9f778efd3f5",
     "semantic_hash": ""
   },
   "aif/README.md": {
@@ -310,8 +310,8 @@
     "semantic_hash": ""
   },
   "aif/spec/SPEC.md": {
-    "mtime": 1786619948.115427,
-    "ast_hash": "b0bb9fc26ccce595948aa878d85753cf",
+    "mtime": 1786832699.5495825,
+    "ast_hash": "d916daac4cf9975f7c150b43d1e40700",
     "semantic_hash": ""
   },
   "tools/aif_manifest_diff.py": {
@@ -320,8 +320,8 @@
     "semantic_hash": ""
   },
   "NEXT-SESSION.md": {
-    "mtime": 1786621004.681154,
-    "ast_hash": "cd87a8d14ebcce3a8a401182b8a51a6f",
+    "mtime": 1786621407.4182692,
+    "ast_hash": "0715183bb5b5ad881dbba00a47ebcc3d",
     "semantic_hash": ""
   },
   "CODE_STYLE.md": {
@@ -590,13 +590,13 @@
     "semantic_hash": ""
   },
   "aif/evidence/arena_census.py": {
-    "mtime": 1786619390.1166108,
-    "ast_hash": "cebe329821907329b1a441a482a88a0d",
+    "mtime": 1786832896.7182055,
+    "ast_hash": "27cd7a36517f9c1df2273f8d21a1aced",
     "semantic_hash": ""
   },
   "aif/evidence/RESULTS-arena.md": {
-    "mtime": 1786619932.8044739,
-    "ast_hash": "11a1d006947550151a3d90536c1a9878",
+    "mtime": 1786834084.3434725,
+    "ast_hash": "1bb384dfb9ddcd0c4329c150ab4d48c1",
     "semantic_hash": ""
   }
 }

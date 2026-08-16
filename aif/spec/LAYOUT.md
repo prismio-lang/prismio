@@ -277,6 +277,37 @@ it, a layout can be scored as having negative cost and the search will chase it.
 This term is what makes SoA win sequential traversals outright: it is vectorisable where a strided
 AoS record is not.
 
+### 5.2.1 Linked splits and indexed splits are not the same cost
+
+*(Added 2026-08-16, when §5.1 was first implemented in the compiler rather than in the prototype.
+See [RESULTS-layout.md](../evidence/RESULTS-layout.md) §5.)*
+
+§6's hot/cold row does not say how the cold group is *reached*, and the two possibilities have
+different costs. A split is **indexed** when the cold group is a parallel block and element `i`'s
+cold half is at a computed offset — reaching it is more streaming. A split is **linked** when the
+hot record holds a pointer to a separately allocated cold block — reaching it is a dependent load
+into unrelated memory.
+
+The distinction is not cosmetic: a linked split is the only kind expressible without handles
+(§6 note 2), so it is what an implementation without them will build, and:
+
+```
+bytes(t,L) for a sequential traversal touching cold fields =
+    size(hot)                                   -- linked:  plus one dependent miss,
+                                                   priced at π(random), not π(order(t))
+    size(hot) + size(cold)                      -- indexed: one longer sequential scan
+```
+
+A linked split SHALL also charge the link word to `size(hot)`.
+
+**Why this is normative rather than an implementation note.** Scored as an indexed split, a cut that
+pushes a hot loop's own fields into the cold block reads as merely *wider*, and the model's top
+candidates then sit inside its own noise: on `g1_particles.psm` the prototype separates its best two
+candidates by **0.7%** and picks the good one by that margin, while the same model with the link word
+added picks the bad one. Priced as a linked split, the good cut wins by 75 against 300 and the
+ranking is stable. A cost model that cannot separate its top two candidates by more than its
+calibration error is not selecting a layout, and §7.2's `argmin` inherits whatever it returns.
+
 ### 5.3 Allocation, footprint, packing, sharing
 
 ```

@@ -79,6 +79,12 @@ void heap_reset(void) {
 void rt_arena_hint_push(void) {}
 void rt_arena_hint_pop(void) {}
 
+// The two halves of "which arena does this container belong to", stubbed for the
+// same reason as the hint: with no region stack the answer is always "none", and
+// the shared container code below then behaves exactly as it did.
+static int rt_arena_slot(void) { return 0; }
+static void* arena_alloc_at(int slot, size_t size) { (void)slot; return rt_base_alloc(size); }
+
 void* realloc(void* ptr, size_t size) {
     if (!ptr) {
         return malloc(size);
@@ -555,6 +561,8 @@ void* type_to_ptr(void* ptr) { return ptr; }
 // to another one. It is never pushed outside a region: aif_arena_at_node needs an
 // enclosing one before it says yes.
 void* arena_alloc(size_t size);
+void* arena_alloc_at(int slot, size_t size);
+int arena_current_slot(void);
 
 static int rt_arena_hint = 0;
 
@@ -565,6 +573,14 @@ static void* rt_alloc(size_t size) {
     if (rt_arena_hint > 0) return arena_alloc(size);
     return rt_base_alloc(size);
 }
+
+// Which arena an allocation made right now would come from, 1-based, or 0 for
+// "the heap". A container is handed this at construction so that a *later*
+// reallocation can go back to the same arena rather than to whichever one is on
+// top at the time -- see list_push. A flag would not do: a nested `region`
+// inside the one that owns the list would take the new element block and free it
+// at its own exit, with the list still pointing at it.
+static int rt_arena_slot(void) { return rt_arena_hint > 0 ? arena_current_slot() : 0; }
 
 // Println function - prints a string and adds a newline
 void println(const char* str) {
@@ -1113,21 +1129,14 @@ void arena_pop(void) {
     arena_stack[arena_depth] = NULL;
 }
 
-void* arena_alloc(size_t size) {
-    // No region active. Codegen only routes a site here when one is, so this is
-    // a corrupted arena stack rather than an ordinary case -- but falling back
-    // to the ordinary allocator keeps SPEC 1's invariant (never wrong, only
-    // slower) instead of returning NULL into code that will not check it. Through
-    // rt_base_alloc rather than malloc so a verify build still accounts for it.
-    if (arena_depth <= 0) return rt_base_alloc(size);
-
+static void* arena_alloc_slot(int index, size_t size) {
     size_t need = (size + 15u) & ~(size_t)15u;   // 16-byte aligned, as malloc is
-    ArenaChunk* c = arena_stack[arena_depth - 1];
+    ArenaChunk* c = arena_stack[index];
     if (!c || c->used + need > c->cap) {
         ArenaChunk* fresh = arena_chunk_new(need);
         if (!fresh) return rt_base_alloc(size);
         fresh->next = c;
-        arena_stack[arena_depth - 1] = fresh;
+        arena_stack[index] = fresh;
         c = fresh;
     }
 
@@ -1136,6 +1145,31 @@ void* arena_alloc(size_t size) {
     arena_bytes_served += (long)need;
     arena_objects_served++;
     return p;
+}
+
+void* arena_alloc(size_t size) {
+    // No region active. Codegen only routes a site here when one is, so this is
+    // a corrupted arena stack rather than an ordinary case -- but falling back
+    // to the ordinary allocator keeps SPEC 1's invariant (never wrong, only
+    // slower) instead of returning NULL into code that will not check it. Through
+    // rt_base_alloc rather than malloc so a verify build still accounts for it.
+    if (arena_depth <= 0) return rt_base_alloc(size);
+    return arena_alloc_slot(arena_depth - 1, size);
+}
+
+int arena_current_slot(void) { return arena_depth; }
+
+// SPEC 5.2.1.1. Allocate from a *named* arena rather than from the innermost
+// one, so a container can grow back into the region that owns it after an inner
+// region has been entered. `slot` is 1-based, as arena_current_slot returns it.
+//
+// A slot past the current depth is a region that has already exited, which
+// obligation 3 rules out -- the container is dead by then. Falling back to the
+// heap rather than trusting it keeps SPEC 1's invariant, and it is the direction
+// that leaks rather than the one that corrupts.
+void* arena_alloc_at(int slot, size_t size) {
+    if (slot <= 0 || slot > arena_depth) return rt_base_alloc(size);
+    return arena_alloc_slot(slot - 1, size);
 }
 
 long arena_objects(void) { return arena_objects_served; }
@@ -1628,6 +1662,16 @@ typedef struct {
     // the function. Same rule as elem_own, one step less abstract: the container
     // is told what to do because it has no way to ask.
     void (*elem_release)(void*);
+    // SPEC 5.2.1.1. The arena this list came from, 1-based, or 0 for the heap.
+    //
+    // A list is two allocations and one of them is *rewritten* long after the
+    // site that made it: list_push doubles the element block and frees the old
+    // one. That is the whole of the `is_list` clause the placement gate used to
+    // reject an arena-served list with -- and the reason it can be lifted for a
+    // bracketed extent is that the answer is recorded here rather than guessed
+    // at from the arena depth that happens to be current. Without it, a list
+    // whose handle is a bump pointer would hand its old element block to free().
+    int arena;
 } XefyList;
 
 static void* list_new_cap(int cap) {
@@ -1636,6 +1680,7 @@ static void* list_new_cap(int cap) {
     l->cap = cap;
     l->elem_own = XEFY_ELEM_NONE;
     l->elem_release = 0;
+    l->arena = rt_arena_slot();
     l->data = (void**)rt_alloc(sizeof(void*) * (size_t)cap);
     return l;
 }
@@ -1693,9 +1738,14 @@ void list_push(void* lp, void* value) {
     if (l->elem_own == XEFY_ELEM_CYCLE) cyc_retain(value);
     if (l->len >= l->cap) {
         int nc = l->cap * 2;
-        void** nd = (void**)rt_alloc(sizeof(void*) * nc);
+        // Back into the arena that owns this list, not into whatever the hint
+        // says right now: the push is usually outside the bracket that created
+        // the list, so rt_alloc here would take the heap and the block below
+        // would be an arena pointer handed to free().
+        void** nd = l->arena ? (void**)arena_alloc_at(l->arena, sizeof(void*) * (size_t)nc)
+                             : (void**)rt_alloc(sizeof(void*) * (size_t)nc);
         for (int i = 0; i < l->len; i++) nd[i] = l->data[i];
-        rt_free(l->data);
+        if (!l->arena) rt_free(l->data);
         l->data = nd;
         l->cap = nc;
     }
@@ -1721,6 +1771,14 @@ void list_push(void* lp, void* value) {
 void list_release(void* lp) {
     if (!lp) return;
     XefyList* l = (XefyList*)lp;
+    // SPEC 5.2.1.1. An arena reclaims in bulk when its region exits, so there is
+    // nothing here to do and every free below would be a pointer into the middle
+    // of a chunk. Codegen should not emit this call at all for such a list --
+    // aif_frees_at_scope_node and aif_owns_call_result_at_node both decline once
+    // the site is arena-served -- so this is the second line of defence, not the
+    // mechanism. It is here because the failure it guards is heap corruption and
+    // the cost of the guard is one predictable branch.
+    if (l->arena) return;
     if (l->elem_own != XEFY_ELEM_NONE) {
         for (int i = l->len - 1; i >= 0; i--) {
             void* e = l->data[i];

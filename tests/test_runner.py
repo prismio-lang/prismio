@@ -512,24 +512,29 @@ def run_manifest_parseable_test():
 
 
 def run_region_diagnostic_test():
-    """SPEC 5.2 / 5.2.1 -- the arena diagnostics, which shipped 2026-08-14.
+    """SPEC 5.2 / 5.2.1 / 5.2.1.1 -- the arena diagnostics, and which regions the
+    warning is allowed to fire on.
 
     test_58 asserts at run time that an arena serves what it claims. This asserts
-    the three *reporting* halves, each of which was a live defect:
+    the *reporting* halves, each of which was a live defect:
 
       * a region serving nothing warns, and one serving something does NOT. The
         second half is the discriminator -- a warning that fired on every region
-        would satisfy any test that only looked for the text.
+        would satisfy any test that only looked for the text. Since call-site
+        placement landed (2026-08-16) the fixture has two of each, so the pairing
+        is checked in both directions on one compilation.
       * a T1 site with no arena reports `region:none`. It reported
         `region:scope`, one column away from the real placements `region:auto`
         and `region:<name>`, so g2_region.psm's manifest showed `region:` on
         every T1 line while the arena served nothing and a reader took it as
         confirmation.
-      * `peak-bytes` counts only what the code generator will actually route to
-        the arena. The cost model omitted the `in_container` clause the codegen
-        gate has, so REQUIREMENTS 19's budget number -- which a `region name
-        pin(N)` gate reads -- was inflated: test_49 reported 64 bytes for an
-        arena holding zero.
+      * `peak-bytes` counts what the code generator will actually route to the
+        arena, and nothing else. It has been wrong in both directions: inflated
+        when the cost model omitted the codegen gate's `in_container` clause
+        (test_49 reported 64 bytes for an arena holding zero), and deflated when
+        call-site placement started routing a callee's allocations to a region
+        the estimator was not counting -- which is the direction that makes a
+        `region name pin(N)` gate pass a budget the binary exceeds.
     """
     print(f"\n{BLUE}--- Running region_diagnostics ---{RESET}")
     problems = []
@@ -539,11 +544,19 @@ def run_region_diagnostic_test():
     build = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(exe)])
     text = (build.stdout or "") + (build.stderr or "")
 
-    if "region callee_work serves no allocation" not in text:
-        problems.append("no warning for the region whose allocation is in a callee")
-    if "region work serves no allocation" in text:
-        problems.append("warned about `work`, which serves 50 allocations -- the "
-                        "diagnostic is firing on every region, not on inert ones")
+    # Two regions serve and two do not, in one compilation. Asserting all four is
+    # what makes this a discriminator rather than a substring search: a warning
+    # that fired on everything fails the second pair, one that fired on nothing
+    # fails the first.
+    for region in ("outlived_work", "shared_work"):
+        if f"region {region} serves no allocation" not in text:
+            problems.append(f"no warning for `{region}`, which serves nothing -- "
+                            f"the region that a bracket declines is exactly the one "
+                            f"a programmer needs told about")
+    for region in ("work", "callee_work"):
+        if f"region {region} serves no allocation" in text:
+            problems.append(f"warned about `{region}`, which serves 50 allocations -- "
+                            f"the diagnostic is firing on every region, not on inert ones")
     if "cannot reach it" not in text:
         problems.append("the warning lost its note, which is the half that names the repair")
     cleanup_files(exe)
@@ -557,6 +570,25 @@ def run_region_diagnostic_test():
     if placements.get("serves__Void#1") != "region:work":
         problems.append(f"serves__Void#1: expected region:work, got "
                         f"{placements.get('serves__Void#1')}")
+    # SPEC 5.2.1.1. The bracketed site, and the two that are deliberately not.
+    # `make` and `make_out` have identical bodies and identical tiers, so the
+    # placement column is the only place the difference is visible at all.
+    if placements.get("make__Int#0") != "region:callee_work":
+        problems.append(f"make__Int#0: expected region:callee_work from the "
+                        f"bracketed call, got {placements.get('make__Int#0')}")
+    if placements.get("make_out__Int#0") == "region:outlived_work":
+        problems.append("make_out__Int#0 was bracketed into a region its return "
+                        "value outlives -- obligation 3 is not being applied")
+    if placements.get("make_shared__Int#0") == "region:shared_work":
+        problems.append("make_shared__Int#0 was bracketed with two call sites -- "
+                        "regime (a) is not being applied")
+    # The bracket is recorded, which SPEC 5.2.1.1 requires of an implementation
+    # using regime (a): the placement can be removed by an edit somewhere else in
+    # the file, so it has to be visible in a diff.
+    if "bracketed calls (SPEC 5.2.1.1 regime (a))" not in manifest.stdout:
+        problems.append("the manifest does not record which call sites were bracketed")
+    elif "#   make " not in manifest.stdout:
+        problems.append("the bracketed-calls section does not name `make`")
     if "peak-bytes  128 bytes" not in manifest.stdout:
         problems.append("peak-bytes for a region that serves 50 sites is not 128")
 
@@ -579,7 +611,11 @@ def run_region_diagnostic_test():
     # about where the value lives, so a reader who fixed the tier found the
     # binary unchanged -- three sessions running. The gate short-circuits, so the
     # load-bearing property is that EVERY blocker is listed, not the first.
-    why = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--why=make__Int#0"])
+    # `make_shared` and not `make`: since 2026-08-16 `make` is bracketed and so
+    # reports a placement rather than a blocker list. `make_shared` is the same
+    # allocation in the same shape that regime (a) declines, so it is the record
+    # that still exercises every clause of the gate.
+    why = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--why=make_shared__Int#0"])
     if "placement" not in why.stdout:
         problems.append("--why does not report placement at all")
     if "the tier is not T1" not in why.stdout:
@@ -596,6 +632,21 @@ def run_region_diagnostic_test():
         problems.append("--why does not name the arena for a site that IS served")
     if "no arena serves this site" in served_why.stdout:
         problems.append("--why reports a served site as heap-placed")
+    if "this call was bracketed" in served_why.stdout:
+        problems.append("--why calls a lexically-served site bracketed -- the two "
+                        "are different facts and a reader acts on them differently")
+
+    # SPEC 5.2.1.1. A bracketed site names the arena *and* says it is in a caller.
+    # Without the second half a reader cannot tell a placement they wrote from one
+    # the compiler inferred on their behalf, and only the second can disappear
+    # because of an edit to a different function.
+    bracketed_why = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--why=make__Int#0"])
+    if "region:callee_work" not in bracketed_why.stdout:
+        problems.append("--why does not name the arena for the bracketed site")
+    if "this call was bracketed" not in bracketed_why.stdout:
+        problems.append("--why reports a bracketed site as an ordinary lexical "
+                        "placement, so nothing says the placement depends on there "
+                        "being exactly one call site")
 
     if problems:
         print(f"{RED}[FAIL] the arena diagnostics do not describe the build{RESET}")
@@ -605,6 +656,117 @@ def run_region_diagnostic_test():
 
     print(f"{GREEN}[PASS] region diagnostics: inert regions warn, served ones do not, "
           f"and --why names every blocker{RESET}")
+    return True
+
+
+def run_layout_cost_model_test():
+    """LAYOUT 5's cost model ranks hot/cold cuts, and ranks them by cost rather
+    than by the access counts.
+
+    **What this discriminates against is the cheap rule, not a broken model.**
+    A hot/cold cut looks like it needs only the frequency ranking: cut where the
+    count drops. `test_61_layout_cost_model.psm` is built so that rule is wrong
+    -- its first frequency boundary is 2/13, which pushes all six of `advance`'s
+    fields behind the cold pointer and scores **413** against not splitting at
+    all. The model picks **9/13** at **76**. An implementation that read the
+    ranking instead of scoring it would pick 2/13 and this test would fail, which
+    is the only reason the fixture has three access groups instead of two.
+
+    The same disagreement is 2/12 against 8/12 on `aif/corpus/g1_particles.psm`,
+    and 8/12 is the cut `aif/evidence/bench/layout_repr.c` measures at 0.87x --
+    so the corpus is the evidence that the model's answer is the right one and
+    this fixture is the assertion that it still gives it.
+
+    Also asserted: the ranking is **reported and not acted on**. `--layout` must
+    say so, and the manifest's `layout` column must still read AoS for a type the
+    model wants to split, because a split object is two allocations and the
+    release path is not built. A compiler that started emitting splits would keep
+    passing the ranking assertions above and fail here.
+    """
+    print(f"\n{BLUE}--- Running layout_cost_model ---{RESET}")
+    problems = []
+
+    fixture = TEST_DIR / "test_61_layout_cost_model.psm"
+    result = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--layout"])
+
+    rows = {}
+    chosen = None
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 7 and parts[0] == "Sample":
+            # "Sample 13 2 split 9/13 * 80 32 76"  |  "Sample 13 2 unsplit 104 0 100"
+            star = "*" in parts
+            tail = [p for p in parts if p != "*"]
+            label = tail[3] if tail[3] == "unsplit" else f"{tail[3]} {tail[4]}"
+            ratio = int(tail[-1])
+            rows[label] = ratio
+            if star:
+                chosen = label
+
+    if not rows:
+        problems.append("--layout printed no candidate rows for Sample at all")
+    if chosen != "split 9/13":
+        problems.append(
+            f"the model chose {chosen!r}, expected 'split 9/13'. The first "
+            f"frequency boundary is 2/13; choosing it means the ranking is being "
+            f"read off the access counts instead of scored.")
+    if rows.get("split 2/13", 0) <= 100:
+        problems.append(
+            f"split 2/13 scores {rows.get('split 2/13')}, which is not worse "
+            f"than not splitting (100). A cold touch must be priced as a pointer "
+            f"chase; if it is priced as a longer scan, this cut looks cheap and "
+            f"the model picks it.")
+    if not (0 < rows.get("split 9/13", 0) < 100):
+        problems.append(
+            f"split 9/13 scores {rows.get('split 9/13')}, which does not beat "
+            f"the unsplit record -- the cut the corpus measures at 0.87x should")
+
+    # Reported, not acted on. The manifest must still say AoS.
+    manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    for line in manifest.stdout.splitlines():
+        if "Sample" in line and line.strip().startswith("make__"):
+            if "AoS" not in line:
+                problems.append(
+                    f"the manifest no longer reports AoS for a split-preferred "
+                    f"type: {line.strip()!r}. If codegen has started emitting "
+                    f"splits, the release path has to land with it.")
+
+    if "Reported only" not in result.stdout:
+        problems.append("--layout does not say the ranking is not acted on")
+
+    # A declared `workload` runs the whole engine twice in one process (LAYOUT
+    # 3.2), so anything the analysis accumulates and does not tear down is
+    # doubled on exactly those sources and correct everywhere else -- the failure
+    # mode that hid in the call graph until 2026-08-16. The traversal table is
+    # accumulated per loop id, and a surviving one does not merely double the
+    # counts: the second run's loops get fresh ids, so they arrive as *extra
+    # traversals* and every candidate's cost scales with how many times the
+    # engine ran.
+    #
+    # `test_55_workload_profile.psm` declares a workload and its `Cell` has three
+    # traversals. **Verified discriminating**: with traversals_reset() removed
+    # from aif_reset this reads 6 and the assertion fires.
+    wl = run_command([str(PRISMIO_EXE), "aif",
+                      str(TEST_DIR / "test_55_workload_profile.psm"), "--layout"])
+    trav = None
+    for line in wl.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "Cell":
+            trav = int(parts[2])
+            break
+    if trav != 3:
+        problems.append(
+            f"Cell reports {trav} traversals on a source that declares a "
+            f"workload, expected 3. The engine runs twice there; a traversal "
+            f"table that survives aif_reset accumulates the second run as extra "
+            f"traversals and every modelled cost scales with the run count.")
+
+    if problems:
+        for p in problems:
+            print(f"{RED}[FAIL] {p}{RESET}")
+        return False
+    print(f"{GREEN}[PASS] the cost model ranks cuts by cost, not by frequency "
+          f"rank, and codegen still emits the unsplit record{RESET}")
     return True
 
 
@@ -724,6 +886,40 @@ def run_bracket_summary_test():
         problems.append("no function is sole-regime on a source with a declared "
                         "workload, which is what a call graph accumulated across "
                         "the two engine runs looks like -- see aif_reset")
+
+    # SPEC 5.2.1.1's placement counter, and the pairing is the check. On test_59
+    # four functions clear the obligations and **nothing is placed**, because the
+    # fixture has no `region` -- so a placement pass that fired on the summary
+    # alone reads non-zero here. On test_58 exactly one call is placed, and the
+    # same number has to come back off a second, independent surface: `--summary`
+    # counts it from the call graph, the manifest prints one line per bracket. If
+    # either wording moves, the two stop agreeing and this fails; a check that
+    # read only one of them would go quietly to zero.
+    def bracketed_count(path):
+        out = run_command([str(PRISMIO_EXE), "aif", str(path), "--summary"]).stdout
+        m = re.search(r"^bracketed\s+(\d+)", out, re.M)
+        return int(m.group(1)) if m else -1
+
+    def bracket_lines(path):
+        out = run_command([str(PRISMIO_EXE), "aif", str(path)]).stdout
+        if "bracketed calls (SPEC 5.2.1.1 regime (a))" not in out:
+            return 0
+        at = out.index("bracketed calls (SPEC 5.2.1.1 regime (a))")
+        return len([l for l in out[at:].splitlines()[1:] if l.startswith("#   ")])
+
+    if bracketed_count(fixture) != 0:
+        problems.append(f"test_59 has no `region` and still reports "
+                        f"{bracketed_count(fixture)} bracketed call(s) -- a function "
+                        f"clearing the obligations is not a placement")
+    served = TEST_DIR / "test_58_region_serves.psm"
+    if bracketed_count(served) != 1:
+        problems.append(f"--summary reports {bracketed_count(served)} bracketed "
+                        f"call(s) on test_58, expected exactly 1 (`make`; `make_out` "
+                        f"fails obligation 3 and `make_shared` fails regime (a))")
+    if bracket_lines(served) != bracketed_count(served):
+        problems.append(f"the manifest lists {bracket_lines(served)} bracketed "
+                        f"call(s) and --summary counts {bracketed_count(served)} -- "
+                        f"two surfaces for one decision, and they disagree")
 
     if problems:
         print(f"{RED}[FAIL] the bracketing summary does not report the "
@@ -1958,6 +2154,11 @@ def main():
         failed += 1
 
     if run_bracket_summary_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_layout_cost_model_test():
         passed += 1
     else:
         failed += 1

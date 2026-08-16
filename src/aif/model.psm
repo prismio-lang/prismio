@@ -153,6 +153,16 @@ extern fn aif_region_call_sites() -> Int
 extern fn aif_bracketable_region_call_sites() -> Int
 extern fn aif_call_edge_count() -> Int
 
+// SPEC 5.2.1.1's placement half. One entry per call the compiler bracketed, and
+// the manifest is required to print them: regime (a) is fragile as a language
+// guarantee -- a second call to a bracketed callee silently removes the
+// placement -- so the loss has to appear as a diff rather than as a slowdown.
+extern fn aif_bracket_count() -> Int
+extern fn aif_bracket_callee(i: Int) -> Int
+extern fn aif_bracket_scope(i: Int) -> Int
+extern fn aif_bracket_served(i: Int) -> Int
+extern fn aif_site_is_bracketed(id: Int) -> Int
+
 // The obligations `aif_fn_bracket_blockers` reports, as a mask. Every failing
 // one is reported, not the first -- the same decision as AIF_ARENA_B_*, for the
 // same reason: three sessions acted on a gate's first clause and each time the
@@ -172,6 +182,29 @@ extern fn aif_struct_add_field(name: String, field: String, type: String, bytes:
 // arena placement uses for allocs_in(s).
 extern fn aif_field_access(type: String, field: String, weight: Int)
 extern fn aif_layout_select()
+
+// LAYOUT 5's cost model needs which fields are touched *together*, which a
+// per-field count cannot express: two fields with equal counts touched by
+// different loops want opposite sides of a hot/cold cut. These bracket a loop so
+// every aif_field_access inside it lands in the same traversal.
+extern fn aif_traversal_begin()
+extern fn aif_traversal_end()
+// `let p = list_get(ps, i)` -- the loop walks a container in order, which is what
+// makes a smaller hot record worth anything. Without this a traversal is treated
+// as a pointer chase.
+extern fn aif_traversal_elem(type: String, sequential: Int)
+
+// LAYOUT 7.2's `argmin over candidates(tau)`, and 8's "ranked by modelled cost".
+// Reported, not yet acted on: a split object is two allocations and the release
+// path has to land before anything may emit one.
+extern fn aif_layout_rank(type: String) -> Int
+extern fn aif_layout_candidates() -> Int
+extern fn aif_layout_best() -> Int
+extern fn aif_layout_cand_hot(i: Int) -> Int
+extern fn aif_layout_cand_ratio(i: Int) -> Int
+extern fn aif_layout_cand_field_hot(i: Int, f: Int) -> Int
+extern fn aif_layout_cand_bytes(i: Int, cold: Int) -> Int
+extern fn aif_layout_traversals(type: String) -> Int
 
 // LAYOUT 2.2. A measured profile, replacing the static estimate above. Answers 1
 // when it read at least one record; 0 means no file, or a file naming nothing

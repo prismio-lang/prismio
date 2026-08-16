@@ -11,11 +11,16 @@ The census reads only shipped compiler surface — the manifest's `placement`
 column and `prismio aif --why`'s placement section — so it cannot drift from what
 codegen does.
 
-**Nothing in §1–§6 has moved.** 38 of 234 sites are still arena-served, `region`
-still serves 0 of 10 201 215 on `g2_region.psm`, and the timings are unchanged
-because no placement decision changed. §8 is new: it measures how much of the
-196 **could** be served by call-site bracketing, which is SPEC 5.2.1's first
-named repair. That measurement is the whole of the 2026-08-16 session's result.
+**§1–§6 describe the state before call-site placement, and are kept because the
+limitation they measure is still the limitation — a `region` still reaches
+nothing in a callee *by itself*.** What changed on 2026-08-16 (second session) is
+that the compiler now brackets the *call*: `g2_region.psm` serves **10 200 000 of
+10 201 215** allocations, against 0, and the "serves no allocation" warning has
+stopped firing on it. §8 has the before/after census and §9 the per-clause
+account of what moved.
+
+Where a number below is stale, it is marked. §1's table is the pre-placement
+census and is left as it was for comparison; the current one is §8.
 
 ---
 
@@ -187,14 +192,12 @@ restriction rather than a soundness obligation, and SPEC 5.2.1.1 (b) lifts it.
 is on 0 functions in g2 and 9 in `g5_asset_cache`, which is a cache that writes
 into structures its callers own. `global` is 0 everywhere.
 
-**PLACEABLE is an upper bound, not a prediction.** It says the *call* may be
-bracketed. Whether the site is then served still depends on §1's per-site
+**PLACEABLE was an upper bound, not a prediction.** It said the *call* may be
+bracketed. Whether the site was then served still depended on §1's per-site
 clauses: `in_container` and `is_list` reject a value the deallocator would take,
 and clearing those for a bracketed extent is the disposition half. That half
-landed 2026-08-16 as a single clause in `elem_disposition_of` and is **inert
-today** — verified byte-identical IR on all 84 compilable programs in `tests/`,
-`aif/corpus/` and `aif/evidence/`, and an unchanged `--verify` ledger
-(`released` and `violations`, per program) against the previous generation.
+landed 2026-08-16 as a single clause in `elem_disposition_of`, inert on landing,
+and §9 is what it does now that placement uses it.
 
 Do not compare `allocated` or `leaked` from `--verify` across runs: the timing
 programs print nanosecond clock values and the printing path allocates per
@@ -202,6 +205,140 @@ digit, so `g2.psm` moves by ~1500 allocations between two runs of **one**
 executable. `released` and `violation(s)` are the stable numbers. Measured
 before reading anything into a difference, because the first run of that
 comparison showed seven programs "moving" and none of them had.
+
+## 9 · Call-site placement, landed *(2026-08-16, second session)*
+
+The upper bound above was 2 sites. Both were taken, and this is the census on
+either side of the change — same command, two compilers:
+
+| | before | after |
+|---|---:|---:|
+| `SERVED` over the corpus | 38 of 234 | **40 of 234** |
+| blocked | 196 | 194 |
+| calls bracketed | — | **2** |
+| `PLACEABLE` (still blocked *and* bracketable) | 2 | **0** |
+| `g2_region.psm`: allocations served | **0 of 10 201 215** | **10 200 000** |
+| `g2_region.psm`: "serves no allocation" warning | fires | **silent** |
+
+`PLACEABLE` going to 0 is the success condition and not a regression: a site that
+was placed is served, so it leaves the blocked column and this one with it. The
+census prints `BRACKETED` and `br_served` next to it for exactly that reason.
+
+**The 10 200 000, accounted for.** 20 000 frames of `cull`:
+
+| | per frame | total |
+|---|---:|---:|
+| `DrawCmd` struct literals | 501 | 10 020 000 |
+| `list_new` handle + element block | 2 | 40 000 |
+| `list_push` growth (cap 4→512, 7 doublings) | 7 | 140 000 |
+| **served** | | **10 200 000** |
+
+The remaining 1 215 are `build_scene`'s and the sample list's, which are outside
+the region and always were. The struct literals are 98.2% of it and needed only
+the `in_container` clause lifted; the other 1.8% is the list, and that needed
+`is_list` lifted *and* a runtime change — see below.
+
+**Four things moved in `g2_region.psm`'s IR and nothing else did.** Line by line:
+
+| change | why |
+|---|---|
+| `malloc` → `arena_alloc` on the `DrawCmd` literal | the site is served; `ir_alloc_region` has existed since Level 3 |
+| `rt_arena_hint_push/pop` around `list_new()` | a list is allocated past the runtime seam, so the *call* is bracketed rather than the site |
+| `list_set_elem_owner(cmds, 1)` **deleted** | `elem_disposition_of` returns NONE for an arena-served element: the region reclaims it, and a per-element `free` would be a pointer into the middle of a chunk |
+| `list_release(cmds)` in `main` **deleted** | `aif_owns_call_result_at_node` reads the same clause and declines |
+
+The rest of that file's diff is SSA renumbering. `tests/test_58_region_serves.psm`
+moved one `malloc` to `arena_alloc` (its `make` is now bracketed). `src/main.psm`
+moved because its *source* moved — the only new symbol is the manifest's
+bracket-recording function, and a normalised body-by-body diff shows the four
+functions that were edited and no others. **Every other program in `tests/`,
+`aif/corpus/` and `aif/evidence/` is byte-identical.**
+
+**Why no Prismio call is wrapped in a hint.** An arena is on a dynamic stack:
+`region` already pushes at entry and pops at every exit, so while a bracketed
+callee runs, the caller's arena is the top of that stack. Only the *analysis* had
+to change; `ir_alloc_region` and `ir_arena_hint_begin/end` then route each site
+on their own. Bracketing the Prismio call with the hint instead would have sent
+**every** runtime allocation in the extent to the arena, including ones the
+per-site gate declined.
+
+**The one runtime change, and why it is not optional.** `list_push` doubles the
+element block and frees the old one, long after the site that made it — which is
+the whole of the `is_list` clause. Lifting that clause without more would hand an
+arena pointer to `free()`. So a `XefyList` now records *which* arena it came
+from, as a 1-based depth rather than a flag, and grows back into that one:
+
+```
+region outer { let l = callee();  region inner { list_push(l, x) } }
+```
+
+with a flag, the new block comes from `inner` and dies at `inner`'s exit while
+`l` still points at it. This is SPEC 5.2.1.1 resolution (c) used as a supplement
+to (a), which is what "(c) is never sufficient alone" means — the bare `DrawCmd`
+still relies on (a).
+
+**Timing — re-measured on a quiet host after the merge; this table is the one to
+quote.** The first run of this measurement was taken while a second agent was
+benchmarking on the same machine, which is exactly the condition §6 says
+invalidates a timing number. It read 174.3 → 45.8 ms (0.263×) over 7 and 5
+interleaved pairs. It was **directionally right and quantitatively wrong**, which
+is the usual shape of a contended measurement: contention inflated both arms
+unequally. Superseded by the run below — 20 interleaved pairs, one warm pair
+discarded, no other load on the host, against the merged compiler `build/mg3`:
+
+| `g2_region.psm` whole-program, median of 20 | ms | ratio |
+|---|---:|---:|
+| before placement (`build/t3`) | 194.4 | 1.000 |
+| after placement (`build/mg3`) | **64.6** | **0.332** |
+
+**3.01× faster, and the distributions do not overlap** — the slowest post-placement
+run (66.2 ms) is faster than the fastest pre-placement one (188.1 ms), so the
+result does not depend on the choice of statistic. Checksums identical on every
+run, and `arena_objects` printed alongside, so a run that served nothing cannot be
+mistaken for a fast one.
+
+**The flat line elsewhere needs no timing at all, and that is the stronger half.**
+Every corpus program without a `region` compiles to byte-identical IR before and
+after (§9), so an identical binary cannot have a different runtime. A measured
+"no change" on those programs would be weaker evidence than the IR identity
+already is — it would carry timing noise where the IR carries none.
+
+```bash
+python3 g2r_time.py <pre.exe> <post.exe> 20      # interleaved, warm pair discarded
+```
+
+The *flat line everywhere else* needs no timing at all and is the stronger claim:
+every corpus program without a `region` is **byte-identical IR**, so nothing about
+them can have changed.
+
+**The `--verify` ledger, and a comparison that could not fail.** The ledger line
+reads `N allocated, N released, N leaked, N violation(s)` — **the count comes
+before the word.** A comparison script asking for `released\s+(\d+)` matched
+nothing on all 45 programs and duly reported every one of them identical. That is
+2026-08-16's `allocated`/`leaked` lesson arriving through a different door: the
+column was not noisy, it was never read. The script now fails if it matched no
+program at all.
+
+Read correctly, over the 46 programs with a ledger:
+
+- **`violation(s)` is 0 on every program, before and after.** That is the column
+  that had to hold, and it held.
+- **`released` differs on exactly one program**: `g2_region.psm`, 10 201 025 →
+  **1 025**. A fall of exactly 10 200 000, which is the number the arena serves.
+  `ir_alloc_region` and `arena_alloc` deliberately bypass verify accounting — an
+  arena releases in bulk and the ledger has nothing to pair a release with — so
+  an arena-served allocation is counted neither as allocated nor as released.
+  This is the feature working, not a leak.
+- The `aif-verify: FAILED` verdict on the g2 family is leak-driven and
+  **pre-existing**; the pre-placement binary prints it too.
+
+**Known gap, recorded rather than fixed.** `peak-bytes` and the `region name
+pin(N)` gate now include bracketed sites, but the weight is a product of two
+*intra*-procedural loop-depth estimates (the site's, times the call site's) —
+`weight_of` cannot span two functions because `loop_depth` is counted within one.
+`g2_region.psm` reports 6144 bytes where the arena really holds ~12 KB per frame.
+That is the right order and it was **0** before, which was flatly wrong; but it is
+an estimate with a known bias and a fixed-budget target should read it that way.
 
 ## 7 · What would actually close this
 

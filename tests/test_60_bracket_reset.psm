@@ -1,0 +1,101 @@
+// SPEC 5.2.1.1 + LAYOUT 3.2 -- call-site placement on a source that runs the
+// whole engine twice.
+//
+// A declared `workload` makes the build run the inference engine a second time,
+// against the profile it collected. Everything the engine accumulates and does
+// not tear down in `aif_reset` is therefore wrong on exactly the sources that
+// carry a profile and right everywhere else -- which is a silent wrong answer
+// with no failing test anywhere near it. That is not hypothetical: the call
+// graph itself had this defect when it landed on 2026-08-16, and it made every
+// callee report two call sites, so regime (a) rejected every function in the
+// program and `sole-regime` read 0.
+//
+// Call-site placement adds four more things to tear down, and one of them is a
+// **use-after-free** rather than a wrong count: the key reverse index caches on
+// `key_count`, and a second run that reaches the same key count would keep an
+// array of pointers into KeyNodes the reset already freed.
+//
+// So this fixture is the same shape as test_58's `serves_from_a_callee`, with a
+// workload bolted on and nothing else changed. The assertion is identical -- 50
+// allocations from the arena -- and it is the *second* engine run's answer that
+// produces the binary.
+//
+// **What it catches, measured, and what it does not.** The teardown has two
+// halves -- free the state, clear the "already computed" flag -- and only one of
+// the two ways to get it wrong is observable here:
+//
+//   * flag left set, state freed:      reads **0**, and test_58 still reads 50.
+//     That is the signature the whole fixture is for: wrong on exactly the
+//     sources that carry a profile, right on every other one.
+//   * flag left set, state left too:   reads 50 and **passes**. The second run
+//     analyses the same program, so the site ids are identical and last run's
+//     answer happens to be this run's answer.
+//
+// The second case is a check this fixture cannot make fail, and saying so is
+// worth more than deleting it: the stale state is still a use-after-free waiting
+// for a program where the two runs disagree about site ids, and nothing in this
+// suite would notice. What makes the teardown safe today is that it is complete,
+// not that it is tested.
+
+extern fn print(s: String)
+extern fn println(s: String)
+extern fn arena_objects() -> Int
+
+struct Cmd {
+    id: Int,
+    weight: Int
+}
+
+fn make(i: Int) -> Cmd {
+    return Cmd { id: i, weight: i * 2 }
+}
+
+fn served_in_a_region() -> Int {
+    let before = arena_objects()
+    region profiled_work {
+        let mut keep = Cmd { id: 0, weight: 0 }
+        let mut i = 0
+        while (i < 50) {
+            keep = make(i)
+            if (keep.id != i) { return 0 - 1 }
+            i = i + 1
+        }
+    }
+    return arena_objects() - before
+}
+
+// Profiled so the second engine run happens at all. It touches `Cmd` and nothing
+// else, because what is being tested is the reset and not the layout search.
+fn touch(n: Int) -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < n) {
+        let c = Cmd { id: i, weight: i }
+        total = total + c.id + c.weight
+        i = i + 1
+    }
+    return total
+}
+
+workload cmd_traffic {
+    setup {
+        touch(4)
+    }
+    measure {
+        touch(64)
+    }
+    repeat 2
+}
+
+fn main() -> Int {
+    let served = served_in_a_region()
+    if (served != 50) {
+        print("FAIL served ")
+        println(served)
+        println("  expected 50: the bracketed call has to reach the arena on the")
+        println("  second engine run too, which is the one that builds -- aif_reset")
+        return 1
+    }
+    println("test_60 ok")
+    return 0
+}

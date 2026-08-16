@@ -149,10 +149,18 @@
   "147": "RESULTS — the string/parse axis",
   "148": "g7bench.py",
   "149": "optlevel.py",
+  "150": "aif_tier_of",
   "151": "Prismio IDE protocol",
   "152": "Session of 2026-08-13 — `workload` lands; two of LAYOUT 6's dimensions are not blocked on what the brief said",
+  "153": "arena_chunk_new",
   "154": "LAYOUT 6's candidate space, measured against what this compiler can emit",
   "155": "The cross-language suite — Prismio vs Rust vs Swift",
   "156": "arena_census.py",
-  "157": "HANDOFF.md"
+  "157": "HANDOFF.md",
+  "158": "Session of 2026-08-16 (second) — call-site placement lands; `region` stops being inert on g2",
+  "159": "Session of 2026-08-16 (layout) — the cost model lands, and it could not have ranked the cut it exists for",
+  "160": "Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on",
+  "161": "Prompt 1 is done — what it unblocked",
+  "162": "str_split",
+  "163": "ir_snapshot.py"
 }

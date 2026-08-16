@@ -164,13 +164,122 @@ and is reusable verbatim when the cost model lands.
 
 ---
 
+## 5 · The cost model is ported, and it could not have ranked the cut it was ported for
+
+**2026-08-16.** LAYOUT §5's cost model now exists in the compiler
+(`runtime/aif_support.c`, `prismio aif <src> --layout`). It is **reported and not acted on**: the
+ranking prints, and codegen still emits the unsplit record for every type, because §2 above is
+still true — a split object is two allocations and the release path is not built.
+
+Porting it surfaced two things that reading it would not have.
+
+### 5.1 Restricted to what codegen can emit, the model picks the measured cut
+
+On `g1_particles.psm` the prototype ranks **SoA** and returns `5.37×`. SoA needs handles, so a
+compiler that ranked it would select a layout it cannot produce. Restricted to the candidates
+codegen could emit — AoS × the split cuts — the same model on the same program returns
+`AoS+split(8/12)`, and that is exactly the cut `bench/layout_repr.c` variant B measures at **0.87×**.
+
+So the candidate restriction is not a weakening. It is what makes the model *useful here*, and it is
+the same rule the search already stated for itself: choosing a layout codegen cannot produce is a
+manifest describing a binary nobody built.
+
+The model overstates: it predicts 0.75× where the bench measures 0.87×. It **ranks** correctly and
+**scales** wrongly, which is the honest summary of a contiguity-calibrated model on a boxed runtime.
+
+### 5.2 A linked split is not an indexed split, and the prototype cannot tell them apart
+
+This is the finding, and it is a specification defect rather than a porting detail — now written up
+as [LAYOUT §5.2.1](../spec/LAYOUT.md).
+
+`layout.py` prices a traversal that touches cold fields as `size(hot) + size(cold)` bytes scanned:
+correct for a split where the cold half sits at a computed offset in a parallel block. **This
+implementation's split is linked** — the hot record points at a separately malloc'd cold block, which
+is precisely why hot/cold needs no handles. Reaching a cold field is therefore a *dependent miss*,
+not a longer scan, and the hot record additionally pays 8 bytes for the link.
+
+Ported faithfully, that flips the answer on the very program the port exists for:
+
+| candidate | hot B | cold B | prototype pricing | linked pricing |
+|---|---:|---:|---:|---:|
+| unsplit | 96 | 0 | 100 | 100 |
+| split 2/12 | 24 | 80 | **73** ← chosen | 300 |
+| split 4/12 | 40 | 64 | 86 | 337 |
+| split 8/12 | 72 | 32 | 75 | **75** ← chosen |
+
+The 2/12 cut puts five of `integrate`'s six fields behind the cold pointer. It is not a close call in
+reality and it wins by two points on the prototype's own arithmetic.
+
+**And the prototype is not safe either — it is lucky.** Its own top two candidates on this program
+score **1188M and 1180M**, 0.7% apart, and the one it prefers is the good one by that margin. Add the
+link word this implementation actually pays and the margin inverts. A model separating its best two
+candidates by less than its calibration error is not selecting a layout; §7.2's `argmin` just
+inherits whatever falls out.
+
+With the chase priced, the good cut wins 75 against 300 — a margin the model can carry.
+
+### 5.3 What this does and does not unblock
+
+- **§7.2 as written** now has a cost function and a candidate enumeration. `--layout` prints the
+  whole ranked set, so a cut is auditable before anything emits it.
+- **§8's empirical validation** is still blocked, and now on one thing rather than two: it needs a
+  way to *force* a candidate layout so the modelled ranking can be checked against measured runs.
+  That is part of the split transform, so §8 follows item 1 and nothing else.
+- **The cut itself** is chosen and printed. Emitting it is item 1, unchanged.
+
+`tests/test_61_layout_cost_model.psm` is the regression, and it is built to discriminate against the
+rule someone will reach for instead of a cost model: its first frequency boundary is 2/13, scoring
+413, and the model picks 9/13 at 76. Verified failing on a compiler with the prototype's pricing.
+
+---
+
+## 6 · The `allocs` column was biased against Prismio, and only against Prismio
+
+**2026-08-16.** `aif/evidence/xlang/bench.py` timed the frame loop and counted allocations for the
+whole *process*. Once commit `901b494` moved the corpus's reporting loops onto the allocating
+`println` overload, the two stopped describing the same code. The fix brackets the counted window on
+the clock every one of these programs already reads per frame — see `allocount.c`; no program in any
+of the three languages changed.
+
+The correction is not uniform noise. Measured across the whole corpus:
+
+| binary | allocs (window) | allocs (process) | inflation |
+|---|---:|---:|---:|
+| g1_prismio | 2,215 | 26,226 | **11.8×** |
+| g1_rust_boxed | 2,206 | 2,209 | 1.0× |
+| g1_rust_idiomatic | 206 | 209 | 1.0× |
+| g1_swift | 963 | 972 | 1.0× |
+| g3_prismio | 5,676 | 47,298 | **8.3×** |
+| g4_prismio | 7,761 | 48,465 | **6.2×** |
+| g5_prismio | 2,267 | 22,281 | **9.8×** |
+| every Rust and Swift port | — | — | 1.0× |
+
+**The bias is systematic and one-sided.** Prismio's `println` allocates ~4 times per call; Rust's and
+Swift's do not. So the column inflated Prismio by 6–12× on four of the seven programs and left every
+comparison language untouched — in a harness whose entire purpose is the cross-language comparison.
+
+What it cost, concretely: g1's real allocation counts are **2,215 for Prismio against 2,206 for
+`g1_rust_boxed`** — the same number, which is the correct answer, because both box every particle.
+The old column read 26,226 against 2,209 and made that look like a 11.9× deficit. A reader pricing
+inline element storage off that figure was reading print overhead.
+
+g2 and g6 read 1.0× because their genuine workload traffic (10.2 M and 15.1 M allocations) dwarfs the
+~80–126 K the dump adds. That is why the defect survived: it is invisible on exactly the two programs
+the arena and capacity work has been aimed at.
+
+Two independent checks that the window is where it is claimed: it reproduces the pre-`901b494` figure
+(2,214) and it reproduces g2's separately documented 10,201,215. `clock_calls` audits the bracket on
+every run and every program lands inside `[2·frames, 2·frames+64]`.
+
+---
+
 ## What to do with this
 
-1. **Hot/cold split.** 0.87× measured, emittable today, no missing mechanism. The T3 interaction is
-   the whole risk and it is nameable: give a split type a generated release and route every free
-   through it.
-2. **Port LAYOUT §5's cost model** from the prototype. It is the precondition for §7.2 as written, for
-   §8, and for ranking hot/cold cuts by anything better than "the frequency ranks say so".
+1. **Hot/cold split.** 0.87× measured, emittable today, no missing mechanism, and the cut is now
+   *chosen* rather than guessed (§5). The T3 interaction is the whole risk and it is nameable: give
+   a split type a generated release and route every free through it. **Not started this session** —
+   see HANDOFF for the release-path design and why a half-built split is worse than none.
+2. ~~**Port LAYOUT §5's cost model**~~ — done, §5 above.
 3. **Handles.** Costed at 337 + 190 sites in `HANDOFF.md`. Worth 0.35× on g1's shape, and nothing
    else in this document gets near it.
 4. **The §2.1/W4 conflict** should be resolved in the specification before anyone writes the packing

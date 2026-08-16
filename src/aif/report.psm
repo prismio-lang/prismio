@@ -24,9 +24,19 @@ fn aifTierName(tier: Int) -> String {
 // its own scope, which has no arena and is served by the heap.
 fn aifPlacement(tier: Int, site: Int) -> String {
     if (tier == 0) { return "stack" }
+
+    // SPEC 5.2.1.1. Asked before the tier ladder, because an arena can now serve
+    // a site whose tier is not T1. A bracketed call's allocations keep the tier
+    // they derived -- T2, since a value that crossed a function boundary has
+    // E = Caller by construction -- while the arena serving them is the caller's
+    // `region`. SPEC 5.2 says why they are separable: the tier is the derived
+    // fact and the placement is the codegen decision. Printing `owned` for a
+    // value the arena bump-allocates would be the manifest describing a build
+    // that did not happen, which is the whole reason `rc:none` exists below.
+    let placed = aif_region_name_at_site(site)
+    if (str_equals(placed, "") == 0) { return str_concat("region:", placed) }
+
     if (tier == 1) {
-        let named = aif_region_name_at_site(site)
-        if (str_equals(named, "") == 0) { return str_concat("region:", named) }
         // `region:none`, not `region:scope`, and the rename is the whole point.
         // T1 with no arena is a value the heap serves and free() reclaims one at
         // a time -- the ordinary path, not a region. `region:scope` was true in
@@ -252,7 +262,40 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
         r = r + 1
     }
 
+    aifEmitBrackets()
     aifEmitPackingAdvice(module)
+}
+
+// SPEC 5.2.1.1: "an implementation using [regime (a)] SHALL record in the
+// manifest which call sites it bracketed."
+//
+// The requirement exists because regime (a) is fragile *as a language
+// guarantee*, not because it is unsound: adding a second call to a bracketed
+// callee removes the placement, and the program still compiles and still runs.
+// Without this section that shows up as a slowdown nobody can attribute; with
+// it, it is a line that disappears from a diff.
+//
+// Printed only when something was bracketed, so every program that brackets
+// nothing keeps a byte-identical manifest.
+fn aifEmitBrackets() {
+    let n = aif_bracket_count()
+    if (n == 0) { return }
+
+    println("#")
+    println("# bracketed calls (SPEC 5.2.1.1 regime (a)) -- a second call to one of these removes the placement")
+    let mut i = 0
+    while (i < n) {
+        let scope = aif_bracket_scope(i)
+        print("#   ")
+        print(aifPad(aif_fn_name(aif_bracket_callee(i)), 30))
+        print(aifPad(str_concat("region:", aif_scope_region(scope)), 24))
+        print(aifPad(str_concat(int_to_str(aif_bracket_served(i)), " site(s) served"), 20))
+        let path = diag_file_path(aif_scope_region_file(scope))
+        println(str_concat(str_concat(path, ":"),
+                str_concat(int_to_str(aif_scope_region_line(scope)),
+                str_concat(":", int_to_str(aif_scope_region_col(scope))))))
+        i = i + 1
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +574,25 @@ fn aifEmitBracketing() {
     println(int_to_str(nDrop))
     print("br-shared    ")
     println(int_to_str(nShared))
+
+    // The placement itself (SPEC 5.2.1.1), and the two numbers are deliberately
+    // separate. `bracketed` is how many calls the compiler took; `br-served` is
+    // how many allocation sites that actually moved into an arena. They come
+    // apart, and the gap is the honest one: bracketing says the *call* may be
+    // placed, and each site in the extent still faces the per-site gate -- a T0
+    // site already has the frame and a T3 one has a count in front of it. A
+    // bracket with 0 served is the call-site form of the inert `region`.
+    print("bracketed    ")
+    print(int_to_str(aif_bracket_count()))
+    print("  call site(s) placed; ")
+    let mut served = 0
+    let mut b = 0
+    while (b < aif_bracket_count()) {
+        served = served + aif_bracket_served(b)
+        b = b + 1
+    }
+    print(int_to_str(served))
+    println(" site(s) now arena-served")
 }
 
 // ---------------------------------------------------------------------------
@@ -734,6 +796,17 @@ fn aifEmitPlacement(site: Int) {
         print("    region:")
         print(where)
         println("  -- bump-allocated, and released in bulk when the region exits")
+        // The two ways to be served are not the same fact, and a reader acting on
+        // this needs to know which one this is. A lexical region is what the
+        // programmer wrote; a bracketed one is a decision the compiler made about
+        // a *caller*, and SPEC 5.2.1.1 makes it conditional on that caller being
+        // the only one -- so it is the placement that can vanish from an edit
+        // somewhere else in the file.
+        if (aif_site_is_bracketed(site) == 1) {
+            println("      note     the `region` is in a caller and this call was bracketed")
+            println("               (SPEC 5.2.1.1 regime (a)). A second call to this function")
+            println("               removes the placement; the manifest lists the bracket.")
+        }
         return
     }
 
@@ -1064,16 +1137,88 @@ fn aifReportInertRegions() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// `prismio aif <src> --layout` -- LAYOUT 7.2's argmin, made visible.
+//
+// SPEC 7.2 specifies selection as `best := argmin over candidates(tau) of
+// Cost(...)` and LAYOUT 8 wants "the top-k candidates ranked by modelled cost".
+// Until the cost model landed this compiler had neither: one greedy placement,
+// never scored. This prints the whole ranked candidate set, which is what makes
+// the hot/cold cut auditable *before* anything emits one.
+//
+// **Nothing here changes codegen.** The chosen row is marked, and the compiler
+// still emits the unsplit record for every type. A split object is two
+// allocations and needs the release path (RESULTS-layout 5) first; printing the
+// ranking before building the transform is the same discipline as pricing
+// `list_new_with_capacity` against a raised default before shipping it.
+//
+// The `modelled` column is a ratio against the unsplit record, x100 -- 100 is
+// "no better than not splitting". It is a *model*, and the model is calibrated
+// for contiguous records while this runtime boxes each one; on Particle it says
+// 69 where layout_repr.c measures 87. It ranks correctly and it overstates, and
+// both halves of that are worth knowing before trusting a number from it.
+// ---------------------------------------------------------------------------
+fn aifEmitLayout(module: ASTNode, sourcePath: String) {
+    println("aif-layout 1")
+    aifKv("source", sourcePath)
+    aifKv("profile", aif_profile_source())
+    println("#")
+    println("# LAYOUT 7.2 argmin over candidates(tau). Reported only -- codegen emits")
+    println("# the unsplit record until the release path for a split object lands.")
+    println("#")
+    println("# type                      fields  trav  candidate      hot B  cold B  modelled")
+
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let d = ptr_to_node(p)
+        if (d.kind == NodeKind.STRUCT_DECL) {
+            let n = aif_layout_rank(d.s1)
+            if (n > 0) {
+                let trav = aif_layout_traversals(d.s1)
+                let best = aif_layout_best()
+                let mut i = 0
+                while (i < n) {
+                    let hot = aif_layout_cand_hot(i)
+                    let total = aif_struct_nfields(d.s1)
+                    let mut label = "unsplit"
+                    if (hot < total) {
+                        label = str_concat("split ", str_concat(int_to_str(hot),
+                                 str_concat("/", int_to_str(total))))
+                    }
+                    if (i == best) { label = str_concat(label, " *") }
+                    print("  ")
+                    print(aifPad(d.s1, 24))
+                    print(aifPad(int_to_str(total), 8))
+                    print(aifPad(int_to_str(trav), 6))
+                    print(aifPad(label, 15))
+                    print(aifPad(int_to_str(aif_layout_cand_bytes(i, 0)), 7))
+                    print(aifPad(int_to_str(aif_layout_cand_bytes(i, 1)), 8))
+                    println(int_to_str(aif_layout_cand_ratio(i)))
+                    i = i + 1
+                }
+                // A type nothing traverses has no evidence behind its ranking:
+                // every candidate scores on the footprint term alone. Saying so
+                // is the difference between "the model prefers unsplit" and "the
+                // model was never given anything to prefer it for".
+                if (trav == 0) {
+                    println("#   ^ no traversal recorded: ranked on footprint alone")
+                }
+            }
+        }
+        p = d.next
+    }
+}
+
 fn aifAnalyze(module: ASTNode, sourcePath: String, version: String,
                ownedCollections: Bool, summary: Bool, thetaFields: Bool,
                budget: Int) {
     aifAnalyzeProfiled(module, sourcePath, version, ownedCollections, summary,
-                        thetaFields, budget, "")
+                        thetaFields, budget, "", false)
 }
 
 fn aifAnalyzeProfiled(module: ASTNode, sourcePath: String, version: String,
                        ownedCollections: Bool, summary: Bool, thetaFields: Bool,
-                       budget: Int, profilePath: String) {
+                       budget: Int, profilePath: String, layout: Bool) {
     let converged = aifRunProfiled(module, ownedCollections, thetaFields, budget,
                                     profilePath)
 
@@ -1083,7 +1228,9 @@ fn aifAnalyzeProfiled(module: ASTNode, sourcePath: String, version: String,
     // question -- the `owned_collections` trap in a new place.
     aifReportInertRegions()
 
-    if (summary) {
+    if (layout) {
+        aifEmitLayout(module, sourcePath)
+    } else if (summary) {
         aifEmitSummary(sourcePath, converged)
     } else {
         aifEmitManifest(module, sourcePath, version, converged)

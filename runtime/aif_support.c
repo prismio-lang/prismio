@@ -795,6 +795,9 @@ int aif_field_range_bytes(const char* type, const char* field) {
     return 8;
 }
 
+// Defined with the cost model below, which is where the traversal table lives.
+static void traversal_note_field(int type_name, int field_index);
+
 void aif_field_access(const char* type, const char* field, int loops) {
     int id = nominal_find(type);
     if (id < 0) return;
@@ -804,7 +807,15 @@ void aif_field_access(const char* type, const char* field, int loops) {
     if (loops > 6) loops = 6;       // capped as weight_of caps it, and for the same reason
     for (int i = 0; i < loops; i++) weight *= AIF_LOOP_ITERS;
     for (int i = 0; i < t->nfields; i++) {
-        if (t->field_name[i] == f) { t->field_acc[i] += weight; return; }
+        if (t->field_name[i] == f) {
+            t->field_acc[i] += weight;
+            // LAYOUT 5's cost model needs which fields are touched *together*,
+            // not just how often each is touched. Same call site, because a
+            // second walk would be a second chance to disagree about what an
+            // access is.
+            traversal_note_field(t->name, i);
+            return;
+        }
     }
 }
 
@@ -883,6 +894,440 @@ void aif_layout_select(void) {
             if (t->order[i] != i) { t->reordered = 1; break; }
         }
     }
+}
+
+// ============================================================================
+// LAYOUT 5's cost model, ported from aif/prototype/layout.py
+//
+// **What this is for.** LAYOUT 7.2 specifies selection as
+// `best := argmin over candidates(tau) of Cost(...)`, and until now this compiler
+// had neither half: `aif_layout_select` above runs one greedy placement and never
+// scores it, so "the top-k candidates ranked by modelled cost" (LAYOUT 8) named a
+// set with one member and a function that did not exist. This is that function.
+//
+// It is **reported and not yet acted on**. Nothing below changes a byte of IR:
+// `aif_layout_select` still chooses field order exactly as it did, and the
+// ranking is surfaced through `prismio aif --layout` so the hot/cold cut can be
+// audited before anything emits it. That ordering is deliberate -- a split object
+// is two allocations and needs the whole release path (RESULTS-layout 5) before
+// any of it may be emitted.
+//
+// ---------------------------------------------------------------------------
+// Three deliberate divergences from the prototype, each of which changes the
+// answer, and each measured rather than argued.
+// ---------------------------------------------------------------------------
+//
+// **1. Candidates are AoS x splits, not AoS/SoA x splits.** The prototype ranks
+// SoA and picks it: on `g1_particles.psm` it returns `SoA 5.37x`. SoA needs
+// handles, which do not exist (RESULTS-layout 1), so a compiler that ranked it
+// would select a layout it cannot emit -- "a manifest that describes a binary
+// nobody built", which is the rule the block above this one already states for
+// the search. Restricted to what codegen can produce, the same model on the same
+// program returns `AoS+split(8/12) 1.44x`, and that cut is exactly the one
+// `aif/evidence/bench/layout_repr.c` variant B measures at **0.87x**. The
+// restriction is what makes the model useful here rather than a weaker version of
+// the prototype.
+//
+// **2. The hot record carries the link word, and the prototype's does not.**
+// `record_size(hot)` in layout.py is the hot fields alone, because its split is
+// indexed rather than linked. This implementation's cold block hangs off the hot
+// record -- that is precisely why hot/cold needs no handles -- so the hot record
+// pays 8 bytes for the pointer. Particle's 8/12 cut is 72 bytes here (8 doubles +
+// link) against the prototype's 64, and RESULTS-layout's "96 -> 72 bytes" is the
+// linked number. Without the link word the model over-values every split, and
+// most sharply the ones that barely pay.
+//
+// **3. There is no SimdCredit term, which resolves LAYOUT 5.4's defect by
+// construction.** layout.py records the defect at `traversal_cost`: 5.4 subtracts
+// SimdCredit from a sum of *memory* costs, so an arithmetic saving nets against
+// something it has nothing to do with and the total can go negative. The
+// prototype clamps with `max(0, ...)`. Here the term cannot arise: the credit is
+// gated on `grouping in (SoA, AoSoA)` and this candidate set is AoS-only, so
+// there is nothing to subtract and nothing to clamp. The arithmetic term itself
+// is layout-invariant -- it is the same for every candidate of a type -- so it
+// cannot move an argmin and is not computed. **This does not resolve the
+// specification defect**, it only means this port never reaches it; 5.4 still
+// needs fixing before any grouping dimension is searched.
+//
+// Integer arithmetic throughout, as LAYOUT 9 obligation 2 requires: a parallel
+// float reduction can flip a tie, and layout must be reproducible.
+//
+// Costs are per element and scaled by 100 (`pi` is already in hundredths), rather
+// than the prototype's per-collection absolute figures. N_ASSUMED is a common
+// factor of every term, so dividing it out changes no ordering and keeps the
+// products inside 64 bits by a wide margin. Only ratios are ever reported.
+// ============================================================================
+
+#define AIF_LINE        64
+#define AIF_C1      (32 * 1024)
+#define AIF_C2   (1024 * 1024)
+#define AIF_C3   (32 * 1024 * 1024)
+#define AIF_MU1          4
+#define AIF_MU2         12
+#define AIF_MU3         40
+#define AIF_MUM        250
+#define AIF_N_ASSUMED (1 << 20)   // LAYOUT 2.1: length unknown statically -> large
+#define AIF_PI_SEQ      15        // hundredths, as in layout.py's PI
+#define AIF_PI_RANDOM  100
+#define AIF_LAMBDA_NUM   2
+#define AIF_LAMBDA_DEN 100
+
+// A loop, and the fields of one type it touches. LAYOUT 2.1's "co-accessed"
+// half, which is the structural fact the model needs and a per-field count
+// cannot supply: two fields with equal counts touched by *different* loops want
+// opposite sides of a cut, and summed counts cannot tell them apart.
+typedef struct {
+    int type;               // interned nominal name
+    int loop_id;
+    int depth;
+    int sequential;         // 1 sequential, 0 random -- see aif_traversal_elem
+    Bits touched;           // by declaration index
+} Traversal;
+
+static Traversal* traversals;
+static int traversal_count, traversal_cap;
+static int g_loop_ids[64];
+static int g_loop_depth;
+static int g_loop_next_id;
+
+void aif_traversal_begin(void) {
+    if (g_loop_depth < 64) g_loop_ids[g_loop_depth] = ++g_loop_next_id;
+    g_loop_depth++;
+}
+
+void aif_traversal_end(void) {
+    if (g_loop_depth > 0) g_loop_depth--;
+}
+
+static Traversal* traversal_for(int type) {
+    if (g_loop_depth <= 0 || g_loop_depth > 64) return NULL;
+    int loop_id = g_loop_ids[g_loop_depth - 1];
+    for (int i = 0; i < traversal_count; i++) {
+        if (traversals[i].type == type && traversals[i].loop_id == loop_id)
+            return &traversals[i];
+    }
+    if (traversal_count == traversal_cap) {
+        traversal_cap = traversal_cap ? traversal_cap * 2 : 64;
+        traversals = (Traversal*)xrealloc(traversals,
+                                          (size_t)traversal_cap * sizeof(Traversal),
+                                          "AIF traversals");
+    }
+    Traversal* t = &traversals[traversal_count++];
+    t->type = type;
+    t->loop_id = loop_id;
+    t->depth = g_loop_depth;
+    // Random until something says otherwise. The prototype's default is the same
+    // and for the same reason: a field walked through a chain of member accesses
+    // (`n.world.px`) is a pointer chase, and treating an unproven walk as
+    // sequential would credit a split with locality nothing established.
+    t->sequential = 0;
+    t->touched.w = NULL;
+    t->touched.nwords = 0;
+    return t;
+}
+
+// The walk calls this when a loop binds a container element -- `let p =
+// list_get(ps, i)`. That is the shape the cost model's `sequential` means: the
+// records are visited in container order, so a smaller hot record puts more of
+// them per line.
+//
+// **Weaker than the prototype's rule, and the difference is nameable.**
+// layout.py additionally requires the index to be an induction variable of the
+// loop, so `list_get(ps, perm[i])` -- a gather -- is random there and sequential
+// here. No loop in `tests/`, `aif/corpus/` or `aif/evidence/` indexes a container
+// by anything but its own counter, so the two rules agree on every program in
+// this tree; the divergence is recorded because the first gather written will
+// separate them, and it will do so silently.
+void aif_traversal_elem(const char* type, int sequential) {
+    int id = nominal_find(type);
+    if (id < 0) return;
+    Traversal* t = traversal_for(nominals[id].name);
+    if (t) t->sequential = sequential ? 1 : 0;
+}
+
+static void traversal_note_field(int type_name, int field_index) {
+    Traversal* t = traversal_for(type_name);
+    if (!t) return;
+    bits_set(&t->touched, field_index, "AIF traversal fields");
+}
+
+static void traversals_reset(void) {
+    for (int i = 0; i < traversal_count; i++) free(traversals[i].touched.w);
+    free(traversals);
+    traversals = NULL;
+    traversal_count = traversal_cap = 0;
+    g_loop_depth = 0;
+    g_loop_next_id = 0;
+}
+
+// Size of a subset of a type's fields, padded, fields placed widest-first --
+// layout.py's record_size. `link` adds the 8-byte pointer to the cold block; see
+// divergence 2 above.
+static int record_size_of(Nominal* t, Bits* subset, int link) {
+    int off = 0;
+    for (int width = 8; width >= 1; width >>= 1) {
+        for (int i = 0; i < t->nfields; i++) {
+            if (!bits_test(subset, i)) continue;
+            int w = t->field_bytes[i];
+            if (w > 8) w = 8;
+            if (w != width) continue;
+            int a = t->field_bytes[i] < 8 ? t->field_bytes[i] : 8;
+            if (a > 0 && off % a) off += a - off % a;
+            off += t->field_bytes[i];
+        }
+    }
+    if (link) {
+        if (off % 8) off += 8 - off % 8;
+        off += 8;
+    }
+    if (off < 1) off = 1;
+    return (off + 7) / 8 * 8;
+}
+
+static int min_size_of(Nominal* t) {
+    int s = 0;
+    for (int i = 0; i < t->nfields; i++) s += t->field_bytes[i];
+    return s;
+}
+
+static int mu_for(long long footprint) {
+    if (footprint <= AIF_C1) return AIF_MU1;
+    if (footprint <= AIF_C2) return AIF_MU2;
+    if (footprint <= AIF_C3) return AIF_MU3;
+    return AIF_MUM;
+}
+
+static long long iters_of(int depth) {
+    long long it = 1;
+    int d = depth < 1 ? 1 : depth;
+    if (d > 6) d = 6;
+    for (int i = 0; i < d; i++) it *= AIF_LOOP_ITERS;
+    return it;
+}
+
+// LAYOUT 5's Cost for one candidate: `hot` is the set kept in the primary
+// allocation, everything else splits cold. Returns cost per element, x100.
+static long long layout_cost(Nominal* t, Bits* hot, int is_split) {
+    int hot_size = record_size_of(t, hot, is_split);
+    Bits cold;
+    cold.w = NULL;
+    cold.nwords = 0;
+    int cold_size = 0;
+    if (is_split) {
+        for (int i = 0; i < t->nfields; i++)
+            if (!bits_test(hot, i)) bits_set(&cold, i, "AIF cold group");
+        cold_size = record_size_of(t, &cold, 0);
+    }
+
+    long long total = 0;
+    for (int i = 0; i < traversal_count; i++) {
+        Traversal* tr = &traversals[i];
+        if (tr->type != t->name) continue;
+
+        int hot_touched = 0, cold_touched = 0;
+        for (int f = 0; f < t->nfields; f++) {
+            if (!bits_test(&tr->touched, f)) continue;
+            if (bits_test(hot, f)) hot_touched = 1;
+            else                   cold_touched = 1;
+        }
+        if (!hot_touched && !cold_touched) continue;
+
+        long long iters = iters_of(tr->depth);
+        if (!tr->sequential) {
+            // A pointer chase pays a line per group it lands in, so a split that
+            // both halves are read through costs a second miss. This is the term
+            // that stops the model splitting everything.
+            int groups = (hot_touched ? 1 : 0) + (cold_touched ? 1 : 0);
+            long long bytes_per = (long long)groups * AIF_LINE;
+            long long fp = (long long)AIF_N_ASSUMED * (hot_size < 1 ? 1 : hot_size);
+            total += iters * bytes_per * mu_for(fp) * AIF_PI_RANDOM / AIF_LINE;
+        } else {
+            // The hot record is walked in container order.
+            long long fp = (long long)AIF_N_ASSUMED * (hot_size < 1 ? 1 : hot_size);
+            total += iters * hot_size * mu_for(fp) * AIF_PI_SEQ / AIF_LINE;
+
+            // **A cold touch is a pointer chase, not a longer scan, and this is
+            // the one place the port must not follow the prototype.**
+            //
+            // layout.py adds `record_size(cold)` to the bytes scanned, which is
+            // correct for the split it models -- cold[i] sits at a computed
+            // offset in a parallel block, so reaching it is more streaming. This
+            // implementation's cold block is *linked*: the hot record holds a
+            // pointer to it, which is exactly why hot/cold needs no handles
+            // (RESULTS-layout 2). Reaching a cold field is therefore a dependent
+            // load into a separately malloc'd block -- a miss at random-access
+            // probability, not 32 more bytes of sequential scan.
+            //
+            // **It changes the answer, and the prototype's margin says why it has
+            // to.** On g1, layout.py ranks its top two candidates 1188M and
+            // 1180M -- 0.7% apart -- and prefers 8/12 by that margin over a cut
+            // that pushes five of `integrate`'s six fields cold. Ported
+            // faithfully, the link word alone flips it: this compiler scored
+            // 2/12 at 73 against 8/12 at 75. Two candidates whose real
+            // performance differs enormously were being separated by less than
+            // the model's own noise. With the chase priced, 8/12 wins at 75
+            // against 314, which agrees with layout_repr.c's measured 0.87x for
+            // exactly that cut.
+            if (cold_touched) {
+                long long cfp = (long long)AIF_N_ASSUMED * (cold_size < 1 ? 1 : cold_size);
+                total += iters * AIF_LINE * mu_for(cfp) * AIF_PI_RANDOM / AIF_LINE;
+            }
+        }
+    }
+
+    // LAYOUT 5's footprint penalty: padding the layout added over the packed
+    // minimum, weighted by lambda. Scaled x100 to match the traversal term.
+    int size = hot_size + cold_size;
+    int slack = size - min_size_of(t);
+    if (slack > 0) total += (long long)slack * AIF_LAMBDA_NUM * 100 / AIF_LAMBDA_DEN;
+
+    free(cold.w);
+    return total;
+}
+
+// ---------------------------------------------------------------------------
+// The candidate space (LAYOUT 6), and the ranking LAYOUT 8 asks for.
+//
+// Cuts are taken at strict frequency boundaries down the access-count ranking,
+// which is layout.py's `candidates`. **The first boundary is not the answer** --
+// on Particle it cuts 2/12 and pushes `integrate`'s own six fields cold, which is
+// slower, not faster. Only scoring every cut finds 8/12. That is the argument for
+// this file existing rather than a `rank[i] > rank[i+1]` test in the search.
+//
+// Field 0 of the *chosen order* is pinned hot and never offered to a cut: the
+// punned-slot invariant is about the first byte of the object
+// (tests/test_41_punned_slot_bytes.psm), and a cut by frequency alone would
+// happily put a never-read field there.
+// ---------------------------------------------------------------------------
+
+#define AIF_MAX_CANDIDATES 32
+
+typedef struct {
+    int hot_count;              // fields in the hot group, including the pinned one
+    long long cost;
+    Bits hot;
+} Candidate;
+
+static Candidate g_cands[AIF_MAX_CANDIDATES];
+static int g_cand_count;
+static int g_cand_type = -1;
+static int g_cand_best;
+
+static void candidates_clear(void) {
+    for (int i = 0; i < g_cand_count; i++) free(g_cands[i].hot.w);
+    g_cand_count = 0;
+    g_cand_type = -1;
+    g_cand_best = 0;
+}
+
+// Ranks every admissible layout for `type`, cheapest first-scoring wins. Returns
+// the number of candidates, 0 when the type is not splittable at all.
+int aif_layout_rank(const char* type) {
+    candidates_clear();
+    int id = nominal_find(type);
+    if (id < 0) return 0;
+    Nominal* t = &nominals[id];
+    if (t->is_enum || t->nfields < 3) return 0;
+    g_cand_type = t->name;
+
+    // Candidate 0 is the unsplit record -- the baseline every ratio is against,
+    // and a real candidate: if no split beats it, none is taken.
+    Bits all;
+    all.w = NULL;
+    all.nwords = 0;
+    for (int i = 0; i < t->nfields; i++) bits_set(&all, i, "AIF layout baseline");
+    g_cands[0].hot_count = t->nfields;
+    g_cands[0].hot = all;
+    g_cands[0].cost = layout_cost(t, &all, 0);
+    g_cand_count = 1;
+
+    // Rank the movable fields by access count descending, then by declaration
+    // index, so the order is total and the output deterministic (LAYOUT 9).
+    int pinned = t->order[0];
+    int rank[256], nrank = 0;
+    for (int i = 0; i < t->nfields && nrank < 256; i++)
+        if (i != pinned) rank[nrank++] = i;
+    for (int a = 0; a < nrank; a++) {
+        for (int b = a + 1; b < nrank; b++) {
+            int x = rank[a], y = rank[b];
+            int swap = t->field_acc[y] > t->field_acc[x]
+                       || (t->field_acc[y] == t->field_acc[x] && y < x);
+            if (swap) { rank[a] = y; rank[b] = x; }
+        }
+    }
+
+    for (int cut = 1; cut < nrank && g_cand_count < AIF_MAX_CANDIDATES; cut++) {
+        if (t->field_acc[rank[cut - 1]] == t->field_acc[rank[cut]]) continue;
+        Bits hot;
+        hot.w = NULL;
+        hot.nwords = 0;
+        bits_set(&hot, pinned, "AIF hot group");
+        for (int i = 0; i < cut; i++) bits_set(&hot, rank[i], "AIF hot group");
+        Candidate* c = &g_cands[g_cand_count++];
+        c->hot_count = cut + 1;
+        c->hot = hot;
+        c->cost = layout_cost(t, &hot, 1);
+    }
+
+    g_cand_best = 0;
+    for (int i = 1; i < g_cand_count; i++) {
+        // Strictly cheaper wins, so a tie keeps the unsplit record: a split costs
+        // a second allocation and a second free at run time, and none of that is
+        // in the model.
+        if (g_cands[i].cost < g_cands[g_cand_best].cost) g_cand_best = i;
+    }
+    return g_cand_count;
+}
+
+int aif_layout_candidates(void)        { return g_cand_count; }
+int aif_layout_best(void)              { return g_cand_best; }
+int aif_layout_cand_hot(int i)         { return (i >= 0 && i < g_cand_count) ? g_cands[i].hot_count : 0; }
+
+// Costs are reported as a ratio against the unsplit baseline, x100, because the
+// absolute figure is in units nobody can act on. 100 means "no better than not
+// splitting"; 87 would mean the model expects 0.87x.
+int aif_layout_cand_ratio(int i) {
+    if (i < 0 || i >= g_cand_count || g_cand_count == 0) return 100;
+    long long base = g_cands[0].cost;
+    if (base <= 0) return 100;
+    return (int)(g_cands[i].cost * 100 / base);
+}
+
+// Whether field `f` (declaration index) is hot in candidate `i`. The report needs
+// it to name the cold fields, which is the part a reader can act on.
+int aif_layout_cand_field_hot(int i, int f) {
+    if (i < 0 || i >= g_cand_count) return 1;
+    return bits_test(&g_cands[i].hot, f) ? 1 : 0;
+}
+
+int aif_layout_cand_bytes(int i, int cold) {
+    if (i < 0 || i >= g_cand_count || g_cand_type < 0) return 0;
+    int id = nominal_find_id(g_cand_type);
+    if (id < 0) return 0;
+    Nominal* t = &nominals[id];
+    int is_split = g_cands[i].hot_count < t->nfields;
+    if (!cold) return record_size_of(t, &g_cands[i].hot, is_split);
+    if (!is_split) return 0;
+    Bits c;
+    c.w = NULL;
+    c.nwords = 0;
+    for (int f = 0; f < t->nfields; f++)
+        if (!bits_test(&g_cands[i].hot, f)) bits_set(&c, f, "AIF cold group");
+    int b = record_size_of(t, &c, 0);
+    free(c.w);
+    return b;
+}
+
+// How many traversals the profile recorded for a type. A type with none is one
+// the model has nothing to say about, and the report says so rather than printing
+// a ratio derived from an empty sum.
+int aif_layout_traversals(const char* type) {
+    int id = nominal_find(type);
+    if (id < 0) return 0;
+    int n = 0;
+    for (int i = 0; i < traversal_count; i++)
+        if (traversals[i].type == nominals[id].name) n++;
+    return n;
 }
 
 // The i-th field of `type` in the chosen order, or "" when there is none. Codegen
@@ -2641,6 +3086,9 @@ void aif_place_arenas(void) {
 // would make a budget gate that passes or fails on a number nobody computed.
 // ============================================================================
 
+// SPEC 5.2.1.1's contribution, defined with the placement it comes from.
+static long bracket_bytes_of(int scope, int* unsized);
+
 long aif_arena_high_water(void) {
     if (scope_count <= 0) return 0;
     long* own = (long*)xcalloc((size_t)scope_count, sizeof(long), "AIF arena bytes");
@@ -2652,7 +3100,7 @@ long aif_arena_high_water(void) {
             if (!arena_would_serve(k, s)) continue;
             b += (long)sites[k].bytes * weight_of(sites[k].scope, s);
         }
-        own[s] = b;
+        own[s] = b + bracket_bytes_of(s, NULL);
     }
 
     long peak = 0;
@@ -2677,7 +3125,9 @@ static long arena_bytes_of(int scope) {
         if (!arena_would_serve(k, scope)) continue;
         b += (long)sites[k].bytes * weight_of(sites[k].scope, scope);
     }
-    return b;
+    // SPEC 5.2.1.1. What a bracketed call routes here is memory this region
+    // holds, so a `pin(N)` gate has to see it -- see bracket_bytes_of.
+    return b + bracket_bytes_of(scope, NULL);
 }
 
 // REQUIREMENTS 19's gate. A refuted budget is an error for the same reason a
@@ -2707,6 +3157,7 @@ int aif_arena_unsized_sites(void) {
         for (int k = 0; k < site_count; k++) {
             if (arena_would_serve(k, s) && sites[k].bytes == 0) n++;
         }
+        bracket_bytes_of(s, &n);    // and the bracketed ones it cannot size either
     }
     return n;
 }
@@ -2759,6 +3210,11 @@ int aif_auto_arena_at_node(const void* node) {
 #define AIF_ARENA_B_ESCAPES     32
 #define AIF_ARENA_B_OUTLIVES    64
 
+// SPEC 5.2.1.1. The region a bracketed call hands this site, or -1. Defined
+// after the call graph it reads; declared here because it is the first clause of
+// the gate below and must not be a second copy of it.
+static int site_bracket_region(int id);
+
 static int site_arena_scope_full(int id, int* blockers) {
     if (id < 0 || id >= site_count) {
         if (blockers) *blockers = AIF_ARENA_B_NOT_T1;
@@ -2766,6 +3222,38 @@ static int site_arena_scope_full(int id, int* blockers) {
     }
     Site* s = &sites[id];
     int mask = 0;
+
+    // SPEC 5.2.1.1's placement. This site is in a bracketed extent, so its arena
+    // is the caller's region and the five clauses below do not apply to it:
+    // every one of them asks about an arena in *this* function, and the whole
+    // point of bracketing is that there is not one. The obligations that replace
+    // them were discharged once, over the entire extent, in bracket_place.
+    //
+    // What survives is what a *deallocator* would still do to this value, which
+    // bracketing does not change:
+    //
+    //   * T0 storage is the frame. Codegen checks the arena before the tier
+    //     (src/ir/expr.psm), so accepting a T0 site here would take a hoisted
+    //     alloca and turn it into one bump allocation per loop iteration.
+    //   * T3 and T4b carry a count in a prefix header and are released by a
+    //     decrement. The last decrement calls the deallocator, and a bump
+    //     pointer is not a thing it can take.
+    //   * `drop(x)` frees it explicitly, for the same reason as below.
+    //
+    // T1 and T2 both pass, and T2 passing is the point: SPEC 5.2 makes the tier
+    // the derived fact and the placement a codegen decision, so a bracketed site
+    // keeps the tier it derived and the manifest reads `T2  region:<name>`.
+    // Promoting it to T1 would move the tier distribution, and the oracle does
+    // not model placement -- the differential would then fail on a difference
+    // that is not an inference difference.
+    int br = site_bracket_region(id);
+    if (br >= 0) {
+        int tier = aif_tier_of(id);
+        if (tier != AIF_T1 && tier != AIF_T2) mask |= AIF_ARENA_B_NOT_T1;
+        if (s->no_stack) mask |= AIF_ARENA_B_NO_STACK;
+        if (blockers) *blockers = mask;
+        return mask == 0 ? br : -1;
+    }
 
     if (aif_tier_of(id) != AIF_T1) mask |= AIF_ARENA_B_NOT_T1;  // T0 has the frame
     // The same reason the T0 clause asks: an arena pointer is not a thing a
@@ -2871,6 +3359,13 @@ int aif_scope_region_col(int s)  { return (s < 0 || s >= scope_count) ? 0 : scop
 // stops being honoured is a gate regression, an inferred placement moving is not.
 int aif_site_arena_is_pinned(int id) {
     if (id < 0 || id >= site_count) return 0;
+    // SPEC 5.2.1.1. A bracketed site's arena is a `region` in *another* function,
+    // which enclosing_region cannot see -- and it is always a pinned one, because
+    // bracketing only ever targets a `region` (see bracket_place). Asked of the
+    // gate rather than of the lexical tree for that reason, and asked first so
+    // the lexical answer below is left exactly as it was for every other site.
+    int served = site_arena_scope(id);
+    if (served >= 0 && scopes[served].region_name >= 0) return 1;
     int r = enclosing_region(sites[id].scope);
     if (r < 0) return 0;
     return scopes[r].region_name >= 0 ? 1 : 0;
@@ -3185,6 +3680,432 @@ int aif_call_edge_count(void) {
         if (call_edges[i].callee >= 0) n++;
     }
     return n;
+}
+
+// ============================================================================
+// Call-site placement (SPEC 5.2.1.1)
+//
+// The section above answers "may a caller's region reach this function". This
+// one decides it, per call site, and hands the resulting sites an arena.
+//
+// **There is no new codegen mechanism, and that is the shape of the thing.** An
+// arena is on a dynamic stack: `region r { ... }` already emits arena_push at
+// entry and arena_pop at every exit, so while a bracketed callee runs, its
+// caller's arena is the top of that stack. All that was missing was for the
+// *analysis* to say a callee's site belongs to it -- after which the two hooks
+// that already exist do the work. ir_alloc_region takes a struct literal
+// straight to arena_alloc, and ir_arena_hint_begin/end takes a producing runtime
+// call (a string, a list) there. Both are keyed on aif_arena_at_node, which is
+// this file's gate, so both follow from the clause below and neither needed a
+// line of frontend change. An earlier design bracketed the Prismio call itself
+// with the hint; that would have routed *every* runtime allocation in the extent
+// to the arena, including ones the per-site gate declined.
+//
+// Three decisions, none of them re-derivable from the code alone:
+//
+// **Only a `region`-pinned arena, never a cost-model-chosen one.** Otherwise
+// placement depends on bracketing depends on placement: enclosing_region reads
+// scopes[].arena, which aif_place_arenas sets from arena_would_serve, which
+// would then have to count bracketed sites as benefit. `region` sets the flag at
+// parse time, before placement runs, so restricting to it cuts the loop -- and
+// leaves arena_would_serve, the one clause-list copy deliberately *not* behind
+// site_arena_scope, correct without change.
+//
+// **Obligation 3 is not readable from E.** "The value the call returns does not
+// outlive R" is a property of the call site, and E cannot express it:
+// AIF_CON_LIVE_IN's transfer sets E = Caller for every site whose fn is not the
+// binding function, by construction, because a scope id in one function does not
+// order against one in another. The fact wanted is the *caller-side* binding, and
+// the points-to graph already holds it -- pt[k] for a VAR key names the function
+// and var_scope names the declaring scope. So obligation 3 is asked of the keys
+// and of the owner sites, not of E. bracket_site_bounded is that question.
+//
+// **Regime (a) is what makes one body serve one regime**, and it is checked by
+// aif_fn_bracket_blockers above: the callee has exactly one call site, and every
+// function the extent reaches is reached only from inside it. Together with the
+// bracketed call being inside the region, that means the extent's bodies run at
+// the region's arena depth on every path they can be entered from.
+// ============================================================================
+
+// Key ids are dense and the interning table is a hash, so a reverse index is the
+// only way to ask "what kind of location is key k". Rebuilt when key_count moves,
+// which after the solve it does not.
+static KeyNode** key_by_id;
+static int key_by_id_len;
+
+static void key_index_build(void) {
+    if (key_by_id && key_by_id_len == key_count) return;
+    free(key_by_id);
+    key_by_id = key_count > 0
+        ? (KeyNode**)xcalloc((size_t)key_count, sizeof(KeyNode*), "AIF key index")
+        : NULL;
+    for (int b = 0; b < AIF_KEY_BUCKETS; b++) {
+        for (KeyNode* n = key_buckets[b]; n; n = n->next) {
+            if (n->id >= 0 && n->id < key_count) key_by_id[n->id] = n;
+        }
+    }
+    key_by_id_len = key_count;
+}
+
+// Which *objects* hold each site: the owner set of every field store and of every
+// `retain_in` call. container_of already records the second, and E-STORE consumes
+// the first without keeping it, so this reconstructs both from cons[] after the
+// solve. It is the half of obligation 3 the keys cannot answer: a FIELD key is
+// object-insensitive (INFERENCE 3.1), so `Wrapper.list` says nothing about which
+// Wrapper -- and *which* is exactly the question, because a Wrapper the extent
+// allocated dies with the extent and one the caller allocated does not.
+static Bits* site_owner_sites;
+static int site_owner_len;
+static Bits owner_bits_val, owner_bits_own;
+static IntVec owner_vec_val, owner_vec_own;
+
+static void site_owners_build(void) {
+    if (site_owner_sites || site_count == 0) return;
+    site_owner_sites = (Bits*)xcalloc((size_t)site_count, sizeof(Bits), "AIF store owners");
+    site_owner_len = site_count;
+
+    for (int i = 0; i < con_count; i++) {
+        Constraint* k = &cons[i];
+        int vset, oset;
+        if (k->kind == AIF_CON_STORE)          { vset = k->b; oset = k->c; }
+        else if (k->kind == AIF_CON_RETAIN_IN) { vset = k->a; oset = k->b; }
+        else continue;
+        resolve(vset, &owner_bits_val);
+        resolve(oset, &owner_bits_own);
+        bits_to_vec(&owner_bits_val, &owner_vec_val);
+        bits_to_vec(&owner_bits_own, &owner_vec_own);
+        for (int a = 0; a < owner_vec_val.len; a++) {
+            for (int b = 0; b < owner_vec_own.len; b++) {
+                bits_set(&site_owner_sites[owner_vec_val.v[a]], owner_vec_own.v[b],
+                         "AIF store owners");
+            }
+        }
+    }
+}
+
+// The innermost `region` enclosing this scope, or -1. Distinct from
+// enclosing_region, which also answers for an arena the cost model chose: only a
+// pinned one may be bracketed into, and the reason is the circularity above.
+static int enclosing_pinned_region(int scope) {
+    for (int s = scope; s >= 0; s = scopes[s].parent) {
+        if (scopes[s].arena && scopes[s].region_name >= 0) return s;
+    }
+    return -1;
+}
+
+// Functions that cannot be running unless the region is.
+//
+// The bracketed extent is one of them, and it is not all of them. `submit(cmds)`
+// in g2_region takes the list the bracketed `cull` returned; the walk binds a
+// parameter to a local of the same name, so `cmds` lands in a VAR key belonging
+// to a function that is in no extent at all. Rejecting that would reject the
+// case the whole feature exists for, and accepting it unconditionally would
+// accept a function that also runs somewhere the region does not.
+//
+// So the set is closed the same way regime (a) closes the extent: a function
+// joins when **every** call site of it is inside the region -- either from a
+// member (which is therefore itself only running inside the region) or from the
+// bracketing caller at a scope at or below `r`. A function with no callers at all
+// never joins; `main` is the one that matters there.
+//
+// The bracketing caller is excluded by construction. It is running when the
+// region is *not* -- that is what the "at or below r" test on its bindings is
+// for -- and admitting it would make every call it makes anywhere read as
+// confined.
+static void region_confined(int r, int caller_fn, const Bits* extent, Bits* out) {
+    bits_clear(out);
+    bits_or(out, extent, "AIF region confinement");
+
+    // Tri-state, and `signed char` rather than `char` on purpose: plain `char` is
+    // unsigned on some ARM targets, and -1 would read back as 255. The logic
+    // survives that by accident -- every promotion is guarded by `== 0` -- and an
+    // invariant that holds by accident is one the next edit breaks silently.
+    //   0  no call site seen yet     1  every call site so far is inside r
+    //  -1  entered from outside; final, and never promoted back
+    signed char* ok = (signed char*)xcalloc((size_t)(fn_count ? fn_count : 1), 1,
+                                            "AIF region confinement");
+    for (int pass = 0; pass <= fn_count; pass++) {
+        for (int g = 0; g < fn_count; g++) ok[g] = 0;
+        for (int i = 0; i < call_edge_count; i++) {
+            CallEdge* e = &call_edges[i];
+            if (e->callee < 0 || e->callee >= fn_count) continue;
+            if (ok[e->callee] < 0) continue;
+            if (bits_test(out, e->caller)) { if (ok[e->callee] == 0) ok[e->callee] = 1; continue; }
+            if (e->caller == caller_fn && scope_lca(e->scope, r) == r) {
+                if (ok[e->callee] == 0) ok[e->callee] = 1;
+                continue;
+            }
+            ok[e->callee] = -1;     // entered from somewhere the region is not
+        }
+        int changed = 0;
+        for (int g = 0; g < fn_count; g++) {
+            if (ok[g] != 1 || g == caller_fn || bits_test(out, g)) continue;
+            bits_set(out, g, "AIF region confinement");
+            changed = 1;
+        }
+        if (!changed) break;
+    }
+    free(ok);
+}
+
+// Obligation 3, for one site of a bracketed extent.
+//
+// Every location that may hold this value has to die no later than `r`. Three
+// kinds of location can, and everything else fails:
+//
+//   * a binding, a parameter or a return in a function confined to the region --
+//     those frames are gone before the region exits;
+//   * a binding in the bracketing caller declared at or below `r`;
+//   * a field or element of an object the extent itself allocated.
+//
+// A PARAM key is allowed and that is not a hole: the walk binds every parameter
+// to a local of the same name, so the same value reaches a VAR key of the same
+// function and that is the one this decides on. A RET key of the bracketing
+// caller is `return f(...)` straight through the region, and it is the case an
+// `E`-based test cannot see at all -- E is already Caller for every site in the
+// extent, by construction.
+static int bracket_trace;   // AIF_BRACKET_TRACE=1 -- why one site failed obligation 3
+
+static int bracket_reject(int s, const char* why, int detail) {
+    if (bracket_trace) {
+        fprintf(stderr, "aif: site %d (%s %s:%d) not bounded: %s %d\n",
+                s, aif_str(sites[s].type),
+                sites[s].fn >= 0 ? aif_str(fns[sites[s].fn].name) : "?",
+                sites[s].line, why, detail);
+    }
+    return 0;
+}
+
+static int bracket_site_bounded(int s, const Bits* confined, const Bits* extent,
+                                int r, int caller_fn) {
+    for (int k = 0; k < pt_len; k++) {
+        if (!bits_test(&pt[k], s)) continue;
+        KeyNode* kn = key_by_id[k];
+        if (kn == NULL) return bracket_reject(s, "unknown key", k);
+        if (kn->kind == AIF_KEY_PARAM) continue;        // decided at the callee's own VAR key
+        if (kn->kind == AIF_KEY_FIELD) continue;        // decided by the owner set below
+        if (kn->kind == AIF_KEY_RET) {
+            if (kn->a == caller_fn) return bracket_reject(s, "returned past the region", k);
+            continue;
+        }
+        if (kn->kind != AIF_KEY_VAR) return bracket_reject(s, "extern key", k);
+        int fn = kn->a;
+        if (fn >= 0 && fn < fn_count && bits_test(confined, fn)) continue;
+        if (fn != caller_fn) return bracket_reject(s, "bound in", fn);
+        int declared = (k < var_scope_cap) ? var_scope[k] : -1;
+        if (declared < 0) return bracket_reject(s, "undeclared binding", k);
+        if (scope_lca(declared, r) != r) return bracket_reject(s, "binding above r, scope", declared);
+    }
+    // The owner has to be in the *extent*, not merely confined to the region.
+    // An object a confined function allocated may still be returned out of the
+    // region -- confinement bounds the activation, not the value -- whereas
+    // every extent site is one this same loop is deciding, so requiring the
+    // owner to be one of those makes the answer inductive rather than assumed.
+    for (int o = 0; o < site_count; o++) {
+        if (!bits_test(&site_owner_sites[s], o)) continue;
+        int of = sites[o].fn;
+        if (of < 0 || of >= fn_count || !bits_test(extent, of)) {
+            return bracket_reject(s, "owner site outside the extent", o);
+        }
+    }
+    return 1;
+}
+
+// site -> the region scope a bracketed call hands it, or -1.
+static int* site_bracket;
+static int bracket_place_ready;
+static Bits bracket_place_extent, bracket_place_confined;
+
+// One entry per bracketed call. SPEC 5.2.1.1 requires the manifest to record
+// them, because regime (a) is fragile as a language guarantee -- adding a second
+// call to a bracketed callee silently removes the placement -- and a loss that
+// appears as a diff is one somebody notices.
+typedef struct {
+    int callee;     // function id
+    int scope;      // the region scope that brackets it
+    int call_scope; // the caller scope the call sits in, for the footprint estimate
+} Bracket;
+
+static Bracket* brackets;
+static int bracket_count, bracket_cap;
+
+static void bracket_place(void) {
+    if (bracket_place_ready) return;
+    bracket_place_ready = 1;
+    if (site_count == 0) return;
+
+    bracket_prepare();
+    key_index_build();
+    site_owners_build();
+    bracket_trace = getenv("AIF_BRACKET_TRACE") != NULL;
+
+    site_bracket = (int*)xcalloc((size_t)site_count, sizeof(int), "AIF call-site placement");
+    for (int s = 0; s < site_count; s++) site_bracket[s] = -1;
+
+    for (int i = 0; i < call_edge_count; i++) {
+        CallEdge* e = &call_edges[i];
+        if (e->callee < 0 || e->callee >= fn_count) continue;
+        int r = enclosing_pinned_region(e->scope);
+        if (r < 0) continue;
+        if (aif_fn_bracket_blockers(e->callee) != 0) continue;
+
+        // The bracketing caller. It is the region's owner and not e->caller,
+        // because those are the same function -- e->scope is a scope of e->caller
+        // and enclosing_pinned_region walked its own parents -- and naming it this
+        // way is what the obligation is actually about.
+        int caller_fn = scopes[r].owner;
+
+        bracket_reachable(e->callee, &bracket_place_extent);
+        region_confined(r, caller_fn, &bracket_place_extent, &bracket_place_confined);
+
+        // A call this compilation cannot summarise may be handed one of the
+        // extent's values, and FFI 5.1's `borrow` default is an assumption
+        // adequate for assigning a tier and **not** adequate for handing a callee
+        // arena memory -- SPEC 5.2.1.1's last paragraph says so in as many words.
+        // It is invisible to every check above: an undeclared extern's arguments
+        // produce only a borrow edge, which raises A and leaves E and the
+        // points-to graph alone. So it is asked of the call graph instead, over
+        // every function that can be running while the region is.
+        //
+        // AIF_BR_B_OPAQUE already covers the extent. What this adds is the
+        // caller's own region body, and the confined functions it reaches
+        // through calls other than the bracketed one.
+        int opaque_in_region = 0;
+        for (int j = 0; j < call_edge_count && !opaque_in_region; j++) {
+            CallEdge* o = &call_edges[j];
+            if (o->callee >= 0) continue;
+            if (bits_test(&bracket_place_confined, o->caller)) opaque_in_region = 1;
+            else if (o->caller == caller_fn && scope_lca(o->scope, r) == r) opaque_in_region = 1;
+        }
+        if (opaque_in_region) continue;
+
+        int ok = 1;
+        for (int s = 0; s < site_count && ok; s++) {
+            int f = sites[s].fn;
+            if (f < 0 || f >= fn_count || !bits_test(&bracket_place_extent, f)) continue;
+            if (!bracket_site_bounded(s, &bracket_place_confined, &bracket_place_extent,
+                                      r, caller_fn)) ok = 0;
+        }
+        if (!ok) continue;
+
+        if (bracket_count == bracket_cap) {
+            bracket_cap = bracket_cap ? bracket_cap * 2 : 16;
+            brackets = (Bracket*)xrealloc(brackets, (size_t)bracket_cap * sizeof(Bracket),
+                                          "AIF call-site placement");
+        }
+        brackets[bracket_count].callee = e->callee;
+        brackets[bracket_count].scope = r;
+        brackets[bracket_count].call_scope = e->scope;
+        bracket_count++;
+
+        for (int s = 0; s < site_count; s++) {
+            int f = sites[s].fn;
+            if (f < 0 || f >= fn_count || !bits_test(&bracket_place_extent, f)) continue;
+            // Regime (a) means a function is in at most one extent -- SHARED_BODY
+            // rejects a body reachable from outside the one that would be
+            // bracketed. Asserted rather than assumed: two answers for one site
+            // would be two arenas, and the wrong one is a use-after-free.
+            if (site_bracket[s] >= 0 && site_bracket[s] != r) { site_bracket[s] = -1; continue; }
+            site_bracket[s] = r;
+        }
+    }
+}
+
+static int site_bracket_region(int id) {
+    if (id < 0 || id >= site_count) return -1;
+    bracket_place();
+    return site_bracket ? site_bracket[id] : -1;
+}
+
+int aif_bracket_count(void) { bracket_place(); return bracket_count; }
+
+int aif_bracket_callee(int i) {
+    bracket_place();
+    return (i < 0 || i >= bracket_count) ? -1 : brackets[i].callee;
+}
+
+int aif_bracket_scope(int i) {
+    bracket_place();
+    return (i < 0 || i >= bracket_count) ? -1 : brackets[i].scope;
+}
+
+// How many sites this bracket actually places. A bracket that reaches nothing is
+// still recorded -- it is a real placement decision and a later edit can make it
+// serve something -- but the manifest has to be able to say so, for the same
+// reason `region` warns when it serves nothing.
+int aif_bracket_served(int i) {
+    bracket_place();
+    if (i < 0 || i >= bracket_count) return 0;
+    // Per *extent*, not per scope. Two brackets into one region is the ordinary
+    // case -- g2_region's `cull` and `submit` are both in `frame_arena` -- and
+    // counting by scope would report each of them as serving the other's sites,
+    // which is how a manifest starts describing a build that did not happen.
+    bracket_reachable(brackets[i].callee, &bracket_place_extent);
+    int n = 0;
+    for (int s = 0; s < site_count; s++) {
+        int f = sites[s].fn;
+        if (f < 0 || f >= fn_count || !bits_test(&bracket_place_extent, f)) continue;
+        if (site_arena_scope(s) >= 0) n++;
+    }
+    return n;
+}
+
+// 1 when this site is served by a bracketed call rather than by a `region` in its
+// own function. `--why` needs the two apart: the second is what the programmer
+// wrote and the first is what the compiler decided on their behalf.
+int aif_site_is_bracketed(int id) {
+    return site_bracket_region(id) >= 0 && site_arena_scope(id) >= 0;
+}
+
+// ----------------------------------------------------------------------------
+// What a bracketed call adds to its region's footprint (REQUIREMENTS 19)
+//
+// `arena_would_serve` deliberately does not count these, and must not: it is the
+// input to aif_place_arenas, so counting a bracketed site there would make
+// placement depend on bracketing depend on placement. But the high-water
+// estimate and the `region name pin(N)` gate run *after* placement, and the
+// question they ask is different -- not "would an arena here be worth it" but
+// "how much will this arena hold". Leaving the bracketed sites out of that
+// answer is a budget gate passing on memory the binary really does bump-allocate,
+// which is the wrong direction for a fixed-budget target to be wrong in.
+//
+// The weight is a product of two estimates and neither is new. How many times
+// the site runs per entry of its own function is its loop depth there; how many
+// times the call runs per entry of the region is the call site's loop depth
+// relative to `r`. Both use AIF_LOOP_ITERS, so this cannot disagree with
+// allocs_in(s) about what a loop multiplies -- and both are static, like every
+// other input to this estimate. `weight_of` cannot be used for the first half:
+// loop_depth is counted *within* a function, so a difference taken across two of
+// them is not a number.
+// ----------------------------------------------------------------------------
+
+static long weight_in_own_fn(int site_scope) {
+    if (site_scope < 0 || site_scope >= scope_count) return 1;
+    int loops = scopes[site_scope].loop_depth;
+    if (loops > 6) loops = 6;               // capped as weight_of caps it
+    long w = 1;
+    for (int i = 0; i < loops; i++) w *= AIF_LOOP_ITERS;
+    return w;
+}
+
+// `unsized` counts sites whose size the frontend never computed -- a string or a
+// list, whose length is a run-time value -- rather than guessing at one.
+static long bracket_bytes_of(int scope, int* unsized) {
+    bracket_place();
+    long total = 0;
+    for (int i = 0; i < bracket_count; i++) {
+        if (brackets[i].scope != scope) continue;
+        long callw = weight_of(brackets[i].call_scope, scope);
+        bracket_reachable(brackets[i].callee, &bracket_place_extent);
+        for (int k = 0; k < site_count; k++) {
+            int f = sites[k].fn;
+            if (f < 0 || f >= fn_count || !bits_test(&bracket_place_extent, f)) continue;
+            if (site_arena_scope(k) != scope) continue;
+            if (sites[k].bytes == 0) { if (unsized) (*unsized)++; continue; }
+            total += (long)sites[k].bytes * weight_in_own_fn(sites[k].scope) * callw;
+        }
+    }
+    return total;
 }
 
 static int site_in_released_field(int s);
@@ -3943,6 +4864,15 @@ void aif_reset(void) {
     pt_len = 0;
     holders_len = 0;
 
+    // LAYOUT 5's traversal table, for exactly the reason the call graph below is
+    // torn down: a declared `workload` runs the engine twice in one process, and
+    // traversals that survived would be counted against a second set of loop ids
+    // -- doubling every co-access set and, because the loop ids differ, doing it
+    // as *extra traversals* rather than as bigger ones. The cost of a candidate
+    // would then scale with how many times the engine had run.
+    traversals_reset();
+    candidates_clear();
+
     // SPEC 5.2.1.1's call graph. It has to be torn down here like everything
     // else, and the reason is not hypothetical: a declared `workload` runs the
     // whole engine twice in one process (LAYOUT 3.2), so edges that survived a
@@ -3976,6 +4906,33 @@ void aif_reset(void) {
     owner_use_cap = 0;
     bits_free(&bracket_closure);
     bits_free(&bracket_scratch);
+
+    // SPEC 5.2.1.1's placement, torn down for the same reason the call graph
+    // above is: a declared `workload` runs the whole engine twice in one process,
+    // and site_bracket indexed by a *previous* run's site ids would hand this
+    // run's sites an arena chosen for someone else's program.
+    free(site_bracket);
+    site_bracket = NULL;
+    free(brackets);
+    brackets = NULL;
+    bracket_count = 0;
+    bracket_cap = 0;
+    bracket_place_ready = 0;
+    bits_free(&bracket_place_extent);
+    bits_free(&bracket_place_confined);
+    for (int i = 0; i < site_owner_len; i++) bits_free(&site_owner_sites[i]);
+    free(site_owner_sites);
+    site_owner_sites = NULL;
+    site_owner_len = 0;
+    bits_free(&owner_bits_val);
+    bits_free(&owner_bits_own);
+    free(owner_vec_val.v);
+    free(owner_vec_own.v);
+    owner_vec_val.v = NULL; owner_vec_val.len = 0; owner_vec_val.cap = 0;
+    owner_vec_own.v = NULL; owner_vec_own.len = 0; owner_vec_own.cap = 0;
+    free(key_by_id);
+    key_by_id = NULL;
+    key_by_id_len = 0;
 
     bits_free(&in_released_field);
     in_released_field_done = 0;

@@ -18,11 +18,22 @@ whose allocation is in a callee, it is on almost every non-served site, and no
 change to the escape lattice moves it -- see SPEC 5.2.1.
 
 The second table is what *does* move it: SPEC 5.2.1.1's call-site bracketing,
-reported per site by `--why` since 2026-08-16. Read the two together. The first
-says what the lexical gate serves today; the second says how much of the
-remainder is in a function a caller's region could bracket, and -- separately,
-because it is the half that is usually zero -- how much of *that* is actually
-called from inside a region.
+reported per site by `--why` since 2026-08-16 and **placed** since 2026-08-16
+(second session). Read the two together, and read them in that order:
+
+  * `SERVED` in the first table is every site an arena reaches, by either route.
+  * `BRACKETED` in the second is how many *calls* were placed, and `br_served`
+    how many sites that moved. Those sites are in SERVED and are therefore *not*
+    in `blocked`, so they are not in `PLACEABLE` either.
+  * `PLACEABLE` is what is still blocked and could be bracketed but is not --
+    after the placement pass, that is the residue rather than the opportunity.
+    It reads 0 across this corpus, and that is the *success* condition: the two
+    sites it counted before are the two that are now served.
+
+A count that lives on two surfaces is checked on both: `--summary` derives
+`bracketed` from the call graph and the manifest prints one line per bracket. The
+census fails if they disagree, which is what stops a reworded report from taking
+a column silently to zero.
 """
 import argparse
 import collections
@@ -74,16 +85,45 @@ def programs():
 
 
 def manifest_symbols(cc, path):
-    """(symbol, tier, placement) per record, or None if the program does not build."""
+    """(records, brackets), or (None, 0) if the program does not build.
+
+    `records` is (symbol, tier, placement) per line; `brackets` is how many calls
+    SPEC 5.2.1.1 says the manifest has to record, counted off the section it
+    requires.
+    """
     r = subprocess.run([cc, "aif", path], capture_output=True, text=True)
     if r.returncode != 0:
-        return None
+        return None, 0
     out = []
+    brackets = 0
+    in_brackets = False
     for line in r.stdout.splitlines():
+        if "bracketed calls (SPEC 5.2.1.1 regime (a))" in line:
+            in_brackets = True
+            continue
+        if in_brackets:
+            if line.startswith("#   "):
+                brackets += 1
+                continue
+            in_brackets = False
         parts = line.split()
         if len(parts) >= 3 and "#" in parts[0] and not line.startswith("#"):
             out.append((parts[0], parts[1], parts[2]))
-    return out
+    return out, brackets
+
+
+def summary_brackets(cc, path):
+    """`--summary`'s own count of placed calls and served sites.
+
+    A second, independent derivation of the manifest's section above: this one
+    walks the call graph, that one prints the recorded decisions. Compared rather
+    than trusted, because a single-surface count goes quietly to zero when the
+    wording it is matched on moves -- which is the failure this whole file exists
+    to make impossible, one level up.
+    """
+    r = subprocess.run([cc, "aif", path, "--summary"], capture_output=True, text=True)
+    m = re.search(r"^bracketed\s+(\d+)\s+call site\(s\) placed; (\d+) site", r.stdout, re.M)
+    return (int(m.group(1)), int(m.group(2))) if m else (-1, -1)
 
 
 def blockers_for(cc, path, symbol):
@@ -131,11 +171,17 @@ def main():
 
     totals = collections.Counter()
     rows = []
+    disagreed = []
     for path in programs():
-        records = manifest_symbols(cc, path)
+        records, manifest_brackets = manifest_symbols(cc, path)
         if records is None:
             continue                      # a module with no main(); g6_engine is one
         counts = collections.Counter()
+        placed, br_served = summary_brackets(cc, path)
+        if placed != manifest_brackets:
+            disagreed.append((os.path.relpath(path, REPO), placed, manifest_brackets))
+        counts["BRACKETED"] = placed
+        counts["br_served"] = br_served
         for symbol, _tier, placement in records:
             if placement.startswith("region:") and placement != "region:none":
                 counts["SERVED"] += 1
@@ -159,25 +205,26 @@ def main():
 
     table(["SERVED", "blocked"] + [n for n, _ in BLOCKERS],
           "# what the lexical gate serves, and what stops the rest (SPEC 5.2.1)")
-    table(["PLACEABLE", "in_region"] + [n for n, _ in BRACKET],
-          "# what call-site bracketing could reach (SPEC 5.2.1.1)")
+    table(["BRACKETED", "br_served", "PLACEABLE", "in_region"] + [n for n, _ in BRACKET],
+          "# what call-site bracketing reached, and what is left (SPEC 5.2.1.1)")
 
     served, blocked = totals["SERVED"], totals["blocked"]
-    print(f"\n{served} of {served + blocked} sites are arena-served.")
+    print(f"\n{served} of {served + blocked} sites are arena-served, "
+          f"{totals['br_served']} of them by a bracketed call.")
     print(f"{totals['no_region']} of {blocked} blocked sites have no region in their own "
           f"function (SPEC 5.2.1) --")
     print("that clause is what an escape-lattice change does not move.")
-    print(f"\n{totals['br_yes']} of those sites are in a function a caller's region MAY bracket,")
-    print(f"and {totals['PLACEABLE']} of them are also called from inside one. Both halves are "
-          f"needed: a")
-    print("function that clears every obligation is never placed if nothing calls it")
-    print("from a region, and every corpus program that does not say `region` has 0.")
+    print(f"\n{totals['BRACKETED']} call site(s) were bracketed (SPEC 5.2.1.1 regime (a)). "
+          f"Both halves are")
+    print("needed and the second is the one that is usually zero: a function that clears")
+    print("every obligation is never placed if nothing calls it from a region, and every")
+    print("corpus program that does not say `region` has none.")
     print("")
-    print("PLACEABLE is an upper bound and not a prediction. It says the *call* may be")
-    print("bracketed; whether the site is then served still depends on the per-site")
-    print("clauses in the first table -- `in_container` and `is_list` reject a value the")
-    print("deallocator would take, and clearing those for a bracketed extent is the")
-    print("disposition half (SPEC 5.2.1.1), which is a separate change from bracketing.")
+    print(f"PLACEABLE is the residue, not the opportunity: {totals['PLACEABLE']} site(s) are "
+          f"still blocked")
+    print("*and* in a function a region could bracket. A site that was placed is served, so")
+    print("it left the blocked column and this one -- which is why 0 here beside a non-zero")
+    print("br_served is the success condition and 0 beside 0 is a corpus with no `region`.")
 
     if totals["no_region"] and not totals["_saw_bracketing"]:
         print("\nERROR: not one `--why` printed a bracketing verdict, on a run with "
@@ -185,6 +232,14 @@ def main():
         print("that must each have one. The section's wording has moved and every "
               "BRACKET substring")
         print("above is now matching nothing -- the columns are zero for the wrong reason.")
+        return 1
+    if disagreed:
+        print("\nERROR: `--summary` and the manifest disagree about how many calls were")
+        print("bracketed. They are two derivations of one decision -- the call graph and")
+        print("the recorded placements -- so a difference is a reporting defect in one of")
+        print("them, and a census that read only one would have gone quietly to zero.")
+        for name, summary_n, manifest_n in disagreed:
+            print(f"  {name}: --summary {summary_n}, manifest {manifest_n}")
         return 1
     return 0
 

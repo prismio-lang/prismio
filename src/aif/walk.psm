@@ -465,14 +465,18 @@ fn aifWalk(nodePtr: String, fnId: Int, scope: Int) {
     if (n.kind == NodeKind.WHILE_STATEMENT) {
         aifWalkChildren(n.child1, fnId, scope)
         aifLoopDepth = aifLoopDepth + 1
+        aif_traversal_begin()
         aifWalkChildren(n.child2, fnId, scope)
+        aif_traversal_end()
         aifLoopDepth = aifLoopDepth - 1
         return
     }
 
     if (n.kind == NodeKind.LOOP_STATEMENT) {
         aifLoopDepth = aifLoopDepth + 1
+        aif_traversal_begin()
         aifWalkChildren(n.child1, fnId, scope)
+        aif_traversal_end()
         aifLoopDepth = aifLoopDepth - 1
         return
     }
@@ -481,7 +485,9 @@ fn aifWalk(nodePtr: String, fnId: Int, scope: Int) {
         aifWalkChildren(n.child1, fnId, scope)
         aifWalkChildren(n.child2, fnId, scope)
         aifLoopDepth = aifLoopDepth + 1
+        aif_traversal_begin()
         aifWalkChildren(n.child3, fnId, scope)
+        aif_traversal_end()
         aifLoopDepth = aifLoopDepth - 1
         return
     }
@@ -510,6 +516,20 @@ fn aifWalk(nodePtr: String, fnId: Int, scope: Int) {
         // still a declaration.
         aif_var_note_scope(fnId, n.s1, scope)
         if (nodeExists(n.child2)) {
+            // LAYOUT 5's `order`. A binding of a container element inside a loop
+            // is the shape the cost model calls sequential: the records are
+            // visited in container order, which is the only thing that makes a
+            // smaller hot record worth anything. Anything else stays a pointer
+            // chase, where a split costs a second miss instead.
+            let init = ptr_to_node(n.child2)
+            if (init.kind == NodeKind.CALL_EXPR) {
+                if (nodeExists(init.child1)) {
+                    let callee = ptr_to_node(init.child1)
+                    if (str_equals(callee.s1, "list_get") == 1) {
+                        aif_traversal_elem(aifBaseType(aifNodeType(n)), 1)
+                    }
+                }
+            }
             let v = aifSitesOf(n.child2, fnId, scope)
             aif_con_bind(aif_key_var(fnId, n.s1), v)
             aif_con_live_in(v, scope, fnId)

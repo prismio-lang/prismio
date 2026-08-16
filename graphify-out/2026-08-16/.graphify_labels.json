@@ -149,13 +149,10 @@
   "147": "RESULTS — the string/parse axis",
   "148": "g7bench.py",
   "149": "optlevel.py",
-  "150": "Scopes",
   "151": "Prismio IDE protocol",
   "152": "Session of 2026-08-13 — `workload` lands; two of LAYOUT 6's dimensions are not blocked on what the brief said",
-  "153": "xcalloc",
   "154": "LAYOUT 6's candidate space, measured against what this compiler can emit",
   "155": "The cross-language suite — Prismio vs Rust vs Swift",
   "156": "arena_census.py",
-  "157": "HANDOFF.md",
-  "158": "2 · Prediction vs measurement, per axis"
+  "157": "HANDOFF.md"
 }

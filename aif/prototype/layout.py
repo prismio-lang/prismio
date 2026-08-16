@@ -326,6 +326,25 @@ def traversal_cost(model, ty, L, t):
         bytes_per = groups * LINE
         resident = record_size(model, ty, L.hot)
     elif L.grouping == 'AoS':
+        # DIVERGENCE from the compiler (runtime/aif_support.c, layout_cost), and
+        # deliberate on both sides. This models an INDEXED split: the cold half of
+        # element i is at a computed offset in a parallel block, so touching it is
+        # more sequential scanning and adding its bytes is right.
+        #
+        # The compiler's split is LINKED -- the hot record holds a pointer to a
+        # separately malloc'd cold block, which is the only form expressible
+        # without handles. There a cold touch is a dependent miss priced at
+        # pi(random), and the hot record additionally carries the 8-byte link.
+        #
+        # The difference is not academic: on g1 this pricing scores 1188M for the
+        # 1/12 cut against 1180M for 8/12 -- 0.7% apart, and it prefers 8/12 by
+        # that margin. Add the link word the compiler pays and the order inverts,
+        # so the compiler would select a cut that pushes five of `integrate`'s six
+        # fields cold. See LAYOUT 5.2.1 and RESULTS-layout 5.2.
+        #
+        # Kept as-is here because this prototype models LAYOUT 6's candidate space
+        # in general, including groupings the compiler cannot emit; the compiler
+        # models the one it can.
         bytes_per = record_size(model, ty, L.hot)
         if cold_touched:
             bytes_per += record_size(model, ty, set(ftypes) - L.hot)

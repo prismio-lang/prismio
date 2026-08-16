@@ -380,7 +380,7 @@ fn printUsage() {
     println("  prismio bootstrap [source.psm] [-o output.exe]")
     println("  prismio runtime-hash")
     println("  prismio dump-ast <source.psm>")
-    println("  prismio aif <source.psm> [--summary] [--copyable-collections] [--theta-fields] [--budget=N]")
+    println("  prismio aif <source.psm> [--summary] [--layout] [--copyable-collections] [--theta-fields] [--budget=N]")
     println("  prismio aif <source.psm> --why=<symbol>   why one record has the tier it has")
     println("")
     println("build/run link against the installed Prismio runtime only.")
@@ -498,7 +498,7 @@ fn checkCommand(path: String) -> Int {
 // generates -- which is the point at this stage: the tier distribution becomes
 // measurable before any of it is risked on the self-host.
 fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: Bool,
-               budget: Int, why: String) -> Int {
+               budget: Int, why: String, layout: Bool) -> Int {
     let merged = analyzedModule(path)
     if (diag_error_count() > 0) {
         return 1
@@ -530,7 +530,7 @@ fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: 
     }
 
     aifAnalyzeProfiled(merged, path, PRISMIO_VERSION, ownedCollections, summary,
-                        thetaFields, budget, profilePath)
+                        thetaFields, budget, profilePath, layout)
     return 0
 }
 
@@ -965,12 +965,19 @@ fn main() -> Int {
         let mut aifOwned = true
         let mut aifThetaFields = false
         let mut aifWhy = ""
+        let mut aifLayout = false
         let mut aifBudgetArg = AIF_DEFAULT_ROUNDS
         let mut aifArg = 3
         while (aifArg < cli_arg_count()) {
             let flag = cli_arg(aifArg)
             if (str_equals(flag, "--summary") == 1) {
                 aifSummary = true
+            } else if (str_equals(flag, "--layout") == 1) {
+                // LAYOUT 7.2's argmin and 8's ranked top-k, printed rather than
+                // acted on. The cost model exists; the transform that would use
+                // it does not, and a ranking nobody can read is a ranking nobody
+                // can check before it starts moving objects.
+                aifLayout = true
             } else if (str_starts_with(flag, "--why=") == 1) {
                 // SPEC 6.3's minimal cause for one record. The symbol is the one
                 // the manifest prints, so it can be copied straight out of a
@@ -1012,7 +1019,8 @@ fn main() -> Int {
             aifArg = aifArg + 1
         }
 
-        return aifCommand(cli_arg(2), aifSummary, aifOwned, aifThetaFields, aifBudgetArg, aifWhy)
+        return aifCommand(cli_arg(2), aifSummary, aifOwned, aifThetaFields, aifBudgetArg,
+                           aifWhy, aifLayout)
     }
 
     // Compiler development. The command itself selects the build mode -- there is no

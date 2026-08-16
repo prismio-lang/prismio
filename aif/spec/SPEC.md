@@ -510,6 +510,34 @@ satisfy regime (a). `region` is what turns that into placement: `g2_region.psm` 
 inside its region and both reach a qualifying callee**, while every corpus program without a
 `region` has none.
 
+**Implemented, 2026-08-16.** Both calls are bracketed and `g2_region.psm` now serves
+**10 200 000 of its 10 201 215 allocations** from `frame_arena`, against 0 before. No corpus
+program without a `region` moved by a byte — the two halves of the measurement above are exactly
+the two halves of the result.
+
+Three consequences of this section that an implementer should not have to re-derive:
+
+- **A bracketed site keeps its derived tier.** SPEC 5.2 makes the tier the derived fact and the
+  placement a codegen decision, so the manifest reads `T2  region:<name>`: a value that crossed a
+  function boundary has `E = Caller` by construction and nothing about bracketing changes that.
+  Promoting it to T1 would move the tier distribution for a reason that is not an inference
+  difference.
+- **Only a `region`-pinned arena may be bracketed into**, never one an implementation's own cost
+  model chose. Otherwise placement depends on bracketing depends on placement. `region` fixes the
+  arena before placement runs, which cuts the loop.
+- **Obligation 3 is not readable from the escape lattice.** `E` is already `Caller` for every site
+  in the extent — that is what makes the extent an extent. The fact wanted is the *caller-side*
+  binding of each callee-allocated value, which a points-to graph already carries: the locations
+  that may hold it, and for a local binding the scope it was declared in. An implementation that
+  tries to answer obligation 3 from `E` will find both the sound and the unsound case reporting the
+  same value.
+
+An implementation MAY additionally record placement on a container that has a header, and the
+reference one does: a `List` stores which arena its element block came from, because `list_push`
+reallocates that block long after the site that made it and would otherwise hand a bump pointer to
+the deallocator. That is resolution (c) used as a *supplement* to (a), which is what the table above
+means by (c) never being sufficient alone — the bare struct still relies on (a).
+
 ### 5.3 `workload(…)`
 
 A declared representative input. It is **not** a fact about any value and SHALL NOT enter the fact

@@ -1,4 +1,5 @@
-// SPEC 5.2 / 5.2.1 -- what a `region` actually serves, asserted at run time.
+// SPEC 5.2 / 5.2.1 / 5.2.1.1 -- what a `region` actually serves, asserted at run
+// time.
 //
 // Nothing in this suite has ever checked that an arena allocates anything. The
 // manifest said `region:` and the tests read values, and both were satisfied by
@@ -9,21 +10,39 @@
 // `arena_objects()` is the only way to tell an arena pointer from a malloc'd one:
 // the values are identical. Sampled as a *delta* around each region rather than
 // as a total, because std/io's own string sites are auto-arena-placed and a total
-// would couple this fixture to how many times it prints.
+// would couple this fixture to how many times it prints. `ir_alloc_region`
+// deliberately bypasses `--verify`'s accounting -- an arena releases in bulk and
+// the ledger has nothing to pair a release with -- so the ledger cannot see any
+// of this either. This counter is the only witness there is.
 //
-// The two halves have to be read together. Either alone passes for the wrong
-// reason: `serves` alone passes if every region serves, `serves_nothing` alone
-// passes if no region ever does.
+// **This fixture changed on 2026-08-16, deliberately, and the old version is the
+// second half of the record.** It had `serves_nothing`: the same allocation moved
+// one function down read 0, because SPEC 5.2.1's arena is lexical. Its header
+// said "when call-site placement lands, `serves_nothing` is the test that
+// changes". It landed, and it does -- `serves_from_a_callee` is that function
+// with the assertion inverted. What replaces it as the pin is the pair below it:
+// call-site placement is *conditional*, and a fixture that only checked the case
+// that now works would pass on a compiler that bracketed unconditionally, which
+// is a use-after-free rather than a lost optimisation.
 //
-//   serves          -- 50 allocations bump-allocated from the named region
-//   serves_nothing  -- the same allocation moved into a callee: 0, because
-//                      SPEC 5.2.1's arena is lexical and `enclosing_region`
-//                      walks a scope tree rooted per function
+// Four functions, and each one is the discriminator for the next:
 //
-// **When call-site placement lands, `serves_nothing` is the test that changes**,
-// and it should change deliberately, with this comment rewritten. Until then it
-// is the pin holding the limitation in place so nobody re-derives it a fourth
-// time.
+//   serves                       50 -- a lexical region, SPEC 5.2
+//   serves_from_a_callee         50 -- the same allocation one function down,
+//                                      reached by bracketing the call (5.2.1.1)
+//   outlives_serves_nothing       0 -- obligation 3 alone: identical shape, one
+//                                      call site, every other obligation clear,
+//                                      and the binding declared *above* the
+//                                      region instead of inside it
+//   shared_body_serves_nothing    0 -- regime (a) alone: two call sites, both
+//                                      inside the same region, so every binding
+//                                      is at or below `r` and nothing but the
+//                                      call count separates this from the second
+//
+// Read the first two together and the last two together. Either pair alone
+// passes for the wrong reason: the positives alone pass on a compiler that
+// brackets everything, and the negatives alone pass on one that brackets
+// nothing -- which is exactly the compiler this fixture was written against.
 
 extern fn print(s: String)
 extern fn println(s: String)
@@ -43,6 +62,10 @@ fn fail(what: String) -> Int {
 // The allocation is bound to a name declared in the region's own scope, so its
 // escape rises above the allocating block and the T0 clause declines -- T1, in a
 // region it cannot outlive, held by no container. Every gate passes.
+//
+// 50 and not 51: the initialiser `Cmd { id: 0, weight: 0 }` is declared and used
+// in one scope, so it is T0 and lives in the frame. Only the 50 assignments in
+// the loop body outlive their own block.
 fn serves() -> Int {
     let before = arena_objects()
     region work {
@@ -63,28 +86,110 @@ fn serves() -> Int {
     return 0
 }
 
-// The identical allocation, one function further down. The region is in this
-// function; the site is in `make`, whose scope tree has no arena in it.
+// SPEC 5.2.1.1. The identical allocation, one function further down. `make` has
+// no region and cannot have one -- an arena is a lexical scope and this is not
+// the function the scope is in. What reaches it is the *call*: `make` clears the
+// obligations, it has exactly one call site, that site is inside `callee_work`,
+// and the value it returns is bound at a scope the region contains. So the
+// bracket is legal and the allocation comes from the caller's arena.
+//
+// No new codegen mechanism does this. `region` already pushes an arena on entry
+// and pops it at every exit, so while `make` runs, the caller's arena is the top
+// of the dynamic stack; all that changed is that the analysis now says this site
+// belongs to it, after which ir_alloc_region -- which has existed since Level 3
+// -- routes it there.
 fn make(i: Int) -> Cmd {
     return Cmd { id: i, weight: i * 2 }
 }
 
-fn serves_nothing() -> Int {
+fn serves_from_a_callee() -> Int {
     let before = arena_objects()
     region callee_work {
         let mut keep = Cmd { id: 0, weight: 0 }
         let mut i = 0
         while (i < 50) {
             keep = make(i)
-            if (keep.id != i) { return fail("serves_nothing value") }
+            if (keep.id != i) { return fail("serves_from_a_callee value") }
             i = i + 1
         }
+    }
+    let served = arena_objects() - before
+    if (served != 50) {
+        print("  served ")
+        println(served)
+        return fail("serves_from_a_callee: the bracketed call did not reach the arena")
+    }
+    return 0
+}
+
+// Obligation 3, isolated. `make_out` is byte-for-byte `make`; the region is the
+// same shape; the call site is the only one and it is inside the region. The one
+// difference is where `keep` is declared -- one line up, in the function's own
+// scope rather than the region's -- so the value the call returns is still live
+// after the arena is gone.
+//
+// This is the obligation E cannot express, and the reason it needs its own
+// fixture. AIF_CON_LIVE_IN sets E = Caller for every site whose function is not
+// the binding function, by construction: a scope id in `make_out` does not order
+// against one in this function. So `make_out`'s site has exactly the same E in
+// both cases and the answer has to come from the caller-side binding instead.
+// A test that read E would pass here and be wrong.
+fn make_out(i: Int) -> Cmd {
+    return Cmd { id: i, weight: i * 2 }
+}
+
+fn outlives_serves_nothing() -> Int {
+    let before = arena_objects()
+    let mut keep = Cmd { id: 0, weight: 0 }
+    region outlived_work {
+        let mut i = 0
+        while (i < 50) {
+            keep = make_out(i)
+            if (keep.id != i) { return fail("outlives value") }
+            i = i + 1
+        }
+    }
+    if (keep.id != 49) { return fail("outlives: the value did not survive the region") }
+    let served = arena_objects() - before
+    if (served != 0) {
+        print("  served ")
+        println(served)
+        return fail("outlives: a value that outlives the region came from its arena")
+    }
+    return 0
+}
+
+// Regime (a), isolated. Two call sites, **both inside the same region**, so every
+// caller binding is at or below `r` and obligation 3 holds for both. Nothing
+// separates this from `serves_from_a_callee` except the call count.
+//
+// Both sites being in one region is what makes the isolation real. Put the second
+// call in a second region and obligation 3 fails as well -- the points-to graph is
+// context-insensitive, so one callee site is held by both callers' bindings and
+// neither region contains the other's. The fixture would then pass whichever
+// clause was deleted, which is the defect this suite produces most.
+fn make_shared(i: Int) -> Cmd {
+    return Cmd { id: i, weight: i * 2 }
+}
+
+fn shared_body_serves_nothing() -> Int {
+    let before = arena_objects()
+    region shared_work {
+        let mut keep = Cmd { id: 0, weight: 0 }
+        let mut i = 0
+        while (i < 50) {
+            keep = make_shared(i)
+            if (keep.id != i) { return fail("shared_body value") }
+            i = i + 1
+        }
+        let extra = make_shared(99)
+        if (extra.id != 99) { return fail("shared_body extra value") }
     }
     let served = arena_objects() - before
     if (served != 0) {
         print("  served ")
         println(served)
-        return fail("serves_nothing: a callee's allocation reached a lexical arena")
+        return fail("shared_body: a body with two call sites was bracketed anyway")
     }
     return 0
 }
@@ -92,7 +197,9 @@ fn serves_nothing() -> Int {
 fn main() -> Int {
     let mut bad = 0
     bad = bad + serves()
-    bad = bad + serves_nothing()
+    bad = bad + serves_from_a_callee()
+    bad = bad + outlives_serves_nothing()
+    bad = bad + shared_body_serves_nothing()
     if (bad != 0) { return 1 }
     println("test_58 ok")
     return 0

@@ -16,22 +16,82 @@
 // Counters are plain non-atomic longs: every benchmark in this set is
 // single-threaded, and making them atomic would put a lock-prefixed RMW in the
 // hot path of the thing being measured.
+//
+// **The window, and why the process total is the wrong number.**
+//
+// bench.py times only the frame loop but used to report the allocator traffic of
+// the whole *process*, and the two stopped describing the same region the moment
+// the corpus's reporting loops moved onto the allocating `println` overload
+// (commit 901b494): g1's column went 2,214 -> 26,326, which is 4.02 allocations
+// per print over 6,002 prints, with the timing untouched. The column was then
+// reporting overhead wearing a workload's name.
+//
+// The fix is to stop counting the dump. Every program in this set -- Prismio,
+// Rust and Swift alike -- brackets each frame with CLOCK_MONOTONIC_RAW, because
+// that is how it emits the `frame_ns` lines bench.py parses, and every one of
+// them dumps those lines *after* the last frame. So interposing the clock gives
+// the boundary for free, in every language, with no edit to any program:
+//
+//   first clock read  -> latch the window open
+//   every clock read  -> latch, so the last one closes it
+//   window            = last - first
+//
+// **What the window actually spans, stated exactly.** Not the frame loop alone.
+// libsystem reads the clock a couple of dozen times during process startup, so
+// the first read is before `main`, and the window is therefore *everything up to
+// the end of the last timed frame*: process init, setup, and the loop -- with the
+// report dump excluded. That is the right cut and not a concession to the
+// startup calls. Setup is where a boxed representation actually pays: g1's window
+// is 2,215 allocations against Rust's 206, and almost all of Prismio's are
+// build_system's 2,000 individually malloc'd particles. A loop-only window would
+// read ~0 against ~0 and erase the one difference the column exists to show. The
+// dump is overhead of *reporting* the measurement and belongs to neither.
+//
+// It also reproduces the number this column carried before 901b494 (2,214 on g1)
+// and matches g2's independently documented 10,201,215 allocations, which is the
+// check that the window is where it is claimed to be.
+//
+// `clock_calls` is emitted so the harness can audit that: these programs read the
+// clock exactly twice per frame, so anything outside [2*frames, 2*frames+64] means
+// the bracket is not where it looks -- a runtime calling the same symbol in a hot
+// path, or a program that stopped timing per frame. A window derived from an
+// interposed symbol would otherwise fail silently, which is the failure mode this
+// project keeps finding.
 
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <time.h>
 
 static unsigned long n_malloc, n_calloc, n_realloc, n_free;
+static unsigned long w0_malloc, w0_calloc, w0_realloc, w0_free;
+static unsigned long w1_malloc, w1_calloc, w1_realloc, w1_free;
+static unsigned long n_clock;
+
+static void clock_mark(void) {
+    if (n_clock == 0) {
+        w0_malloc = n_malloc; w0_calloc = n_calloc;
+        w0_realloc = n_realloc; w0_free = n_free;
+    }
+    n_clock++;
+    w1_malloc = n_malloc; w1_calloc = n_calloc;
+    w1_realloc = n_realloc; w1_free = n_free;
+}
 
 // Written without stdio so the report cannot itself allocate.
 static void emit(void) {
     const char *path = getenv("ALLOCOUNT_OUT");
-    char buf[256];
+    char buf[512];
     int n = snprintf(buf, sizeof buf,
-                     "malloc %lu\ncalloc %lu\nrealloc %lu\nfree %lu\n",
-                     n_malloc, n_calloc, n_realloc, n_free);
+                     "malloc %lu\ncalloc %lu\nrealloc %lu\nfree %lu\n"
+                     "loop_malloc %lu\nloop_calloc %lu\nloop_realloc %lu\n"
+                     "loop_free %lu\nclock_calls %lu\n",
+                     n_malloc, n_calloc, n_realloc, n_free,
+                     w1_malloc - w0_malloc, w1_calloc - w0_calloc,
+                     w1_realloc - w0_realloc, w1_free - w0_free, n_clock);
     if (n <= 0) return;
     int fd = 2;
     if (path && *path) {
@@ -64,6 +124,16 @@ INTERPOSE(count_malloc,  malloc)
 INTERPOSE(count_calloc,  calloc)
 INTERPOSE(count_realloc, realloc)
 INTERPOSE(count_free,    free)
+
+// The window bracket. All three languages' harnesses bottom out here on macOS:
+// Prismio declares it as an `extern fn`, Rust's harness::now_ns and Swift's
+// nowNs both call it directly.
+extern uint64_t clock_gettime_nsec_np(clockid_t);
+static uint64_t count_clock(clockid_t c) {
+    clock_mark();
+    return clock_gettime_nsec_np(c);
+}
+INTERPOSE(count_clock, clock_gettime_nsec_np)
 
 #else
 
@@ -125,6 +195,17 @@ void free(void *p) {
     if (from_boot(p)) return;
     if (p) n_free++;
     real_free(p);
+}
+
+// The window bracket. `clock_gettime_nsec_np` is Darwin-only; on Linux the
+// harnesses reach the clock through clock_gettime, so that is the symbol to
+// bracket on. Same contract: first call opens the window, last call closes it.
+int clock_gettime(clockid_t c, struct timespec *ts) {
+    static int (*real_clock_gettime)(clockid_t, struct timespec *);
+    if (!real_clock_gettime)
+        real_clock_gettime = dlsym(RTLD_NEXT, "clock_gettime");
+    clock_mark();
+    return real_clock_gettime(c, ts);
 }
 
 #endif

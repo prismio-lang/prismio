@@ -34,6 +34,25 @@ WHAT IS MEASURED, AND HOW
                             these runs are never used for timing. Rates are counts
                             over the median clean loop time.
 
+                            **Counted up to the end of the last timed frame** --
+                            startup, setup and the loop, with the frame_ns dump
+                            excluded -- bracketed on the clock every one of these
+                            programs already reads per frame. It was a process
+                            total until 2026-08-16, and once the corpus's reporting
+                            loops moved onto the allocating `println` overload
+                            (commit 901b494) that made g1 read 26,261 where the
+                            workload allocated 2,215: ~4 allocations per print over
+                            6,002 prints, with the timing untouched. The column had
+                            become a measure of reporting.
+
+                            Setup is deliberately inside the window: it is where a
+                            boxed representation costs, and it is most of the
+                            2,215-vs-206 gap against Rust on g1. A loop-only window
+                            would read ~0 on both sides and say nothing. The
+                            process total is still reported, on the "whole process"
+                            line under each table and as `process_allocs` /
+                            `process_frees` in the JSON.
+
   exe size                  Stat of the linked binary.
 
   NOTE  Until 2026-08-08 `prismio build` ran no optimiser on either the program
@@ -281,15 +300,54 @@ def measure(exe, runs, tmp):
     return per_run, checks
 
 
-def measure_allocs(exe, dylib, tmp, alloc_tmp):
+# libsystem reads the clock a couple of dozen times during startup, so the window
+# opens before main rather than at frame 0. Measured 14-25 over the corpus; 64 is
+# the slack that admits that without admitting a bracket in a hot path.
+CLOCK_SLACK = 64
+
+
+def measure_allocs(exe, dylib, tmp, alloc_tmp, frames=None, label=""):
+    """Allocator traffic up to the end of the last timed frame, and process-wide.
+
+    The first number is the one the table prints, and the two were the same
+    number until the corpus's reporting loops moved onto the allocating
+    `println` overload: g1 then read 26,261 process allocations against 2,215 of
+    workload, because 6,002 prints cost ~4 each. The timing never included the
+    dump, so the process total had stopped describing anything the timing did.
+
+    The window spans startup, setup and the frame loop, and excludes the dump --
+    see allocount.c for why that is the right cut rather than the loop alone
+    (setup is where a boxed representation pays, and a loop-only window reads ~0
+    on both sides for g1). `clock_calls` audits that the bracket is where it is
+    claimed to be.
+    """
     run_once(exe, tmp, preload=dylib, alloc_out=alloc_tmp)
     counts = {}
     with open(alloc_tmp) as fh:
         for line in fh:
             k, v = line.split()
             counts[k] = int(v)
-    allocs = counts.get("malloc", 0) + counts.get("calloc", 0) + counts.get("realloc", 0)
-    return allocs, counts.get("free", 0), counts
+
+    total = sum(counts.get(k, 0) for k in ("malloc", "calloc", "realloc"))
+    loop = sum(counts.get("loop_" + k, 0) for k in ("malloc", "calloc", "realloc"))
+
+    if "clock_calls" not in counts:
+        sys.exit("allocount reported no clock_calls: the dylib predates the "
+                 "windowed counters. Rebuild it -- "
+                 "rm aif/evidence/xlang/build/allocount.dylib -- or drop "
+                 "--skip-build, which rebuilds it every time.")
+    if frames is not None:
+        lo, hi = 2 * frames, 2 * frames + CLOCK_SLACK
+        if not lo <= counts["clock_calls"] <= hi:
+            sys.exit(
+                f"{label or exe}: the allocation window is not where it should "
+                f"be -- {counts['clock_calls']:,} clock reads for {frames:,} "
+                f"frames, outside [{lo:,}, {hi:,}]. Either something other than "
+                f"the frame loop is reading CLOCK_MONOTONIC_RAW, or this program "
+                f"no longer times one frame per iteration. The `allocs` column "
+                f"would be measuring a region nobody chose.")
+
+    return loop, counts.get("loop_free", 0), total, counts.get("free", 0), counts
 
 
 def agg(per_run, key):
@@ -355,7 +413,8 @@ def main():
         rows = []
         for _, key, label, lang, exe in built:
             per_run, checks = measure(exe, args.runs, tmp)
-            allocs, frees, raw = measure_allocs(exe, dylib, tmp, alloc_tmp)
+            allocs, frees, tot_allocs, tot_frees, raw = measure_allocs(
+                exe, dylib, tmp, alloc_tmp, per_run[0]["frames"], label)
             loop_med = agg(per_run, "loop_ms")[0]
             row = {
                 "variant": key, "label": label, "language": lang,
@@ -367,6 +426,7 @@ def main():
                 "wall_ms": agg(per_run, "wall_ms"),
                 "rss_mb": agg(per_run, "rss_mb"),
                 "allocs": allocs, "frees": frees, "alloc_raw": raw,
+                "process_allocs": tot_allocs, "process_frees": tot_frees,
                 "allocs_per_s": allocs / (loop_med / 1000.0) if loop_med else 0.0,
                 "frees_per_s": frees / (loop_med / 1000.0) if loop_med else 0.0,
                 "exe_bytes": os.path.getsize(exe),
@@ -397,6 +457,12 @@ def main():
                       f"{rel('p999_us'):>10}{rel('loop_ms'):>10}{'':>10}"
                       f"{rel('rss_mb'):>9}{ra:>12}{rf:>12}")
 
+        # The process totals, kept visible rather than dropped. `allocs` above is
+        # the timed region; the difference is setup and the frame_ns dump, and a
+        # reader comparing against a pre-2026-08-16 table needs to see both to
+        # know which number moved.
+        print(f"\n{'whole process (allocs/frees)':<17}" + "  ".join(
+            f"{r['label']} {r['process_allocs']:,}/{r['process_frees']:,}" for r in rows))
         print(f"\nspread over {args.runs} runs (min-max): " + ", ".join(
             f"{r['label']} loop {r['loop_ms'][1]:.1f}-{r['loop_ms'][2]:.1f}ms" for r in rows))
         print(f"frame samples per run: {rows[0]['frames']:,}"
