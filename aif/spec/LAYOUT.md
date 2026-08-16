@@ -394,6 +394,22 @@ remove it. It does not supply the escape fact — the analysis already has that.
 
 Ties break by scope node order (§9).
 
+**`allocs_in(s)` counts only sites the code generator will actually route to `s`, and the two
+predicates SHALL be the same one.** *(Added in 1.2.1, from a measured defect.)* A site excluded from
+arena placement for a codegen reason — an element a container reclaims, a value an explicit `drop`
+frees, a collection that reallocates past its own site — contributes no benefit, because the arena
+will never see it. Scoring it anyway places arenas whose entire justification is traffic they do not
+receive: in the reference implementation this put a live `arena_push`/`arena_pop` pair into three
+programs that bump-allocated nothing, and inflated the §REQUIREMENTS-19 `peak-bytes` estimate on all
+three — one of them reporting 64 bytes of arena for an arena holding zero. A budget gate reads that
+number.
+
+The failure is a duplicated predicate rather than a wrong model, which is why the requirement is
+that they be one predicate and not merely that they agree.
+
+Note also §SPEC 5.2.1: a site is only ever servable by an arena in **its own function**, so
+`allocs_in(s)` is a sum over the sites lexically within `s`, never over what its callees allocate.
+
 ### 7.2 Layout selection
 
 ```

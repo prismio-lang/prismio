@@ -314,6 +314,10 @@ typedef struct {
     // rather than the block.
     long budget;
     int budget_file, budget_line, budget_col;
+    // SPEC 5.2's diagnostic. Recorded for every `region`, not only for one that
+    // carries a budget, because the warning that matters most fires on the plain
+    // form -- a region that serves nothing and says nothing.
+    int region_file, region_line, region_col;
 } Scope;
 
 static Scope* scopes;
@@ -334,7 +338,15 @@ int aif_scope_new(int parent, int owner) {
     s->node = NULL;
     s->budget = 0;
     s->budget_file = s->budget_line = s->budget_col = 0;
+    s->region_file = s->region_line = s->region_col = 0;
     return scope_count++;
+}
+
+void aif_scope_set_region_span(int scope, int file, int line, int col) {
+    if (scope < 0 || scope >= scope_count) return;
+    scopes[scope].region_file = file;
+    scopes[scope].region_line = line;
+    scopes[scope].region_col = col;
 }
 
 void aif_scope_set_budget(int scope, int bytes, int file, int line, int col) {
@@ -2549,6 +2561,11 @@ static int arena_would_serve(int site_id, int cand) {
     if (aif_tier_of(site_id) != AIF_T1) return 0;   // T0 has the frame already
     if (s->no_stack) return 0;                      // an explicit drop frees it
     if (s->kind == AIF_K_LIST) return 0;            // grows past its site; see below
+    // The container reclaims it, so codegen will not route it here whatever this
+    // model decides -- site_arena_scope declines on the same flag. Counting it as
+    // benefit placed arenas whose whole justification was traffic they would never
+    // see, which is the automatic-placement form of the inert `region`.
+    if (s->in_container) return 0;
     if (s->E < 0) return 0;                         // Caller or Global
     if (!is_ancestor_or_self(cand, s->scope)) return 0;
     if (scope_lca(s->E, cand) != cand) return 0;    // outlives the arena
@@ -2709,45 +2726,114 @@ int aif_auto_arena_at_node(const void* node) {
 
 // SPEC 5.2: may this value come from the enclosing region's arena?
 //
-// Only if it dies no later than that region does. The escape is a scope, and
-// the arena is released when its own scope exits, so the test is "is the region
-// an ancestor-or-self of the escape scope" -- lca(E, r) == r.
+// **This is the only arena gate.** Codegen (aif_arena_at_node), the manifest's
+// placement column (aif_region_name_at_site), the zero-serving diagnostic
+// (aif_region_serves), the LAYOUT 7.1 cost model and `--why`'s placement section
+// all read this one function. A disagreement between them is a manifest
+// describing a build that did not happen -- the defect the `rc`/`rc:none` split
+// exists to prevent, one tier down. They were four separate copies of these
+// clauses until 2026-08-14, and the copy that had drifted was placing arenas
+// that served nothing.
 //
-// The nesting case is the one that makes this more than a lexical question:
+// The nesting case is what makes the last clause more than a lexical question:
 //
 //     region outer { let mut x = ...; region inner { x = Foo{} } use(x) }
 //
 // `Foo{}` is lexically inside `inner`, but its escape is `outer`'s scope, and
 // inner's arena is gone by `use(x)`. lca(outer, inner) is outer, not inner, so
 // this correctly declines and the value goes to the heap.
+//
+// **`blockers` receives EVERY clause that rejected, not the first**, and that is
+// the whole reason it is a mask. A short-circuiting answer told a reader of g2
+// "the tier is not T1" -- true, and the wrong thing to act on, because
+// `in_container` and `no_region` reject the same site immediately afterwards. So
+// the tier gets fixed, the binary does not change, and the session ends with a
+// design note explaining a gate nobody read to the end. That happened three
+// times before this mask existed.
+
+#define AIF_ARENA_B_NOT_T1       1
+#define AIF_ARENA_B_NO_STACK     2
+#define AIF_ARENA_B_IN_CONTAINER 4
+#define AIF_ARENA_B_IS_LIST      8
+#define AIF_ARENA_B_NO_REGION   16
+#define AIF_ARENA_B_ESCAPES     32
+#define AIF_ARENA_B_OUTLIVES    64
+
+static int site_arena_scope_full(int id, int* blockers) {
+    if (id < 0 || id >= site_count) {
+        if (blockers) *blockers = AIF_ARENA_B_NOT_T1;
+        return -1;
+    }
+    Site* s = &sites[id];
+    int mask = 0;
+
+    if (aif_tier_of(id) != AIF_T1) mask |= AIF_ARENA_B_NOT_T1;  // T0 has the frame
+    // The same reason the T0 clause asks: an arena pointer is not a thing a
+    // deallocator can take, and `drop(x)` emits one unconditionally -- the
+    // source, not the model, decided when that value dies.
+    if (s->no_stack) mask |= AIF_ARENA_B_NO_STACK;
+    // The container frees its elements through the deallocator, and a pointer
+    // into the middle of an arena chunk is not one it can take.
+    if (s->in_container) mask |= AIF_ARENA_B_IN_CONTAINER;
+    // An arena serves values allocated once. A list is not one: list_push
+    // reallocates the element block long after this site returned, at whatever
+    // arena depth the program happens to be at then -- so the block would be
+    // tied to a region the list can outlive, and freeing the old block would
+    // hand arena memory to the deallocator.
+    if (s->kind == AIF_K_LIST) mask |= AIF_ARENA_B_IS_LIST;
+
+    // **The clause that decides the corpus, and the one three sessions of design
+    // notes walked past.** `enclosing_region` walks scopes[].parent, a *lexical*
+    // tree rooted per function -- scope_lca returns -1 across owners. So a site
+    // in a callee can never find an arena its caller opened, however its escape
+    // is spelled. Measured 2026-08-14: of 234 allocation sites in aif/corpus and
+    // aif/evidence, 38 are served and 196 are not -- and **all 196 fail here**.
+    // Every one of the 38 is a case where the region and the allocation share a
+    // function. No value of E moves that number, because E holds a scope id in
+    // the site's own function while the arena that would serve a callee's
+    // allocation is chosen at run time by arena_depth. SPEC 5.2.1 states it
+    // normatively; aif/evidence/arena_census.py re-derives it in one command.
+    int r = enclosing_region(s->scope);
+    if (r < 0) {
+        mask |= AIF_ARENA_B_NO_REGION;
+    } else if (s->E < 0) {
+        mask |= AIF_ARENA_B_ESCAPES;                // Caller or Global
+    } else if (scope_lca(s->E, r) != r) {
+        mask |= AIF_ARENA_B_OUTLIVES;
+    }
+
+    if (blockers) *blockers = mask;
+    return mask == 0 ? r : -1;
+}
+
+static int site_arena_scope(int id) {
+    return site_arena_scope_full(id, NULL);
+}
+
+// SPEC 6.3's witness path, for placement rather than for the tier. `--why`
+// answered "what made this T2" and said nothing about where the value lives.
+int aif_arena_blockers(int id) {
+    int mask = 0;
+    site_arena_scope_full(id, &mask);
+    return mask;
+}
+
+// The region a site would have been served by if the gate had not declined --
+// i.e. the nearest enclosing one, ignoring every other clause. "" when there is
+// none, which is what AIF_ARENA_B_NO_REGION already says; this exists so the
+// OUTLIVES case can name the arena the value escaped past.
+const char* aif_nearest_region_name(int id) {
+    if (id < 0 || id >= site_count) return "";
+    int r = enclosing_region(sites[id].scope);
+    if (r < 0) return "";
+    return scopes[r].region_name < 0 ? "auto" : aif_str(scopes[r].region_name);
+}
+
 int aif_arena_at_node(const void* node) {
     if (node == NULL) return 0;
     for (NodeSite* n = node_buckets[node_hash(node)]; n; n = n->next) {
         if (n->node != node) continue;
-        Site* s = &sites[n->site];
-        if (aif_tier_of(n->site) != AIF_T1) return 0;   // T0 has the frame already
-        // The same reason the T0 clause asks: an arena pointer is not a thing a
-        // deallocator can take, and `drop(x)` emits one unconditionally -- the
-        // source, not the model, decided when that value dies. Latent while
-        // arenas only appeared where a `region` was written; automatic placement
-        // (LAYOUT 7.1) puts one around almost every explicit drop.
-        if (s->no_stack) return 0;
-        // The container frees its elements through the deallocator, and a pointer
-        // into the middle of an arena chunk is not one it can take. Same exclusion
-        // as no_stack above, one owner further out.
-        if (s->in_container) return 0;
-        // An arena serves values allocated once. A list is not one: list_push
-        // reallocates the element block long after this site returned, at
-        // whatever arena depth the program happens to be at then -- so the block
-        // would be tied to a region the list can outlive, and freeing the old
-        // block would hand arena memory to the deallocator. Lists stay on the
-        // heap and are reclaimed by list_release at their binding's scope exit,
-        // which is also what keeps the Level 2 drop path exercised.
-        if (s->kind == AIF_K_LIST) return 0;
-        int r = enclosing_region(s->scope);
-        if (r < 0) return 0;
-        if (s->E < 0) return 0;                         // Caller or Global
-        return scope_lca(s->E, r) == r ? 1 : 0;
+        return site_arena_scope(n->site) >= 0 ? 1 : 0;
     }
     return 0;
 }
@@ -2757,17 +2843,28 @@ int aif_arena_at_node(const void* node) {
 // declaration -- so it reports "auto", which is what distinguishes it in the
 // manifest from a `region` the programmer pinned.
 const char* aif_region_name_at_site(int id) {
-    if (id < 0 || id >= site_count) return "";
-    if (aif_tier_of(id) != AIF_T1) return "";
-    if (sites[id].no_stack) return "";
-    if (sites[id].in_container) return "";
-    if (sites[id].kind == AIF_K_LIST) return "";
-    int r = enclosing_region(sites[id].scope);
-    if (r < 0 || sites[id].E < 0) return "";
-    if (scope_lca(sites[id].E, r) != r) return "";
+    int r = site_arena_scope(id);
+    if (r < 0) return "";
     if (scopes[r].region_name < 0) return "auto";
     return aif_str(scopes[r].region_name);
 }
+
+// SPEC 5.2's diagnostic. How many allocation sites this scope's arena actually
+// serves -- by the codegen gate above, not by the cost model's estimate, because
+// the question a programmer is asking is "did my annotation do anything" and only
+// the emitted code answers that.
+int aif_region_serves(int scope) {
+    if (scope < 0 || scope >= scope_count) return 0;
+    int n = 0;
+    for (int i = 0; i < site_count; i++) {
+        if (site_arena_scope(i) == scope) n++;
+    }
+    return n;
+}
+
+int aif_scope_region_file(int s) { return (s < 0 || s >= scope_count) ? 0 : scopes[s].region_file; }
+int aif_scope_region_line(int s) { return (s < 0 || s >= scope_count) ? 0 : scopes[s].region_line; }
+int aif_scope_region_col(int s)  { return (s < 0 || s >= scope_count) ? 0 : scopes[s].region_col; }
 
 // 1 when this site's arena was pinned by a `region` statement rather than chosen
 // by the cost model. SPEC 6.2's `origin` column distinguishes them: a pin that
@@ -2777,6 +2874,317 @@ int aif_site_arena_is_pinned(int id) {
     int r = enclosing_region(sites[id].scope);
     if (r < 0) return 0;
     return scopes[r].region_name >= 0 ? 1 : 0;
+}
+
+// ============================================================================
+// Call-site bracketing: may a caller's region reach a callee's allocations?
+// (SPEC 5.2.1's first named repair. Report only -- nothing here places anything.)
+//
+// The gate above rejects a site whose `region` is in another function, and the
+// census says that is 196 of 196 blocked sites. The repair is not to make the
+// site's E name the caller's arena -- it cannot; E is a scope id in the site's
+// own function -- but to *bracket the call*, so that the arena serving the
+// callee's allocations is chosen at run time by the region stack that is
+// already there.
+//
+// That is only sound when nothing the callee allocates can outlive the region.
+// This computes exactly that question, per function, and answers it as a mask
+// rather than a verdict -- the same decision `aif_arena_blockers` records, for
+// the same reason: a conjunction reported as its first failure sends a reader
+// to the wrong work, and this file has three sessions of evidence for it.
+//
+//   GLOBAL       an allocation in the extent escapes to static storage. Nothing
+//                bounds its lifetime, so no region can.
+//   PARAM_STORE  the extent stores into something it did not allocate. This is
+//                the counterexample that kills the naive version:
+//
+//                    fn add_to(dest: List<Node>, n: Int) {
+//                        list_push(dest, Node { id: n })
+//                    }
+//                    region R { add_to(long_lived_list, 5) }
+//
+//                the Node comes from R's arena and the list outlives R. Caught
+//                by asking whether every *owner* the extent stores into was
+//                itself allocated inside the extent.
+//   OPAQUE       a callee with no visible body. A summary of a body nobody can
+//                see is a guess, and the optimistic direction is the one that
+//                produces a use-after-free.
+//   DROP         `drop(x)` inside the extent. The source, not the model, decided
+//                when that value dies, and a bump pointer is not a thing free()
+//                can take. Same clause as AIF_ARENA_B_NO_STACK, one level up.
+//   SHARED_BODY  the body serves more than one placement regime -- SPEC 5.2.1's
+//                regime (a). Codegen's frees are static decisions, so a body
+//                reachable both inside and outside a bracket would have to free
+//                arena memory on one path or leak heap memory on the other.
+//                Not an allocation obligation; reported separately for that
+//                reason, and the reason the manifest must say when it fired.
+//
+// Obligation 4 -- the summary is a fixpoint over the call graph -- is not a
+// blocker but how every clause above is evaluated: recursion and mutual
+// recursion mean the transitive callee set is a closure, not a walk. The
+// remaining obligation, "the returned value does not outlive R", is a property
+// of the *call site* rather than of the function, and `site_arena_scope`'s
+// scope_lca test already answers it in the caller.
+// ============================================================================
+
+#define AIF_BR_B_GLOBAL       1
+#define AIF_BR_B_PARAM_STORE  2
+#define AIF_BR_B_OPAQUE       4
+#define AIF_BR_B_DROP         8
+#define AIF_BR_B_SHARED_BODY 16
+
+// One entry per call *expression*, so the count of entries naming a callee is
+// its static call-site count -- which is what regime (a) asks about. A bitset
+// would collapse two calls to one and silently make every callee sole-owned.
+typedef struct {
+    int caller;
+    int callee;
+    int scope;      // the caller's scope the call sits in, for "calls in a region"
+} CallEdge;
+
+static CallEdge* call_edges;
+static int call_edge_count, call_edge_cap;
+
+static CallEdge* call_edge_push(void) {
+    if (call_edge_count == call_edge_cap) {
+        call_edge_cap = call_edge_cap ? call_edge_cap * 2 : 256;
+        call_edges = (CallEdge*)xrealloc(call_edges, (size_t)call_edge_cap * sizeof(CallEdge),
+                                         "AIF call graph");
+    }
+    return &call_edges[call_edge_count++];
+}
+
+// Value sets a function stores *into*: the holder of a `retain_in` and the owner
+// set of a field store. Resolved after the solve, because until then a value set
+// names keys rather than sites.
+typedef struct {
+    int fn;
+    int vs;
+} OwnerUse;
+
+static OwnerUse* owner_uses;
+static int owner_use_count, owner_use_cap;
+
+// The per-function facts the closure walk reads. Built once, lazily, because
+// every one of them needs the converged facts.
+static Bits* fn_callees;        // fn -> direct callees, for the closure
+static Bits* fn_owner_fns;      // fn -> functions that allocated what it stores into
+static char* fn_has_global;
+static char* fn_has_drop;
+static char* fn_calls_opaque;
+static int bracket_ready;
+// How many functions the arrays above were sized for. Kept because aif_reset
+// runs after fn_count has been zeroed by the caller in some orders, and freeing
+// a bitset array by a count that is no longer the one it was allocated with is
+// how a teardown leaks or double-frees.
+static int bracket_fn_cap;
+static Bits bracket_closure, bracket_scratch;
+
+void aif_call_edge(int caller, int callee, int scope) {
+    if (caller < 0 || callee < 0) return;
+    CallEdge* e = call_edge_push();
+    e->caller = caller;
+    e->callee = callee;
+    e->scope = scope;
+}
+
+// A call this compilation cannot summarise: a sealed function, or an extern
+// whose contract table says nothing about it. An extern the table *does* know
+// is already modelled -- `retain_in` puts the value under a container,
+// `retain` sends it to Global, `consume` marks it no_stack -- so the clauses
+// below see it and this does not have to.
+//
+// Recorded as an edge to callee -1 rather than into a per-function flag array,
+// because the walk creates functions as it goes: an array sized at the first
+// opaque call would be short by every function declared after it.
+void aif_call_opaque(int caller, int scope) {
+    if (caller < 0) return;
+    CallEdge* e = call_edge_push();
+    e->caller = caller;
+    e->callee = -1;
+    e->scope = scope;
+}
+
+void aif_note_owner_use(int fn, int vs) {
+    if (fn < 0 || vs < 0) return;
+    if (owner_use_count == owner_use_cap) {
+        owner_use_cap = owner_use_cap ? owner_use_cap * 2 : 256;
+        owner_uses = (OwnerUse*)xrealloc(owner_uses, (size_t)owner_use_cap * sizeof(OwnerUse),
+                                         "AIF owner uses");
+    }
+    owner_uses[owner_use_count].fn = fn;
+    owner_uses[owner_use_count].vs = vs;
+    owner_use_count++;
+}
+
+static void bracket_prepare(void) {
+    if (bracket_ready || fn_count == 0) return;
+    bracket_ready = 1;
+
+    bracket_fn_cap = fn_count;
+    fn_callees   = (Bits*)xcalloc((size_t)fn_count, sizeof(Bits), "AIF call graph");
+    fn_owner_fns = (Bits*)xcalloc((size_t)fn_count, sizeof(Bits), "AIF store owners");
+    fn_has_global = (char*)xcalloc((size_t)fn_count, 1, "AIF bracket facts");
+    fn_has_drop   = (char*)xcalloc((size_t)fn_count, 1, "AIF bracket facts");
+    fn_calls_opaque = (char*)xcalloc((size_t)fn_count, 1, "AIF opaque calls");
+
+    for (int i = 0; i < call_edge_count; i++) {
+        CallEdge* e = &call_edges[i];
+        if (e->caller < 0 || e->caller >= fn_count) continue;
+        if (e->callee < 0) {
+            fn_calls_opaque[e->caller] = 1;
+        } else if (e->callee < fn_count) {
+            bits_set(&fn_callees[e->caller], e->callee, "AIF call graph");
+        }
+    }
+
+    for (int s = 0; s < site_count; s++) {
+        int f = sites[s].fn;
+        if (f < 0 || f >= fn_count) continue;
+        if (sites[s].E == AIF_E_GLOBAL) fn_has_global[f] = 1;
+        if (sites[s].no_stack) fn_has_drop[f] = 1;
+    }
+
+    // A store's owners are sites; which *function* allocated them is the fact
+    // the closure test needs, and it does not depend on which caller is asking,
+    // so it is computed once here rather than per query.
+    for (int i = 0; i < owner_use_count; i++) {
+        int f = owner_uses[i].fn;
+        if (f < 0 || f >= fn_count) continue;
+        resolve(owner_uses[i].vs, &bracket_scratch);
+        for (int s = 0; s < site_count; s++) {
+            if (!bits_test(&bracket_scratch, s)) continue;
+            // An orphan site belongs to no function, so no closure can contain
+            // it. fn_count is the id reserved for exactly that, and it is one
+            // past the end -- so a closure bitset never holds it and the subset
+            // test below rejects, which is the sound direction.
+            int owner_fn = sites[s].fn;
+            bits_set(&fn_owner_fns[f], (owner_fn < 0 || owner_fn >= fn_count) ? fn_count : owner_fn,
+                     "AIF store owners");
+        }
+    }
+}
+
+// Every function reachable from `f` through the call graph, `f` included.
+// INFERENCE-style worklist rather than a walk, because mutual recursion makes
+// the transitive set a least fixed point (obligation 4).
+static void bracket_reachable(int f, Bits* out) {
+    bits_clear(out);
+    bits_set(out, f, "AIF bracket closure");
+    int changed = 1;
+    while (changed) {
+        changed = 0;
+        for (int g = 0; g < fn_count; g++) {
+            if (!bits_test(out, g)) continue;
+            for (int h = 0; h < fn_count; h++) {
+                if (!bits_test(&fn_callees[g], h)) continue;
+                if (bits_set(out, h, "AIF bracket closure")) changed = 1;
+            }
+        }
+    }
+}
+
+static int bits_subset(const Bits* a, const Bits* b) {
+    for (int i = 0; i < a->nwords; i++) {
+        Word x = a->w[i];
+        if (!x) continue;
+        Word y = (i < b->nwords) ? b->w[i] : 0;
+        if (x & ~y) return 0;
+    }
+    return 1;
+}
+
+int aif_fn_bracket_blockers(int f) {
+    if (f < 0 || f >= fn_count) return AIF_BR_B_OPAQUE;
+    bracket_prepare();
+    bracket_reachable(f, &bracket_closure);
+
+    int mask = 0;
+    for (int g = 0; g < fn_count; g++) {
+        if (!bits_test(&bracket_closure, g)) continue;
+        if (fn_has_global[g])   mask |= AIF_BR_B_GLOBAL;
+        if (fn_has_drop[g])     mask |= AIF_BR_B_DROP;
+        if (fn_calls_opaque[g]) mask |= AIF_BR_B_OPAQUE;
+        if (fns[g].sealed)      mask |= AIF_BR_B_OPAQUE;
+        if (!bits_subset(&fn_owner_fns[g], &bracket_closure)) mask |= AIF_BR_B_PARAM_STORE;
+    }
+
+    // Regime (a). `f` itself must have exactly one call site -- the one that
+    // would be bracketed -- and everything it reaches must be reached only from
+    // inside the extent, or that callee's body would have to free arena memory
+    // on one path and heap memory on the other.
+    int f_calls = 0;
+    for (int i = 0; i < call_edge_count; i++) {
+        CallEdge* e = &call_edges[i];
+        if (e->callee == f) { f_calls++; continue; }
+        if (!bits_test(&bracket_closure, e->callee)) continue;
+        if (!bits_test(&bracket_closure, e->caller)) mask |= AIF_BR_B_SHARED_BODY;
+    }
+    if (f_calls != 1) mask |= AIF_BR_B_SHARED_BODY;
+
+    return mask;
+}
+
+int aif_fn_call_sites(int f) {
+    int n = 0;
+    for (int i = 0; i < call_edge_count; i++) {
+        if (call_edges[i].callee == f) n++;
+    }
+    return n;
+}
+
+// Of this function's call sites, how many sit inside a region. This is the half
+// of the answer the obligations do not carry: a function can clear every one of
+// them and still never be placed, because nobody calls it from a region. Telling
+// a reader "bracketable" without it is the manifest defect one level up --
+// reporting a property that reads as a placement and is not one.
+int aif_fn_calls_in_region(int f) {
+    int n = 0;
+    for (int i = 0; i < call_edge_count; i++) {
+        if (call_edges[i].callee != f) continue;
+        if (enclosing_region(call_edges[i].scope) >= 0) n++;
+    }
+    return n;
+}
+
+// How many call expressions sit lexically inside a `region` (or inside a scope
+// the cost model gave an arena). This is the population call-site placement can
+// draw from, and printing it beside the qualifying-function count is what makes
+// "N functions qualify" mean something: a thousand safe functions nobody calls
+// from a region is still zero placements.
+int aif_region_call_sites(void) {
+    int n = 0;
+    for (int i = 0; i < call_edge_count; i++) {
+        if (call_edges[i].callee < 0) continue;   // an opaque call is never bracketed
+        if (enclosing_region(call_edges[i].scope) >= 0) n++;
+    }
+    return n;
+}
+
+// Of those, the ones whose callee clears every obligation. This is the number
+// task 4 would act on, and it is deliberately printed next to the two counts it
+// is derived from: a large qualifying-function count with a zero here means the
+// analysis is right and the programs are not shaped the way it assumed.
+int aif_bracketable_region_call_sites(void) {
+    int n = 0;
+    for (int i = 0; i < call_edge_count; i++) {
+        if (call_edges[i].callee < 0) continue;
+        if (enclosing_region(call_edges[i].scope) < 0) continue;
+        if (aif_fn_bracket_blockers(call_edges[i].callee) == 0) n++;
+    }
+    return n;
+}
+
+// Call sites whose callee this compilation can see. The opaque ones are not in
+// the denominator because they are not in the numerator either -- a call nobody
+// can summarise is never a candidate, so counting it would make the ratio read
+// worse than the question it answers.
+int aif_call_edge_count(void) {
+    int n = 0;
+    for (int i = 0; i < call_edge_count; i++) {
+        if (call_edges[i].callee >= 0) n++;
+    }
+    return n;
 }
 
 static int site_in_released_field(int s);
@@ -2902,8 +3310,32 @@ int aif_cycle_at_node(const void* node) {
 
 static int type_releases_of(int nominal);
 
-static int elem_disposition_of(const Site* s, int tier) {
+static int elem_disposition_of(int id, int tier) {
+    if (id < 0 || id >= site_count) return AIF_ELEM_NONE;
+    const Site* s = &sites[id];
     if (s->kind == AIF_K_ARRAY || s->kind == AIF_K_OPAQUE) return AIF_ELEM_NONE;
+    // SPEC 5.2.1.1's disposition half. An arena reclaims in bulk when its region
+    // exits, so a value it serves is never released individually: handing a
+    // pointer into the middle of a chunk to the deallocator is heap corruption,
+    // and for a container element it is that once per element.
+    //
+    // **Disjoint from every clause below today**, because the placement gate
+    // rejects `in_container` and `is_list`, so no arena-served site is ever an
+    // element or a released field. It is here first, and deliberately: call-site
+    // placement removes exactly those two rejections, and a disposition that
+    // learned about arenas in the same change as placement would be a
+    // use-after-free with nothing to compare it against. Verified inert on
+    // landing -- byte-identical IR for every program in tests/, aif/corpus/ and
+    // aif/evidence/.
+    //
+    // One clause rather than one per consumer, and that is the load-bearing part.
+    // aif_elem_owner_at_node (a container's element release), field_release_of
+    // (a struct's generated release), type_is_reclaimed and
+    // aif_owns_call_result_at_node all read this function. The 2026-08-14 session
+    // found the arena gate wearing four copies, one of which had drifted and was
+    // placing arenas that served nothing; a second copy of *this* clause would be
+    // the same defect with a use-after-free behind it instead of a wasted push.
+    if (site_arena_scope(id) >= 0) return AIF_ELEM_NONE;
     if (site_is_rc(s, tier)) return AIF_ELEM_RC;
     if (site_is_cyclic(s, tier)) return AIF_ELEM_CYCLE;
     // T0 is the frame, and a T3 or T4b site the two predicates above declined has
@@ -3020,7 +3452,7 @@ static int field_release_of(int type_name, int field_name, int declared_type) {
         if (declared_type >= 0 && base_type_id(sites[s].type) != declared_type) {
             return AIF_ELEM_NONE;
         }
-        int d = elem_disposition_of(&sites[s], aif_tier_of(s));
+        int d = elem_disposition_of(s, aif_tier_of(s));
         if (d == AIF_ELEM_NONE) return AIF_ELEM_NONE;
         if (agreed == AIF_ELEM_NONE) agreed = d;
         else if (agreed != d) return AIF_ELEM_NONE;
@@ -3218,7 +3650,7 @@ static int type_is_reclaimed(int nominal) {
         type_reclaimed = (int*)xcalloc((size_t)nominal_count, sizeof(int),
                                        "AIF reclaimed types");
         for (int s = 0; s < site_count; s++) {
-            if (elem_disposition_of(&sites[s], aif_tier_of(s)) == AIF_ELEM_NONE) continue;
+            if (elem_disposition_of(s, aif_tier_of(s)) == AIF_ELEM_NONE) continue;
             int id = nominal_find_id(base_type_id(sites[s].type));
             if (id >= 0) type_reclaimed[id] = 1;
         }
@@ -3277,7 +3709,7 @@ int aif_elem_owner_at_node(const void* node) {
     int agreed = AIF_ELEM_NONE;
     for (int s = 0; s < site_count; s++) {
         if (!bits_test(&container_of[s], container)) continue;
-        int d = elem_disposition_of(&sites[s], aif_tier_of(s));
+        int d = elem_disposition_of(s, aif_tier_of(s));
         if (d == AIF_ELEM_NONE) return AIF_ELEM_NONE;
         if (agreed == AIF_ELEM_NONE) agreed = d;
         else if (agreed != d) return AIF_ELEM_NONE;
@@ -3353,11 +3785,13 @@ int aif_site_is_rc(int id) {
 // different road. The same goes for a struct-returning function with a sentinel
 // path.
 //
-// A `List` has no literal form: list_new is the only way to make one and it
-// always allocates. So the return set of a list-returning function is complete,
-// which is the property this needs and the one the other two lack. Recovering
-// them needs the points-to lattice to carry "may hold something untracked", which
-// is a real extension and not this item.
+// A `List` has no literal form: `list_new` and `list_new_with_capacity` are the
+// only ways to make one and both always allocate. So the return set of a
+// list-returning function is complete, which is the property this needs and the
+// one the other two lack -- and it is a property to check when a third
+// constructor is added, not a fact about the count. Recovering the other two
+// needs the points-to lattice to carry "may hold something untracked", which is a
+// real extension and not this item.
 //
 // Returns the deallocator the result needs: 0 none, 2 list.
 // ============================================================================
@@ -3411,7 +3845,7 @@ int aif_owns_call_result_at_node(const void* node) {
         // stores a value into a field and returns that field.
         if (site_in_released_field(s)) return AIF_ELEM_NONE;
         if (aif_tier_of(s) != AIF_T2) return AIF_ELEM_NONE;
-        int d = elem_disposition_of(&sites[s], AIF_T2);
+        int d = elem_disposition_of(s, AIF_T2);
         // A struct that owns something joins `List` here, and for the same
         // reason the comment above gives: the value set has to be complete.
         // A `List` qualifies because it has no literal form. A struct qualifies
@@ -3508,6 +3942,40 @@ void aif_reset(void) {
     key_views = NULL;
     pt_len = 0;
     holders_len = 0;
+
+    // SPEC 5.2.1.1's call graph. It has to be torn down here like everything
+    // else, and the reason is not hypothetical: a declared `workload` runs the
+    // whole engine twice in one process (LAYOUT 3.2), so edges that survived a
+    // reset would double every call-site count -- and regime (a) turns on
+    // exactly that count, so every callee would report two call sites and no
+    // function would ever be sole-regime. A wrong answer, silently, on the
+    // programs that carry a profile and on no others.
+    for (int i = 0; i < bracket_fn_cap; i++) {
+        bits_free(&fn_callees[i]);
+        bits_free(&fn_owner_fns[i]);
+    }
+    free(fn_callees);
+    free(fn_owner_fns);
+    free(fn_has_global);
+    free(fn_has_drop);
+    free(fn_calls_opaque);
+    fn_callees = NULL;
+    fn_owner_fns = NULL;
+    fn_has_global = NULL;
+    fn_has_drop = NULL;
+    fn_calls_opaque = NULL;
+    bracket_fn_cap = 0;
+    bracket_ready = 0;
+    free(call_edges);
+    call_edges = NULL;
+    call_edge_count = 0;
+    call_edge_cap = 0;
+    free(owner_uses);
+    owner_uses = NULL;
+    owner_use_count = 0;
+    owner_use_cap = 0;
+    bits_free(&bracket_closure);
+    bits_free(&bracket_scratch);
 
     bits_free(&in_released_field);
     in_released_field_done = 0;

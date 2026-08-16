@@ -777,6 +777,10 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
         return 1
     }
 
+    // SPEC 5.2. Warns rather than fails, so it goes after the gate above: an
+    // inert `region` is a pessimisation, not a false assertion about a value.
+    aifReportInertRegions()
+
     ir_reset()
 
     // SPEC 7.3's verify mode is a name swap through the allocator seam and

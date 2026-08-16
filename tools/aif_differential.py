@@ -33,6 +33,25 @@ PROTOTYPE = REPO / "aif" / "prototype" / "aif.py"
 TIERS = ("T0", "T1", "T2", "T3", "T4b")
 COUNTERS = ("sites", "opaque-ret", "extern-alloc", "static-ret",
             "literal-strings", "rounds")
+# SPEC 5.2.1's bracketing summary. Compared for the same reason the exclusions
+# are: it is a *new* thing the analysis computes, so an implementation that has
+# it and an oracle that does not would agree on every old number while
+# disagreeing about the one being built on. `region-calls` is deliberately not
+# here -- it counts call sites inside an arena, and arena placement is a codegen
+# decision the oracle does not model; see report_bracketing in aif.py.
+BRACKET = ("bracketable", "bracket-total", "sole-regime",
+           "br-global", "br-param", "br-opaque", "br-drop", "br-shared")
+
+
+def parse_bracketing(text, out):
+    m = re.search(r"^bracketable\s+(\d+)\s*/\s*(\d+)", text, re.M)
+    out["bracketable"] = int(m.group(1)) if m else -1
+    out["bracket-total"] = int(m.group(2)) if m else -1
+    m = re.search(r"^sole-regime\s+(\d+)", text, re.M)
+    out["sole-regime"] = int(m.group(1)) if m else -1
+    for k in ("br-global", "br-param", "br-opaque", "br-drop", "br-shared"):
+        m = re.search(rf"^{k}\s+(\d+)", text, re.M)
+        out[k] = int(m.group(1)) if m else -1
 
 
 def parse_compiler(text):
@@ -51,6 +70,7 @@ def parse_compiler(text):
     for t in TIERS:
         m = re.search(rf"^\s+{t}\s+(\d+)\s", text, re.M)
         out[t] = int(m.group(1)) if m else -1
+    parse_bracketing(text, out)
     return out
 
 
@@ -70,6 +90,7 @@ def parse_oracle(text):
     for t in TIERS:
         m = re.search(rf"^\s+{t}\s+(\d+)\s+\d", text, re.M)
         out[t] = int(m.group(1)) if m else -1
+    parse_bracketing(text, out)
     return out
 
 
@@ -111,7 +132,7 @@ def compare(compiler, source, owned, dumps):
     a = parse_compiler(got.stdout)
     b = parse_oracle(want.stdout)
 
-    bad = [k for k in TIERS + COUNTERS if a.get(k) != b.get(k)]
+    bad = [k for k in TIERS + COUNTERS + BRACKET if a.get(k) != b.get(k)]
     if bad:
         detail = ", ".join(f"{k}: compiler={a.get(k)} oracle={b.get(k)}" for k in bad)
         return f"{source} (owned={owned}): {detail}"
@@ -159,6 +180,24 @@ def main():
         # fixture moves exactly two sites, and view provenance is the only thing
         # that can move them.
         sources.append(Path("tests/test_53_aif_views.psm"))
+        # A **builtin** is the one runtime function whose contract the oracle
+        # cannot read off the AST: every extern a source declares carries its
+        # own, so aif.py's fallback tables only fire for names nobody declares.
+        # No source above calls `list_new_with_capacity`, so when it was added
+        # and the oracle was not told, the differential agreed on all 13 sources
+        # while the two implementations disagreed by 8 tiers on any program that
+        # used it -- the "check that cannot fail" mode again. Verified
+        # discriminating: with the oracle's tables reverted, this source reports
+        # `opaque-ret: compiler=0 oracle=5`.
+        sources.append(Path("tests/test_56_list_capacity.psm"))
+        # SPEC 5.2.1's bracketing summary, which both implementations now
+        # compute. No source above makes a function fail obligation 2 -- the
+        # corpus stores into containers it owns -- so without this the two arms
+        # would agree on `br-param: 0` by never exercising the clause, which is
+        # the "check that cannot fail" mode again. Verified discriminating: with
+        # the oracle's obligation-2 test removed, this source reports
+        # `br-param: compiler=1 oracle=0`.
+        sources.append(Path("tests/test_59_bracket_summary.psm"))
 
     dumps = {}
     failures = []

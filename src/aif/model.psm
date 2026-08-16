@@ -77,6 +77,29 @@ extern fn aif_scope_set_region(scope: Int, name: String borrow)
 extern fn aif_region_name_at_site(id: Int) -> String alias
 extern fn aif_site_arena_is_pinned(id: Int) -> Int
 
+// SPEC 5.2's diagnostic. How many sites the arena at this scope actually serves,
+// by the codegen gate, and where to underline when the answer is zero.
+extern fn aif_scope_set_region_span(scope: Int, file: Int, line: Int, col: Int)
+extern fn aif_region_serves(scope: Int) -> Int
+extern fn aif_scope_region_file(s: Int) -> Int
+extern fn aif_scope_region_line(s: Int) -> Int
+extern fn aif_scope_region_col(s: Int) -> Int
+
+// SPEC 6.3's witness path for placement. Which clause of the arena gate declined
+// this site, and the region it would otherwise have been served by.
+extern fn aif_arena_blockers(id: Int) -> Int
+extern fn aif_nearest_region_name(id: Int) -> String alias
+
+// A mask, not an enum: the gate reports every clause that rejected, because the
+// first one is reliably the wrong thing to act on. See runtime/aif_support.c.
+let AIF_ARENA_B_NOT_T1 = 1
+let AIF_ARENA_B_NO_STACK = 2
+let AIF_ARENA_B_IN_CONTAINER = 4
+let AIF_ARENA_B_IS_LIST = 8
+let AIF_ARENA_B_NO_REGION = 16
+let AIF_ARENA_B_ESCAPES = 32
+let AIF_ARENA_B_OUTLIVES = 64
+
 // SPEC 5's annotations. `unique` cuts the aliasing graph at a site; `pin`
 // constrains the tier after convergence, and its verdict is one of AIF_PIN_*.
 extern fn aif_con_unique(vs: Int)
@@ -114,6 +137,31 @@ extern fn aif_fn_count() -> Int
 extern fn aif_fn_symbol(f: Int) -> String alias
 extern fn aif_fn_name(f: Int) -> String
 extern fn aif_fn_is_sealed(f: Int) -> Int
+
+// SPEC 5.2.1's first named repair, in its report-only half. The call graph is
+// recorded here rather than reconstructed later because the walk is the only
+// place that knows which function a call expression sits in *and* which scope --
+// and both are needed: the closure needs the caller, the "calls in a region"
+// count needs the scope.
+extern fn aif_call_edge(caller: Int, callee: Int, scope: Int)
+extern fn aif_call_opaque(caller: Int, scope: Int)
+extern fn aif_note_owner_use(fnId: Int, vs: Int)
+extern fn aif_fn_bracket_blockers(f: Int) -> Int
+extern fn aif_fn_call_sites(f: Int) -> Int
+extern fn aif_fn_calls_in_region(f: Int) -> Int
+extern fn aif_region_call_sites() -> Int
+extern fn aif_bracketable_region_call_sites() -> Int
+extern fn aif_call_edge_count() -> Int
+
+// The obligations `aif_fn_bracket_blockers` reports, as a mask. Every failing
+// one is reported, not the first -- the same decision as AIF_ARENA_B_*, for the
+// same reason: three sessions acted on a gate's first clause and each time the
+// site was rejected by two more.
+let AIF_BR_B_GLOBAL = 1
+let AIF_BR_B_PARAM_STORE = 2
+let AIF_BR_B_OPAQUE = 4
+let AIF_BR_B_DROP = 8
+let AIF_BR_B_SHARED_BODY = 16
 
 extern fn aif_struct_new(name: String)
 extern fn aif_enum_new(name: String)
@@ -282,6 +330,15 @@ let AIF_FFI_CONSUME = 2
 // ownership consequence at all, so it behaves as `borrow`.
 let AIF_FFI_OUT = 3
 let AIF_FFI_RETAIN_IN_BASE = 100
+// Not a contract: "the runtime table has never heard of this name". It has to be
+// distinguishable from a declared `borrow`, because FFI 5.1's default *is*
+// `borrow` and a bracketing decision must not read a guess as a description.
+// aifFfiContract maps it to the default, so no transfer rule sees it.
+//
+// 99 rather than -1: a global initializer must be a literal (nothing runs before
+// main), and the language has no negative literal. It sits in the gap between
+// the four contract codes and RETAIN_IN_BASE, so it collides with nothing.
+let AIF_FFI_UNKNOWN = 99
 
 // Counters the manifest reports. They exist so that what the model *excludes*
 // is visible rather than silent -- an exclusion nobody can see is indistinguish-

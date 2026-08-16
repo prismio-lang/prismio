@@ -73,6 +73,11 @@ FFI_CONTRACTS = {
     'list_get':       {0: 'borrow'},          # returns an alias into arg 0
     'list_len':       {0: 'borrow'},
     'list_new':       {},                     # produces a fresh container
+    # Vec::with_capacity. Its argument is an Int, so there is no site to give a
+    # contract to -- but the *return* contract matters, and leaving it out is what
+    # made the oracle call five fresh containers `opaque-ret` and sink eight sites
+    # to T3. See FFI_RETURNS_PRODUCE below; these two tables have to move together.
+    'list_new_with_capacity': {},
     'str_concat':     {0: 'borrow', 1: 'borrow'},
     'str_equals':     {0: 'borrow', 1: 'borrow'},
     'str_length':     {0: 'borrow'},
@@ -122,10 +127,29 @@ def elem_key(container_type):
 # release; anything undeclared has UNKNOWN provenance and must be treated
 # conservatively -- it may already be shared and may already outlive us.
 FFI_RETURNS_PRODUCE = {
-    'list_new', 'str_concat', 'str_substring', 'str_slice', 'str_from_char',
+    'list_new', 'list_new_with_capacity',
+    'str_concat', 'str_substring', 'str_slice', 'str_from_char',
     'int_to_str',
     'read_file', 'get_directory', 'join_path',
 }
+
+# A builtin is the one kind of runtime function this table is load-bearing for.
+# Every extern a *source* declares carries its contract in the AST, so the oracle
+# reads it and these tables never fire -- which is why `src/main.psm` kept
+# agreeing while `list_new_with_capacity` was missing here. A builtin is never
+# declared, so an omission is silent until some source in the differential's list
+# calls it. `tests/test_56_list_capacity.psm` is in that list for exactly this
+# reason: without it, adding a builtin and forgetting this table costs nothing
+# until much later.
+
+# SPEC 5.2.1's bracketing obligations, as a mask. Every failing one is reported,
+# not the first: the clauses are a conjunction and a site typically fails
+# several, which is the same reason `--why`'s placement section reports a mask.
+BR_GLOBAL = 1
+BR_PARAM_STORE = 2
+BR_OPAQUE = 4
+BR_DROP = 8
+BR_SHARED_BODY = 16
 
 
 class Scopes:
@@ -427,6 +451,15 @@ class Engine:
         # Shadowing joins outward via the LCA, so the answer does not depend on
         # which declaration the walk saw last.
         self.var_scope = {}
+        # SPEC 5.2.1's call graph, for the bracketing summary. One entry per call
+        # *expression*: a set would collapse two calls to one and make every
+        # callee look sole-owned, which is exactly the fact regime (a) turns on.
+        # A callee of None is a call nothing can summarise.
+        self.call_edges = []              # (caller, callee|None, scope)
+        # What each function stores *into*. Obligation 2 asks whether every one
+        # of those owners was allocated inside the extent being bracketed, so it
+        # is the holder that is recorded, not the value.
+        self.owner_uses = []              # (fn, vs)
 
     # -- construction --------------------------------------------------------
 
@@ -467,6 +500,11 @@ class Engine:
                     v = self.sites_of(f['c1'][0], fn, scope)
                     self.constraints.append(
                         ('store', ('field', sname, f['s1']), v, vs_sites(sid)))
+                    # SPEC 5.2.1 obligation 2. Provably local -- the owner is this
+                    # literal's own site -- and recorded anyway, because a clause
+                    # exempted by an argument in a comment is a clause that stops
+                    # being checked the moment the argument stops holding.
+                    self.owner_uses.append((fn, vs_sites(sid)))
             return vs_sites(sid)
 
         if k == 'ARRAY_LITERAL_EXPR':
@@ -478,6 +516,7 @@ class Engine:
                 v = self.sites_of(el, fn, scope)
                 self.constraints.append(
                     ('store', ('field', aname, '[]'), v, vs_sites(sid)))
+                self.owner_uses.append((fn, vs_sites(sid)))
             return vs_sites(sid)
 
         if k == 'LITERAL_EXPR':
@@ -509,6 +548,15 @@ class Engine:
             contracts = FFI_CONTRACTS.get(plain, {})
             argvals = [self.sites_of(a, fn, scope) for a in e['c2']]
 
+            # SPEC 5.2.1's call graph. `drop` is excluded from the opaque case:
+            # it is fully modelled, by the `no_stack` constraint below, and the
+            # DROP obligation reports it in terms a reader can act on. Mirrors
+            # src/aif/walk.psm.
+            if known:
+                self.call_edges.append((fn, callee, scope))
+            elif plain != 'drop' and not self.call_is_summarised(plain, len(argvals)):
+                self.call_edges.append((fn, None, scope))
+
             # `drop(x)` lowers to a free, and a stack slot cannot be freed. A T0
             # value has no allocation to release -- its storage *is* the frame --
             # so promoting a value the source explicitly drops turns a working
@@ -539,6 +587,12 @@ class Engine:
                     # it escapes exactly as far as that container does.
                     holder = argvals[c[1]] if c[1] < len(argvals) else VS_EMPTY
                     self.constraints.append(('retain_in', av, holder))
+                    # SPEC 5.2.1 obligation 2, container form. `list_push(dest, x)`
+                    # on a `dest` this function did not allocate is the counter-
+                    # example the summary exists to catch, and it is recorded on
+                    # the *holder* because the element block reallocates whether
+                    # or not the pushed value has a site.
+                    self.owner_uses.append((fn, holder))
                     # ...and the container's element field now points at it, so a
                     # later read gets the element back rather than the container.
                     holder_ty = e['c2'][c[1]]['ty'] if c[1] < len(e['c2']) else ''
@@ -636,6 +690,29 @@ class Engine:
             return text
         return None                       # a return contract; sema rejected it
 
+    def call_is_summarised(self, name, argc):
+        """SPEC 5.2.1's bracketing question, at a call: is what this callee does
+        to the values it is handed *described*, or assumed?
+
+        FFI 5.1's `borrow` default is sound enough for a tier -- a wrong guess is
+        caught by the same widening that catches everything else -- but bracketing
+        hands the callee arena memory, and an undescribed callee that retains it
+        turns the annotation into a use-after-free. So the default does not count
+        as a description here, and the two cases have to be distinguishable:
+        `self.ffi_default` is what the tier analysis falls back to, and this asks
+        whether it had to.
+
+        A declaration counts only when it is **complete** -- every parameter and
+        the return. A partial one leaves undescribed exactly the argument nobody
+        thought about, which is the one that retains. Mirrors
+        `aifCallIsSummarised` in src/aif/contracts.psm.
+        """
+        if name in FFI_CONTRACTS or name in FFI_RETURNS_PRODUCE:
+            return True
+        if not self.m.contracts.get((name, -1), ''):
+            return False
+        return all(self.declared_contract(name, i) is not None for i in range(argc))
+
     def ref(self, key):
         self.pt[key]                      # touch so it exists
         return vs_ref(key)
@@ -698,6 +775,10 @@ class Engine:
                     base = (obj['ty'].split('<')[0]) if obj is not None else ''
                     self.constraints.append(
                         ('store', ('field', base, tgt['s1']), val, ov))
+                    # SPEC 5.2.1 obligation 2, and the case that can actually
+                    # fail it: `param.field = Foo{}` stores into an object this
+                    # function did not allocate.
+                    self.owner_uses.append((fn, ov))
             return
 
         if k == 'RETURN_STATEMENT':
@@ -1099,6 +1180,120 @@ def tier_of(model, eng, sid):
 # Report
 # ---------------------------------------------------------------------------
 
+def bracket_masks(model, eng):
+    """SPEC 5.2.1: per function, may a caller's `region` bracket a call to it?
+
+    The obligations, and what each one is guarding against:
+
+      GLOBAL       an allocation in the extent escapes to static storage, so
+                   nothing bounds its lifetime and no region can.
+      PARAM_STORE  the extent stores into something it did not allocate:
+
+                       fn add_to(dest: List<Node>, n: Int) {
+                           list_push(dest, Node { id: n })
+                       }
+                       region R { add_to(long_lived_list, 5) }
+
+                   the Node comes from R's arena and the list outlives R.
+      OPAQUE       a callee with no visible body and no complete contract.
+      DROP         `drop(x)` inside the extent -- the source decided when that
+                   value dies, and a bump pointer is not a thing free() takes.
+      SHARED_BODY  the body would serve more than one placement regime. Not an
+                   allocation obligation; regime (a)'s restriction on codegen,
+                   reported beside the safety answer rather than folded into it.
+
+    Obligation 4 is not a blocker but how every clause is evaluated: mutual
+    recursion makes the transitive callee set a closure, not a walk. Mirrors
+    aif_fn_bracket_blockers in runtime/aif_support.c.
+    """
+    callees = defaultdict(set)
+    calls_opaque = set()
+    call_count = Counter()
+    for caller, callee, _scope in eng.call_edges:
+        if callee is None:
+            calls_opaque.add(caller)
+        else:
+            callees[caller].add(callee)
+            call_count[callee] += 1
+
+    has_global, has_drop = set(), set()
+    for sid, site in enumerate(model.sites):
+        if eng.E[sid] == GLOBAL:
+            has_global.add(site.fn)
+        if sid in eng.no_stack:
+            has_drop.add(site.fn)
+
+    owner_fns = defaultdict(set)
+    for f, vs in eng.owner_uses:
+        for s in eng.resolve(vs):
+            owner_fns[f].add(model.sites[s].fn)
+
+    def reachable(f):
+        seen, work = {f}, [f]
+        while work:
+            for h in callees[work.pop()]:
+                if h not in seen:
+                    seen.add(h)
+                    work.append(h)
+        return seen
+
+    masks = {}
+    for f in model.functions:
+        cl = reachable(f)
+        mask = 0
+        for g in cl:
+            if g in has_global:
+                mask |= BR_GLOBAL
+            if g in has_drop:
+                mask |= BR_DROP
+            if g in calls_opaque or g in model.sealed:
+                mask |= BR_OPAQUE
+            if not owner_fns[g] <= cl:
+                mask |= BR_PARAM_STORE
+        # Regime (a): `f` has exactly one call site -- the one that would be
+        # bracketed -- and everything it reaches is reached only from inside the
+        # extent, or that callee's body would have to free arena memory on one
+        # path and heap memory on the other.
+        if call_count[f] != 1:
+            mask |= BR_SHARED_BODY
+        for caller, callee, _scope in eng.call_edges:
+            if callee is None or callee == f:
+                continue
+            if callee in cl and caller not in cl:
+                mask |= BR_SHARED_BODY
+        masks[f] = mask
+    return masks
+
+
+def report_bracketing(model, eng):
+    """The counts the differential compares against `prismio aif --summary`.
+
+    **`region-calls` is deliberately absent**, and this is a recorded divergence
+    rather than an omission: it counts call sites lexically inside an arena, and
+    which scopes get an arena is a *codegen* decision (LAYOUT 7.1's cost model)
+    that this oracle does not model at all -- see the note on REGION_STATEMENT in
+    Engine.walk. Mirroring it would mean porting placement, which would make the
+    oracle a second implementation of the thing it is supposed to check rather
+    than an independent one. The compiler-side number is checked instead by
+    aif/evidence/arena_census.py over the whole corpus.
+    """
+    masks = bracket_masks(model, eng)
+    n = len(masks)
+    ok = sum(1 for m in masks.values() if not m & ~BR_SHARED_BODY)
+    sole = sum(1 for m in masks.values() if m == 0)
+
+    print("\n# call-site bracketing (SPEC 5.2.1) -- may a caller's region reach "
+          "a callee's allocations?")
+    print(f"bracketable  {ok} / {n}  (obligations 1, 2, 4: nothing the extent "
+          f"allocates outlives the call)")
+    print(f"sole-regime  {sole}  (of those: one body, one placement regime -- "
+          f"SPEC 5.2.1 (a))")
+    for label, bit in (("br-global", BR_GLOBAL), ("br-param", BR_PARAM_STORE),
+                       ("br-opaque", BR_OPAQUE), ("br-drop", BR_DROP),
+                       ("br-shared", BR_SHARED_BODY)):
+        print(f"{label:12} {sum(1 for m in masks.values() if m & bit)}")
+
+
 def report(model, eng, converged, args):
     tiers = Counter()
     by_kind = defaultdict(Counter)
@@ -1166,6 +1361,8 @@ def report(model, eng, converged, args):
     else:
         print(f"  none -- no struct type lies in a non-trivial SCC. "
               f"Collector omitted from the binary entirely.")
+
+    report_bracketing(model, eng)
 
 
 def measure_masks(model, dump):

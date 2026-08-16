@@ -1,0 +1,99 @@
+// SPEC 5.2 / 5.2.1 -- what a `region` actually serves, asserted at run time.
+//
+// Nothing in this suite has ever checked that an arena allocates anything. The
+// manifest said `region:` and the tests read values, and both were satisfied by
+// a region that bump-allocated nothing at all -- which is how `g2_region.psm`
+// came to be quoted as the language's tuning story for three sessions while
+// serving 0 of 10 201 215 allocations and running 1.67x slower.
+//
+// `arena_objects()` is the only way to tell an arena pointer from a malloc'd one:
+// the values are identical. Sampled as a *delta* around each region rather than
+// as a total, because std/io's own string sites are auto-arena-placed and a total
+// would couple this fixture to how many times it prints.
+//
+// The two halves have to be read together. Either alone passes for the wrong
+// reason: `serves` alone passes if every region serves, `serves_nothing` alone
+// passes if no region ever does.
+//
+//   serves          -- 50 allocations bump-allocated from the named region
+//   serves_nothing  -- the same allocation moved into a callee: 0, because
+//                      SPEC 5.2.1's arena is lexical and `enclosing_region`
+//                      walks a scope tree rooted per function
+//
+// **When call-site placement lands, `serves_nothing` is the test that changes**,
+// and it should change deliberately, with this comment rewritten. Until then it
+// is the pin holding the limitation in place so nobody re-derives it a fourth
+// time.
+
+extern fn print(s: String)
+extern fn println(s: String)
+extern fn arena_objects() -> Int
+
+struct Cmd {
+    id: Int,
+    weight: Int
+}
+
+fn fail(what: String) -> Int {
+    print("FAIL ")
+    println(what)
+    return 1
+}
+
+// The allocation is bound to a name declared in the region's own scope, so its
+// escape rises above the allocating block and the T0 clause declines -- T1, in a
+// region it cannot outlive, held by no container. Every gate passes.
+fn serves() -> Int {
+    let before = arena_objects()
+    region work {
+        let mut keep = Cmd { id: 0, weight: 0 }
+        let mut i = 0
+        while (i < 50) {
+            keep = Cmd { id: i, weight: i * 2 }
+            if (keep.id != i) { return fail("serves value") }
+            i = i + 1
+        }
+    }
+    let served = arena_objects() - before
+    if (served != 50) {
+        print("  served ")
+        println(served)
+        return fail("serves: expected 50 allocations from the arena")
+    }
+    return 0
+}
+
+// The identical allocation, one function further down. The region is in this
+// function; the site is in `make`, whose scope tree has no arena in it.
+fn make(i: Int) -> Cmd {
+    return Cmd { id: i, weight: i * 2 }
+}
+
+fn serves_nothing() -> Int {
+    let before = arena_objects()
+    region callee_work {
+        let mut keep = Cmd { id: 0, weight: 0 }
+        let mut i = 0
+        while (i < 50) {
+            keep = make(i)
+            if (keep.id != i) { return fail("serves_nothing value") }
+            i = i + 1
+        }
+    }
+    let served = arena_objects() - before
+    if (served != 0) {
+        print("  served ")
+        println(served)
+        return fail("serves_nothing: a callee's allocation reached a lexical arena")
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    bad = bad + serves()
+    bad = bad + serves_nothing()
+    if (bad != 0) { return 1 }
+    println("test_58 ok")
+    return 0
+}

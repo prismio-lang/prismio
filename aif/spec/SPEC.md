@@ -286,8 +286,17 @@ identical observable behaviour.**
 An annotation SHALL NOT be viral: none propagates an obligation into a signature that did not
 already carry one, and none forces a caller to change.
 
-Being wrong about an annotation SHALL produce a diagnostic of severity *warning* and SHALL NOT
-fail compilation. The annotation is then discarded and the value is inferred normally.
+Being wrong about an **axiom** (`unique`, `region`) SHALL produce a diagnostic of severity *warning*
+and SHALL NOT fail compilation: the axiom is discarded and the value is inferred normally. Being
+wrong about the **constraint** (`pin`) SHALL fail compilation when inference converged (§5.4.1) and
+SHALL warn when it did not (§5.4.2).
+
+*(Corrected in 1.2.1. v1.1 stated the warning rule for all four, and 1.2's C-change to §5.4.1 made
+`pin` an error without revising this paragraph or §11 item 7 — so the specification asserted both.
+The split is not a compromise between them: an axiom has somewhere to fall back to, because
+discarding it leaves the ordinary inference that would have run anyway, and a constraint does not.
+Discarding a refuted `pin` silently returns the value to the tier the programmer just said was
+unacceptable, which is the one outcome `pin` exists to prevent — see §5.0.1.)*
 
 The four are not the same kind of object. This distinction is normative because it determines
 where each one enters the pipeline:
@@ -328,6 +337,43 @@ The argument is meant to be used. `@threadlocal` is an axiom on `T`, which is lo
 so it asserts what the compiler already sees — rejected as duplicative. `@acyclic` is an axiom on
 `C`, which is derived — rejected. `@nocopy` is a constraint that duplicates `pin`. `@inline` is a
 constraint on a decision outside the memory model's scope.
+
+### 5.0.1 Annotations are assertions, not directives *(normative)*
+
+*(New in 1.2.1. §5.4.1 already decided this for `pin`; stating it for the tier is what stops the
+question being reopened one annotation at a time.)*
+
+Every AIF annotation is a claim about the program that **the compiler verifies and MAY refuse**. No
+annotation is an instruction the compiler carries out on the programmer's authority.
+
+```
+assertion:  the programmer states a fact; the compiler proves it, refutes it, or runs out of budget
+directive:  the programmer states a decision; the compiler performs it, verified or not
+```
+
+AIF is assertions. Three independent reasons, any one of which is sufficient:
+
+- **A directive needs `unsafe`, and AIF's host language does not have one.** A wrong assertion is a
+  build error. A wrong directive is undefined behaviour — an arena-placed value that outlives its
+  arena is a use-after-free, and no diagnostic follows it. A language may choose to offer that, but
+  it must be designed as one feature with one clearly marked boundary, not accumulated one
+  annotation at a time. Until such a boundary exists, an annotation that the compiler obeys without
+  proof is a hole in the memory model.
+- **§11's governance rule forbids it.** "An annotation SHALL NOT alter program semantics" is frozen.
+  A directive that is wrong alters them.
+- **It is the thesis.** Rust's leverage comes from the programmer *specifying* ownership; AIF's
+  claim is that the compiler *infers* it and the programmer *constrains the result*. A directive
+  tier would make AIF a worse Rust — the same annotation burden, without the soundness.
+
+**What this costs, stated plainly.** The annotation tier cannot make anything faster than inference
+already proved possible; it can only stop a regression, or pessimise deliberately. Anything a
+programmer wants that the analysis cannot prove is a request to improve the analysis, not to
+override it. §5.4's direction limit is the concrete form of this cost, and lifting it — permitting a
+pin *below* the derived tier — requires a discharge obligation per tier written into this
+specification, not a relaxed comparison in an implementation.
+
+This is a hard boundary. A proposal to make any annotation a directive is a proposal to design
+`unsafe` for the host language first.
 
 ### 5.1 `unique`
 
@@ -373,6 +419,96 @@ enclosing scope (§INFERENCE 2.1).
 
 This is the highest-payoff annotation per character: it supplies the one fact no analysis can
 recover, because it is intent — *this is a frame / a request / a parse / a level.*
+
+#### 5.2.1 A region only reaches allocations in its own function *(normative limitation)*
+
+*(New in 1.2.1, from measurement. Recorded here because three separate design passes proposed
+escape-lattice fixes for a problem that is not in the escape lattice.)*
+
+`Region(s)` names a **lexical scope** in one function. An implementation therefore serves a site
+from an arena only when the `region` and the allocation are in the same function, because that is
+the only case in which the site's escape and the region are comparable at all — a scope id from one
+function and a scope id from another have no ordering, and their join is `Caller` by definition.
+
+**This is a limitation of the model as specified, not of any implementation.** An allocation
+performed in a callee cannot name its caller's region, however its escape is spelled, because the
+arena that would serve it is selected at run time by the dynamic region stack while `E` holds a
+static scope id. A value of `E` meaning "one activation up" does not close the gap: it makes the
+site T1 without giving it an arena to be T1 *in*.
+
+Measured on the reference implementation, 2026-08-14: of **234** allocation sites across
+`aif/corpus` and `aif/evidence`, 38 are arena-served and 196 are not — and **all 196 fail this
+test**. Every one of the 38 that pass is a case where the region and the allocation share a
+function, and all 38 are in `std/io`: no user-written program in that tree has a single
+arena-served allocation. The corpus's own tuning fixture — `g2_region.psm`, a frame loop wrapped in
+`region frame_arena` — served **0 of 10 201 215 allocations** and ran **1.67× slower** than the
+unannotated program, because its allocations happen inside `cull`.
+([RESULTS-arena.md](../evidence/RESULTS-arena.md); re-derives in one command.)
+
+An implementation SHALL warn when a `region` serves no allocation, naming the block. A region that
+costs a push and a pop per entry and reclaims nothing is a pessimisation, and silence about it is
+what lets an annotation be believed in for three sessions without being measured.
+
+Closing this needs one of: **call-site placement** (the caller brackets a callee whose allocations
+are all provably bound by the region — an interprocedural summary, cheaper than full contexts),
+**ownership contexts** (INFERENCE §6–7, which instantiate the callee per call site so the region
+becomes nameable), or **inlining before placement**. All three are real work; none is a change to
+the escape lattice, and a proposal that only changes `E` should be measured against this section
+before it is built.
+
+#### 5.2.1.1 Call-site placement, and which regime it uses *(normative)*
+
+*(New in 1.2.2.)*
+
+An implementation MAY serve a callee's allocations from a caller's arena by **bracketing the
+call** — pushing the region's arena onto the dynamic allocation stack for the call's extent. Where
+it does, this section governs.
+
+**The regime question, and the answer.** A function body's frees are *static* decisions in code
+generation: which values a scope exit releases, and what disposition a container's element release
+carries. Bracketing makes the *source* of an allocation dynamic. A body reachable both inside and
+outside a bracket would therefore have to free arena memory on one path or leak heap memory on the
+other. Three resolutions exist, and an implementation SHALL choose exactly one and record it:
+
+| | regime | cost |
+|---|---|---|
+| **(a)** | Bracket only where the callee has **exactly one call site** in the program, so one body serves one regime | none; reaches less |
+| (b) | Specialise the callee per regime — INFERENCE §7's body duplication, of which (a) is the degenerate case | binary size; needs a cap with deterministic victim selection |
+| (c) | Record placement on the object and branch at release | works for containers; a bare struct freed by a scope drop has no header to read, so (c) is never sufficient alone |
+
+**The reference implementation uses (a).** It is the smallest sound choice, and (c) cannot stand on
+its own. **(a) is fragile as a language guarantee** — adding a second call to a bracketed callee
+silently removes the placement — which is why an implementation using it SHALL record in the
+manifest which call sites it bracketed, so the loss appears as a diff rather than as a slowdown.
+
+**The obligations.** For a call `f(args)` inside region `R` to be bracketed, all of the following
+SHALL hold. Each one is a use-after-free if omitted, not a lost optimisation:
+
+1. Nothing `f` transitively allocates escapes to `Global`.
+2. Nothing the extent allocates is stored into a location it did not itself allocate. The
+   counterexample is the whole of this clause:
+
+   ```
+   fn add_to(dest: List<Node>, n: Int) { list_push(dest, Node { id: n }) }
+   region R { add_to(long_lived_list, 5) }      // the Node comes from R and outlives it
+   ```
+3. The value the call returns does not outlive `R`. This is a property of the call site, not of
+   `f`, and is the ordinary escape test in the caller.
+4. The summary is a **least fixed point over the call graph**. Recursion and mutual recursion make
+   the transitive callee set a closure rather than a walk.
+5. Every exit from `R` — including an early return or a break out of a loop containing the call —
+   pops the bracket. This is why the mechanism is a depth rather than a flag.
+
+An implementation SHALL treat a callee whose body it cannot see, and whose FFI contract does not
+describe every parameter and its return, as failing these obligations. FFI §5.1's `borrow` default
+is an assumption adequate for assigning a tier and **not** adequate for handing a callee arena
+memory.
+
+**Measured on the reference implementation, 2026-08-16**, over `aif/corpus` and `aif/evidence`:
+between 4 and 11 of ~35–45 functions per program clear obligations 1, 2 and 4, of which 1 to 5 also
+satisfy regime (a). `region` is what turns that into placement: `g2_region.psm` has **2 call sites
+inside its region and both reach a qualifying callee**, while every corpus program without a
+`region` has none.
 
 ### 5.3 `workload(…)`
 
@@ -445,6 +581,39 @@ making everything strict is how a language becomes Rust.
 allocation path with a budget. This is the same shape as [TARGET.md](../implementation/TARGET.md) §2.1: **the
 framework or engine author pins the handful of values whose cost is load-bearing; the application
 author writes nothing and is never blocked.**
+
+#### 5.4.4 The direction limit *(normative)*
+
+*(Stated in 1.2.1. It was implicit in §5.4's pseudocode and in every implementation of it, and
+naming it is what makes the cost of §5.0.1 legible rather than a surprise.)*
+
+A `pin` is honoured when the pinned tier is **at or above** the derived tier, and refuted below it
+on a converged analysis. So a programmer MAY pessimise deliberately and MAY NOT optimise past the
+analysis. This is sound in one direction only, and the asymmetry is the point: every tier is
+semantically valid, so weakening needs no proof, while strengthening needs exactly the proof the
+analysis just failed to find.
+
+The consequence, stated plainly because it is the whole cost of §5.0.1: **the annotation tier cannot
+make a program faster than inference already proved it could be.** It stops regressions, it records
+guarantees in the manifest, and it lets a programmer choose a more expensive tier on purpose. It is
+not a tuning knob.
+
+Lifting the limit — permitting a pin *below* the derived tier — requires a **discharge obligation
+per tier** written into this specification: what the compiler must check, what it may assume, and
+what happens at run time when the assumption is wrong. Absent that, a pin below the derived tier is
+a directive, and §5.0.1 forbids directives until the host language has an `unsafe` boundary. A
+relaxed comparison in an implementation is not a discharge obligation.
+
+**Two of the tiers have working Rust counterparts today**, and they are what `pin` currently buys:
+
+| | Rust | effect |
+|---|---|---|
+| `let pin(T2) node = …` | `Box::new` | heap, uniquely owned, freed at its owner's teardown |
+| `let pin(T3) shared = …` | `Rc::new` | reference counted, freed at zero |
+
+`pin(T3)` emits a count only where a count has something to count — a value no container holds has
+no edge to increment, and the manifest SHALL say so (`rc:none`) rather than claim a mechanism the
+binary does not contain.
 
 ---
 
@@ -943,8 +1112,12 @@ not meet. A manifest SHALL record the level that produced it.
    data stays relocatable.
 6. **The budget rule.** Layout search is prioritised over lifetime proving, ≈80/20.
 7. **Exactly four annotations** — `unique`, `region`, `workload`, `pin`. All optional, none viral,
-   all warning-not-error. Deleting all annotations SHALL NOT change observable behaviour. §5.0
-   argues the set is a complete basis rather than an arbitrary four.
+   and **all assertions rather than directives** (§5.0.1): the compiler verifies each and may
+   refuse it. Deleting all annotations SHALL NOT change observable behaviour. A wrong *axiom*
+   (`unique`, `region`) is a warning and is discarded; a *refuted* `pin` is a compile error
+   (§5.4.1) and an *unproven* one is a warning (§5.4.2). §5.0 argues the set is a complete basis
+   rather than an arbitrary four. *(Item corrected in 1.2.1: it read "all warning-not-error", which
+   1.2's own §5.4.1 had already contradicted.)*
 8. **The tier manifest.** Every release build emits one; CI diffs it; a regression fails the gate,
    never the compile. A diff carries a minimal cause (§6.3).
 9. **Two-speed compilation.** A zero-analysis build exists and is behaviourally identical, and a

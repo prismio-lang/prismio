@@ -89,7 +89,12 @@ fn aifRuntimeContract(name: String, index: Int) -> Int {
     if (str_equals(name, "str_byte_at") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "print") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "println") == 1) { return AIF_FFI_BORROW }
-    return aifFfiDefault
+    // AIF_FFI_UNKNOWN rather than the default, and the distinction is the whole
+    // point: FFI 5.1's default is a *guess* that the callee does not retain, and
+    // a guess is exactly what call-site bracketing must not build on. Every
+    // caller that only wants a contract maps this back to the default one line
+    // below, so nothing about the tier analysis moves.
+    return AIF_FFI_UNKNOWN
 }
 
 // Declared contract, then the runtime table, then FFI 5.1's default.
@@ -98,7 +103,36 @@ fn aifFfiContract(name: String, index: Int) -> Int {
     if (declared >= 0) {
         return declared
     }
-    return aifRuntimeContract(name, index)
+    let table = aifRuntimeContract(name, index)
+    if (table == AIF_FFI_UNKNOWN) {
+        return aifFfiDefault
+    }
+    return table
+}
+
+// SPEC 5.2.1's bracketing question, at a call: is what this callee does to the
+// values it is handed *described*, or assumed?
+//
+// A described call can be summarised, because the contract says what it retains
+// and the solver has already applied it. An assumed one cannot: FFI 5.1's
+// `borrow` default is sound enough for a tier (a wrong guess there is caught by
+// the same widening that catches everything else) but bracketing hands the
+// callee arena memory, and an undescribed callee that retains it turns the
+// annotation into a use-after-free.
+//
+// A declaration counts only when it is **complete** -- every parameter and the
+// return. A partial one leaves undescribed exactly the argument nobody thought
+// about, which is the one that retains.
+fn aifCallIsSummarised(name: String, argc: Int) -> Bool {
+    if (aifRuntimeContract(name, 0) != AIF_FFI_UNKNOWN) { return true }
+    if (aifFfiProduces(name)) { return true }
+    if (str_equals(aif_extern_contract(name, 0 - 1), "") == 1) { return false }
+    let mut i = 0
+    while (i < argc) {
+        if (aifDeclaredContract(name, i) < 0) { return false }
+        i = i + 1
+    }
+    return true
 }
 
 // FFI 5.2 `alias`: the return is an existing value reached through an argument,
@@ -162,6 +196,7 @@ fn aifDeclaredReturnIsAlias(name: String) -> Bool {
 // outlive this frame -- and is handled by the `opaque` constraint instead.
 fn aifFfiProduces(name: String) -> Bool {
     if (str_equals(name, "list_new") == 1) { return true }
+    if (str_equals(name, "list_new_with_capacity") == 1) { return true }
     if (str_equals(name, "str_concat") == 1) { return true }
     if (str_equals(name, "str_substring") == 1) { return true }
     // Same contract as str_substring, and for the same reason: **every**

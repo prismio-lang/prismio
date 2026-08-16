@@ -12,9 +12,9 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
   IR for `src/main.psm` is byte-identical to the warm build's.
-- **98/98 tests** as of 2026-08-13, of which 25 are negative and each asserts *which* diagnostic it
-  expects. (This line read "76/76" for six sessions after it stopped being true. If you change the
-  count, change it here.)
+- **108/108 tests** as of 2026-08-16, of which 26 are negative and each asserts *which* diagnostic
+  it expects. (This line read "76/76" for six sessions after it stopped being true. If you change
+  the count, change it here.)
 - Backend is the **LLVM C API** (`runtime/llvm-api-backend.c`); the old text emitter is gone.
   `ir_append()` survives only as a loud failure guarding against raw text creeping back in.
 - Pinned to **LLVM 22.x**, enforced at build time (`tools/setup_llvm.py`) and at runtime
@@ -409,6 +409,432 @@ LAYOUT §3.2's W3 sandbox obligations. Shipping the syntax without the runner is
 this item was ordered around, pointed the other way: a producer that produces nothing. The
 instrumentation point already exists when someone wants it — `ir_struct_field_ptr` is the single
 choke point for field access, the way `ir_alloc_object` is for allocation.
+
+---
+
+## Session of 2026-08-16 — the repair is measured before it is built, and it is worth building
+
+Three sessions designed an arena fix from the source and each was refuted. This one **ran the tools
+first** — `arena_census.py` and `--why`, which exist for that purpose — reproduced 2026-08-14's
+numbers exactly, and then measured the repair SPEC 5.2.1 names rather than designing it.
+
+**Landed and verified: tasks 1, 2 and 3. Stopped deliberately at task 4** (the placement change
+itself); §5 says why and what it needs. Nothing is half-landed. Suite **108/108** (was 106),
+fixpoint warm and cold, **cold == warm**, oracle agrees on **15** sources (was 14), and IR is
+**byte-identical on all 84** compilable programs in `tests/`, `aif/corpus/` **and**
+`aif/evidence/` — no binary moved this session, by design.
+
+### 1. The number the session exists to produce
+
+`region` cannot reach a callee's allocation (SPEC 5.2.1). The repair is to bracket the *call*. How
+far could that reach? Per function, as a fixed point over the call graph:
+
+| | corpus programs | `g2_region.psm` | `src/main.psm` |
+|---|---|---:|---:|
+| clears obligations 1, 2, 4 | 4–11 of 35–45 | 6 / 35 | 189 / 463 |
+| …and regime (a): one call site | 1–5 | 4 | 48 |
+| **region call sites reaching one** | **0** | **2 of 2** | 6 of 635 |
+
+**Not "almost no function", so tasks 3–5 are worth doing** — that was the brief's gate and this is
+the reading of it. And the second row is the one that matters: 70 of the 196 blocked sites are in a
+bracketable function, but only **2** are also *called from inside a region*, and both are
+`g2_region.psm`'s `cull` and `submit`. Every corpus program that does not say `region` contributes
+zero, because nothing calls its functions from an arena.
+
+`prismio aif <file> --summary` prints this; `--why=<symbol>` gives the per-site verdict, so the
+count is auditable rather than a claim. On g2's hot `DrawCmd` — the site every arena design has been
+aimed at:
+
+```
+    bracketing (SPEC 5.2.1.1) -- may a caller's region reach this function?
+      yes  -- every obligation holds, and the body serves one regime (1 call site)
+      callers  1 of 1 call sites lie inside a region
+```
+
+### 2. The regime question, settled and written into the spec
+
+**SPEC §5.2.1.1 is new and normative.** A function body's frees are static decisions in codegen
+while bracketing makes the allocation's *source* dynamic, so a body reachable both inside and
+outside a bracket would free arena memory on one path or leak heap memory on the other. Three
+resolutions exist; **the choice is (a)** — bracket only a callee with exactly one call site in the
+program. It is the smallest sound one, (c) is never sufficient alone (a bare struct freed by a scope
+drop has no header to read), and (b) is what lifts (a)'s limit when the measurement says it is
+worth it. (a) is fragile as a *language guarantee* — a second call silently removes the placement —
+so §5.2.1.1 requires the manifest to record when it fired.
+
+The five obligations are written out there too, with the counterexample (`add_to(dest, n)` pushing
+into a caller's list) that kills the naive version.
+
+### 3. What the reports say, and where the numbers live
+
+- `--summary` gained `bracketable`, `sole-regime`, `region-calls` and five `br-*` blocker counts.
+- `--why`'s placement section gained a bracketing verdict on every `no_region` site, reporting
+  **every** failing obligation rather than the first — the same discipline, and for the same reason,
+  as the placement mask added 2026-08-14.
+- `arena_census.py` prints a second table over the whole corpus and **exits non-zero** if no `--why`
+  printed a verdict at all, which is what separates "zero because nothing qualifies" from "zero
+  because the wording moved and every substring stopped matching".
+- The differential compares all eight bracketing counters. `region-calls` is deliberately excluded
+  and the reason is recorded in both files: it counts call sites inside an arena, and arena
+  placement is a codegen decision `aif/prototype/aif.py` does not model. Mirroring it would make the
+  oracle a second implementation of the thing it checks.
+
+### 4. Two defects, one of them mine, and both now have a test that fails without the fix
+
+**The call graph survived `aif_reset`, and a declared `workload` runs the whole engine twice in one
+process.** So every call-site count doubled on exactly those sources — and regime (a) turns on that
+count, so `sole-regime` read **0** and `br-shared` read **37 of 37** on `test_55_workload_profile`
+while every other program was right. A silently wrong answer on the programs that carry a profile
+and on no others. Found by asking what `aif_reset` had to tear down, not by a failing test.
+`run_bracket_summary_test` now asserts `sole-regime >= 1` there; verified it reads 0 on the
+pre-fix compiler. `test_46` also declares a workload and **cannot** discriminate — its workload run
+falls back (W2), so the engine runs once. Measured before choosing the fixture.
+
+**`--verify`'s `allocated` and `leaked` are not comparable across runs.** The timing programs print
+nanosecond values and the printing path allocates per digit, so `g2.psm` moves by ~1500 allocations
+between two runs of *one* executable. The first comparison of the ledger reported seven programs
+"moved" and none had. `released` and `violation(s)` are the stable columns; both are identical to
+the previous generation on all 45 programs with a ledger.
+
+### 5. Why task 4 stopped, and the two things not to re-derive
+
+Bracketing needs one fact the model does not have and one decision that removes a circularity. Both
+were worked out this session and are written up in
+[RESULTS-arena.md §7](aif/evidence/RESULTS-arena.md) item 1:
+
+1. **Obligation 3 is not readable from `E`.** `AIF_CON_LIVE_IN` sets `E = Caller` for any site whose
+   `fn` is not the binding function — by construction, since scope ids do not order across
+   functions. The fact wanted is the **caller-side binding scope**, recoverable with no frontend
+   change by walking `cons[]` for `LIVE_IN` after the solve.
+2. **Bracket only into `region`-pinned arenas.** Otherwise placement depends on bracketing depends
+   on placement: `enclosing_region` reads `scopes[].arena`, which `aif_place_arenas` sets from
+   `arena_would_serve` — the one copy of the clause list that is deliberately *not* behind
+   `site_arena_scope`, because it scores scopes that have no arena yet. A `region` sets the flag
+   before placement runs, so the loop is cut and `arena_would_serve` needs no change.
+
+And the semantic consequence to accept rather than fight: a bracketed site keeps its **derived
+tier**, so the manifest will read `T2  region:<name>`. Promoting it to T1 would move the tier
+distribution, and the oracle does not model placement — the differential would then fail on a
+difference that is not an inference difference.
+
+The disposition half **is** in, ahead of placement and deliberately so: one clause in
+`elem_disposition_of`, which is the single function `aif_elem_owner_at_node`, `field_release_of`,
+`type_is_reclaimed` and `aif_owns_call_result_at_node` all read. A second copy of that clause would
+be 2026-08-14's four-copies defect with a use-after-free behind it instead of a wasted push. It is
+inert today — the placement gate still rejects `in_container` and `is_list`, so no arena-served site
+is ever an element — and inertness is the verified claim: byte-identical IR everywhere.
+
+### 6. Fixtures built to discriminate
+
+`tests/test_59_bracket_summary.psm` has one function per verdict, and the third exists only because
+the first two would pass for the wrong reason:
+
+- `bracketable` pushes into a list it allocated — the positive control.
+- `stores_param` pushes into its caller's list — obligation 2. `br-param` must be **1**: a clause
+  firing on every container store reads 2, one that stopped firing reads 0.
+- `drops` calls `drop()`, and **`middle` sits between it and `main`**. `br-drop` must be **3**,
+  because a blocker anywhere in the transitive set blocks the whole extent. The first version of
+  this had `main` calling `drops` directly and **did not discriminate anything** — verified by
+  replacing the closure with a one-step walk, which still read 2. Two levels is the minimum that
+  fails.
+
+Note what is deliberately absent: `main` has no `br-param`, because the list `stores_param` writes
+into was allocated by `bracketable`, which is *inside* main's extent. Sound there, unsound one level
+down — a summary that answered per function instead of per extent could not tell those apart.
+
+---
+
+## Session of 2026-08-14 — the arena is lexical and allocation is not, which refutes the fix three sessions have designed
+
+**Read this before planning any arena work.** The `CallerRegion` + container-disposition pair has
+been designed twice, deferred twice, and named "the highest-value item with a measured prize" in two
+handoffs. **It was measured this session and it buys zero.** Not "less than hoped" — zero sites, on
+every program in `tests/`, `aif/corpus/` and `aif/evidence/`. The reason is a third gate that
+neither half touches, and it is structural rather than an oversight.
+
+Suite **106/106** (was 98). Fixpoint holds warm and cold, **cold == warm**, the oracle agrees on 13
+sources — **14 after this session added one**, see §8 — source lists agree, and the committed seed
+still parses `src/` (no seed refresh needed: the FFI surface only grew). Across the session, 82 of 85 compilable programs in `tests/`, `aif/corpus/`
+**and** `aif/evidence/` differ only by one added `declare`; the other three additionally lose an
+`arena_push`/`arena_pop` pair for an arena that served nothing, which is §2's fix.
+
+### 1. The measurement, and why the designed fix could not have worked
+
+The arena gate has seven clauses. HANDOFF has recorded two of them as the blockers. The census below
+is the whole gate, non-short-circuiting, over **234** allocation sites — and it now re-derives in one
+command from shipped compiler surface rather than from a patched runtime:
+
+```bash
+python3 aif/evidence/arena_census.py --compiler build/<gen>
+```
+
+| blocker | blocked sites |
+|---|---:|
+| **`no_region`** — no `region` in the allocation's *own function* | **196 of 196** |
+| `not_t1` | 184 |
+| `is_list` | 56 |
+| `in_container` | 46 |
+| `no_stack`, `escapes`, `outlives` | 0 |
+
+**38 of 234 sites are arena-served, all of them in `std/io`.** No user-written program in this tree
+has a single arena-served allocation. The clauses are a conjunction, so a site typically fails
+several — which is exactly why the mask matters and the first failure does not.
+
+Simulating the designed fix — `E=Caller` becomes `CallerRegion` so the site reaches T1, and
+`in_container` stops rejecting — leaves the served set **unchanged at 38**, because `no_region` is on
+every blocked site both before and after. Full write-up and method:
+[`aif/evidence/RESULTS-arena.md`](aif/evidence/RESULTS-arena.md).
+
+**`no_region` is on every single non-served site, before and after.** It is
+`enclosing_region(s->scope)`, which walks `scopes[].parent` — a lexical tree rooted **per function**,
+which is also why `scope_lca` returns −1 across owners. A site in a callee has no arena in its own
+function's scope tree to find, and no value of `E` puts one there.
+
+**This is the category error, and it is worth stating precisely.** `Region(s)` holds a *scope id in
+the site's own function*. The arena that would serve a callee's allocation is chosen at **run time**,
+by `arena_depth` in `runtime/lang_runtime.c`. `CallerRegion` would make g2's `DrawCmd` T1 and leave
+it with no arena to be T1 *in* — a manifest claiming a placement that did not happen, which is
+exactly the failure the previous design note predicted for the previous gate. **This is the third
+consecutive session in which a fully-worked arena design was refuted by reading the gate. The lesson
+was recorded twice; reading the gate cost forty minutes this time and would have cost forty minutes
+either of the previous two.**
+
+Re-measured first, as the brief asked: `g2_region.psm` is still **0 of 10 201 215 allocations
+served, 20 000 regions entered, 1.67× slower** (106.5 → 177.8 ms, 5 runs) on the current compiler.
+The 1.73× stands within noise.
+
+**And the 9.9× is still not a Prismio number.** It is the C arena benchmark's headroom. Nothing this
+session moved it, and nothing will until placement can place something.
+
+### 2. `region` warns when it serves nothing, and the manifest stopped lying
+
+Both halves of the trap are closed. The warning:
+
+```
+warning: region frame_arena serves no allocation; it costs an arena push and pop
+         per entry and reclaims nothing
+   --> aif/evidence/xlang/prismio/g2_region.psm:112:16
+  note: an arena serves a value only where the region and the allocation are in
+        the same function: a value allocated in a callee cannot reach it
+```
+
+The note is the part that matters — it names the *repair*, and the repair is not one the programmer
+would guess.
+
+**And `region:scope` was renamed `region:none`.** This is the bigger of the two. `region:scope` was
+printed for a T1 site with **no arena**, served by the heap, one column away from `region:auto` and
+`region:frame_arena`, which are real placements. So `g2_region.psm`'s manifest showed `region:` on
+every T1 line while the arena served nothing, and a programmer reading it for confirmation got it.
+`rc:none` and `cycle:none` already exist for exactly this reason one tier down; T1 never got the
+same treatment.
+
+**Three predicates were one predicate wearing three copies.** `aif_arena_at_node` (codegen),
+`aif_region_name_at_site` (manifest) and the new `aif_region_serves` (diagnostic) now all read
+`site_arena_scope`. They agreed by inspection before; a diagnostic derived from a fourth copy would
+have been the manifest defect again, in a new place.
+
+**A fourth copy did disagree, and it was live.** `arena_would_serve` — the LAYOUT 7.1 cost model —
+omitted the `in_container` clause, so it scored benefit from container elements codegen refuses to
+place. Effect, measured: `test_28`, `test_45` and `test_49` each carried a live
+`arena_push`/`arena_pop` pair for an arena that bump-allocated **nothing**, and `peak-bytes`
+overstated the arena high-water mark on all three — `test_49` reported **64 bytes for an arena
+holding zero**, and REQUIREMENTS 19's budget gate reads that number. Fixed; those three programs
+lose the push/pop pair and report 0. **No tier and no placement moved anywhere in the corpus** —
+verified byte-identical IR on the other 80 programs and a whitespace-normalised manifest diff on the
+three.
+
+### 3. `list_new_with_capacity(n)` — 0.92× on g2, and the only speed result here
+
+Vec::with_capacity's equivalent. `cull` builds a fresh ~501-element list every frame for 20 000
+frames and paid seven reallocations and 508 pointer copies each time.
+
+**Priced before it was built**, which is why it exists: raising `list_new`'s default capacity to 512
+— the upper bound this API can reach, since it removes exactly the same reallocations — measured
+**0.926×** on g2. The shipped feature then measured **0.923× over 21 interleaved runs** (110.3 →
+101.7 ms), so it captures essentially all of the available win. Checksums identical.
+
+`aif/evidence/xlang/prismio/g2_capacity.psm` is the measurement artefact — `g2.psm` with one line
+changed.
+
+**It is a library call and not an annotation, and that is a governance point rather than a
+convenience.** The argument is a *value*, not a fact the analysis must trust; a wrong hint costs a
+reallocation and never correctness. So it spends none of SPEC 11 item 7's budget of four.
+
+### 4. The governance question, settled and written down
+
+**Annotations are assertions the compiler verifies and may refuse — option (a)** — now normative in
+SPEC §5.0.1, with §5.4.4 for the direction limit. The implementation already behaved this way; the
+*specification* did not agree with itself:
+
+- §5 ¶4 said being wrong about an annotation is a **warning** and SHALL NOT fail compilation.
+- §11 item 7 said all four are **warning-not-error**.
+- §5.4.1, added in 1.2, said a refuted `pin` **SHALL fail compilation** — and the shipping compiler
+  does exactly that.
+
+**That is the third internally inconsistent pair found in this specification** (after §2.1 vs W4, and
+SimdCredit), and the third found by trying to implement a clause rather than by reading it. Resolved
+by kind rather than by compromise: an **axiom** (`unique`, `region`) warns and is discarded, because
+discarding it leaves the inference that would have run anyway; the **constraint** (`pin`) fails,
+because discarding it silently returns the value to the tier the programmer just said was
+unacceptable.
+
+### 5. `pin(T2)` and `pin(T3)` work, and are now tested rather than folklore
+
+Box and Rc, working since Level 5, documented nowhere and tested nowhere. Verified, then fixed in
+place: `test_57_pin_tiers.psm`, `neg_25_pin_refuted.psm`, and `run_pin_tier_test` in the runner,
+which checks the manifest's tier/placement/origin **and** counts `rc_alloc` call sites in the IR —
+because a pin that moved the report and not codegen looks identical from the source.
+
+The brief's worry about `pin(T3)` emitting no count is **already handled**: a pinned-T3 value no
+container holds reports `rc:none` and gets no header, which is the honest answer. `rc` and `rc:none`
+are both asserted, so the distinction cannot rot.
+
+### 6. `--why` explains placement, and lists *every* blocker
+
+The tool that would have saved the two previous sessions, and it is the durable half of §1.
+
+`prismio aif --why=<symbol>` explained the **tier** and said nothing about where the value lives.
+Now:
+
+```
+  placement
+    heap  -- no arena serves this site
+      because  the tier is not T1 -- see the cause above
+      and      a container owns this value and tears it down through the deallocator
+      and      no `region` encloses this allocation *in its own function*
+      note     an arena is a lexical scope (SPEC 5.2.1). A `region` in a
+               caller cannot reach an allocation made in a callee, so no
+               change to the escape lattice moves this site.
+```
+
+**Reporting a mask instead of the first failure is the load-bearing decision.** The gate
+short-circuits, so a short-circuiting diagnostic answers "the tier is not T1" — true, and the wrong
+thing to act on, because two further clauses reject the same site. That answer is precisely what two
+sessions inferred by reading the source, and both then designed a tier fix. A reader who runs `--why`
+on g2's `DrawCmd` now cannot make that mistake.
+
+The gate itself computes the mask, so the diagnostic cannot drift from codegen — the same discipline
+§2 applied to the other three copies.
+
+### 7. The manifest emitted records its own CI gate could not read
+
+Found while re-deriving the census from the manifest instead of from a patched runtime.
+
+`aifPad` padded *up to* a column width and did nothing when the field was wider, so an
+over-long field ran into the next one with no separator. SPEC 6.2's record table is
+whitespace-separated, and `tools/aif_manifest_diff.py` ignores lines it cannot parse — correctly, for
+comments and blanks, and silently for real records.
+
+**`aif/corpus/g5_asset_cache.psm` emits 14 records; the differ read 13.**
+`load_material__Struct_AssetCache_Int_Int_Float#0` is 45 characters against a 44-wide column and
+merged with its own tier. **A tier regression on that site could not have failed CI** — SPEC 11 item
+8's gate, unable to fail, on a symbol in this project's own corpus. That is the "check that cannot
+fail" rule again, and it is the fourth instance this document records.
+
+One line in `aifPad`: at or past the column, emit exactly one space. Every caller prints something
+after it on the same line, so no trailing whitespace appears anywhere. **Exactly one line of output
+changed across the whole corpus** — the broken one. `run_manifest_parseable_test` counts emitted
+records against parsed ones over every corpus program, so the next overflow fails rather than hides;
+verified to fail on the pre-fix compiler.
+
+### 8. The oracle did not know about `list_new_with_capacity`, and the differential still passed
+
+**The differential agreed on all 13 sources while the two implementations disagreed by eight tiers on
+any program using the new builtin.** Caught only by going back to check the brief's explicit
+requirement — "the same change in `aif/prototype/aif.py`, or the differential stops meaning
+anything" — against a claim already made that no oracle change was needed.
+
+The reasoning behind that claim was wrong in an instructive way. It ran: *this session changed no
+transfer rule and no lattice, so the oracle needs nothing.* True of the rules, and irrelevant, because
+the oracle also needs a **vocabulary**:
+
+- Every `extern fn` a *source* declares carries its FFI contract in the AST, so the oracle reads it
+  and `aif.py`'s fallback tables never fire. That is why `src/main.psm` — which gained five new
+  externs this session — kept agreeing.
+- A **builtin** is never declared by anyone. `list_new_with_capacity` therefore fell through to the
+  tables, was absent, and became an undeclared extern with unknown provenance.
+
+Measured on `tests/test_56_list_capacity.psm` before the fix:
+
+```
+T1: compiler=10 oracle=2   T3: compiler=3 oracle=11   opaque-ret: compiler=0 oracle=5
+```
+
+Five fresh containers read as opaque; eight sites sank to T3.
+
+**Why nothing caught it: no source in the differential's list called the new builtin.** The check was
+not wrong, it was unexercised — the same failure mode as §7's unparseable record, as SPEC 8.4's
+E-VIEW ("both arms would agree by never running the rule"), and as `test_55`'s first draft. Fixed in
+both tables, and `test_56_list_capacity.psm` is now in the default source list with the reason
+written at the append, so the next builtin cannot be added silently. **14 sources, all agreeing.**
+
+The rule this yields is sharper than "update the oracle": **adding a builtin is an oracle change even
+when no rule moved, and a differential source list is part of the check, not a convenience.**
+
+### 9. `pin(<region-name>)` — deliberately not built, and the reason is §1
+
+Item 3 of the brief, and it would have been cheap: the parser already accepts `pin(X)` with a bare
+identifier and only `aifTierFromName` rejects it.
+
+**Not built, because it would have shipped an annotation that refutes almost everywhere it is
+natural to write.** §1's census is the argument: placement can serve 32 sites in the whole corpus,
+all of them strings in `std/io` where the region and the allocation share a function. The brief's own
+example —
+
+```prismio
+region frame { let pin(frame) cmd = DrawCmd { … } }
+```
+
+— refutes as written: a `DrawCmd` that does not escape its scope is **T0, a stack slot**, not an
+arena value. An annotation whose headline example fails to compile is the `weight` mistake with a
+different name, and this document has now recorded three times that an annotation which does nothing
+is worse than no annotation.
+
+**It becomes worth building the day placement can place something in a callee**, and not before. The
+assertion machinery it needs (`AIF_PIN_*`, `aif_check_pins`, `--why`) is all present and unchanged.
+
+### Four things to carry forward
+
+- **Read the gate, and read *all* of it.** Two sessions read `aif_arena_at_node` far enough to find
+  the clause that explained the last failure and stopped there. The census that settled this took one
+  `getenv`-gated `fprintf` and two throwaway scripts — cheaper than either design pass it replaced.
+  It is now `aif/evidence/arena_census.py`, runs in 1.4 s off shipped compiler surface, and `--why`
+  answers the same question for one site.
+- **A short-circuiting gate makes a short-circuiting diagnostic, and that is a trap.** "The tier is
+  not T1" was true about g2 and sent two sessions to the wrong work. A conjunction should report
+  every conjunct it failed.
+- **A duplicated predicate is a defect even while the copies agree.** Four copies of the arena gate
+  existed; three agreed and the fourth silently placed arenas that served nothing and inflated a
+  budget number. Nothing failed. The fix is one predicate, not four that match.
+- **A column that reads like confirmation is worse than a blank one.** `region:scope` meant "no
+  arena" and was read as "arena". The project had already invented `rc:none` for this exact problem
+  and had not applied it one tier up.
+- **Price the experiment before building the feature.** `list_new_with_capacity` was worth building
+  because a two-line change to a default measured the ceiling first. The same discipline would have
+  saved three sessions of arena design.
+- **Deriving a measurement from a shipped artefact finds defects in the artefact.** Rebuilding the
+  census on the manifest rather than on a patched runtime is what exposed §7 — a CI gate silently
+  blind to one of its own corpus's records. A throwaway probe would have measured the same numbers
+  and found nothing.
+- **A checklist item dismissed with a reason is still unchecked.** "The oracle models tiers, not
+  placement, so it needs no change" was sound about the rules and silent about the *vocabulary*, and
+  §8 sat behind it for the rest of the session. Three of this session's findings — §7, §8, and the
+  region warning itself — are checks that could not fail. When the argument for skipping a
+  verification step is good, run the step anyway; it costs one command.
+
+### Next, ranked on this session's measurements
+
+1. **Call-site arena placement.** The smallest thing that makes `region` work at all: the *caller*
+   brackets a call whose callee allocations are all provably bound by the region, using the
+   `rt_arena_hint_push/pop` mechanism that already exists for runtime-internal allocation. Needs a
+   per-function summary ("does this function allocate anything outliving its return value") and the
+   container-disposition half, which is still unbuilt and still a use-after-free if done alone. This
+   is the cheap subset of INFERENCE §6–7 and it is what the two designed halves were reaching for.
+2. **Hot/cold split.** Unchanged from the last handoff: 0.87× measured, emittable today, no missing
+   mechanism. Still the largest thing not blocked on anything.
+3. **Inline element storage for `List<T>`.** Worth 1.09×–8.88×; would also delete most of g2's
+   remaining gap, which item 1 is competing for.
+4. **Port LAYOUT 5's cost model.** Precondition for §7.2 as written and for §8's ranking.
 
 ---
 

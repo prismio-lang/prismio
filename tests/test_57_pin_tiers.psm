@@ -1,0 +1,114 @@
+// SPEC 5.4 -- what `pin(<tier>)` actually gives a programmer today.
+//
+// Two of these are Rust's Box and Rc, they have worked since Level 5, and until
+// this fixture nothing tested or documented them. That is the failure mode this
+// file exists to prevent: a feature nobody can rely on because nobody can tell
+// whether it still works.
+//
+//   let pin(T2) node   = Node { ... }   // Box: heap, uniquely owned, freed at
+//                                       //      the owner's teardown
+//   let pin(T3) shared = Node { ... }   // Rc:  refcounted, freed at zero
+//
+// **A pin is an assertion, not a directive** (SPEC 5.0.1). It cannot make a value
+// cheaper than inference already proved it could be -- `aif_check_pins` honours a
+// pin only when `pin_tier >= derived`, so a programmer can pessimise deliberately
+// and can never optimise past the analysis. neg_25_pin_refuted.psm covers the
+// refusal; run_pin_tier_test in test_runner.py checks the manifest and the IR.
+//
+// The three facts this asserts, none of which is visible from the source:
+//
+//   1. A honoured pin freezes the tier for *codegen*, not just for the manifest.
+//      aif_tier_of returns pin_tier for a honoured pin, and the drop predicate
+//      and the arena test both read it, so a pin that moved only the report would
+//      be a manifest describing a build that did not happen.
+//   2. `pin(T3)` emits a count only where a count has something to count. T3
+//      requires a container edge -- site_is_rc wants kind==STRUCT and
+//      in_container -- so a pinned-T3 value that no container holds reports
+//      `rc:none` and gets no header. That is the honest answer, not a bug, and it
+//      is checked by pin_tier_test in test_runner.py against the manifest.
+//   3. The values still come out right. A tier is a claim about lifetime, so the
+//      program asserting its own answers is what makes a wrong claim an exit code
+//      rather than a number nobody reads.
+
+extern fn print(s: String)
+extern fn println(s: String)
+extern fn int_to_str(n: Int) -> String produce(free)
+
+struct Node {
+    id: Int,
+    weight: Int
+}
+
+fn fail(what: String) -> Int {
+    print("FAIL ")
+    println(what)
+    return 1
+}
+
+// Box. Uniquely owned, individually freed, held by a container so the container's
+// teardown is the release point.
+fn boxed_elements() -> Int {
+    let mut nodes: List<Node> = list_new()
+    let mut i = 0
+    while (i < 6) {
+        let pin(T2) node = Node { id: i, weight: i * 5 }
+        list_push(nodes, node)
+        i = i + 1
+    }
+    if (list_len(nodes) != 6) { return fail("boxed_elements length") }
+    let mut sum = 0
+    let mut j = 0
+    while (j < 6) {
+        sum = sum + list_get(nodes, j).weight
+        j = j + 1
+    }
+    // 0+5+10+15+20+25
+    if (sum != 75) { return fail("boxed_elements sum") }
+    return 0
+}
+
+// Rc. The same shape one tier up: pinned T3 and held by a container, so
+// site_is_rc is satisfied and rc_alloc really is emitted.
+fn counted_elements() -> Int {
+    let mut nodes: List<Node> = list_new()
+    let mut i = 0
+    while (i < 4) {
+        let pin(T3) shared = Node { id: i, weight: i + 100 }
+        list_push(nodes, shared)
+        i = i + 1
+    }
+    if (list_len(nodes) != 4) { return fail("counted_elements length") }
+    if (list_get(nodes, 3).weight != 103) { return fail("counted_elements tail") }
+    return 0
+}
+
+// The `rc:none` case, and the reason the manifest has that spelling. Nothing
+// holds this value in a container, so there is no edge to count; T3 is honoured
+// as a tier and no header is emitted. A build that printed `rc` here would be
+// asserting a mechanism the binary does not contain.
+fn counted_but_uncounted() -> Int {
+    let pin(T3) lone = Node { id: 7, weight: 11 }
+    if (lone.weight != 11) { return fail("counted_but_uncounted value") }
+    return 0
+}
+
+// Pessimising deliberately: T3 asked for where T2 was derived. Honoured, because
+// every tier is semantically valid and weakening needs no proof.
+fn deliberate_pessimisation() -> Int {
+    let mut nodes: List<Node> = list_new()
+    let pin(T3) n = Node { id: 1, weight: 2 }
+    list_push(nodes, n)
+    if (list_get(nodes, 0).id != 1) { return fail("deliberate_pessimisation") }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    bad = bad + boxed_elements()
+    bad = bad + counted_elements()
+    bad = bad + counted_but_uncounted()
+    bad = bad + deliberate_pessimisation()
+    if (bad != 0) { return 1 }
+    println("test_57 ok")
+    return 0
+}

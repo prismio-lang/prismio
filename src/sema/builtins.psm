@@ -27,6 +27,7 @@ fn semaBuiltinCallType(name: String, argPtr: String) -> TypeInfo {
     }
 
     if (str_equals(name, "list_new") == 1) { return typeList(typeInvalid()) }
+    if (str_equals(name, "list_new_with_capacity") == 1) { return typeList(typeInvalid()) }
     if (str_equals(name, "list_len") == 1) { return typeInt() }
     if (str_equals(name, "list_push") == 1) { return typeVoid() }
     if (str_equals(name, "list_set") == 1) { return typeVoid() }
@@ -79,6 +80,14 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: St
 
     if (str_equals(name, "list_new") == 1) {
         semaCheckArity(call, name, argPtr, 0)
+        return true
+    }
+    // Vec::with_capacity. A hint, not a bound -- the list still doubles past it --
+    // so there is nothing here for the analysis to trust and no annotation budget
+    // to spend. Worth 0.926x on g2's per-frame list; see runtime/lang_runtime.c.
+    if (str_equals(name, "list_new_with_capacity") == 1) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        semaCheckValue(module, ptr_to_node(argPtr), typeInt(), "list_new_with_capacity")
         return true
     }
     if (str_equals(name, "list_len") == 1) {

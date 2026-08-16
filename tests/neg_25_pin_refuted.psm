@@ -1,0 +1,33 @@
+// expect-error: pin(T1) cannot hold: this value is T2
+// expect-error: inference converged, so this is a proven-false assertion
+//
+// SPEC 5.4.1, and SPEC 5.0.1's decision made visible: an annotation is an
+// assertion the compiler verifies and may refuse, not a directive it carries out.
+//
+// `out` demonstrably escapes -- it is returned -- so no arena can hold it and T1
+// is false. The analysis converged, so this is a wrong claim about the
+// programmer's own program rather than a limit of the analysis, and SPEC 5.4.1
+// separates those two cases precisely so that this one can be an error without
+// touching SPEC 1's invariant.
+//
+// The contrast that makes the rule legible: an *unproven* pin (budget exhausted)
+// warns and is ignored (SPEC 5.4.2), and a wrong *axiom* -- `unique`, `region` --
+// warns and is discarded (SPEC 5). Only the constraint fails the build, because
+// only the constraint has nothing to fall back to: discarding a refuted `pin`
+// silently returns the value to the tier the programmer just said was
+// unacceptable.
+
+struct Node {
+    id: Int,
+    weight: Int
+}
+
+fn leaks(i: Int) -> Node {
+    let pin(T1) out = Node { id: i, weight: i }
+    return out
+}
+
+fn main() -> Int {
+    let n = leaks(4)
+    return n.id
+}

@@ -793,6 +793,10 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_begin("list_new", "ptr")
     ir_declare_function_end()
 
+    ir_declare_function_begin("list_new_with_capacity", "ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
     ir_declare_function_begin("list_set_elem_releaser", "void")
     ir_declare_function_param("ptr")
     ir_declare_function_param("ptr")

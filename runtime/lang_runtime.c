@@ -1630,14 +1630,36 @@ typedef struct {
     void (*elem_release)(void*);
 } XefyList;
 
-void* list_new(void) {
+static void* list_new_cap(int cap) {
     XefyList* l = (XefyList*)rt_alloc(sizeof(XefyList));
     l->len = 0;
-    l->cap = 4;
+    l->cap = cap;
     l->elem_own = XEFY_ELEM_NONE;
     l->elem_release = 0;
-    l->data = (void**)rt_alloc(sizeof(void*) * 4);
+    l->data = (void**)rt_alloc(sizeof(void*) * (size_t)cap);
     return l;
+}
+
+void* list_new(void) { return list_new_cap(4); }
+
+// Vec::with_capacity. A hint about size, not a bound: the list still grows by
+// doubling past `n`, so a wrong hint costs memory or a realloc and never
+// correctness. That is what keeps it outside SPEC 5's annotation budget -- it is
+// a library call whose argument is a value, not a fact the analysis has to trust.
+//
+// Worth 0.926x on g2 (aif/evidence/xlang/prismio/g2.psm, 9 interleaved runs),
+// where `cull` builds a fresh ~501-element list every frame for 20 000 frames and
+// paid seven reallocations and 508 pointer copies each time. Measured before this
+// was written, by raising the default capacity to 512 and timing the frame loop --
+// which is the upper bound this API can reach, since it removes exactly the same
+// reallocations.
+//
+// A non-positive hint is clamped rather than rejected: `list_new_with_capacity(0)`
+// is the natural thing to write when the count is computed and comes out empty,
+// and a zero-length data block would make the first push read cap 0 and double it
+// to 0 forever.
+void* list_new_with_capacity(int n) {
+    return list_new_cap(n > 0 ? n : 4);
 }
 
 void list_set_elem_owner(void* lp, int mode) {

@@ -1,0 +1,99 @@
+// SPEC 5.2.1 -- the per-function bracketing summary, one function per verdict.
+//
+// The summary answers "may a caller's `region` bracket a call to this function",
+// and it is a conjunction: a function fails it for a *set* of reasons. So one
+// function per obligation, each of which allocates and prints the same way, and
+// each of which differs from `bracketable` in exactly one respect. A fixture
+// where only the negative cases exist passes for a summary that says no to
+// everything; one where only the positive case exists passes for a summary that
+// says yes to everything. Both halves, as in test_58.
+//
+//   bracketable   -- pushes into a list it allocated itself. Everything it makes
+//                    dies with the call or leaves through the return, which is
+//                    the caller's problem and is checked at the call site.
+//   stores_param  -- pushes into a list the *caller* owns. This is obligation 2,
+//                    and it is the counterexample the whole summary exists for:
+//                    bracket this and the Cmd comes from the caller's arena
+//                    while the list outlives it.
+//   drops         -- `drop(x)` inside the extent. A bump pointer is not a thing
+//                    free() can take, and the source, not the model, decided
+//                    when that value dies.
+//
+// The program's own output asserts nothing about bracketing -- it cannot; the
+// summary is a compile-time report and this is a run-time value check. What it
+// asserts is that all three functions still *work*, so a change that broke the
+// obligations by breaking the analysis under them fails here too rather than
+// only in the counts. `run_bracket_summary_test` reads the counts.
+
+extern fn print(s: String)
+extern fn println(s: String)
+
+struct Cmd {
+    id: Int,
+    weight: Int
+}
+
+fn fail(what: String) -> Int {
+    print("FAIL ")
+    println(what)
+    return 1
+}
+
+// Bracketable. The container is this function's own, so obligation 2 holds; the
+// list leaves through the return, which obligation 3 checks in the caller.
+fn bracketable(n: Int) -> List<Cmd> {
+    let mut out: List<Cmd> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(out, Cmd { id: i, weight: i * 2 })
+        i = i + 1
+    }
+    return out
+}
+
+// Not bracketable: obligation 2. The Cmd is stored into a container this
+// function did not allocate, so it lives exactly as long as the caller's list
+// does -- which is to say, longer than any region the call could sit in.
+fn stores_param(dest: List<Cmd>, id: Int) {
+    list_push(dest, Cmd { id: id, weight: id })
+}
+
+// Not bracketable: the DROP obligation. The value is released explicitly, and an
+// arena reclaims in bulk at its region's exit or not at all.
+fn drops(id: Int) -> Int {
+    let mut tmp: List<Cmd> = list_new()
+    list_push(tmp, Cmd { id: id, weight: 0 })
+    let n = list_len(tmp)
+    drop(tmp)
+    return n
+}
+
+// Two levels between `main` and the `drop`, deliberately. A blocker anywhere in
+// the transitive callee set blocks the whole extent, so `drops`, `middle` **and**
+// `main` must all report it -- and a one-step walk instead of a closure would
+// clear `main` while still reporting the other two. Verified by replacing the
+// closure with a single step: br-drop reads 2 instead of 3. One level would not
+// have discriminated anything, because a direct-callee walk finds a direct
+// callee; that is why this function exists and does nothing else.
+fn middle(id: Int) -> Int {
+    return drops(id)
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let own = bracketable(4)
+    if (list_len(own) != 4) { bad = bad + fail("bracketable length") }
+
+    stores_param(own, 99)
+    if (list_len(own) != 5) { bad = bad + fail("stores_param length") }
+
+    let last = list_get(own, 4)
+    if (last.id != 99) { bad = bad + fail("stores_param value") }
+
+    if (middle(7) != 1) { bad = bad + fail("drops length") }
+
+    if (bad != 0) { return 1 }
+    println("test_59 ok")
+    return 0
+}

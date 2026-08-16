@@ -404,6 +404,413 @@ def run_aif_test():
     return True
 
 
+def run_oracle_vocabulary_test():
+    """The compiler and `aif/prototype/aif.py` must know the same builtins.
+
+    The differential compares *answers* on a fixed list of sources. It cannot see
+    a builtin neither list happens to call -- and that is not hypothetical: when
+    `list_new_with_capacity` was added on 2026-08-14 the oracle was not told, the
+    differential agreed on all 13 sources, and any program using it disagreed by
+    eight tiers (`opaque-ret: compiler=0 oracle=5`).
+
+    The asymmetry that makes this class of omission silent is worth stating: every
+    `extern fn` a *source* declares carries its FFI contract in the AST, so the
+    oracle reads it and its fallback tables never fire. A **builtin** is never
+    declared by anyone, so the tables are the only place it can be known, and an
+    omission costs nothing until some source calls it.
+
+    So this compares the two tables directly rather than comparing answers. It is
+    the cheap half of "adding a builtin is an oracle change even when no rule
+    moved"; `tests/test_56_list_capacity.psm` in the differential's source list is
+    the expensive half.
+    """
+    print(f"\n{BLUE}--- Running oracle_vocabulary ---{RESET}")
+    contracts = (PROJECT_ROOT / "src" / "aif" / "contracts.psm").read_text(encoding="utf-8")
+    oracle_src = (PROJECT_ROOT / "aif" / "prototype" / "aif.py").read_text(encoding="utf-8")
+
+    produces = set(re.findall(
+        r'str_equals\(name,\s*"([a-z_0-9]+)"\)\s*==\s*1\)\s*\{\s*return true\s*\}', contracts))
+    at = oracle_src.find("FFI_RETURNS_PRODUCE = {")
+    if at < 0 or not produces:
+        print(f"{RED}[FAIL] could not locate both produce lists -- this check has "
+              f"gone blind, which is the thing it exists to prevent{RESET}")
+        return False
+    block = oracle_src[at:oracle_src.index("}", at)]
+    oracle = set(re.findall(r"'([a-z_0-9]+)'", block))
+
+    missing = sorted(produces - oracle)
+    extra = sorted(oracle - produces)
+    if missing or extra:
+        print(f"{RED}[FAIL] the compiler and the oracle disagree about which "
+              f"runtime calls produce an owned value{RESET}")
+        for name in missing:
+            print(f"  {name}: the compiler produces it, aif.py does not know it -- "
+                  f"the oracle will call it opaque and sink every user to T3")
+        for name in extra:
+            print(f"  {name}: aif.py produces it, the compiler does not")
+        return False
+
+    print(f"{GREEN}[PASS] compiler and oracle agree on all {len(produces)} "
+          f"producing runtime calls{RESET}")
+    return True
+
+
+def run_manifest_parseable_test():
+    """SPEC 6.2 / 11 item 8 -- every record the manifest emits must be a record
+    the gate can read.
+
+    `tools/aif_manifest_diff.py` ignores lines it cannot parse, which is right for
+    comments and blank lines and was silently wrong for real records: a field
+    wider than its column was emitted unpadded and ran into the next one, so the
+    line stopped matching the record shape and the symbol vanished from the diff.
+    `g5_asset_cache.psm` emitted 14 records and the differ saw 13 -- a **tier
+    regression on `load_material` could not have failed CI**, on a symbol in this
+    project's own corpus.
+
+    Checked by counting rather than by looking for that one symbol, because the
+    next overflow will be a different name: any record line the emitter writes and
+    the parser drops is the same defect.
+    """
+    print(f"\n{BLUE}--- Running manifest_parseable ---{RESET}")
+    sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+    try:
+        from aif_manifest_diff import parse as parse_manifest
+    except ImportError as exc:
+        print(f"{RED}[FAIL] cannot import the manifest differ: {exc}{RESET}")
+        return False
+
+    sources = sorted((PROJECT_ROOT / "aif" / "corpus").glob("*.psm"))
+    sources += [TEST_DIR / "test_57_pin_tiers.psm", TEST_DIR / "test_58_region_serves.psm"]
+
+    problems = []
+    tmp = TEST_DIR / "_manifest_parse.txt"
+    for src in sources:
+        result = run_command([str(PRISMIO_EXE), "aif", str(src)])
+        if result.returncode != 0:
+            continue
+        tmp.write_text(result.stdout, encoding="utf-8")
+        _header, records = parse_manifest(tmp)
+        # A record line is one carrying a `symbol#ordinal`, which is exactly what
+        # the emitter writes and nothing else in the manifest does.
+        emitted = [l for l in result.stdout.splitlines()
+                   if "#" in l and not l.startswith("#") and l.strip()]
+        if len(records) != len(emitted):
+            missing = len(emitted) - len(records)
+            problems.append(f"{src.name}: emitted {len(emitted)} records, differ "
+                            f"parsed {len(records)} -- {missing} invisible to the gate")
+    if tmp.exists():
+        tmp.unlink()
+
+    if problems:
+        print(f"{RED}[FAIL] the manifest emits records its own differ cannot read{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] every manifest record is parseable by the CI differ{RESET}")
+    return True
+
+
+def run_region_diagnostic_test():
+    """SPEC 5.2 / 5.2.1 -- the arena diagnostics, which shipped 2026-08-14.
+
+    test_58 asserts at run time that an arena serves what it claims. This asserts
+    the three *reporting* halves, each of which was a live defect:
+
+      * a region serving nothing warns, and one serving something does NOT. The
+        second half is the discriminator -- a warning that fired on every region
+        would satisfy any test that only looked for the text.
+      * a T1 site with no arena reports `region:none`. It reported
+        `region:scope`, one column away from the real placements `region:auto`
+        and `region:<name>`, so g2_region.psm's manifest showed `region:` on
+        every T1 line while the arena served nothing and a reader took it as
+        confirmation.
+      * `peak-bytes` counts only what the code generator will actually route to
+        the arena. The cost model omitted the `in_container` clause the codegen
+        gate has, so REQUIREMENTS 19's budget number -- which a `region name
+        pin(N)` gate reads -- was inflated: test_49 reported 64 bytes for an
+        arena holding zero.
+    """
+    print(f"\n{BLUE}--- Running region_diagnostics ---{RESET}")
+    problems = []
+
+    fixture = TEST_DIR / "test_58_region_serves.psm"
+    exe = TEST_DIR / "test_58_region_serves.exe"
+    build = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(exe)])
+    text = (build.stdout or "") + (build.stderr or "")
+
+    if "region callee_work serves no allocation" not in text:
+        problems.append("no warning for the region whose allocation is in a callee")
+    if "region work serves no allocation" in text:
+        problems.append("warned about `work`, which serves 50 allocations -- the "
+                        "diagnostic is firing on every region, not on inert ones")
+    if "cannot reach it" not in text:
+        problems.append("the warning lost its note, which is the half that names the repair")
+    cleanup_files(exe)
+
+    manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    placements = {}
+    for line in manifest.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and "#" in parts[0]:
+            placements[parts[0]] = parts[2]
+    if placements.get("serves__Void#1") != "region:work":
+        problems.append(f"serves__Void#1: expected region:work, got "
+                        f"{placements.get('serves__Void#1')}")
+    if "peak-bytes  128 bytes" not in manifest.stdout:
+        problems.append("peak-bytes for a region that serves 50 sites is not 128")
+
+    # `region:none` -- a T1 site the heap serves. test_57's list sites are the
+    # case, and `region:scope` must not come back.
+    other = run_command([str(PRISMIO_EXE), "aif", str(TEST_DIR / "test_57_pin_tiers.psm")])
+    if "region:none" not in other.stdout:
+        problems.append("no T1 site reports region:none")
+    if "region:scope" in other.stdout:
+        problems.append("region:scope is back -- it reads as a placement and is not one")
+
+    # The corrected budget estimate. 64 before the cost model learned the
+    # codegen gate's in_container clause, 0 after, and the arena holds zero.
+    budget = run_command([str(PRISMIO_EXE), "aif", str(TEST_DIR / "test_49_aif_struct_fields.psm")])
+    if "peak-bytes  0 bytes" not in budget.stdout:
+        problems.append("test_49 still estimates arena bytes for an arena that "
+                        "serves nothing (REQUIREMENTS 19's gate reads this)")
+
+    # SPEC 6.3's placement witness. `--why` explained the tier and said nothing
+    # about where the value lives, so a reader who fixed the tier found the
+    # binary unchanged -- three sessions running. The gate short-circuits, so the
+    # load-bearing property is that EVERY blocker is listed, not the first.
+    why = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--why=make__Int#0"])
+    if "placement" not in why.stdout:
+        problems.append("--why does not report placement at all")
+    if "the tier is not T1" not in why.stdout:
+        problems.append("--why does not report the tier blocker")
+    if "in its own function" not in why.stdout:
+        problems.append("--why stopped at the tier and did not report no_region -- "
+                        "the short-circuit this exists to defeat")
+    if "lexical scope (SPEC 5.2.1)" not in why.stdout:
+        problems.append("--why lost the note explaining why no escape-lattice "
+                        "change moves a callee's allocation")
+
+    served_why = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--why=serves__Void#1"])
+    if "region:work" not in served_why.stdout:
+        problems.append("--why does not name the arena for a site that IS served")
+    if "no arena serves this site" in served_why.stdout:
+        problems.append("--why reports a served site as heap-placed")
+
+    if problems:
+        print(f"{RED}[FAIL] the arena diagnostics do not describe the build{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] region diagnostics: inert regions warn, served ones do not, "
+          f"and --why names every blocker{RESET}")
+    return True
+
+
+def run_bracket_summary_test():
+    """SPEC 5.2.1 -- the per-function bracketing summary reports the obligations,
+    and reports them over the call graph rather than one function at a time.
+
+    `test_59_bracket_summary.psm` has one function per verdict, and the two
+    counts asserted here are the two that can be wrong in opposite directions:
+
+      br-param == 1   exactly `stores_param`, which pushes into a list its caller
+                      owns. Not `bracketable`, which pushes into its own -- so a
+                      clause that fired on every container store would read 2,
+                      and one that stopped firing would read 0. This is
+                      obligation 2, and it is the counterexample the summary
+                      exists for.
+      br-drop  == 3   `drops`, which calls drop(), and `middle` and `main`
+                      above it. That is obligation 4: the transitive callee set
+                      is a closure, and a blocker anywhere inside it blocks the
+                      whole extent. Two levels, deliberately -- **verified
+                      discriminating**: with the closure replaced by a one-step
+                      walk, this reads 2 and the test fails. One level would not
+                      have caught it, because a direct-callee walk finds a direct
+                      callee, and that is the first version of this assertion.
+
+    Note what does NOT appear: `main` has no br-param, because the list
+    `stores_param` writes into was allocated by `bracketable`, which is *inside*
+    main's extent. Bracketing main would put both in the same arena, so the store
+    is sound there and unsound one level down. A summary that answered
+    per-function instead of per-extent could not tell those two apart.
+    """
+    print(f"\n{BLUE}--- Running bracket_summary ---{RESET}")
+    problems = []
+
+    fixture = TEST_DIR / "test_59_bracket_summary.psm"
+    result = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--summary"])
+    counts = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].startswith("br-"):
+            counts[parts[0]] = int(parts[1])
+        if len(parts) >= 2 and parts[0] in ("bracketable", "sole-regime"):
+            counts[parts[0]] = int(parts[1])
+
+    if not counts:
+        problems.append("--summary printed no bracketing section at all")
+    if counts.get("br-param") != 1:
+        problems.append(f"br-param is {counts.get('br-param')}, expected 1 "
+                        f"(only `stores_param` writes into a container it does "
+                        f"not own)")
+    if counts.get("br-drop") != 3:
+        problems.append(f"br-drop is {counts.get('br-drop')}, expected 3 "
+                        f"(`drops`, `middle` and `main` -- obligation 4's "
+                        f"closure over the call graph, two levels deep)")
+    if counts.get("bracketable", 0) < 1:
+        problems.append("no function qualifies at all, so the positive half of "
+                        "the fixture is not discriminating anything")
+
+    # SPEC 5.2.1.1's per-site verdict, which is what makes the counts above
+    # auditable rather than a claim: a reader who wants to know *which* function
+    # failed and why runs `--why` on the record, exactly as they would for a
+    # tier. Three records, three different answers -- and the third is the
+    # discriminator, because a verdict that said "no" to everything would satisfy
+    # the first two.
+    verdicts = [
+        ("stores_param__List_Struct_Cmd_Int#0",
+         "stores into a container or field it did not allocate",
+         "obligation 2 is not reported per site"),
+        ("drops__Int#1",
+         "inside the extent frees one of its allocations",
+         "the DROP obligation is not reported per site"),
+        ("bracketable__Int#1",
+         "yes  -- every obligation holds",
+         "the one function that DOES qualify is not reported as qualifying -- "
+         "a verdict that says no to everything passes the two checks above"),
+    ]
+    for symbol, phrase, complaint in verdicts:
+        why = run_command([str(PRISMIO_EXE), "aif", str(fixture), f"--why={symbol}"])
+        if "bracketing (SPEC 5.2.1.1)" not in why.stdout:
+            problems.append(f"--why={symbol} prints no bracketing section")
+        elif phrase not in why.stdout:
+            problems.append(f"{complaint} (--why={symbol})")
+
+    # The half the obligations do not carry. `bracketable` clears every one of
+    # them and is still never placed, because its only call site is not in a
+    # region -- and a report that said "yes" without saying that is the manifest
+    # defect `region:none` exists to prevent, one level up.
+    why = run_command([str(PRISMIO_EXE), "aif", str(fixture),
+                       "--why=bracketable__Int#1"])
+    if "0 of 1 call sites lie inside a region" not in why.stdout:
+        problems.append("--why does not report how many of the function's call "
+                        "sites are inside a region, so `yes` reads as a placement")
+
+    # A declared `workload` runs the whole engine twice in one process (LAYOUT
+    # 3.2), so anything the analysis accumulates and does not tear down is
+    # doubled on exactly those sources and correct everywhere else. The call
+    # graph was, when it first landed: every callee reported two call sites, so
+    # regime (a) rejected every function in the program and `sole-regime` read 0.
+    #
+    # Asserted on `test_55_workload_profile.psm` and not on
+    # `test_46_aif_annotations.psm`, which also declares one -- measured: 46's
+    # workload run falls back (W2) and the engine only runs once there, so it
+    # cannot discriminate. **Verified**: on the compiler before aif_reset tore
+    # the graph down, 55 reads 0 here and 46 reads the same 6 either way.
+    #
+    # `>= 1` rather than the exact count on purpose: under the doubling *every*
+    # function has two call sites, so the failure is total and the exact number
+    # would only couple this to how many functions std/io has.
+    workload = run_command([str(PRISMIO_EXE), "aif",
+                            str(TEST_DIR / "test_55_workload_profile.psm"), "--summary"])
+    sole = 0
+    for line in workload.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "sole-regime":
+            sole = int(parts[1])
+    if sole < 1:
+        problems.append("no function is sole-regime on a source with a declared "
+                        "workload, which is what a call graph accumulated across "
+                        "the two engine runs looks like -- see aif_reset")
+
+    if problems:
+        print(f"{RED}[FAIL] the bracketing summary does not report the "
+              f"obligations{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] bracketing summary: obligation 2 fires on the callee "
+          f"that stores into a parameter, and only on it; a blocker propagates "
+          f"to its caller{RESET}")
+    return True
+
+
+def run_pin_tier_test():
+    """SPEC 5.4 -- a honoured pin freezes the tier, and only where the mechanism
+    exists.
+
+    test_57 asserts its own *values*; this asserts the thing the values cannot
+    see. Three distinct ways the feature could be broken while the program still
+    printed `test_57 ok`:
+
+      * the pin moves the manifest but not codegen, so `pin(T3)` reports `rc` and
+        emits an ordinary malloc;
+      * the pin is dropped entirely and the derived tier is reported, which looks
+        identical unless you know what was derived;
+      * `pin(T3)` on a value no container holds reports `rc` rather than
+        `rc:none` -- the manifest asserting a mechanism the binary does not
+        contain, which is the exact defect the rc/rc:none split was introduced to
+        prevent.
+
+    The `origin` column is checked too: a record can carry the right tier for the
+    wrong reason, and `pin` vs `inferred` is what separates them.
+    """
+    print(f"\n{BLUE}--- Running pin_tiers ---{RESET}")
+    fixture = TEST_DIR / "test_57_pin_tiers.psm"
+
+    result = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    if result.returncode != 0:
+        print(f"{RED}[FAIL] `prismio aif` exited {result.returncode}{RESET}")
+        print(result.stdout or result.stderr)
+        return False
+
+    # symbol -> (tier, placement, origin)
+    want = {
+        "boxed_elements__Void#1":           ("T2", "owned",   "pin"),
+        "counted_elements__Void#1":         ("T3", "rc",      "pin"),
+        "counted_but_uncounted__Void#0":    ("T3", "rc:none", "pin"),
+        "deliberate_pessimisation__Void#1": ("T3", "rc",      "pin"),
+    }
+    got = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 6 and parts[0] in want:
+            got[parts[0]] = (parts[1], parts[2], parts[5])
+
+    problems = []
+    for sym, expect in want.items():
+        if sym not in got:
+            problems.append(f"{sym}: no manifest record")
+        elif got[sym] != expect:
+            problems.append(f"{sym}: expected {expect}, got {got[sym]}")
+
+    # The codegen half. A pinned-T3 site in a container must reach rc_alloc; the
+    # one no container holds must not, and there is exactly one of each here.
+    ll = TEST_DIR / "test_57_pin_tiers.ll"
+    build = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(ll)])
+    if build.returncode != 0 or not ll.exists():
+        problems.append("could not emit IR for the fixture")
+    else:
+        ir = ll.read_text(encoding="utf-8", errors="replace")
+        calls = sum(1 for line in ir.splitlines() if "call ptr @rc_alloc" in line)
+        if calls != 2:
+            problems.append(f"expected 2 rc_alloc call sites (the two pinned-T3 "
+                            f"sites a container holds), got {calls}")
+        ll.unlink()
+
+    if problems:
+        print(f"{RED}[FAIL] pin does not freeze the tier as SPEC 5.4 specifies{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] pin freezes the tier, and only where the mechanism exists{RESET}")
+    return True
+
+
 def run_aif_stack_slot_test():
     """The T0 path has to be checked in the IR, not only in the output: falling
     back to the heap is silently correct, so every value test here passes just as
@@ -1536,6 +1943,31 @@ def main():
         failed += 1
 
     if run_aif_stack_slot_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_pin_tier_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_region_diagnostic_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_bracket_summary_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_manifest_parseable_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_oracle_vocabulary_test():
         passed += 1
     else:
         failed += 1

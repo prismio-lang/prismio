@@ -46,6 +46,12 @@ fn aifSitesOf(nodePtr: String, fnId: Int, scope: Int) -> Int {
                 aif_field_access(sname, f.s1, aifLoopDepth)
                 aif_con_store(aif_key_field(sname, f.s1),
                               aifSitesOf(f.child1, fnId, scope), owner)
+                // SPEC 5.2.1's obligation 2. The owner here is this literal's
+                // own site and so is provably local -- recorded anyway, because
+                // a clause that is exempted by an argument in a comment is a
+                // clause that stops being checked the moment the argument stops
+                // holding.
+                aif_note_owner_use(fnId, owner)
             }
             fPtr = f.next
         }
@@ -68,6 +74,7 @@ fn aifSitesOf(nodePtr: String, fnId: Int, scope: Int) -> Int {
             let el = ptr_to_node(elPtr)
             aif_con_store(aif_key_field(aname, "[]"),
                           aifSitesOf(elPtr, fnId, scope), owner)
+            aif_note_owner_use(fnId, owner)
             elPtr = el.next
         }
         return aifVsOfSite(sid)
@@ -184,6 +191,24 @@ fn aifCallSites(callPtr: String, fnId: Int, scope: Int) -> Int {
     }
     let argc = aif_argv_count(base)
 
+    // SPEC 5.2.1's call graph, recorded here because this is the only place that
+    // knows the caller, the callee and the scope at once. A callee whose body
+    // this compilation cannot see -- sealed, or an extern no contract describes
+    // -- is an edge to nothing: it makes its caller unsummarisable rather than
+    // contributing a node the closure could walk into.
+    //
+    // `drop` is excluded from the opaque case. It is fully modelled, by
+    // aif_con_no_stack, and the DROP obligation reports it in the terms a reader
+    // can act on; calling it opaque as well would answer "a body nobody can see"
+    // about the one builtin whose effect the model knows exactly.
+    if (known) {
+        aif_call_edge(fnId, calleeId, scope)
+    } else if (str_equals(plain, "drop") == 0) {
+        if (aifCallIsSummarised(plain, argc) == false) {
+            aif_call_opaque(fnId, scope)
+        }
+    }
+
     // `drop(x)` lowers to a free, and a stack slot cannot be freed. Suppress T0
     // for whatever it names -- see aif_con_no_stack for why this is a codegen
     // constraint rather than a fact.
@@ -203,6 +228,12 @@ fn aifCallSites(callPtr: String, fnId: Int, scope: Int) -> Int {
             if (contract >= AIF_FFI_RETAIN_IN_BASE) {
                 let holderIndex = contract - AIF_FFI_RETAIN_IN_BASE
                 aif_con_retain_in(av, aif_argv_get(base, holderIndex))
+                // SPEC 5.2.1's obligation 2, container form. `list_push(dest, x)`
+                // on a `dest` this function did not allocate is the counter-
+                // example the summary exists to catch -- and it has to be
+                // recorded on the *holder*, not on `x`, because the element
+                // block reallocates whether or not the pushed value has a site.
+                aif_note_owner_use(fnId, aif_argv_get(base, holderIndex))
                 // ...and the container's element field now points at it, so a
                 // later read gets the element back rather than the container.
                 aif_con_bind(aifElemKey(aifArgTypeAt(e, holderIndex)), av)
@@ -462,6 +493,7 @@ fn aifWalk(nodePtr: String, fnId: Int, scope: Int) {
     if (n.kind == NodeKind.REGION_STATEMENT) {
         let inner = aif_scope_new(scope, fnId)
         aif_scope_set_region(inner, n.s1)
+        aif_scope_set_region_span(inner, n.file, n.line, n.col)
         // REQUIREMENTS 19. `region work pin(4096)` asserts a cap on what this
         // arena serves. Recorded here and checked once the facts have converged,
         // for the same reason SPEC 5.4's pins are: the estimate reads tiers.
@@ -523,6 +555,11 @@ fn aifWalk(nodePtr: String, fnId: Int, scope: Int) {
                 }
                 aif_field_access(base, tgt.s1, aifLoopDepth)
                 aif_con_store(aif_key_field(base, tgt.s1), val, owner)
+                // SPEC 5.2.1's obligation 2, and the case that can actually
+                // fail it: `param.field = Foo{}` stores into an object this
+                // function did not allocate, so the Foo outlives any region a
+                // caller could bracket the call with.
+                aif_note_owner_use(fnId, owner)
             }
         }
         return

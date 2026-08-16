@@ -27,7 +27,15 @@ fn aifPlacement(tier: Int, site: Int) -> String {
     if (tier == 1) {
         let named = aif_region_name_at_site(site)
         if (str_equals(named, "") == 0) { return str_concat("region:", named) }
-        return "region:scope"
+        // `region:none`, not `region:scope`, and the rename is the whole point.
+        // T1 with no arena is a value the heap serves and free() reclaims one at
+        // a time -- the ordinary path, not a region. `region:scope` was true in
+        // the sense that every scope is an implicit region (SPEC 4.1) and read as
+        // confirmation that a `region` annotation had worked: on g2_region.psm
+        // the manifest showed `region:` on every T1 line while the arena served 0
+        // of 10,201,215 allocations. Same discipline as `rc:none` below -- the
+        // manifest states the mechanism the binary contains.
+        return "region:none"
     }
     if (tier == 2) { return "owned" }
     // T3 says the facts permit a count; whether one was emitted is a separate
@@ -82,9 +90,27 @@ fn aifCountKindTier(kind: Int, tier: Int) -> Int {
     return n
 }
 
+// Pads to `width`, and **always leaves at least one trailing space**.
+//
+// The second half is the whole point and it was missing. A field wider than its
+// column used to be emitted unpadded, so it ran straight into the next one with
+// no separator -- and SPEC 6.2's record table is whitespace-separated, so such a
+// line stops being a record. `tools/aif_manifest_diff.py` ignores what it cannot
+// parse, which made this silent: `g5_asset_cache.psm` emits 14 records and the
+// differ read 13, because `load_material__Struct_AssetCache_Int_Int_Float#0` is
+// 45 characters against a 44-wide column and merged with its own tier. **A tier
+// regression on that site could not have failed the gate** -- SPEC 11 item 8's
+// check, unable to fail, on a symbol in this project's own corpus.
+//
+// Every caller prints something after this on the same line, so the guaranteed
+// space never becomes trailing whitespace at end of line.
 fn aifPad(s: String, width: Int) -> String {
-    let mut out = s
     let mut n = str_length(s)
+    // Already at or past the column: one space, so the fields stay separable.
+    // Tested before the loop, because after it `n >= width` always holds and
+    // padding every field by one more character would shift the whole table.
+    if (n >= width) { return str_concat(s, " ") }
+    let mut out = s
     while (n < width) {
         out = str_concat(out, " ")
         n = n + 1
@@ -428,6 +454,83 @@ fn aifEmitSummary(sourcePath: String, converged: Bool) {
         print(int_to_str(structs))
         println(" struct types lie in or reach a non-trivial SCC")
     }
+
+    aifEmitBracketing()
+}
+
+// SPEC 5.2.1's first repair, measured before it is built.
+//
+// The census says 196 of 196 blocked sites fail `no_region` -- the allocation is
+// in a callee and the arena is in the caller. The repair is to bracket the
+// *call*. This reports how far that could reach, and it reports it as counts
+// rather than as a verdict so the answer can be read before any placement code
+// exists: **if almost no function qualifies, the rest of that work is not worth
+// doing, and that is a result rather than a failure.**
+//
+// Nothing here decides anything. It reads the converged facts and the call
+// graph, and prints. The binary is byte-identical with and without it.
+fn aifEmitBracketing() {
+    let fnCount = aif_fn_count()
+    let mut ok = 0
+    let mut sole = 0
+    let mut nGlobal = 0
+    let mut nParam = 0
+    let mut nOpaque = 0
+    let mut nDrop = 0
+    let mut nShared = 0
+
+    let mut f = 0
+    while (f < fnCount) {
+        let mask = aif_fn_bracket_blockers(f)
+        if (mask / AIF_BR_B_GLOBAL % 2 == 1) { nGlobal = nGlobal + 1 }
+        if (mask / AIF_BR_B_PARAM_STORE % 2 == 1) { nParam = nParam + 1 }
+        if (mask / AIF_BR_B_OPAQUE % 2 == 1) { nOpaque = nOpaque + 1 }
+        if (mask / AIF_BR_B_DROP % 2 == 1) { nDrop = nDrop + 1 }
+        if (mask / AIF_BR_B_SHARED_BODY % 2 == 1) { nShared = nShared + 1 }
+        // The allocation obligations alone. SHARED_BODY is not one of them --
+        // it is regime (a)'s restriction on *codegen*, reported beside the
+        // safety answer rather than folded into it, because the two would
+        // otherwise be indistinguishable in one number and they call for
+        // different work: specialisation lifts the second and nothing lifts
+        // the first.
+        if (mask - (mask / AIF_BR_B_SHARED_BODY % 2) * AIF_BR_B_SHARED_BODY == 0) {
+            ok = ok + 1
+            if (mask == 0) { sole = sole + 1 }
+        }
+        f = f + 1
+    }
+
+    println("")
+    println("# call-site bracketing (SPEC 5.2.1) -- may a caller's region reach a callee's allocations?")
+
+    print("bracketable  ")
+    print(int_to_str(ok))
+    print(" / ")
+    print(int_to_str(fnCount))
+    println("  (obligations 1, 2, 4: nothing the extent allocates outlives the call)")
+
+    print("sole-regime  ")
+    print(int_to_str(sole))
+    println("  (of those: one body, one placement regime -- SPEC 5.2.1 (a))")
+
+    print("region-calls ")
+    print(int_to_str(aif_region_call_sites()))
+    print(" / ")
+    print(int_to_str(aif_call_edge_count()))
+    print("  call sites lie inside a region; ")
+    print(int_to_str(aif_bracketable_region_call_sites()))
+    println(" of them reach a bracketable callee")
+
+    print("br-global    ")
+    println(int_to_str(nGlobal))
+    print("br-param     ")
+    println(int_to_str(nParam))
+    print("br-opaque    ")
+    println(int_to_str(nOpaque))
+    print("br-drop      ")
+    println(int_to_str(nDrop))
+    print("br-shared    ")
+    println(int_to_str(nShared))
 }
 
 // ---------------------------------------------------------------------------
@@ -584,6 +687,175 @@ fn aifRepairFor(rule: Int) -> String {
     return ""
 }
 
+// SPEC 6.3, for placement rather than for the tier.
+//
+// A tier and a placement are two different questions and `--why` only answered
+// the first. "T1" says a value *may* live in a region; whether an arena actually
+// serves it is seven further clauses, and reading them off the source is exactly
+// what three consecutive sessions got wrong -- each stopped at the clause that
+// had explained the previous failure. The mask comes from the gate itself, so
+// this cannot drift from what codegen does, and it lists **every** obstacle
+// rather than the first: the first one is reliably the wrong thing to act on.
+fn aifArenaBlockerText(bit: Int) -> String {
+    if (bit == AIF_ARENA_B_NOT_T1) {
+        return "the tier is not T1 -- see the cause above"
+    }
+    if (bit == AIF_ARENA_B_NO_STACK) {
+        return "an explicit `drop` frees this value, and a deallocator cannot take an arena pointer"
+    }
+    if (bit == AIF_ARENA_B_IN_CONTAINER) {
+        return "a container owns this value and tears it down through the deallocator"
+    }
+    if (bit == AIF_ARENA_B_IS_LIST) {
+        return "a List reallocates its element block after this site returned"
+    }
+    if (bit == AIF_ARENA_B_NO_REGION) {
+        return "no `region` encloses this allocation *in its own function*"
+    }
+    if (bit == AIF_ARENA_B_ESCAPES) {
+        return "the value escapes to its caller or to static storage"
+    }
+    return "the value outlives the enclosing region"
+}
+
+fn aifEmitBlocker(mask: Int, bit: Int, shown: Int) -> Int {
+    if (mask / bit % 2 == 0) { return shown }
+    if (shown == 0) { print("      because  ") } else { print("      and      ") }
+    println(aifArenaBlockerText(bit))
+    return shown + 1
+}
+
+fn aifEmitPlacement(site: Int) {
+    println("")
+    println("  placement")
+
+    let where = aif_region_name_at_site(site)
+    if (str_equals(where, "") == 0) {
+        print("    region:")
+        print(where)
+        println("  -- bump-allocated, and released in bulk when the region exits")
+        return
+    }
+
+    println("    heap  -- no arena serves this site")
+
+    let mask = aif_arena_blockers(site)
+    let mut shown = 0
+    shown = aifEmitBlocker(mask, AIF_ARENA_B_NOT_T1, shown)
+    shown = aifEmitBlocker(mask, AIF_ARENA_B_NO_STACK, shown)
+    shown = aifEmitBlocker(mask, AIF_ARENA_B_IN_CONTAINER, shown)
+    shown = aifEmitBlocker(mask, AIF_ARENA_B_IS_LIST, shown)
+    shown = aifEmitBlocker(mask, AIF_ARENA_B_NO_REGION, shown)
+    shown = aifEmitBlocker(mask, AIF_ARENA_B_ESCAPES, shown)
+    shown = aifEmitBlocker(mask, AIF_ARENA_B_OUTLIVES, shown)
+
+    // The one rejection a reader cannot act on from the message alone, and the
+    // one that decides almost every site in the corpus.
+    if (mask / AIF_ARENA_B_NO_REGION % 2 == 1) {
+        println("      note     an arena is a lexical scope (SPEC 5.2.1). A `region` in a")
+        println("               caller cannot reach an allocation made in a callee, so no")
+        println("               change to the escape lattice moves this site.")
+    }
+
+    // Naming the arena the value escaped past is the difference between "move
+    // the region" and "move the binding", and a reader cannot tell which without
+    // it.
+    if (mask / AIF_ARENA_B_OUTLIVES % 2 == 1) {
+        print("      note     the nearest region is `")
+        print(aif_nearest_region_name(site))
+        println("`; the value is still live after it exits")
+    }
+
+    if (mask / AIF_ARENA_B_NO_REGION % 2 == 1) {
+        aifEmitBracketing(site)
+    }
+}
+
+fn aifBracketBlockerText(bit: Int) -> String {
+    if (bit == AIF_BR_B_GLOBAL) {
+        return "something the extent allocates escapes to static storage"
+    }
+    if (bit == AIF_BR_B_PARAM_STORE) {
+        return "the extent stores into a container or field it did not allocate"
+    }
+    if (bit == AIF_BR_B_OPAQUE) {
+        return "the extent calls a body with no source and no complete FFI contract"
+    }
+    if (bit == AIF_BR_B_DROP) {
+        return "an explicit `drop` inside the extent frees one of its allocations"
+    }
+    return "the body is reachable from outside the bracket, so it would serve two placement regimes"
+}
+
+fn aifEmitBracketBlocker(mask: Int, bit: Int, shown: Int) -> Int {
+    if (mask / bit % 2 == 0) { return shown }
+    if (shown == 0) { print("        because  ") } else { print("        and      ") }
+    println(aifBracketBlockerText(bit))
+    return shown + 1
+}
+
+// SPEC 5.2.1's repair, answered for this site rather than described.
+//
+// `no_region` is the clause on 196 of 196 blocked sites in the corpus, and its
+// note says an escape-lattice change does not move it. That is true and it is
+// only half an answer: the *other* half is whether this site's function could be
+// bracketed by a caller's region, which is a different question with a different
+// repair. A reader who got the note and nothing else knew what would not work.
+//
+// Reports every failing obligation, not the first -- the same discipline as the
+// placement mask above, and for the same reason: three sessions acted on a
+// gate's first clause while two more clauses rejected the same site.
+fn aifEmitBracketing(site: Int) {
+    let f = aif_site_fn(site)
+    if (f < 0) { return }
+
+    let mask = aif_fn_bracket_blockers(f)
+    let inRegion = aif_fn_calls_in_region(f)
+    let calls = aif_fn_call_sites(f)
+
+    // The allocation obligations without regime (a)'s restriction, which is
+    // reported separately below because it calls for different work: SPEC
+    // 5.2.1.1's regime (b) lifts it and nothing lifts the others.
+    let unsafeMask = mask - (mask / AIF_BR_B_SHARED_BODY % 2) * AIF_BR_B_SHARED_BODY
+
+    println("")
+    println("    bracketing (SPEC 5.2.1.1) -- may a caller's region reach this function?")
+
+    if (unsafeMask == 0) {
+        if (mask == 0) {
+            print("      yes  -- every obligation holds, and the body serves one regime (")
+            print(int_to_str(calls))
+            println(" call site)")
+        } else {
+            print("      no   -- the obligations hold, but the body has ")
+            print(int_to_str(calls))
+            println(" call sites, so it would serve two placement regimes")
+            println("      note     SPEC 5.2.1.1 regime (b) -- specialisation -- is what lifts this")
+        }
+    } else {
+        println("      no   -- bracketing this call would outlive the region")
+        let mut shown = 0
+        shown = aifEmitBracketBlocker(mask, AIF_BR_B_GLOBAL, shown)
+        shown = aifEmitBracketBlocker(mask, AIF_BR_B_PARAM_STORE, shown)
+        shown = aifEmitBracketBlocker(mask, AIF_BR_B_OPAQUE, shown)
+        shown = aifEmitBracketBlocker(mask, AIF_BR_B_DROP, shown)
+        shown = aifEmitBracketBlocker(mask, AIF_BR_B_SHARED_BODY, shown)
+    }
+
+    // The half the obligations do not carry. A function that clears every one of
+    // them is still never placed if nothing calls it from a region, and saying
+    // "yes" without this would report a property that reads as a placement.
+    print("      callers  ")
+    print(int_to_str(inRegion))
+    print(" of ")
+    print(int_to_str(calls))
+    if (inRegion == 0) {
+        println(" call sites lie inside a region -- so no arena would serve it either way")
+    } else {
+        println(" call sites lie inside a region")
+    }
+}
+
 fn aifEmitCause(site: Int, converged: Bool) {
     let domain = aif_cause_domain_for(site)
     let n = aif_cause_build(site, domain)
@@ -621,6 +893,8 @@ fn aifEmitCause(site: Int, converged: Bool) {
         println(int_to_str(aif_cause_col(i)))
         i = i + 1
     }
+
+    aifEmitPlacement(site)
 
     println("")
     println("  repairs, cheapest first")
@@ -754,6 +1028,42 @@ fn aifReportBudgets(converged: Bool) -> Int {
     return errors
 }
 
+// SPEC 5.2. A `region` that serves no allocation is a pessimisation the compiler
+// used to perform in silence: the block still pushes and pops an arena at every
+// entry, and nothing is bump-allocated from it. Measured on
+// `aif/evidence/xlang/prismio/g2_region.psm` -- 20 000 regions entered, 0 of
+// 10 201 215 allocations served, and the frame loop 1.67x slower than the same
+// program without the annotation.
+//
+// A warning rather than an error, because SPEC 5's rule for an axiom is that
+// being wrong about it is recoverable: the region is still a legal scope and the
+// program still runs. What is not acceptable is the silence -- SPEC 5.0.1 makes
+// an annotation a verified assertion, and an assertion nobody checks is
+// decoration.
+//
+// The count comes from aif_region_serves, which reads the codegen gate rather
+// than the cost model's estimate. Those two disagreed until 2026-08-14, and the
+// estimate is the wrong one to warn from: it counts container elements that
+// codegen will not place, so a region serving nothing would have looked busy.
+fn aifReportInertRegions() {
+    // aif_budget_count() is scope_count under a name it outgrew -- aifReportBudgets
+    // above walks the same range for the same reason. Kept rather than renamed
+    // because the name is on the FFI surface the committed seed links against.
+    let n = aif_budget_count()
+    let mut s = 0
+    while (s < n) {
+        let name = aif_scope_region(s)
+        if (str_equals(name, "") == 0 and aif_region_serves(s) == 0) {
+            diag_warning_at(aif_scope_region_file(s), aif_scope_region_line(s),
+                            aif_scope_region_col(s), 0,
+                            str_concat(str_concat("region ", name),
+                                       " serves no allocation; it costs an arena push and pop per entry and reclaims nothing"))
+            diag_note("an arena serves a value only where the region and the allocation are in the same function: a value allocated in a callee cannot reach it")
+        }
+        s = s + 1
+    }
+}
+
 fn aifAnalyze(module: ASTNode, sourcePath: String, version: String,
                ownedCollections: Bool, summary: Bool, thetaFields: Bool,
                budget: Int) {
@@ -766,6 +1076,12 @@ fn aifAnalyzeProfiled(module: ASTNode, sourcePath: String, version: String,
                        budget: Int, profilePath: String) {
     let converged = aifRunProfiled(module, ownedCollections, thetaFields, budget,
                                     profilePath)
+
+    // The reporting command has to describe the build, which is the same reason
+    // `prismio aif` runs a declared workload. A manifest that shows no arena for
+    // a named region while the build warns about it would be two answers to one
+    // question -- the `owned_collections` trap in a new place.
+    aifReportInertRegions()
 
     if (summary) {
         aifEmitSummary(sourcePath, converged)
