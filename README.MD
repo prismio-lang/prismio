@@ -139,6 +139,17 @@ analysis-only validation and versioned JSON Lines diagnostics. The command runs
 the full frontend without generating IR, invoking the native linker, or creating
 an output artifact. See [IDE_PROTOCOL.md](IDE_PROTOCOL.md) for the wire contract.
 
+### Debugging
+
+`prismio build <source.psm> -g` emits DWARF — line tables, functions, lexical scopes,
+locals and struct layouts — so a program can be run under lldb or gdb. On macOS a `.dSYM`
+is written beside the binary.
+
+Separately, and more useful for the questions a debugger cannot answer, the memory model
+explains itself: `prismio aif <source.psm>` prints where every allocation went,
+`--why=<symbol>` derives it and ranks the repairs, and `prismio build --verify` runs the
+program and checks the inference held. See [docs/DEBUGGING.md](docs/DEBUGGING.md).
+
 ### Run the Test Suite
 
 ```bash

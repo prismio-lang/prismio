@@ -25,11 +25,16 @@ fn generateFunction(func: ASTNode) {
     
     let retSigType = storageType(retType)
     ir_function_begin(emittedName, retSigType)
+    // The declared return, not the storage one: `struct:Point` and `String` are
+    // both `ptr` by the time ir_function_begin sees them.
+    debugSignature(retType, debugTypeName(func.child3, ""))
 
     if (isMain == 1) {
         // Real OS argc/argv only reach the C `main` symbol; stash into globals for cli_arg().
         ir_function_param("i32", "p_argc")
         ir_function_param("ptr", "p_argv")
+        debugSignatureParam("i32", "Int")
+        debugSignatureParam("ptr", "")
     }
 
     let mut paramPtr = func.child1
@@ -46,12 +51,19 @@ fn generateFunction(func: ASTNode) {
         } else {
             ir_function_param(pStore, pName)
         }
+        debugSignatureParam(mapTypeNode(pTypeNode), debugTypeName(paramNode.child1, ""))
         paramPtr = paramNode.next
     }
 
     ir_function_body_start()
     ir_clear_local_var_types()
     ir_clear_returned()
+
+    // After ir_function_body_start, which is where the LLVM function is
+    // materialised -- the subprogram's signature is read off it -- and before any
+    // instruction is built, because LLVM requires every call in a function that
+    // has debug info to carry a location.
+    debugOpenFunction(func, emittedName)
 
     if (isMain == 1) {
         ir_store_global("i32", "%p_argc", "prismio_argc")
@@ -62,6 +74,7 @@ fn generateFunction(func: ASTNode) {
     ir_scope_push()
 
     let mut paramPtr2 = func.child1
+    let mut paramIndex = 0
     while (str_equals(paramPtr2, "") == 0) {
         let paramNode = ptr_to_node(paramPtr2)
         let pTypeNode = ptr_to_node(paramNode.child1)
@@ -72,6 +85,14 @@ fn generateFunction(func: ASTNode) {
         let pSlot = ir_get_var_slot(paramNode.s1)
         ir_alloca(pStoreType, pSlot)
         ir_store(pStoreType, str_concat("%p_", paramNode.s1), pSlot)
+
+        // The *declared* key, not the storage one: `struct:Point` is what says
+        // the slot holds a Point and not an unlabelled address. argc/argv are
+        // deliberately not described -- they are main's real C parameters, which
+        // the program never named and cannot see.
+        paramIndex = paramIndex + 1
+        debugLocal(paramNode.s1, pSlot, pTypeStr,
+                   debugTypeName(paramNode.child1, ""), paramNode, paramIndex)
 
         paramPtr2 = paramNode.next
     }
@@ -101,6 +122,9 @@ fn generateFunction(func: ASTNode) {
         }
     }
     
+    // After the implicit return above, so that return still carries this
+    // function's location rather than none.
+    debugCloseFunction()
     ir_function_end()
 }
 
@@ -464,6 +488,7 @@ fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
             if (nodeExists(node_to_ptr(field))) {
                 let fieldType = fieldTypeFor(module, ptr_to_node(field.child1))
                 ir_register_struct_field(structNode.s1, field.s1, fieldType)
+                debugFieldType(structNode.s1, field.s1, field.child1)
                 ir_struct_type_field(fieldType)
                 emitted = emitted + 1
             }
@@ -478,6 +503,7 @@ fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
             let typeNode = ptr_to_node(field.child1)
             let fieldType = fieldTypeFor(module, typeNode)
             ir_register_struct_field(structNode.s1, field.s1, fieldType)
+            debugFieldType(structNode.s1, field.s1, field.child1)
             ir_struct_type_field(fieldType)
             fieldPtr = field.next
         }
@@ -774,6 +800,11 @@ fn generateModule(module: ASTNode) {
         ir_module_start("self_hosted_module")
     }
 
+    // Immediately after the module exists and before anything is built into it:
+    // a DIBuilder is created from the module, and -g pins the module's data
+    // layout, which has to be settled before the first struct body is laid out.
+    debugBeginModule()
+
     let mut typeStmtPtr = module.child1
     while (str_equals(typeStmtPtr, "") == 0) {
         let typeStmt = ptr_to_node(typeStmtPtr)
@@ -793,6 +824,19 @@ fn generateModule(module: ASTNode) {
             generateStructDecl(structStmt, module)
         }
         structStmtPtr = structStmt.next
+    }
+
+    // After every body is set, not inside the loop above: a composite's member
+    // offsets come from the finished LLVM type, and generateStructDecl emits
+    // dependencies before dependents, so a type visited early may still be
+    // opaque at the point its own declaration is reached.
+    let mut debugStructPtr = module.child1
+    while (str_equals(debugStructPtr, "") == 0) {
+        let debugStructStmt = ptr_to_node(debugStructPtr)
+        if (debugStructStmt.kind == NodeKind.STRUCT_DECL) {
+            debugStruct(debugStructStmt)
+        }
+        debugStructPtr = debugStructStmt.next
     }
 
     ir_blank_line()
@@ -1086,6 +1130,11 @@ fn generateModule(module: ASTNode) {
             generateWorkloadDriver(wl, irProfilePath)
         }
     }
+
+    // Before ir_module_end, and before ir_write_file's verifier runs: an
+    // unfinalised DIBuilder leaves temporary metadata nodes in the module, which
+    // is a verification failure rather than a missing line.
+    debugEndModule()
 
     ir_module_end()
 }

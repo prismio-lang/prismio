@@ -641,6 +641,32 @@ static int g_verify_mode = 0;
 
 void compiler_set_verify_mode(int on) { g_verify_mode = on ? 1 : 0; }
 
+// `-g`, as seen from the build. The DWARF itself is built by the backend and
+// travels inside the .ll; this flag is the two things the *driver* has to do
+// differently once it is there.
+//
+// **-O0 for the program object.** The rest of this file argues for -O2 and the
+// measurements behind it stand, but they are measurements of speed, and -g is a
+// request for a different thing. At -O2 a Prismio local is promoted out of its
+// stack slot in the first hundred milliseconds of the pipeline, and every
+// question a debugger can then answer about it is "optimized out". LLVM does not
+// lie in that state -- it drops locations rather than keeping stale ones -- so
+// the result is not wrong, it is empty, and an empty debugger is what a user
+// would report as "-g does not work". Someone who wants both can still ask:
+// `prismio build x.psm -O2 -g` runs the IR pipeline inside the compiler and the
+// compile unit records isOptimized, so the debugger says so.
+//
+// **dsymutil on Darwin.** Mach-O keeps DWARF in the object file and puts only a
+// debug map in the executable, so `delete_file(program_obj)` below -- which has
+// always run -- would take the debug info with it. dsymutil walks the map and
+// copies the DWARF into a .dSYM bundle beside the binary, which is where lldb
+// looks. On ELF the linker copies the sections into the executable itself and
+// there is nothing to do. This is why -g on macOS was not simply "emit the
+// metadata": everything downstream of the metadata was already deleting it.
+static int g_debug_info = 0;
+
+void compiler_set_debug_info(int on) { g_debug_info = on ? 1 : 0; }
+
 // LAYOUT 3.2. A workload driver calls rt_profile_*, and an *installed*
 // runtime.lib may predate them -- it is a binary someone built at some point,
 // and this feature is newer than some of those points. The link then fails on
@@ -685,7 +711,7 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     int len = (int)(strlen(q_ir) + strlen(q_obj) + 64);
     char* command = (char*)malloc(len);
 
-    snprintf(command, len, "clang -O2 -c %s -o %s", q_ir, q_obj);
+    snprintf(command, len, "clang %s -c %s -o %s", g_debug_info ? "-O0" : "-O2", q_ir, q_obj);
     int result = run_build_command(command);
 
     free(command);
@@ -1097,6 +1123,30 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
     return result;
 }
 
+// Mach-O only, and a warning rather than a failure if it does not work.
+//
+// A .dSYM is a copy of debug info that already exists somewhere else, so a
+// program that built and linked is a program that runs. Failing the build
+// because the bundle could not be written would turn a degraded -g into no
+// binary at all. The warning names the tool so the cause is not a mystery.
+static void write_dsym(const char* exe_file) {
+#ifdef __APPLE__
+    char* q_exe = command_quote_arg(exe_file);
+    int len = (int)strlen(q_exe) + 64;
+    char* command = (char*)malloc(len);
+    snprintf(command, len, "dsymutil %s", q_exe);
+    if (run_build_command(command) != 0) {
+        fprintf(stderr,
+                "warning: dsymutil failed; the binary has a debug map but no .dSYM,\n"
+                "         so a debugger will find no source lines for it.\n");
+    }
+    free(command);
+    free(q_exe);
+#else
+    (void)exe_file; // ELF: the linker copied the debug sections into the binary
+#endif
+}
+
 // Normal user mode. The program links against the runtime only, so a link failure
 // here is most often someone trying to build the compiler itself -- src/main.psm
 // calls the backend's ir_* functions, which deliberately are not in runtime.lib.
@@ -1132,6 +1182,11 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
                     "src/main.psm");
         }
     }
+
+    // Before the object goes away, and only while it is still there to walk. See
+    // g_debug_info: on Mach-O the executable carries a debug map, not DWARF, and
+    // the DWARF it points at is in the object file the next line deletes.
+    if (result == 0 && g_debug_info) write_dsym(exe_file);
 
     delete_file(program_obj);
     free(program_obj);

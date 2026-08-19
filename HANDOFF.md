@@ -12,8 +12,9 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
   IR for `src/main.psm` is byte-identical to the warm build's.
-- **130/130 tests** as of 2026-08-19 (128 before the concurrency session, which added the
-  `aif_concurrency` runner test and then `test_68_optional_returns.psm`), of which
+- **132/132 tests** as of 2026-08-20 (131 before the DWARF session, which added the
+  `debug_info` runner test and its fixture; 128 before the concurrency session, which added the
+  `aif_concurrency` runner test, `test_68_optional_returns.psm` and `test_69_task_results.psm`), of which
   **31** are negative and each asserts *which* diagnostic it
   expects. The runner globs `neg_*.psm`, so the count is `ls tests/neg_*.psm | wc -l` and nothing
   else; this line said 26 while the tree held 27, which is the same rot the note below describes. (This line read "76/76" for six sessions after it
@@ -28,26 +29,28 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 ### File roles
 
-> **Stale as of `f791ab0` (2026-08-08).** That commit split every one of these into a directory and
-> renamed the identifiers to camelCase: `src/sema.psm` → `src/sema/{checker,flow,ownership,symbols,
-> types,builtins}.psm`, `src/ir.psm` → `src/ir/{module,expr,stmt,types,context}.psm`, `src/aif.psm`
-> → `src/aif/{walk,model,report,contracts,layout}.psm`, `src/lexer.psm` → `src/lexer/`,
-> `src/parser.psm` → `src/parse/`, `src/ast.psm` → `src/ast/nodes.psm`, `src/bridge.psm` →
-> `src/ir/bridge.psm`, `src/diag.psm` → `src/common/diagnostics.psm`. The *roles* below are still
-> accurate; the paths are not.
+Paths are current as of 2026-08-20. The 2026-08-08 split (`src/sema.psm` into `src/sema/`, and so
+on for ir, aif, lexer, parse, ast) is folded in rather than left as a warning over a stale table.
 
-| File | Role |
+| Path | Role |
 |---|---|
-| `src/lexer.psm` | tokens with spans, string/char escapes |
-| `src/parser.psm` | precedence, casts, compound-assignment desugaring, error recovery |
-| `src/sema.psm` | type checking, ownership, scoping, flow analysis |
-| `src/types.psm` | TypeInfo, width/signedness helpers |
-| `src/ir.psm` | AST → backend calls. **Emits no IR text** |
-| `src/bridge.psm` | the backend FFI surface |
-| `src/diag.psm` | the diagnostics FFI surface |
+| `src/lexer/{scanner,token}.psm` | tokens with spans, string/char escapes |
+| `src/parse/{parser,expr,stmt,decl}.psm` | precedence, casts, compound-assignment desugaring, error recovery |
+| `src/ast/{nodes,types,dump}.psm` | ASTNode, TypeInfo, width/signedness helpers, the JSON dump |
+| `src/sema/{checker,flow,ownership,symbols,types,builtins,enums,generics}.psm` | type checking, ownership, scoping, flow analysis, monomorphisation |
+| `src/aif/{walk,model,report,contracts,layout}.psm` | the memory model: AST walk, transfer rules, manifest, `--why`, layout search |
+| `src/ir/{module,expr,stmt,types,context}.psm` | AST → backend calls. **Emits no IR text** |
+| `src/ir/bridge.psm` | the backend FFI surface |
+| `src/ir/debug.psm` | `-g`: where a location is stamped, and where it is declined |
+| `src/common/{diagnostics,text}.psm` | the diagnostics FFI surface, string helpers |
+| `std/` | the standard library, written in Prismio |
 | `runtime/ir_symbols.c` | interned names, scoped symbol table, move/borrow state, loop targets |
 | `runtime/diagnostics.c` | source-file registry, span rendering, error accounting |
-| `runtime/llvm-api-backend.c` | the backend |
+| `runtime/aif_support.c` | the solver: bitsets, points-to, the fixed point, arena placement |
+| `runtime/lang_runtime.c` | the language runtime a compiled program links against |
+| `runtime/program_support.c` | files, paths, argv, threads and channels |
+| `runtime/build_driver.c` | drives clang, the object cache, the toolchain sources |
+| `runtime/llvm-api-backend.c` | the backend, including the DWARF emitter |
 | `runtime/prismio_llvm.h` | LLVM C API decls; real headers via `-DPRISMIO_LLVM_REAL_HEADERS` |
 
 ---
@@ -93,7 +96,11 @@ which of the six lists you missed.
 
 ---
 
-## What's next
+## What landed, and what to know before touching it
+
+Named "What's next" for several sessions while every paragraph in it described something that had
+already shipped. It is a reference for the memory model as built — read the part covering whatever
+you are about to change. For what is actually next, see `SESSION-PROMPT.md`.
 
 **The memory model, Level 1.** Level 0 landed on 2026-08-05: `prismio aif <source.psm>` runs AIF's
 inference engine over the post-sema AST, assigns every allocation site a tier, and emits the
@@ -415,6 +422,192 @@ choke point for field access, the way `ir_alloc_object` is for allocation.
 
 ---
 
+## Session of 2026-08-20 (DWARF) — `-g` lands, and the honest omissions are the interesting part
+
+### What this closes
+
+`V1_GAP_ANALYSIS.md`'s "Compiled programs cannot be source-debugged", and item 19's second
+half. `prismio build x.psm -g` emits a compile unit, a line table, a DISubprogram per source
+function, a DILexicalBlock per block, a DILocalVariable per binding and a DICompositeType per
+struct. lldb resolves breakpoints by file and line, prints frame variables, and `type lookup
+Point` prints the struct.
+
+`docs/DEBUGGING.md` is the other half of the session and is not a README for `-g`: it is the
+write-up of `--verify`, the manifest and `--why` as a debugging story, which is the thing this
+compiler has that a debugger does not replace.
+
+### 1. The property that let it land, and how it was checked
+
+**Without `-g`, output is byte-identical.** `tools/ir_snapshot.py` over `tests/`,
+`aif/corpus/`, `aif/evidence/` and `src/`: 98 pre-existing programs, and the only one that
+moved is `src/main.ll`, which moved because `src/` did. The whole feature is one flag through
+`irSetDebugInfo`, and `run_debug_info_test` asserts a no-`-g` build contains no
+`!DICompileUnit`, no `!DILocation`, no `!dbg` and no `target datalayout` — because a stray
+unconditional call into the DWARF layer would fail nothing else in the suite and would move
+every program's IR.
+
+### 2. Pinning the data layout is the load-bearing part, and it is not obvious
+
+A module with no `target datalayout` is laid out by **LLVM's default specification**, in which
+`i64` has a *4-byte* ABI alignment. Measured, on this host:
+
+| | `{ i32, i64, i8 }` |
+|---|---|
+| empty layout | size 16, offsets 0 / 4 / 12 |
+| host (arm64-apple) | size 24, offsets 0 / 8 / 16 |
+
+So member offsets read from `LLVMGetModuleDataLayout` on a module the compiler never gave a
+layout are four bytes out on the first 64-bit integer field of every struct that has one, and
+clang then lays the object out its own way. That is not a missing answer, it is a debugger
+confidently pointing at the wrong bytes. A `-g` build therefore asks the host target machine
+for its layout and writes it onto the module, the way clang does for a C translation unit.
+`tests/debug_info.psm` carries a `Checkpoint { tick: Int, stamp: I64 }` for exactly this: field
+0 is pinned by the layout search, so its `i64` sits behind a lone `i32` and lands at bit 64 on
+every supported target and at bit 32 under the default. Breaking the pin moves it, and the test
+says so in those words.
+
+`double` and `ptr` are 64-bit-aligned in the default spec too, so most structs come out the
+same either way — which is precisely why this needed a fixture built to discriminate rather
+than a spot check.
+
+### 3. The three things AIF makes hard, and what each got
+
+The brief asked for a DWARF expression or an honest omission per case. Two of the three are
+omissions and one is a real description:
+
+- **A T0 value's alloca is one slot per loop.** No change needed: the variable's storage *is*
+  that slot and the DILexicalBlock bounds it to the declaring block, exactly as C bounds a
+  loop-body local. The unexpressible part — a pointer from iteration 1 naming iteration 2's
+  object — is a property of the promotion, not of the location, and is documented.
+- **An arena-placed value has no individual lifetime.** Its slot holds a pointer that is right
+  while the binding is in scope; the storage dies with the region. DWARF has no "valid until
+  this other PC", so nothing claims one.
+- **A field may not be where the source says.** This one is described rather than omitted.
+  Offsets come from `LLVMOffsetOfElement` over the struct LLVM built, so a LAYOUT 7.2
+  permutation needs no special handling. A LAYOUT 6 hot/cold split gets a `__cold` pointer
+  member and a second `Foo.cold` composite behind it — verified on a forced split: hot record
+  32 bytes with `id`/`x`/`y`/`__cold`, cold record 40 bytes with the other five in the
+  search's order. Listing all eight at eight offsets in the 32-byte record would have been
+  the exact failure this feature must not have.
+
+Note that the cold record's *measured* size is 40 bytes where the layout model predicted 32.
+The model estimates; the DWARF reports what was built. They are allowed to differ and the
+DWARF is the one that has to be right.
+
+### 4. Four ways it was broken on purpose, and what each one failed on
+
+`run_debug_info_test` is 132's newest and the suite's only coverage of any of this, so it was
+checked in the direction that matters: a compiler was built with each mechanism broken.
+
+| break | what failed |
+|---|---|
+| the `-g` gate removed (`if (true)`) | five markers found in a no-flag build |
+| data layout not pinned | `target datalayout` missing; `Checkpoint.stamp` at bit 32, not 64; `Checkpoint` 96 bits, not 128 |
+| cold block not described | "`--force-layout` produced no split composite" |
+| `debugAt` moved from the statement to the block | "nothing is attributed to line 39 (`describe-return`)" |
+
+The forced cut is **read from `prismio aif --layout`** rather than written down, because a
+forced candidate the search does not offer is a warning and no split — a hardcoded number
+would turn "the model reranked" into "this test quietly stopped checking".
+
+### 5. Two things about the build that are not the metadata
+
+Both were discovered by the feature appearing to work and producing nothing usable.
+
+- **`-g` drops the object step to `-O0`.** `compile_ir_to_object` compiles at `-O2` and the
+  measurements behind that stand, but at `-O2` every Prismio local is promoted out of its
+  stack slot and every question a debugger can ask is `<optimized out>`. LLVM does not lie
+  there — it drops locations rather than keeping stale ones — so the result is empty, not
+  wrong, and empty is what a user reports as "-g does not work". `prismio build x.psm -O2 -g`
+  still gets both, with `isOptimized` recorded in the compile unit.
+- **Mach-O keeps DWARF in the object file**, and `compiler_build_executable` has always ended
+  with `delete_file(program_obj)`. So on macOS the metadata was emitted, linked, and then
+  deleted. `dsymutil` runs before that, and its failure is a warning rather than a build
+  failure: a `.dSYM` is a copy of information that exists elsewhere, and refusing to produce a
+  binary because the bundle could not be written turns a degraded `-g` into no binary at all.
+
+### 6. Where the fidelity actually stops
+
+- **A signature is the declared one, not LLVM's**, because everything with an address is `ptr`
+  in the LLVM function type — a `String`, a `List`, a `Point` and an opaque extern return
+  would all read `void *`. `ir_debug_signature`/`_param` buffer the declared keys between
+  `ir_function_begin` and `ir_function_body_start`. It is used only when the count matches
+  what LLVM built; it will not for `main`, whose real argc/argv codegen prepends, and the
+  mismatch falls back to storage types rather than misaligning the list.
+- **`String` is `char *`** and that is a statement of fact, not a nicety: `str_concat` and
+  friends treat it as a NUL-terminated buffer, so a debugger prints the characters.
+- **A `List<T>`, a `T?` and an array are opaque pointers.** Each is an address of something
+  this layer has no layout for, and naming it something it is not would be the whole point
+  missed.
+- **`DILexicalBlockFile` is built and nothing in the tree reaches it.** Checked, not assumed:
+  no program in `tests/` or `aif/corpus/` emits one, because `resolveImports` flattens without
+  moving nodes between files and a monomorphised clone keeps its template's file on both body
+  and function. Kept anyway — a DILocation inherits its scope's file, so the first pass that
+  copies an AST node across a file boundary would introduce a silently wrong filename, and
+  this is the code that stops it.
+- **Cleanup code inherits the preceding statement's line.** Scope drops, arena pops and region
+  exits are emitted after a block's last statement and the AST records no closing-brace
+  position. The fix, if someone wants it, is to stamp the `}` token's span onto the BLOCK node
+  in `parseBlock`; it is a real improvement and it is not a correctness problem. It also does
+  *not* affect variable liveness, which is the thing you would expect it to — LLVM derives a
+  DW_TAG_lexical_block's low_pc/high_pc from the instructions in the scope, not from the
+  DILexicalBlock's line, and the dumps confirm it.
+- **Module-level globals get none.** A program with `let mut counter = 0` at the top level
+  emits `@counter` and zero `DIGlobalVariable`. This is a plain hole rather than a fidelity
+  limit -- `generateModule`'s global loop has the type key and the span in hand and nothing
+  calls `LLVMDIBuilderCreateGlobalVariableExpression`. Ranked second in NEXT-SESSION.
+- **`prismio bootstrap` takes no `-g`.** The flag is parsed on `build`/`run` only, so the one
+  program in this repo that would most repay stepping through cannot be. Ranked first.
+- **`-g` needs a backend built against real llvm-c headers.** `prismio_llvm.h`'s hand-written
+  fallback path refuses with a message instead. Twenty DIBuilder signatures, the longest of
+  which takes nineteen arguments, transcribed by hand into a file the linker checks by *name*
+  only, is how you get DWARF that is subtly wrong rather than a build that fails.
+
+### 7. The gate
+
+- suite **132/132** (`run_debug_info_test` is new)
+- two-generation fixpoint `S10c == S10d`
+- IR snapshot: 98 pre-existing programs, only `src/main.ll` moved
+- AIF differential agrees on 17 sources
+- cold build from the **committed seed** byte-identical to the warm chain
+- `-g` builds all 78 programs in `tests/` + `aif/corpus/` with no failure
+- `--verify` on `test_44` unchanged from the pre-session compiler (0 released, 0 violations
+  both sides — see the note about which columns are noisy)
+
+**Last-good: `build/S10d`.** The seed was not refreshed and did not need to be: no new syntax.
+
+### 8. Found in passing, and it is not this session's
+
+**`--target wasm32` builds nothing at all.** `Isize`/`Usize` lower to `i32` there while
+`std/io.psm` declares `I64`, so `LLVMVerifyModule` rejects four calls with "Call parameter type
+does not match function signature" -- and `std/io.psm` is merged into *every* module, so this
+fires even for a `main` that does no I/O whatsoever. Confirmed pre-existing rather than assumed:
+a compiler built from the committed seed fails identically with no `-g`.
+
+Two further things about that flag, checked while confirming the above, because they change what
+"fix wasm32" would even mean:
+
+- **The build driver never passes `--target` to clang** -- zero occurrences in
+  `build_driver.c`. So even with the verifier satisfied, `--target wasm32 -o x.exe` would emit
+  wasm-triple IR and then compile it for the *host*. The only coherent path today is `-o x.ll`,
+  which stops after writing IR, leaving the caller to drive `clang`/`wasm-ld` themselves.
+- **`PRISMIO_WASM` is never defined by anything in this repo** -- zero occurrences in the driver
+  and in both bootstrap scripts. The `#ifdef PRISMIO_WASM` runtime in `lang_runtime.c` (a bump
+  allocator over `__heap_base`, a hand-written `memcpy`, `free` as a no-op, four host imports
+  from the `env` module) is compiled by no build in this tree.
+
+So it is an unfinished escape hatch rather than a supported target, and `V1_GAP_ANALYSIS.md`'s
+"Host only; `--target wasm32` switches pointer width and little else" is the accurate grade.
+Nothing native depends on it and it is inert unless asked for.
+
+### 9. Next, ranked
+
+See NEXT-SESSION's 2026-08-20 entry for the full form. In order: `-g` for `prismio bootstrap`;
+`DIGlobalVariable` for module-level globals; the closing-brace span on BLOCK; enums as
+`DW_TAG_enumeration_type`; a `--verify` that instruments reads.
+
+---
+
 ## Session of 2026-08-19 (concurrency) — the `T` domain stops being vacuous, and T4a is emitted for the first time
 
 **State, verified on the tree.** Suite **129/129** (128 at the session's start; `aif_concurrency` is
@@ -517,6 +710,69 @@ container from the caller.
    which then trips T-SPAWN-SHARE. The first draft of the fixture used custom `report_list()`
    externs and landed the "this must stay non-atomic" case at T4a. Use `list_new`/`list_push`/
    `list_get`, which the walk summarises.
+
+### 4b. The join analysis was a defect, not a compromise — and the differential could not see it
+
+The first E-SPAWN-J was a forward scan. Its early-exit helper recursed into the statement's `next`,
+so it asked "does anything between here and the end of the block leave" rather than "can control
+leave *this statement*" — and every such block ends in `return join t`, which answered yes.
+
+**Measured before rebuilding, as the note said to.** Five ordinary shapes; four fell off the cliff.
+A single inert `let x = 1` between a spawn and its join took the argument from **T0 with no count
+at all to T4a with an atomic one**. A loop with no `break` and a bare `if` did the same. The one
+shape that worked — joining on the very next statement — is the one nobody writes, and is what both
+existing fixtures happened to do.
+
+**The oracle had already diverged and the differential passed anyway.** `aif/prototype/aif.py`
+represents sibling statements as child lists, so it never had the `next` bug; on the measurement
+fixture it reported `CrossThread 2` where the compiler reported `0`. The differential agreed on all
+17 sources throughout, because no fixture on either side had a statement between a spawn and its
+join. That is HANDOFF rule 5 exactly — a check that cannot fail — and the cause was fixture coverage,
+not the oracle.
+
+Replaced with `chainJoins` / `chainEscapesUnjoined`, two mutually recursive judgements in
+`src/sema/flow.psm`'s style, mirrored in the oracle. They are **not** negations: falling out of the
+bottom of a chain is *not joined* for one and *did not escape* for the other. The escape test runs
+first, which is what keeps `if (c) { return 0 }` followed by `return join t` correctly unjoined.
+`break` now carries an `inLoop` flag, so a break absorbed by its own loop stops counting as an exit.
+
+Five shapes added to `tests/aif_concurrency.psm` and asserted in the runner, including
+`one_path_escapes_unjoined`, which must **stay** T4a — being wrong in that direction is a
+use-after-free, not a lost tier. Verified the differential now has teeth: reverting the oracle's
+break handling alone makes it report `DIFFER` on `aif_concurrency.psm`.
+
+### 4c. `Task<R>` — the restriction was the lowering, and it lifted cleanly
+
+`spawn` yields `Task<R>`; `join` yields R — Int, a reference type, or nothing. Safe because the
+compiler knows R statically and picks a correctly-typed function pointer: `prismio_task_invoke` now
+has three families across four arities, twelve typedefs. One signature plus a cast works on every
+ABI anyone ships and is still undefined, and with *return values* it stops being formal — an
+i32-returning function called through a `void*`-returning pointer leaves the upper half of the
+register undefined on the targets this compiles for. Float and the sized integers are refused with a
+diagnostic that says why.
+
+The handle stays PTR-kinded with a `child`; a `Task` TypeKind would have to be added to every switch
+in sema, AIF and codegen to reach the behaviour PTR already has. Two things worth keeping:
+
+- **`Task<R>` had to become writable as an annotation.** Before it was, it resolved to Invalid — and
+  Invalid matches everything, so `let t: Task<Int> = spawn name_span(j)` type-checked against a
+  `Task<String>`. A type nobody can spell is a type nobody can get wrong; one that silently resolves
+  to Invalid is worse than either.
+- **The sem key was written with its decoder this time.** `task:<inner>` round-trips, because the
+  optional bug three sections down was exactly the same hole and had sat there for twelve days.
+
+### 4d. SPEC 11.0's levels table, resolved (1.2.4)
+
+The row read `none` for AIF-2 while the same column's Inference row read "+ thread". Those cannot
+both be requirements: a thread domain with no tasks is vacuous by construction, and an
+implementation meets it by writing the lattice down and never consulting it — which is precisely
+what this one did for its whole life, while emitting a `T` distribution that could only read
+`Isolated N`.
+
+AIF-2's cell is now `isolation`; AIF-3's is `+ unrestricted sharing`. The compiler still declares
+**AIF-1** — it meets none of AIF-2's other seven rows — and the manifest records `exceeds
+inference:thread concurrency:isolation` instead. Recorded as RATIONALE C11. This is a governance
+call on a normative document; reverse it there if you disagree.
 
 ### 5. Found in passing, fixed immediately after (REQUIREMENTS 4)
 
@@ -3412,14 +3668,19 @@ claims that the compiler does not implement.
 
 ### Known gaps, documented rather than fixed
 
-- **Compile time is superlinear** in module size — ~290 ms for the 155 KB compiler, ~500 ms for a
-  105 KB single module. The cubic term is gone (symbols are mangled once, type names resolve
-  through a registry) and lexing is linear now, but sema still scans the module per identifier
-  for function lookup. The fix is a name→declaration map built once in `analyze_module`.
-- **No `-g`.** Nothing compiled can be source-debugged. Needs real DWARF design work.
+- ~~**Compile time is superlinear** in module size.~~ **Does not reproduce as of 2026-08-20.**
+  Measured: 733 B → 29 ms, 3 KB → 21 ms, 60 KB → 72 ms — 82× the input for about 2.5× the time,
+  and the floor on the small ones is the `std.io` prelude rather than anything superlinear. The
+  2026-08-17 session removed the cubic term and made lexing linear; whatever remains of sema's
+  per-identifier module scan is not visible at these sizes. Re-measure before treating it as a
+  problem, and delete this bullet if it stays clean.
+- ~~**No `-g`.**~~ Landed 2026-08-20 — see that session's entry. What it deliberately does
+  not describe, and why, is `docs/DEBUGGING.md`.
 - **No error-handling story.** The one users hit first: failure can only be signalled by a
   sentinel return value. Needs tagged unions → `Option`/`Result`, i.e. language design.
-- **No generics, methods, closures, or slices.** `List<T>` is a hardcoded special case.
+- **No methods, closures, or slices.** Generics landed on 2026-08-19 by monomorphisation, and
+  `List<T>` is no longer a hardcoded special case — `Map<K,V>` in `std/map.psm` is written in
+  Prismio. Methods, closures and slices are untouched.
 - `resolve_imports` flattens every module into one AST. File identity survives on each node's
   `file` id, which is why diagnostics can still name the right file — but there is no module
   namespacing or visibility.

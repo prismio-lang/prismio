@@ -536,8 +536,18 @@ fn generateExpression(expr: ASTNode) -> String {
         let mut target = callee.s1
         if (str_equals(call.s2, "") == 0) { target = call.s2 }
 
+        // Which of prismio_task_invoke's three families the runtime must call
+        // through. Decided from the callee's declared return type, which is
+        // known statically -- so the type the task produces and the type read
+        // back out of the join agree by construction.
+        let resultT = typeTaskResult(nodeGetType(expr))
+        let mut rkind = 0
+        if (resultT.kind == TypeKind.VOID) { rkind = 2 }
+        else if (resultT.kind != TypeKind.INT) { rkind = 1 }
+
         ir_call_begin()
         ir_call_arg("ptr", ir_get_temp_name(ir_func_addr(target)))
+        ir_call_arg("i32", int_to_str(rkind))
 
         // The arity is counted before the arguments are emitted, because
         // ir_call_arg wants them in order and the count comes first.
@@ -573,9 +583,16 @@ fn generateExpression(expr: ASTNode) -> String {
 
     if (expr.kind == NodeKind.JOIN_EXPR) {
         let handle = generateExpression(ptr_to_node(expr.child1))
+        let resultT = nodeGetType(expr)
         ir_call_begin()
         ir_call_arg("ptr", handle)
-        return ir_get_temp_name(ir_call_end("i32", "prismio_task_join"))
+        if (resultT.kind == TypeKind.VOID) {
+            return ir_get_temp_name(ir_call_end("void", "prismio_task_join_v"))
+        }
+        if (resultT.kind == TypeKind.INT) {
+            return ir_get_temp_name(ir_call_end("i32", "prismio_task_join"))
+        }
+        return ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p"))
     }
 
     if (expr.kind == NodeKind.BINARY_EXPR) {

@@ -106,6 +106,20 @@ fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     // -- it has a TypeKind and a runtime -- and everything else is a generic
     // declaration, resolved by instantiating it into an ordinary struct.
     if (tn.i2 == 1) {
+        // REQUIREMENTS 15. `Task<R>` is built in for the same reason `List<T>`
+        // is: it has a runtime and a TypeKind, so there is no struct to
+        // instantiate. Without this arm it fell through to
+        // monoInstantiateStruct, which found no `Task` declaration, returned
+        // Invalid -- and Invalid matches everything, so a written
+        // `let t: Task<Int> = spawn describe(j)` type-checked against a
+        // Task<String>. A type nobody can spell is a type nobody can get wrong;
+        // one that resolves to Invalid is worse than either.
+        if (str_equals(tn.s1, "Task") == 1) {
+            if (str_equals(tn.child1, "") == 0) {
+                return typeTask(semaAnnotationType(module, ptr_to_node(tn.child1)))
+            }
+            return typeTask(typeInvalid())
+        }
         if (str_equals(tn.s1, "List") == 1) {
             if (str_equals(tn.child1, "") == 0) {
                 return typeList(semaAnnotationType(module, ptr_to_node(tn.child1)))

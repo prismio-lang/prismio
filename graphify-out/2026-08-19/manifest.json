@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1787112588.525523,
-    "ast_hash": "9f9f9c55e603ec3627b67652ab29b8d4",
+    "mtime": 1787113497.7545705,
+    "ast_hash": "089a3be8c54512a494d896dd5438809c",
     "semantic_hash": ""
   },
   "PORTING.md": {
@@ -265,8 +265,8 @@
     "semantic_hash": ""
   },
   "aif/implementation/REQUIREMENTS.md": {
-    "mtime": 1787112519.4073992,
-    "ast_hash": "5ff5de08e927cf24c06559979a3b5ad5",
+    "mtime": 1787113472.1513643,
+    "ast_hash": "46f9ead004b40f9db7a7b834a6ee68a8",
     "semantic_hash": ""
   },
   "aif/implementation/ROADMAP.md": {
@@ -320,8 +320,8 @@
     "semantic_hash": ""
   },
   "NEXT-SESSION.md": {
-    "mtime": 1787112778.6810498,
-    "ast_hash": "09538aff5dbbe50c6ce736a0f9d1ab1e",
+    "mtime": 1787113497.754863,
+    "ast_hash": "ae68a227300cea440cc9bd8fc79c320f",
     "semantic_hash": ""
   },
   "CODE_STYLE.md": {

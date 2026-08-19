@@ -1,12 +1,121 @@
 # Prompts for the next sessions
 
+## 2026-08-21 — see `SESSION-PROMPT.md`
+
+The live prompt moved to its own file at the repo root. This entry is a pointer so the archive
+does not carry a second, diverging copy.
+
+An earlier draft of it lived here and **was ordered wrong**: it put `-g` follow-through and JIT
+ahead of cross-compilation. Two things settled after it was written moved JIT off the critical
+path entirely — iOS is out of scope, and a web reload needs no JIT, because a whole-program
+rebuild of a compiler-sized app measures 83 ms frontend + 116 ms LLVM at `-O0`. `SESSION-PROMPT.md`
+carries the corrected order: layering, then targets, then `-g`, then JIT as optional.
+
+
+## 2026-08-20 (DWARF) — `-g` is in; the compiler itself still cannot be stepped through
+
+**State, verified on the tree.** Suite **132/132**; two-generation fixpoint `S10c == S10d`; cold
+build from the **committed seed** byte-identical to the warm chain; the IR snapshot over
+`tests/`, `aif/corpus/`, `aif/evidence/` and `src/` moves exactly one file, `src/main.ll`, which
+moved because `src/` did; AIF differential agrees on 17 sources; `-g` builds all 78 programs in
+`tests/` + `aif/corpus/` cleanly. **Last-good: `build/S10d`.** The seed was not refreshed and did
+not need to be — no new syntax.
+
+### What landed
+
+`-g` on `build`/`run`: a DICompileUnit, a line table, a DISubprogram per source function, a
+DILexicalBlock per block, a DILocalVariable per binding, and a DICompositeType per struct with
+member offsets read from the type LLVM actually built. `runtime/llvm-api-backend.c` grew a
+"Debug information (DWARF)" section; `src/ir/debug.psm` is the frontend half and is where the
+"never emit a wrong location" rule is written down.
+
+And `docs/DEBUGGING.md`, which is the write-up of `--verify` / the manifest / `--why` as a
+debugging story. That was the half of the brief that was not engineering, and it is the half
+nobody outside this repo knows exists.
+
+**Read HANDOFF's 2026-08-20 entry before starting**, especially §2. The data-layout pin is the
+one place where a plausible implementation produces DWARF that points four bytes past every
+64-bit integer field, and the reason is not visible from the code.
+
+### The tasks, ranked
+
+1. **`-g` for `prismio bootstrap`.** The flag is on `build`/`run` only, so the one program in
+   this repo that most needs stepping through — the compiler — is the one that cannot be. It is
+   threading `debugInfo` through `compileSource`'s bootstrap branch, plus a decision about
+   whether `build_from_toolchain_sources` should pass `-g` to the runtime's C objects so a
+   stack trace crosses the FFI boundary intact.
+
+2. **Module-level globals get no debug info.** Checked: a program with `let mut counter = 0`
+   at the top level emits `@counter` and zero `DIGlobalVariable`, so a debugger cannot name it.
+   `LLVMDIBuilderCreateGlobalVariableExpression` plus a call from `generateModule`'s global
+   loop, where the type key and the span are both already in hand. Smaller than it sounds and
+   it is a plain hole rather than a fidelity limit.
+
+3. **A closing-brace span on BLOCK.** `parseBlock` knows the `}` token and throws it away, so
+   every scope drop, arena pop and region exit inherits the *previous statement's* line.
+   Stamping the span fixes that attribution. **It does not affect variable liveness** — LLVM
+   derives a DW_TAG_lexical_block's low_pc/high_pc from the instructions in the scope, which
+   the dumps confirm, so scoping is already right. This is a line-table nicety, ranked here
+   because it is cheap, not because anything is broken.
+
+4. **Enums as `DW_TAG_enumeration_type`.** `ir_register_enum_variant` already holds the
+   name→value map. It needs one accessor in `ir_symbols.c` and about fifteen lines in the DWARF
+   section, and it turns `p kind` from `12` into `STRUCT_DECL`.
+
+5. **`--verify` that instruments reads.** It catches a double free and a leak today; a
+   use-after-free is only made *loud*, by poisoning released memory with `0xDD`. SPEC 7.3's
+   table says what each remaining row needs, and the header over the shims in
+   `runtime/lang_runtime.c` says which are blocked on an object header.
+
+### Found in passing, not this session's bug
+
+**`--target wasm32` builds nothing at all.** `Isize`/`Usize` lower to `i32` there while
+`std/io.psm` declares `I64`, so `LLVMVerifyModule` rejects four calls with "Call parameter type
+does not match function signature" -- and `std/io.psm` is merged into *every* module, so this
+fires even for a `main` that does no I/O whatsoever. Confirmed pre-existing rather than assumed:
+a compiler built from the committed seed fails identically with no `-g`.
+
+Two further things about that flag, checked while confirming the above, because they change what
+"fix wasm32" would even mean:
+
+- **The build driver never passes `--target` to clang** -- zero occurrences in
+  `build_driver.c`. So even with the verifier satisfied, `--target wasm32 -o x.exe` would emit
+  wasm-triple IR and then compile it for the *host*. The only coherent path today is `-o x.ll`,
+  which stops after writing IR, leaving the caller to drive `clang`/`wasm-ld` themselves.
+- **`PRISMIO_WASM` is never defined by anything in this repo** -- zero occurrences in the driver
+  and in both bootstrap scripts. The `#ifdef PRISMIO_WASM` runtime in `lang_runtime.c` (a bump
+  allocator over `__heap_base`, a hand-written `memcpy`, `free` as a no-op, four host imports
+  from the `env` module) is compiled by no build in this tree.
+
+So it is an unfinished escape hatch rather than a supported target, and `V1_GAP_ANALYSIS.md`'s
+"Host only; `--target wasm32` switches pointer width and little else" is the accurate grade.
+Nothing native depends on it and it is inert unless asked for.
+
+### Two things not to re-derive
+
+- **The data layout must be pinned under `-g`, and only under `-g`.** LLVM's default
+  specification gives `i64` a 4-byte ABI alignment. `tests/debug_info.psm`'s `Checkpoint` exists
+  solely to make that difference observable; if you touch `pin_data_layout`, that fixture is
+  what tells you.
+- **A forced layout candidate the search does not offer is a warning and no split.** That is why
+  `run_debug_info_test` reads the cut out of `prismio aif --layout` instead of hardcoding one.
+
+### Not this session
+
+Another container. The `-g` work touched none of the memory model and the ranking above is
+deliberately all debug-info follow-through — but the memory-model list from the concurrency and
+payload-enum briefs below is untouched and still current.
+
+---
+
 ## 2026-08-19 (concurrency) — the `T` domain is live; the join analysis is the hole
 
-**State, verified on the tree.** Suite **130/130**; two-generation fixpoint `S9o1 == S9o2`; cold
-build from the **committed seed** byte-identical to the warm chain on all 97 programs; every
-pre-existing program emits byte-identical IR except `src/main.ll`, which changed because `src/` did;
-AIF differential agrees on 17 sources, two of them concurrent. **Last-good: `build/S9o2`.** The seed
-was not refreshed and did not need to be — `src/` uses no `spawn`.
+**State, verified on the tree.** Suite **131/131**; two-generation fixpoint `S9g1 == S9g2`; cold
+build from the **committed seed** byte-identical to the warm chain on all 98 programs; **every one
+of the 94 programs that predate this session emits byte-identical IR**, the exception being
+`src/main.ll`, which changed because `src/` did; AIF differential agrees on 17 sources, two of them
+concurrent, and now has teeth on the join analysis. **Last-good: `build/S9g2`.** The seed was not
+refreshed and did not need to be — `src/` uses no `spawn`.
 
 A REQUIREMENTS 4 follow-up landed after the concurrency work: optionals in *return* position were
 decoding to `Invalid` through a binding (`typeFromSemKey` had no `opt:` case). See HANDOFF's
@@ -25,28 +134,24 @@ the differential *cannot* catch.
 
 ### The tasks, ranked
 
-1. **Give E-SPAWN-J a real flow analysis.** This is the highest-value item and the session's own
-   biggest compromise. "Joined on every path before scope `s` exits" is currently decided by a
-   syntactic scan: a straight run of statements from the spawn to the join with nothing in between
-   that can leave the block. Any loop or conditional in between answers "not joined", which forces
-   `E = Global`, which forces `Shared` through A-ESCAPE, which forces CrossThread — a value going
-   from **T1 with no count at all** to **T4a with an atomic one** because of a `while` loop between
-   the spawn and its join. That is most real concurrent code. `src/sema/flow.psm` already computes
-   per-path reachability for the missing-return check; that is the machinery.
+**All three of the previous list are done.** E-SPAWN-J has a real per-path analysis, `Task<R>`
+carries its result type, and SPEC's levels table is resolved at 1.2.4. What is left is genuinely new
+ground.
 
-   Measure it before building it: the two fixtures are the wrong shape to show the cost, so write
-   one that has a loop between spawn and join and diff the manifest against the same program with
-   the loop hoisted.
+1. **Measure the tier distribution on concurrent code.** SPEC 11.0's open item #1 — "the whole
+   performance thesis rests on typical code landing overwhelmingly at T0–T2, and nobody has
+   measured it" — now has a concurrency arm for the first time. The corpus has no concurrent
+   program. Write one (a worker pool over a channel is the obvious shape), run BENCHMARKS H1
+   against it, and find out whether isolation actually keeps T4a near zero on code that was written
+   to do work rather than to exercise a rule.
 
-2. **`Task<T>`.** A handle is a `Ptr` and `join` yields `Int`. The restriction is the lowering —
-   three `void*` slots and an arity switch in `prismio_task_spawn` — not the model. A general
-   answer wants a per-site wrapper that unpacks an argument pack, which is REQUIREMENTS 3a's
-   closures.
+2. **`chan_*` is FFI surface, not language.** A channel is externed by hand and carries `Ptr`, so
+   nothing type-checks what goes in or comes out. `Chan<T>` would want the same treatment `Task<R>`
+   just got — a PTR-kinded type with a child and a sem-key round-trip. The pattern is now written
+   down twice; a third use should probably generalise it rather than copy it.
 
-3. **Decide the SPEC 11.0 levels question.** The table gives AIF-1 "Concurrency: none — `T` is
-   vacuous". This implementation declares AIF-1 and now exceeds that row. Exceeding a level is not
-   a conformance violation, but the table now describes something the implementation is not, and
-   that is a governance call rather than a code one.
+3. **Arity 3 is still the ceiling.** Unchanged, and still not a restriction of the model: a general
+   answer wants a per-site wrapper unpacking an argument pack, which is REQUIREMENTS 3a's closures.
 
 ### Two things not to re-derive
 

@@ -1,0 +1,138 @@
+// REQUIREMENTS 15 -- `Task<R>`, the typed half of the task model.
+//
+// The first cut of `spawn` produced a bare `Ptr` and `join` always yielded
+// `Int`. That was a restriction of the *lowering*, not of the model: the
+// runtime called every task through one `int (*)(void*)` pointer, so anything
+// else would have been read out of the wrong register.
+//
+// What makes the general case safe is that the compiler knows the callee's
+// declared return type statically, so it can pick the correctly-typed function
+// pointer rather than cast to a common one. `prismio_task_invoke` therefore has
+// three families -- int, pointer, void -- and twelve typedefs across four
+// arities. The alternative, one signature plus a cast, works on every ABI
+// anyone ships and is still undefined; with return values it stops being merely
+// formal, because an i32-returning function called through a pointer declared
+// to return `void*` leaves the upper half of the register undefined on exactly
+// the 64-bit targets this compiles for.
+//
+// The handle stays PTR-kinded. A `Task` TypeKind would have to be added to
+// every switch in sema, AIF and codegen to arrive at the behaviour PTR already
+// has. What the type carries that a bare `Ptr` could not is its `child`: the
+// thing `join` yields.
+//
+// **The result type has to survive a binding**, and that is the case worth
+// asserting rather than assuming -- `typeSemKey` writes `task:<inner>` and
+// `typeFromSemKey` reads it back. Optionals had exactly that hole for twelve
+// days (see test_68), so this file exercises the round-trip on purpose.
+
+extern fn print(s: String)
+extern fn println(s: String)
+extern fn int_to_str(n: Int) -> String
+extern fn str_concat(a: String, b: String) -> String
+extern fn str_equals(a: String, b: String) -> Int
+
+struct Job {
+    lo: Int,
+    hi: Int
+}
+
+struct Report {
+    label: String,
+    total: Int
+}
+
+fn count_span(j: Job) -> Int {
+    return j.hi - j.lo
+}
+
+fn name_span(j: Job) -> String {
+    return str_concat("span-", int_to_str(j.hi - j.lo))
+}
+
+fn summarise(j: Job) -> Report {
+    return Report { label: "summary", total: j.hi }
+}
+
+// A task with nothing to hand back. Still joined, because the join is the
+// synchronisation edge whether or not a value crosses it.
+fn acknowledge(j: Job) {
+    print("")
+}
+
+fn int_result() -> Int {
+    let t = spawn count_span(Job { lo: 2, hi: 9 })
+    return join t
+}
+
+fn string_result() -> Int {
+    let t = spawn name_span(Job { lo: 0, hi: 4 })
+    if (str_equals(join t, "span-4") == 1) {
+        return 1
+    }
+    return 0
+}
+
+fn struct_result() -> Int {
+    let t = spawn summarise(Job { lo: 0, hi: 5 })
+    let r = join t
+    return r.total
+}
+
+fn void_result() -> Int {
+    let t = spawn acknowledge(Job { lo: 0, hi: 1 })
+    join t
+    return 3
+}
+
+// The round-trip. `u` gets its type from a sem key rather than from the
+// expression, so a decoder that dropped the `child` would make `join u` yield
+// the wrong thing -- or, before `Task` had a child at all, always an Int.
+fn result_type_survives_a_binding() -> Int {
+    let t = spawn name_span(Job { lo: 0, hi: 7 })
+    let u = t
+    if (str_equals(join u, "span-7") == 1) {
+        return 1
+    }
+    return 0
+}
+
+// The type written out rather than inferred. Before `Task` was a real
+// annotation this resolved to Invalid, and Invalid matches everything -- so
+// `let t: Task<Int> = spawn name_span(j)` type-checked. A type nobody can spell
+// is a type nobody can get wrong; one that silently resolves to Invalid is
+// worse than either.
+fn written_annotation_agrees() -> Int {
+    let t: Task<Report> = spawn summarise(Job { lo: 0, hi: 8 })
+    let r = join t
+    return r.total
+}
+
+fn check(name: String, got: Int, want: Int) -> Int {
+    if (got == want) {
+        return 0
+    }
+    print("FAIL ")
+    print(name)
+    print(": got ")
+    print(int_to_str(got))
+    print(" want ")
+    println(int_to_str(want))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("int", int_result(), 7)
+    bad = bad + check("string", string_result(), 1)
+    bad = bad + check("struct", struct_result(), 5)
+    bad = bad + check("void", void_result(), 3)
+    bad = bad + check("binding", result_type_survives_a_binding(), 1)
+    bad = bad + check("annotation", written_annotation_agrees(), 8)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

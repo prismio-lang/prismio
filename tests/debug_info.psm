@@ -1,0 +1,68 @@
+// Fixture for run_debug_info_test. Not a value test -- it is compiled twice, with
+// and without `-g`, and both IRs are read.
+//
+// **The line numbers in this file are load-bearing.** The runner asserts that
+// each marked statement's DILocation names the line it is written on, which is
+// the only way to catch a line table that is off by a constant. Adding a line
+// above one of the markers moves it; the marker comments say which.
+
+extern fn int_to_str(n: Int) -> String produce(free)
+
+struct Reading {
+    id: Int,
+    label: String,
+    scale: Float,
+    magnitude: Float,
+    channel: Int,
+    revision: Int,
+    weight: Float,
+    offset: Float
+}
+
+// Exists for one assertion: LLVM's *default* data layout gives i64 a 4-byte ABI
+// alignment, so this struct is 12 bytes there and 16 on every target this
+// compiler supports. Field 0 is pinned, so the search cannot reorder its way out
+// of the hole, which makes it the one shape where a -g build that forgot to pin
+// the module's layout produces a member offset a debugger would act on and be
+// wrong about.
+struct Checkpoint {
+    tick: Int,
+    stamp: I64
+}
+
+fn scaled(r: Reading) -> Float {
+    return r.scale * r.magnitude          // MARK scaled-return
+}
+
+fn describe(r: Reading, prefix: String) -> String {
+    let body = r.label
+    return str_concat(prefix, body)       // MARK describe-return
+}
+
+fn checkpointTotal(c: Checkpoint) -> I64 {
+    return c.stamp
+}
+
+fn main() -> Int {
+    let mark = Checkpoint { tick: 1, stamp: 2 }
+    let stamp = checkpointTotal(mark)
+    let sample = Reading {
+        id: 1, label: "north", scale: 2.0, magnitude: 3.0,
+        channel: 4, revision: 5, weight: 0.5, offset: 0.25
+    }
+    let total = scaled(sample)            // MARK main-scaled
+    let mut count = 0
+    while (count < 3) {
+        let inner = count + 1             // MARK loop-inner
+        count = inner
+    }
+    println(describe(sample, "reading "))
+    println(int_to_str(count))
+    if (stamp > 0) {
+        println("PASS: checkpoint")
+    }
+    if (total > 0.0) {
+        println("PASS: debug info fixture")
+    }
+    return 0
+}

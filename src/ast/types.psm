@@ -163,6 +163,29 @@ fn typeOptional(inner: TypeInfo) -> TypeInfo {
     return t
 }
 
+// REQUIREMENTS 15. A task handle, carrying the type its `join` yields.
+//
+// PTR-kinded rather than a TypeKind of its own, and that is a considered choice
+// rather than a shortcut: the handle *is* an opaque word, every switch in sema,
+// AIF and codegen already has a PTR arm that treats it correctly, and a new
+// kind would have to be added to all of them to arrive at the same behaviour.
+// What the name and the `child` add is the one thing a bare `Ptr` could not
+// carry -- what comes back out of the join.
+fn typeTask(result: TypeInfo) -> TypeInfo {
+    let mut t = typeMake(TypeKind.PTR, str_concat("Task<", str_concat(result.name, ">")), "ptr")
+    t.child = type_to_ptr(result)
+    return t
+}
+
+fn typeIsTask(t: TypeInfo) -> Bool {
+    return t.kind == TypeKind.PTR and str_starts_with(t.name, "Task<") == 1
+}
+
+fn typeTaskResult(t: TypeInfo) -> TypeInfo {
+    if (typeIsTask(t) and str_equals(t.child, "") == 0) { return ptr_to_type(t.child) }
+    return typeInvalid()
+}
+
 fn typeOptionalInner(t: TypeInfo) -> TypeInfo {
     if (t.kind == TypeKind.OPTIONAL and str_equals(t.child, "") == 0) {
         return ptr_to_type(t.child)
@@ -246,6 +269,14 @@ fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
         if (typeIsValid(ac) == false or typeIsValid(bc) == false) { return true }
         return typeEquals(ac, bc)
     }
+    // Two task handles are the same type only when they yield the same thing.
+    // Without this they would fall through to PTR's unconditional `true` and
+    // `let t: Task<Int> = spawn make_report(j)` would typecheck.
+    if (typeIsTask(a) or typeIsTask(b)) {
+        if (typeIsTask(a) == false or typeIsTask(b) == false) { return false }
+        if (str_equals(a.child, "") == 1 or str_equals(b.child, "") == 1) { return true }
+        return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
+    }
     if (a.kind == TypeKind.OPTIONAL) {
         // A bare `none` carries no inner type, so it matches any optional. That
         // is what lets `none` be written wherever a `T?` is wanted without an
@@ -294,7 +325,16 @@ fn typeSemKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.BOOL) { return "Bool" }
     if (t.kind == TypeKind.CHAR) { return "Char" }
     if (t.kind == TypeKind.STRING) { return "String" }
-    if (t.kind == TypeKind.PTR) { return "Ptr" }
+    // A task's result type has to survive a binding, which is what a sem key is
+    // for. Writing "Ptr" here would lose it and `let t = spawn f(x)` would come
+    // back as a bare handle -- the same round-trip hole REQUIREMENTS 4's
+    // optionals fell into, which is why this case was written with its decoder.
+    if (t.kind == TypeKind.PTR) {
+        if (typeIsTask(t) and str_equals(t.child, "") == 0) {
+            return str_concat("task:", typeSemKey(ptr_to_type(t.child)))
+        }
+        return "Ptr"
+    }
     if (t.kind == TypeKind.STRUCT) { return str_concat("struct:", t.name) }
     if (t.kind == TypeKind.ENUM) { return str_concat("enum:", t.name) }
     if (t.kind == TypeKind.ARRAY) {
@@ -410,6 +450,9 @@ fn typeFromSemKey(key: String) -> TypeInfo {
     // lets `none` reach a typed slot with no inference pass. Decoding to
     // typeOptional(Invalid) would hand back a child that matches nothing, so
     // `let x = none` would stop being assignable to anything at all.
+    if (str_starts_with(key, "task:") == 1) {
+        return typeTask(typeFromSemKey(str_substring(key, 5, str_length(key) - 5)))
+    }
     if (str_starts_with(key, "opt:") == 1) {
         let inner = typeFromSemKey(str_substring(key, 4, str_length(key) - 4))
         if (typeIsValid(inner) == false) { return typeNone() }

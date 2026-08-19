@@ -51,8 +51,10 @@ char* cli_arg(int index);
 // SPEC 11 item 10 is what shapes the split: a task *owns* its arguments and a
 // channel *moves* its messages, so nothing the solver tiers is ever reachable
 // from two tasks at once -- which is what keeps T3's count non-atomic.
-void* prismio_task_spawn(void* fn, int nargs, void* a0, void* a1, void* a2);
+void* prismio_task_spawn(void* fn, int rkind, int nargs, void* a0, void* a1, void* a2);
 int   prismio_task_join(void* handle);
+void* prismio_task_join_p(void* handle);
+void  prismio_task_join_v(void* handle);
 void  prismio_task_release(void* handle);
 
 void* chan_new(int capacity);

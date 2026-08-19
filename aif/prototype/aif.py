@@ -826,35 +826,113 @@ class Engine:
                     return True
         return False
 
-    def stmt_has_early_exit(self, n):
-        """Can control leave this statement without running what follows it?
+    # A join in this statement's own expression, not in any block it contains.
+    DIRECT_JOIN_SLOT = {
+        'VARIABLE_DECL': 'c2', 'EXPRESSION_STATEMENT': 'c1',
+        'RETURN_STATEMENT': 'c1', 'ASSIGNMENT_STATEMENT': 'c2',
+    }
 
-        Conservative in the same direction the compiler is: a `break` counts
-        even where the loop it belongs to is wholly inside the statement and
-        would absorb it.
+    def stmt_direct_join(self, n, name):
+        slot = self.DIRECT_JOIN_SLOT.get(n['k'])
+        return bool(slot and n[slot] and self.expr_has_join_of(n[slot][0], name))
+
+    @staticmethod
+    def _body(slot):
+        """The statement list under a block child slot, or [] when absent."""
+        return slot[0]['c1'] if slot else []
+
+    def stmt_escapes_unjoined(self, n, name, in_loop):
+        """Some path through this statement leaves the scope without joining.
+
+        `in_loop` is what makes `break` mean different things at different
+        depths: inside a loop that is itself part of the chain being scanned it
+        is absorbed and control continues, at the top level it leaves. The
+        previous version could not tell those apart and counted every break as
+        an exit.
         """
-        if n['k'] in ('RETURN_STATEMENT', 'BREAK_STATEMENT', 'CONTINUE_STATEMENT'):
-            return True
-        for slot in ('c1', 'c2', 'c3'):
-            for c in n[slot]:
-                if self.stmt_has_early_exit(c):
-                    return True
+        k = n['k']
+        if k == 'RETURN_STATEMENT':
+            return not (n['c1'] and self.expr_has_join_of(n['c1'][0], name))
+        if k in ('BREAK_STATEMENT', 'CONTINUE_STATEMENT'):
+            return not in_loop
+        if k == 'IF_STATEMENT':
+            if self.chain_escapes_unjoined(self._body(n['c2']), name, in_loop):
+                return True
+            if not n['c3']:
+                return False
+            els = n['c3'][0]
+            if els['k'] == 'IF_STATEMENT':
+                return self.stmt_escapes_unjoined(els, name, in_loop)
+            return self.chain_escapes_unjoined(els['c1'], name, in_loop)
+        if k == 'WHILE_STATEMENT':
+            return self.chain_escapes_unjoined(self._body(n['c2']), name, True)
+        if k == 'LOOP_STATEMENT':
+            return self.chain_escapes_unjoined(self._body(n['c1']), name, True)
+        if k == 'FOR_STATEMENT':
+            return self.chain_escapes_unjoined(self._body(n['c3']), name, True)
+        # A region is not a loop, so `in_loop` passes through unchanged.
+        if k == 'REGION_STATEMENT':
+            return self.chain_escapes_unjoined(self._body(n['c1']), name, in_loop)
+        if k == 'BLOCK':
+            return self.chain_escapes_unjoined(n['c1'], name, in_loop)
+        if k == 'MATCH_STATEMENT':
+            return any(self.chain_escapes_unjoined(self._body(arm['c2']), name, in_loop)
+                       for arm in n['c2'])
         return False
 
-    def spawn_is_joined(self, rest, name):
-        for n in rest:
-            k = n['k']
-            if k == 'VARIABLE_DECL' and n['c2'] and self.expr_has_join_of(n['c2'][0], name):
+    def stmt_always_joins(self, n, name, in_loop):
+        """Every path through this statement joins."""
+        if self.stmt_direct_join(n, name):
+            return True
+        k = n['k']
+        if k == 'IF_STATEMENT':
+            # No else means a path runs none of the arm, so the fall-through
+            # decides it and the enclosing chain is what sees that.
+            if not n['c3']:
+                return False
+            if not self.chain_joins(self._body(n['c2']), name, in_loop):
+                return False
+            els = n['c3'][0]
+            if els['k'] == 'IF_STATEMENT':
+                return self.stmt_always_joins(els, name, in_loop)
+            return self.chain_joins(els['c1'], name, in_loop)
+        if k == 'BLOCK':
+            return self.chain_joins(n['c1'], name, in_loop)
+        if k == 'REGION_STATEMENT':
+            return self.chain_joins(self._body(n['c1']), name, in_loop)
+        # Deliberately not MATCH: "every arm joins" would be sound only because
+        # another pass checks exhaustiveness, and a hole there would surface
+        # here as a use-after-free rather than as a missing-case diagnostic.
+        # Nor any loop -- while/for may run zero times, `loop` may not terminate.
+        return False
+
+    def chain_escapes_unjoined(self, stmts, name, in_loop):
+        for n in stmts:
+            if self.stmt_escapes_unjoined(n, name, in_loop):
                 return True
-            if k == 'EXPRESSION_STATEMENT' and n['c1'] and self.expr_has_join_of(n['c1'][0], name):
-                return True
-            if k == 'RETURN_STATEMENT' and n['c1'] and self.expr_has_join_of(n['c1'][0], name):
-                return True
-            if k == 'ASSIGNMENT_STATEMENT' and n['c2'] and self.expr_has_join_of(n['c2'][0], name):
-                return True
-            if self.stmt_has_early_exit(n):
+            if self.stmt_always_joins(n, name, in_loop):
                 return False
         return False
+
+    def chain_joins(self, stmts, name, in_loop):
+        """Every path through this chain joins before control leaves it.
+
+        The escape test runs first, and that order is the correctness argument:
+        `if (c) { return 0 }` followed by `return join t` has a path that leaves
+        without joining, and asking "does something later join" first would
+        answer yes and miss it.
+        """
+        for n in stmts:
+            if self.stmt_escapes_unjoined(n, name, in_loop):
+                return False
+            if self.stmt_always_joins(n, name, in_loop):
+                return True
+        return False   # fell out of the bottom with the task still running
+
+    def spawn_is_joined(self, rest, name):
+        # False at the top: the scope is the block holding the spawn, and a
+        # `break` written directly in it leaves that block.
+        return self.chain_joins(rest, name, False)
 
     def stamp_joins(self, stmts):
         """Mark every `let t = spawn ...` in this chain that is joined before the

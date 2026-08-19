@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| Version | 1.2 |
+| Version | 1.2.4 |
 | Status | Draft — normative sections marked; §11 is the conformance boundary |
 | Dated | 2026-08-01 |
 | Supersedes | *The Prism Memory Model* v1.0 (2026-07-30), the PMM v1.1 open-choice resolutions, and AIF 1.1 |
@@ -1199,7 +1199,22 @@ deterministic RAII on T0–T2
 | T4b | leak-and-report | collector | collector |
 | Startup | ordinary | ordinary | static region (§8.3) |
 | Distribution | source | source | PIR |
-| Concurrency | none — `T` is vacuous | none | full |
+| Concurrency | none — `T` is vacuous | isolation (item 10) | + unrestricted sharing |
+
+*(Concurrency row corrected in 1.2.4.* It read `none` for AIF-2, which contradicted the Inference
+row of the same column: AIF-2 introduces the **thread** domain, and a thread domain in a language
+with no tasks is vacuous by construction — every value is `Isolated`, T4a is unreachable, and the
+whole column buys nothing. So AIF-2's inference requirement was unmeetable in any sense that
+mattered, and an implementation could satisfy it by writing the lattice down and never consulting
+it. That is what this implementation did for its entire life before REQUIREMENTS 15, and the
+manifest recorded a `T` distribution that could only ever read `Isolated N`.
+
+**Isolation** is the correct cell because it is the cheapest model under which the domain is not
+vacuous, and because item 10 already freezes it as *the* concurrency model at every level — so
+AIF-2 was never choosing between isolation and shared memory, only between having tasks and not.
+AIF-3's cell becomes `+ unrestricted sharing`, which is what it always meant: item 10's guarantee
+holds, and AIF-3 additionally admits values reachable from two tasks at once, which is what makes
+T4a's atomic counting a common-path cost there and a residue everywhere else.*
 
 **AIF-1 is a real memory model**, not a stub: no GC, no ARC tax, deterministic destruction, a cost
 manifest, and a verify mode. It is better than the status quo for a large class of programs and is

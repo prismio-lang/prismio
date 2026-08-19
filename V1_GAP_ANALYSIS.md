@@ -33,6 +33,36 @@ documentation claims.
 > temporary written inline as an argument still leaks (AIF Level 4); arrays are stack-allocated, so
 > one cannot be returned from the function that created it and is never freed.
 
+> ## Status — 2026-08-20
+>
+> The 2026-08-01 box below is kept as written. This one supersedes it; the body of the document
+> is still deliberately frozen at 2026-07-30.
+>
+> **Everything the box below listed as "not done, and deliberately so" has landed except methods
+> and closures.**
+>
+> - **The memory model.** AIF Levels 0–5: tier inference and the manifest, stack promotion,
+>   scope drops, `region` arenas plus automatic placement, affine `String`/`List`, refcounting,
+>   ownership inside containers, a cycle collector that this corpus can omit entirely. Plus
+>   `--verify`, `--why` and a differential against an independent oracle.
+> - **An error-handling story.** Payload-carrying enum variants, `Option`/`Result`, `match` with
+>   exhaustiveness and arm-reachability checking.
+> - **Generics**, by monomorphisation, as an AST-to-AST transform. `Map<K,V>` is written in
+>   Prismio.
+> - **`-g` debug info.** Line tables, subprograms, lexical blocks, locals and struct layouts,
+>   with the layout permutation and hot/cold split described truthfully. See `docs/DEBUGGING.md`.
+>   No PDB/CodeView, so an MSVC-targeted Windows build has no debug info.
+> - **Concurrency**: `spawn`/`join`, OS threads and channels, thread-affinity inference.
+>
+> **Still not done:** methods / `impl` blocks, closures, slices, module namespacing and
+> visibility, first-class pointers, and cross-compilation — `--target wasm32` exists but builds
+> nothing and is slated for removal.
+>
+> **The superlinear compile time in the box below no longer reproduces.** Measured 2026-08-20:
+> 733 B → 29 ms, 3 KB → 21 ms, 60 KB → 72 ms, i.e. 82× the input for ~2.5× the time. The fixed
+> cost is the `std.io` prelude, which dominates small programs. The 2026-08-17 session removed
+> the cubic term and made lexing linear.
+
 ## The bar being used
 
 "v1 of a serious self-hosted compiler" is taken to mean, concretely:

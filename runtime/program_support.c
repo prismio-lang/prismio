@@ -366,46 +366,83 @@ char* cli_arg(int index) {
 #define PRISMIO_COND_BROADCAST(c)  pthread_cond_broadcast(c)
 #endif
 
-typedef int (*PrismioTaskFn0)(void);
-typedef int (*PrismioTaskFn1)(void*);
-typedef int (*PrismioTaskFn2)(void*, void*);
-typedef int (*PrismioTaskFn3)(void*, void*, void*);
+// A task's result comes back through `join`, so the runtime has to call the
+// spawned function through a pointer of its *real* type. Twelve typedefs --
+// three return kinds by four arities -- rather than one signature and a cast.
+//
+// The cast would work on every ABI anyone ships and is still undefined, and
+// with return values it stops being merely formal: an i32-returning function
+// called through a pointer declared to return void* leaves the upper half of
+// the register undefined on exactly the 64-bit targets this compiles for.
+#define PRISMIO_RK_INT  0
+#define PRISMIO_RK_PTR  1
+#define PRISMIO_RK_VOID 2
+
+typedef int   (*PrismioFnI0)(void);
+typedef int   (*PrismioFnI1)(void*);
+typedef int   (*PrismioFnI2)(void*, void*);
+typedef int   (*PrismioFnI3)(void*, void*, void*);
+typedef void* (*PrismioFnP0)(void);
+typedef void* (*PrismioFnP1)(void*);
+typedef void* (*PrismioFnP2)(void*, void*);
+typedef void* (*PrismioFnP3)(void*, void*, void*);
+typedef void  (*PrismioFnV0)(void);
+typedef void  (*PrismioFnV1)(void*);
+typedef void  (*PrismioFnV2)(void*, void*);
+typedef void  (*PrismioFnV3)(void*, void*, void*);
 
 typedef struct {
     PRISMIO_THREAD_T thread;
     void* fn;
+    int rkind;
     int nargs;
     void* a[3];
-    int result;
+    int result_i;
+    void* result_p;
     int joined;
     int started;
 } PrismioTask;
 
-static int prismio_task_invoke(PrismioTask* t) {
+static void prismio_task_invoke(PrismioTask* t) {
+    void** a = t->a;
+    if (t->rkind == PRISMIO_RK_PTR) {
+        switch (t->nargs) {
+            case 0:  t->result_p = ((PrismioFnP0)t->fn)(); return;
+            case 1:  t->result_p = ((PrismioFnP1)t->fn)(a[0]); return;
+            case 2:  t->result_p = ((PrismioFnP2)t->fn)(a[0], a[1]); return;
+            default: t->result_p = ((PrismioFnP3)t->fn)(a[0], a[1], a[2]); return;
+        }
+    }
+    if (t->rkind == PRISMIO_RK_VOID) {
+        switch (t->nargs) {
+            case 0:  ((PrismioFnV0)t->fn)(); return;
+            case 1:  ((PrismioFnV1)t->fn)(a[0]); return;
+            case 2:  ((PrismioFnV2)t->fn)(a[0], a[1]); return;
+            default: ((PrismioFnV3)t->fn)(a[0], a[1], a[2]); return;
+        }
+    }
     switch (t->nargs) {
-        case 0:  return ((PrismioTaskFn0)t->fn)();
-        case 1:  return ((PrismioTaskFn1)t->fn)(t->a[0]);
-        case 2:  return ((PrismioTaskFn2)t->fn)(t->a[0], t->a[1]);
-        default: return ((PrismioTaskFn3)t->fn)(t->a[0], t->a[1], t->a[2]);
+        case 0:  t->result_i = ((PrismioFnI0)t->fn)(); return;
+        case 1:  t->result_i = ((PrismioFnI1)t->fn)(a[0]); return;
+        case 2:  t->result_i = ((PrismioFnI2)t->fn)(a[0], a[1]); return;
+        default: t->result_i = ((PrismioFnI3)t->fn)(a[0], a[1], a[2]); return;
     }
 }
 
 #ifdef _WIN32
 static DWORD WINAPI prismio_task_entry(LPVOID arg) {
-    PrismioTask* t = (PrismioTask*)arg;
-    t->result = prismio_task_invoke(t);
+    prismio_task_invoke((PrismioTask*)arg);
     return 0;
 }
 #else
 static void* prismio_task_entry(void* arg) {
-    PrismioTask* t = (PrismioTask*)arg;
-    t->result = prismio_task_invoke(t);
+    prismio_task_invoke((PrismioTask*)arg);
     return NULL;
 }
 #endif
 
 // Emitted by generate_expression for a SPAWN_EXPR. Returns an opaque handle;
-// the language types it `Ptr`, which is this codebase's handle idiom.
+// the language types it `Task<R>`, where R is what `join` yields.
 //
 // A task that cannot be started runs **inline** rather than failing. SPEC 1's
 // invariant is about inference, but the same principle applies with more force
@@ -413,10 +450,11 @@ static void* prismio_task_entry(void* arg) {
 // runs it on the calling thread. The result is identical either way, because
 // isolation means the task shares nothing with its parent -- which is the one
 // property that makes a serial fallback observationally equivalent.
-void* prismio_task_spawn(void* fn, int nargs, void* a0, void* a1, void* a2) {
+void* prismio_task_spawn(void* fn, int rkind, int nargs, void* a0, void* a1, void* a2) {
     PrismioTask* t = (PrismioTask*)calloc(1, sizeof(PrismioTask));
     if (!t) return NULL;
     t->fn = fn;
+    t->rkind = rkind;
     t->nargs = (nargs < 0) ? 0 : (nargs > 3 ? 3 : nargs);
     t->a[0] = a0;
     t->a[1] = a1;
@@ -430,17 +468,17 @@ void* prismio_task_spawn(void* fn, int nargs, void* a0, void* a1, void* a2) {
 #endif
 
     if (!t->started) {
-        t->result = prismio_task_invoke(t);
+        prismio_task_invoke(t);
     }
     return t;
 }
 
-// Joining twice returns the same result rather than waiting on a dead thread.
-// The language does not stop a program from doing it -- a task handle is a `Ptr`
-// and `Ptr` is copyable -- so the runtime has to.
-int prismio_task_join(void* handle) {
+// The wait itself, shared by the three typed accessors below. Split out because
+// joining twice must not wait on a dead thread: the language does not stop a
+// program from doing it -- a handle is copyable -- so the runtime has to.
+static PrismioTask* prismio_task_await(void* handle) {
     PrismioTask* t = (PrismioTask*)handle;
-    if (!t) return 0;
+    if (!t) return NULL;
     if (!t->joined) {
         if (t->started) {
 #ifdef _WIN32
@@ -452,7 +490,25 @@ int prismio_task_join(void* handle) {
         }
         t->joined = 1;
     }
-    return t->result;
+    return t;
+}
+
+// Three accessors rather than one returning a word the caller reinterprets.
+// Which one is emitted is decided by the callee's declared return type, which
+// the compiler knows statically -- so the type the task produced and the type
+// read back out are the same by construction rather than by convention.
+int prismio_task_join(void* handle) {
+    PrismioTask* t = prismio_task_await(handle);
+    return t ? t->result_i : 0;
+}
+
+void* prismio_task_join_p(void* handle) {
+    PrismioTask* t = prismio_task_await(handle);
+    return t ? t->result_p : NULL;
+}
+
+void prismio_task_join_v(void* handle) {
+    prismio_task_await(handle);
 }
 
 // The join is the synchronisation edge, so the handle is dead the moment it

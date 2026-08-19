@@ -331,3 +331,58 @@ extern fn ir_has_returned() -> Int
 extern fn ir_clear_returned()
 extern fn ir_comment(comment: String)
 extern fn ir_blank_line()
+
+// ---------------------------------------------------------------------------
+// Debug information (DWARF), off unless `-g`.
+//
+// The whole surface is inert until ir_debug_begin is called, so a release build
+// takes not one branch differently and emits not one byte differently. That is
+// the property that let this land: `prismio build` without -g produces the same
+// IR it produced before debug info existed, for every program in the corpus.
+//
+// Every call below is allowed to decline. A node with no source span, a file the
+// diagnostics registry never saw, a slot the backend cannot name -- each of
+// those produces *no* entry rather than a plausible one. See the section header
+// in runtime/llvm-api-backend.c for why that rule is the whole design.
+// ---------------------------------------------------------------------------
+extern fn ir_debug_begin(producer: String, mainPath: String, isOptimized: Int)
+extern fn ir_debug_end()
+extern fn ir_debug_enabled() -> Int
+
+// A source function. `name` is what the programmer wrote and `linkageName` the
+// mangled symbol, so a debugger can match a frame either way.
+extern fn ir_debug_function_begin(name: String, linkageName: String, fileId: Int, line: Int)
+
+// The declared signature, said before the body starts. Without it a signature is
+// read off the LLVM function type, where a String, a List, a Point and an opaque
+// extern return are all `ptr` -- so a debugger prints `void *` four times for
+// four different things. Slot 0 is the return; one call per parameter follows,
+// in order.
+extern fn ir_debug_signature(retKey: String, retName: String)
+extern fn ir_debug_signature_param(typeKey: String, typeName: String)
+extern fn ir_debug_function_end()
+
+// A lexical block, pushed and popped exactly where codegen pushes and pops a
+// binding scope -- so a name is in scope for the debugger over the same span it
+// is in scope for the compiler.
+extern fn ir_debug_scope_push(fileId: Int, line: Int, col: Int)
+extern fn ir_debug_scope_pop()
+
+// The line every instruction built from here on belongs to.
+extern fn ir_debug_location(fileId: Int, line: Int, col: Int)
+
+// A binding and the alloca that holds it. `typeKey` is the storage key the rest
+// of this surface already uses; `typeName` is the source-level name sema
+// recorded, which is what turns an anonymous `ptr` into a `String` or a `Point*`.
+// `argNo` is 0 for a local and the 1-based position for a parameter.
+extern fn ir_debug_local(name: String, slot: String, typeKey: String, typeName: String,
+                          fileId: Int, line: Int, argNo: Int)
+
+// The source-level type of one field, said while the struct is being built.
+// Same reason a local carries one: the registered field type is a storage key,
+// and String, List<T>, [T], `T?` and every struct are all `ptr` there.
+extern fn ir_debug_field_type(owner: String, field: String, typeName: String)
+
+// A struct type and where it was declared. Emitted for every declared struct
+// rather than on demand, so `p` can name a type a program only passes around.
+extern fn ir_debug_struct(name: String, fileId: Int, line: Int)

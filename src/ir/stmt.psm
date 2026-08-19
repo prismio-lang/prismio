@@ -54,6 +54,13 @@ fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: String) {
 }
 
 fn generateStatement(stmt: ASTNode) {
+    // The line table, in one place. Every instruction this statement and its
+    // subexpressions build inherits this location, including the calls codegen
+    // inserts on its own -- an arena bracket, a drop, a release. Column as well
+    // as line, because a `for` header and its body start on the same line and a
+    // breakpoint on one should not stop on the other.
+    debugAt(stmt)
+
     if (stmt.kind == NodeKind.VARIABLE_DECL) {
         let varName = stmt.s1
         let mut varType = "i32"
@@ -81,6 +88,13 @@ fn generateStatement(stmt: ASTNode) {
         let slot = ir_get_var_slot(varName)
         let storeType = storageType(varType)
         ir_alloca(storeType, slot)
+
+        // Declared here rather than after the store: the alloca is what the
+        // variable *is*, and a debugger stopped between the two should report the
+        // slot with whatever is in it, not report the name as unknown. The slot
+        // is uninitialised until the store lands, which is the same window C has
+        // and the same one it does not describe either.
+        debugLocal(varName, slot, varType, debugTypeName(stmt.child1, stmt.child2), stmt, 0)
 
         if (hasInit) {
             ir_store(storeType, initVal, slot)
@@ -472,6 +486,7 @@ fn generateBlock(block: ASTNode) {
     // order, so that a name resolves to the same binding -- and therefore the
     // same slot -- in both passes.
     ir_scope_push()
+    debugPushScope(block)
 
     let mut stmtPtr = block.child1
     while (str_equals(stmtPtr, "") == 0) {
@@ -488,6 +503,7 @@ fn generateBlock(block: ASTNode) {
         generateScopeDrops(ir_scope_drop_floor())
     }
 
+    debugPopScope()
     ir_scope_pop()
 
     if (arena) {

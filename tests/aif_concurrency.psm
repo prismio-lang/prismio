@@ -128,11 +128,90 @@ fn unjoined_is_cross_thread() -> Int {
     return join t
 }
 
+// ---------------------------------------------------------------------------
+// E-SPAWN-J, the shapes that are not a straight run from spawn to join.
+//
+// These exist because the first implementation of the join analysis was a
+// forward scan whose early-exit helper walked the *rest of the block* rather
+// than the statement it was handed -- and every one of these blocks ends in
+// `return join t`, so it always found an exit and always answered "not joined".
+// The measured cost was T0 with no count at all becoming **T4a with an atomic
+// one**, on four of five ordinary shapes. One inert `let x = 1` between a spawn
+// and its join was enough.
+//
+// Nothing above caught it. `joined_stays_local` joins on the statement
+// immediately after the spawn, which is the single shape the broken scan got
+// right, and the differential agreed with the oracle throughout because no
+// fixture on either side had a statement in between. That is a check that could
+// not fail, and these are what make it able to.
+
+fn one_statement_between() -> Int {
+    let j = Job { lo: 0, hi: 10 }
+    let t = spawn work(j)
+    let x = 1
+    return join t + x
+}
+
+// A loop between the two. `while` may run zero times, so it is never itself a
+// join -- the point is only that control passes through it and out the bottom.
+fn loop_between_spawn_and_join() -> Int {
+    let j = Job { lo: 0, hi: 10 }
+    let t = spawn work(j)
+    let mut i = 0
+    while (i < 4) { i = i + 1 }
+    return join t
+}
+
+// A `break` inside that loop. Absorbed by the loop it belongs to, so it cannot
+// leave this block and must not be read as an early exit -- the distinction the
+// old helper had no parameter to express.
+fn break_is_absorbed_by_its_loop() -> Int {
+    let j = Job { lo: 0, hi: 10 }
+    let t = spawn work(j)
+    let mut i = 0
+    while (i < 4) {
+        i = i + 1
+        if (i == 2) { break }
+    }
+    return join t
+}
+
+// Joined on both sides of a branch rather than after it. This is the case that
+// needs "every path", not "some path": neither join is at the top level of the
+// block, and the analysis has to prove the pair covers every way out.
+fn join_on_both_paths() -> Int {
+    let j = Job { lo: 0, hi: 10 }
+    let t = spawn work(j)
+    if (str_length(cli_arg(1)) > 0) {
+        return join t
+    }
+    return join t
+}
+
+// The counterpart, and the reason `unjoined_is_cross_thread` is not enough on
+// its own: an arm that leaves *without* joining still has to force Global even
+// though a join is plainly visible further down. Getting this wrong is a
+// use-after-free rather than a lost tier, so it is asserted next to the cases
+// that made the analysis more permissive.
+fn one_path_escapes_unjoined() -> Int {
+    let j = Job { lo: 0, hi: 10 }
+    let t = spawn work(j)
+    if (str_length(cli_arg(1)) > 0) {
+        return 0
+    }
+    return join t
+}
+
 fn main() -> Int {
     let a = joined_stays_local()
     let b = transferred_is_not_atomic()
     let c = no_task_at_all()
     let d = static_root_is_cross_thread()
     let f = unjoined_is_cross_thread()
-    return a + b + c + d + f
+    let g = one_statement_between()
+    let h = loop_between_spawn_and_join()
+    let i = break_is_absorbed_by_its_loop()
+    let k = join_on_both_paths()
+    let m = one_path_escapes_unjoined()
+    return a + b + c + d + f + g + h + i + k + m
 }

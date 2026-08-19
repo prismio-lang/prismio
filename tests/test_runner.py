@@ -433,6 +433,24 @@ AIF_CONCURRENCY_EXPECTED = {
     # E-SPAWN with an early return between spawn and join, so nothing proves the
     # task is awaited and escape goes to Global.
     "unjoined_is_cross_thread__Void#0":      ("T4a", "CrossThread"),
+
+    # E-SPAWN-J where the join is not the next statement. Every one of these
+    # read T4a/CrossThread under the original forward scan, whose early-exit
+    # helper walked the rest of the block instead of the statement it was given
+    # and so was answered by the block's own closing `return join t`. A single
+    # inert statement between a spawn and its join cost an atomic count.
+    #
+    # They are asserted as a group because the failure was a group: no single
+    # one of them is exotic, and the shape that *did* work -- joining on the
+    # very next statement -- is the one nobody writes.
+    "one_statement_between__Void#0":         ("T0", "Transferred"),
+    "loop_between_spawn_and_join__Void#0":   ("T0", "Transferred"),
+    "break_is_absorbed_by_its_loop__Void#0": ("T0", "Transferred"),
+    "join_on_both_paths__Void#0":            ("T0", "Transferred"),
+    # ...and the direction that must NOT move. One arm leaves without joining,
+    # so escape goes to Global even though a join is visible further down.
+    # Being wrong here is a use-after-free, not a lost tier.
+    "one_path_escapes_unjoined__Void#0":     ("T4a", "CrossThread"),
 }
 
 # T-SPAWN-SHARE, in its own file because the `@elem` key is one per container
@@ -2175,6 +2193,283 @@ def run_workload_test():
     return ok
 
 
+# ---------------------------------------------------------------------------
+# -g
+# ---------------------------------------------------------------------------
+
+def _di_nodes(ir):
+    """Every `!N = ...` line of a module, as {N: text}."""
+    return {int(m.group(1)): m.group(2)
+            for m in re.finditer(r"^!(\d+) = (.*)$", ir, re.M)}
+
+
+def _di_tuple(nodes, ref):
+    """The members of a metadata tuple `!{!1, !2, ...}`, as ints."""
+    body = nodes.get(ref, "")
+    return [int(x) for x in re.findall(r"!(\d+)", body)]
+
+
+def _di_composite(nodes, name):
+    """The DICompositeType with this name, and its members as
+    [(field, offset_bits, size_bits)] in declaration order within the record."""
+    for num, text in nodes.items():
+        if "DICompositeType" not in text:
+            continue
+        if re.search(r'name: "%s"' % re.escape(name), text) is None:
+            continue
+        elems = re.search(r"elements: !(\d+)", text)
+        members = []
+        if elems:
+            for ref in _di_tuple(nodes, int(elems.group(1))):
+                body = nodes.get(ref, "")
+                if "DW_TAG_member" not in body:
+                    continue
+                fname = re.search(r'name: "([^"]*)"', body)
+                size = re.search(r"size: (\d+)", body)
+                offset = re.search(r"offset: (\d+)", body)
+                members.append((fname.group(1) if fname else "?",
+                                int(offset.group(1)) if offset else 0,
+                                int(size.group(1)) if size else 0))
+        size = re.search(r"size: (\d+)", text)
+        return members, (int(size.group(1)) if size else 0)
+    return None, 0
+
+
+# Natural alignment, which is what every target this compiler supports uses for
+# these seven types. Written out here rather than asked of the compiler on
+# purpose: a test that computed offsets the same way the thing under test does
+# would agree with it while both were wrong.
+_LLVM_WIDTH_BITS = {"i1": 8, "i8": 8, "i16": 16, "i32": 32, "i64": 64,
+                    "double": 64, "ptr": 64}
+
+
+def _expected_layout(elements):
+    """(offsets, total_size), in bits, for a C-style struct of these elements."""
+    offset = 0
+    worst = 8
+    offsets = []
+    for e in elements:
+        width = _LLVM_WIDTH_BITS.get(e)
+        if width is None:
+            return None, 0
+        worst = max(worst, width)
+        if offset % width:
+            offset += width - (offset % width)
+        offsets.append(offset)
+        offset += width
+    if offset % worst:
+        offset += worst - (offset % worst)
+    return offsets, offset
+
+
+def _emitted_struct(ir, name):
+    m = re.search(r"^%%%s = type \{(.*)\}" % re.escape(name), ir, re.M)
+    if not m:
+        return None
+    return [e.strip() for e in m.group(1).split(",") if e.strip()]
+
+
+def run_debug_info_test():
+    """`-g`, checked on the two things it can get wrong silently.
+
+    Neither is visible from a value test. A program with debug info computes
+    exactly what the same program without it computes -- that is the point of the
+    feature -- so the only evidence is the metadata itself.
+
+    **1. A release build must carry none of it.** The whole feature is gated on
+    one flag, and the property that let it land is that `prismio build` without
+    `-g` emits the IR it emitted before debug info existed. A stray unconditional
+    call to the DWARF layer would not fail anything else in this suite; it would
+    change 98 programs' output and nobody would notice until the next IR diff.
+
+    **2. A location must not be wrong.** This is the sharp half. Two ways it can
+    be, and both are checked:
+
+      - *the line table shifts.* Every `// MARK` in the fixture names a statement
+        whose line must appear in a DILocation. An off-by-one -- or a location
+        taken from the enclosing node rather than the statement -- moves them all.
+      - *a member offset is computed from the wrong layout.* A module with no
+        `target datalayout` is laid out by LLVM's default specification, in which
+        i64 has a 4-byte ABI alignment; `{ i32, i64 }` is 12 bytes there and 16 on
+        every target this compiler supports. Emitting the default's offsets puts
+        DW_AT_data_member_location four bytes from the field on every struct with
+        a 64-bit member after a 32-bit one, and a debugger would confidently print
+        the wrong value. So: -g pins the layout, and every 64-bit member is
+        required to be 64-bit aligned.
+
+    And the case AIF makes hard, which is why it is worth a fixture of its own:
+    LAYOUT 6 can move the tail of a record into a separately allocated cold block.
+    There is no offset in the hot record that names a cold field, so the type must
+    describe what is really there -- hot members, a `__cold` pointer, and a second
+    composite behind it. A build that listed all eight fields at eight offsets in
+    a 32-byte record would be the exact failure this feature must not have.
+    """
+    print(f"\n{BLUE}--- Running debug_info ---{RESET}")
+    source = TEST_DIR / "debug_info.psm"
+    plain = TEST_DIR / "debug_plain.ll"
+    dbg = TEST_DIR / "debug_g.ll"
+    split = TEST_DIR / "debug_split.ll"
+
+    # Which cut to force is read from the model rather than written down here.
+    # A forced candidate the search does not offer is a warning and no split, so
+    # a hardcoded number would turn "the model reranked" into "this test quietly
+    # stopped checking the split".
+    layout = run_command([str(PRISMIO_EXE), "aif", str(source), "--layout"])
+    cuts = re.findall(r"^\s+Reading\s+\d+\s+\d+\s+split (\d+)/\d+",
+                      layout.stdout or "", re.M)
+    if not cuts:
+        print(f"{RED}[FAIL] the model offers no split candidate for `Reading`, "
+              f"so the cold-block half of this test cannot run{RESET}")
+        print(layout.stdout or layout.stderr)
+        return False
+    hot_cut = cuts[0]
+
+    for out, extra in ((plain, []), (dbg, ["-g"]),
+                       (split, ["-g", f"--force-layout=Reading:{hot_cut}"])):
+        result = run_command([str(PRISMIO_EXE), "build", str(source),
+                              "-o", str(out)] + extra)
+        if result.returncode != 0:
+            print(f"{RED}[FAIL] build {' '.join(extra) or '(no flags)'} exited "
+                  f"{result.returncode}{RESET}")
+            print(result.stdout or result.stderr)
+            cleanup_files(plain, dbg, split)
+            return False
+
+    plain_ir = plain.read_text(encoding="utf-8", errors="replace")
+    dbg_ir = dbg.read_text(encoding="utf-8", errors="replace")
+    split_ir = split.read_text(encoding="utf-8", errors="replace")
+    cleanup_files(plain, dbg, split)
+
+    problems = []
+
+    # 1. A release build carries nothing.
+    for marker in ("!DICompileUnit", "!DILocation", "!DISubprogram", "!dbg",
+                   "target datalayout"):
+        if marker in plain_ir:
+            problems.append(f"a build without -g emitted `{marker}` -- debug info "
+                            "is no longer gated on the flag, and every program's "
+                            "IR has moved with it")
+
+    # 2a. A -g build carries the whole chain.
+    for marker in ('!DICompileUnit', '"Debug Info Version"', 'target datalayout'):
+        if marker not in dbg_ir:
+            problems.append(f"a -g build is missing `{marker}`")
+
+    for fn in ("scaled", "describe", "main"):
+        if re.search(r'!DISubprogram\(name: "%s"' % fn, dbg_ir) is None:
+            problems.append(f"no subprogram for `{fn}`")
+
+    # 2b. The line table names the lines the statements are on.
+    marks = {}
+    for i, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+        m = re.search(r"// MARK ([\w-]+)", line)
+        if m:
+            marks[m.group(1)] = i
+    if not marks:
+        problems.append("the fixture has no `// MARK` comments -- this test "
+                        "stopped checking the line table")
+
+    located = {int(m.group(1))
+               for m in re.finditer(r"!DILocation\(line: (\d+)", dbg_ir)}
+    for name, line in sorted(marks.items()):
+        if line not in located:
+            problems.append(f"nothing is attributed to line {line} "
+                            f"(`{name}`) -- the line table has shifted")
+    if 0 in located:
+        problems.append("a DILocation claims line 0 -- a synthesised node was "
+                        "given a location instead of inheriting the statement's")
+
+    # 2c. Members sit where the host layout puts them, not where LLVM's default
+    # specification would.
+    nodes = _di_nodes(dbg_ir)
+    members, total = _di_composite(nodes, "Reading")
+    if members is None:
+        problems.append("no composite type for `Reading` -- struct layouts are "
+                        "not being described at all")
+    else:
+        names = [f for f, _, _ in members]
+        if sorted(names) != sorted(["id", "label", "scale", "magnitude",
+                                    "channel", "revision", "weight", "offset"]):
+            problems.append(f"unsplit `Reading` describes {names}, which is not "
+                            "its eight fields")
+        elements = _emitted_struct(dbg_ir, "Reading")
+        want_offsets, want_total = _expected_layout(elements or [])
+        if want_offsets is None or len(want_offsets) != len(members):
+            problems.append("could not recompute `Reading`'s layout from the "
+                            f"emitted `%Reading = type {{{elements}}}` -- this "
+                            "test stopped checking offsets")
+        else:
+            if total != want_total:
+                problems.append(f"`Reading` is described as {total} bits and "
+                                f"natural alignment makes it {want_total} -- the "
+                                "offsets came from LLVM's default data layout, "
+                                "where i64 is 4-byte aligned, rather than the "
+                                "host's")
+            for (field, offset, size), want in zip(members, want_offsets):
+                if offset != want:
+                    problems.append(f"`Reading.{field}` is described at bit "
+                                    f"{offset} and belongs at {want}")
+
+    # 2d. And the one shape where the two layouts actually disagree. Reading
+    # happens to come out the same either way -- the search packs its two 32-bit
+    # fields into one 8-byte slot, so nothing lands at a bad offset. Checkpoint
+    # cannot: field 0 is pinned, so its i64 sits behind a lone i32 and is at bit
+    # 64 on every supported target and at bit 32 under LLVM's default
+    # specification. That difference is a debugger reading four bytes early.
+    cmembers, ctotal = _di_composite(nodes, "Checkpoint")
+    if cmembers is None:
+        problems.append("no composite type for `Checkpoint`")
+    else:
+        want = {"tick": 0, "stamp": 64}
+        for field, offset, _ in cmembers:
+            if field in want and offset != want[field]:
+                problems.append(f"`Checkpoint.{field}` is described at bit "
+                                f"{offset} and is at {want[field]} -- a debugger "
+                                "would read the wrong bytes for it")
+        if ctotal != 128:
+            problems.append(f"`Checkpoint` is described as {ctotal} bits and is "
+                            "128")
+
+    # 3. A split type is described as what it is.
+    snodes = _di_nodes(split_ir)
+    hot, hot_size = _di_composite(snodes, "Reading")
+    cold, _ = _di_composite(snodes, "Reading.cold")
+    if hot is None or cold is None:
+        problems.append("--force-layout produced no split composite: hot="
+                        f"{hot is not None} cold={cold is not None}")
+    else:
+        hot_names = [f for f, _, _ in hot]
+        cold_names = [f for f, _, _ in cold]
+        if "__cold" not in hot_names:
+            problems.append("the hot record has no `__cold` member, so nothing "
+                            "in the debug info reaches the cold fields")
+        for field, offset, size in hot:
+            if offset + size > hot_size:
+                problems.append(f"`Reading.{field}` is at bit {offset} of a "
+                                f"{hot_size}-bit hot record -- a cold field has "
+                                "been given an offset in a record it is not in")
+        overlap = set(hot_names) & set(cold_names)
+        if overlap:
+            problems.append(f"{sorted(overlap)} appear in both the hot and the "
+                            "cold record")
+        covered = set(hot_names) - {"__cold"} | set(cold_names)
+        if covered != {"id", "label", "scale", "magnitude", "channel",
+                       "revision", "weight", "offset"}:
+            problems.append(f"the split describes {sorted(covered)}, not the "
+                            "eight declared fields")
+
+    if problems:
+        print(f"{RED}[FAIL] -g emits debug info that is missing or wrong{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] -g: {len(marks)} marked lines located, "
+          f"{len(members)} members at host offsets, a split type describes its "
+          f"cold block{RESET}")
+    return True
+
+
 def run_aif_layout_test():
     """LAYOUT 7.2's field-order search, checked where it is decided: the IR.
 
@@ -3090,6 +3385,11 @@ def main():
         failed += 1
 
     if run_punned_slot_invariant_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_debug_info_test():
         passed += 1
     else:
         failed += 1

@@ -45,6 +45,20 @@ fn semaWarningAt(node: ASTNode, message: String) {
 // scalar registers no allocation site, so it is precisely the case AIF's `T`
 // domain has nothing to say about, and admitting it would widen the surface
 // without widening what the analysis can prove.
+// What `prismio_task_invoke` has a correctly-typed function pointer for.
+// Float and the sized integers are absent because each would need its own arm
+// there rather than a cast -- calling an i32-returning function through a
+// pointer declared to return something wider leaves the upper half undefined,
+// which is the one class of bug a task runtime must not have.
+fn semaTaskResultAllowed(t: TypeInfo) -> Bool {
+    if (t.kind == TypeKind.VOID) { return true }
+    if (t.kind == TypeKind.INT) { return str_equals(t.name, "Int") == 1 }
+    if (t.kind == TypeKind.STRUCT) { return true }
+    if (t.kind == TypeKind.STRING) { return true }
+    if (t.kind == TypeKind.LIST) { return true }
+    return t.kind == TypeKind.PTR
+}
+
 fn semaSpawnArgAllowed(t: TypeInfo) -> Bool {
     if (t.kind == TypeKind.STRUCT) { return true }
     if (t.kind == TypeKind.STRING) { return true }
@@ -423,10 +437,14 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             semaErrorAt(expr, "`spawn` needs a named Prismio function; a builtin has no address to hand a task")
         }
 
-        if (typeIsValid(retT) and retT.kind != TypeKind.INT) {
-            semaErrorAt(expr, str_concat(str_concat("a spawned function must return Int, found ",
+        // Any result the runtime has an honestly-typed function pointer for:
+        // an Int, a reference, or nothing. What is excluded is Float and the
+        // sized integers, because those come back in a different register class
+        // or width and would need their own arm rather than a cast.
+        if (typeIsValid(retT) and semaTaskResultAllowed(retT) == false) {
+            semaErrorAt(expr, str_concat(str_concat("a spawned function cannot return ",
                                                     typeDisplay(retT)),
-                                         "; the result travels back through `join`, which is one word wide"))
+                                         "; a task result must be Int, a reference type, or nothing"))
         }
 
         let mut argPtr = call.child2
@@ -453,23 +471,32 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             semaErrorAt(expr, "`spawn` takes at most 3 arguments; pack the rest into a struct and move that")
         }
 
-        // A task handle is a `Ptr`, which is this codebase's opaque-handle
-        // spelling. Deliberately not a new TypeKind: a `Task` kind would buy
-        // type safety on `join` and cost every switch in sema, AIF and codegen a
-        // new arm, and the handle is not the value the memory model cares about
-        // -- the arguments are.
-        nodeSetType(expr, typePtr())
-        return typePtr()
+        // `Task<R>`, where R is what the spawned function returns. The handle
+        // is still one opaque word; what the type adds is that `join` knows
+        // what comes out of it, so a task's result is checked rather than
+        // assumed to be an Int.
+        let taskT = typeTask(retT)
+        nodeSetType(expr, taskT)
+        return taskT
     }
 
     if (expr.kind == NodeKind.JOIN_EXPR) {
         let handle = ptr_to_node(expr.child1)
         let handleT = semaExpr(module, handle)
-        if (typeIsValid(handleT) and handleT.kind != TypeKind.PTR) {
-            semaErrorAt(handle, str_concat("`join` needs a task handle, found ", typeDisplay(handleT)))
+        if (typeIsValid(handleT) == false) {
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
         }
-        nodeSetType(expr, typeInt())
-        return typeInt()
+        if (typeIsTask(handleT) == false) {
+            semaErrorAt(handle, str_concat(str_concat("`join` needs a task handle, found ",
+                                                      typeDisplay(handleT)),
+                                           "; only `spawn` produces one"))
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+        let resultT = typeTaskResult(handleT)
+        nodeSetType(expr, resultT)
+        return resultT
     }
 
     if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {

@@ -1,0 +1,177 @@
+// `-g`: where codegen tells the backend what line it is on, and what a binding
+// is called.
+//
+// This file exists to hold one rule in one place. **A location that is wrong is
+// worse than no location at all.** A debugger that admits it does not know where
+// `x` lives sends the reader to a print statement; one that confidently names
+// the wrong frame slot sends the reader after a bug that is not there. So every
+// function here is allowed to answer "nothing", and several of them do:
+//
+//   - a node the parser never stamped carries line 0. `debugAt` declines it and
+//     leaves the previous location standing, which attributes the instruction to
+//     the statement that produced it rather than to the top of the file.
+//     Desugared compound assignment, inserted drops and monomorphised clones all
+//     arrive here that way;
+//   - a generated function -- `__aif_release_T`, an extern stub, the workload
+//     driver -- never opens a subprogram, so nothing inside it claims a line;
+//   - a binding whose source type is not knowable gets an honest `ptr` rather
+//     than a guess at what it points to.
+//
+// The backend has the matching half of every one of these; see the debug section
+// of runtime/llvm-api-backend.c.
+
+import ast.nodes
+import ast.types
+import common.text
+
+// Set once, from the `-g` flag, before generateModule runs. Everything below is
+// a no-op while it is false, which is what keeps a release build byte-identical
+// to one built by a compiler that had never heard of debug info.
+//
+// The producer string and the main source path come in with the flag rather than
+// being read where they are used: both belong to the invocation, and the only
+// place that knows an invocation is main.psm. Mirrors irSetProfileMode.
+let mut irDebugInfo = false
+let mut irDebugProducer = ""
+let mut irDebugMainPath = ""
+let mut irDebugOptimized = false
+
+fn irSetDebugInfo(enabled: Bool, producer: String, mainPath: String, isOptimized: Bool) {
+    irDebugInfo = enabled
+    irDebugProducer = producer
+    irDebugMainPath = mainPath
+    irDebugOptimized = isOptimized
+}
+
+// The line every instruction built from here belongs to.
+//
+// Deliberately not "clear the location when the node has none": the backend's
+// location is sticky, and stickiness is the right behaviour. Codegen emits real
+// calls -- a scope drop, an arena pop, a region exit -- from nodes that have no
+// span of their own, and LLVM requires every call in a function that has debug
+// info to carry *some* location. The last real statement is where that code came
+// from, so that is where it is attributed.
+fn debugAt(node: ASTNode) {
+    if (irDebugInfo == false) { return }
+    ir_debug_location(node.file, node.line, node.col)
+}
+
+// A source function. The mangled symbol goes in as the linkage name so a
+// debugger can match a frame by either spelling.
+fn debugOpenFunction(func: ASTNode, symbol: String) {
+    if (irDebugInfo == false) { return }
+    ir_debug_function_begin(func.s1, symbol, func.file, func.line)
+}
+
+// The declared signature, in the order the parameters are emitted -- which for
+// `main` starts with the real argc/argv the program never named. The backend
+// checks the count against what LLVM built and falls back to storage types if
+// the two disagree, so an omission here degrades rather than misreports.
+fn debugSignature(retKey: String, retName: String) {
+    if (irDebugInfo == false) { return }
+    ir_debug_signature(retKey, retName)
+}
+
+fn debugSignatureParam(typeKey: String, typeName: String) {
+    if (irDebugInfo == false) { return }
+    ir_debug_signature_param(typeKey, typeName)
+}
+
+fn debugCloseFunction() {
+    if (irDebugInfo == false) { return }
+    ir_debug_function_end()
+}
+
+// Pushed and popped exactly where codegen pushes and pops a binding scope, so a
+// name is visible to the debugger over the same span it is visible to the
+// compiler -- including the shadowing case, where two `let x` in sibling blocks
+// have separate slots and must not be reported as one variable.
+fn debugPushScope(node: ASTNode) {
+    if (irDebugInfo == false) { return }
+    ir_debug_scope_push(node.file, node.line, node.col)
+}
+
+fn debugPopScope() {
+    if (irDebugInfo == false) { return }
+    ir_debug_scope_pop()
+}
+
+// The source-level name of a binding's type, or "" when there is not one to be
+// had.
+//
+// Two sources, in this order. An annotation is what the programmer wrote and is
+// exact. Failing that, sema's inferred TypeInfo carries the same name it would
+// have written. Neither exists for a binding whose type did not resolve, and ""
+// is then the honest answer -- the backend falls back to describing the storage,
+// which is still true, just less specific.
+//
+// This matters more than it looks. `mapType` collapses String, List<T>, [T],
+// `T?` and every struct to `ptr`, so without a name every one of them is an
+// anonymous address in the debugger. With it, a String prints its characters and
+// a struct pointer prints its fields.
+fn debugTypeName(annotation: String, initializer: String) -> String {
+    if (str_equals(annotation, "") == 0) {
+        let typeNode = ptr_to_node(annotation)
+        // An array or a list annotation names its *element* in s1, and reporting
+        // `[Int]` as `Int` would describe the wrong thing. Both are addresses of
+        // storage this layer has no layout for, so neither gets a name.
+        if (typeNode.i1 == 1 or typeNode.i2 == 1 or typeNode.i3 == 1) {
+            return ""
+        }
+        if (str_equals(typeNode.s1, "") == 0) {
+            return typeNode.s1
+        }
+    }
+
+    if (str_equals(initializer, "") == 0) {
+        let initNode = ptr_to_node(initializer)
+        if (nodeHasType(initNode)) {
+            let t = nodeGetType(initNode)
+            if (t.kind == TypeKind.STRING) { return "String" }
+            if (t.kind == TypeKind.STRUCT) { return t.name }
+        }
+    }
+
+    return ""
+}
+
+// A binding and the alloca holding it.
+//
+// `argNo` is 0 for a local and the 1-based position for a parameter; DWARF keeps
+// the two apart so a debugger can print a frame's arguments without printing its
+// locals.
+fn debugLocal(name: String, slot: String, typeKey: String, typeName: String,
+               node: ASTNode, argNo: Int) {
+    if (irDebugInfo == false) { return }
+    ir_debug_local(name, slot, typeKey, typeName, node.file, node.line, argNo)
+}
+
+fn debugFieldType(owner: String, field: String, typeNode: String) {
+    if (irDebugInfo == false) { return }
+    ir_debug_field_type(owner, field, debugTypeName(typeNode, ""))
+}
+
+fn debugStruct(structNode: ASTNode) {
+    if (irDebugInfo == false) { return }
+    ir_debug_struct(structNode.s1, structNode.file, structNode.line)
+}
+
+// Opens the compile unit. Called once, immediately after ir_module_start, since
+// a DIBuilder is created from the module and everything else hangs off the unit
+// it makes.
+//
+// `isOptimized` is passed through to DW_AT_APPLE_optimized rather than inferred:
+// a debugger uses it to warn that a variable may have been folded away, and
+// telling it "no" while running -O2 is the kind of small lie this file exists to
+// avoid.
+fn debugBeginModule() {
+    if (irDebugInfo == false) { return }
+    let mut opt = 0
+    if (irDebugOptimized) { opt = 1 }
+    ir_debug_begin(irDebugProducer, irDebugMainPath, opt)
+}
+
+fn debugEndModule() {
+    if (irDebugInfo == false) { return }
+    ir_debug_end()
+}

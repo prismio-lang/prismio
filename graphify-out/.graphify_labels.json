@@ -191,5 +191,9 @@
   "189": "call_edge_push",
   "190": "run_cli_test",
   "191": "run_aif_layout_test",
-  "192": "run_aif_struct_field_test"
+  "192": "run_aif_struct_field_test",
+  "193": "str_split",
+  "194": "run_aif_stack_slot_test",
+  "195": "add_binding",
+  "196": "run_aif_view_test"
 }

@@ -48,10 +48,27 @@
 
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Core.h>
+#include <llvm-c/DebugInfo.h>
 #include <llvm-c/Error.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
+
+// `-g` is compiled in only on this path, and deliberately.
+//
+// DIBuilder is ~20 functions whose parameter lists are long and mostly integers
+// -- CreateCompileUnit alone takes twenty. The linker checks the *names* in the
+// block below, never the signatures, so a transcription slip there does not
+// fail to build: it produces a module whose DWARF is subtly wrong, which is the
+// one outcome this feature must not have. A missing `-g` is an honest gap; a
+// member offset four bytes from the field is a debugger confidently pointing at
+// the wrong memory.
+//
+// The supported configuration is real headers -- tools/setup_llvm.py refuses an
+// LLVM without include/llvm-c/Core.h -- so nothing that is actually verified
+// loses anything. ir_debug_begin() says so out loud rather than emitting
+// nothing and letting -g look as though it worked.
+#define PRISMIO_DWARF 1
 
 #else
 

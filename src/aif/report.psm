@@ -184,6 +184,18 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
 
     println("aif-manifest 1")
     aifKv("level", "AIF-1")
+    // SPEC 11.0 requires a level and forbids claiming one whose requirements
+    // are not met; it says nothing about exceeding one, and exceeding is not a
+    // conformance violation. But a bare `AIF-1` had become misleading in one
+    // direction that matters to a reader deciding what this build can be
+    // trusted to have analysed.
+    //
+    // REQUIREMENTS 15 put a working thread domain and a reachable T4a into a
+    // build that meets none of AIF-2's other seven rows -- no layout search, no
+    // cost-placed arenas, no T3 elision, no collector. Inflating the
+    // declaration to AIF-2 would claim all of those. Recording the two rows
+    // that are genuinely ahead says the true thing and claims nothing else.
+    aifKv("exceeds", "inference:thread concurrency:isolation")
     // `prismio aif` never runs codegen, so the manifest it prints describes an
     // analysis, not a build. SPEC 7.3's verify mode changes the allocator names
     // and nothing the inference does, so the facts here are the same either way.

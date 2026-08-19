@@ -454,6 +454,32 @@ for a server.
 
 ---
 
+## C11
+
+**SPEC 1.2.4 — the conformance table's concurrency row contradicted its inference row.**
+
+AIF-2's Inference cell reads "+ thread, cyclicity". Its Concurrency cell read "none". Those cannot
+both be requirements of one level: a thread domain in a language with no tasks is vacuous by
+construction — every value is `Isolated`, T4a is unreachable, and an implementation satisfies the
+inference requirement by writing the lattice down and never consulting it.
+
+That is not hypothetical. It is exactly what this implementation did for its entire life before
+REQUIREMENTS 15, while emitting a manifest whose `T` distribution could only ever read `Isolated N`.
+The row was describing a level nobody could meaningfully implement, and the failure mode was silent.
+
+**Resolved by making AIF-2's cell `isolation`.** It is the cheapest model under which the domain is
+not vacuous, and §11's frozen item 10 already fixes isolation as *the* concurrency model at every
+level — so AIF-2 was never choosing between isolation and shared memory, only between having tasks
+and not. AIF-3's cell becomes `+ unrestricted sharing`, which is what "full" always meant: item 10's
+guarantee holds, and AIF-3 additionally admits values reachable from two tasks at once, which is
+what makes T4a's atomic counting a common-path cost there and a residue everywhere else.
+
+**What this does not do** is change any implementation's declared level. Exceeding a row was never a
+conformance violation, and the Prismio compiler still declares AIF-1 because it meets none of
+AIF-2's other seven rows. What it gained instead is a manifest line — `exceeds inference:thread
+concurrency:isolation` — so a reader can tell what the build actually analysed without the
+declaration either under-describing it or over-claiming the rest of the column.
+
 ## What changed about the risk profile
 
 | Risk in 1.1 | Status in 1.2 |

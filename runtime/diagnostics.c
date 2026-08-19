@@ -87,6 +87,14 @@ const char* diag_file_path(int file) {
     return g_files[file].path;
 }
 
+// How many ids diag_add_file has handed out.
+//
+// Exists because "<unknown>" is a usable answer for a diagnostic and a wrong one
+// for debug info: an out-of-range id would become a DIFile named "<unknown>" and
+// a debugger would go looking for a file by that name. The DWARF emitter asks
+// this first and emits no location at all for an id outside the registry.
+int diag_file_count(void) { return g_file_count; }
+
 // Start of the 1-based `line` within `text`, or NULL if the file has fewer
 // lines than that -- which happens whenever a span is stale or synthesised, and
 // must degrade to "no snippet" rather than reading past the buffer.

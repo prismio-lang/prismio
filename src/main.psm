@@ -33,6 +33,10 @@ extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
 // pointed at the verify shims, so the strings and lists it allocates are in the
 // same accounting as everything ir_alloc_object handed out.
 extern fn compiler_set_verify_mode(on: Int)
+// `-g`. Two things the driver does differently once the module carries debug
+// info: the object step drops to -O0, and on Darwin a .dSYM is written before
+// the object -- which is where Mach-O keeps the DWARF -- is deleted.
+extern fn compiler_set_debug_info(on: Int)
 extern fn compiler_bootstrap_executable(irFile: String, exeFile: String) -> Int
 extern fn compiler_run_executable(exeFile: String) -> Int
 // LAYOUT 3.2. Runs a workload driver with no argv and a wall-clock bound, so W2's
@@ -437,8 +441,8 @@ fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNod
 
 fn printUsage() {
     println("Usage:")
-    println("  prismio build [source.psm] [-o output.exe] [--verify]")
-    println("  prismio run <source.psm> [-o output.exe] [--verify]")
+    println("  prismio build [source.psm] [-o output.exe] [-g] [--verify]")
+    println("  prismio run <source.psm> [-o output.exe] [-g] [--verify]")
     println("  prismio check <source.psm> [--diagnostic-format=json]")
     println("  prismio bootstrap [source.psm] [-o output.exe]")
     println("  prismio runtime-hash")
@@ -446,6 +450,12 @@ fn printUsage() {
     println("  prismio aif <source.psm> [--summary] [--layout] [--copyable-collections] [--theta-fields] [--budget=N]")
     println("  prismio aif <source.psm> --why=<symbol>   why one record has the tier it has")
     println("  prismio build|aif <source.psm> --force-layout=<Type>:<hot>   emit a named layout candidate")
+    println("")
+    println("-g emits DWARF: line tables, functions, scopes, locals and struct")
+    println("   layouts, so the program can be run under lldb or gdb. It also drops")
+    println("   the object step to -O0, because a variable folded into a register is")
+    println("   a variable a debugger cannot show you. Distinct from --debug, which")
+    println("   is the analysis level and says nothing about debug info.")
     println("")
     println("build/run link against the installed Prismio runtime only.")
     println("build with no source discovers build.ums and delegates the project to UMS.")
@@ -811,7 +821,7 @@ fn endWorkloadPass(verifyMode: Bool) {
 }
 
 fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstrapMode: Bool,
-                  verifyMode: Bool, debugMode: Bool) -> Int {
+                  verifyMode: Bool, debugMode: Bool, debugInfo: Bool, optimized: Bool) -> Int {
     let mut outFile = ""
     let mut emitIrOnly = false
 
@@ -955,6 +965,19 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
         compiler_set_verify_mode(1)
     }
 
+    // Before generateModule, because the first thing it does after starting the
+    // module is open the compile unit.
+    //
+    // `optimized` is passed through to DW_AT_APPLE_optimized rather than assumed
+    // false: -g drops the object step to -O0, but an explicit `-O2 -g` still runs
+    // the IR pipeline, and a debugger uses that bit to warn the reader that a
+    // variable may have been folded away. Claiming otherwise is exactly the kind
+    // of small lie ir/debug.psm exists to prevent.
+    if (debugInfo) {
+        irSetDebugInfo(true, str_concat("prismio ", PRISMIO_VERSION), path, optimized)
+        compiler_set_debug_info(1)
+    }
+
     generateModule(mergedAst)
 
     if (ir_write_file(outFile) != 0) {
@@ -1011,7 +1034,7 @@ fn buildUmsProject() -> Int {
     while (index < umsWorkspaceTargetCount(workspace)) {
         let target = umsWorkspaceTarget(workspace, index)
         if (compileSource(target.sourcePath, target.outputPath,
-                          false, false, false, false) != 0) {
+                          false, false, false, false, false, false) != 0) {
             return 1
         }
         index = index + 1
@@ -1221,7 +1244,8 @@ fn main() -> Int {
             }
         }
 
-        return compileSource(path, outputFile, runAfterBuild, bootstrapMode, false, false)
+        return compileSource(path, outputFile, runAfterBuild, bootstrapMode, false, false,
+                              false, false)
     }
 
     if (str_equals(first, "build") == 1) {
@@ -1265,6 +1289,9 @@ fn main() -> Int {
 
     outputFile = compiler_default_exe_path(path)
 
+    let mut debugInfo = false
+    let mut optimized = false
+
     while (argIndex < cli_arg_count()) {
         let mut arg = cli_arg(argIndex)
 
@@ -1284,6 +1311,7 @@ fn main() -> Int {
                 return 1
             }
             ir_set_opt_level(level)
+            optimized = level > 0
             argIndex = argIndex + 1
         } else if (str_equals(arg, "--target") == 1) {
             if (argIndex + 1 >= cli_arg_count()) {
@@ -1298,6 +1326,15 @@ fn main() -> Int {
             // SPEC 7.3. Slower and heavier by design: the mode exists to be run
             // by CI, not by users.
             verifyMode = true
+            argIndex = argIndex + 1
+        } else if (str_equals(arg, "-g") == 1) {
+            // Source-level debug info, and nothing else -- not an analysis level
+            // and not an optimisation setting at the Prismio end. Named `-g`
+            // because that is what every compiler in the world spells it; the
+            // neighbouring `--debug` is SPEC 7.1's zero-analysis level and the
+            // collision of names is unfortunate and not worth renaming a
+            // released flag over.
+            debugInfo = true
             argIndex = argIndex + 1
         } else if (str_equals(arg, "--debug") == 1) {
             // SPEC 7.1/7.2's zero-analysis level. `max` is deliberately not
@@ -1335,5 +1372,6 @@ fn main() -> Int {
         }
     }
 
-    return compileSource(path, outputFile, runAfterBuild, bootstrapMode, verifyMode, debugMode)
+    return compileSource(path, outputFile, runAfterBuild, bootstrapMode, verifyMode, debugMode,
+                          debugInfo, optimized)
 }

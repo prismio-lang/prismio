@@ -420,7 +420,14 @@ static void reset_state(void) {
     g_pending_param_count = 0;
 }
 
+// Declared here because the debug section is further down the file and this is
+// the one place outside it that has to know debug info exists: a DIBuilder holds
+// metadata owned by the module it was created from, so it cannot outlive it.
+static void debug_dispose(void);
+static void debug_clear_location(void);
+
 void ir_reset(void) {
+    debug_dispose();
     if (g_module) {
         LLVMDisposeModule(g_module);
         g_module = NULL;
@@ -551,6 +558,11 @@ void ir_declare_function_end(void) { materialize_function(); }
 void ir_function_body_start(void) {
     g_function = materialize_function();
     apply_param_attrs(g_function);
+    // Whatever the previous function left set belongs to the previous function's
+    // subprogram. Attaching it to an instruction here is not a slightly wrong
+    // line, it is a module the verifier rejects -- so it is cleared before the
+    // first instruction rather than trusted to be cleared on the way out.
+    debug_clear_location();
     g_alloca_count = 0;
     g_param_count = 0;
     g_has_returned = 0;
@@ -1431,6 +1443,803 @@ void ir_append_line(const char *text) { ir_append(text); }
 
 void ir_comment(const char *text) { (void)text; /* comments have no IR representation */ }
 void ir_blank_line(void) { /* formatting only */ }
+
+// ============================================================================
+// Debug information (DWARF)
+//
+// `prismio build <src> -g` puts a DICompileUnit, a DISubprogram per source
+// function, a line table, and a DILocalVariable per binding into the module.
+// clang then emits DWARF from them; no `-g` is passed to clang, because for an
+// LLVM IR input the module's own metadata is what drives emission.
+//
+// Everything here is off unless the frontend calls ir_debug_begin(). A release
+// build takes not one branch differently, which is why -g could land without
+// moving a byte of anyone's output.
+//
+// ---------------------------------------------------------------------------
+// The rule this section is written around: **never emit a location that is
+// wrong.** A debugger that says "no location for x" sends the reader to a print
+// statement. A debugger that says "x is at frame offset 12" when x is at 16
+// sends the reader after a bug that does not exist. So every entry point below
+// has an "I cannot answer that" path, and takes it:
+//
+//   - an unregistered file id, or a line of 0 (a node the parser synthesised
+//     rather than read), emits no location and leaves the previous one standing;
+//   - a function whose declaration has no readable span gets no DISubprogram at
+//     all, so nothing inside it claims a line;
+//   - a local whose alloca this layer cannot name gets no variable entry;
+//   - a struct is described only when its exact byte layout is known, and a
+//     field the hot/cold split moved out of the record is described where it
+//     really is (behind the link pointer) rather than at a made-up offset.
+//
+// ---------------------------------------------------------------------------
+// Three things Prismio makes harder than C does, and what is done about each.
+//
+// **1. AIF's T0 hoists an allocation into an alloca in the entry block**, and
+// one slot serves every iteration of the loop that declares it. The DWARF is
+// still true: the variable's storage *is* that slot, and its DILexicalBlock
+// bounds it to the block that declares it, exactly as a C loop-body local is
+// bounded. What DWARF cannot say -- and what this does not pretend to say -- is
+// that a pointer to a T0 object read in iteration 1 names iteration 2's object
+// afterwards. That is a property of the promotion, not of the location, and
+// docs/DEBUGGING.md is where it is written down.
+//
+// **2. An arena-placed value has no individual lifetime.** Its slot is a
+// pointer, and the pointer is right for as long as the binding is in scope; the
+// storage behind it dies with the enclosing region, all at once. Scoping covers
+// the binding. It does not cover a pointer copied out of the region, and DWARF
+// has no way to express "valid until this other PC" for a heap object. Again
+// documented rather than approximated.
+//
+// **3. A field may not be where the source says it is.** LAYOUT 7.2 permutes
+// field order and LAYOUT 6 can move the tail of a record into a separate cold
+// block. Member offsets here are therefore never computed from the declaration
+// -- they come from LLVMOffsetOfElement over the struct LLVM actually built, so
+// a permutation is described rather than papered over, and a split type is
+// described as what it is: a hot record with a `__cold` pointer, and a second
+// composite behind it.
+//
+// ---------------------------------------------------------------------------
+// Why a -g build pins the module's data layout
+//
+// A module with no `target datalayout` is laid out by LLVM's *default*
+// specification, in which i64 has a 4-byte ABI alignment. `{ i32, i64 }` is 12
+// bytes there and 16 on every target this compiler supports, so member offsets
+// read from the default would be four bytes out on the first 64-bit field of
+// every struct that has one. clang would then lay the object out its own way and
+// the DWARF would point into the middle of a field. So -g asks the host target
+// machine for its layout and writes it onto the module, which is what clang does
+// for a C translation unit and for the same reason. A module that already has a
+// layout (--target wasm32) keeps it.
+// ============================================================================
+
+#ifdef PRISMIO_DWARF
+
+// From diagnostics.c. A file id on an AST node indexes that registry; the path
+// is what a DIFile needs. diag_file_count() is the difference between "file 7"
+// and "there is no file 7" -- without it an out-of-range id renders as
+// "<unknown>", which is a filename a debugger would go looking for.
+int diag_file_count(void);
+const char *diag_file_path(int file);
+
+// From program_support.c, for DW_AT_comp_dir. A source path reaches the
+// compiler as the user typed it, so it is usually relative, and a debugger
+// resolves a relative DW_AT_name against the compilation directory.
+char *current_directory(void);
+
+// From ir_symbols.c. The field *names* of a registered struct, in the order they
+// were registered -- which generateStructDecl guarantees is the physical order
+// the layout search chose, not the declaration order.
+int ir_get_struct_field_count(const char *struct_name);
+const char *ir_get_struct_field_name_at(const char *struct_name, int index);
+const char *ir_get_struct_field_type_at(const char *struct_name, int index);
+int ir_is_struct_type_name(const char *name);
+
+// DWARF base-type encodings. llvm-c/DebugInfo.h types LLVMDWARFTypeEncoding as a
+// bare `unsigned` and defines no constants for it, so these are DWARF 5 table
+// 7.11 verbatim rather than something LLVM would check.
+#define PRISMIO_DW_ATE_boolean 0x02
+#define PRISMIO_DW_ATE_float 0x04
+#define PRISMIO_DW_ATE_signed 0x05
+#define PRISMIO_DW_ATE_signed_char 0x06
+#define PRISMIO_DW_TAG_structure_type 0x13
+
+#define MAX_DI_FILES 256
+#define MAX_DI_SCOPES 64
+#define MAX_DI_TYPES 512
+#define MAX_DI_SCOPE_FILES 128
+
+static LLVMDIBuilderRef g_di;
+static LLVMMetadataRef g_di_cu;
+static LLVMMetadataRef g_di_files[MAX_DI_FILES];
+static LLVMTargetDataRef g_di_layout;
+static LLVMMetadataRef g_di_empty_expr;
+static char g_di_dir[1024];
+
+// The open scope chain: [0] is the subprogram, the rest are lexical blocks. A
+// depth of 0 means no function with debug info is open, and every entry point
+// below is a no-op in that state -- which is how a generated function
+// (__aif_release_T, an extern stub, the workload driver) ends up with no line
+// information rather than with a made-up one.
+typedef struct {
+    LLVMMetadataRef scope;
+    int file; // the frontend file id this scope's DIFile came from
+} DIScope;
+static DIScope g_di_scopes[MAX_DI_SCOPES];
+static int g_di_depth;
+
+// A DILocation carries no file of its own: it inherits the file of its scope.
+// So a statement whose file differs from the function around it would be
+// attributed to the function's file -- a wrong answer rather than a missing one.
+// DILexicalBlockFile is the mechanism for exactly that (it is what `#line`
+// lowers to); these are the ones already built.
+//
+// **Nothing in the tree reaches this today**, and that was checked rather than
+// assumed: no program in tests/ or aif/corpus/ emits a DILexicalBlockFile,
+// because resolveImports flattens files without moving nodes between them and a
+// monomorphised clone keeps its template's file on both the body and the
+// function. It is kept because the alternative is not "no code" but "a silently
+// wrong file", and the first pass that copies an AST node across a file boundary
+// would introduce that without failing anything.
+typedef struct {
+    LLVMMetadataRef scope;
+    int file;
+    LLVMMetadataRef derived;
+} DIScopeFile;
+static DIScopeFile g_di_scope_files[MAX_DI_SCOPE_FILES];
+static int g_di_scope_file_count;
+
+typedef struct {
+    char key[NAME_LEN];
+    LLVMMetadataRef type;
+} DITypeEntry;
+static DITypeEntry g_di_types[MAX_DI_TYPES];
+static int g_di_type_count;
+
+// Where each struct was declared. Kept here rather than derived, because the
+// backend's struct table holds a layout and no provenance -- and a composite
+// attributed to the wrong file is the same class of wrong answer as a member at
+// the wrong offset. A type nobody registered gets no DW_AT_decl_file at all.
+typedef struct {
+    char name[NAME_LEN];
+    int file;
+    int line;
+} DIStructSite;
+static DIStructSite g_di_struct_sites[256];
+static int g_di_struct_site_count;
+
+// The source-level type name of one field, for the same reason a local has one:
+// ir_symbols.c stores the *storage* key, and String, List<T>, [T], `T?` and every
+// struct are all `ptr` there. Without this a struct's String field reads as an
+// anonymous address instead of printing its characters.
+//
+// Its own table rather than a fourth argument to ir_register_struct_field: that
+// function is called by the committed seed's IR, and changing its arity would
+// mean the seed could no longer link.
+typedef struct {
+    char owner[NAME_LEN];
+    char field[NAME_LEN];
+    char type[NAME_LEN];
+} DIFieldType;
+static DIFieldType g_di_field_types[1024];
+static int g_di_field_type_count;
+
+static const char *di_field_type_name(const char *owner, const char *field) {
+    for (int i = 0; i < g_di_field_type_count; i++) {
+        if (strcmp(g_di_field_types[i].owner, owner) == 0
+            && strcmp(g_di_field_types[i].field, field) == 0) {
+            return g_di_field_types[i].type;
+        }
+    }
+    return NULL;
+}
+
+void ir_debug_field_type(const char *owner, const char *field, const char *type_name) {
+    if (!g_di || g_di_field_type_count >= 1024) return;
+    snprintf(g_di_field_types[g_di_field_type_count].owner, NAME_LEN, "%s", owner);
+    snprintf(g_di_field_types[g_di_field_type_count].field, NAME_LEN, "%s", field);
+    snprintf(g_di_field_types[g_di_field_type_count].type, NAME_LEN, "%s", type_name);
+    g_di_field_type_count++;
+}
+
+int ir_debug_enabled(void) { return g_di != NULL; }
+
+void ir_debug_location(int file_id, int line, int col);
+
+// The declared signature, buffered between ir_function_begin and
+// ir_function_body_start.
+//
+// It exists because the LLVM function type is not enough. Everything with an
+// address is `ptr` there -- a String, a List, a Point, an opaque extern return --
+// so a signature read off it says `void *` five times where the source said five
+// different things. The frontend knows which is which and says so here; slot 0
+// is the return.
+//
+// Only used when the count matches what LLVM built. It will not match for main,
+// whose real argc/argv are prepended by codegen, and a mismatch means the two
+// have gone out of step -- in which case the storage types are still true, just
+// coarser, and that is what gets emitted.
+static char g_di_sig_key[MAX_PENDING_PARAMS + 1][NAME_LEN];
+static char g_di_sig_name[MAX_PENDING_PARAMS + 1][NAME_LEN];
+static int g_di_sig_count;
+
+static void sig_push(const char *key, const char *name) {
+    if (g_di_sig_count > MAX_PENDING_PARAMS) return;
+    snprintf(g_di_sig_key[g_di_sig_count], NAME_LEN, "%s", key ? key : "");
+    snprintf(g_di_sig_name[g_di_sig_count], NAME_LEN, "%s", name ? name : "");
+    g_di_sig_count++;
+}
+
+void ir_debug_signature(const char *ret_key, const char *ret_name) {
+    if (!g_di) return;
+    g_di_sig_count = 0;
+    sig_push(ret_key, ret_name);
+}
+
+void ir_debug_signature_param(const char *key, const char *name) {
+    if (!g_di || g_di_sig_count == 0) return;
+    sig_push(key, name);
+}
+
+static LLVMMetadataRef di_file(int file_id) {
+    if (!g_di) return NULL;
+    if (file_id < 0 || file_id >= MAX_DI_FILES) return NULL;
+    if (file_id >= diag_file_count()) return NULL;
+    if (g_di_files[file_id]) return g_di_files[file_id];
+
+    const char *path = diag_file_path(file_id);
+    g_di_files[file_id] = LLVMDIBuilderCreateFile(g_di, path, strlen(path),
+                                                  g_di_dir, strlen(g_di_dir));
+    return g_di_files[file_id];
+}
+
+// ---------------------------------------------------------------------------
+// Types
+//
+// Two facts are needed per binding and the frontend has one of each: the
+// *storage* key it already passes to every builder here ("i32", "ptr",
+// "struct:Foo"), which is authoritative about size, and the source-level type
+// name sema recorded ("Int", "String", "Point"), which is what the reader typed.
+// The key decides the shape; the name only refines a pointer, and only when the
+// two agree about there being a pointer.
+// ---------------------------------------------------------------------------
+
+static LLVMMetadataRef di_cached(const char *key) {
+    for (int i = 0; i < g_di_type_count; i++) {
+        if (strcmp(g_di_types[i].key, key) == 0) return g_di_types[i].type;
+    }
+    return NULL;
+}
+
+static LLVMMetadataRef di_cache(const char *key, LLVMMetadataRef type) {
+    if (g_di_type_count >= MAX_DI_TYPES) return type;
+    strncpy(g_di_types[g_di_type_count].key, key, NAME_LEN - 1);
+    g_di_types[g_di_type_count].key[NAME_LEN - 1] = '\0';
+    g_di_types[g_di_type_count].type = type;
+    g_di_type_count++;
+    return type;
+}
+
+static LLVMMetadataRef di_basic(const char *name, uint64_t bits, unsigned encoding) {
+    LLVMMetadataRef hit = di_cached(name);
+    if (hit) return hit;
+    return di_cache(name, LLVMDIBuilderCreateBasicType(g_di, name, strlen(name),
+                                                       bits, encoding, LLVMDIFlagZero));
+}
+
+// An address whose pointee this layer will not claim to know. Not a lie and not
+// nothing: the reader still gets the address, which is what a `ptr` is.
+static LLVMMetadataRef di_opaque_ptr(void) {
+    LLVMMetadataRef hit = di_cached("$ptr");
+    if (hit) return hit;
+    return di_cache("$ptr", LLVMDIBuilderCreatePointerType(g_di, NULL, 64, 0, 0, "", 0));
+}
+
+static LLVMMetadataRef di_struct_type(const char *name);
+
+// `struct:Foo` in a local's slot means a *pointer* to Foo -- storageType()
+// collapses it before the alloca is made -- so the pointee is looked up and the
+// pointer built around it.
+static LLVMMetadataRef di_pointer_to(const char *pointee_key, LLVMMetadataRef pointee) {
+    char key[NAME_LEN];
+    snprintf(key, sizeof(key), "$p:%s", pointee_key);
+    LLVMMetadataRef hit = di_cached(key);
+    if (hit) return hit;
+    if (!pointee) return di_opaque_ptr();
+    return di_cache(key, LLVMDIBuilderCreatePointerType(g_di, pointee, 64, 0, 0, "", 0));
+}
+
+// The storage key alone. `name` refines only the pointer case, and only towards
+// something this layer can show to be true.
+static LLVMMetadataRef di_type_for(const char *key, const char *name) {
+    if (!key || !*key) return NULL;
+    if (strcmp(key, "void") == 0) return NULL;
+    if (strcmp(key, "i1") == 0) return di_basic("Bool", 8, PRISMIO_DW_ATE_boolean);
+    if (strcmp(key, "i8") == 0) return di_basic("Char", 8, PRISMIO_DW_ATE_signed_char);
+    if (strcmp(key, "i16") == 0) return di_basic("I16", 16, PRISMIO_DW_ATE_signed);
+    if (strcmp(key, "i32") == 0) return di_basic("Int", 32, PRISMIO_DW_ATE_signed);
+    if (strcmp(key, "i64") == 0) return di_basic("I64", 64, PRISMIO_DW_ATE_signed);
+    if (strcmp(key, "double") == 0) return di_basic("Float", 64, PRISMIO_DW_ATE_float);
+
+    if (strncmp(key, "struct:", 7) == 0) {
+        return di_pointer_to(key + 7, di_struct_type(key + 7));
+    }
+    if (strcmp(key, "ptrptr") == 0) return di_pointer_to("$ptr", di_opaque_ptr());
+
+    if (strcmp(key, "ptr") == 0) {
+        // A Prismio String is a NUL-terminated char* -- str_concat, str_equals
+        // and every runtime string function treat it as one -- so saying `char *`
+        // is a statement of fact, and it is what makes a debugger print the
+        // contents instead of the address.
+        if (name && strcmp(name, "String") == 0) {
+            return di_pointer_to("$char", di_basic("Char", 8, PRISMIO_DW_ATE_signed_char));
+        }
+        // A struct-typed binding whose key was already collapsed to `ptr`.
+        if (name && *name && ir_is_struct_type_name(name)) {
+            return di_pointer_to(name, di_struct_type(name));
+        }
+        // A List, an Optional, an array, an opaque extern return. Each is an
+        // address of something this layer has no layout for.
+        return di_opaque_ptr();
+    }
+    return NULL;
+}
+
+// The same mapping driven by what LLVM built rather than by what the frontend
+// said. Used for a function's signature, where the storage types are all this
+// layer has and all a DWARF consumer needs.
+static LLVMMetadataRef di_type_for_llvm(LLVMTypeRef ty) {
+    switch (LLVMGetTypeKind(ty)) {
+    case LLVMVoidTypeKind: return NULL;
+    case LLVMDoubleTypeKind: return di_type_for("double", NULL);
+    case LLVMPointerTypeKind: return di_opaque_ptr();
+    case LLVMIntegerTypeKind: {
+        unsigned w = LLVMGetIntTypeWidth(ty);
+        if (w == 1) return di_type_for("i1", NULL);
+        if (w <= 8) return di_type_for("i8", NULL);
+        if (w <= 16) return di_type_for("i16", NULL);
+        if (w <= 32) return di_type_for("i32", NULL);
+        return di_type_for("i64", NULL);
+    }
+    default: return NULL;
+    }
+}
+
+// The composite for a registered struct, built from the type LLVM really
+// created rather than from the declaration.
+//
+// The field *names* come from ir_symbols.c in registration order, and
+// generateStructDecl registers them in the physical order aif_layout_field
+// chose -- so index i is the same field in both, and a permuted layout is
+// described correctly without this having to know a search ran.
+//
+// A split type is the case worth reading. The hot record is `hot_count` fields
+// plus a link pointer; the rest live in a separate `Foo.cold` allocation. There
+// is no offset in the hot record that names a cold field, so none is invented:
+// the composite gets its hot members, a `__cold` member for the link, and a
+// second composite for what the link points at. `p obj->__cold->field` is a
+// longer thing to type than `p obj->field`, and it is the truth.
+static LLVMMetadataRef di_struct_type(const char *name) {
+    char key[NAME_LEN];
+    snprintf(key, sizeof(key), "$s:%s", name);
+    LLVMMetadataRef hit = di_cached(key);
+    if (hit) return hit;
+
+    StructType *s = NULL;
+    for (int i = 0; i < g_struct_count; i++) {
+        if (strcmp(g_structs[i].name, name) == 0) { s = &g_structs[i]; break; }
+    }
+    if (!s || !g_di_layout || LLVMIsOpaqueStruct(s->type)) return NULL;
+
+    LLVMMetadataRef site_file = NULL;
+    unsigned site_line = 0;
+    for (int i = 0; i < g_di_struct_site_count; i++) {
+        if (strcmp(g_di_struct_sites[i].name, name) != 0) continue;
+        site_file = di_file(g_di_struct_sites[i].file);
+        if (g_di_struct_sites[i].line > 0) site_line = (unsigned)g_di_struct_sites[i].line;
+        break;
+    }
+
+    // Cached before the members are built: a struct that contains a pointer to
+    // its own type would otherwise recurse forever.
+    LLVMMetadataRef placeholder = LLVMDIBuilderCreateReplaceableCompositeType(
+        g_di, PRISMIO_DW_TAG_structure_type, name, strlen(name), g_di_cu,
+        site_file, site_line, 0, 0, 0, LLVMDIFlagZero, "", 0);
+    di_cache(key, placeholder);
+
+    int total = ir_get_struct_field_count(name);
+    int hot = s->hot_count > 0 ? s->hot_count : total;
+
+    LLVMMetadataRef members[66];
+    unsigned count = 0;
+    for (int i = 0; i < hot && i < total && count < 64; i++) {
+        const char *fname = ir_get_struct_field_name_at(name, i);
+        const char *ftype = ir_get_struct_field_type_at(name, i);
+        LLVMMetadataRef fty = di_type_for(ftype, di_field_type_name(name, fname));
+        if (!fty) continue;
+        LLVMTypeRef llvm_field = LLVMStructGetTypeAtIndex(s->type, (unsigned)i);
+        members[count++] = LLVMDIBuilderCreateMemberType(
+            g_di, placeholder, fname, strlen(fname), site_file, 0,
+            LLVMABISizeOfType(g_di_layout, llvm_field) * 8,
+            LLVMABIAlignmentOfType(g_di_layout, llvm_field) * 8,
+            LLVMOffsetOfElement(g_di_layout, s->type, (unsigned)i) * 8,
+            LLVMDIFlagZero, fty);
+    }
+
+    if (s->hot_count > 0 && s->cold && count < 65) {
+        char cold_name[NAME_LEN];
+        snprintf(cold_name, sizeof(cold_name), "%s.cold", name);
+        LLVMMetadataRef cold_members[64];
+        unsigned cold_count = 0;
+        for (int i = hot; i < total && cold_count < 64; i++) {
+            const char *fname = ir_get_struct_field_name_at(name, i);
+            const char *ftype = ir_get_struct_field_type_at(name, i);
+            LLVMMetadataRef fty = di_type_for(ftype, di_field_type_name(name, fname));
+            if (!fty) continue;
+            LLVMTypeRef llvm_field = LLVMStructGetTypeAtIndex(s->cold, (unsigned)(i - hot));
+            cold_members[cold_count++] = LLVMDIBuilderCreateMemberType(
+                g_di, g_di_cu, fname, strlen(fname), site_file, 0,
+                LLVMABISizeOfType(g_di_layout, llvm_field) * 8,
+                LLVMABIAlignmentOfType(g_di_layout, llvm_field) * 8,
+                LLVMOffsetOfElement(g_di_layout, s->cold, (unsigned)(i - hot)) * 8,
+                LLVMDIFlagZero, fty);
+        }
+        LLVMMetadataRef cold_ty = LLVMDIBuilderCreateStructType(
+            g_di, g_di_cu, cold_name, strlen(cold_name), site_file, site_line,
+            LLVMABISizeOfType(g_di_layout, s->cold) * 8,
+            LLVMABIAlignmentOfType(g_di_layout, s->cold) * 8,
+            LLVMDIFlagZero, NULL, cold_members, cold_count, 0, NULL, "", 0);
+
+        LLVMTypeRef link = LLVMStructGetTypeAtIndex(s->type, (unsigned)hot);
+        members[count++] = LLVMDIBuilderCreateMemberType(
+            g_di, placeholder, "__cold", 6, site_file, 0,
+            LLVMABISizeOfType(g_di_layout, link) * 8,
+            LLVMABIAlignmentOfType(g_di_layout, link) * 8,
+            LLVMOffsetOfElement(g_di_layout, s->type, (unsigned)hot) * 8,
+            LLVMDIFlagZero, LLVMDIBuilderCreatePointerType(g_di, cold_ty, 64, 0, 0, "", 0));
+    }
+
+    LLVMMetadataRef real = LLVMDIBuilderCreateStructType(
+        g_di, g_di_cu, name, strlen(name), site_file, site_line,
+        LLVMABISizeOfType(g_di_layout, s->type) * 8,
+        LLVMABIAlignmentOfType(g_di_layout, s->type) * 8,
+        LLVMDIFlagZero, NULL, members, count, 0, NULL, "", 0);
+    LLVMMetadataReplaceAllUsesWith(placeholder, real);
+
+    for (int i = 0; i < g_di_type_count; i++) {
+        if (strcmp(g_di_types[i].key, key) == 0) g_di_types[i].type = real;
+    }
+    return real;
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+// Asks the host target machine for the layout the object file will be built
+// with, and writes it onto the module. See the section header for why a -g build
+// cannot use LLVM's default specification.
+static void pin_data_layout(void) {
+    const char *existing = LLVMGetDataLayoutStr(g_module);
+    if (existing && *existing) {
+        g_di_layout = LLVMGetModuleDataLayout(g_module);
+        return;
+    }
+
+    LLVMInitializeNativeTarget();
+    LLVMInitializeNativeAsmPrinter();
+
+    char *triple = LLVMGetDefaultTargetTriple();
+    LLVMTargetRef target = NULL;
+    char *err = NULL;
+    if (LLVMGetTargetFromTriple(triple, &target, &err)) {
+        // No layout means no member offsets, and the composites are skipped
+        // rather than guessed. Line tables and scalar locals are unaffected.
+        fprintf(stderr, "warning: -g could not resolve the host target (%s); "
+                        "struct layouts will be omitted from the debug info\n",
+                err ? err : "?");
+        if (err) LLVMDisposeMessage(err);
+        LLVMDisposeMessage(triple);
+        return;
+    }
+
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
+        target, triple, "", "", LLVMCodeGenLevelDefault, LLVMRelocDefault,
+        LLVMCodeModelDefault);
+    LLVMTargetDataRef td = LLVMCreateTargetDataLayout(tm);
+    char *rep = LLVMCopyStringRepOfTargetData(td);
+    LLVMSetDataLayout(g_module, rep);
+    const char *triple_now = LLVMGetTarget(g_module);
+    if (!triple_now || !*triple_now) LLVMSetTarget(g_module, triple);
+    LLVMDisposeMessage(rep);
+    LLVMDisposeTargetMachine(tm);
+    LLVMDisposeMessage(triple);
+
+    g_di_layout = LLVMGetModuleDataLayout(g_module);
+}
+
+void ir_debug_begin(const char *producer, const char *main_path, int is_optimized) {
+    if (!g_module) backend_fail("-g: no module to attach debug info to", NULL);
+    if (g_di) return;
+
+    memset(g_di_files, 0, sizeof(g_di_files));
+    g_di_type_count = 0;
+    g_di_scope_file_count = 0;
+    g_di_struct_site_count = 0;
+    g_di_field_type_count = 0;
+    g_di_sig_count = 0;
+    g_di_depth = 0;
+
+    char *cwd = current_directory();
+    snprintf(g_di_dir, sizeof(g_di_dir), "%s", cwd ? cwd : ".");
+    if (cwd) free(cwd);
+
+    g_di = LLVMCreateDIBuilder(g_module);
+    pin_data_layout();
+
+    LLVMMetadataRef file = LLVMDIBuilderCreateFile(g_di, main_path, strlen(main_path),
+                                                   g_di_dir, strlen(g_di_dir));
+    // DW_LANG_C99 rather than a Prismio of our own. DWARF's language codes are
+    // registered, Prismio has none, and the code is not decoration: lldb and gdb
+    // pick an expression parser and a formatter from it. C99 is the one whose
+    // value model -- machine integers, NUL-terminated char*, flat structs -- is
+    // what a Prismio binary actually contains.
+    g_di_cu = LLVMDIBuilderCreateCompileUnit(
+        g_di, LLVMDWARFSourceLanguageC99, file, producer, strlen(producer),
+        is_optimized ? 1 : 0, "", 0, 0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "", 0, "", 0);
+
+    g_di_empty_expr = LLVMDIBuilderCreateExpression(g_di, NULL, 0);
+
+    // "Debug Info Version" is what makes the backend read any of this; without
+    // it every !dbg node is dropped on the way to the object. The DWARF version
+    // is pinned at 4 rather than left to the target's default so that two hosts
+    // produce the same thing, and at 4 rather than 5 because every lldb, gdb and
+    // dsymutil in service reads 4. Raise it when something needs a 5-only form.
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMAddModuleFlag(g_module, LLVMModuleFlagBehaviorWarning, "Dwarf Version", 13,
+                      LLVMValueAsMetadata(LLVMConstInt(i32, 4, 0)));
+    LLVMAddModuleFlag(g_module, LLVMModuleFlagBehaviorWarning, "Debug Info Version", 18,
+                      LLVMValueAsMetadata(LLVMConstInt(i32, 3, 0)));
+}
+
+void ir_debug_end(void) {
+    if (!g_di) return;
+    LLVMDIBuilderFinalize(g_di);
+}
+
+static void debug_dispose(void) {
+    if (!g_di) return;
+    LLVMDisposeDIBuilder(g_di);
+    g_di = NULL;
+    g_di_cu = NULL;
+    g_di_layout = NULL;
+    g_di_depth = 0;
+}
+
+static void debug_clear_location(void) {
+    if (!g_di) return;
+    LLVMSetCurrentDebugLocation2(g_builder, NULL);
+    LLVMSetCurrentDebugLocation2(g_alloca_builder, NULL);
+}
+
+// ---------------------------------------------------------------------------
+// Scopes and locations
+// ---------------------------------------------------------------------------
+
+// The scope a location in `file` should hang from. Same file as the enclosing
+// scope: the scope itself. A different one: a DILexicalBlockFile over it, so the
+// line is attributed to the file it was written in.
+static LLVMMetadataRef scope_in_file(int file) {
+    LLVMMetadataRef scope = g_di_scopes[g_di_depth - 1].scope;
+    if (file == g_di_scopes[g_di_depth - 1].file) return scope;
+
+    LLVMMetadataRef f = di_file(file);
+    if (!f) return scope;
+
+    for (int i = 0; i < g_di_scope_file_count; i++) {
+        if (g_di_scope_files[i].scope == scope && g_di_scope_files[i].file == file) {
+            return g_di_scope_files[i].derived;
+        }
+    }
+    LLVMMetadataRef derived = LLVMDIBuilderCreateLexicalBlockFile(g_di, scope, f, 0);
+    if (g_di_scope_file_count < MAX_DI_SCOPE_FILES) {
+        g_di_scope_files[g_di_scope_file_count].scope = scope;
+        g_di_scope_files[g_di_scope_file_count].file = file;
+        g_di_scope_files[g_di_scope_file_count].derived = derived;
+        g_di_scope_file_count++;
+    }
+    return derived;
+}
+
+void ir_debug_function_begin(const char *name, const char *linkage_name,
+                             int file_id, int line) {
+    if (!g_di || !g_function) return;
+    g_di_depth = 0;
+
+    LLVMMetadataRef file = di_file(file_id);
+    if (!file || line <= 0) return; // no span to point at: no subprogram
+
+    LLVMTypeRef fn_ty = LLVMGlobalGetValueType(g_function);
+    LLVMMetadataRef types[MAX_PENDING_PARAMS + 1];
+    unsigned n = 0;
+    unsigned pc = LLVMCountParamTypes(fn_ty);
+    if (pc > MAX_PENDING_PARAMS) pc = MAX_PENDING_PARAMS;
+
+    if (g_di_sig_count == (int)pc + 1) {
+        // The declared signature. Preferred because it distinguishes the five
+        // different things that are all `ptr` in the LLVM type.
+        for (int i = 0; i < g_di_sig_count; i++) {
+            types[n++] = di_type_for(g_di_sig_key[i], g_di_sig_name[i]);
+        }
+    } else {
+        // Storage-level, from the function LLVM built. Coarser and still true.
+        LLVMTypeRef ret = LLVMGetReturnType(fn_ty);
+        types[n++] = LLVMGetTypeKind(ret) == LLVMVoidTypeKind ? NULL : di_type_for_llvm(ret);
+        LLVMTypeRef params[MAX_PENDING_PARAMS];
+        LLVMGetParamTypes(fn_ty, params);
+        for (unsigned i = 0; i < pc; i++) types[n++] = di_type_for_llvm(params[i]);
+    }
+
+    // NULL means void, and void is only meaningful at index 0. A parameter this
+    // layer could not map would be read as "nothing" in the middle of a
+    // signature, so the whole signature is dropped rather than half-stated -- the
+    // subprogram, the line table and the locals all survive without it.
+    for (unsigned i = 1; i < n; i++) {
+        if (!types[i]) { n = 0; break; }
+    }
+
+    LLVMMetadataRef sub_ty = LLVMDIBuilderCreateSubroutineType(
+        g_di, file, n > 0 ? types : NULL, n, LLVMDIFlagZero);
+
+    LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(
+        g_di, file, name, strlen(name), linkage_name, strlen(linkage_name), file,
+        (unsigned)line, sub_ty, 0, 1, (unsigned)line, LLVMDIFlagZero, 0);
+    LLVMSetSubprogram(g_function, sp);
+
+    g_di_scopes[0].scope = sp;
+    g_di_scopes[0].file = file_id;
+    g_di_depth = 1;
+    ir_debug_location(file_id, line, 1);
+}
+
+void ir_debug_function_end(void) {
+    if (!g_di) return;
+    g_di_depth = 0;
+    // Cleared, and this is not tidiness. A stale location outlives the function
+    // it belongs to, and the next instruction built would carry a !dbg whose
+    // scope is another function's subprogram -- which the verifier rejects, and
+    // which would otherwise be a build failure whose cause is three functions
+    // back.
+    LLVMSetCurrentDebugLocation2(g_builder, NULL);
+    LLVMSetCurrentDebugLocation2(g_alloca_builder, NULL);
+}
+
+void ir_debug_scope_push(int file_id, int line, int col) {
+    if (!g_di || g_di_depth == 0 || g_di_depth >= MAX_DI_SCOPES) return;
+    LLVMMetadataRef file = di_file(file_id);
+    if (!file) file = LLVMDIScopeGetFile(g_di_scopes[g_di_depth - 1].scope);
+
+    LLVMMetadataRef block = LLVMDIBuilderCreateLexicalBlock(
+        g_di, g_di_scopes[g_di_depth - 1].scope, file,
+        (unsigned)(line > 0 ? line : 0), (unsigned)(col > 0 ? col : 0));
+    g_di_scopes[g_di_depth].scope = block;
+    g_di_scopes[g_di_depth].file = file_id;
+    g_di_depth++;
+}
+
+void ir_debug_scope_pop(void) {
+    // Never below the subprogram: generateFunction pops the parameter scope
+    // after generateBlock has popped the body's, and one unbalanced pop would
+    // leave every later location hanging off nothing.
+    if (!g_di || g_di_depth <= 1) return;
+    g_di_depth--;
+}
+
+void ir_debug_location(int file_id, int line, int col) {
+    if (!g_di || g_di_depth == 0) return;
+    // A synthesised node -- a desugared `x += 1`, an inserted drop, anything
+    // createNode() made without a token -- carries line 0. Claiming line 0 puts
+    // the debugger at the top of the file; leaving the previous location
+    // standing attributes the instruction to the statement that caused it, which
+    // is where it came from.
+    if (line <= 0) return;
+    if (di_file(file_id) == NULL) return;
+
+    LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(
+        g_ctx, (unsigned)line, (unsigned)(col > 0 ? col : 0), scope_in_file(file_id), NULL);
+    LLVMSetCurrentDebugLocation2(g_builder, loc);
+    LLVMSetCurrentDebugLocation2(g_alloca_builder, loc);
+}
+
+// ---------------------------------------------------------------------------
+// Variables
+// ---------------------------------------------------------------------------
+
+// `slot` is the alloca's name, the same one ir_alloca() was given and every
+// load and store since has resolved through. arg_no is 0 for a local and the
+// 1-based parameter position otherwise.
+void ir_debug_local(const char *name, const char *slot, const char *type_key,
+                    const char *type_name, int file_id, int line, int arg_no) {
+    if (!g_di || g_di_depth == 0) return;
+    if (line <= 0) return;
+
+    LLVMTypeRef stored = NULL;
+    LLVMValueRef storage = lookup_named(g_allocas, g_alloca_count, slot, &stored);
+    if (!storage) return; // nothing this layer can name: no entry, no guess
+
+    LLVMMetadataRef file = di_file(file_id);
+    if (!file) return;
+
+    LLVMMetadataRef ty = di_type_for(type_key, type_name);
+    if (!ty) return;
+
+    LLVMMetadataRef scope = g_di_scopes[g_di_depth - 1].scope;
+    LLVMMetadataRef var =
+        arg_no > 0
+            ? LLVMDIBuilderCreateParameterVariable(g_di, scope, name, strlen(name),
+                                                   (unsigned)arg_no, file, (unsigned)line,
+                                                   ty, 1, LLVMDIFlagZero)
+            : LLVMDIBuilderCreateAutoVariable(g_di, scope, name, strlen(name), file,
+                                              (unsigned)line, ty, 1, LLVMDIFlagZero, 0);
+
+    LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(
+        g_ctx, (unsigned)line, 0, scope, NULL);
+    LLVMBasicBlockRef bb = LLVMGetInsertBlock(g_builder);
+    if (!bb) return;
+    LLVMDIBuilderInsertDeclareRecordAtEnd(g_di, storage, var, g_di_empty_expr, loc, bb);
+}
+
+// One composite per struct, emitted after generateStructDecl has registered
+// every type. Nothing references them until a variable does, so this exists to
+// make a type visible to `p` even in a program that only passes it around.
+void ir_debug_struct(const char *name, int file_id, int line) {
+    if (!g_di) return;
+    if (g_di_struct_site_count < 256) {
+        strncpy(g_di_struct_sites[g_di_struct_site_count].name, name, NAME_LEN - 1);
+        g_di_struct_sites[g_di_struct_site_count].name[NAME_LEN - 1] = '\0';
+        g_di_struct_sites[g_di_struct_site_count].file = file_id;
+        g_di_struct_sites[g_di_struct_site_count].line = line;
+        g_di_struct_site_count++;
+    }
+    di_struct_type(name);
+}
+
+#else // !PRISMIO_DWARF
+
+int ir_debug_enabled(void) { return 0; }
+
+void ir_debug_begin(const char *producer, const char *main_path, int is_optimized) {
+    (void)producer; (void)main_path; (void)is_optimized;
+    fprintf(stderr,
+            "error: -g is not available in this build of the compiler.\n"
+            "  Debug info needs the LLVM DebugInfo C API, which is only compiled in\n"
+            "  when the backend is built against real llvm-c headers.\n"
+            "  Run: python3 tools/setup_llvm.py\n");
+    exit(1);
+}
+
+void ir_debug_end(void) {}
+void ir_debug_signature(const char *k, const char *n) { (void)k; (void)n; }
+void ir_debug_signature_param(const char *k, const char *n) { (void)k; (void)n; }
+static void debug_dispose(void) {}
+static void debug_clear_location(void) {}
+void ir_debug_function_begin(const char *n, const char *l, int f, int line) {
+    (void)n; (void)l; (void)f; (void)line;
+}
+void ir_debug_function_end(void) {}
+void ir_debug_scope_push(int f, int l, int c) { (void)f; (void)l; (void)c; }
+void ir_debug_scope_pop(void) {}
+void ir_debug_location(int f, int l, int c) { (void)f; (void)l; (void)c; }
+void ir_debug_local(const char *n, const char *s, const char *k, const char *t,
+                    int f, int l, int a) {
+    (void)n; (void)s; (void)k; (void)t; (void)f; (void)l; (void)a;
+}
+void ir_debug_struct(const char *name, int f, int l) { (void)name; (void)f; (void)l; }
+void ir_debug_field_type(const char *o, const char *f, const char *t) {
+    (void)o; (void)f; (void)t;
+}
+
+#endif // PRISMIO_DWARF
 
 // ============================================================================
 // Output

@@ -497,6 +497,19 @@ const char* ir_get_struct_field_type_at(const char* struct_name, int index) {
     return s->fields[index].type;
 }
 
+// The field's *source* name at a physical index. The sibling above answers what
+// occupies slot i; this answers what the programmer called it, which is the half
+// DWARF needs and the only place the two orders have to be reconciled.
+// generateStructDecl registers in the order aif_layout_field chose, so index i
+// here and element i of the LLVM struct are the same field by construction.
+// Empty rather than a placeholder for an unknown index: a made-up field name in
+// a debugger is worse than a gap.
+const char* ir_get_struct_field_name_at(const char* struct_name, int index) {
+    StructInfo* s = find_struct(struct_name);
+    if (!s || index < 0 || index >= s->field_count) return "";
+    return s->fields[index].name;
+}
+
 void ir_register_enum_variant(const char* enum_name, const char* variant_name, int value) {
     if (enum_variant_count == enum_variant_capacity) {
         int next = enum_variant_capacity ? enum_variant_capacity * 2 : 128;

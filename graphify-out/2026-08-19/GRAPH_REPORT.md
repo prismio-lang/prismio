@@ -1,7 +1,7 @@
 # Graph Report - prismio  (2026-08-19)
 
 ## Corpus Check
-- 124 files · ~390,984 words
+- 124 files · ~391,433 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -839,7 +839,7 @@ Nodes (14): 1. REQUIREMENTS 16 was four scans in three passes, not one, 2. The I
 
 ### Community 164 - "2 · Prediction vs measurement, per axis"
 Cohesion: 0.12
-Nodes (16): 2026-08-17 (second) — LAYOUT §8's forced candidate landed; read this before writing another brief, 2026-08-17 — tasks 1 and 2 both landed, in parallel, and were merged, 2026-08-19 (concurrency) — the `T` domain is live; the join analysis is the hole, 2026-08-19 (generics) — monomorphisation is in; the stdlib floor is now gated on one missing primitive, Next, ranked, Not this session, Prompts for the next sessions, Task 2 is done — `pin(<region-name>)`, 2026-08-17 (pin session) (+8 more)
+Nodes (16): 2026-08-17 (compile time) — the frontend is linear now, and incrementality is not an AIF problem, 2026-08-17 (second) — LAYOUT §8's forced candidate landed; read this before writing another brief, 2026-08-17 — tasks 1 and 2 both landed, in parallel, and were merged, 2026-08-19 (concurrency) — the `T` domain is live; the join analysis is the hole, Next, ranked, Next, ranked, Prompts for the next sessions, Task 2 is done — `pin(<region-name>)`, 2026-08-17 (pin session) (+8 more)
 
 ### Community 166 - "9 · The budget rule"
 Cohesion: 0.25
@@ -859,7 +859,7 @@ Nodes (6): Four things to carry forward, Next, re-ranked on this session's measu
 
 ### Community 170 - "2026-08-17 (compile time) — the frontend is linear now, and incrementality is not an AIF problem"
 Cohesion: 0.40
-Nodes (5): 2026-08-17 (compile time) — the frontend is linear now, and incrementality is not an AIF problem, Next, ranked, The measurement that should decide the next few sessions, The per-module split, priced (RESULTS-compile-time §5), What landed
+Nodes (5): 2026-08-19 (generics) — monomorphisation is in; the stdlib floor is now gated on one missing primitive, Not this session, The tasks, ranked, Two premises in the last brief were wrong, and the correction matters, What landed
 
 ### Community 171 - "decl_entry"
 Cohesion: 0.40
@@ -915,7 +915,7 @@ Nodes (11): LLVMBasicBlockRef, block_done(), block_for(), ir_br_numbered(), ir_c
 
 ### Community 184 - "Session of 2026-08-19 (concurrency) — the `T` domain stops being vacuous, and T4a is emitted for the first time"
 Cohesion: 0.22
-Nodes (9): 1. The assertion the session was built around, and it holds, 2. Two departures from INFERENCE 4.3, both deliberate, both invisible to the differential, 3. The result, which is more interesting than the feature, 4. Four things that cost time and should not cost it twice, 5. Found in passing, not fixed, 6. Where the atomics actually are, Next, ranked, Session of 2026-08-19 (concurrency) — the `T` domain stops being vacuous, and T4a is emitted for the first time (+1 more)
+Nodes (9): 1. The assertion the session was built around, and it holds, 2. Two departures from INFERENCE 4.3, both deliberate, both invisible to the differential, 3. The result, which is more interesting than the feature, 4. Four things that cost time and should not cost it twice, 5. Found in passing, fixed immediately after (REQUIREMENTS 4), 6. Where the atomics actually are, Next, ranked, Session of 2026-08-19 (concurrency) — the `T` domain stops being vacuous, and T4a is emitted for the first time (+1 more)
 
 ### Community 185 - "run_check_command_test"
 Cohesion: 0.31

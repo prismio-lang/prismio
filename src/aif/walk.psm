@@ -685,52 +685,180 @@ fn aifExprHasJoinOf(ptr: String, name: String) -> Bool {
     return aifExprHasJoinOf(n.next, name)
 }
 
-// Can control leave this statement without running what follows it?
-//
-// Conservative on purpose, and it costs the analysis nothing it can measure: a
-// `break` is counted as an exit even when the loop it belongs to is wholly
-// inside the statement and would absorb it. Being wrong in this direction makes
-// a spawn read as unjoined, which raises escape and *costs* a tier. Being wrong
-// the other way would hand a value a scope-bound lifetime while a task still
-// holds it, which is a use-after-free.
-fn aifStmtHasEarlyExit(ptr: String) -> Bool {
-    if (nodeIsNull(ptr)) { return false }
-    let n = ptr_to_node(ptr)
-    if (n.kind == NodeKind.RETURN_STATEMENT) { return true }
-    if (n.kind == NodeKind.BREAK_STATEMENT) { return true }
-    if (n.kind == NodeKind.CONTINUE_STATEMENT) { return true }
-    if (aifStmtHasEarlyExit(n.child1)) { return true }
-    if (aifStmtHasEarlyExit(n.child2)) { return true }
-    if (aifStmtHasEarlyExit(n.child3)) { return true }
-    return aifStmtHasEarlyExit(n.next)
-}
-
-// INFERENCE 4.1: "joined on every path before scope s exits". Walks forward
-// from the spawn's declaration through the rest of its block.
+// INFERENCE 4.1's E-SPAWN-J: "joined on every path before scope `s` exits".
 //
 // This decides E-SPAWN-J against E-SPAWN, which INFERENCE calls the place
-// structured concurrency pays -- it is the whole difference between a task's
+// structured concurrency pays. It is the whole difference between a task's
 // arguments staying region-bound at T1 and being forced to Global, and from
-// there through A-ESCAPE to Shared and T4. So it is worth being exact about
-// what is proved: a straight run of statements from the spawn to the join, with
-// nothing in between that can leave the block. Anything else answers "not
-// joined", which is the sound direction.
+// there through A-ESCAPE to Shared and on to T4a with an atomic count.
 //
-// A precise answer wants the flow analysis in src/sema/flow.psm, which already
-// computes reachability per path for the missing-return check. Reusing it here
-// is the obvious next move and is deliberately not this session's.
-fn aifSpawnIsJoined(afterPtr: String, name: String) -> Bool {
-    let mut p = afterPtr
+// **The previous version was a forward scan and it was wrong in a way no
+// fixture caught.** Its early-exit helper recursed into `n.next`, so it did not
+// ask "can control leave this statement" but "does anything between here and
+// the end of the block leave" -- and the block always ends in `return join t`,
+// which answered yes. The measured consequence: a single inert `let x = 1`
+// between a spawn and its join moved the argument from **T0 with no count at
+// all to T4a with an atomic one**. Four of five ordinary shapes fell off that
+// cliff, including a loop with no break and a bare `if`. The two fixtures in
+// tests/aif_concurrency.psm both happen to join on the statement immediately
+// after the spawn, which is the one shape the scan got right.
+//
+// What replaces it is two mutually recursive judgements over the statement
+// tree, in the style src/sema/flow.psm already uses for definite-return:
+//
+//   * `aifChainJoins`          -- does **every** path through this chain reach a
+//                                 join before control leaves the chain?
+//   * `aifChainEscapesUnjoined` -- is there **some** path that leaves the
+//                                 enclosing scope without having joined?
+//
+// They are not negations of each other and both are needed. Falling out of the
+// bottom of a chain means "not joined" for the first (the scope exits with the
+// task still running) but "did not escape" for the second (control simply
+// continues into the enclosing chain). Conflating them is how an analysis of
+// this shape becomes unsound.
+//
+// Every default is the conservative one. Being wrong towards "not joined" costs
+// a tier; being wrong the other way hands a value a scope-bound lifetime while
+// a task still holds it, which is a use-after-free.
+
+// A join in this statement's own expression -- not in any block it contains.
+fn aifStmtDirectJoin(n: ASTNode, name: String) -> Bool {
+    if (n.kind == NodeKind.VARIABLE_DECL) { return aifExprHasJoinOf(n.child2, name) }
+    if (n.kind == NodeKind.EXPRESSION_STATEMENT) { return aifExprHasJoinOf(n.child1, name) }
+    if (n.kind == NodeKind.RETURN_STATEMENT) { return aifExprHasJoinOf(n.child1, name) }
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) { return aifExprHasJoinOf(n.child2, name) }
+    return false
+}
+
+// The statement chain under a block, or "" when there is no block there.
+fn aifBlockChain(ptr: String) -> String {
+    if (nodeIsNull(ptr)) { return "" }
+    return ptr_to_node(ptr).child1
+}
+
+// Some path through this statement leaves the scope being analysed without
+// having joined first.
+//
+// `inLoop` is what makes `break` and `continue` mean different things at
+// different depths. Inside a loop that is itself part of the chain being
+// scanned, a break is *absorbed* by that loop and control continues in the
+// chain; at the top level it leaves. The old scan could not tell those apart
+// and counted every break as an exit, which its own comment admitted.
+fn aifStmtEscapesUnjoined(n: ASTNode, name: String, inLoop: Bool) -> Bool {
+    if (n.kind == NodeKind.RETURN_STATEMENT) {
+        return aifExprHasJoinOf(n.child1, name) == false
+    }
+    if (n.kind == NodeKind.BREAK_STATEMENT or n.kind == NodeKind.CONTINUE_STATEMENT) {
+        return inLoop == false
+    }
+    if (n.kind == NodeKind.IF_STATEMENT) {
+        if (aifChainEscapesUnjoined(aifBlockChain(n.child2), name, inLoop)) { return true }
+        if (nodeIsNull(n.child3)) { return false }
+        let elseNode = ptr_to_node(n.child3)
+        if (elseNode.kind == NodeKind.IF_STATEMENT) {
+            return aifStmtEscapesUnjoined(elseNode, name, inLoop)
+        }
+        return aifChainEscapesUnjoined(elseNode.child1, name, inLoop)
+    }
+    if (n.kind == NodeKind.WHILE_STATEMENT) {
+        return aifChainEscapesUnjoined(aifBlockChain(n.child2), name, true)
+    }
+    if (n.kind == NodeKind.LOOP_STATEMENT) {
+        return aifChainEscapesUnjoined(aifBlockChain(n.child1), name, true)
+    }
+    if (n.kind == NodeKind.FOR_STATEMENT) {
+        return aifChainEscapesUnjoined(aifBlockChain(n.child3), name, true)
+    }
+    // A region is not a loop, so a break inside one belongs to whatever encloses
+    // it and `inLoop` passes through unchanged -- the same reading
+    // semaBlockHasBreak takes.
+    if (n.kind == NodeKind.REGION_STATEMENT) {
+        return aifChainEscapesUnjoined(aifBlockChain(n.child1), name, inLoop)
+    }
+    if (n.kind == NodeKind.BLOCK) {
+        return aifChainEscapesUnjoined(n.child1, name, inLoop)
+    }
+    if (n.kind == NodeKind.MATCH_STATEMENT) {
+        let mut armPtr = n.child2
+        while (nodeExists(armPtr)) {
+            let arm = ptr_to_node(armPtr)
+            if (aifChainEscapesUnjoined(aifBlockChain(arm.child2), name, inLoop)) { return true }
+            armPtr = arm.next
+        }
+        return false
+    }
+    return false
+}
+
+// Every path through this statement joins.
+fn aifStmtAlwaysJoins(n: ASTNode, name: String, inLoop: Bool) -> Bool {
+    if (aifStmtDirectJoin(n, name)) { return true }
+
+    if (n.kind == NodeKind.IF_STATEMENT) {
+        // Without an else there is a path that runs none of the arm, so the
+        // fall-through decides it and the enclosing chain is what sees that.
+        if (nodeIsNull(n.child3)) { return false }
+        if (aifChainJoins(aifBlockChain(n.child2), name, inLoop) == false) { return false }
+        let elseNode = ptr_to_node(n.child3)
+        if (elseNode.kind == NodeKind.IF_STATEMENT) {
+            return aifStmtAlwaysJoins(elseNode, name, inLoop)
+        }
+        return aifChainJoins(elseNode.child1, name, inLoop)
+    }
+    if (n.kind == NodeKind.BLOCK) {
+        return aifChainJoins(n.child1, name, inLoop)
+    }
+    if (n.kind == NodeKind.REGION_STATEMENT) {
+        return aifChainJoins(aifBlockChain(n.child1), name, inLoop)
+    }
+
+    // Deliberately **not** MATCH, even though exhaustiveness is checked and
+    // "every arm joins" would therefore be sound today. The soundness would be
+    // borrowed from another pass: a hole in exhaustiveness would turn into a
+    // use-after-free here rather than into a missing-case diagnostic there. A
+    // match between a spawn and its join costs a tier and nothing worse.
+    //
+    // Nor a loop of any kind. `while` and `for` may run zero times, and a `loop`
+    // may never terminate; neither is a path this can prove joins.
+    return false
+}
+
+// Some path through this chain leaves the scope without joining. Statements
+// after one that always joins cannot contribute -- the join already happened.
+fn aifChainEscapesUnjoined(head: String, name: String, inLoop: Bool) -> Bool {
+    let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
-        if (n.kind == NodeKind.VARIABLE_DECL and aifExprHasJoinOf(n.child2, name)) { return true }
-        if (n.kind == NodeKind.EXPRESSION_STATEMENT and aifExprHasJoinOf(n.child1, name)) { return true }
-        if (n.kind == NodeKind.RETURN_STATEMENT and aifExprHasJoinOf(n.child1, name)) { return true }
-        if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and aifExprHasJoinOf(n.child2, name)) { return true }
-        if (aifStmtHasEarlyExit(p)) { return false }
+        if (aifStmtEscapesUnjoined(n, name, inLoop)) { return true }
+        if (aifStmtAlwaysJoins(n, name, inLoop)) { return false }
         p = n.next
     }
     return false
+}
+
+// Every path through this chain joins before control leaves it.
+//
+// The escape test runs first, and the order is the whole correctness argument:
+// `if (c) { return 0 }` followed by `return join t` has a path that leaves
+// without joining, and asking "does something later join" first would answer
+// yes and miss it. That shape is tests/aif_concurrency.psm's
+// `unjoined_is_cross_thread`, which is why it still reports CrossThread.
+fn aifChainJoins(head: String, name: String, inLoop: Bool) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (aifStmtEscapesUnjoined(n, name, inLoop)) { return false }
+        if (aifStmtAlwaysJoins(n, name, inLoop)) { return true }
+        p = n.next
+    }
+    // Fell out of the bottom with the task still running.
+    return false
+}
+
+fn aifSpawnIsJoined(afterPtr: String, name: String) -> Bool {
+    // `inLoop` is false at the top: the scope being analysed is the block
+    // holding the spawn, and a `break` written directly in it leaves that block.
+    return aifChainJoins(afterPtr, name, false)
 }
 
 fn aifWalkChain(head: String, fnId: Int, scope: Int) {

@@ -402,24 +402,62 @@ to the differential, so both are argued at the rule instead:
   a **per-site** rule, not a clause on the spawn's arguments; testing the arguments alone was the
   first version and it was unsound, because the argument is the container and the shared thing is
   the element.
-- **E-SPAWN-J is decided syntactically** — a straight run of statements from spawn to join with no
-  early exit between them. Anything less obvious answers "not joined", which costs a tier rather
-  than soundness. `src/sema/flow.psm` already computes per-path reachability for the missing-return
-  check and is the obvious place to get a precise answer.
+- **E-SPAWN-J was decided syntactically, and that was a defect rather than a compromise.** The
+  first version scanned forward from the spawn, and its early-exit helper recursed into the
+  statement's `next` — so it did not ask "can control leave *this statement*" but "does anything
+  between here and the end of the block leave", and every such block ends in `return join t`, which
+  answered yes. **A single inert `let x = 1` between a spawn and its join moved the argument from
+  T0 with no count at all to T4a with an atomic one.** Measured on five ordinary shapes, four fell
+  off that cliff, including a loop with no `break` and a bare `if`.
+
+  Replaced (2026-08-19) with two mutually recursive judgements over the statement tree, in the
+  style `src/sema/flow.psm` uses for definite-return: `chainJoins` ("does **every** path reach a
+  join before leaving?") and `chainEscapesUnjoined` ("is there **some** path that leaves the scope
+  without joining?"). They are not negations and both are needed — falling out of the bottom of a
+  chain means *not joined* for the first and *did not escape* for the second, and conflating them
+  is how an analysis of this shape becomes unsound. The escape test runs first, which is what keeps
+  `if (c) { return 0 }` followed by `return join t` correctly unjoined.
+
+  `break` and `continue` now carry an `inLoop` parameter, so a break absorbed by a loop inside the
+  scanned chain stops counting as an exit — the imprecision the original helper's own comment
+  admitted to and had no way to express.
 
 **The result worth recording.** Under isolation a value cannot become cross-thread by being passed
 around — the move checker forbids it — so T4a's population is exactly the residue of the two doors
 the design leaves open: a static root (T-STATIC), and a value already `Shared` before it crossed.
 That is the claim SPEC 11 item 10 makes, and it is now measurable rather than asserted.
 
-Verified: **93 of 94 programs emit byte-identical IR**, the exception being `src/main.ll`, which
-changed because `src/` did. Suite 129/129, two-generation fixpoint, differential agrees on 17
+**`Task<R>`, and why the handle is still PTR-kinded.** `spawn f(…)` yields `Task<R>` where R is the
+callee's declared return type, and `join` yields R — an `Int`, a reference type, or nothing. What
+makes the general case *safe* is that the compiler knows R statically and can pick a correctly-typed
+function pointer: `prismio_task_invoke` has three families across four arities, twelve typedefs in
+all. One signature plus a cast works on every ABI anyone ships and is still undefined, and with
+return values it stops being merely formal — an i32-returning function called through a pointer
+declared to return `void*` leaves the upper half of the register undefined on exactly the 64-bit
+targets this compiles for. `Float` and the sized integers are refused for the same reason, and the
+diagnostic says so.
+
+The handle stays `TypeKind.PTR` with a `child`. A `Task` kind would have to be added to every switch
+in sema, AIF and codegen to arrive at the behaviour PTR already has; the `child` is the one thing a
+bare `Ptr` could not carry. `Task<R>` is writable as an annotation — before it was, it resolved to
+Invalid, and Invalid matches everything, so `let t: Task<Int> = spawn name_span(j)` type-checked
+against a `Task<String>`. **A type nobody can spell is a type nobody can get wrong; one that
+silently resolves to Invalid is worse than either.** `typeSemKey` writes `task:<inner>` and
+`typeFromSemKey` reads it back, which is the round-trip REQUIREMENTS 4's optionals had been missing
+for twelve days — `tests/test_69_task_results.psm` exercises it on purpose.
+
+Verified: **every one of the 94 programs that predate this work emits byte-identical IR**, the
+exception being `src/main.ll`, which changed because `src/` did. Suite 131/131, two-generation
+fixpoint, cold build from the committed seed identical to the warm chain, differential agrees on 17
 sources.
 
-*Note for the levels table.* SPEC 11.0 gives AIF-1 "Concurrency: none — `T` is vacuous". This
-implementation declares AIF-1 and now exceeds that row. Exceeding a level is not a conformance
-violation, but the table is now describing something the implementation is not, and that is a
-governance call rather than a code one.
+*Levels table, resolved (SPEC 1.2.4).* The row read `none` for AIF-2, contradicting the Inference
+row of the same column — AIF-2 introduces the **thread** domain, and a thread domain in a language
+with no tasks is vacuous by construction. AIF-2's cell is now `isolation`, which is the cheapest
+model under which the domain is not vacuous and is what item 10 freezes at every level anyway;
+AIF-3's becomes `+ unrestricted sharing`. This implementation still declares **AIF-1** — it meets
+none of AIF-2's other seven rows — and the manifest now records `exceeds inference:thread
+concurrency:isolation` rather than inflating the declaration.
 
 ### 16. Fix superlinear compile time — **DONE, 2026-08-17**
 
