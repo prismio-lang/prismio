@@ -517,6 +517,67 @@ fn generateExpression(expr: ASTNode) -> String {
         return "null"
     }
 
+    // REQUIREMENTS 15. `spawn f(a, b)` -> prismio_task_spawn(&f, n, a, b, null).
+    //
+    // Three void* slots and an arity, rather than a per-site wrapper function
+    // that unpacks a heap argument pack. The wrapper is the general answer and
+    // it wants closures, which REQUIREMENTS 3a has not built; the runtime's
+    // switch on `n` calls through a correctly-typed function pointer, which is
+    // defined behaviour where a variadic cast would not have been.
+    //
+    // Nothing about the *tier* of the arguments is decided here. Codegen asks
+    // aif_tier_at_node exactly as it does for any other value, so a moved-in
+    // argument that landed T3 gets T3's non-atomic count and a static that
+    // landed T4a gets an atomic one -- which is the entire point of putting the
+    // distinction in the solver rather than in the lowering.
+    if (expr.kind == NodeKind.SPAWN_EXPR) {
+        let call = ptr_to_node(expr.child1)
+        let callee = ptr_to_node(call.child1)
+        let mut target = callee.s1
+        if (str_equals(call.s2, "") == 0) { target = call.s2 }
+
+        ir_call_begin()
+        ir_call_arg("ptr", ir_get_temp_name(ir_func_addr(target)))
+
+        // The arity is counted before the arguments are emitted, because
+        // ir_call_arg wants them in order and the count comes first.
+        let mut countPtr = call.child2
+        let mut argc = 0
+        while (str_equals(countPtr, "") == 0) {
+            argc = argc + 1
+            countPtr = ptr_to_node(countPtr).next
+        }
+        ir_call_arg("i32", int_to_str(argc))
+
+        let mut argPtr = call.child2
+        let mut emitted = 0
+        while (str_equals(argPtr, "") == 0) {
+            let argNode = ptr_to_node(argPtr)
+            ir_call_arg("ptr", generateExpression(argNode))
+            emitted = emitted + 1
+            argPtr = argNode.next
+        }
+        // The unused slots are still passed. prismio_task_spawn has one
+        // signature, and a call that supplied fewer arguments than the
+        // declaration would fail module verification -- the backend synthesises
+        // the declaration from the *first* call site it sees, so two spawns of
+        // different arity in one module would otherwise disagree about the
+        // callee's type.
+        while (emitted < 3) {
+            ir_call_arg("ptr", "null")
+            emitted = emitted + 1
+        }
+
+        return ir_get_temp_name(ir_call_end("ptr", "prismio_task_spawn"))
+    }
+
+    if (expr.kind == NodeKind.JOIN_EXPR) {
+        let handle = generateExpression(ptr_to_node(expr.child1))
+        ir_call_begin()
+        ir_call_arg("ptr", handle)
+        return ir_get_temp_name(ir_call_end("i32", "prismio_task_join"))
+    }
+
     if (expr.kind == NodeKind.BINARY_EXPR) {
         // Handled before either operand is generated -- that is the whole point.
         if (str_equals(expr.s1, "and") == 1 or str_equals(expr.s1, "or") == 1) {

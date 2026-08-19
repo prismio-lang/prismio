@@ -537,6 +537,29 @@ void chan_close(void* handle) {
     PRISMIO_MUTEX_UNLOCK(&c->lock);
 }
 
+// SPEC 11 item 10, and this function exists *because* of its second sentence:
+// "creating a second owning reference SHALL be a syntactically identifiable
+// event." A channel is the one object two tasks are supposed to hold at once,
+// and every handle the language can name is affine -- so without an explicit
+// duplication there is no way to get one into a task and keep one in the
+// parent, and `spawn producer(c)` simply moves the channel away.
+//
+// So the duplication is spelled out loud. `chan_share` is the event, it is
+// visible at the call site, and it is what AIF's aliasing module sees when it
+// decides the endpoint is `Shared` rather than `Unique` -- which is what puts
+// anything reachable from it at CrossThread, and therefore on an atomic count.
+// The alternative, making channel handles quietly copyable, would have bought
+// the same programs and lost the only place the analysis could have noticed.
+//
+// The pointer is returned as-is rather than reference-counted. The contract is
+// the one the corpus already follows and the one the join edge makes checkable:
+// the creator closes, joins every task it shared with, then frees. A count here
+// would have to be atomic, which is the tax this whole design exists to avoid
+// paying on anything but the shared object itself.
+void* chan_share(void* handle) {
+    return handle;
+}
+
 int chan_len(void* handle) {
     PrismioChan* c = (PrismioChan*)handle;
     if (!c) return 0;

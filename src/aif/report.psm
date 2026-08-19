@@ -15,13 +15,26 @@ fn aifTierName(tier: Int) -> String {
     if (tier == 1) { return "T1" }
     if (tier == 2) { return "T2" }
     if (tier == 3) { return "T3" }
-    return "T4b"
+    // SPEC 3: T4 is one tier with two sub-classes, and they are ordered here
+    // with T4a on top -- see AIF_T4A in runtime/aif_support.c for why that
+    // ordinal rather than the other. The consequence a reader meets first is
+    // that the tables below print T4b before T4a, which is ordinal order and
+    // not a mistake.
+    if (tier == 4) { return "T4b" }
+    return "T4a"
 }
 
 // SPEC 6.2's `placement` column, which is SPEC 3's codegen contract per tier.
 // T1 names the region it is bound to: a `region` statement's name when one
 // encloses it and the value cannot outlive it, otherwise the implicit region of
 // its own scope, which has no arena and is served by the heap.
+// INFERENCE 2.3's lattice, for the manifest's `thread` column.
+fn aifThreadName(t: Int) -> String {
+    if (t == 0) { return "Isolated" }
+    if (t == 1) { return "Transferred" }
+    return "CrossThread"
+}
+
 fn aifPlacement(tier: Int, site: Int) -> String {
     if (tier == 0) { return "stack" }
 
@@ -63,8 +76,22 @@ fn aifPlacement(tier: Int, site: Int) -> String {
     // `rc:none` split was introduced to stop. `cycle:none` is a value the
     // collector cannot take: an opaque pointer, one allocated past the seam, or
     // one no container holds, so nothing ever decrements it into a candidate.
-    if (aif_site_is_cyclic(site) == 1) { return "rc+cycle" }
-    return "cycle:none"
+    if (tier == 4) {
+        if (aif_site_is_cyclic(site) == 1) { return "rc+cycle" }
+        return "cycle:none"
+    }
+    // T4a. SPEC 3's cost table calls this an atomic count word, and SPEC 6.2's
+    // own worked example prints `rc-atomic` in this column. The same
+    // does-the-binary-contain-it discipline applies as one tier down: a site
+    // nothing counts gets `rc:none` whatever its thread affinity, because an
+    // atomic increment that is never emitted is not a mechanism the binary has.
+    //
+    // "a value meeting both conditions pays both" (SPEC 3) is why the cyclic
+    // case is spelled out rather than folded away: a T4a site whose type is in
+    // a non-trivial SCC needs the collector too, and the manifest has to say so.
+    if (aif_site_is_rc(site) == 0) { return "rc:none" }
+    if (aif_site_is_cyclic(site) == 1) { return "rc-atomic+cycle" }
+    return "rc-atomic"
 }
 
 fn aifCountTier(tier: Int) -> Int {
@@ -217,7 +244,7 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
                                     str_concat(int_to_str(aif_t4b_site_count()), " T4b site(s))"))))
     }
     println("#")
-    println("# symbol                                      tier  placement         type            layout      origin            site")
+    println("# symbol                                      tier  thread       placement         type            layout      origin            site")
 
     let mut i = 0
     while (i < total) {
@@ -254,6 +281,17 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
         if (aif_site_widened(site) == 1) { origin = "budget-exhausted" }
         print(aifPad(aif_order_symbol(r), 44))
         print(aifPad(aifTierName(tier), 6))
+        // INFERENCE 2.3, recorded because a manifest that omits it cannot gate
+        // the one regression this domain has.
+        //
+        // A value moving Transferred -> CrossThread is a non-atomic count
+        // becoming an atomic one. That is exactly what SPEC 11 item 10 forbids
+        // on the common path -- and for a T4a site it moves no tier, for a T1
+        // site it moves no tier either, so without this column the CI differ
+        // sees an identical manifest and passes. SPEC 6.2 asks the manifest to
+        // make a build describable; an undescribed fact is one nothing can
+        // regress against.
+        print(aifPad(aifThreadName(aif_site_thread(site)), 13))
         print(aifPad(aifPlacement(tier, site), 18))
         print(aifPad(aif_site_type(site), 16))
         // LAYOUT 6's grouping dimension is always AoS -- SoA needs handles, which
@@ -398,7 +436,7 @@ fn aifEmitKindRow(kind: Int) {
     print(aifPad(aifKindName(kind), 9))
     print(aifPad(int_to_str(n), 8))
     let mut t = 0
-    while (t < 5) {
+    while (t < 6) {
         print(aifPad(int_to_str(aifCountKindTier(kind, t)), 7))
         t = t + 1
     }
@@ -452,7 +490,7 @@ fn aifEmitSummary(sourcePath: String, converged: Bool) {
 
     let mut cheap = 0
     let mut t = 0
-    while (t < 5) {
+    while (t < 6) {
         let n = aifCountTier(t)
         if (t < 3) { cheap = cheap + n }
         print("  ")
@@ -483,11 +521,31 @@ fn aifEmitSummary(sourcePath: String, converged: Bool) {
 
     println("")
     println("# by allocation kind -- where the residue actually lives")
-    println("  kind     sites   T0     T1     T2     T3     T4b")
+    println("  kind     sites   T0     T1     T2     T3     T4b    T4a")
     let mut k = 0
     while (k < 5) {
         aifEmitKindRow(k)
         k = k + 1
+    }
+
+    println("")
+    // INFERENCE 2.3, as a distribution. Compared by tools/aif_differential.py,
+    // and that is what it is here for: tier counts alone cannot tell "the two
+    // thread modules agree" from "neither implementation has one", which is
+    // what they agreed on for six sessions.
+    println("# thread affinity (INFERENCE 2.3)")
+    let mut ti = 0
+    while (ti < 3) {
+        let mut n = 0
+        let mut si = 0
+        while (si < total) {
+            if (aif_site_thread(si) == ti) { n = n + 1 }
+            si = si + 1
+        }
+        print("  ")
+        print(aifPad(aifThreadName(ti), 12))
+        println(int_to_str(n))
+        ti = ti + 1
     }
 
     println("")
@@ -1167,7 +1225,7 @@ fn aifReportPlacementPin(i: Int) -> Int {
 
     if (aifRegionExists(want) == false) {
         diag_note(str_concat(str_concat("no `region` in this program is named ", diagQuote(want)),
-                             "; a tier pin is one of T0, T1, T2, T3, T4b"))
+                             "; a tier pin is one of T0, T1, T2, T3, T4b, T4a"))
         return 1
     }
 

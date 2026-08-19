@@ -1,17 +1,17 @@
 {
   "runtime/embedded_sources.h": {
-    "mtime": 1786991958.0082219,
-    "ast_hash": "9cea256231041e073d9f1bf1a20bb447",
+    "mtime": 1787112185.2092197,
+    "ast_hash": "52e9fc2f75fd678b25ddde22dc7522a6",
     "semantic_hash": ""
   },
   "runtime/lang_runtime.c": {
-    "mtime": 1786935335.0,
-    "ast_hash": "f6f1409943a754debe435a42aa058977",
+    "mtime": 1787112120.5431669,
+    "ast_hash": "da15725f4e6a7498e2bc02cb8ef7eeaa",
     "semantic_hash": ""
   },
   "tests/test_runner.py": {
-    "mtime": 1786991866.5046139,
-    "ast_hash": "e3ff19509d51de05cf7a20b1f5c2328d",
+    "mtime": 1787112220.3873525,
+    "ast_hash": "2c8ac3c5ac7565e528cee76eb915362a",
     "semantic_hash": ""
   },
   "CONTRIBUTING.md": {
@@ -70,8 +70,8 @@
     "semantic_hash": ""
   },
   "runtime/llvm-api-backend.c": {
-    "mtime": 1786986801.2703023,
-    "ast_hash": "efe3155ad332f85ae21b542084b7ebae",
+    "mtime": 1787112145.9651854,
+    "ast_hash": "74ba0961994d9f0e1e5b978704505bc4",
     "semantic_hash": ""
   },
   "runtime/prismio_llvm.h": {
@@ -85,13 +85,13 @@
     "semantic_hash": ""
   },
   "runtime/prismio_runtime.h": {
-    "mtime": 1786579504.0,
-    "ast_hash": "8240faf41e8fd636d8333314639e4776",
+    "mtime": 1787108852.590662,
+    "ast_hash": "85d90f86437c9090b74359ac330843ea",
     "semantic_hash": ""
   },
   "runtime/program_support.c": {
-    "mtime": 1786473654.0,
-    "ast_hash": "21a07f8abf18b1942b32be285489804e",
+    "mtime": 1787108852.567464,
+    "ast_hash": "5244df2ca865b52feb6b91b12f75ae64",
     "semantic_hash": ""
   },
   "runtime/test_llvm_backend.c": {
@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1787082828.1954618,
-    "ast_hash": "2fc89770f2f5c0ed711de7e00cd3a043",
+    "mtime": 1787113497.7545705,
+    "ast_hash": "089a3be8c54512a494d896dd5438809c",
     "semantic_hash": ""
   },
   "PORTING.md": {
@@ -190,8 +190,8 @@
     "semantic_hash": ""
   },
   "aif/prototype/aif.py": {
-    "mtime": 1786832525.0,
-    "ast_hash": "d341a2abd6aca8c4d7cdb79229d9215b",
+    "mtime": 1787112020.4777246,
+    "ast_hash": "4e62b36587529af7435222d9bb63b293",
     "semantic_hash": ""
   },
   "aif/prototype/layout.py": {
@@ -200,13 +200,13 @@
     "semantic_hash": ""
   },
   "runtime/aif_support.c": {
-    "mtime": 1786978542.466585,
-    "ast_hash": "37abdbe8e6ee3087dad1d7efa6666e90",
+    "mtime": 1787112145.9433916,
+    "ast_hash": "407e841d43f5e1b6fd78e3151e3dcdbb",
     "semantic_hash": ""
   },
   "tools/aif_differential.py": {
-    "mtime": 1786832506.0,
-    "ast_hash": "51b36baadd9da0ff98d6c9f778efd3f5",
+    "mtime": 1787112002.9272158,
+    "ast_hash": "45a350ae3a9b3ff98b360d2f7d00ff14",
     "semantic_hash": ""
   },
   "aif/README.md": {
@@ -215,8 +215,8 @@
     "semantic_hash": ""
   },
   "aif/corpus/README.md": {
-    "mtime": 1786200697.0,
-    "ast_hash": "edf723aca52ba689df6492bdc21879ed",
+    "mtime": 1787112487.2502685,
+    "ast_hash": "6c548cb16149290401bdde31e3d12396",
     "semantic_hash": ""
   },
   "aif/evidence/BENCHMARKS.md": {
@@ -255,8 +255,8 @@
     "semantic_hash": ""
   },
   "aif/implementation/COMPILER-AUDIT.md": {
-    "mtime": 1786200697.0,
-    "ast_hash": "9a3ad4b727fcd71e2aa07cdb7a86df7a",
+    "mtime": 1787112487.249744,
+    "ast_hash": "05503cf94866536ad8a3139a48f9d5e2",
     "semantic_hash": ""
   },
   "aif/implementation/RATIONALE.md": {
@@ -265,8 +265,8 @@
     "semantic_hash": ""
   },
   "aif/implementation/REQUIREMENTS.md": {
-    "mtime": 1787081762.3627431,
-    "ast_hash": "45a7f09dc922d5f2abd3d1f1a0400edd",
+    "mtime": 1787113472.1513643,
+    "ast_hash": "46f9ead004b40f9db7a7b834a6ee68a8",
     "semantic_hash": ""
   },
   "aif/implementation/ROADMAP.md": {
@@ -315,13 +315,13 @@
     "semantic_hash": ""
   },
   "tools/aif_manifest_diff.py": {
-    "mtime": 1786200697.0,
-    "ast_hash": "fd72c5babcb387d222763838f4b76e60",
+    "mtime": 1787111415.227459,
+    "ast_hash": "0c9b16a14867a725b3b47f325530485b",
     "semantic_hash": ""
   },
   "NEXT-SESSION.md": {
-    "mtime": 1787081961.8572335,
-    "ast_hash": "06f9d331e9d88efaca1d6dd3ee3c5cc8",
+    "mtime": 1787113497.754863,
+    "ast_hash": "ae68a227300cea440cc9bd8fc79c320f",
     "semantic_hash": ""
   },
   "CODE_STYLE.md": {

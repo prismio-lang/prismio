@@ -176,5 +176,20 @@
   "174": "backend_fail",
   "175": "struct_entry",
   "176": "block_done",
-  "177": "LLVMValueRef"
+  "177": "LLVMValueRef",
+  "178": "The prompt for the next session",
+  "179": "g3.swift",
+  "180": "cleanup_files",
+  "181": "run_command",
+  "182": "manifest_records",
+  "183": "block_done",
+  "184": "Session of 2026-08-19 (concurrency) — the `T` domain stops being vacuous, and T4a is emitted for the first time",
+  "185": "run_check_command_test",
+  "186": "test_runner.py",
+  "187": "2026-08-19 (payload enums) — `Option`/`Result` are in; exhaustiveness is the hole, and REQUIREMENTS 18 now gates two things",
+  "188": "aif_records",
+  "189": "call_edge_push",
+  "190": "run_cli_test",
+  "191": "run_aif_layout_test",
+  "192": "run_aif_struct_field_test"
 }

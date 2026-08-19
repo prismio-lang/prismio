@@ -32,19 +32,40 @@ import subprocess
 import sys
 from pathlib import Path
 
-TIER_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3, "T4b": 4}
+# The solver's ordinal order, T4a above T4b -- see AIF_T4A in
+# runtime/aif_support.c. A tier missing here is a KeyError on the line that
+# decides regressions, not a quiet miss, which is the right failure mode.
+TIER_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3, "T4b": 4, "T4a": 5}
+
+# INFERENCE 2.3. A move up this chain at an unchanged tier is still a
+# regression: Transferred -> CrossThread turns a non-atomic count into an
+# atomic one, and SPEC 11 item 10 is the promise that does not happen on the
+# common path. Tier alone cannot see it -- a T1 site has no count to change
+# and a T4a site is already at the top -- which is why the manifest carries
+# the fact and why this dict exists.
+THREAD_ORDER = {"Isolated": 0, "Transferred": 1, "CrossThread": 2}
 
 # `symbol tier placement type layout origin site`, with the site last because a
 # path may contain spaces and nothing else may.
+# REQUIREMENTS 15 added the `thread` column and the T4a tier, and both had to
+# arrive here in the same commit as in the manifest.
+#
+# T4a missing from the alternation would have made every cross-thread record
+# unparseable, and `parse` ignores what it cannot match -- so the gate would
+# have gone quiet on exactly the tier it most needs to notice. That is this
+# file's own documented failure mode: see the `layout` column's width comment in
+# src/aif/report.psm, where a record running into the next column had already
+# cost one silent regression.
 RECORD = re.compile(
-    r"^(\S+)\s+(T0|T1|T2|T3|T4b)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*)$")
+    r"^(\S+)\s+(T0|T1|T2|T3|T4b|T4a)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*)$")
 
 
 class Record:
-    __slots__ = ("symbol", "tier", "placement", "type", "layout", "origin", "site")
+    __slots__ = ("symbol", "tier", "thread", "placement", "type", "layout",
+                 "origin", "site")
 
     def __init__(self, m):
-        (self.symbol, self.tier, self.placement, self.type,
+        (self.symbol, self.tier, self.thread, self.placement, self.type,
          self.layout, self.origin, self.site) = (g.strip() for g in m.groups())
 
 
@@ -131,6 +152,11 @@ def main():
         if old_rec is None:
             continue
         delta = TIER_ORDER[new_rec.tier] - TIER_ORDER[old_rec.tier]
+        if delta == 0:
+            # Same tier, worse thread affinity. The count the binary emits
+            # changed even though the ladder did not move.
+            delta = (THREAD_ORDER.get(new_rec.thread, 0)
+                     - THREAD_ORDER.get(old_rec.thread, 0))
         if delta > 0:
             regressions.append((sym, old_rec, new_rec))
         elif delta < 0:
@@ -142,6 +168,8 @@ def main():
     cause_source = args.source or new_head.get("source")
     for sym, o, n in regressions:
         print(f"{sym}   {o.tier} -> {n.tier}   REGRESSION")
+        if o.thread != n.thread:
+            print(f"    thread     {o.thread} -> {n.thread}")
         print(f"    placement  {o.placement} -> {n.placement}")
         if o.origin != n.origin:
             print(f"    origin     {o.origin} -> {n.origin}")
@@ -154,7 +182,10 @@ def main():
         print()
 
     for sym, o, n in improvements:
-        print(f"{sym}   {o.tier} -> {n.tier}")
+        if o.tier == n.tier:
+            print(f"{sym}   thread {o.thread} -> {n.thread}")
+        else:
+            print(f"{sym}   {o.tier} -> {n.tier}")
 
     if added:
         print(f"\n{len(added)} new site(s): " + ", ".join(added[:8])

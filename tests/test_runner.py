@@ -405,6 +405,156 @@ def run_aif_test():
     return True
 
 
+# REQUIREMENTS 15. symbol -> (tier, thread affinity).
+#
+# The thread column carries the weight here, not the tier. Two of these records
+# assert `Transferred` at a tier that has no count at all, which is a fact the
+# ladder cannot express and the whole reason the manifest grew the column: a
+# value sliding Transferred -> CrossThread turns a non-atomic count into an
+# atomic one and moves no tier at all in either direction.
+AIF_CONCURRENCY_EXPECTED = {
+    # E-SPAWN-J. The task is joined before the scope exits, so the argument
+    # never leaves the frame it was allocated in -- a stack slot handed to
+    # another thread, which is sound only because the join is proved.
+    "joined_stays_local__Void#0":            ("T0", "Transferred"),
+    # T-SPAWN-MOVE, and the assertion this session lives or dies by. Moved into
+    # the task through the list that holds it, so one thread reaches it at a
+    # time. Transferred, never CrossThread.
+    "transferred_is_not_atomic__Void#0":     ("T1", "Transferred"),
+    "transferred_is_not_atomic__Void#1":     ("T1", "Transferred"),
+    # The control. Same shape, no task -- and if this ever reads Transferred the
+    # rules are firing on everything rather than on task boundaries, which is
+    # the failure mode that would otherwise still look green.
+    "no_task_at_all__Void#0":                ("T0", "Isolated"),
+    # T-STATIC: retained by an FFI callee, so E = Global, in a program with
+    # tasks.
+    "static_root_is_cross_thread__Void#0":   ("T4a", "CrossThread"),
+    "static_root_is_cross_thread__Void#1":   ("T0", "Transferred"),
+    # E-SPAWN with an early return between spawn and join, so nothing proves the
+    # task is awaited and escape goes to Global.
+    "unjoined_is_cross_thread__Void#0":      ("T4a", "CrossThread"),
+}
+
+# T-SPAWN-SHARE, in its own file because the `@elem` key is one per container
+# base type -- see that file's header for why the contrast cannot be local.
+AIF_CONCURRENCY_SHARED_EXPECTED = {
+    "shared_element_crosses__List_Struct_Item#0": ("T1", "Transferred"),
+    "shared_element_crosses__List_Struct_Item#1": ("T4a", "CrossThread"),
+}
+
+# The other half of that contrast, and the reason it is asserted here rather
+# than described in a comment: identical aliasing, identical `list_get` between
+# two containers, no spawn anywhere -- and a **non-atomic** count. If a change
+# lands this at T4a then T-SPAWN-SHARE has stopped testing the task boundary and
+# started testing sharing, which is a different and much more expensive claim.
+AIF_NO_TASK_CONTROL = {
+    "overwrite_releases__Void#1": ("T3", "Isolated"),
+    "overwrite_releases__Void#2": ("T3", "Isolated"),
+}
+
+
+def aif_thread_records(source):
+    """symbol -> (tier, thread) from a manifest run."""
+    result = run_command([str(PRISMIO_EXE), "aif", str(source)])
+    if result.returncode != 0:
+        return None, result
+    got = {r: (v["tier"], v["thread"])
+           for r, v in manifest_records(result.stdout).items()}
+    return got, result
+
+
+def run_aif_concurrency_test():
+    """INFERENCE 4.3's thread module, one fixture function per rule.
+
+    The `T` domain was vacuous for the whole life of this compiler -- the
+    language had no tasks, so every value was Isolated, T4a was unreachable by
+    construction, and SPEC 4.2's two `T` conjuncts were tautologies. There was
+    therefore no program at all that could tell a correct thread module from an
+    absent one, and COMPILER-AUDIT finding 7 recorded that as "actually
+    simplifying, for now". REQUIREMENTS 15 ended it; this is the coverage.
+
+    Asserts the thread affinity as well as the tier, because the regression this
+    domain has does not move a tier. SPEC 11 item 10 promises no atomic counts
+    on the common path, and what breaks that promise is a value drifting from
+    Transferred to CrossThread -- which at T1 changes nothing on the ladder and
+    everything in the emitted code.
+    """
+    print(f"\n{BLUE}--- Running aif_concurrency ---{RESET}")
+
+    problems = []
+    for fixture, expected in (
+            ("aif_concurrency.psm", AIF_CONCURRENCY_EXPECTED),
+            ("aif_concurrency_shared.psm", AIF_CONCURRENCY_SHARED_EXPECTED),
+            ("test_48_aif_shared_elements.psm", AIF_NO_TASK_CONTROL)):
+        src = TEST_DIR / fixture
+        got, result = aif_thread_records(src)
+        if got is None:
+            problems.append(f"{fixture}: `aif` exited {result.returncode}")
+            continue
+        if "converged   yes" not in result.stdout:
+            problems.append(f"{fixture}: inference did not converge")
+            continue
+        for symbol, want in expected.items():
+            if symbol not in got:
+                problems.append(f"{fixture}: {symbol}: no manifest record")
+            elif got[symbol] != want:
+                problems.append(f"{fixture}: {symbol}: expected "
+                                f"{want[0]}/{want[1]}, got "
+                                f"{got[symbol][0]}/{got[symbol][1]}")
+
+    # T4a had never been emitted by this compiler before REQUIREMENTS 15.
+    # Asserting that it now is, separately from the per-record checks, so that
+    # deleting the fixture functions cannot quietly turn this back into a test
+    # of nothing.
+    got, _ = aif_thread_records(TEST_DIR / "aif_concurrency.psm")
+    if got is not None and not any(t == "T4a" for t, _th in got.values()):
+        problems.append("no T4a record: the sub-class is unreachable again")
+
+    # And the half the manifest cannot show: that the distinction survives into
+    # emitted code.
+    #
+    # T4a had never been emitted by this compiler, so "the solver derives it"
+    # and "the binary counts it atomically" are two claims and only the first is
+    # a manifest fact. The pair below is the discrimination itself -- identical
+    # aliasing in both programs, `list_get` between two containers in both, and
+    # the only difference is that one hands a container to a task.
+    with tempfile.TemporaryDirectory() as tmp:
+        emitted = {}
+        for fixture in ("aif_concurrency_shared.psm", "test_48_aif_shared_elements.psm"):
+            out = os.path.join(tmp, fixture + ".ll")
+            r = run_command([str(PRISMIO_EXE), "build",
+                             str(TEST_DIR / fixture), "-o", out])
+            if r.returncode != 0 or not os.path.exists(out):
+                problems.append(f"{fixture}: build failed, cannot check the count")
+                continue
+            text = Path(out).read_text(encoding="utf-8", errors="replace")
+            emitted[fixture] = set(
+                re.findall(r"@list_set_elem_owner\(ptr [^,]*, i32 (\d+)\)", text))
+
+        # 6 is AIF_ELEM_RC_ATOMIC, 3 is AIF_ELEM_RC -- src/ir/context.psm.
+        if emitted.get("aif_concurrency_shared.psm") != {"6"}:
+            problems.append(
+                "the cross-thread element is not counted atomically: expected "
+                "list_set_elem_owner disposition {'6'}, got "
+                f"{emitted.get('aif_concurrency_shared.psm')}")
+        if emitted.get("test_48_aif_shared_elements.psm") != {"3"}:
+            problems.append(
+                "the thread-local element stopped using a plain count: expected "
+                "list_set_elem_owner disposition {'3'}, got "
+                f"{emitted.get('test_48_aif_shared_elements.psm')} -- SPEC 11 "
+                "item 10 is that atomics stay off the common path")
+
+    if problems:
+        print(f"{RED}[FAIL] thread affinity changed{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] INFERENCE 4.3 assigns every rule its expected "
+          f"affinity; T4a is reachable and counts atomically{RESET}")
+    return True
+
+
 def run_oracle_vocabulary_test():
     """The compiler and `aif/prototype/aif.py` must know the same builtins.
 
@@ -563,11 +713,8 @@ def run_region_diagnostic_test():
     cleanup_files(exe)
 
     manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
-    placements = {}
-    for line in manifest.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 3 and "#" in parts[0]:
-            placements[parts[0]] = parts[2]
+    placements = {r: v["placement"]
+                  for r, v in manifest_records(manifest.stdout).items()}
     if placements.get("serves__Void#1") != "region:work":
         problems.append(f"serves__Void#1: expected region:work, got "
                         f"{placements.get('serves__Void#1')}")
@@ -685,11 +832,8 @@ def run_placement_pin_test():
     fixture = TEST_DIR / "test_63_placement_pin.psm"
     manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
 
-    records = {}
-    for line in manifest.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 6 and "#" in parts[0]:
-            records[parts[0]] = (parts[2], parts[5])
+    records = {r: (v["placement"], v["origin"])
+               for r, v in manifest_records(manifest.stdout).items()}
 
     # SPEC 5.2 and SPEC 5.2.1.1, one each. The second is the one that can vanish
     # because of an edit to a different function, and it is the reason the
@@ -1632,11 +1776,8 @@ def run_pin_tier_test():
         "counted_but_uncounted__Void#0":    ("T3", "rc:none", "pin"),
         "deliberate_pessimisation__Void#1": ("T3", "rc",      "pin"),
     }
-    got = {}
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 6 and parts[0] in want:
-            got[parts[0]] = (parts[1], parts[2], parts[5])
+    got = {r: (v["tier"], v["placement"], v["origin"])
+           for r, v in manifest_records(result.stdout).items() if r in want}
 
     problems = []
     for sym, expect in want.items():
@@ -2660,7 +2801,38 @@ def run_aif_minimal_cause_test():
     return True
 
 
-TIER_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3, "T4b": 4}
+# REQUIREMENTS 15 added T4a. The order is the solver's ordinal order, T4a above
+# T4b -- see AIF_T4A in runtime/aif_support.c for the argument. This dict is not
+# decoration: aif_records() filters records by membership, so a tier missing
+# here vanishes from the parse and reads as "the site population changed".
+TIER_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3, "T4b": 4, "T4a": 5}
+
+# The manifest record table, by column *name*.
+#
+# Introduced when REQUIREMENTS 15 added the `thread` column and five separate
+# parsers in this file broke at once, every one of them holding a hard-coded
+# `parts[2]` or `parts[5]`. They failed loudly, which was luck: a parser whose
+# index slides onto a neighbouring column reads a plausible string and asserts
+# against it, and src/aif/report.psm already carries a comment about a tier
+# regression that could not fail the gate for exactly that reason.
+#
+# Columns are whitespace-separated and only `site` may contain none of its own,
+# so a split with a fixed field count is enough and the trailing path survives.
+MANIFEST_COLUMNS = ("tier", "thread", "placement", "type", "layout", "origin", "site")
+
+
+def manifest_records(text):
+    """symbol -> {column name: value} for every record line in a manifest."""
+    out = {}
+    for line in text.splitlines():
+        parts = line.split(None, len(MANIFEST_COLUMNS))
+        if len(parts) <= len(MANIFEST_COLUMNS):
+            continue
+        if "#" not in parts[0] or parts[1] not in TIER_ORDER:
+            continue
+        out[parts[0]] = dict(zip(MANIFEST_COLUMNS, parts[1:]))
+    return out
+
 
 
 def aif_records(source, budget=None):
@@ -2675,11 +2847,8 @@ def aif_records(source, budget=None):
     result = run_command(cmd)
     if result.returncode != 0:
         return None, result
-    out = {}
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 6 and "#" in parts[0] and parts[1] in TIER_ORDER:
-            out[parts[0]] = (parts[1], "budget-exhausted" in line, parts[5])
+    out = {r: (v["tier"], v["origin"] == "budget-exhausted", v["origin"])
+           for r, v in manifest_records(result.stdout).items()}
     return out, result
 
 
@@ -2791,6 +2960,11 @@ def main():
         failed += 1
 
     if run_aif_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_concurrency_test():
         passed += 1
     else:
         failed += 1

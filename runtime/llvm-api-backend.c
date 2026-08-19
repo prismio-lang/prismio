@@ -1043,6 +1043,14 @@ void ir_free_typed(const char *value, const char *fn_name) { ir_release_call(val
 // AIF Level 5. The decrement half, for a counted value held in a struct field.
 void ir_free_rc(const char *value) { ir_release_call(value, "rc_release"); }
 
+// AIF T4a. The same release through the atomic entry point.
+//
+// A distinct symbol chosen at compile time rather than a flag tested at run
+// time, which is the point of inferring thread affinity at all: SPEC 11
+// item 10 keeps atomics off the common path, and a value proved never to cross
+// a thread boundary should not pay even a predictable branch to establish that.
+void ir_free_rc_atomic(const char *value) { ir_release_call(value, "rc_release_atomic"); }
+
 // AIF T4b. The fifth allocator hook, and a `fn(size) -> ptr` like the other
 // four: the colour and the per-type descriptor go in front of the pointer, so
 // the LLVM struct type is untouched and cyc_set_type fills them in afterwards --

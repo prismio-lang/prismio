@@ -58,6 +58,7 @@ void  prismio_task_release(void* handle);
 void* chan_new(int capacity);
 int   chan_send(void* handle, void* msg);
 void* chan_recv(void* handle);
+void* chan_share(void* handle);
 void  chan_close(void* handle);
 int   chan_len(void* handle);
 void  chan_free(void* handle);

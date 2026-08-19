@@ -1,5 +1,64 @@
 # Prompts for the next sessions
 
+## 2026-08-19 (concurrency) — the `T` domain is live; the join analysis is the hole
+
+**State, verified on the tree.** Suite **130/130**; two-generation fixpoint `S9o1 == S9o2`; cold
+build from the **committed seed** byte-identical to the warm chain on all 97 programs; every
+pre-existing program emits byte-identical IR except `src/main.ll`, which changed because `src/` did;
+AIF differential agrees on 17 sources, two of them concurrent. **Last-good: `build/S9o2`.** The seed
+was not refreshed and did not need to be — `src/` uses no `spawn`.
+
+A REQUIREMENTS 4 follow-up landed after the concurrency work: optionals in *return* position were
+decoding to `Invalid` through a binding (`typeFromSemKey` had no `opt:` case). See HANDOFF's
+concurrency entry §5 — the interesting part is that the three obvious suspects were all innocent.
+
+### What landed
+
+`spawn f(a, b)` / `join t` (contextual keywords), real OS threads and channels in
+`runtime/program_support.c`, INFERENCE 4.3's thread module in both the solver and the oracle, a
+`thread` column in the manifest, and T4a emitted for the first time with an atomic count.
+`aif/implementation/COMPILER-AUDIT.md` finding 7 is closed.
+
+**Read HANDOFF's 2026-08-19 (concurrency) entry before starting**, especially §2 — the two
+deliberate departures from INFERENCE 4.3 are shared by both implementations and so are exactly what
+the differential *cannot* catch.
+
+### The tasks, ranked
+
+1. **Give E-SPAWN-J a real flow analysis.** This is the highest-value item and the session's own
+   biggest compromise. "Joined on every path before scope `s` exits" is currently decided by a
+   syntactic scan: a straight run of statements from the spawn to the join with nothing in between
+   that can leave the block. Any loop or conditional in between answers "not joined", which forces
+   `E = Global`, which forces `Shared` through A-ESCAPE, which forces CrossThread — a value going
+   from **T1 with no count at all** to **T4a with an atomic one** because of a `while` loop between
+   the spawn and its join. That is most real concurrent code. `src/sema/flow.psm` already computes
+   per-path reachability for the missing-return check; that is the machinery.
+
+   Measure it before building it: the two fixtures are the wrong shape to show the cost, so write
+   one that has a loop between spawn and join and diff the manifest against the same program with
+   the loop hoisted.
+
+2. **`Task<T>`.** A handle is a `Ptr` and `join` yields `Int`. The restriction is the lowering —
+   three `void*` slots and an arity switch in `prismio_task_spawn` — not the model. A general
+   answer wants a per-site wrapper that unpacks an argument pack, which is REQUIREMENTS 3a's
+   closures.
+
+3. **Decide the SPEC 11.0 levels question.** The table gives AIF-1 "Concurrency: none — `T` is
+   vacuous". This implementation declares AIF-1 and now exceeds that row. Exceeding a level is not
+   a conformance violation, but the table now describes something the implementation is not, and
+   that is a governance call rather than a code one.
+
+### Two things not to re-derive
+
+- **`spawn` is a contextual keyword and has to stay one.** `aif/corpus/g4_ecs_world.psm` has
+  `fn spawn(...)` and `tests/test_62_split_release.psm` has a struct field named `spawn`.
+- **The `@elem` key is one per container *base* type**, and every `List<T>` shares `List`. A
+  cross-container push anywhere in a file marks every pushed site in that file as multiply held.
+  That is why `tests/aif_concurrency_shared.psm` is a separate file and why its control lives in
+  `tests/test_48_aif_shared_elements.psm`.
+
+---
+
 ## 2026-08-19 (payload enums) — `Option`/`Result` are in; exhaustiveness is the hole, and REQUIREMENTS 18 now gates two things
 
 **State, verified on the tree.** Suite **128/128**; two-generation fixpoint `S7x3 == S7x4`; cold

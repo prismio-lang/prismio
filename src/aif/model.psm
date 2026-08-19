@@ -22,7 +22,7 @@ import common.diagnostics
 // written against it.
 //
 // WHAT IT IMPLEMENTS
-//   INFERENCE 2      the E / A / C lattices  (T is vacuous -- see below)
+//   INFERENCE 2      the E / A / T / C lattices
 //   INFERENCE 3-4    the fact graph and the escape, aliasing and cyclicity
 //                    transfer rules
 //   INFERENCE 5      round iteration to a fixed point, with the mandatory
@@ -43,8 +43,13 @@ import common.diagnostics
 //   A3  Context-insensitive: every function is analysed at the TOP context.
 //       Ownership contexts (SPEC 2.2) are AIF-2 work and contributed zero to
 //       every measured tier number.
-//   A4  Thread affinity is vacuous: the language has no tasks, so every value
-//       is Isolated and T4a is unreachable by construction.
+//   A4  Thread affinity is modelled (REQUIREMENTS 15, 2026-08-19). It was
+//       vacuous before that: the language had no tasks, every value was
+//       Isolated, and T4a was unreachable by construction. Two decisions are
+//       shared with aif/prototype/aif.py and so cannot be checked by the
+//       differential -- T-SPAWN-SHARE's premise is read as `A = Shared`, and
+//       E-SPAWN-J's "joined on every path" is decided syntactically. Both are
+//       argued at the rule in runtime/aif_support.c.
 //   A5  Struct size is approximated by field count for the T0/T1 split. The
 //       AST carries no layout, and SPEC 4.2 leaves Theta_stack implementation-
 //       defined and requires only that it be documented -- it is, in the
@@ -128,6 +133,25 @@ extern fn aif_con_pin_region(vs: Int, name: String borrow)
 extern fn aif_check_placement_pins(converged: Int)
 extern fn aif_site_pin_region_verdict(id: Int) -> Int
 extern fn aif_site_pin_region(id: Int) -> String alias
+
+// REQUIREMENTS 15, INFERENCE 4.1 and 4.3. One `spawn`, and both boundary rules
+// ride it: E-SPAWN vs E-SPAWN-J is chosen by `joined`, and T-SPAWN-MOVE vs
+// T-SPAWN-SHARE is chosen inside the solver from the aliasing fact rather than
+// from anything the walk can see.
+//
+// `scope` is what E-SPAWN-J binds the arguments to when the task is joined
+// before that scope exits. It is ignored when `joined` is 0, because E-SPAWN's
+// conclusion is Global and has no scope to name.
+extern fn aif_con_spawn(vs: Int, scope: Int, joined: Int)
+
+// INFERENCE 2.3, read back per site: 0 Isolated, 1 Transferred, 2 CrossThread.
+// The manifest prints it and the drop path reads it to choose between a plain
+// decrement and an atomic one.
+extern fn aif_site_thread(id: Int) -> Int
+
+// INFERENCE 4.3's T-STATIC premise: does this program create any task at all?
+// A whole-program property, so it is asked of the module and not of a site.
+extern fn aif_program_has_tasks() -> Int
 
 // INFERENCE 5.6 / SPEC 6.3. The derivation, read back as a witness path.
 extern fn aif_con_at(file: Int, line: Int, col: Int)

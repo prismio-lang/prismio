@@ -136,6 +136,41 @@ fn aifSitesOf(nodePtr: String, fnId: Int, scope: Int) -> Int {
         return aifCallSites(nodePtr, fnId, scope)
     }
 
+    // REQUIREMENTS 15. `spawn f(a, b)`.
+    //
+    // The inner CALL_EXPR is walked as an ordinary call first, and that is not a
+    // shortcut: the callee really is called, so E-CALL, A-CALL and every FFI
+    // contract on its parameters apply exactly as they would on this thread.
+    // What a spawn adds is one constraint on top, carrying the two rules that
+    // are about the boundary rather than about the call -- INFERENCE 4.1's
+    // E-SPAWN/E-SPAWN-J and 4.3's T-SPAWN-MOVE/T-SPAWN-SHARE.
+    //
+    // The task handle contributes no site. It is a runtime object this
+    // compilation did not allocate, so there is nothing to place, count or
+    // release -- the same reason `none` returns empty two cases up.
+    if (e.kind == NodeKind.SPAWN_EXPR) {
+        if (nodeIsNull(e.child1)) { return aifVsEmpty() }
+        let call = ptr_to_node(e.child1)
+        aifCallSites(e.child1, fnId, scope)
+
+        let mut args = aifVsEmpty()
+        let mut argPtr = call.child2
+        while (nodeExists(argPtr)) {
+            let argNode = ptr_to_node(argPtr)
+            args = aif_vs_union(args, aifSitesOf(argPtr, fnId, scope))
+            argPtr = argNode.next
+        }
+        aif_con_spawn(args, scope, e.i1)
+        return aifVsEmpty()
+    }
+
+    // `join t` yields an Int. Nothing allocates, and the handle it consumes was
+    // never a site -- so like `none`, this is empty rather than falling through
+    // to the child walk that would reach the same answer more slowly.
+    if (e.kind == NodeKind.JOIN_EXPR) {
+        return aifVsEmpty()
+    }
+
     // Everything else contributes whatever its children do.
     let mut out = aifVsEmpty()
     out = aif_vs_union(out, aifSitesOfChain(e.child1, fnId, scope))
@@ -421,6 +456,12 @@ fn aifTierFromName(name: String) -> Int {
     if (str_equals(name, "T2") == 1) { return 2 }
     if (str_equals(name, "T3") == 1) { return 3 }
     if (str_equals(name, "T4b") == 1) { return 4 }
+    // REQUIREMENTS 15. `pin(T4a)` asks for an atomic count, and it is honoured
+    // wherever the derived tier is cheaper -- raising a tier is always sound, so
+    // this is the one direction a pin can go without the facts backing it.
+    // `pin(T4b)` on a site the solver put at T4a goes the other way and is
+    // refuted, which is what the ordinal order buys.
+    if (str_equals(name, "T4a") == 1) { return 5 }
     return 0 - 1
 }
 
@@ -615,10 +656,99 @@ fn aifWalk(nodePtr: String, fnId: Int, scope: Int) {
     aifWalkChildren(n.child3, fnId, scope)
 }
 
+// REQUIREMENTS 15, in service of INFERENCE 4.1's E-SPAWN-J. Does this
+// expression tree contain `join <name>`?
+//
+// Stops dead at any statement kind, which is what keeps it from wandering out
+// of the expression it was handed and into a nested block's statements. Without
+// that guard `if (c) { join t }` would read as an unconditional join.
+fn aifExprHasJoinOf(ptr: String, name: String) -> Bool {
+    if (nodeIsNull(ptr)) { return false }
+    let n = ptr_to_node(ptr)
+    if (aifIsStatementKind(n.kind)) { return false }
+
+    if (n.kind == NodeKind.JOIN_EXPR) {
+        if (nodeExists(n.child1)) {
+            let target = ptr_to_node(n.child1)
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and str_equals(target.s1, name) == 1) {
+                return true
+            }
+        }
+    }
+
+    if (aifExprHasJoinOf(n.child1, name)) { return true }
+    if (aifExprHasJoinOf(n.child2, name)) { return true }
+    if (aifExprHasJoinOf(n.child3, name)) { return true }
+    // Call arguments are a sibling chain, so `use(join t)` needs this. Safe
+    // because the statement guard above already stopped the walk at any
+    // statement, so a chain reached from here is an expression list.
+    return aifExprHasJoinOf(n.next, name)
+}
+
+// Can control leave this statement without running what follows it?
+//
+// Conservative on purpose, and it costs the analysis nothing it can measure: a
+// `break` is counted as an exit even when the loop it belongs to is wholly
+// inside the statement and would absorb it. Being wrong in this direction makes
+// a spawn read as unjoined, which raises escape and *costs* a tier. Being wrong
+// the other way would hand a value a scope-bound lifetime while a task still
+// holds it, which is a use-after-free.
+fn aifStmtHasEarlyExit(ptr: String) -> Bool {
+    if (nodeIsNull(ptr)) { return false }
+    let n = ptr_to_node(ptr)
+    if (n.kind == NodeKind.RETURN_STATEMENT) { return true }
+    if (n.kind == NodeKind.BREAK_STATEMENT) { return true }
+    if (n.kind == NodeKind.CONTINUE_STATEMENT) { return true }
+    if (aifStmtHasEarlyExit(n.child1)) { return true }
+    if (aifStmtHasEarlyExit(n.child2)) { return true }
+    if (aifStmtHasEarlyExit(n.child3)) { return true }
+    return aifStmtHasEarlyExit(n.next)
+}
+
+// INFERENCE 4.1: "joined on every path before scope s exits". Walks forward
+// from the spawn's declaration through the rest of its block.
+//
+// This decides E-SPAWN-J against E-SPAWN, which INFERENCE calls the place
+// structured concurrency pays -- it is the whole difference between a task's
+// arguments staying region-bound at T1 and being forced to Global, and from
+// there through A-ESCAPE to Shared and T4. So it is worth being exact about
+// what is proved: a straight run of statements from the spawn to the join, with
+// nothing in between that can leave the block. Anything else answers "not
+// joined", which is the sound direction.
+//
+// A precise answer wants the flow analysis in src/sema/flow.psm, which already
+// computes reachability per path for the missing-return check. Reusing it here
+// is the obvious next move and is deliberately not this session's.
+fn aifSpawnIsJoined(afterPtr: String, name: String) -> Bool {
+    let mut p = afterPtr
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.VARIABLE_DECL and aifExprHasJoinOf(n.child2, name)) { return true }
+        if (n.kind == NodeKind.EXPRESSION_STATEMENT and aifExprHasJoinOf(n.child1, name)) { return true }
+        if (n.kind == NodeKind.RETURN_STATEMENT and aifExprHasJoinOf(n.child1, name)) { return true }
+        if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and aifExprHasJoinOf(n.child2, name)) { return true }
+        if (aifStmtHasEarlyExit(p)) { return false }
+        p = n.next
+    }
+    return false
+}
+
 fn aifWalkChain(head: String, fnId: Int, scope: Int) {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
+        // REQUIREMENTS 15. Decided here rather than at the SPAWN_EXPR itself,
+        // because "joined before this scope exits" is a property of the
+        // statements *around* the spawn and this is the only walk that has
+        // them. Stamped on the spawn node, whose i1 the parser leaves 0 -- so
+        // the default is the conservative answer and a spawn this pass never
+        // reaches is treated as unjoined rather than as joined.
+        if (n.kind == NodeKind.VARIABLE_DECL and nodeExists(n.child2)) {
+            let init = ptr_to_node(n.child2)
+            if (init.kind == NodeKind.SPAWN_EXPR) {
+                if (aifSpawnIsJoined(n.next, n.s1)) { init.i1 = 1 }
+            }
+        }
         aifWalk(p, fnId, scope)
         p = n.next
     }

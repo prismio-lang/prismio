@@ -73,6 +73,22 @@ static void* xrealloc(void* p, size_t n, const char* what) {
 #define AIF_C_ACYCLIC 0
 #define AIF_C_MAYBE   1
 
+// INFERENCE 2.3. Thread affinity: Isolated < Transferred < CrossThread.
+//
+// Vacuous until 2026-08-19 -- the language had no tasks, so every value sat at
+// the bottom and SPEC 4.2's two `T` conjuncts were tautologies this file did
+// not bother to write down. REQUIREMENTS 15 ended that, and the conjuncts are
+// now in derived_tier where the spec puts them.
+//
+// The middle element is the one the whole design is for. `Transferred` means
+// ownership moved between tasks but only one may reach the value at a time, so
+// the transfer point is itself a synchronisation edge and a release/acquire
+// pair there is sufficient -- the count stays **non-atomic**. Only CrossThread
+// forces atomics, and SPEC 11 item 10 exists to keep that column empty.
+#define AIF_T_ISOLATED    0
+#define AIF_T_TRANSFERRED 1
+#define AIF_T_CROSS       2
+
 // Site kinds. Mirrors what src/aif.psm classifies a type as; the solver only
 // cares that kind 0 is a struct (the T0 clause and the copy rule both test it).
 // LAYOUT 4. Assumed trip count of a loop with no profile, and the one estimator
@@ -1794,7 +1810,7 @@ typedef struct {
     int file, line, col;
     int nfields;
     int bytes;          // stamped once, before iteration
-    int E, A, C;
+    int E, A, C, T;
     int type_acyclic;   // stamped once, before iteration
     int no_stack;       // explicitly dropped -- see AIF_CON_NO_STACK
     // Stored into a container by a `retain_in` call. The container owns it from
@@ -1857,10 +1873,14 @@ int aif_site_new(const char* type, int kind, int fn, int scope,
     s->pin_verdict = AIF_PIN_NONE;
     s->pin_region = -1;
     s->pin_region_verdict = AIF_PIN_NONE;
-    // Bottom, per INFERENCE 5.2 line 2: Region(defscope), Unique, Acyclic.
+    // Bottom, per INFERENCE 5.2 line 2: Region(defscope), Unique, Acyclic,
+    // Isolated. T-DEFAULT is this line and nothing else -- "any node has
+    // T >= Isolated" is a statement about the bottom element, not a rule that
+    // has to fire.
     s->E = scope;
     s->A = AIF_A_UNIQUE;
     s->C = AIF_C_ACYCLIC;
+    s->T = AIF_T_ISOLATED;
     return site_count++;
 }
 
@@ -2192,6 +2212,20 @@ void aif_argv_end(int base) { argv.len = base; }
 // output of arena placement, which has not run yet.
 #define AIF_CON_PIN_REGION   17
 
+// REQUIREMENTS 15, INFERENCE 4.1/4.3. The arguments of one `spawn`.
+//
+// Appended for the third time for the same reason AIF_CON_VIEW_OF and
+// AIF_CON_PIN_REGION were: AIF_RULE_ALLOC's ordinal 14 is written out again in
+// src/aif/model.psm, so anything inserted below it renames the derivation root
+// there and neither side fails to build.
+//
+// One constraint per spawn site rather than one per argument. E-SPAWN-J's
+// premise -- "joined on every path before scope s exits" -- is a property of
+// the *call*, and splitting it per argument would make each one re-derive it.
+// `b` carries the enclosing scope so E-SPAWN-J has somewhere to bind to; `c` is
+// 1 when the task is joined in that scope and 0 when it is not.
+#define AIF_CON_SPAWN        18
+
 typedef struct {
     int kind, a, b, c;
     // Where in the source this constraint came from. Carried so a manifest diff
@@ -2230,6 +2264,19 @@ void aif_con_escape_caller(int vs)              { con_add(AIF_CON_ESCAPE_CALLER,
 void aif_con_escape_global(int vs)              { con_add(AIF_CON_ESCAPE_GLOBAL, vs, 0, 0); }
 void aif_con_unique(int vs)                     { con_add(AIF_CON_UNIQUE, vs, 0, 0); }
 void aif_con_pin(int vs, int tier)              { con_add(AIF_CON_PIN, vs, tier, 0); }
+// INFERENCE 4.3's T-STATIC premise is "the program creates any task", which is
+// a whole-program property and therefore not something a per-site rule can ask.
+// Recorded as the constraints are built rather than scanned for later, so a
+// module with no spawn never pays for the question.
+static int program_has_tasks;
+
+int aif_program_has_tasks(void) { return program_has_tasks; }
+
+void aif_con_spawn(int vs, int scope, int joined) {
+    program_has_tasks = 1;
+    con_add(AIF_CON_SPAWN, vs, scope, joined);
+}
+
 void aif_con_pin_region(int vs, const char* name) {
     con_add(AIF_CON_PIN_REGION, vs, aif_intern(name), 0);
 }
@@ -2547,6 +2594,21 @@ static int raise_alias(int site, int level, int from) {
     return 1;
 }
 
+// INFERENCE 4.3. No axiom cuts this one: SPEC 5's four annotations say nothing
+// about thread affinity, which is why `unique` has no counterpart here and why
+// there is no `alias_suppressed` equivalent to record.
+//
+// Deliberately without a derivation edge. deriv_e and deriv_a exist so a
+// manifest diff can walk a witness path back to a root (INFERENCE 5.6), and the
+// domain that path walks is chosen by aif_cause_domain_for from the tier. A T4a
+// site's interesting fact is *aliasing* -- see the comment there -- so a third
+// Deriv array would cost one word per site to answer a question nothing asks.
+static int raise_thread(int site, int level) {
+    if (sites[site].T >= level) return 0;
+    sites[site].T = level;
+    return 1;
+}
+
 // Iteration runs to full convergence, so by Kleene's theorem the result is the
 // least fixed point regardless of the order constraints are applied in
 // (INFERENCE 5.1 permits asynchronous iteration on exactly that condition).
@@ -2694,6 +2756,10 @@ int aif_solve(int max_rounds) {
                         if (raise_escape(s, sites[o].E, o)) changed = moved(s);
                         // A-STORE: sharing is inherited through reachability.
                         if (raise_alias(s, sites[o].A, o)) changed = moved(s);
+                        // T-REACH: and so is thread affinity. A value reachable
+                        // from something a task can see is something that task
+                        // can see.
+                        if (raise_thread(s, sites[o].T)) changed = moved(s);
                     }
                 }
                 // E-VIEW: storing a view into a field makes the viewed
@@ -2742,6 +2808,8 @@ int aif_solve(int max_rounds) {
                         int h = vec_own.v[j];
                         if (raise_escape(s, sites[h].E, h)) changed = moved(s);
                         if (raise_alias(s, sites[h].A, h)) changed = moved(s);
+                        // T-REACH, through a container rather than a field.
+                        if (raise_thread(s, sites[h].T)) changed = moved(s);
                         // Which containers hold it, not merely that one does. The
                         // count is the fact A-CONTAIN reads, and it is the only
                         // thing separating "the container owns this, free it at
@@ -2792,6 +2860,47 @@ int aif_solve(int max_rounds) {
                         sites[vec_val.v[i]].no_stack = 1;
                         changed = moved(vec_val.v[i]);
                     }
+                }
+
+            } else if (k->kind == AIF_CON_SPAWN) {
+                // INFERENCE 4.1's E-SPAWN / E-SPAWN-J and 4.3's T-SPAWN-MOVE /
+                // T-SPAWN-SHARE, which are the same four arguments seen through
+                // two domains.
+                resolve(k->a, &scratch_val);
+                bits_to_vec(&scratch_val, &vec_val);
+                for (int i = 0; i < vec_val.len; i++) {
+                    int s = vec_val.v[i];
+
+                    if (k->c) {
+                        // E-SPAWN-J. The task is joined on every path before the
+                        // scope exits, so the argument has to outlive the join
+                        // and nothing more. This is the clause INFERENCE calls
+                        // "where structured concurrency pays": it is the whole
+                        // difference between concurrent code at T1 and the same
+                        // code at T4.
+                        if (raise_escape(s, k->b, -1)) changed = moved(s);
+                    } else {
+                        // E-SPAWN. An unjoined task may outlive every scope in
+                        // this function, so the value is reachable from a root
+                        // this analysis cannot see the end of.
+                        if (sites[s].E != AIF_E_GLOBAL) {
+                            sites[s].E = AIF_E_GLOBAL;
+                            note_deriv(deriv_e, s, -1, AIF_E_GLOBAL);
+                            changed = moved(s);
+                        }
+                    }
+
+                    // T-SPAWN-MOVE. The argument was moved in -- sema's
+                    // semaConsumeOperand guarantees it, and the move checker
+                    // enforces it -- so exactly one task can reach it at a time.
+                    // Transferred, not CrossThread: this is the case T3's
+                    // non-atomic count is sound for.
+                    if (raise_thread(s, AIF_T_TRANSFERRED)) changed = moved(s);
+
+                    // T-SPAWN-SHARE is *not* here. It is a per-site rule
+                    // below, because the argument is not the only thing a task
+                    // can reach -- everything reachable from it is too, and
+                    // that is where the sharing actually shows up.
                 }
 
             } else if (k->kind == AIF_CON_ESCAPE_GLOBAL) {
@@ -2845,6 +2954,56 @@ int aif_solve(int max_rounds) {
                 changed = moved(s);
             }
 
+            // T-SPAWN-SHARE. Stated as a per-site rule over the two facts
+            // rather than as a clause on the spawn, and both halves of that
+            // are deliberate.
+            //
+            // **Why the premise is `A = Shared` and not syntax.** INFERENCE
+            // writes it as "y is still live in the parent". Under affine
+            // references that is never syntactically true: the move checker
+            // rejects any program that names the value twice. But a value can
+            // be live in the parent without its *binding* being -- two
+            // containers holding one element, one moved into a task and one
+            // retained, is the ordinary shape and no binding names it twice.
+            // `Shared` is exactly INFERENCE 2.2's "two or more references
+            // whose relative lifetimes are not statically ordered", so a
+            // Shared value that a task can reach is one nothing proved the
+            // parent dropped. This is the same move C-UNIQUE makes one domain
+            // over (INFERENCE 4.4): the aliasing module does the work and the
+            // derived domain reads its answer.
+            //
+            // **Why per-site and not on the spawn's arguments.** Testing the
+            // arguments alone was the first version and it was unsound. The
+            // spawn's argument is the *container*; the shared thing is the
+            // element, which reaches Transferred through T-REACH and never
+            // appears in any spawn's value set. tests/aif_concurrency_shared.psm
+            // is that program, and it derived T3 with a non-atomic count for a
+            // value two threads could reach.
+            //
+            // Read as one sentence: a value that crosses a task boundary at
+            // all, and has two references nothing ordered, is cross-thread.
+            // `unique` earns its keep twice here -- an axiom holding A at
+            // Unique keeps a transferred value off the atomic path.
+            if (sites[s].T >= AIF_T_TRANSFERRED && sites[s].A >= AIF_A_SHARED
+                && raise_thread(s, AIF_T_CROSS)) {
+                changed = moved(s);
+            }
+
+            // T-STATIC. A static root in a program with concurrency is
+            // assumed reachable from every task.
+            //
+            // INFERENCE calls this "deliberately blunt" and it is: refining it
+            // wants a global reachability analysis whose payoff is small in a
+            // language where static mutable roots are rare. What the bluntness
+            // buys is the honest answer to "when is T4a actually reachable?" --
+            // under isolation, a value cannot be shared by being passed around,
+            // so the static root is the residue, and it is the residue *because*
+            // the rest of the design closed the other doors.
+            if (program_has_tasks && sites[s].E == AIF_E_GLOBAL
+                && raise_thread(s, AIF_T_CROSS)) {
+                changed = moved(s);
+            }
+
             // C-UNIQUE / C-TYPE (INFERENCE 4.4 stage 2).
             int acyclic = (sites[s].A == AIF_A_UNIQUE) || sites[s].type_acyclic;
             int want = acyclic ? AIF_C_ACYCLIC : AIF_C_MAYBE;
@@ -2886,6 +3045,21 @@ static void widen_sites(const Bits* u) {
         sites[s].E = AIF_E_GLOBAL;
         sites[s].A = AIF_A_SHARED;
         sites[s].C = AIF_C_MAYBE;
+        // Top of the T lattice too -- but only where a task exists to reach
+        // it from. Omitting the raise entirely would make a truncated build
+        // *cheaper* than a converged one, an atomic count skipped because the
+        // budget ran out, which is the exact unsoundness INFERENCE 5.3
+        // introduces widening to prevent.
+        //
+        // The guard is not a weakening of that. Widening raises a site to top
+        // because the analysis ran out of rounds to prove otherwise; "this
+        // program contains no spawn" is not something it was trying to prove,
+        // it is something the constraint set already said, and no number of
+        // further rounds could contradict it. So CrossThread in a task-free
+        // module is not conservatism, it is a false statement that costs
+        // atomics -- and SPEC 1's invariant is that inference failure degrades
+        // performance, which this keeps to the programs that have tasks.
+        if (program_has_tasks) sites[s].T = AIF_T_CROSS;
         bits_set(&widened, s, "AIF widened");
     }
 }
@@ -2961,8 +3135,18 @@ int aif_site_widened(int id) {
 // layout, so a byte threshold is not available. SPEC 4.2 requires the threshold
 // be documented by the implementation -- it is emitted in the manifest header.
 //
-// T4a is unreachable by construction: the language has no tasks, so the thread
-// affinity domain is vacuous and every value is Isolated.
+// T4a was unreachable by construction until 2026-08-19, because the language had
+// no tasks and the thread domain was vacuous. REQUIREMENTS 15 built the task
+// model and the two `T` conjuncts below are no longer tautologies.
+//
+// **The single-threaded path is unchanged, and it is unchanged structurally
+// rather than by measurement.** A module with no `spawn` raises no site above
+// AIF_T_ISOLATED: T-SPAWN-* fires only on a spawn constraint, T-REACH can only
+// propagate a value some rule already raised, and T-STATIC is guarded on
+// program_has_tasks. So `T <= AIF_T_TRANSFERRED` holds at every site, both new
+// conjuncts are true, and T4a is unreachable -- exactly the shape the clauses
+// had before. This is the property the whole design is for, so it is stated
+// where the clauses are and not only in a document.
 // ============================================================================
 
 #define AIF_THETA_STACK_FIELDS 8
@@ -2976,6 +3160,18 @@ int aif_site_widened(int id) {
 #define AIF_T2  2
 #define AIF_T3  3
 #define AIF_T4B 4
+// SPEC 3 is emphatic that "T4 is one tier, not two", and these are its two
+// sub-classes rather than two tiers. They still need distinct ordinals, because
+// the manifest names them separately and `pin` adjudicates numerically.
+//
+// T4a above T4b is a real decision and this is the argument for it. The order
+// has to be a linear extension of the fact lattice for aif_check_pins to stay
+// sound (SPEC 4.3's monotonicity), and it has to make raising T never *lower*
+// the ordinal: from <Transferred, MaybeCyclic> = T4b, raising T to CrossThread
+// must not go down. Putting T4a on top satisfies both, and it makes the useful
+// pin the honest one -- `pin(T4a)` on a T3 site asks for an atomic count and is
+// granted, `pin(T4b)` on a T4a site asks to drop one and is refuted.
+#define AIF_T4A 5
 
 // Which Theta_stack to apply. Bytes is the real threshold and the default;
 // fields is the prototype's approximation (its A5), kept switchable because the
@@ -3020,9 +3216,21 @@ static int derived_tier(const Site* s) {
         && !s->no_stack && !s->in_container) {
         return AIF_T0;
     }
+    // Neither the T1 clause nor T0's tests T, and that is SPEC 4.2 read
+    // literally rather than an omission. A value whose escape bottoms inside a
+    // region did not leave it, and E-SPAWN-J is what keeps a joined task's
+    // arguments there -- which is INFERENCE 4.1's "this single distinction
+    // determines whether concurrent code lands at T1 or T4", visible here as
+    // the absence of a test.
     if (s->E != AIF_E_CALLER && s->E != AIF_E_GLOBAL) return AIF_T1;
-    if (s->A <= AIF_A_BORROWED) return AIF_T2;
-    if (s->C == AIF_C_ACYCLIC) return AIF_T3;
+    if (s->A <= AIF_A_BORROWED && s->T <= AIF_T_TRANSFERRED) return AIF_T2;
+    if (s->T <= AIF_T_TRANSFERRED && s->C == AIF_C_ACYCLIC) return AIF_T3;
+    // SPEC 3: "a value meeting both conditions pays both". The sub-class named
+    // here is the one that decides the *count*, because that is what codegen
+    // reads it for; a T4a site that is also cyclic still reports C =
+    // MaybeCyclic through aif_site_cyclic, so collector registration is
+    // decided from the fact and not from this name.
+    if (s->T == AIF_T_CROSS) return AIF_T4A;
     return AIF_T4B;
 }
 
@@ -3081,6 +3289,13 @@ int aif_site_pin_tier(int id) {
 int aif_site_derived_tier(int id) {
     if (id < 0 || id >= site_count) return AIF_T4B;
     return derived_tier(&sites[id]);
+}
+
+// INFERENCE 2.3, read back. Codegen needs it to choose an atomic count, and the
+// manifest needs it to say why.
+int aif_site_thread(int id) {
+    if (id < 0 || id >= site_count) return AIF_T_CROSS;
+    return sites[id].T;
 }
 
 int aif_site_alias_axiom(int id) {
@@ -4626,6 +4841,12 @@ int aif_frees_at_scope_node(const void* node) {
 #define AIF_ELEM_RC     3   // Level 5: a decrement, and the last holder frees
 #define AIF_ELEM_TYPED  4   // the type's generated release -- struct-field ownership
 #define AIF_ELEM_CYCLE  5   // T4b: a decrement, and a non-zero result buffers a candidate
+// REQUIREMENTS 15. The two above with an atomic decrement, for T4a. Two
+// constants and not one plus a flag: SPEC 3 requires an implementation to
+// distinguish the sub-classes and forbids charging collector participation to a
+// T4a value that is provably acyclic, which is exactly what separates these.
+#define AIF_ELEM_RC_ATOMIC    6
+#define AIF_ELEM_CYCLE_ATOMIC 7
 
 // AIF Level 5. Whether this site is allocated with a reference count.
 //
@@ -4643,7 +4864,11 @@ int aif_frees_at_scope_node(const void* node) {
 // of container edges, so a value in none of them would be born at zero, never
 // retained, never released, and pay 16 bytes of header for nothing.
 static int site_is_rc(const Site* s, int tier) {
-    if (tier != AIF_T3) return 0;
+    // T4a counts too -- SPEC 3's cost table gives it "atomic count word", which
+    // is the same header and the same container edges as T3's, differing only
+    // in the instruction that touches it. Which instruction that is, is decided
+    // where the decrement is emitted and not here.
+    if (tier != AIF_T3 && tier != AIF_T4A) return 0;
     if (s->kind != AIF_K_STRUCT) return 0;
     if (s->no_stack) return 0;              // an explicit drop needs a plain free
     return s->in_container;
@@ -4659,7 +4884,17 @@ static int site_is_rc(const Site* s, int tier) {
 // there is an SCC to walk. Without one there are no cyclic children and the
 // collector would buffer candidates it can never reclaim.
 static int site_is_cyclic(const Site* s, int tier) {
-    if (tier != AIF_T4B) return 0;
+    // SPEC 3: "A value meeting both conditions pays both. An implementation
+    // SHALL distinguish the sub-classes; it SHALL NOT charge atomics to a T4b
+    // value that is thread-local, nor collector participation to a T4a value
+    // that is provably acyclic."
+    //
+    // Both halves of that last sentence are enforced right here. T4b never
+    // reaches the atomic path because site_is_rc's tier test excludes it; and a
+    // T4a value that is provably acyclic is turned away by the type_acyclic
+    // test below, which is the *same* test that has always excluded acyclic
+    // types -- so admitting T4a costs no new rule, only a wider tier test.
+    if (tier != AIF_T4B && tier != AIF_T4A) return 0;
     if (s->kind != AIF_K_STRUCT) return 0;
     if (s->no_stack) return 0;
     if (s->type_acyclic) return 0;
@@ -4708,6 +4943,24 @@ static int elem_disposition_of(int id, int tier) {
     // placing arenas that served nothing; a second copy of *this* clause would be
     // the same defect with a use-after-free behind it instead of a wasted push.
     if (site_arena_scope(id) >= 0) return AIF_ELEM_NONE;
+    // SPEC 3, in one place: "A value meeting both conditions pays both. An
+    // implementation SHALL distinguish the sub-classes; it SHALL NOT charge
+    // atomics to a T4b value that is thread-local, nor collector participation
+    // to a T4a value that is provably acyclic."
+    //
+    // The four outcomes below are that sentence. T4a with an acyclic type gets
+    // the atomic count and no collector; T4a whose type lies in an SCC gets
+    // both; T4b gets the collector and a *plain* decrement, because a
+    // thread-local cycle is still thread-local; T3 gets neither.
+    //
+    // Checked before the T3 clause rather than folded into it, because
+    // site_is_rc now admits T4a as well -- an atomic value must not be able to
+    // fall through to the non-atomic disposition on any path.
+    if (tier == AIF_T4A) {
+        if (site_is_cyclic(s, tier)) return AIF_ELEM_CYCLE_ATOMIC;
+        if (site_is_rc(s, tier)) return AIF_ELEM_RC_ATOMIC;
+        return AIF_ELEM_NONE;
+    }
     if (site_is_rc(s, tier)) return AIF_ELEM_RC;
     if (site_is_cyclic(s, tier)) return AIF_ELEM_CYCLE;
     // T0 is the frame, and a T3 or T4b site the two predicates above declined has

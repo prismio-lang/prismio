@@ -393,6 +393,28 @@ fn typeFromSemKey(key: String) -> TypeInfo {
     if (str_starts_with(key, "list:") == 1) {
         return typeList(typeFromSemKey(str_substring(key, 5, str_length(key) - 5)))
     }
+    // REQUIREMENTS 4. The inverse of typeSemKey's `opt:` case, which was written
+    // without one -- so every optional round-tripping through a binding decoded
+    // to Invalid, and `let r = f()` on a `-> T?` function produced a value that
+    // could not be compared with `none`.
+    //
+    // Optional *fields* were unaffected and that is why this survived: a field's
+    // type is looked up from its struct declaration on every access and never
+    // passes through a sem key. Only a local binding does, which is why
+    // tests/test_51_optional_refs.psm -- all fields -- was green throughout.
+    //
+    // `opt:Invalid` decodes to `none` rather than to `typeOptional(Invalid)`,
+    // and the difference is load-bearing. typeSemKey maps both a bare `none`
+    // (empty child) and an optional of an invalid type to that one string, and
+    // typeEquals gives an empty child the "matches any optional" behaviour that
+    // lets `none` reach a typed slot with no inference pass. Decoding to
+    // typeOptional(Invalid) would hand back a child that matches nothing, so
+    // `let x = none` would stop being assignable to anything at all.
+    if (str_starts_with(key, "opt:") == 1) {
+        let inner = typeFromSemKey(str_substring(key, 4, str_length(key) - 4))
+        if (typeIsValid(inner) == false) { return typeNone() }
+        return typeOptional(inner)
+    }
     return typeInvalid()
 }
 

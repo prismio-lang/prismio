@@ -74,7 +74,7 @@ They also capture, which makes them the main genuine source of shared ownership 
 handle-based engine code avoids. Closure capture is where AIF's aliasing analysis will actually be
 exercised.
 
-### 4. Optional / nullable reference fields — **DONE, 2026-08-07**
+### 4. Optional / nullable reference fields — **DONE, 2026-08-07; return position 2026-08-19**
 
 `T?` for any reference type, a `none` literal, `==`/`!=` against `none`, and `expect(x)` as the
 checked unwrap. Implicit widening from `T` to `T?`; never the reverse.
@@ -109,7 +109,38 @@ Four things worth keeping:
   boundary between statically generated release and the T4b collector, and it could not be drawn
   before this item existed — which is precisely why CYCLES had nothing to run against.
 
-*Source:* RESULTS-L0 §4.2 (`parent: 0` → *expected Node, found Int*).
+**Return position was missing until 2026-08-19, and the way it was missing is the lesson.** A
+function declared `-> T?` produced a value that could not be compared with `none`:
+
+```prismio
+let r = find(k)
+if (r == none) { … }        // error: an optional can only be compared with `none`
+```
+
+Written inline, `find(k) == none` was fine. The difference is a **binding**: sema stores a local's
+type as a *sem key* string and reads it back, `typeSemKey` wrote optionals as `opt:<inner>`, and
+`typeFromSemKey` had no branch to read that back — so every optional through a `let` decoded to
+`Invalid`. Optional **fields** were untouched, because a field's type is looked up from its struct
+declaration on every access and never enters a sem key.
+
+Three things this is worth remembering for:
+
+- **`test_51` is all fields, so it stayed green for twelve days and could not have caught it.** A
+  feature tested only in the shape that bypasses the round-trip is tested in the shape nobody
+  writes. `test_68_optional_returns.psm` is the companion, and everything in it goes through a
+  binding on purpose.
+- **A decode gap is worse than a missing feature**, because the compiler kept answering. It reported
+  `found Invalid` where it should have said `found Node?` — an error message that had stopped
+  describing the program. Anything downstream that skips on an invalid type (`semaExpectAssignable`
+  and its neighbours) was quietly skipping.
+- **The obvious suspects were all innocent.** `parseTypeAnnotation` sets `i3` correctly,
+  `semaDeclaredReturnType` delegates to `semaAnnotationType`, and that peels the suffix. Everything
+  on the path from source to call site was right; the loss was on the way *back out of a binding*.
+  A one-line probe — compare the call result without binding it — separates the two halves in a
+  single build and would have gone straight there.
+
+*Source:* RESULTS-L0 §4.2 (`parent: 0` → *expected Node, found Int*); the return-position gap found
+while writing a channel drain loop for REQUIREMENTS 15.
 
 ---
 
@@ -332,11 +363,63 @@ Not done, each for a stated reason rather than for lack of time:
   nothing in `Ok` mentions the error type. Fixing it means inference from the *expected* type — a
   bidirectional pass, which is its own feature. Diagnosed by name in the meantime.
 
-### 15. Concurrency / task model **[needed for `T`]**
+### 15. Concurrency / task model — **DONE, 2026-08-19**
 
 No tasks, so the thread-affinity domain is vacuous and T4a is unreachable by construction. For a
 job-system target this moves from AIF-3 to gating: INFERENCE's E-SPAWN vs E-SPAWN-J rule is what
 decides whether job-local data lands T1 or T4, and it needs a task model to attach to.
+
+**Done.** `spawn f(a, b)` and `join t`, both **contextual** keywords — the tree already contained
+`fn spawn(w: World, seed: Float)` in `../corpus/g4_ecs_world.psm` and a struct field named `spawn`
+in `tests/test_62_split_release.psm`, and reserving the word would have stopped two existing
+programs compiling. One token of lookahead settles it exactly: a spawn is always followed by the
+*name* of the function to run.
+
+Isolation is enforced, not documented. A spawned argument is **moved** (`semaConsumeOperand`, the
+same path a `sink` parameter takes), so the parent's binding is dead the moment the task exists and
+touching it afterwards is `use of moved value`. That single fact is what makes INFERENCE's
+T-SPAWN-MOVE rather than T-SPAWN-SHARE the rule that fires, and therefore what keeps T3's counter
+non-atomic — SPEC 11 item 10's promise, discharged by the move checker.
+
+Message passing is the runtime's `chan_*` surface, and `chan_share` exists **because** of SPEC 11
+item 10's second sentence: creating a second owning reference SHALL be a syntactically identifiable
+event. Every handle the language can name is affine, so without an explicit duplication a channel
+cannot be in a task and in its parent at once — `spawn producer(c)` simply moves it away. The
+duplication is therefore spelled out loud, and it is what the aliasing module sees.
+
+The thread module (INFERENCE 4.3) is in `runtime/aif_support.c` and mirrored in
+`../prototype/aif.py`; `tools/aif_differential.py` compares the `T` distribution as well as the
+tiers, and both fixtures are in its source list. T4a is emitted for the first time, with an atomic
+count (`rc_release_atomic`) chosen at compile time rather than by a flag the runtime tests.
+
+Two departures from INFERENCE 4.3, both shared by the two implementations and therefore invisible
+to the differential, so both are argued at the rule instead:
+
+- **T-SPAWN-SHARE's premise is read as `A = Shared`.** INFERENCE writes it as "y is still live in
+  the parent", which under affine references is never *syntactically* true — the move checker
+  rejects any program that names the value twice. But a value can be live in the parent without its
+  binding being: two containers holding one element, one moved into a task and one retained. It is
+  a **per-site** rule, not a clause on the spawn's arguments; testing the arguments alone was the
+  first version and it was unsound, because the argument is the container and the shared thing is
+  the element.
+- **E-SPAWN-J is decided syntactically** — a straight run of statements from spawn to join with no
+  early exit between them. Anything less obvious answers "not joined", which costs a tier rather
+  than soundness. `src/sema/flow.psm` already computes per-path reachability for the missing-return
+  check and is the obvious place to get a precise answer.
+
+**The result worth recording.** Under isolation a value cannot become cross-thread by being passed
+around — the move checker forbids it — so T4a's population is exactly the residue of the two doors
+the design leaves open: a static root (T-STATIC), and a value already `Shared` before it crossed.
+That is the claim SPEC 11 item 10 makes, and it is now measurable rather than asserted.
+
+Verified: **93 of 94 programs emit byte-identical IR**, the exception being `src/main.ll`, which
+changed because `src/` did. Suite 129/129, two-generation fixpoint, differential agrees on 17
+sources.
+
+*Note for the levels table.* SPEC 11.0 gives AIF-1 "Concurrency: none — `T` is vacuous". This
+implementation declares AIF-1 and now exceeds that row. Exceeding a level is not a conformance
+violation, but the table is now describing something the implementation is not, and that is a
+governance call rather than a code one.
 
 ### 16. Fix superlinear compile time — **DONE, 2026-08-17**
 

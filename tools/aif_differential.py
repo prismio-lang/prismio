@@ -30,9 +30,19 @@ PROTOTYPE = REPO / "aif" / "prototype" / "aif.py"
 # Everything compared. Tier counts are the result; the rest are the exclusions,
 # and they are compared too because a site one implementation declines to count
 # is exactly the kind of difference that would otherwise hide a real one.
-TIERS = ("T0", "T1", "T2", "T3", "T4b")
+# REQUIREMENTS 15 added T4a, and adding it here is the point of adding it at
+# all: a thread domain implemented in one of the two and not the other is
+# exactly the silently-wrong-tier failure this script exists to catch.
+TIERS = ("T0", "T1", "T2", "T3", "T4b", "T4a")
 COUNTERS = ("sites", "opaque-ret", "extern-alloc", "static-ret",
-            "literal-strings", "rounds")
+            "literal-strings", "rounds",
+            # INFERENCE 2.3's distribution. Compared because the tier counts
+            # cannot distinguish a thread module that agrees from two that do
+            # not exist -- which is what they were comparing until
+            # REQUIREMENTS 15. A T4a count catches the extreme; these catch a
+            # value that landed Transferred in one and Isolated in the other,
+            # which moves no tier and is the likelier mistake.
+            "Isolated", "Transferred", "CrossThread")
 # SPEC 5.2.1's bracketing summary. Compared for the same reason the exclusions
 # are: it is a *new* thing the analysis computes, so an implementation that has
 # it and an oracle that does not would agree on every old number while
@@ -54,6 +64,14 @@ def parse_bracketing(text, out):
         out[k] = int(m.group(1)) if m else -1
 
 
+# INFERENCE 2.3's distribution. Both implementations print the same three
+# labels under the same heading, so one parser serves both.
+def parse_threads(text, out):
+    for k in ("Isolated", "Transferred", "CrossThread"):
+        m = re.search(rf"^\s+{k}\s+(\d+)\s*$", text, re.M)
+        out[k] = int(m.group(1)) if m else -1
+
+
 def parse_compiler(text):
     out = {}
     m = re.search(r"rounds=(\d+)", text)
@@ -70,6 +88,7 @@ def parse_compiler(text):
     for t in TIERS:
         m = re.search(rf"^\s+{t}\s+(\d+)\s", text, re.M)
         out[t] = int(m.group(1)) if m else -1
+    parse_threads(text, out)
     parse_bracketing(text, out)
     return out
 
@@ -90,6 +109,7 @@ def parse_oracle(text):
     for t in TIERS:
         m = re.search(rf"^\s+{t}\s+(\d+)\s+\d", text, re.M)
         out[t] = int(m.group(1)) if m else -1
+    parse_threads(text, out)
     parse_bracketing(text, out)
     return out
 
@@ -180,6 +200,17 @@ def main():
         # fixture moves exactly two sites, and view provenance is the only thing
         # that can move them.
         sources.append(Path("tests/test_53_aif_views.psm"))
+        # REQUIREMENTS 15. No corpus program spawns anything, so without these
+        # the two implementations would agree about the `T` domain by never
+        # running a rule of it -- which is precisely the shape of agreement this
+        # script exists to distrust, and precisely the shape it had while the
+        # domain was vacuous. The first exercises E-SPAWN vs E-SPAWN-J and
+        # T-STATIC; the second is the only source anywhere that reaches
+        # T-SPAWN-SHARE, whose premise both implementations read off the
+        # aliasing domain rather than off the syntax -- a shared decision, and
+        # therefore one this script can only check the *consequences* of.
+        sources.append(Path("tests/aif_concurrency.psm"))
+        sources.append(Path("tests/aif_concurrency_shared.psm"))
         # A **builtin** is the one runtime function whose contract the oracle
         # cannot read off the AST: every extern a source declares carries its
         # own, so aif.py's fallback tables only fire for names nobody declares.

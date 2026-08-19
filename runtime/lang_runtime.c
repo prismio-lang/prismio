@@ -1391,6 +1391,54 @@ void rc_retain(void* p) {
     if (p) (*rc_slot(p))++;
 }
 
+// AIF T4a (SPEC 3, REQUIREMENTS 15). The same count, touched atomically.
+//
+// **A separate entry point, chosen at compile time, and that is the whole
+// design.** The obvious alternative is one `rc_release` that branches on a bit
+// in the header -- and it puts a load and a branch on the path SPEC 11 item 10
+// exists to keep clear. The point of inferring thread affinity at all is that
+// the answer is known statically, so a value that never crosses a thread
+// boundary should not pay even a predictable branch to find that out. The
+// compiler picks the symbol; there is nothing to test at run time.
+//
+// Relaxed on the increment, acq_rel on the decrement, which is the standard
+// pairing and not an optimisation: a retain only needs the count to be right,
+// while the decrement that reaches zero must see every write any other thread
+// made through its own reference before the free runs.
+//
+// Built from __atomic rather than <stdatomic.h> because the count is an
+// ordinary `size_t` in a header this file shares with the non-atomic path --
+// declaring it _Atomic would change rc_slot's type for both. The generic
+// builtins are the supported way to do exactly that, and clang is the compiler
+// on all three CI platforms.
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#define PRISMIO_ATOMIC_INC(p) ((size_t)_InterlockedIncrement64((volatile __int64*)(p)))
+#define PRISMIO_ATOMIC_DEC(p) ((size_t)_InterlockedDecrement64((volatile __int64*)(p)))
+#else
+#define PRISMIO_ATOMIC_INC(p) __atomic_add_fetch((p), 1, __ATOMIC_RELAXED)
+#define PRISMIO_ATOMIC_DEC(p) __atomic_sub_fetch((p), 1, __ATOMIC_ACQ_REL)
+#endif
+
+void rc_retain_atomic(void* p) {
+    if (p) PRISMIO_ATOMIC_INC(rc_slot(p));
+}
+
+void rc_release_atomic(void* p) {
+    if (!p) return;
+    size_t* c = rc_slot(p);
+    // The zero test is not a race the atomics have to cover. A count of zero
+    // means nothing ever retained the value, so no second reference exists to
+    // be decrementing concurrently -- the same reasoning rc_release relies on,
+    // and the reason this reads the slot plainly first.
+    if (*c == 0) return;
+    if (PRISMIO_ATOMIC_DEC(c) == 0) {
+        size_t off = *rc_cold_slot(p);
+        if (off) rt_free(*(void**)((unsigned char*)p + off));
+        rt_free((unsigned char*)p - RC_HDR);
+    }
+}
+
 void rc_release(void* p) {
     if (!p) return;
     size_t* c = rc_slot(p);
@@ -1689,6 +1737,13 @@ long long cyc_collections_run(void) { return cyc_collections; }
 #define XEFY_ELEM_RC     3   // Level 5: a decrement, and the last holder frees
 #define XEFY_ELEM_TYPED  4   // struct-field ownership: the element type's own release
 #define XEFY_ELEM_CYCLE  5   // T4b: a decrement, and a non-zero result is a candidate root
+// REQUIREMENTS 15. The two above, one tier up: T4a is a count two threads can
+// touch, so the same decrement has to be atomic. Two constants rather than one
+// plus a flag, because SPEC 3 requires an implementation to "distinguish the
+// sub-classes" and specifically forbids charging collector participation to a
+// T4a value that is provably acyclic -- which is exactly the difference here.
+#define XEFY_ELEM_RC_ATOMIC    6
+#define XEFY_ELEM_CYCLE_ATOMIC 7
 
 typedef struct {
     void** data;
@@ -1774,6 +1829,8 @@ void list_push(void* lp, void* value) {
     // counted -- which is the failure a per-element answer would invite.
     if (l->elem_own == XEFY_ELEM_RC) rc_retain(value);
     if (l->elem_own == XEFY_ELEM_CYCLE) cyc_retain(value);
+    if (l->elem_own == XEFY_ELEM_RC_ATOMIC) rc_retain_atomic(value);
+    if (l->elem_own == XEFY_ELEM_CYCLE_ATOMIC) { rc_retain_atomic(value); cyc_retain(value); }
     if (l->len >= l->cap) {
         int nc = l->cap * 2;
         // Back into the arena that owns this list, not into whatever the hint
@@ -1824,6 +1881,11 @@ void list_release(void* lp) {
             if (l->elem_own == XEFY_ELEM_LIST)    list_release(e);
             else if (l->elem_own == XEFY_ELEM_RC) rc_release(e);
             else if (l->elem_own == XEFY_ELEM_CYCLE) cyc_release(e);
+            else if (l->elem_own == XEFY_ELEM_RC_ATOMIC) rc_release_atomic(e);
+            // SPEC 3's "a value meeting both conditions pays both", and the
+            // order is forced: cyc_release is what buffers a candidate root, so
+            // it has to see the count *after* this thread's decrement.
+            else if (l->elem_own == XEFY_ELEM_CYCLE_ATOMIC) { rc_release_atomic(e); cyc_release(e); }
             else if (l->elem_own == XEFY_ELEM_TYPED) {
                 // Struct-field ownership. The element owns fields of its own, so
                 // rt_free(e) here would reclaim the object and leak everything
@@ -1854,6 +1916,13 @@ void list_set(void* lp, int index, void* value) {
     if (l->elem_own == XEFY_ELEM_RC) {
         rc_retain(value);
         rc_release(l->data[index]);
+    } else if (l->elem_own == XEFY_ELEM_RC_ATOMIC
+               || l->elem_own == XEFY_ELEM_CYCLE_ATOMIC) {
+        // Retain before release, as above: if the incoming value is the one
+        // already in the slot, releasing first can take the count to zero and
+        // free what is about to be stored.
+        rc_retain_atomic(value);
+        rc_release_atomic(l->data[index]);
     }
     l->data[index] = value;
 }

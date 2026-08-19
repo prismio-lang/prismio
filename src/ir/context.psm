@@ -67,6 +67,15 @@ let AIF_ELEM_RC = 3
 // Struct-field ownership. Not a mode the runtime can act on by itself: it names
 // a release that differs per type, which is why the generated function exists.
 let AIF_ELEM_TYPED = 4
+// REQUIREMENTS 15. AIF_ELEM_RC and its cyclic sibling one tier up, where the
+// count is one two threads can touch and the decrement has to be atomic.
+//
+// 5 is AIF_ELEM_CYCLE, which this file never named because nothing in Prismio
+// switched on it -- the runtime does. It is written out here so the two new
+// ordinals cannot silently land on the wrong constant, which they would have.
+let AIF_ELEM_CYCLE = 5
+let AIF_ELEM_RC_ATOMIC = 6
+let AIF_ELEM_CYCLE_ATOMIC = 7
 
 // Where a value the memory model inferred lives, keyed by the AST node that
 // allocates it -- both passes walk the same tree, so the node is a name for the

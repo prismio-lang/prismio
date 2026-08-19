@@ -119,6 +119,14 @@ fn nodeKindName(k: NodeKind) -> String {
     else if (k == NodeKind.ARRAY_LITERAL_EXPR) { return "ARRAY_LITERAL_EXPR" }
     else if (k == NodeKind.STRUCT_LITERAL_EXPR) { return "STRUCT_LITERAL_EXPR" }
     else if (k == NodeKind.CAST_EXPR) { return "CAST_EXPR" }
+    // REQUIREMENTS 15. Named here or the oracle sees "UNKNOWN", falls into its
+    // generic child walk, and reads `spawn f(a)` as an ordinary call to f --
+    // which would have it derive Isolated where the compiler derives
+    // Transferred. The differential would then disagree on every concurrent
+    // program, and the two would be *right* to disagree, which is the worst
+    // kind of failure this dump can produce.
+    else if (k == NodeKind.SPAWN_EXPR) { return "SPAWN_EXPR" }
+    else if (k == NodeKind.JOIN_EXPR) { return "JOIN_EXPR" }
     else if (k == NodeKind.FUNCTION_PARAMETER) { return "FUNCTION_PARAMETER" }
     else if (k == NodeKind.TYPE_ANNOTATION) { return "TYPE_ANNOTATION" }
     else if (k == NodeKind.STRUCT_FIELD) { return "STRUCT_FIELD" }

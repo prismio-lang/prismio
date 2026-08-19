@@ -1,0 +1,135 @@
+// REQUIREMENTS 4 -- an optional in *return* position, and through a binding.
+//
+// The companion to test_51, which covers optional **fields**. That split is not
+// tidiness: it is exactly where the gap was. A field's type is looked up from
+// its struct declaration on every access, so it never leaves the type table. A
+// local binding does — sema stores its type as a *sem key* string and reads it
+// back — and `typeSemKey` wrote optionals as `opt:<inner>` while
+// `typeFromSemKey` had no branch to read that back. Every optional that passed
+// through a `let` decoded to `Invalid`.
+//
+// What that cost, in the order a user meets it:
+//
+//   let r = find(k)
+//   if (r == none) { ... }   // error: an optional can only be compared with `none`
+//
+// — a diagnostic naming the correct construct as the thing it is refusing.
+// `find(k) == none` written inline was fine, because nothing round-tripped. So
+// the feature worked in exactly the spelling nobody uses.
+//
+// It also made the compiler report `Invalid` where it should report `Node?`,
+// which is the other reason a decode gap is worse than a missing feature: the
+// error message stops describing the program.
+//
+// test_51 stayed green through all of it and could not have caught it, because
+// every optional in it is a field. Anything added here must go through a
+// binding or it is testing test_51's ground again.
+
+extern fn print(s: String)
+extern fn println(s: String)
+extern fn int_to_str(n: Int) -> String
+
+struct Node {
+    id: Int,
+    parent: Node?
+}
+
+fn find(hit: Bool) -> Node? {
+    if (hit) {
+        return Node { id: 7, parent: none }
+    }
+    return none
+}
+
+// An optional bound to a name, then tested. This is the shape the whole item
+// was missing, and the one line of it that matters is `let found = ...`.
+fn bound_result_is_optional() -> Int {
+    let found = find(true)
+    if (found == none) {
+        return 0
+    }
+    return expect(found).id
+}
+
+fn bound_absent_is_absent() -> Int {
+    let missing = find(false)
+    if (missing == none) {
+        return 1
+    }
+    return 0
+}
+
+// Through two bindings. The sem-key round-trip happens once per binding, so a
+// decode that dropped the inner type rather than the whole optional would
+// survive the single-hop case above and fail here.
+fn optional_survives_rebinding() -> Int {
+    let first = find(true)
+    let second = first
+    if (second == none) {
+        return 0
+    }
+    return expect(second).id + 1
+}
+
+// A bare `none` bound to a name. Distinct from the cases above because
+// `typeSemKey` maps *both* a bare `none` and an optional-of-invalid to the one
+// string `opt:Invalid` — so the decoder has to choose, and choosing
+// `typeOptional(Invalid)` would give back a type whose child matches nothing
+// and make this function stop compiling. It decodes to `none`, whose empty
+// child is what typeEquals reads as "matches any optional".
+fn bare_none_binding_still_matches() -> Int {
+    let nothing = none
+    if (nothing == none) {
+        return 2
+    }
+    return 0
+}
+
+// The narrowing half, still enforced through a binding. `expect` is the one way
+// across and this asserts the *other* direction is closed -- before the fix the
+// binding was Invalid, so this rejection happened for the wrong reason and said
+// "found Invalid" instead of naming the type.
+fn present_value_reaches_its_field() -> Int {
+    let n = find(true)
+    let unwrapped = expect(n)
+    return unwrapped.id + parent_depth(unwrapped)
+}
+
+// The field half, reached from an unwrapped binding rather than from a literal.
+// test_51 covers optional fields; what this adds is that the field is still
+// optional after its owner has been through a sem key.
+fn parent_depth(n: Node) -> Int {
+    if (n.parent == none) {
+        return 0
+    }
+    return 1
+}
+
+fn check(name: String, got: Int, want: Int) -> Int {
+    if (got == want) {
+        return 0
+    }
+    print("FAIL ")
+    print(name)
+    print(": got ")
+    print(int_to_str(got))
+    print(" want ")
+    println(int_to_str(want))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("bound_result", bound_result_is_optional(), 7)
+    bad = bad + check("bound_absent", bound_absent_is_absent(), 1)
+    bad = bad + check("rebinding", optional_survives_rebinding(), 8)
+    bad = bad + check("bare_none", bare_none_binding_still_matches(), 2)
+    bad = bad + check("present_field", present_value_reaches_its_field(), 7)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

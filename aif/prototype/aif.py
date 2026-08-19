@@ -23,8 +23,18 @@ never less, so a good number here is trustworthy and a bad one may be pessimisti
   A3  Context-insensitive in the whole-program pass: every function is analysed
       at the TOP context. Contexts are measured separately (see --masks), which
       is what H4's leading indicator needs.
-  A4  Thread affinity is vacuous -- the language has no tasks, so every value is
-      Isolated and T4a is unreachable by construction.
+  A4  Thread affinity is modelled (REQUIREMENTS 15, since 2026-08-19). It was
+      vacuous before that -- the language had no tasks, so every value was
+      Isolated and T4a was unreachable by construction. Two departures from
+      INFERENCE 4.3 are worth naming because they are shared with the compiler
+      and a differential cannot see a shared decision:
+        * T-SPAWN-SHARE's premise "y is still live in the parent" is read off
+          the aliasing domain as A = Shared, because under affine references it
+          is never syntactically true. See the `spawn` constraint.
+        * E-SPAWN-J's "joined on every path" is decided syntactically, over a
+          straight run of statements with no early exit between spawn and join.
+          Anything less obvious answers "not joined", which costs a tier rather
+          than soundness. A precise answer wants a real flow analysis.
   A5  Struct sizes are approximated by field count for the T0/T1 split, since
       the dump carries no layout.
 """
@@ -46,7 +56,14 @@ GLOBAL = ('GLOBAL',)
 UNIQUE, BORROWED, SHARED = 0, 1, 2
 ACYCLIC, MAYBE_CYCLIC = 0, 1
 
+# INFERENCE 2.3. Thread affinity, added 2026-08-19 with REQUIREMENTS 15's task
+# model. Before that the domain was vacuous -- A4 below said so -- and every
+# value sat at ISOLATED.
+ISOLATED, TRANSFERRED, CROSS_THREAD = 0, 1, 2
+
 ALIAS_NAME = {UNIQUE: 'Unique', BORROWED: 'Borrowed', SHARED: 'Shared'}
+THREAD_NAME = {ISOLATED: 'Isolated', TRANSFERRED: 'Transferred',
+               CROSS_THREAD: 'CrossThread'}
 
 REF_SCALARS = {'Int', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64',
                'Isize', 'Usize', 'Float', 'Bool', 'Char', 'Void', ''}
@@ -437,6 +454,10 @@ class Engine:
         self.E = {}                       # site -> escape
         self.A = {}                       # site -> alias
         self.C = {}                       # site -> cyclicity
+        self.T = {}                       # site -> thread affinity
+        # INFERENCE 4.3's T-STATIC premise, "the program creates any task", is a
+        # whole-program property. Mirrors program_has_tasks in aif_support.c.
+        self.has_tasks = False
         self.holders = defaultdict(set)   # site -> {holder keys}, for A-COPY
         self.constraints = []             # deferred (kind, args) edges
         self.rounds = 0
@@ -484,6 +505,9 @@ class Engine:
         self.E[s.id] = ('R', scope)
         self.A[s.id] = UNIQUE
         self.C[s.id] = ACYCLIC
+        # T-DEFAULT is the bottom element and not a rule: "any node has
+        # T >= Isolated" is discharged by initialising it here.
+        self.T[s.id] = ISOLATED
         return s.id
 
     def sites_of(self, e, fn, scope):
@@ -537,6 +561,38 @@ class Engine:
                 base = obj['ty'].split('<')[0]
                 self.sites_of(obj, fn, scope)
                 return self.ref(('field', base, e['s1']))
+            return VS_EMPTY
+
+        # REQUIREMENTS 15. `spawn f(a, b)`. Mirrors src/aif/walk.psm.
+        #
+        # The inner call is evaluated as an ordinary call first -- the callee
+        # really is called, so E-CALL, A-CALL and the FFI contracts all apply
+        # unchanged. What the spawn adds is one constraint carrying the two
+        # rules that are about the *boundary*: INFERENCE 4.1's E-SPAWN /
+        # E-SPAWN-J and 4.3's T-SPAWN-MOVE / T-SPAWN-SHARE.
+        #
+        # `i1` is the joined flag, and this implementation computes it itself in
+        # walk() rather than reading the compiler's answer out of the dump. That
+        # is the point of an oracle: a join analysis that is wrong in both
+        # implementations for the same reason is exactly what a differential
+        # cannot catch, so the two derive it separately from the same AST.
+        if k == 'SPAWN_EXPR':
+            if not e['c1']:
+                return VS_EMPTY
+            call = e['c1'][0]
+            self.sites_of(call, fn, scope)
+            args = VS_EMPTY
+            for a in call['c2']:
+                args = vs_union(args, self.sites_of(a, fn, scope))
+            self.has_tasks = True
+            self.constraints.append(('spawn', args, scope, bool(e['i1'])))
+            # The task handle is a runtime object this compilation did not
+            # allocate, so it contributes no site -- nothing to place, count or
+            # release.
+            return VS_EMPTY
+
+        # `join t` yields an Int, and the handle it consumes was never a site.
+        if k == 'JOIN_EXPR':
             return VS_EMPTY
 
         if k == 'CALL_EXPR':
@@ -731,6 +787,86 @@ class Engine:
         """Where a value assigned to `name` has to stay alive until."""
         return self.var_scope.get(('var', fn, name), fallback)
 
+    # -- structured-concurrency analysis -------------------------------------
+    #
+    # INFERENCE 4.1's E-SPAWN-J premise: "joined on every path before scope s
+    # exits". Derived here independently of src/aif/walk.psm, deliberately --
+    # this is the fact that decides whether a task's arguments stay region-bound
+    # at T1 or are forced to Global and from there to T4, and a shared bug in
+    # the two implementations is precisely what a differential cannot see.
+    #
+    # Kept to the same conservative shape as the compiler's: a straight run of
+    # statements from the spawn to the join, with nothing in between that can
+    # leave the block. Anything else answers "not joined", which is the sound
+    # direction -- it raises escape and costs a tier, where the opposite would
+    # hand a scope-bound lifetime to a value a task still holds.
+
+    STATEMENT_KINDS = frozenset((
+        'BLOCK', 'IF_STATEMENT', 'MATCH_STATEMENT', 'FOR_STATEMENT',
+        'WHILE_STATEMENT', 'LOOP_STATEMENT', 'RETURN_STATEMENT',
+        'ASSIGNMENT_STATEMENT', 'EXPRESSION_STATEMENT', 'BREAK_STATEMENT',
+        'CONTINUE_STATEMENT', 'REGION_STATEMENT', 'VARIABLE_DECL'))
+
+    def expr_has_join_of(self, e, name):
+        """Does this expression contain `join <name>`?
+
+        Stops at any statement kind, which keeps it from wandering out of the
+        expression into a nested block -- without that, `if (c) { join t }`
+        would read as an unconditional join.
+        """
+        if e is None or e['k'] in self.STATEMENT_KINDS:
+            return False
+        if e['k'] == 'JOIN_EXPR' and e['c1']:
+            target = e['c1'][0]
+            if target['k'] == 'IDENTIFIER_EXPR' and target['s1'] == name:
+                return True
+        for slot in ('c1', 'c2', 'c3'):
+            for c in e[slot]:
+                if self.expr_has_join_of(c, name):
+                    return True
+        return False
+
+    def stmt_has_early_exit(self, n):
+        """Can control leave this statement without running what follows it?
+
+        Conservative in the same direction the compiler is: a `break` counts
+        even where the loop it belongs to is wholly inside the statement and
+        would absorb it.
+        """
+        if n['k'] in ('RETURN_STATEMENT', 'BREAK_STATEMENT', 'CONTINUE_STATEMENT'):
+            return True
+        for slot in ('c1', 'c2', 'c3'):
+            for c in n[slot]:
+                if self.stmt_has_early_exit(c):
+                    return True
+        return False
+
+    def spawn_is_joined(self, rest, name):
+        for n in rest:
+            k = n['k']
+            if k == 'VARIABLE_DECL' and n['c2'] and self.expr_has_join_of(n['c2'][0], name):
+                return True
+            if k == 'EXPRESSION_STATEMENT' and n['c1'] and self.expr_has_join_of(n['c1'][0], name):
+                return True
+            if k == 'RETURN_STATEMENT' and n['c1'] and self.expr_has_join_of(n['c1'][0], name):
+                return True
+            if k == 'ASSIGNMENT_STATEMENT' and n['c2'] and self.expr_has_join_of(n['c2'][0], name):
+                return True
+            if self.stmt_has_early_exit(n):
+                return False
+        return False
+
+    def stamp_joins(self, stmts):
+        """Mark every `let t = spawn ...` in this chain that is joined before the
+        chain ends. The flag rides on the spawn node's i1, which the parser
+        leaves 0 -- so a spawn this never reaches defaults to unjoined."""
+        for i, n in enumerate(stmts):
+            if n['k'] != 'VARIABLE_DECL' or not n['c2']:
+                continue
+            init = n['c2'][0]
+            if init['k'] == 'SPAWN_EXPR':
+                init['i1'] = 1 if self.spawn_is_joined(stmts[i + 1:], n['s1']) else 0
+
     # -- statement walk ------------------------------------------------------
 
     def walk(self, n, fn, scope):
@@ -739,6 +875,7 @@ class Engine:
         if k == 'BLOCK':
             inner = self.m.scopes.new(scope, fn)
             for slot in ('c1', 'c2', 'c3'):
+                self.stamp_joins(n[slot])
                 for c in n[slot]:
                     self.walk(c, fn, inner)
             return
@@ -749,6 +886,7 @@ class Engine:
         # the escape analysis did not already have.
         if k == 'REGION_STATEMENT':
             inner = self.m.scopes.new(scope, fn)
+            self.stamp_joins(n['c1'])
             for c in n['c1']:
                 self.walk(c, fn, inner)
             return
@@ -963,6 +1101,12 @@ class Engine:
                             if self.A[o] > self.A[s]:
                                 self.A[s] = self.A[o]
                                 changed = self.moved(s)
+                            # T-REACH: thread affinity is inherited through
+                            # reachability too. Anything reachable from
+                            # something a task can see, that task can see.
+                            if self.T[o] > self.T[s]:
+                                self.T[s] = self.T[o]
+                                changed = self.moved(s)
                     # E-VIEW: storing a view into a field makes the viewed
                     # collection live at least as long as the object holding it.
                     for o in ow:
@@ -1014,6 +1158,10 @@ class Engine:
                             if self.A[h] > self.A[s]:
                                 self.A[s] = self.A[h]
                                 changed = self.moved(s)
+                            # T-REACH, through a container rather than a field.
+                            if self.T[h] > self.T[s]:
+                                self.T[s] = self.T[h]
+                                changed = self.moved(s)
                             # Which containers hold it, not merely that one does:
                             # the count is what A-CONTAIN reads.
                             if h not in self.container_of[s]:
@@ -1056,6 +1204,43 @@ class Engine:
                             self.no_stack.add(s)
                             changed = self.moved(s)
 
+                elif kind == 'spawn':
+                    # INFERENCE 4.1's E-SPAWN / E-SPAWN-J and 4.3's
+                    # T-SPAWN-MOVE / T-SPAWN-SHARE: the same arguments seen
+                    # through two domains. Mirrors AIF_CON_SPAWN.
+                    _, args, sp_scope, joined = c
+                    for s in self.resolve(args):
+                        if joined:
+                            # E-SPAWN-J. The argument has to outlive the join
+                            # and nothing more. INFERENCE calls this the place
+                            # structured concurrency pays, and this branch is
+                            # the whole difference between T1 and T4.
+                            j = escape_join(scopes, self.E[s], ('R', sp_scope))
+                            if j != self.E[s]:
+                                self.E[s] = j
+                                changed = self.moved(s)
+                        else:
+                            # E-SPAWN. An unjoined task may outlive every scope
+                            # here, so the value is reachable from a root whose
+                            # end this analysis cannot see.
+                            if self.E[s] != GLOBAL:
+                                self.E[s] = GLOBAL
+                                changed = self.moved(s)
+
+                        # T-SPAWN-MOVE. The argument was moved in, so exactly
+                        # one task can reach it at a time. Transferred, not
+                        # CrossThread -- this is the case T3's non-atomic count
+                        # is sound for, and keeping it out of CrossThread is the
+                        # entire point of SPEC 11 item 10.
+                        if self.T[s] < TRANSFERRED:
+                            self.T[s] = TRANSFERRED
+                            changed = self.moved(s)
+
+                        # T-SPAWN-SHARE is not here. It is a per-site rule
+                        # below: the argument is not the only thing the task
+                        # can reach, and the sharing shows up on what it
+                        # reaches rather than on the argument itself.
+
                 elif kind == 'escape_global':
                     for s in self.resolve(c[1]):
                         if self.E[s] != GLOBAL:
@@ -1088,6 +1273,33 @@ class Engine:
                 if (len(self.container_of[s_id]) >= 2
                         and self.A[s_id] < SHARED):
                     self.A[s_id] = SHARED
+                    changed = self.moved(s_id)
+                # T-SPAWN-SHARE, as a per-site rule over the two facts.
+                #
+                # The premise is A = Shared rather than syntax because under
+                # affine references INFERENCE's "y is still live in the parent"
+                # is never syntactically true -- the move checker rejects any
+                # program that names the value twice. SHARED is INFERENCE 2.2's
+                # "two or more references whose relative lifetimes are not
+                # statically ordered", which is the fact that survives.
+                #
+                # Per-site rather than on the spawn's arguments because testing
+                # the arguments alone is unsound: the argument is the
+                # container, and the shared thing is the element, which reaches
+                # Transferred through T-REACH and appears in no spawn's value
+                # set. tests/aif_concurrency_shared.psm is that program.
+                if (self.T[s_id] >= TRANSFERRED and self.A[s_id] >= SHARED
+                        and self.T[s_id] < CROSS_THREAD):
+                    self.T[s_id] = CROSS_THREAD
+                    changed = self.moved(s_id)
+                # T-STATIC. A static root in a program with concurrency is
+                # assumed reachable from every task. INFERENCE calls this
+                # deliberately blunt, and refining it wants a global
+                # reachability analysis whose payoff is small where static
+                # mutable roots are rare.
+                if (self.has_tasks and self.E[s_id] == GLOBAL
+                        and self.T[s_id] < CROSS_THREAD):
+                    self.T[s_id] = CROSS_THREAD
                     changed = self.moved(s_id)
                 # C-UNIQUE / C-TYPE (INFERENCE 4.4 stage 2)
                 acyclic = (self.A[s_id] == UNIQUE
@@ -1145,6 +1357,16 @@ class Engine:
             self.E[s] = GLOBAL
             self.A[s] = SHARED
             self.C[s] = MAYBE_CYCLIC
+            # Top of the T lattice too -- but only where a task exists to reach
+            # it from. Skipping the raise entirely would make a truncated build
+            # *cheaper* than a converged one, which is the unsoundness widening
+            # exists to prevent. Guarding it is not a weakening: "this program
+            # contains no spawn" is not something the iteration was trying to
+            # prove and ran out of rounds for, it is something the constraint
+            # set already said. CrossThread in a task-free module would be a
+            # false statement that costs atomics.
+            if self.has_tasks:
+                self.T[s] = CROSS_THREAD
         self.widened = u
 
 
@@ -1157,7 +1379,7 @@ THETA_STACK_FIELDS = 8      # A5: field-count stand-in for a byte threshold
 
 def tier_of(model, eng, sid):
     site = model.sites[sid]
-    E, A, C = eng.E[sid], eng.A[sid], eng.C[sid]
+    E, A, C, T = eng.E[sid], eng.A[sid], eng.C[sid], eng.T[sid]
 
     # in_container joins no_stack for the same reason: the container reclaims its
     # elements, and a frame slot is not something a deallocator can take.
@@ -1167,13 +1389,24 @@ def tier_of(model, eng, sid):
             and site.kind == 'struct' and site.nfields <= THETA_STACK_FIELDS
             and sid not in eng.no_stack and not eng.container_of[sid]):
         return 'T0'
+    # Neither this clause nor T0's tests T, which is SPEC 4.2 read literally: a
+    # value whose escape bottoms inside a region never left it, and E-SPAWN-J is
+    # what keeps a joined task's arguments there. INFERENCE 4.1's "this single
+    # distinction determines whether concurrent code lands at T1 or T4" shows up
+    # here as the *absence* of a test.
     if E != CALLER and E != GLOBAL:
         return 'T1'
-    if A <= BORROWED:
+    if A <= BORROWED and T <= TRANSFERRED:
         return 'T2'
-    if C == ACYCLIC:
+    if T <= TRANSFERRED and C == ACYCLIC:
         return 'T3'
-    return 'T4b'            # T4a is unreachable: no concurrency (A4)
+    # REQUIREMENTS 15 made this reachable; A4 used to say it was not, because
+    # the language had no tasks. A module with no `spawn` still cannot get here:
+    # nothing raises T above ISOLATED without a spawn constraint, so both
+    # conjuncts above stay true and the ladder reads exactly as it did.
+    if T == CROSS_THREAD:
+        return 'T4a'
+    return 'T4b'
 
 
 # ---------------------------------------------------------------------------
@@ -1303,7 +1536,7 @@ def report(model, eng, converged, args):
         t = tier_of(model, eng, sid)
         tiers[t] += 1
         by_kind[site.kind][t] += 1
-        records.append((site, t, eng.E[sid], eng.A[sid], eng.C[sid]))
+        records.append((site, t, eng.E[sid], eng.A[sid], eng.C[sid], eng.T[sid]))
 
     total = max(1, sum(tiers.values()))
     cheap = tiers['T0'] + tiers['T1'] + tiers['T2']
@@ -1321,7 +1554,7 @@ def report(model, eng, converged, args):
           f"(declared `alias` with nothing to alias -- static, not allocated)")
     print("#")
     print("# tier distribution  (BENCHMARKS H1: static D over abstract values)")
-    for t in ('T0', 'T1', 'T2', 'T3', 'T4b'):
+    for t in ('T0', 'T1', 'T2', 'T3', 'T4b', 'T4a'):
         n = tiers[t]
         bar = '#' * int(60 * n / total)
         print(f"  {t:4} {n:6}  {100*n/total:5.1f}%  {bar}")
@@ -1333,23 +1566,32 @@ def report(model, eng, converged, args):
 
     print("\n# by allocation kind -- where the residue actually lives")
     hdr = f"  {'kind':8} {'sites':>6} " + ' '.join(f'{t:>6}' for t in
-                                                   ('T0','T1','T2','T3','T4b'))
+                                                   ('T0','T1','T2','T3','T4b','T4a'))
     print(hdr)
     for kind in sorted(by_kind, key=lambda k: -sum(by_kind[k].values())):
         c = by_kind[kind]
         n = sum(c.values())
         print(f"  {kind:8} {n:6} " +
-              ' '.join(f"{c[t]:6}" for t in ('T0','T1','T2','T3','T4b')))
+              ' '.join(f"{c[t]:6}" for t in ('T0','T1','T2','T3','T4b','T4a')))
 
     if args.sites:
         print("\n# worst offenders (T3/T4 by source position)")
-        bad = [r for r in records if r[1] in ('T3', 'T4b')]
+        bad = [r for r in records if r[1] in ('T3', 'T4b', 'T4a')]
         bad.sort(key=lambda r: (r[0].file, r[0].line))
-        for site, t, E, A, C in bad[:args.sites]:
+        for site, t, E, A, C, T in bad[:args.sites]:
             path = model.files.get(site.file, '?')
             e = 'Global' if E == GLOBAL else ('Caller' if E == CALLER else 'Region')
             print(f"  {t:4} {site.type:16} {path}:{site.line}:{site.col}"
-                  f"   E={e} A={ALIAS_NAME[A]}")
+                  f"   E={e} A={ALIAS_NAME[A]} T={THREAD_NAME[T]}")
+
+    # INFERENCE 2.3, as a distribution. Compared by tools/aif_differential.py,
+    # which is the point: the tier counts alone cannot separate "the thread
+    # module agrees" from "neither implementation has one", and for six sessions
+    # neither did.
+    print("\n# thread affinity (INFERENCE 2.3)")
+    threads = Counter(THREAD_NAME[r[5]] for r in records)
+    for name in ('Isolated', 'Transferred', 'CrossThread'):
+        print(f"  {name:12} {threads[name]}")
 
     print(f"\n# cyclicity (CYCLES 1-2)")
     cyc = [t for t, ok in model.type_acyclic.items() if not ok]

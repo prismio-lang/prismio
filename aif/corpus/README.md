@@ -43,4 +43,7 @@ prismio build g4_ecs_world.psm -o g4.exe
 - **No closures anywhere**, because the language has none — which is why the T3 path is untested
   rather than absent (INFERENCE §4.5, [../evidence/EVALUATION.md](../evidence/EVALUATION.md) §5).
 - **No `region` annotation**, so every allocation lands T2 where it should land T1.
-- **No concurrency**, so the thread-affinity domain is vacuous throughout.
+- **No concurrency**, so the thread-affinity domain is `Isolated` throughout. The domain
+  itself is no longer vacuous (REQUIREMENTS 15) — the corpus simply does not spawn, which
+  is why `tests/aif_concurrency.psm` and `tests/aif_concurrency_shared.psm` carry that
+  coverage instead and are in the differential's source list for exactly that reason.

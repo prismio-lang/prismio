@@ -12,9 +12,8 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
   IR for `src/main.psm` is byte-identical to the warm build's.
-- **128/128 tests** as of 2026-08-19 (120 at the session's start; `test_64_generics`,
-  `test_65_map`, `test_66_payload_enums`, `test_67_option_result`, `neg_27_generic_arity`,
-  `neg_28_enum_infer`, `neg_29_match_not_exhaustive` and `neg_30_unreachable_arm` since), of which
+- **130/130 tests** as of 2026-08-19 (128 before the concurrency session, which added the
+  `aif_concurrency` runner test and then `test_68_optional_returns.psm`), of which
   **31** are negative and each asserts *which* diagnostic it
   expects. The runner globs `neg_*.psm`, so the count is `ls tests/neg_*.psm | wc -l` and nothing
   else; this line said 26 while the tree held 27, which is the same rot the note below describes. (This line read "76/76" for six sessions after it
@@ -413,6 +412,162 @@ LAYOUT §3.2's W3 sandbox obligations. Shipping the syntax without the runner is
 this item was ordered around, pointed the other way: a producer that produces nothing. The
 instrumentation point already exists when someone wants it — `ir_struct_field_ptr` is the single
 choke point for field access, the way `ir_alloc_object` is for allocation.
+
+---
+
+## Session of 2026-08-19 (concurrency) — the `T` domain stops being vacuous, and T4a is emitted for the first time
+
+**State, verified on the tree.** Suite **129/129** (128 at the session's start; `aif_concurrency` is
+new). Two-generation fixpoint `S9c1 == S9c2`. **93 of 94 pre-existing programs emit byte-identical
+IR**, the exception being `src/main.ll`, which changed because `src/` did. Differential agrees on
+**17** sources, two of them concurrent. **Last-good: `build/S9c2`.** The seed was not refreshed and
+did not need to be — `src/` uses no `spawn`.
+
+### What this closes
+
+`aif/implementation/COMPILER-AUDIT.md` finding 7: "there is no concurrency, so the `T` domain is
+vacuous and T3 vs T4a is undecidable-by-absence", rated *"Medium — actually simplifying, for now"*.
+That was the right call and it had an expiry date. What it deferred was not the rules — those were
+written in INFERENCE 4.3 all along — but the only question that matters: **T3's non-atomic count is
+sound only because nothing crosses a thread boundary**, and nothing could establish that while
+nothing could cross one.
+
+Note the filename. There is also a root `COMPILER_AUDIT.md`, with an underscore, whose §7 is about
+testing and CI. The brief said "COMPILER-AUDIT finding 7" and meant the hyphenated one in
+`aif/implementation/`.
+
+### 1. The assertion the session was built around, and it holds
+
+A single-threaded program emits **byte-identical** code to before the change, and it does so
+*structurally* rather than by measurement. A module with no `spawn` raises no site above
+`AIF_T_ISOLATED`: T-SPAWN-\* fires only on a spawn constraint, T-REACH can only propagate what some
+rule already raised, and T-STATIC is guarded on `program_has_tasks`. So `T <= Transferred` holds
+everywhere, SPEC 4.2's two new conjuncts are tautologies, and the ladder reads exactly as it did.
+
+The one place that argument had a hole was **widening**. `aif_widen` raises everything in the
+frontier to top, and raising `T` to `CrossThread` made truncated single-threaded builds derive T4a
+— which broke `aif_widening` immediately and would have put atomics in a program with no threads.
+The raise is now guarded on `program_has_tasks`, and the guard is not a weakening: "this program
+contains no spawn" is not something the iteration was trying to prove and ran out of rounds for, it
+is something the constraint set already said. Skipping the raise entirely *would* have been
+unsound; making it unconditional was merely false.
+
+### 2. Two departures from INFERENCE 4.3, both deliberate, both invisible to the differential
+
+Shared decisions are exactly what an independent oracle cannot catch, so both are argued at the
+rule in `runtime/aif_support.c` and repeated in `aif/prototype/aif.py`.
+
+**T-SPAWN-SHARE's premise is `A = Shared`, and the rule is per-site.** INFERENCE writes the premise
+as "y is still live in the parent", which under affine references is never *syntactically* true —
+the move checker rejects any program naming the value twice. `Shared` is INFERENCE 2.2's "two or
+more references whose relative lifetimes are not statically ordered", which is the fact that
+survives. This is the move C-UNIQUE already makes one domain over: the aliasing module does the
+work and the derived domain reads its answer.
+
+**Per-site, not on the spawn's arguments — and testing the arguments was the first version and it
+was unsound.** The spawn's argument is the *container*; the shared thing is the element, which
+reaches `Transferred` through T-REACH and appears in no spawn's value set.
+`tests/aif_concurrency_shared.psm` is that program, and it derived **T3 with a non-atomic count for
+a value two threads could reach**. Read the rule as one sentence: a value that crosses a task
+boundary at all, and has two references nothing ordered, is cross-thread.
+
+**E-SPAWN-J is decided syntactically** — a straight run of statements from spawn to join with
+nothing in between that can leave the block. Anything else answers "not joined", which raises
+escape and costs a tier rather than soundness. `src/sema/flow.psm` already computes per-path
+reachability for the missing-return check; that is where a precise answer comes from and it is
+deliberately not this session's.
+
+### 3. The result, which is more interesting than the feature
+
+**Under isolation, T4a is hard to reach on purpose.** A value cannot become cross-thread by being
+passed around — `spawn f(x)` moves `x`, so the parent's binding is dead. The two doors left open
+are the whole CrossThread population: a static root (T-STATIC, blunt by design), and a value that
+was already `Shared` before it crossed. Both fixtures had to work at it, and *how* they had to work
+at it is the evidence: one detaches a task so nothing joins it, the other launders a value through
+a second container so no binding names it twice.
+
+The second-order result is sharper. With both containers **local**, `aif_concurrency_shared.psm`'s
+element is CrossThread and lands at **T1** — because SPEC 4.2's T1 clause tests only `E`, and a
+joined task cannot outlive the scope its arguments were allocated in. Cross-thread and *no count at
+all*, which is cheaper than the atomic one, reclaimed by the arena reset after the join. That is
+INFERENCE 4.1's "this single distinction determines whether concurrent code lands at T1 or T4"
+arriving somewhere nobody expected it. Making the fixture reach the atomic path took giving it a
+container from the caller.
+
+### 4. Four things that cost time and should not cost it twice
+
+1. **`spawn` was already an identifier in the tree** — `fn spawn(...)` in `aif/corpus/g4_ecs_world.psm`
+   and a struct field `spawn:` in `tests/test_62_split_release.psm`. A reserved keyword would have
+   stopped both compiling and failed the byte-identity rule for a reason unrelated to the change,
+   which is the worst way to lose that signal. Both keywords are **contextual**, settled by one
+   token of lookahead: `spawn` followed by an IDENTIFIER is a spawn, followed by `(` it is a call.
+2. **Adding the `thread` column to the manifest broke five parsers in `tests/test_runner.py` at
+   once**, every one holding a hard-coded `parts[2]` or `parts[5]`. They failed loudly, which was
+   luck — an index sliding onto a neighbouring column reads a plausible string and asserts against
+   it. They now go through `manifest_records()`, which is keyed by column *name*. Two more places
+   needed the same care and would have failed *silently*: `tools/aif_manifest_diff.py`'s `RECORD`
+   regex did not list T4a (so every cross-thread record would have been unparseable, and `parse`
+   ignores what it cannot match), and its `TIER_ORDER` had no T4a either.
+3. **The `@elem` key is one per container *base* type**, and every `List<T>` shares the base `List`.
+   A cross-container push anywhere in a file marks every pushed site in that file as multiply held.
+   The shared-element fixture is a separate file for exactly this reason, and its "control" function
+   had to move out too — it reported CrossThread beside the case it was meant to contrast with.
+   test_48 is the real control: identical aliasing, no spawn, **T3 / Isolated / non-atomic `rc`**.
+4. **An unmodelled `extern` returning a container makes its result `Shared`** (`AIF_CON_OPAQUE`),
+   which then trips T-SPAWN-SHARE. The first draft of the fixture used custom `report_list()`
+   externs and landed the "this must stay non-atomic" case at T4a. Use `list_new`/`list_push`/
+   `list_get`, which the walk summarises.
+
+### 5. Found in passing, fixed immediately after (REQUIREMENTS 4)
+
+**A function declared to return an optional lost the optional-ness through a binding.**
+`let r = f()` on a `-> Node?` function gave a value that could not be compared with `none`.
+Reproduced on `build/S9x2`, so not a regression from this session; it cost the channel fixture its
+drain protocol.
+
+**The cause was not where it looked.** `parseTypeAnnotation` sets `i3` for the `?`,
+`semaDeclaredReturnType` delegates to `semaAnnotationType`, and that peels the suffix — the whole
+path from source to call site was correct, and `f() == none` written *inline* compiled fine. The
+loss was on the way back **out of a binding**: sema stores a local's type as a sem-key string,
+`typeSemKey` wrote optionals as `opt:<inner>`, and `typeFromSemKey` had no branch to read it back,
+so every optional through a `let` decoded to `Invalid`. Optional fields never enter a sem key, which
+is why `tests/test_51_optional_refs.psm` — all fields — stayed green throughout.
+
+One probe separates those two halves in a single build: compare the call result *without* binding
+it. If that compiles, the parse and sema paths are fine and the fault is in the round-trip.
+
+Fixed by adding the missing `opt:` case to `typeFromSemKey` (`src/ast/types.psm`).
+`opt:Invalid` decodes to `none` rather than `typeOptional(Invalid)`, and that is load-bearing:
+`typeSemKey` maps both to the one string, and only `none`'s empty child gets typeEquals's
+"matches any optional" behaviour. Covered by `tests/test_68_optional_returns.psm`, which fails with
+six errors on `build/S9c2`. Suite **130/130**; only `src/main.ll` moved.
+
+### 6. Where the atomics actually are
+
+`rc_retain_atomic` / `rc_release_atomic` in `runtime/lang_runtime.c`, reached through two new
+element dispositions (`AIF_ELEM_RC_ATOMIC` 6, `AIF_ELEM_CYCLE_ATOMIC` 7) and `ir_free_rc_atomic`.
+**A separate symbol chosen at compile time, not a flag the runtime tests** — the point of inferring
+thread affinity is that the answer is known statically, so a value proved never to cross a thread
+boundary should not pay even a predictable branch to establish it. Relaxed on the increment,
+acq_rel on the decrement.
+
+Verified in emitted IR, not just in the manifest: `aif_concurrency_shared.psm` emits
+`list_set_elem_owner(..., i32 6)` and `test_48_aif_shared_elements.psm` emits `i32 3`, and
+`run_aif_concurrency_test` asserts both.
+
+### Next, ranked
+
+1. **Give E-SPAWN-J a real flow analysis.** The syntactic version costs a tier on any spawn with a
+   loop or a conditional between it and its join, which is most real code. `src/sema/flow.psm`
+   already has the machinery.
+2. **The optional-return gap in §5.** Small, pre-existing, and it blocks any FFI that wants to
+   report absence.
+3. **`Task<T>`.** A task handle is a `Ptr` and `join` yields `Int`, which is honest but thin. The
+   restriction is the *lowering* (three `void*` slots and an arity switch), not the model —
+   REQUIREMENTS 3a's closures are what a general answer wants.
+4. **Decide the SPEC 11.0 levels question.** The table gives AIF-1 "Concurrency: none — `T` is
+   vacuous", and this implementation declares AIF-1 and exceeds that row. Not a conformance
+   violation; the table is now describing something the implementation is not.
 
 ---
 

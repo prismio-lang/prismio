@@ -554,6 +554,13 @@ fn generateReleaseFn(structNode: ASTNode) {
                     ir_free_list(value)
                 } else if (disp == AIF_ELEM_RC) {
                     ir_free_rc(value)
+                } else if (disp == AIF_ELEM_RC_ATOMIC or disp == AIF_ELEM_CYCLE_ATOMIC) {
+                    // AIF T4a. The same decrement through the atomic entry
+                    // point. CYCLE_ATOMIC lands here too and gets only the
+                    // count: collector registration is a container's business
+                    // (list_release drives cyc_release), and a struct field is
+                    // not a container.
+                    ir_free_rc_atomic(value)
                 } else if (disp == AIF_ELEM_TYPED) {
                     let ftype = ptr_to_node(field.child1)
                     ir_free_typed(value, releaseFnName(ftype.s1))
