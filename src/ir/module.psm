@@ -170,7 +170,7 @@ fn collectStringsExpr(expr: ASTNode) {
 
 fn declareExternFunction(ext: ASTNode) {
     let mut retType = getDeclaredReturnType(ext, ext.child2)
-    ir_set_var_type(fnKey(functionSymbolName(ext)), retType)
+    ir_set_fn_return_type(functionSymbolName(ext), retType)
 
     ir_declare_function_begin(functionSymbolName(ext), storageType(retType))
     let mut paramPtr = ext.child1
@@ -361,14 +361,18 @@ fn moduleWorkloadCount(module: ASTNode) -> Int {
     return n
 }
 
+// Asked once per extern declaration, from a walk over every declaration, so the
+// walk it used to do was the same quadratic REQUIREMENTS 16 names in sema. Same
+// answer, from the index generateModule fills.
 fn moduleHasFunction(module: ASTNode, name: String) -> Bool {
-    let mut stmtPtr = module.child1
-    while (str_equals(stmtPtr, "") == 0) {
-        let stmt = ptr_to_node(stmtPtr)
-        if (stmt.kind == NodeKind.FUNCTION and str_equals(stmt.s1, name) == 1) {
+    let count = ir_decl_count(name)
+    let mut i = 0
+    while (i < count) {
+        let stmt = ptr_to_node(ir_decl_at(name, i))
+        if (stmt.kind == NodeKind.FUNCTION) {
             return true
         }
-        stmtPtr = stmt.next
+        i = i + 1
     }
 
     return false
@@ -387,19 +391,6 @@ fn registerEnumDecl(enumNode: ASTNode) {
 
 fn registerStructName(structNode: ASTNode) {
     ir_register_struct(structNode.s1)
-}
-
-// The declaration whose name is `name`, or a node that does not exist.
-fn findStructDecl(module: ASTNode, name: String) -> ASTNode {
-    let mut p = module.child1
-    while (str_equals(p, "") == 0) {
-        let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.STRUCT_DECL) {
-            if (str_equals(stmt.s1, name) == 1) { return stmt }
-        }
-        p = stmt.next
-    }
-    return ptr_to_node("")
 }
 
 // The registered type of a field, which is what decides its physical layout:
@@ -441,7 +432,7 @@ fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
         if (isStructTypeKey(depType)) {
             let depName = structTypeName(depType)
             if (str_equals(depName, structNode.s1) == 0) {
-                let depDecl = findStructDecl(module, depName)
+                let depDecl = findStructDeclNamed(module, depName)
                 if (nodeExists(node_to_ptr(depDecl))) {
                     generateStructDecl(depDecl, module)
                 }
@@ -490,8 +481,18 @@ fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
             ir_struct_type_field(fieldType)
             fieldPtr = field.next
         }
+        // Only on the layout the search chose. The fallback above is declaration
+        // order, which is SPEC 7.1's zero-analysis mode -- there is no cut to
+        // apply, and applying one to a different order would put arbitrary fields
+        // behind the cold pointer.
+        ir_struct_type_end()
+        return
     }
 
+    // LAYOUT 6. The cut, in the same index space the loop above just emitted:
+    // aif_layout_field hands hot fields first, so the count is where they stop.
+    // 0 for every type the search left alone.
+    ir_struct_type_split(aif_layout_hot_count(structNode.s1))
     ir_struct_type_end()
 }
 
@@ -564,6 +565,15 @@ fn generateReleaseFn(structNode: ASTNode) {
         i = i - 1
     }
 
+    // LAYOUT 6's hot/cold split, the release half. A split object is two
+    // allocations and ir_free_object below frees one block without knowing its
+    // type; this is the one point in the program that has both the pointer and
+    // the type, which is why `aif_type_releases` is forced true for every split
+    // type -- so that every way a split object can die passes through here.
+    //
+    // Before the object's own free, not after: the cold pointer lives inside the
+    // hot record. A no-op when the type is not split.
+    ir_free_cold(tname, "%p_obj")
     ir_free_object("%p_obj")
     ir_br_numbered(doneLabel)
     ir_label_numbered(doneLabel)
@@ -744,6 +754,10 @@ fn generateModule(module: ASTNode) {
     ir_reset_globals()
     ir_reset_types()
     ir_clear_var_types()
+    ir_reset_fn_return_types()
+    // Rebuilt here rather than inherited from analyzeModule, so codegen does not
+    // depend on which passes ran before it. It is one walk of the top level.
+    indexModuleDeclarations(module)
     // Tell the backend the target's pointer width -- it sizes the allocator's
     // size argument and array GEP indices.
     ir_set_pointer_int_type(irPtrIntType())
@@ -1018,7 +1032,7 @@ fn generateModule(module: ASTNode) {
             if (str_equals(stmt.s1, "main") == 1) {
                 retType = "i32"
             }
-            ir_set_var_type(fnKey(functionSymbolName(stmt)), retType)
+            ir_set_fn_return_type(functionSymbolName(stmt), retType)
             collectStringsFunction(stmt)
         }
         

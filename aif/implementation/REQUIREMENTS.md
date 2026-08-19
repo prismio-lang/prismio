@@ -195,14 +195,30 @@ never need them.
   it feeds a layout cost model (§9) that does not exist. Building it now would mean inventing
   specification for a consumer that cannot use it. Do it with LAYOUT §7.2, not before.
 
-### 10. Per-module optimisation levels **[needed]**
+### 10. Per-module optimisation levels **[specified 2026-08-17, not implemented]**
 
 SPEC §7.2 defines levels per *build*. The target needs them per *module*: engine at `max`, compiled
 once and cached; gameplay at `debug`, rebuilt constantly. A single per-build level forces a choice
 between a slow iteration loop and an unoptimised engine.
 
 Sound by the invariant — every tier is semantically valid, so mixing levels cannot change
-behaviour — but unspecified.
+behaviour — ~~but unspecified~~. **Specified as SPEC §7.5.** Four obligations that are not obvious
+and are the reason it needed writing down rather than building:
+
+- A level boundary is an **inference boundary**: a module analysed at `release` must treat a
+  `debug` module's functions as an undeclared `extern` (FFI §1's conservative default), because a
+  `debug` module proved nothing. Reading summaries across the boundary rests a tier on an analysis
+  that never ran.
+- Lowering a module's level invalidates every module that depends on it, the same way INFERENCE §9
+  invalidates a reverse-reachable set. The level is part of the cache key.
+- **Layout is not per module** — one layout per type, chosen by the declaring module, read from the
+  manifest by every other. Two modules disagreeing about a field offset is a miscompile.
+- **`verify` is not per module** — the allocator seam has to swap at both ends of every allocation.
+
+It also needs the thing this compiler does not have: a compilation unit. Everything is merged into
+one module before sema runs (`resolveImports`), and the emitted IR is one `.ll`, so there is no
+per-module object to compile at a level or to cache. That is the same prerequisite REQUIREMENTS 21
+(PIR) names, and it is what makes this item large rather than the specification.
 
 *Source:* TARGET §2.5.
 
@@ -223,7 +239,7 @@ Deepest change on this list.
 
 ## Tier 3 — enabling AIF's own implementation
 
-### 13. Generic containers — `Map<K,V>`, growable `Vec<T>` **[enabling]**
+### 13. Generic containers — `Map<K,V>`, growable `Vec<T>` — **PARTLY DONE, 2026-08-19**
 
 The inference engine needs a graph with dynamic insertion, per-node lattice records, a worklist,
 and hashing over context tuples. Prismio has structs, fixed arrays and a hardcoded `List<T>`; no
@@ -233,11 +249,88 @@ It is writable with parallel arrays and integer indices — the current compiler
 — but it is materially larger and more error-prone in the one component where a silent bug yields a
 wrong-tier binary. **Land containers before the engine, not after.**
 
+**Generics landed** (`src/sema/generics.psm`), with monomorphisation: `fn f<T>`, `struct S<K,V>`,
+inference from argument types, explicit arguments where inference has nothing to read. One body per
+distinct type-argument tuple, so `Box<Int>` emits `{ i32 }` and not a boxed pointer.
+
+**`Vec<T>` needed nothing, and that is the finding.** `List<T>` *is* the growable vector —
+`XefyList` in `lang_runtime.c` is a `void**` that doubles on push, and the runtime's own comment
+calls `list_new_with_capacity` "Vec::with_capacity". A `Vec<T>` would have been a second name for
+it. This item read as two missing containers for six sessions and was one.
+
+**`Map<K,V>` landed** as `std/map.psm`, in Prismio, over two `List`s. Two limits, both language
+gaps rather than unfinished work:
+
+- **Lookup is linear, not hashed.** Hashing `K` needs a hash function per key type and a way to
+  dispatch to it, which is bounded type parameters — traits. Every function is written in terms of
+  `mapIndexOf`, so bounds turn that one body into a hash table with no caller change.
+- **Keys must be `==`-comparable, i.e. scalar.** `Map<String, V>` does not instantiate, because
+  `String ==` is deliberately rejected. Less limiting than it looks for the caller this item exists
+  for: `aif_support.c` interns everything to `int` ids and keys its tables on those.
+
+**How much of `runtime/aif_support.c` should now move into Prismio? Almost none, and the blocker is
+item 18 rather than a judgement call.** Its containers are bitsets, interning tables, points-to key
+tuples and a worklist, all over raw memory. Writing any of them in Prismio needs two things the
+language does not have: the size of a type (item 18, still open) and a way to index raw memory as
+`T` — `Ptr` is opaque, with no arithmetic, no deref and no indexing. `List<T>` cannot be written in
+Prismio either, for exactly this reason, which is why item 1's replacement test could not be run as
+written. What *can* move today is anything expressible as a map or list over interned integer ids,
+which is the solver's bookkeeping but not its storage. Revisit when item 18 lands; until then the
+answer is "none", and it is a capability statement rather than an inherited preference.
+
 *Source:* GAPS §4.3.
 
-### 14. Error handling — tagged unions, `Option` / `Result` **[enabling]**
+### 14. Error handling — tagged unions, `Option` / `Result` — **DONE, 2026-08-19**
 
-Failure is signalled by sentinel return values. Overlaps with item 4.
+Failure was signalled by sentinel return values. Overlaps with item 4.
+
+**Done.** Enum variants carry payloads (`src/sema/enums.psm`), and `Option<T>` / `Result<T, E>` are
+ordinary generic enums in `std/option.psm` — nothing about them is in the compiler.
+
+**The representation is a tagged *product*, not a tagged union, and that is forced by item 18.**
+Overlapping the variants needs the size of the widest one, so instead each payload slot gets its
+own field: `enum Shape { Dot, Circle(Int), Rect(Int, Int) }` becomes
+`struct Shape { $tag: Int, Circle$0: Int, Rect$0: Int, Rect$1: Int }`. `Option<T>` loses nothing —
+one variant carries anything — while a many-armed enum is larger than it needs to be. When item 18
+lands, the overlap goes in that one file and no caller changes.
+
+The desugaring is an AST transform, so sema, AIF, the layout optimiser and codegen were not taught
+what a payload enum is; they see a struct, and field access stays a `getelementptr`. Same
+architecture as monomorphisation, deliberately.
+
+Four things to know before touching it:
+
+- **Tags are one-based.** The tag is the struct's first field, and no type punned through `String`
+  may have a zero-valued first field — a struct whose first four bytes are zero is
+  indistinguishable from an empty slot. A first variant with tag 0 would make every value of it
+  read as absent.
+- **Variant order is the compiled form.** The tag is the variant's position, so reordering the
+  variants of `Option` changes what already-compiled code expects. Append, never insert.
+- **It found and fixed a pre-existing defect.** A struct literal that omitted a field type-checked
+  and then *read uninitialised memory*: allocation is `malloc`, and codegen only stored the fields
+  the literal listed. `semaFillOmittedFields` now appends a zero for every omitted field, for all
+  structs rather than only these. That is also what makes `Option.None` safe — it mentions only the
+  tag, and the `Some` slot has to be a defined value.
+- **`Result.Ok(5)` cannot infer `E`.** Type arguments are solved from what a variant carries, and
+  nothing in `Ok` mentions the error type; there is no inference from the expected type. It must be
+  written `Result<Int, String>.Ok(5)`, and the compiler says so by name (`neg_28_enum_infer`).
+
+**Exhaustiveness is checked.** A match over a payload enum must cover every variant or carry a `_`
+arm, and the diagnostic names what is missing (`neg_29_match_not_exhaustive`). A second arm for a
+variant an earlier arm already matches is rejected as unreachable (`neg_30_unreachable_arm`). Both
+are payload enums only: a fieldless enum still matches as an integer, where the scrutinee is not
+confined to the declared variants, so matching a subset stays legal.
+
+Not done, each for a stated reason rather than for lack of time:
+
+- **No propagation operator.** It needs a defined interaction with ownership and with cleanup during
+  a non-local exit; neither is specified, and shipping the syntax first is the producer-with-no-
+  product mistake this file has made before.
+- **No `unwrap`.** Deliberate. `optionOr`/`resultOr` take a fallback, so the absent case is handled
+  at the use site rather than deferred to a crash.
+- **`Result.Ok(5)` cannot infer `E`.** Type arguments are solved from what a variant carries, and
+  nothing in `Ok` mentions the error type. Fixing it means inference from the *expected* type — a
+  bidirectional pass, which is its own feature. Diagnosed by name in the meantime.
 
 ### 15. Concurrency / task model **[needed for `T`]**
 
@@ -245,11 +338,30 @@ No tasks, so the thread-affinity domain is vacuous and T4a is unreachable by con
 job-system target this moves from AIF-3 to gating: INFERENCE's E-SPAWN vs E-SPAWN-J rule is what
 decides whether job-local data lands T1 or T4, and it needs a task model to attach to.
 
-### 16. Fix superlinear compile time **[enabling]**
+### 16. Fix superlinear compile time — **DONE, 2026-08-17**
 
 Sema scans the module per identifier for function lookup (~290 ms for the 155 KB compiler, ~500 ms
 for a 105 KB single module). Whole-program fixed-point iteration lands on top of that; fix it first
 or AIF's cost cannot be attributed.
+
+**Fixed.** There were four scans, not one, and they were in three passes:
+
+| where | what it scanned | per |
+|---|---|---|
+| `semaFindFunctionOverload` | every top-level declaration | call site |
+| `find_binding` (`ir_symbols.c`) | the whole binding table, whose floor is one `$fn$` entry per function | identifier, in sema *and* in codegen |
+| `hasNamedTopLevel` (`main.psm`) | everything merged so far | merged declaration |
+| `appendStatement` (`main.psm`) | to the end of the list | merged declaration |
+
+All four are gone: a name → declaration index in `ir_symbols.c` filled once per module, a
+dedicated table for function return types, and a cached tail for the merge. Measured, minimum of
+five runs, on a 4 000-function module: `check` 1.241 s → **0.088 s**. On the compiler's own 518 KB
+of source: `check` 0.126 s → **0.039 s**, emit-IR 0.183 s → **0.090 s**. Frontend time is linear in
+module size over 31 KB–922 KB.
+
+Attribution, which is what this item existed for: the whole AIF fixed point costs **18 ms** on the
+compiler's own source — 19% of the frontend and under 1% of a build. See HANDOFF "Session of
+2026-08-17 (compile time)".
 
 *Source:* `self/HANDOFF.md` known gaps.
 

@@ -1,0 +1,67 @@
+// Enum variants that carry values, and the `match` that takes them apart.
+//
+// The representation is a tagged struct (src/sema/enums.psm), so the cases worth
+// pinning are the ones where that shows through: a variant carrying nothing must
+// still be the struct and not an integer, the absent variant's payload slot must
+// be a defined value rather than whatever was in that memory, and a fieldless
+// enum must be completely unaffected.
+
+extern fn str_equals(s1: String, s2: String) -> Int
+
+enum Shape {
+    Dot,
+    Circle(Int),
+    Rect(Int, Int)
+}
+
+// Untouched by any of this: no payload anywhere, so it stays an i32 constant.
+enum Color {
+    Red,
+    Green
+}
+
+fn area(s: Shape) -> Int {
+    match (s) {
+        Shape.Dot => { return 0 }
+        Shape.Circle(r) => { return 3 * r * r }
+        Shape.Rect(w, h) => { return w * h }
+    }
+    return -1
+}
+
+fn describe(s: Shape) -> String {
+    match (s) {
+        Shape.Circle(r) => { return "circle" }
+        _ => { return "other" }
+    }
+    return "unreachable"
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (area(Shape.Circle(2)) != 12) { return fail("Circle payload") }
+    if (area(Shape.Rect(3, 4)) != 12) { return fail("Rect binds two values") }
+    if (area(Shape.Dot) != 0) { return fail("payload-free variant") }
+
+    // A wildcard arm alongside variant arms.
+    if (str_equals(describe(Shape.Circle(1)), "circle") == 0) { return fail("variant arm") }
+    if (str_equals(describe(Shape.Dot), "other") == 0) { return fail("wildcard arm") }
+
+    // The fieldless enum still compares as an integer, and match on it is the
+    // path this feature must not have disturbed.
+    let c = Color.Green
+    let mut seen = 0
+    match (c) {
+        Color.Red => { seen = 1 }
+        Color.Green => { seen = 2 }
+    }
+    if (seen != 2) { return fail("fieldless enum match") }
+
+    println("PASS: payload enums")
+    return 0
+}

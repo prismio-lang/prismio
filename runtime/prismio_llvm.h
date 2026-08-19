@@ -207,6 +207,13 @@ void LLVMAddAttributeAtIndex(LLVMValueRef F, unsigned Idx, LLVMAttributeRef A);
 typedef struct LLVMOpaqueTargetData *LLVMTargetDataRef;
 LLVMTargetDataRef LLVMGetModuleDataLayout(LLVMModuleRef M);
 unsigned LLVMABIAlignmentOfType(LLVMTargetDataRef, LLVMTypeRef Ty);
+// LAYOUT 6's hot/cold split. A T3 object's cold block is reached from the
+// *runtime*, which has only a pointer and a byte offset -- so rc_alloc's spare
+// header word is told where in the hot record the link sits, and that number is
+// the one LLVM placed it at rather than a recomputed guess. Same reason
+// LLVMABIAlignmentOfType is read back above.
+unsigned long long LLVMOffsetOfElement(LLVMTargetDataRef, LLVMTypeRef StructTy,
+                                       unsigned Element);
 LLVMValueRef LLVMBuildGEP2(LLVMBuilderRef, LLVMTypeRef Ty, LLVMValueRef Pointer,
                            LLVMValueRef *Indices, unsigned NumIndices, const char *Name);
 LLVMValueRef LLVMBuildInBoundsGEP2(LLVMBuilderRef, LLVMTypeRef Ty, LLVMValueRef Pointer,

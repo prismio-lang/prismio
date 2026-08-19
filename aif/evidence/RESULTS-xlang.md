@@ -15,6 +15,55 @@ python3 aif/evidence/xlang/bench.py --compiler build/gen2 --runs 20
 
 ---
 
+## 0.1 · Re-measured 2026-08-17, first pass since the `allocs` fix — and the spreads are the finding
+
+`bench.py --runs 20 --compiler build/L5`, the same host class, with **arena placement, the hot/cold
+split and `pin` all in** and the harness's allocation window fixed (RESULTS-layout §6). Loop-time
+medians, ratios against each variant:
+
+| prog | Prismio | vs Rust idiomatic | vs Rust hand-tuned | vs Swift |
+|---|---:|---:|---:|---:|
+| g1 | 50.1 ms | 1.42× | 3.48× | 1.43× |
+| g2 | 210.2 ms | 5.59× | 10.10× | 3.39× |
+| g3 | 101.0 ms | 1.15× | 1.63× | 1.01× |
+| g4 | 127.6 ms | 3.06× | 3.69× | **0.89×** |
+| g5 | 134.1 ms | 2.43× | 10.81× | 1.10× |
+| g6 | 390.7 ms | 3.89× | 5.39× | 1.45× |
+
+**1.15×–5.59× idiomatic Rust**, and Prismio is at or ahead of Swift on three of six (g3 1.01×, g5
+1.10×, g4 0.89×). The idiomatic-Rust band is materially unchanged from §1's 1.12×–5.57×, which is
+worth stating plainly: **none of the three memory-model features that landed since moved the
+cross-language standing on this corpus.** They were measured individually and the individual results
+stand; the corpus total is where they do not show.
+
+**The per-program run-to-run spread is the more useful output, because it says what each program can
+resolve.** Min–max of the loop median over 20 runs, as a percentage of the median:
+
+| prog | spread | can it resolve a 13% effect? |
+|---|---:|---|
+| g5 | **3.6%** | yes |
+| g6 | 8.7% | marginally |
+| g2 | 9.2% | marginally |
+| g3 | 11.3% | no |
+| g1 | **15.9%** | **no** |
+| g4 | 29.1% | no |
+
+This settles a question two sessions have argued about. **g1's own noise band is wider than the
+0.87× effect being hunted on it** — 15.9% against 13% — so "re-take g1's number on a quiet host" is
+necessary but may not be sufficient, and the four-run 0.958×–1.061× disagreement in RESULTS-layout
+§2.1 is fully explained by it. **g5 is the program on this corpus with the headroom to resolve a
+layout effect**, at a 3.6% band, and it carries three split types (`Mesh 2/6`, `Texture 4/7`,
+`Entity 3/6`). An A/B that wants a number rather than a direction should run there, or on
+`layout_repr.c`, which resolves it at every size.
+
+The allocation column, corpus-wide, confirms what §6 of RESULTS-layout fixed: on the four programs
+whose workload allocates lightly, the **process total is 5.7×–8.7× the windowed figure** — g1
+4,214 against 28,252, g3 5,675 / 49,383, g4 9,260 / 59,272, g5 4,294 / 24,308. Reporting overhead
+was most of that column. g2's windowed 10,202,215 lands within 1,000 of the independently documented
+10,201,215, which is the cross-check that the window is where it claims to be.
+
+---
+
 ## 0 · The one-paragraph answer
 
 The session was called to falsify cheaply: *if tuned Rust ties us everywhere, the claim becomes

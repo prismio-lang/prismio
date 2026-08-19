@@ -1346,12 +1346,45 @@ static size_t* rc_slot(void* p) {
     return &((size_t*)p)[-1];
 }
 
+// LAYOUT 6's hot/cold split, the T3 half.
+//
+// `rc_release` frees one block and cannot name the type -- a counted value's last
+// holder is a container's teardown, which arrives holding a bare pointer. That is
+// the one release path the generated `__aif_release_T` does not cover, and it is
+// where a split would leak its cold block.
+//
+// **RC_HDR is 16 bytes with 8 in use, so the fix is already paid for.** The
+// second word holds the *byte offset* of the link within the payload, stamped at
+// construction exactly as `cyc_set_type` stamps a descriptor, and `rc_release`
+// reads the cold pointer from there. No function pointer, no per-type table, and
+// no extra call on the release path.
+//
+// Offset 0 means "not split", and it is sound rather than convenient: field 0 is
+// pinned hot and placed first, so no hot record can carry its link at byte 0.
+static size_t* rc_cold_slot(void* p) {
+    return &((size_t*)p)[-2];
+}
+
 void* rc_alloc(size_t size) {
     unsigned char* base = (unsigned char*)rt_base_alloc(size + RC_HDR);
     if (!base) return 0;
     void* payload = base + RC_HDR;
     *rc_slot(payload) = 0;
+    *rc_cold_slot(payload) = 0;
     return payload;
+}
+
+// Allocates the cold half of a split T3 object, links it, and records where the
+// link is. Emitted by ir_alloc_rc immediately after rc_alloc, so the object is
+// whole before any field initialiser runs.
+//
+// Through rt_base_alloc, like rc_alloc itself, so a verify build accounts for
+// both halves in one ledger and rc_release's rt_free pairs with it.
+void rc_attach_cold(void* p, size_t cold_size, size_t link_offset) {
+    if (!p || link_offset == 0) return;
+    void* cold = rt_base_alloc(cold_size);
+    *(void**)((unsigned char*)p + link_offset) = cold;
+    *rc_cold_slot(p) = link_offset;
 }
 
 void rc_retain(void* p) {
@@ -1363,6 +1396,11 @@ void rc_release(void* p) {
     size_t* c = rc_slot(p);
     if (*c == 0) return;            // never retained: nothing holds it, nothing frees it
     if (--(*c) == 0) {
+        // The cold block first: its pointer lives *inside* the payload, so reading
+        // it after the base has gone is a use-after-free -- and in a verify build,
+        // a read of poisoned bytes handed straight to the deallocator.
+        size_t off = *rc_cold_slot(p);
+        if (off) rt_free(*(void**)((unsigned char*)p + off));
         rt_free((unsigned char*)p - RC_HDR);
     }
 }

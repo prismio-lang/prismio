@@ -132,10 +132,58 @@ fn parsePostfix(p: Parser) -> ASTNode {
     return expr
 }
 
+// Does an identifier at the cursor begin `Name<...>` followed by `opener`?
+//
+// A pure scan over the token chain: it builds nothing and, crucially, **mutates
+// nothing**. The obvious implementation is to speculatively parse the argument
+// list and rewind on failure, and it is wrong here for one specific reason --
+// parserExpectCloseAngle splits a `>>` token in place, and that edit survives a
+// rewind. `a < b >> c` would come back from a failed speculation as `a < b > c`.
+//
+// Scanning cannot decide the general case and does not try. It admits only the
+// tokens a type argument list can contain, so anything else -- an operator, a
+// literal, a call -- settles it as a comparison immediately.
+fn parserLooksLikeTypeArgs(p: Parser, opener: String) -> Bool {
+    let mut tok = ptr_to_token(p.current).tokNext
+    if (str_equals(tok, "") == 1) { return false }
+    if (str_equals(ptr_to_token(tok).value, "<") == 0) { return false }
+
+    let mut depth = 1
+    tok = ptr_to_token(tok).tokNext
+    while (str_equals(tok, "") == 0 and depth > 0) {
+        let current = ptr_to_token(tok)
+        if (current.type == TokenType.IDENTIFIER) {
+            // nothing to do: a type name
+        } else if (str_equals(current.value, "<") == 1) {
+            depth = depth + 1
+        } else if (str_equals(current.value, ">") == 1) {
+            depth = depth - 1
+        } else if (str_equals(current.value, ">>") == 1) {
+            depth = depth - 2
+        } else if (str_equals(current.value, ",") == 1) {
+            // nothing to do: an argument separator
+        } else if (str_equals(current.value, "[") == 1) {
+            // nothing to do: an array element type
+        } else if (str_equals(current.value, "]") == 1) {
+            // nothing to do
+        } else if (str_equals(current.value, "?") == 1) {
+            // nothing to do: an optional suffix
+        } else {
+            return false
+        }
+        tok = current.tokNext
+    }
+
+    if (depth != 0) { return false }
+    if (str_equals(tok, "") == 1) { return false }
+    return str_equals(ptr_to_token(tok).value, opener) == 1
+}
+
+// The cursor is on the `{`. Both callers have consumed the name already -- the
+// generic one had to consume an argument list between the two.
 fn parseStructLiteral(p: Parser, name: Token) -> ASTNode {
     let structLit = parserNode(p, NodeKind.STRUCT_LITERAL_EXPR)
     structLit.s1 = name.value
-    parserAdvance(p)
     parserExpectVal(p, TokenType.SEPARATOR, "{", "struct literal")
 
     let fields = nodeList()
@@ -252,9 +300,102 @@ fn parsePrimary(p: Parser) -> ASTNode {
 
     if (current.type == TokenType.IDENTIFIER) {
         let next = parserPeek(p)
+
+        // REQUIREMENTS 15. `spawn f(a)` and `join t`.
+        //
+        // **Contextual, not reserved**, and that is not a stylistic choice: the
+        // tree already contains `fn spawn(w: World, seed: Float)` in
+        // aif/corpus/g4_ecs_world.psm and a struct field named `spawn` in
+        // tests/test_62_split_release.psm. Reserving the word would stop both
+        // compiling, and a corpus program that no longer builds fails the
+        // byte-identical-output rule for a reason that has nothing to do with
+        // the change being made -- which is the worst way to lose that signal.
+        //
+        // The rule is one token of lookahead and it is exact. A spawn is always
+        // `spawn` followed by the *name* of the function to run, so an
+        // IDENTIFIER follows. An ordinary call to something named `spawn` has a
+        // `(` there, an ordinary use has an operator or a separator, and a field
+        // access reaches its name through `.` and never comes through here at
+        // all. No existing spelling is claimed.
+        if (next.type == TokenType.IDENTIFIER) {
+            if (str_equals(current.value, "spawn") == 1) {
+                let spawnNode = parserNode(p, NodeKind.SPAWN_EXPR)
+                parserAdvance(p)
+                let callee = parsePrimary(p)
+                if (callee.kind != NodeKind.CALL_EXPR) {
+                    diag_error_at(spawnNode.file, spawnNode.line, spawnNode.col, spawnNode.len,
+                                  "`spawn` needs a call: write `spawn f(args)`, naming the function the task runs")
+                }
+                spawnNode.child1 = node_to_ptr(callee)
+                return spawnNode
+            }
+            if (str_equals(current.value, "join") == 1) {
+                let joinNode = parserNode(p, NodeKind.JOIN_EXPR)
+                parserAdvance(p)
+                joinNode.child1 = node_to_ptr(parsePrimary(p))
+                return joinNode
+            }
+        }
+
         let opensStruct = next.type == TokenType.SEPARATOR and str_equals(next.value, "{") == 1
         if (opensStruct and p.allowStructLit == 1) {
+            parserAdvance(p)
             return parseStructLiteral(p, current)
+        }
+
+        // `Box<Int> { value: 7 }`. The type arguments are parsed into a
+        // TYPE_ANNOTATION on child2, where sema resolves them the same way it
+        // resolves the annotation in `let b: Box<Int>` -- so the literal and the
+        // annotation cannot disagree about which instantiation they mean.
+        if (p.allowStructLit == 1 and parserLooksLikeTypeArgs(p, "{")) {
+            parserAdvance(p)
+            let named = parserNode(p, NodeKind.TYPE_ANNOTATION)
+            named.s1 = current.value
+            parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<")
+            parseTypeArgList(p, named)
+
+            let structLit = parseStructLiteral(p, current)
+            structLit.child2 = node_to_ptr(named)
+            return structLit
+        }
+
+        // `vecNew<Int>()` -- explicit type arguments on a call. Needed wherever
+        // inference has nothing to work from: a constructor takes no argument
+        // that mentions its own element type, so `T` is unsolvable there and
+        // has to be written.
+        //
+        // Unlike the struct-literal case this is not gated on allowStructLit.
+        // That flag exists to stop `for i in 0..n {` reading `n {` as a literal,
+        // and a `(` is not a block -- there is nothing for it to disambiguate.
+        // `Option<Int>.None` -- a generic enum's variant, qualified by the
+        // instantiation. The qualifier is left as a TYPE_ANNOTATION and
+        // parseSuffixes hangs the `.` off it, so sema receives the same shape it
+        // gets for `Shape.Dot` with the arguments attached.
+        //
+        // The scan settles this against `a < b . c` on the first `.`, which is
+        // not a token a type argument list may contain.
+        if (parserLooksLikeTypeArgs(p, ".")) {
+            parserAdvance(p)
+            let qualifier = parserNode(p, NodeKind.TYPE_ANNOTATION)
+            qualifier.s1 = current.value
+            parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<")
+            parseTypeArgList(p, qualifier)
+            return parseSuffixes(p, qualifier)
+        }
+
+        if (parserLooksLikeTypeArgs(p, "(")) {
+            parserAdvance(p)
+            let named = parserNode(p, NodeKind.TYPE_ANNOTATION)
+            named.s1 = current.value
+            parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<")
+            parseTypeArgList(p, named)
+
+            let identifier = parserNode(p, NodeKind.IDENTIFIER_EXPR)
+            identifier.s1 = current.value
+            parserExpectVal(p, TokenType.SEPARATOR, "(", "call")
+            let call = parseCall(p, identifier)
+            call.child3 = node_to_ptr(named)
+            return parseSuffixes(p, call)
         }
 
         let identifier = parserNode(p, NodeKind.IDENTIFIER_EXPR)

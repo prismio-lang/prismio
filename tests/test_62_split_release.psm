@@ -1,0 +1,109 @@
+// LAYOUT 6's hot/cold split -- the release half, checked by running it.
+//
+// A split object is **two allocations**, and the two ways to get that wrong point
+// in opposite directions: leak the cold block on the good path, or free it twice
+// on the bad one. Neither is visible in a manifest and neither is visible in the
+// IR. Both are visible in `--verify`'s ledger, which is why `run_split_release_test`
+// builds and runs this rather than reading it.
+//
+// The path that matters is a **container teardown**: 4096 bs go into a list
+// and are reclaimed by `list_release`, where the release arrives holding nothing
+// but a pointer and the type-blind `ir_free_object` cannot serve it. What makes it
+// work is one clause -- `aif_type_releases` is forced true for a split type, so
+// the element disposition is TYPED and `list_release` calls `__aif_release_Body`
+// per element, which is where the cold block goes.
+//
+// The printed value is exact integer arithmetic over the cold fields plus a count
+// of the hot ones: 15 + 15 + 4096 = 4126. A field-access redirect that read the
+// wrong side of the split cannot produce it.
+//
+// **The fixture is worthless if `Body` stops being split**, because both ledger
+// assertions then pass against an unsplit object. The runner asserts the split
+// first, from `--layout`'s `emitted` column.
+//
+// **Reconstructed on 2026-08-19** after the file was deleted by a careless glob,
+// from the emitted IR of the previous generation plus the assertions in
+// `run_split_release_test`. It emits the same split, prints the same value and
+// produces the same ledger; the prose above is new.
+
+struct Body {
+    id: Int,
+    px: Float,
+    py: Float,
+    pz: Float,
+    vx: Float,
+    vy: Float,
+    vz: Float,
+    spawn: Int,
+    lod: Int,
+    flags: Int,
+    layer: Int,
+    owner: Int
+}
+
+fn make_body(n: Int) -> Body {
+    return Body {
+        id: n,
+        px: 0.0, py: 0.0, pz: 0.0,
+        vx: 1.0, vy: 2.0, vz: 3.0,
+        spawn: 1, lod: 2, flags: 3, layer: 4, owner: 5
+    }
+}
+
+fn build(count: Int) -> List<Body> {
+    let mut bs: List<Body> = list_new()
+    let mut i = 0
+    while (i < count) {
+        list_push(bs, make_body(i))
+        i = i + 1
+    }
+    return bs
+}
+
+// The hot path: six fields per body, every body, every frame. This is what makes
+// the position and velocity fields hot in the access profile and leaves the five
+// integers below the cut.
+fn step(bs: List<Body>, dt: Float) {
+    let n = list_len(bs)
+    let mut i = 0
+    while (i < n) {
+        let b = list_get(bs, i)
+        b.px = b.px + b.vx * dt
+        b.py = b.py + b.vy * dt
+        b.pz = b.pz + b.vz * dt
+        i = i + 1
+    }
+}
+
+fn count_ids(bs: List<Body>) -> Int {
+    let n = list_len(bs)
+    let mut seen = 0
+    let mut i = 0
+    while (i < n) {
+        let b = list_get(bs, i)
+        if (b.id >= 0) { seen = seen + 1 }
+        i = i + 1
+    }
+    return seen
+}
+
+// Every field on the cold side, read through the split. Called twice, and not in
+// a loop, which is what keeps these five below the cut.
+fn cold_sum(b: Body) -> Int {
+    return b.spawn + b.lod + b.flags + b.layer + b.owner
+}
+
+fn main() -> Int {
+    let bs = build(4096)
+
+    let mut frame = 0
+    while (frame < 4) {
+        step(bs, 0.5)
+        frame = frame + 1
+    }
+
+    let first = list_get(bs, 0)
+    let last = list_get(bs, 4095)
+    println(cold_sum(first) + cold_sum(last) + count_ids(bs))
+    return 0
+}

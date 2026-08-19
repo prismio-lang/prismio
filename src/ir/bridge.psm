@@ -144,6 +144,14 @@ extern fn ir_get_alloc_function() -> String alias
 extern fn ir_get_free_function() -> String alias
 extern fn ir_struct_type_begin(name: String)
 extern fn ir_struct_type_field(fieldType: String)
+
+// LAYOUT 6's hot/cold split, and the only thing codegen has to say about it.
+//
+// How many of the fields just declared stay in the hot record; 0 means no split.
+// The backend appends the link word, builds the cold record, and redirects every
+// field access at or above this index through it -- none of which is visible from
+// here, because ir_struct_field_ptr is the single choke point for field access.
+extern fn ir_struct_type_split(hotCount: Int)
 extern fn ir_struct_type_end()
 extern fn ir_alloc_object(structName: String) -> Int
 
@@ -195,6 +203,14 @@ extern fn ir_free_list(value: String)
 extern fn ir_free_typed(value: String, fnName: String)
 extern fn ir_free_rc(value: String)
 
+// The release half of the hot/cold split. A split object is two allocations and
+// ir_free_object frees one block without knowing its type, so the cold block is
+// reclaimed from inside the generated `__aif_release_T` -- the one place where the
+// pointer and the type are both in hand. A no-op for an unsplit type, which is
+// what lets generateReleaseFn call it unconditionally and therefore never get it
+// wrong for a particular type.
+extern fn ir_free_cold(structName: String, value: String)
+
 // The address of a named function, as a value. A container of structs that own
 // their fields cannot be told its disposition with an int -- the release differs
 // per element type and the runtime cannot name a type -- so it is told this.
@@ -237,6 +253,22 @@ extern fn ir_reset_types()
 extern fn ir_declare_named_type(name: String, kind: Int)
 extern fn ir_named_type_kind(name: String) -> Int
 extern fn ir_reset_named_types()
+
+// Top-level declaration index (REQUIREMENTS 16), filled by
+// indexModuleDeclarations() in ast/types.psm before either sema or codegen runs.
+// `ir_decl_at` returns the AST pointer that was indexed -- our own memory, not a
+// fresh allocation.
+extern fn ir_reset_decl_index()
+extern fn ir_index_decl(name: String, node: String)
+extern fn ir_decl_count(name: String) -> Int
+extern fn ir_decl_at(name: String, index: Int) -> String alias
+
+// A function's return type, keyed by its mangled symbol. Its own table rather
+// than a "$fn$" binding: those were permanent, so every identifier lookup in
+// every function body scanned past one per function in the module.
+extern fn ir_set_fn_return_type(symbol: String, returnType: String)
+extern fn ir_get_fn_return_type(symbol: String) -> String alias
+extern fn ir_reset_fn_return_types()
 
 extern fn ir_register_struct(name: String)
 extern fn ir_register_struct_field(structName: String, fieldName: String, fieldType: String)

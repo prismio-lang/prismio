@@ -27,16 +27,28 @@ param(
     # different seed. Mirrors --seed in tools/bootstrap.sh.
     [string]$Compiler = '',
     [string]$Seed = '',
-    [Parameter(Mandatory = $true)][string]$Out,
+    # Required for a build, and deliberately not Mandatory: -PrintCacheKey needs
+    # no output path, and a Mandatory parameter would prompt for one.
+    [string]$Out = '',
     # Defaults to the repository root (this script's parent directory). Resolved in
     # the body, not here: $PSScriptRoot is not populated during param binding.
     [string]$Repo = '',
-    [switch]$KeepIntermediates
+    [switch]$KeepIntermediates,
+    # The object cache's key for one runtime source, and nothing else. Exists so
+    # a test can assert that the key moves when the inputs move without paying
+    # for a bootstrap to find out. Mirrors --print-cache-key in bootstrap.sh.
+    [string]$PrintCacheKey = ''
 )
 
 $ErrorActionPreference = 'Stop'
 
 if ([string]::IsNullOrEmpty($Repo)) { $Repo = Split-Path -Parent $PSScriptRoot }
+
+if ([string]::IsNullOrEmpty($Out) -and [string]::IsNullOrEmpty($PrintCacheKey)) {
+    Write-Host 'usage: bootstrap.ps1 [-Compiler <prismio>] [-Seed <ir>] -Out <path> [-Repo <dir>]' -ForegroundColor Red
+    Write-Host '       bootstrap.ps1 -PrintCacheKey <runtime-source.c> [-Repo <dir>]' -ForegroundColor Red
+    exit 2
+}
 
 # Must match prismio_toolchain_files[] in runtime\build_driver.c.
 $runtimeSources = @('lang_runtime.c', 'program_support.c', 'build_driver.c', 'ir_symbols.c', 'aif_support.c', 'diagnostics.c', 'llvm-api-backend.c')
@@ -63,6 +75,80 @@ function Resolve-Llvm {
     Write-Host '  Run: python tools\setup_llvm.py' -ForegroundColor Yellow
     Write-Host '  (or set PRISMIO_LLVM_DIR to an LLVM install with include\llvm-c\Core.h)' -ForegroundColor Yellow
     exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Toolchain object cache
+#
+# 1.44 s of this script's ~2.7 s is recompiling seven C files that did not
+# change, and the loop it sits in is the one this project runs most. The build
+# driver caches the same objects for user builds; this is the same idea for the
+# path that builds the compiler, with the same PRISMIO_OBJ_CACHE knobs, and it
+# must stay in step with tools/bootstrap.sh.
+#
+# **The key is content, and it has to be, because this is the one path whose
+# contract is that an edit to runtime\*.c reaches the next generation.** A stale
+# entry here poisons a compiler generation rather than a test binary. So every
+# runtime\*.h goes into every entry -- a header changes what a .c compiles to
+# without changing a byte of it -- and so do the compile flags, including the
+# LLVM include path, because -DPRISMIO_LLVM_REAL_HEADERS makes the backend's
+# object depend on which LLVM's headers it saw.
+#
+# Not covered, exactly as in build_driver.c: an in-place upgrade of clang.
+# PRISMIO_OBJ_CACHE=0 is the escape.
+# ---------------------------------------------------------------------------
+
+$cacheDir = if ($env:PRISMIO_OBJ_CACHE_DIR) { $env:PRISMIO_OBJ_CACHE_DIR }
+            else { Join-Path ([System.IO.Path]::GetTempPath()) 'prismio-objcache' }
+
+$script:headerKey = ''
+
+function Get-Sha256 {
+    param([byte[]]$Bytes)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return -join ($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') }) }
+    finally { $sha.Dispose() }
+}
+
+# The cache path for one source, or '' when the cache is off or cannot be keyed.
+function Get-CacheEntry {
+    param([string]$Source, [string]$Include, [string]$Repo)
+
+    if ($env:PRISMIO_OBJ_CACHE -eq '0') { return '' }
+    $path = Join-Path $Repo "runtime\$Source"
+    if (-not (Test-Path $path)) { return '' }
+
+    # Hashed once for the whole run, not once per source: embedded_sources.h
+    # alone is half a megabyte.
+    if ([string]::IsNullOrEmpty($script:headerKey)) {
+        $acc = New-Object System.Collections.Generic.List[byte]
+        foreach ($h in (Get-ChildItem (Join-Path $Repo 'runtime') -Filter '*.h' | Sort-Object Name)) {
+            $acc.AddRange([System.Text.Encoding]::UTF8.GetBytes("|$($h.Name)|"))
+            $acc.AddRange([System.IO.File]::ReadAllBytes($h.FullName))
+        }
+        $script:headerKey = Get-Sha256 -Bytes $acc.ToArray()
+    }
+
+    $acc = New-Object System.Collections.Generic.List[byte]
+    $acc.AddRange([System.Text.Encoding]::UTF8.GetBytes(
+        "bootstrap|$Source|-O2 -DPRISMIO_LLVM_REAL_HEADERS -I$Include|$($script:headerKey)|"))
+    $acc.AddRange([System.IO.File]::ReadAllBytes($path))
+    $key = Get-Sha256 -Bytes $acc.ToArray()
+
+    New-Item -ItemType Directory -Force $cacheDir -ErrorAction SilentlyContinue | Out-Null
+    if (-not (Test-Path $cacheDir)) { return '' }
+    return Join-Path $cacheDir ("bootstrap-" + [System.IO.Path]::GetFileNameWithoutExtension($Source) + "-$key.obj")
+}
+
+if (-not [string]::IsNullOrEmpty($PrintCacheKey)) {
+    $llvm = Resolve-Llvm -Repo $Repo
+    $entry = Get-CacheEntry -Source $PrintCacheKey -Include $llvm.include -Repo $Repo
+    if ([string]::IsNullOrEmpty($entry)) {
+        Write-Host 'no key: the cache is disabled or the source does not exist' -ForegroundColor Red
+        exit 1
+    }
+    Write-Output (Split-Path -Leaf $entry)
+    exit 0
 }
 
 $work = Join-Path (Split-Path -Parent $Out) ('.bootstrap-' + [System.IO.Path]::GetFileNameWithoutExtension($Out))
@@ -119,10 +205,32 @@ $llvm = Resolve-Llvm -Repo $Repo
 
 $objs = @($programObj)
 foreach ($c in $runtimeSources) {
+    $entry = Get-CacheEntry -Source $c -Include $llvm.include -Repo $Repo
+    if ($entry -and (Test-Path $entry)) {
+        Write-Host "[cc $c (cached)]" -ForegroundColor DarkGray
+        $objs += $entry
+        continue
+    }
+
     $obj = Join-Path $work ([System.IO.Path]::GetFileNameWithoutExtension($c) + '.obj')
     Invoke-Step "cc $c" 'clang' @('-O2', '-DPRISMIO_LLVM_REAL_HEADERS', '-Wno-deprecated-declarations',
                                   "-I$($llvm.include)", "-I$(Join-Path $Repo 'runtime')",
                                   '-c', (Join-Path $Repo "runtime\$c"), '-o', $obj)
+
+    # Installed by a move inside the cache directory, so it is atomic and two
+    # concurrent bootstraps cannot link a half-written object. A failed install
+    # is not a failed build -- link the local copy and pay again next time.
+    if ($entry) {
+        $tmp = Join-Path (Split-Path -Parent $entry) (".tmp-$PID-" + (Split-Path -Leaf $entry))
+        try {
+            Copy-Item $obj $tmp -Force
+            Move-Item $tmp $entry -Force
+            $objs += $entry
+            continue
+        } catch {
+            Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+        }
+    }
     $objs += $obj
 }
 

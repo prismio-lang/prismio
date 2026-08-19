@@ -1,0 +1,540 @@
+// Generic declarations: collection, substitution, and demand-driven
+// instantiation.
+//
+// The strategy is monomorphisation, and it is an AST-to-AST transform that
+// finishes before codegen sees anything. `Box<Int>` becomes an ordinary struct
+// named `Box$Int`; `identity<T>` called on an `Int` becomes an ordinary function
+// named `identity$Int`. Sema and codegen are unchanged by this file -- they only
+// ever see concrete declarations -- which is what makes the abstraction free at
+// runtime rather than merely cheap.
+//
+// **Templates leave the module chain before sema runs.** monoCollectTemplates
+// unlinks every generic declaration and parks it on `module.child2`. That is not
+// tidiness: semaCacheFunctionSymbols overwrites `s2` on every FUNCTION in the
+// chain, and `s2` is where the parser put the type parameters, so a template
+// left in the chain would have its parameter list destroyed before the first
+// instantiation could read it.
+//
+// Instantiation is **demand-driven**, which is INFERENCE 6.3's shape and is
+// deliberate -- see monoInstantiateFunction for why that matters beyond this
+// file.
+
+import ast.nodes
+import ast.types
+import common.text
+import common.diagnostics
+import ir.bridge
+
+// The separator in an instantiated name. `$` rather than `_` because a mangled
+// name has to be one no user declaration can collide with, and `_` is a legal
+// identifier character here while `$` is not.
+fn monoSeparator() -> String { return "$" }
+
+fn monoIsTemplate(stmt: ASTNode) -> Bool {
+    if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.STRUCT_DECL
+        or stmt.kind == NodeKind.ENUM_DECL) {
+        return str_equals(stmt.s2, "") == 0
+    }
+    return false
+}
+
+// Unlinks every generic declaration from the module chain and parks it on
+// `module.child2`. Runs after import resolution and before sema.
+fn monoCollectTemplates(module: ASTNode) {
+    let kept = nodeList()
+    let templates = nodeList()
+
+    let mut stmtPtr = module.child1
+    while (nodeExists(stmtPtr)) {
+        let stmt = ptr_to_node(stmtPtr)
+        // Read `next` before pushing: nodeListPush rewrites the tail's `next`,
+        // so the chain being walked is the chain being rebuilt.
+        let following = stmt.next
+        stmt.next = ""
+        if (monoIsTemplate(stmt)) {
+            nodeListPush(templates, stmt)
+        } else {
+            nodeListPush(kept, stmt)
+        }
+        stmtPtr = following
+    }
+
+    module.child1 = kept.head
+    module.child2 = templates.head
+}
+
+// A generic *type* template, which may be a struct or an enum. Both spell their
+// use the same way -- `Option<Int>` and `Box<Int>` are one syntax -- so the
+// lookup that resolves a type annotation cannot know which it wants in advance.
+fn monoFindTypeTemplate(module: ASTNode, name: String) -> ASTNode {
+    let mut p = module.child2
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (str_equals(stmt.s1, name) == 1) {
+            if (stmt.kind == NodeKind.STRUCT_DECL or stmt.kind == NodeKind.ENUM_DECL) {
+                return stmt
+            }
+        }
+        p = stmt.next
+    }
+    return ptr_to_node("")
+}
+
+fn monoFindTemplate(module: ASTNode, name: String, kind: NodeKind) -> ASTNode {
+    let mut p = module.child2
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == kind and str_equals(stmt.s1, name) == 1) { return stmt }
+        p = stmt.next
+    }
+    return ptr_to_node("")
+}
+
+fn monoHasTemplate(module: ASTNode, name: String, kind: NodeKind) -> Bool {
+    return nodeExists(node_to_ptr(monoFindTemplate(module, name, kind)))
+}
+
+// Appends an instantiated declaration to the module chain.
+//
+// Walks to the tail rather than caching one. The cached tail in main.psm exists
+// because merging appends once per declaration of every module; this appends
+// once per *instantiation*, and a program with enough instantiations for the
+// walk to matter would be one where the instantiations themselves dominate.
+// Measure before replacing it.
+fn monoAppendDeclaration(module: ASTNode, decl: ASTNode) {
+    decl.next = ""
+    if (nodeIsNull(module.child1)) {
+        module.child1 = node_to_ptr(decl)
+        return
+    }
+    let mut p = module.child1
+    loop {
+        let stmt = ptr_to_node(p)
+        if (nodeIsNull(stmt.next)) {
+            stmt.next = node_to_ptr(decl)
+            return
+        }
+        p = stmt.next
+    }
+}
+
+// ---------------------------------------------------------
+// Copying a template
+// ---------------------------------------------------------
+
+// `typeInfo` is deliberately not copied. A copy is made before sema has run over
+// it, and the template's own types -- if it ever acquired any -- are types of the
+// type *parameter*, not of the argument substituted for it. Carrying one over
+// would make the instantiation agree with the template about a type it no longer
+// has.
+fn monoCopyOne(ptr: String) -> ASTNode {
+    let src = ptr_to_node(ptr)
+    let dup = createNode(src.kind)
+    dup.s1 = src.s1
+    dup.s2 = src.s2
+    dup.i1 = src.i1
+    dup.i2 = src.i2
+    dup.i3 = src.i3
+    dup.line = src.line
+    dup.col = src.col
+    dup.len = src.len
+    dup.file = src.file
+    dup.child1 = monoCopyChain(src.child1)
+    dup.child2 = monoCopyChain(src.child2)
+    dup.child3 = monoCopyChain(src.child3)
+    return dup
+}
+
+// **Returns the node, not a pointer to it, and the chain is built with
+// nodeList().** Both halves of that matter and the first one cost a crash to
+// learn: a function that ends `return node_to_ptr(dup)` hands back a pointer to
+// a local the scope then drops, and the copy is reclaimed before its first
+// reader. Returning the ASTNode moves it to the caller; nodeListPush moves it
+// into the chain. Every node-building function in the frontend is shaped this
+// way -- parseParameterList returns `params.head` for exactly this reason.
+fn monoCopyChain(ptr: String) -> String {
+    let copies = nodeList()
+    let mut p = ptr
+    while (nodeExists(p)) {
+        nodeListPush(copies, monoCopyOne(p))
+        p = ptr_to_node(p).next
+    }
+    return copies.head
+}
+
+// ---------------------------------------------------------
+// Type parameter lists, which the parser left comma-joined
+// ---------------------------------------------------------
+
+fn monoParamCount(params: String) -> Int {
+    if (str_equals(params, "") == 1) { return 0 }
+    let mut count = 1
+    let mut i = 0
+    let n = str_length(params)
+    while (i < n) {
+        if (str_char_at(params, i) == ',') { count = count + 1 }
+        i = i + 1
+    }
+    return count
+}
+
+fn monoParamAt(params: String, index: Int) -> String {
+    let mut start = 0
+    let mut seen = 0
+    let mut i = 0
+    let n = str_length(params)
+    while (i <= n) {
+        if (i == n or str_char_at(params, i) == ',') {
+            if (seen == index) { return str_substring(params, start, i - start) }
+            seen = seen + 1
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+fn monoParamIndex(params: String, name: String) -> Int {
+    let count = monoParamCount(params)
+    let mut i = 0
+    while (i < count) {
+        if (str_equals(monoParamAt(params, i), name) == 1) { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+fn monoChainLength(ptr: String) -> Int {
+    let mut count = 0
+    let mut p = ptr
+    while (nodeExists(p)) {
+        count = count + 1
+        p = ptr_to_node(p).next
+    }
+    return count
+}
+
+fn monoChainAt(ptr: String, index: Int) -> String {
+    let mut p = ptr
+    let mut i = 0
+    while (nodeExists(p)) {
+        if (i == index) { return p }
+        i = i + 1
+        p = ptr_to_node(p).next
+    }
+    return ""
+}
+
+// ---------------------------------------------------------
+// Substitution
+// ---------------------------------------------------------
+
+// Rewrites a type parameter in place into the argument written for it.
+//
+// In place rather than by returning a new node, because a type annotation is
+// reached through a `child1`/`next` slot whose owner would otherwise have to be
+// told to re-point -- and the owners are five different kinds. The two fields
+// that must survive the rewrite are the sibling link, which belongs to the list
+// this annotation sits in and not to the type, and the `?` suffix: `T?` with
+// `T := Node` is `Node?`, so the suffix is or-ed rather than overwritten.
+fn monoSubstituteInto(target: ASTNode, argPtr: String) {
+    let arg = monoCopyOne(argPtr)
+    target.s1 = arg.s1
+    target.i1 = arg.i1
+    target.i2 = arg.i2
+    if (arg.i3 == 1) { target.i3 = 1 }
+    target.child1 = arg.child1
+}
+
+fn monoSubstituteChain(ptr: String, params: String, argsPtr: String) {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.TYPE_ANNOTATION and node.i1 == 0 and node.i2 == 0) {
+            let index = monoParamIndex(params, node.s1)
+            if (index >= 0) {
+                let argPtr = monoChainAt(argsPtr, index)
+                if (nodeExists(argPtr)) { monoSubstituteInto(node, argPtr) }
+            }
+        }
+        monoSubstituteChain(node.child1, params, argsPtr)
+        monoSubstituteChain(node.child2, params, argsPtr)
+        monoSubstituteChain(node.child3, params, argsPtr)
+        p = node.next
+    }
+}
+
+// ---------------------------------------------------------
+// Naming an instantiation
+// ---------------------------------------------------------
+
+// The mangled name is built from the *resolved* argument types rather than from
+// the text written at the use site, so `Box<Int>` and a `Box<T>` whose `T` was
+// itself substituted with `Int` name the same instantiation instead of two that
+// differ only in spelling.
+fn monoMangledName(module: ASTNode, base: String, argsPtr: String) -> String {
+    let mut name = base
+    let mut p = argsPtr
+    while (nodeExists(p)) {
+        let arg = ptr_to_node(p)
+        let argT = semaAnnotationType(module, arg)
+        name = str_concat(str_concat(name, monoSeparator()), semaMangleType(argT))
+        p = arg.next
+    }
+    return name
+}
+
+// A type annotation that denotes an already-resolved type. Needed because a
+// generic function's arguments are *expressions*: inference produces a TypeInfo
+// where substitution consumes an annotation, and this is the bridge.
+fn monoAnnotationFromType(t: TypeInfo) -> ASTNode {
+    let tn = createNode(NodeKind.TYPE_ANNOTATION)
+    if (t.kind == TypeKind.OPTIONAL) {
+        let inner = typeOptionalInner(t)
+        if (typeIsValid(inner)) {
+            let base = monoAnnotationFromType(inner)
+            base.i3 = 1
+            return base
+        }
+        tn.s1 = "Ptr"
+        return tn
+    }
+    if (t.kind == TypeKind.ARRAY) {
+        tn.i1 = 1
+        tn.child1 = node_to_ptr(monoAnnotationFromType(ptr_to_type(t.child)))
+        return tn
+    }
+    if (t.kind == TypeKind.LIST) {
+        tn.i2 = 1
+        tn.s1 = "List"
+        tn.child1 = node_to_ptr(monoAnnotationFromType(ptr_to_type(t.child)))
+        return tn
+    }
+    tn.s1 = t.name
+    return tn
+}
+
+// ---------------------------------------------------------
+// Instantiation
+// ---------------------------------------------------------
+
+// Names the parameters rather than counting them: the list says what to write,
+// where a count only says how many.
+fn monoArityError(node: ASTNode, name: String, params: String) {
+    semaErrorAt(node, str_concat(str_concat(str_concat(
+        diagQuote(name), " takes type parameters <"), params),
+        ">, and the type arguments written here do not match"))
+}
+
+// `Box<Int>` -> the name of an ordinary struct, instantiating it if this is the
+// first use. Answers "" when the name is not a generic struct, which is how the
+// caller tells a missing type argument list from a missing type.
+fn monoInstantiateStruct(module: ASTNode, tn: ASTNode) -> String {
+    let template = monoFindTypeTemplate(module, tn.s1)
+    if (nodeIsNull(node_to_ptr(template))) { return "" }
+
+    let params = template.s2
+    let given = monoChainLength(tn.child1)
+    if (given != monoParamCount(params)) {
+        monoArityError(tn, tn.s1, params)
+        return ""
+    }
+
+    // The mangled name is written straight onto the declaration that will carry
+    // it, and every read below is a read of that field.
+    //
+    // **It may not be held in a local.** Strings are affine, so a `let` could be
+    // named once where this needs it four times -- but parking it on a scratch
+    // node is worse than useless, and that is the bug this shape exists to avoid.
+    // Automatic arena placement reclaims a scope's allocations at the scope's
+    // exit, so a name whose only owner is a local dies when this function
+    // returns, while the declaration written from it lives in the module for the
+    // rest of the compile.
+    //
+    // The copy is therefore made before the already-instantiated check, and
+    // thrown away on a hit. That is a wasted copy per repeated use site; it is
+    // measured in nothing yet, and correctness here is not negotiable.
+    let copy = monoCopyOne(node_to_ptr(template))
+    copy.s1 = monoMangledName(module, tn.s1, tn.child1)
+    copy.s2 = ""
+
+    if (semaHasStruct(module, copy.s1) or semaHasEnum(module, copy.s1)) { return copy.s1 }
+
+    // A generic enum with no payload stays an enum: its values are still i32
+    // constants, and nothing about a type parameter changes that.
+    if (copy.kind == NodeKind.ENUM_DECL and enumHasPayload(copy) == false) {
+        ir_declare_named_type(copy.s1, 2)
+        monoAppendDeclaration(module, copy)
+        indexTopLevel(copy)
+        return copy.s1
+    }
+
+    // Declared before the payload or field types are substituted, and that
+    // ordering is what makes a self-referential generic terminate: `struct
+    // Node<T> { next: Node<T>? }` reaches this function again from inside its
+    // own field list, and has to find the name already taken rather than recur.
+    ir_declare_named_type(copy.s1, 1)
+    monoSubstituteChain(copy.child1, params, tn.child1)
+
+    if (copy.kind == NodeKind.ENUM_DECL) {
+        // Desugared *after* substitution, so the struct's payload slots carry
+        // the concrete types rather than the parameters. The instantiated enum
+        // becomes the shadow, which is what gives `match` the payload types and
+        // the tag values for this instantiation.
+        let desugared = enumDesugarToStruct(copy)
+        desugared.child2 = monoCopyChain(tn.child1)
+        enumShadowPush(module, copy)
+        monoAppendDeclaration(module, desugared)
+        indexTopLevel(desugared)
+        return desugared.s1
+    }
+
+    // The arguments this was instantiated with, kept on the declaration.
+    //
+    // Without them a type parameter is unrecoverable the moment it is
+    // substituted: `Map<Int, Int>` becomes a struct named `Map$Int$Int`, and a
+    // later `fn mapLen<K, V>(m: Map<K, V>)` has nothing to match `K` against but
+    // the name. Reading them back out of the mangled name would work until a
+    // type argument contained the separator.
+    copy.child2 = monoCopyChain(tn.child1)
+    monoAppendDeclaration(module, copy)
+    indexTopLevel(copy)
+    return copy.s1
+}
+
+// The function half. `argsPtr` is a chain of type annotations in the template's
+// declaration order -- the caller has already solved them, because solving needs
+// the types of the call's arguments and those are sema's to give.
+//
+// **Demand-driven, and that is worth more than the code it saves.** A template
+// nothing calls is never emitted, so a generic that is written and unused costs
+// nothing in the binary. It is also the shape INFERENCE 6.3 specifies for
+// ownership contexts -- discovery at the call site, instantiation into a
+// monotonically growing module -- which is why the two can share this machinery
+// rather than each grow their own. See the note at the end of this file.
+fn monoInstantiateFunction(module: ASTNode, template: ASTNode, argsPtr: String) -> String {
+    let params = template.s2
+    // Built onto the copy for the reason monoInstantiateStruct sets out at
+    // length: a name owned only by a local does not outlive this call.
+    let copy = monoCopyOne(node_to_ptr(template))
+    copy.s1 = monoMangledName(module, template.s1, argsPtr)
+    copy.s2 = ""
+    if (ir_decl_count(copy.s1) > 0) { return copy.s1 }
+
+    monoSubstituteChain(copy.child1, params, argsPtr)
+    monoSubstituteChain(copy.child2, params, argsPtr)
+    monoSubstituteChain(copy.child3, params, argsPtr)
+
+    // Appended and indexed before it is predeclared, because predeclaring reads
+    // the parameter annotations back through the declaration index.
+    monoAppendDeclaration(module, copy)
+    indexTopLevel(copy)
+    copy.s2 = semaFunctionSymbol(module, copy)
+    semaPredeclareFunction(module, copy)
+
+    // Nothing checks the body here. The instantiation is appended to the chain
+    // analyzeModule is still walking, so the loop that asked for it reaches it in
+    // the same pass -- which is also why an instantiation may itself instantiate.
+    return copy.s1
+}
+
+// ---------------------------------------------------------
+// Solving a call's type arguments
+// ---------------------------------------------------------
+
+// Matches one parameter's written type against the type the call actually
+// passed, looking for `paramName`. Answers the type it was bound to, or an
+// absent node when this parameter says nothing about it.
+//
+// Structural rather than positional, so `fn first<T>(xs: List<T>) -> T` solves
+// `T` from the *element* type of the argument. It goes one constructor deep per
+// step and recurses, which is all inference this needs: a type parameter is
+// found in argument position, never solved from a return type.
+fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, paramName: String) -> ASTNode {
+    if (tn.i1 == 0 and tn.i2 == 0 and str_equals(tn.s1, paramName) == 1) {
+        if (typeIsValid(actual) == false) { return ptr_to_node("") }
+        return monoAnnotationFromType(actual)
+    }
+    if (tn.i1 == 1 and actual.kind == TypeKind.ARRAY and nodeExists(tn.child1)) {
+        return monoMatchParam(module, ptr_to_node(tn.child1), ptr_to_type(actual.child), paramName)
+    }
+    if (tn.i2 == 1 and actual.kind == TypeKind.LIST and nodeExists(tn.child1)) {
+        return monoMatchParam(module, ptr_to_node(tn.child1), semaListElementType(actual), paramName)
+    }
+
+    // `Map<K, V>` against an argument of type `Map$Int$Int`. The instantiation
+    // recorded what it was made from, so the match is positional against that
+    // rather than an attempt to read the mangled name back apart.
+    if (tn.i2 == 1 and actual.kind == TypeKind.STRUCT and nodeExists(tn.child1)) {
+        let decl = findStructDeclNamed(module, actual.name)
+        if (nodeExists(node_to_ptr(decl)) and nodeExists(decl.child2)) {
+            let mut want = tn.child1
+            let mut have = decl.child2
+            while (nodeExists(want) and nodeExists(have)) {
+                let solved = monoMatchParam(module, ptr_to_node(want),
+                                            semaAnnotationType(module, ptr_to_node(have)), paramName)
+                if (nodeExists(node_to_ptr(solved))) { return solved }
+                want = ptr_to_node(want).next
+                have = ptr_to_node(have).next
+            }
+        }
+    }
+    return ptr_to_node("")
+}
+
+fn monoSolveTypeParam(module: ASTNode, template: ASTNode, argPtr: String, paramName: String) -> ASTNode {
+    let mut param = template.child1
+    let mut arg = argPtr
+    while (nodeExists(param) and nodeExists(arg)) {
+        let paramNode = ptr_to_node(param)
+        let solved = monoMatchParam(module, ptr_to_node(paramNode.child1),
+                                    semaExpr(module, ptr_to_node(arg)), paramName)
+        if (nodeExists(node_to_ptr(solved))) { return solved }
+        param = paramNode.next
+        arg = ptr_to_node(arg).next
+    }
+    return ptr_to_node("")
+}
+
+// Rewrites a call to a generic function so that it names an instantiation.
+//
+// Does nothing when the name is not a generic function, which is the common
+// case and has to stay cheap: it is one walk of the template chain, and that
+// chain holds only the generics the program declared.
+//
+// A type parameter that cannot be solved is left alone rather than reported
+// here. The call then fails to resolve like any other unknown call, which puts
+// the diagnostic at the call site with the overload machinery's wording instead
+// of inventing a second vocabulary for the same mistake.
+fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode) {
+    let template = monoFindTemplate(module, callee.s1, NodeKind.FUNCTION)
+    if (nodeIsNull(node_to_ptr(template))) { return }
+
+    let params = template.s2
+
+    // Written out at the call site: `vecNew<Int>()`. Taken as given rather than
+    // solved, and cleared afterwards so that the repeated semaExpr overload
+    // resolution performs over a call does not resolve the same annotation
+    // again -- the callee's name already records the answer.
+    if (nodeExists(callExpr.child3)) {
+        let explicit = ptr_to_node(callExpr.child3)
+        callExpr.child3 = ""
+        if (monoChainLength(explicit.child1) != monoParamCount(params)) {
+            monoArityError(callExpr, template.s1, params)
+            return
+        }
+        callee.s1 = monoInstantiateFunction(module, template, explicit.child1)
+        return
+    }
+
+    let count = monoParamCount(params)
+    let solvedArgs = nodeList()
+    let mut i = 0
+    while (i < count) {
+        let solved = monoSolveTypeParam(module, template, callExpr.child2, monoParamAt(params, i))
+        if (nodeIsNull(node_to_ptr(solved))) { return }
+        nodeListPush(solvedArgs, solved)
+        i = i + 1
+    }
+    callee.s1 = monoInstantiateFunction(module, template, solvedArgs.head)
+}

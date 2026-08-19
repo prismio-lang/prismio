@@ -141,6 +141,53 @@ char* compiler_temp_path_for(const char* source_path, const char* suffix) {
     return compiler_temp_path(source_path, suffix);
 }
 
+// The same name with the pid in it, for a temporary that must not be shared
+// between concurrent builds of one source.
+//
+// RESULTS-layout §7: the three paths the workload runner used were the only ones
+// here without a pid, so two compiles of the same program shared one
+// profile.txt. A build that read another process's profile chose a different
+// field order, and -- unlike a profile that fails to load -- neither fell back
+// nor warned. It made the IR differential, which is this project's definition of
+// a safe change, report a false difference under any concurrent load.
+//
+// LAYOUT §2.2's predictable path is kept: the profile is *published* to it after
+// the run (compiler_publish_file), so the artifact a user may check in beside
+// the manifest still appears at the name it always had. What changed is that
+// nothing reads it.
+char* compiler_temp_private_path(const char* source_path, const char* suffix) {
+    char stamped[128];
+    snprintf(stamped, sizeof(stamped), "%d-%s", PRISMIO_GETPID(), suffix);
+    return compiler_temp_path(source_path, stamped);
+}
+
+static int write_text_file(const char* path, const char* content);
+
+// Copies `from` onto `to` through a pid-qualified temporary beside it, so a
+// concurrent reader of `to` sees either the old file or the new one and never a
+// half-written one. Returns 0 on success.
+int compiler_publish_file(const char* from, const char* to) {
+    char* text = read_file(from);
+    if (!text) return 1;
+
+    size_t len = strlen(to) + 32;
+    char* tmp = (char*)malloc(len);
+    snprintf(tmp, len, "%s.%d.tmp", to, PRISMIO_GETPID());
+
+    int result = write_text_file(tmp, text);
+    if (result == 0 && rename(tmp, to) != 0) {
+        // Same filesystem by construction -- the temporary is a sibling -- so a
+        // failure here is a permission or a disk problem, not EXDEV. Publishing
+        // is best-effort either way: the build has its own copy.
+        delete_file(tmp);
+        result = 1;
+    }
+
+    free(tmp);
+    free(text);
+    return result;
+}
+
 char* compiler_temp_ir_path(const char* source_path) {
     char suffix[32];
     snprintf(suffix, sizeof(suffix), "%d.ll", PRISMIO_GETPID());
@@ -253,6 +300,87 @@ static int find_toolchain_source(char* out, int out_size, const char* filename) 
     }
 
     return 0;
+}
+
+// ============================================
+// Locating the LLVM C API
+//
+// The backend is built on it, so a build that includes the backend needs LLVM's
+// headers to compile and its C API library to link. The two places to look are
+// the same two the bootstrap scripts read, in the same order and with the same
+// names: PRISMIO_LLVM_DIR overrides, otherwise third_party/llvm-paths.json,
+// which tools/setup_llvm.py writes. A third answer would be a third thing to
+// keep in step.
+// ============================================
+
+// The value of a top-level "key": "value" pair. Not a JSON parser and does not
+// pretend to be one: this reads a file this toolchain generated, whose shape is
+// fixed by setup_llvm.py. The one escape a Windows path actually produces --
+// a doubled backslash -- is undone; anything else is copied through, and a file
+// that does not match returns 0 rather than a wrong answer.
+static int json_string_field(const char* text, const char* key, char* out, int out_size) {
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+
+    const char* at = strstr(text, pattern);
+    if (!at) return 0;
+    at = strchr(at + strlen(pattern), ':');
+    if (!at) return 0;
+    at = strchr(at, '"');
+    if (!at) return 0;
+    at++;
+
+    int n = 0;
+    while (*at && *at != '"' && n < out_size - 1) {
+        if (at[0] == '\\' && (at[1] == '\\' || at[1] == '/')) at++;
+        out[n++] = *at++;
+    }
+    if (*at != '"') return 0; // ran off the end: an incomplete value is not a value
+    out[n] = '\0';
+    return n > 0;
+}
+
+static int find_llvm_paths(char* include_out, int include_size, char* lib_out, int lib_size) {
+    const char* root = getenv("PRISMIO_LLVM_DIR");
+    if (root && root[0]) {
+        snprintf(include_out, include_size, "%s%cinclude", root, PRISMIO_PATH_SEP);
+        snprintf(lib_out, lib_size, "%s%clib", root, PRISMIO_PATH_SEP);
+        return 1;
+    }
+
+    // Beside the compiler and then beside the working directory, matching
+    // find_toolchain_source: a bootstrap runs from a checkout either way.
+    static const char* relative[] = {
+        "..", ".", NULL
+    };
+    char candidate[1024];
+    char* compiler_dir = prismio_executable_directory();
+    char* text = NULL;
+
+    for (int i = 0; relative[i] && !text; i++) {
+        if (!compiler_dir) break;
+        snprintf(candidate, sizeof(candidate), "%s%c%s%cthird_party%cllvm-paths.json",
+                 compiler_dir, PRISMIO_PATH_SEP, relative[i],
+                 PRISMIO_PATH_SEP, PRISMIO_PATH_SEP);
+        if (file_exists(candidate)) text = read_file(candidate);
+    }
+    if (compiler_dir) free(compiler_dir);
+
+    static const char* prefixes[] = {
+        "third_party/llvm-paths.json", "third_party\\llvm-paths.json",
+        "../third_party/llvm-paths.json", "..\\third_party\\llvm-paths.json",
+        NULL
+    };
+    for (int i = 0; prefixes[i] && !text; i++) {
+        if (file_exists(prefixes[i])) text = read_file(prefixes[i]);
+    }
+
+    if (!text) return 0;
+
+    int ok = json_string_field(text, "include", include_out, include_size)
+          && json_string_field(text, "lib", lib_out, lib_size);
+    free(text);
+    return ok;
 }
 
 // ============================================
@@ -589,6 +717,154 @@ static int link_against_runtime_library(const char* program_obj,
     return result;
 }
 
+// ============================================
+// Toolchain object cache
+//
+// Every build compiles the toolchain sources from scratch and deletes the
+// objects afterwards. Measured on this host: lang_runtime.c and
+// program_support.c cost 203 ms of a 411 ms build of a 34-line program, so
+// **half of every small build is recompiling code that did not change**. It is
+// the same object every time -- the runtime does not depend on the program.
+//
+// The key is the content of the source plus the exact compile command, hashed
+// with the same FNV-1a used for the staleness check above, for the reason given
+// there: mtimes move on a checkout or a copy and content does not. Flags are in
+// the key because `--verify` compiles the same file to a different object
+// (-DPRISMIO_AIF_VERIFY), and an object built for one mode linked into the other
+// is exactly the "half the allocations are outside the accounting" failure the
+// verify path already guards against.
+//
+// **What the key does not cover: an in-place upgrade of clang itself.** The same
+// source and the same flags through a different compiler produce a different
+// object, and nothing here notices. Set `PRISMIO_OBJ_CACHE=0` to bypass the
+// cache after a toolchain upgrade, or delete the directory. Spawning
+// `clang --version` to fold into the key was measured at 28 ms -- 14% of what
+// the cache saves -- and was not worth paying on every build.
+// ============================================
+
+static int object_cache_disabled(void) {
+    const char* v = getenv("PRISMIO_OBJ_CACHE");
+    return v && v[0] == '0' && v[1] == '\0';
+}
+
+// Prints one line per toolchain object saying whether it came from the cache.
+// The test that this cache works asks for exactly this, because "the build was
+// faster" is not an observation a test can make reliably on a shared host.
+static int object_cache_trace(void) {
+    const char* v = getenv("PRISMIO_OBJ_CACHE_TRACE");
+    return v && v[0] != '\0' && !(v[0] == '0' && v[1] == '\0');
+}
+
+// PRISMIO_OBJ_CACHE_DIR *is* the directory when it is set, rather than a parent
+// to append a name to. The bootstrap scripts read the same variable and use it
+// directly, and two readings of one variable is how the two caches would end up
+// in two places while both reporting hits.
+static char* object_cache_dir(void) {
+    const char* override = getenv("PRISMIO_OBJ_CACHE_DIR");
+    if (override && override[0]) {
+        char* copy = (char*)malloc(strlen(override) + 1);
+        strcpy(copy, override);
+        return copy;
+    }
+
+    const char* base;
+#ifdef _WIN32
+    base = getenv("TEMP");
+    if (!base || !base[0]) base = getenv("TMP");
+    if (!base || !base[0]) base = ".";
+#else
+    base = getenv("TMPDIR");
+    if (!base || !base[0]) base = "/tmp";
+#endif
+    // Shared across every build on the host, which is the point: a test suite
+    // building 119 programs compiles the runtime once rather than 119 times.
+    return join_path(base, "prismio-objcache");
+}
+
+// The cache entry for one toolchain source, or NULL when the source cannot be
+// read or the cache directory cannot be made. A NULL is always safe: the caller
+// compiles as it did before.
+static char* object_cache_path(const char* role, const char* source_path,
+                               const char* command_flags,
+                               const char source_paths[][1024]) {
+    char* text = read_file(source_path);
+    if (!text) return NULL;
+
+    unsigned long long hash = PRISMIO_FNV_OFFSET;
+    hash = fnv1a_bytes(hash, (const unsigned char*)role);
+    hash = fnv1a_bytes(hash, (const unsigned char*)command_flags);
+    hash = fnv1a_bytes(hash, (const unsigned char*)text);
+    free(text);
+
+    // Every header in the table, into every entry. A header changes what a .c
+    // compiles to without changing a byte of it, so keying on the .c alone
+    // serves an object built against the *previous* prismio_runtime.h -- and the
+    // way that happens is a runtime session regenerating embedded_sources.h,
+    // which is a thing this project does routinely. Over-invalidating (an edit
+    // to one header rebuilds all of them) is the right side to be wrong on: the
+    // headers are three files and they change rarely.
+    for (int i = 0; i < PRISMIO_TOOLCHAIN_FILE_COUNT; i++) {
+        if (prismio_toolchain_files[i].compiled) continue;
+        if (!source_paths[i][0]) continue;
+        char* header = read_file(source_paths[i]);
+        if (!header) {
+            // A header that cannot be read makes the key incomplete, and an
+            // incomplete key is worse than no cache.
+            return NULL;
+        }
+        hash = fnv1a_bytes(hash, (const unsigned char*)prismio_toolchain_files[i].name);
+        hash = fnv1a_bytes(hash, (const unsigned char*)header);
+        free(header);
+    }
+
+    // embedded_sources.h is not in the table -- it is generated, and only
+    // build_driver.c includes it -- but it is a header like any other and a
+    // bootstrap build compiles against it. Absent on an installed toolchain,
+    // where nothing includes it either, so missing is not an incomplete key.
+    char embedded[1024];
+    if (find_toolchain_source(embedded, sizeof(embedded), "embedded_sources.h")) {
+        char* text_h = read_file(embedded);
+        if (text_h) {
+            hash = fnv1a_bytes(hash, (const unsigned char*)"embedded_sources.h");
+            hash = fnv1a_bytes(hash, (const unsigned char*)text_h);
+            free(text_h);
+        }
+    }
+
+    char* dir = object_cache_dir();
+    if (ensure_directory_exists(dir) != 0) {
+        free(dir);
+        return NULL;
+    }
+
+    char name[128];
+    snprintf(name, sizeof(name), "%s-%016llx.obj", role, hash);
+    char* path = join_path(dir, name);
+    free(dir);
+    return path;
+}
+
+// A sibling of `entry` in the cache directory, which is where the compiler is
+// told to write the object before it is renamed into place.
+//
+// **It has to be a sibling.** The first version compiled next to the *output
+// executable* and renamed into $TMPDIR, and `rename()` cannot cross a
+// filesystem: on any host where the two differ -- /tmp as tmpfs on Linux, a
+// build directory on a second volume -- every install fails with EXDEV, the
+// build still succeeds, and the cache silently never populates. Nothing local
+// would ever have shown it, because this Mac has one volume.
+static char* object_cache_temp_path(const char* entry) {
+    const char* file = entry;
+    for (const char* p = entry; *p; p++) {
+        if (*p == '/' || *p == '\\') file = p + 1;
+    }
+    size_t dir_len = (size_t)(file - entry);
+    size_t len = dir_len + strlen(file) + 32;
+    char* tmp = (char*)malloc(len);
+    snprintf(tmp, len, "%.*s.tmp-%d-%s", (int)dir_len, entry, PRISMIO_GETPID(), file);
+    return tmp;
+}
+
 // Compile the toolchain from source and link it with the program.
 //
 // `include_backend` selects the build mode:
@@ -666,9 +942,29 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
 
     char* objs[PRISMIO_TOOLCHAIN_FILE_COUNT];
     char* q_objs[PRISMIO_TOOLCHAIN_FILE_COUNT];
+    // A cached object outlives this build and must not be deleted with the
+    // temporaries below.
+    int cached[PRISMIO_TOOLCHAIN_FILE_COUNT];
     for (int i = 0; i < PRISMIO_TOOLCHAIN_FILE_COUNT; i++) {
         objs[i] = NULL;
         q_objs[i] = NULL;
+        cached[i] = 0;
+    }
+
+    // The backend half needs LLVM's headers to compile and its C API library to
+    // link. Resolved once, and a failure here is fatal rather than a fallback:
+    // compiling the backend against the stub declarations in prismio_llvm.h and
+    // then linking without -lLLVM-C is exactly what used to happen, and it ends
+    // in several hundred undefined _LLVM* symbols after a full compile.
+    char llvm_include[1024] = "";
+    char llvm_lib[1024] = "";
+    if (include_backend && !find_llvm_paths(llvm_include, sizeof(llvm_include),
+                                            llvm_lib, sizeof(llvm_lib))) {
+        fprintf(stderr,
+                "ERROR: no LLVM toolchain configured, and the compiler backend needs one.\n"
+                "       Run: python3 tools/setup_llvm.py\n"
+                "       (or set PRISMIO_LLVM_DIR to an LLVM install with include/llvm-c/Core.h)\n");
+        return 1;
     }
 
     int command_len = 4096;
@@ -676,24 +972,89 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
         command_len += (int)strlen(source_paths[i]) * 2 + 64;
     }
     command_len += (int)(strlen(q_exe) + strlen(q_program_obj));
+    command_len += (int)(strlen(llvm_include) + strlen(llvm_lib)) * 2 + 256;
     char* command = (char*)malloc(command_len);
     int result = 0;
+
+    // One flag string for every source in this build, so the cache key and the
+    // command cannot disagree about what an object was compiled with.
+    char* compile_flags = (char*)malloc(command_len);
+    {
+        char* q_include = command_quote_arg(llvm_include);
+        // The unpacked or in-tree sources include each other by bare name, so
+        // the directory holding them is on the include path too. `-I` on a
+        // quoted path: clang takes `-I <path>` as two arguments.
+        char* source_dir = get_directory(source_paths[include_backend ? 4 : 2]);
+        char* q_source_dir = command_quote_arg(source_dir);
+        snprintf(compile_flags, command_len, "-O2 -Wno-deprecated-declarations %s%s%s%s%s%s",
+                 g_verify_mode ? "-DPRISMIO_AIF_VERIFY " : "",
+                 include_backend ? "-DPRISMIO_LLVM_REAL_HEADERS -I " : "",
+                 include_backend ? q_include : "",
+                 include_backend ? " -I " : "",
+                 include_backend ? q_source_dir : "",
+                 include_backend ? " " : "");
+        free(q_include);
+        free(q_source_dir);
+        free(source_dir);
+    }
 
     for (int i = 0; i < PRISMIO_TOOLCHAIN_FILE_COUNT && result == 0; i++) {
         if (!prismio_toolchain_files[i].compiled) continue;
         if (!prismio_toolchain_files[i].runtime && !include_backend) continue;
 
-        objs[i] = compiler_temp_obj_path(exe_file, prismio_toolchain_files[i].role);
+        const char* role = prismio_toolchain_files[i].role;
+        char* entry = NULL;
+        if (object_cache_disabled()) {
+            // Said separately from a miss: "the cache was not consulted" and
+            // "the cache was consulted and had nothing" are different facts, and
+            // a bypass that reported a miss would be indistinguishable from a
+            // bypass that did not bypass.
+            if (object_cache_trace()) fprintf(stderr, "[objcache off] %s\n", role);
+        } else {
+            entry = object_cache_path(role, source_paths[i], compile_flags, source_paths);
+
+            if (entry && file_exists(entry)) {
+                if (object_cache_trace()) fprintf(stderr, "[objcache hit] %s\n", role);
+                objs[i] = entry;
+                q_objs[i] = command_quote_arg(entry);
+                cached[i] = 1;
+                continue;
+            }
+            if (object_cache_trace()) fprintf(stderr, "[objcache miss] %s\n", role);
+        }
+
+        // Compiled to a pid-qualified temporary *in the cache directory* and
+        // moved into place, never written at the cache path directly: two builds
+        // racing on one entry would otherwise link a half-written object. (The
+        // profile race in runWorkloadProfile is the same mistake made the other
+        // way round.) See object_cache_temp_path for why the temporary has to be
+        // a sibling rather than a file beside the output.
+        objs[i] = entry ? object_cache_temp_path(entry)
+                        : compiler_temp_obj_path(exe_file, role);
         q_objs[i] = command_quote_arg(objs[i]);
         char* q_src = command_quote_arg(source_paths[i]);
         // -O2 here matters more than it does on the program's own IR: this is
         // where list_get, list_push and the allocator live, and a user program
         // calls them millions of times. Compiling them at -O0 was worth more of
         // the corpus gap than the missing IR pipeline was (RESULTS-xlang 3.1).
-        snprintf(command, command_len, "clang -O2 -Wno-deprecated-declarations %s-c %s -o %s",
-                 g_verify_mode ? "-DPRISMIO_AIF_VERIFY " : "", q_src, q_objs[i]);
+        snprintf(command, command_len, "clang %s-c %s -o %s",
+                 compile_flags, q_src, q_objs[i]);
         if (run_build_command(command) != 0) result = 1;
         free(q_src);
+
+        if (result == 0 && entry) {
+            // A failed install is not a failed build: link the temporary and
+            // pay for the compile again next time.
+            if (rename(objs[i], entry) == 0) {
+                free(objs[i]);
+                free(q_objs[i]);
+                objs[i] = entry;
+                q_objs[i] = command_quote_arg(entry);
+                cached[i] = 1;
+                entry = NULL;
+            }
+        }
+        if (entry) free(entry);
     }
 
     if (result == 0) {
@@ -702,17 +1063,26 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
             if (!q_objs[i]) continue;
             written += snprintf(command + written, command_len - written, " %s", q_objs[i]);
         }
-        snprintf(command + written, command_len - written, " -o %s", q_exe);
+        written += snprintf(command + written, command_len - written, " -o %s", q_exe);
+        if (include_backend) {
+            // The half that was missing. Without it the backend's several
+            // hundred LLVM calls are undefined symbols, after every object has
+            // already been compiled.
+            char* q_lib = command_quote_arg(llvm_lib);
+            snprintf(command + written, command_len - written, " -L %s -lLLVM-C", q_lib);
+            free(q_lib);
+        }
         if (run_build_command(command) != 0) result = 1;
     }
 
     for (int i = 0; i < PRISMIO_TOOLCHAIN_FILE_COUNT; i++) {
-        if (objs[i]) delete_file(objs[i]);
+        if (objs[i] && !cached[i]) delete_file(objs[i]);
         if (unpacked_paths[i]) delete_file(unpacked_paths[i]);
     }
     if (embedded_header) delete_file(embedded_header);
     if (embedded_dir) PRISMIO_RMDIR(embedded_dir);
 
+    free(compile_flags);
     free(command);
     free(q_exe);
     free(q_program_obj);
@@ -757,7 +1127,8 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
                     "\nNOTE: a normal build links against the Prismio runtime only.\n"
                     "      If you are building the Prismio compiler itself, use:\n"
                     "          prismio bootstrap %s\n"
-                    "      which also links the compiler backend (the ir_* functions).\n",
+                    "      which also links the compiler backend (the ir_* functions)\n"
+                    "      and the LLVM C API they call.\n",
                     "src/main.psm");
         }
     }
@@ -774,6 +1145,19 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
 // generation. That guarantee is what the mode exists for, and it is why this is a
 // separate entry point selected by the `bootstrap` command rather than a flag or an
 // environment variable read somewhere inside the build.
+//
+// **This could not link a compiler between the move to the LLVM C API and
+// 2026-08-17**, and nothing noticed because nothing in the tree runs it: CI and
+// every session use tools/bootstrap.sh. The link line was `clang <objects> -o
+// <exe>` with no `-L` and no `-lLLVM-C`, so a full compile ended in several
+// hundred undefined `_LLVM*` symbols — and `compiler_build_executable` printed a
+// NOTE recommending this command, which made it a signpost pointing at a trap.
+//
+// It resolves LLVM the same way and from the same two places the scripts do
+// (find_llvm_paths), so there is one answer to "where is LLVM" rather than two
+// that can drift. `run_bootstrap_command_test` builds a compiler through this
+// path and requires its IR to match the one that built it, which is what stops
+// the drift being silent next time.
 int compiler_bootstrap_executable(const char* ir_file, const char* exe_file) {
     if (compiler_prepare_output_path(exe_file) != 0) {
         fprintf(stderr, "ERROR: could not create output directory\n");

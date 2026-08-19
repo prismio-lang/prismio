@@ -107,10 +107,6 @@ fn countListNodes(firstPtr: String) -> Int {
     return count
 }
 
-fn fnKey(name: String) -> String {
-    return str_concat("$fn$", name)
-}
-
 fn functionSymbolName(func: ASTNode) -> String {
     if (str_equals(func.s2, "") == 0) {
         return func.s2
@@ -166,9 +162,9 @@ fn getExprType(expr: ASTNode) -> String {
         let callee = ptr_to_node(expr.child1)
         let funcName = callee.s1
         if (str_equals(expr.s2, "") == 0) {
-            return ir_get_var_type(fnKey(expr.s2))
+            return ir_get_fn_return_type(expr.s2)
         }
-        return ir_get_var_type(fnKey(funcName))
+        return ir_get_fn_return_type(funcName)
     }
 
     if (expr.kind == NodeKind.INDEX_EXPR) {

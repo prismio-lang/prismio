@@ -1,0 +1,88 @@
+// Option<T> and Result<T, E> -- signalling absence and failure without a
+// sentinel.
+//
+// REQUIREMENTS 14. Before these, a function that could fail returned a sentinel
+// -- `-1`, `0`, an empty string -- and nothing in the type said so, so nothing
+// made a caller check. `T?` (REQUIREMENTS 4) covers *reference*-shaped types
+// only: `Int?` is refused, because a scalar has no spare representation. These
+// two work for every type, because the tag is a separate field rather than a
+// value stolen from the payload's range.
+//
+// **Variant order is part of the ABI here.** The tag is the variant's position,
+// so reordering the variants in this file changes the tag every compiled program
+// expects. Append, never insert.
+//
+// A note on representation: an enum with payloads becomes a tagged struct (see
+// src/sema/enums.psm), which makes these move-only owned values rather than
+// copied scalars. `Option<Int>` is two words and one allocation, not a register.
+// That is the cost of not having a tagged *union* yet, and it is REQUIREMENTS 18
+// that unlocks the smaller form.
+
+enum Option<T> {
+    None,
+    Some(T)
+}
+
+fn optionIsSome<T>(o: Option<T>) -> Bool {
+    match (o) {
+        Option.Some(v) => { return true }
+        Option.None => { return false }
+    }
+    return false
+}
+
+fn optionIsNone<T>(o: Option<T>) -> Bool {
+    match (o) {
+        Option.Some(v) => { return false }
+        Option.None => { return true }
+    }
+    return true
+}
+
+// The value, or the caller's default. The only way to read an `Option` here:
+// there is deliberately no unchecked `unwrap`, because the whole point of the
+// type is that the absent case is unavoidable at the use site.
+fn optionOr<T>(o: Option<T>, fallback: T) -> T {
+    match (o) {
+        Option.Some(v) => { return v }
+        Option.None => { return fallback }
+    }
+    return fallback
+}
+
+enum Result<T, E> {
+    Err(E),
+    Ok(T)
+}
+
+fn resultIsOk<T, E>(r: Result<T, E>) -> Bool {
+    match (r) {
+        Result.Ok(v) => { return true }
+        Result.Err(e) => { return false }
+    }
+    return false
+}
+
+fn resultIsErr<T, E>(r: Result<T, E>) -> Bool {
+    match (r) {
+        Result.Ok(v) => { return false }
+        Result.Err(e) => { return true }
+    }
+    return true
+}
+
+fn resultOr<T, E>(r: Result<T, E>, fallback: T) -> T {
+    match (r) {
+        Result.Ok(v) => { return v }
+        Result.Err(e) => { return fallback }
+    }
+    return fallback
+}
+
+fn resultErrOr<T, E>(r: Result<T, E>, fallback: E) -> E {
+    match (r) {
+        Result.Ok(v) => { return fallback }
+        Result.Err(e) => { return e }
+    }
+    return fallback
+}

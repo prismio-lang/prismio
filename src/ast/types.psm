@@ -443,14 +443,62 @@ fn nodeGetType(node: ASTNode) -> TypeInfo {
 // containment be required acyclic without rejecting any program.
 extern fn ir_is_struct_type_name(name: String) -> Int
 
-fn findStructDeclNamed(module: ASTNode, name: String) -> ASTNode {
+// REQUIREMENTS 16. Every lookup of a declaration by name goes through the index
+// these four declare, and the index is a cache of exactly what a walk of the
+// module's statement list would have found, in the same order. The walk itself
+// is here once, in indexModuleDeclarations(), instead of once per pass that
+// wanted an answer from it.
+extern fn ir_reset_decl_index()
+extern fn ir_index_decl(name: String, node: String)
+extern fn ir_decl_count(name: String) -> Int
+extern fn ir_decl_at(name: String, index: Int) -> String alias
+
+// Which top-level statements have a name worth indexing. Also the import
+// merge's duplicate rule (main.psm), and it has to be the same predicate: the
+// merge fills the index as it goes and every later pass rebuilds it, so a kind
+// one of them thought named and the other did not would give the two different
+// answers to the same question.
+fn isNamedTopLevel(stmt: ASTNode) -> Bool {
+    if (stmt.kind == NodeKind.EXTERN_FUNCTION) { return true }
+    if (stmt.kind == NodeKind.VARIABLE_DECL) { return true }
+    if (stmt.kind == NodeKind.FUNCTION) { return true }
+    if (stmt.kind == NodeKind.STRUCT_DECL) { return true }
+    if (stmt.kind == NodeKind.ENUM_DECL) { return true }
+    // LAYOUT 3.1 merges several workloads *by summation*, so a workload that
+    // arrives twice through two import paths would weight itself twice over. It
+    // is named and it is not overloadable, so the existing rule is exactly right
+    // for it.
+    if (stmt.kind == NodeKind.WORKLOAD_DECL) { return true }
+    return false
+}
+
+fn indexTopLevel(stmt: ASTNode) {
+    if (isNamedTopLevel(stmt)) {
+        ir_index_decl(stmt.s1, node_to_ptr(stmt))
+    }
+}
+
+// Called by analyzeModule() and again by generateModule(), so neither depends on
+// the other having run. Rebuilding it is one walk of the top level; asking it a
+// question was the thing that cost.
+fn indexModuleDeclarations(module: ASTNode) {
+    ir_reset_decl_index()
     let mut p = module.child1
     while (str_equals(p, "") == 0) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.STRUCT_DECL) {
-            if (str_equals(stmt.s1, name) == 1) { return stmt }
-        }
+        indexTopLevel(stmt)
         p = stmt.next
+    }
+}
+
+fn findStructDeclNamed(module: ASTNode, name: String) -> ASTNode {
+    let n = ir_decl_count(name)
+    let mut i = 0
+    while (i < n) {
+        let p = ir_decl_at(name, i)
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.STRUCT_DECL) { return stmt }
+        i = i + 1
     }
     return ptr_to_node("")
 }

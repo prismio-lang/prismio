@@ -33,6 +33,25 @@ fn semaWarningAt(node: ASTNode, message: String) {
     diag_warning_at(node.file, node.line, node.col, node.len, message)
 }
 
+// REQUIREMENTS 15. What may cross a task boundary as an argument.
+//
+// The predicate is "lowers to a pointer", not "is move-only", and the two are
+// not the same set: `Ptr` is copyable and is admitted, an array is not admitted
+// even though it is a reference, because an array literal is frame storage
+// (typeIsMoveOnly says why) and a frame does not outlive the spawn.
+//
+// Enums and scalars are excluded because they lower to an integer. That is an
+// ABI fact here, but it lines up with a memory-model one worth stating: a
+// scalar registers no allocation site, so it is precisely the case AIF's `T`
+// domain has nothing to say about, and admitting it would widen the surface
+// without widening what the analysis can prove.
+fn semaSpawnArgAllowed(t: TypeInfo) -> Bool {
+    if (t.kind == TypeKind.STRUCT) { return true }
+    if (t.kind == TypeKind.STRING) { return true }
+    if (t.kind == TypeKind.LIST) { return true }
+    return t.kind == TypeKind.PTR
+}
+
 fn semaTypeErrorAt(node: ASTNode, context: String, expected: TypeInfo, actual: TypeInfo) {
     semaErrorAt(node, str_concat(str_concat(context, ": expected "),
                   str_concat(typeDisplay(expected), str_concat(", found ", typeDisplay(actual)))))
@@ -316,6 +335,27 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
     if (expr.kind == NodeKind.CALL_EXPR) {
         let callee = ptr_to_node(expr.child1)
+
+        // A call to a generic function names a template, not a declaration.
+        // Solving its type arguments needs the types of the arguments, which is
+        // why this is sema's job rather than the parser's -- and rewriting the
+        // callee to the instantiated name is what leaves everything below,
+        // overload resolution included, exactly as it was.
+        // `Shape.Circle(5)` -- a payload variant, which is a constructor rather
+        // than a call. Rewritten into a struct literal here, before anything
+        // tries to resolve `Circle` as a function; semaExpr is re-entered on the
+        // rewritten node so the literal is checked exactly as a written one is.
+        if (callee.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+            let target = ptr_to_node(callee.child1)
+            if (target.kind == NodeKind.IDENTIFIER_EXPR or target.kind == NodeKind.TYPE_ANNOTATION) {
+                if (enumResolveConstruction(module, expr, target.s1, callee.s1,
+                                            expr.child2, enumExplicitArgs(target))) {
+                    return semaExpr(module, expr)
+                }
+            }
+        }
+
+        monoResolveGenericCall(module, expr, callee)
         let name = callee.s1
 
         if (semaCheckBuiltinCall(module, expr, name, expr.child2)) {
@@ -354,8 +394,97 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         return retT
     }
 
+    // REQUIREMENTS 15, and every restriction below is SPEC 11 item 10 made
+    // enforceable rather than hoped for.
+    //
+    // The load-bearing line is `semaConsumeOperand`. A spawned argument is
+    // **moved**, exactly as a `sink` parameter is, so the parent's binding is
+    // dead the moment the task exists. That single fact is what "no shared
+    // mutable heap" means operationally, it is what makes INFERENCE's
+    // T-SPAWN-MOVE rather than T-SPAWN-SHARE the rule that fires, and it is
+    // therefore what keeps T3's counter non-atomic. Delete it and the whole
+    // isolation argument becomes a comment.
+    if (expr.kind == NodeKind.SPAWN_EXPR) {
+        let call = ptr_to_node(expr.child1)
+        if (call.kind != NodeKind.CALL_EXPR) {
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+
+        let retT = semaExpr(module, call)
+
+        // Not a restriction on tasks so much as a restriction on this
+        // *lowering*: prismio_task_spawn calls through a function pointer whose
+        // type it has to know statically, and a builtin or an overload set does
+        // not give it an address. Naming the reason matters -- it is the thing
+        // that would have to change to lift the ceiling, and it is not the task
+        // model.
+        if (str_equals(call.s2, "") == 1) {
+            semaErrorAt(expr, "`spawn` needs a named Prismio function; a builtin has no address to hand a task")
+        }
+
+        if (typeIsValid(retT) and retT.kind != TypeKind.INT) {
+            semaErrorAt(expr, str_concat(str_concat("a spawned function must return Int, found ",
+                                                    typeDisplay(retT)),
+                                         "; the result travels back through `join`, which is one word wide"))
+        }
+
+        let mut argPtr = call.child2
+        let mut argc = 0
+        while (str_equals(argPtr, "") == 0) {
+            let argNode = ptr_to_node(argPtr)
+            let argT = nodeGetType(argNode)
+            // Pointer-lowered types only. A task's arguments cross a thread
+            // boundary through three void* slots, and an Int would need a
+            // fourth signature; more to the point, a scalar has no allocation
+            // site, so it is exactly the case the T domain has nothing to say
+            // about.
+            if (typeIsValid(argT) and semaSpawnArgAllowed(argT) == false) {
+                semaErrorAt(argNode, str_concat(str_concat("a spawned argument must be a reference type, found ",
+                                                           typeDisplay(argT)),
+                                                "; tasks own what they are given, and a scalar has nothing to own"))
+            }
+            semaConsumeOperand(argNode)
+            argc = argc + 1
+            argPtr = argNode.next
+        }
+
+        if (argc > 3) {
+            semaErrorAt(expr, "`spawn` takes at most 3 arguments; pack the rest into a struct and move that")
+        }
+
+        // A task handle is a `Ptr`, which is this codebase's opaque-handle
+        // spelling. Deliberately not a new TypeKind: a `Task` kind would buy
+        // type safety on `join` and cost every switch in sema, AIF and codegen a
+        // new arm, and the handle is not the value the memory model cares about
+        // -- the arguments are.
+        nodeSetType(expr, typePtr())
+        return typePtr()
+    }
+
+    if (expr.kind == NodeKind.JOIN_EXPR) {
+        let handle = ptr_to_node(expr.child1)
+        let handleT = semaExpr(module, handle)
+        if (typeIsValid(handleT) and handleT.kind != TypeKind.PTR) {
+            semaErrorAt(handle, str_concat("`join` needs a task handle, found ", typeDisplay(handleT)))
+        }
+        nodeSetType(expr, typeInt())
+        return typeInt()
+    }
+
     if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
         let objectNode = ptr_to_node(expr.child1)
+
+        // `Shape.Dot` -- a payload enum's variant that happens to carry nothing.
+        // It is still the tagged struct, not an integer, because the enum it
+        // belongs to has payloads elsewhere and one value has one representation.
+        if (objectNode.kind == NodeKind.IDENTIFIER_EXPR or objectNode.kind == NodeKind.TYPE_ANNOTATION) {
+            if (enumResolveConstruction(module, expr, objectNode.s1, expr.s1, "",
+                                        enumExplicitArgs(objectNode))) {
+                return semaExpr(module, expr)
+            }
+        }
+
         if (objectNode.kind == NodeKind.IDENTIFIER_EXPR and semaEnumHasVariant(module, objectNode.s1, expr.s1)) {
             nodeSetType(expr, typeInt())
             return typeInt()
@@ -409,6 +538,25 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+        // A generic literal names its instantiation through the type annotation
+        // the parser hung on child2. Resolving that annotation is what creates
+        // the instantiation; rewriting `s1` to the instantiated name is what lets
+        // everything below -- field lookup, the type, codegen, AIF -- stay
+        // exactly as it is for an ordinary struct.
+        //
+        // child2 is cleared rather than kept. semaExpr runs over a node more than
+        // once (overload resolution types every argument of every candidate), and
+        // an annotation still hanging here would be resolved again each time.
+        if (nodeExists(expr.child2)) {
+            let instantiated = monoInstantiateStruct(module, ptr_to_node(expr.child2))
+            expr.child2 = ""
+            if (str_equals(instantiated, "") == 1) {
+                semaErrorAt(expr, str_concat("unknown generic struct ", diagQuote(expr.s1)))
+                nodeSetType(expr, typeInvalid())
+                return typeInvalid()
+            }
+            expr.s1 = instantiated
+        }
         if (semaHasStruct(module, expr.s1) == false) {
             semaErrorAt(expr, str_concat("unknown struct ", diagQuote(expr.s1)))
             nodeSetType(expr, typeInvalid())
@@ -422,6 +570,8 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             semaMoveOperand(ptr_to_node(field.child1))
             fieldPtr = field.next
         }
+        semaFillOmittedFields(module, expr, expr.s1)
+
         let structT = typeStruct(expr.s1)
         nodeSetType(expr, structT)
         return structT
@@ -607,6 +757,15 @@ fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
 
     if (stmt.kind == NodeKind.MATCH_STATEMENT) {
         let scrutT = semaExpr(module, ptr_to_node(stmt.child1))
+
+        // An enum with payloads is a tagged struct by the time it gets here, and
+        // its arms bind names rather than comparing values, so it takes a
+        // different path entirely -- see semaCheckPayloadArm.
+        if (enumIsPayloadType(module, scrutT)) {
+            semaMatchPayloadArms(module, stmt, scrutT, expectedReturn)
+            return
+        }
+
         if (scrutT.kind != TypeKind.INT and scrutT.kind != TypeKind.ENUM) {
             semaErrorAt(ptr_to_node(stmt.child1), str_concat("match scrutinee must be an integer or enum value, found ", typeDisplay(scrutT)))
         }
@@ -659,25 +818,26 @@ fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
     }
     // Already mangled and cached by semaCacheFunctionSymbols().
     let symbol = fnNode.s2
-    let overloadKey = semaFnKey(symbol)
 
     // Reported against the *later* definition only, with a note pointing at the
     // one it collides with. Counting instead meant a single clash produced two
     // identical errors, neither of which said where the other definition was.
-    if (semaFunctionSymbolCount(module, symbol) > 1) {
-        let first = semaFirstFunctionWithSymbol(module, symbol)
-        // Identity by source position, not by pointer: node_to_ptr() puns a
-        // pointer into a String, and str_equals is strcmp -- it would compare
-        // the bytes of the two nodes rather than their addresses. Two
-        // declarations cannot begin at the same file, line and column, so this
-        // is exact.
-        if (semaSamePosition(first, fnNode) == false) {
-            semaErrorAt(fnNode, str_concat(str_concat("duplicate definition of ", diagQuote(fnNode.s1)),
-                                              " with the same parameter types"))
-            diag_note_at(first.file, first.line, first.col, first.len, "the first definition is here")
-        }
+    //
+    // The earliest declaration with this symbol is `fnNode` itself when nothing
+    // collides, so the position test below is the whole condition -- there is no
+    // count to consult first.
+    let first = semaFirstFunctionWithSymbol(module, fnNode)
+    // Identity by source position, not by pointer: node_to_ptr() puns a
+    // pointer into a String, and str_equals is strcmp -- it would compare
+    // the bytes of the two nodes rather than their addresses. Two
+    // declarations cannot begin at the same file, line and column, so this
+    // is exact.
+    if (semaSamePosition(first, fnNode) == false) {
+        semaErrorAt(fnNode, str_concat(str_concat("duplicate definition of ", diagQuote(fnNode.s1)),
+                                          " with the same parameter types"))
+        diag_note_at(first.file, first.line, first.col, first.len, "the first definition is here")
     }
-    ir_set_var_type(overloadKey, typeSemKey(retT))
+    ir_set_fn_return_type(symbol, typeSemKey(retT))
 }
 
 fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
@@ -771,13 +931,17 @@ fn semaFunction(module: ASTNode, fnNode: ASTNode) {
 fn analyzeModule(module: ASTNode) {
     ir_clear_var_types()
     ir_reset_globals()
+    ir_reset_fn_return_types()
 
-    // Both of these must run before anything is checked. The first lets a type
+    // All three must run before anything is checked. The first lets a type
     // annotation be resolved without walking the module; the second mangles each
-    // function's symbol once instead of once per comparison. Together they take
-    // predeclaration from cubic to quadratic in the number of declarations.
+    // function's symbol once instead of once per comparison; the third answers
+    // "which declarations carry this name?" without a walk, which is what
+    // overload resolution asks once per call site. Together they take checking
+    // from cubic to linear in the number of declarations (REQUIREMENTS 16).
     semaRegisterNamedTypes(module)
     semaCacheFunctionSymbols(module)
+    indexModuleDeclarations(module)
 
     let mut fnPtr = module.child1
     while (str_equals(fnPtr, "") == 0) {

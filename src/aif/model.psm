@@ -110,6 +110,25 @@ extern fn aif_site_pin_tier(id: Int) -> Int
 extern fn aif_site_derived_tier(id: Int) -> Int
 extern fn aif_site_alias_axiom(id: Int) -> Int
 
+// SPEC 5.4 applied to *placement* rather than to the tier: `pin(<region-name>)`
+// asserts that this allocation is served by the arena of the `region` with that
+// name, and a converged analysis that says otherwise refutes it (SPEC 5.4.1).
+//
+// It exists because of SPEC 5.2.1.1's own admission. Regime (a) brackets a call
+// only while its callee has exactly one call site, so **adding a second call
+// silently removes the placement** -- the program still compiles, still runs,
+// and gets slower with no diagnostic and no failing test. The manifest is
+// required to record every bracket for exactly that reason; this turns the
+// record into an assertion a build can fail on.
+//
+// It reads `aif_region_name_at_site` and nothing else, which is the one arena
+// gate every other consumer reads. A second copy of that predicate is the defect
+// this file's neighbours have already paid for having four of.
+extern fn aif_con_pin_region(vs: Int, name: String borrow)
+extern fn aif_check_placement_pins(converged: Int)
+extern fn aif_site_pin_region_verdict(id: Int) -> Int
+extern fn aif_site_pin_region(id: Int) -> String alias
+
 // INFERENCE 5.6 / SPEC 6.3. The derivation, read back as a witness path.
 extern fn aif_con_at(file: Int, line: Int, col: Int)
 extern fn aif_cause_domain_for(id: Int) -> Int
@@ -195,8 +214,6 @@ extern fn aif_traversal_end()
 extern fn aif_traversal_elem(type: String, sequential: Int)
 
 // LAYOUT 7.2's `argmin over candidates(tau)`, and 8's "ranked by modelled cost".
-// Reported, not yet acted on: a split object is two allocations and the release
-// path has to land before anything may emit one.
 extern fn aif_layout_rank(type: String) -> Int
 extern fn aif_layout_candidates() -> Int
 extern fn aif_layout_best() -> Int
@@ -205,6 +222,48 @@ extern fn aif_layout_cand_ratio(i: Int) -> Int
 extern fn aif_layout_cand_field_hot(i: Int, f: Int) -> Int
 extern fn aif_layout_cand_bytes(i: Int, cold: Int) -> Int
 extern fn aif_layout_traversals(type: String) -> Int
+// 8's top-k, in cost order. `k = 0` is the argmin `aif_layout_best` reports; -1
+// means k is past the last candidate. Ties break on the candidate index, which is
+// 9.1's total order, so the k-th candidate is the same on every host.
+extern fn aif_layout_cand_at_rank(k: Int) -> Int
+
+// LAYOUT 6's hot/cold split, taken rather than reported.
+//
+// `aif_layout_split_select` runs the ranking above over every type and keeps the
+// winning cut when it beats not splitting. It has to run **after** aifComputeSizes
+// -- so a split cannot change the sizes the solve reads -- and **before** the
+// solve, because forcing `aif_type_releases` for a split type is what routes its
+// cold block to a release at all.
+//
+// `aif_layout_no_split` is the veto, and it is pushed in before the decision, not
+// after: a type embedded *inline* in another struct is storage inside its owner,
+// so nothing ever calls an allocator for it and its link word would be whatever
+// the owner's allocation left behind.
+extern fn aif_layout_no_split(type: String)
+extern fn aif_layout_split_select()
+extern fn aif_layout_hot_count(type: String) -> Int
+
+// Veto 5, on its own channel because LAYOUT 8 may override this one and must never
+// override `aif_layout_no_split`. Both come from the same discovery -- a struct
+// with an inline struct field -- but the field's *type* cannot be split at all,
+// while its *owner* is merely unmodellable: `aifTypeBytes` sizes that field as one
+// pointer, so g3's `Node` is modelled at 40 bytes and is really 112. The owner's
+// split is sound, it just has no basis for being chosen.
+extern fn aif_layout_no_split_unmodelled(type: String)
+
+// LAYOUT 8's forced candidate: emit this cut rather than the model's argmin.
+//
+// A candidate is named by its hot-field count, not its rank, because ranks move
+// when the model is retuned and `hot_count` is a property of the layout -- so the
+// `split 8/12` a human reads off `--layout` is what they can force. The force is
+// checked against the enumerated candidates and is *not* silently dropped when it
+// matches nothing: `aif_layout_force_applied` is how this compiler avoids adding
+// another instrument that reports success while matching nothing.
+extern fn aif_layout_force(type: String, hotCount: Int)
+extern fn aif_layout_forced_count() -> Int
+extern fn aif_layout_forced_type(i: Int) -> String alias
+extern fn aif_layout_forced_hot(i: Int) -> Int
+extern fn aif_layout_force_applied(i: Int) -> Int
 
 // LAYOUT 2.2. A measured profile, replacing the static estimate above. Answers 1
 // when it read at least one record; 0 means no file, or a file naming nothing

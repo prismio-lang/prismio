@@ -243,3 +243,82 @@ fn aifComputeSizes(module: ASTNode) {
         p = d.next
     }
 }
+
+// LAYOUT 6's hot/cold split, the one veto only the frontend can supply.
+//
+// A split object is two allocations: the hot record holds a pointer to a cold
+// block that some allocator hook has to create. **An inline struct field is
+// storage inside its owner** -- no hook runs for it, nothing writes its link, and
+// the first cold read would be a load through whatever the owner's allocation
+// left in those eight bytes. So a type that appears as an inline field is not
+// splittable, and the search has to be told before it chooses.
+//
+// **The registry is empty here, and that is the trap.** `fieldTypeFor` decides
+// inline-ness with `ir_is_struct_type_name` + `typeAnnIsPod`, but the struct
+// registry is filled by codegen and this runs during the analysis -- so asking
+// `ir_is_struct_type_name` here answers 0 for every struct in the program and the
+// veto fires for nothing. That is not hypothetical: it is what the first version
+// of this function did, and `aif/corpus/g3_scene_graph.psm` stopped building with
+// "byte-copy of a split struct (Transform)" from the backend assertion that
+// exists for exactly this. A silent version of the same hole is two Nodes sharing
+// one Transform's cold block and a double free at the second teardown.
+//
+// So the registry half is asked of the **AST** instead -- `findStructDeclNamed`,
+// which is what the registry is built from and therefore agrees with it by
+// construction. The POD half stays `typeAnnIsPod`, and with an empty registry it
+// **over**-approximates: a struct-typed field of a struct reads as POD rather
+// than recursing, so `structDeclIsPod` can only answer true more often. More true
+// means more vetoes means fewer splits, which is the safe direction, and it is
+// the only direction the imprecision can go.
+fn aifFieldIsInlineStruct(module: ASTNode, ann: ASTNode) -> Bool {
+    if (ann.i1 == 1) { return false }
+    if (ann.i2 == 1) { return false }
+    if (ann.i3 == 1) { return false }
+    if (nodeExists(node_to_ptr(findStructDeclNamed(module, ann.s1))) == false) {
+        return false
+    }
+    return typeAnnIsPod(module, ann, 0)
+}
+
+fn aifLayoutVetoInline(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let d = ptr_to_node(p)
+        if (d.kind == NodeKind.STRUCT_DECL) {
+            let mut fp = d.child1
+            while (str_equals(fp, "") == 0) {
+                let f = ptr_to_node(fp)
+                if (f.kind == NodeKind.STRUCT_FIELD) {
+                    if (nodeExists(f.child1)) {
+                        let ann = ptr_to_node(f.child1)
+                        if (aifFieldIsInlineStruct(module, ann)) {
+                            // The field's type: it is storage inside `d`, so no
+                            // allocator hook ever writes its link word.
+                            aif_layout_no_split(ann.s1)
+                            // And `d` itself, for a different reason: the cost
+                            // model sizes this field as one pointer, because
+                            // `aifDeclare` asks `aifTypeBytes` and the struct
+                            // registry is empty during the analysis. g3's `Node`
+                            // is modelled at 40 bytes and is really 112 -- two
+                            // inline `Transform`s at 48 each. A cut chosen from a
+                            // shape that wrong is not a choice, and it measured
+                            // 1.11x. Declining is cheap; sizing inline fields
+                            // properly moves Theta_stack and therefore tiers,
+                            // which is a separate change.
+                            //
+                            // Separate entry point from the line above, and the
+                            // distinction is load-bearing: `ann.s1` cannot be
+                            // split at all, while `d.s1` merely cannot be
+                            // *modelled*. LAYOUT 8 measures instead of modelling,
+                            // so a forced candidate clears this veto and never
+                            // that one.
+                            aif_layout_no_split_unmodelled(d.s1)
+                        }
+                    }
+                }
+                fp = f.next
+            }
+        }
+        p = d.next
+    }
+}

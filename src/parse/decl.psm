@@ -53,6 +53,56 @@ fn parserExpectCloseAngle(p: Parser, context: String) {
     parserExpectVal(p, TokenType.RELATIONAL_OPERATOR, ">", context)
 }
 
+// The type parameters of a generic declaration: `fn map<T, U>(...)`,
+// `struct Pair<K, V> { ... }`. Returns them comma-joined, or "" for an ordinary
+// declaration.
+//
+// **Stored on the declaration's `s2`, which sema also uses for a function's
+// mangled symbol.** The two cannot collide, and the reason is structural rather
+// than lucky: monomorphisation removes every template from the module before
+// sema runs, and an instantiated copy has its `s2` cleared. A FUNCTION carrying
+// type parameters is therefore a node sema never sees. If that ordering ever
+// changes, this needs a slot of its own -- `i1`/`i2`/`i3` are free on both kinds.
+//
+// Comma-joined text rather than a node chain because it is read by
+// substitution as a set of names, never walked as a tree, and FUNCTION has no
+// free child slot -- child1/2/3 are parameters, body and return type.
+fn parseGenericParams(p: Parser) -> String {
+    if (parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<") == false) { return "" }
+
+    let mut params = ""
+    loop {
+        let name = parserCurrent(p)
+        parserExpect(p, TokenType.IDENTIFIER, "type parameter name")
+        if (str_equals(params, "") == 1) {
+            params = name.value
+        } else {
+            params = str_concat(str_concat(params, ","), name.value)
+        }
+        if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+    }
+    parserExpectCloseAngle(p, "type parameter list")
+    return params
+}
+
+// The shared tail of `Name<...>`: the caller has consumed the name and the `<`,
+// and this consumes the arguments and the `>`, hanging the list on `child1` and
+// marking `i2`.
+//
+// Three constructs need it -- a type annotation, a generic struct literal, and a
+// call with explicit type arguments -- and they had better agree on the shape
+// they produce, because sema resolves all three through one path.
+fn parseTypeArgList(p: Parser, node: ASTNode) {
+    node.i2 = 1
+    let args = nodeList()
+    loop {
+        nodeListPush(args, parseTypeAnnotation(p))
+        if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+    }
+    node.child1 = args.head
+    parserExpectCloseAngle(p, "type argument list")
+}
+
 fn parseTypeAnnotation(p: Parser) -> ASTNode {
     let typeNode = parserNode(p, NodeKind.TYPE_ANNOTATION)
 
@@ -74,10 +124,19 @@ fn parseTypeAnnotation(p: Parser) -> ASTNode {
         parserFatal(p, str_concat("expected a type name, found ", parserDescribe(name)))
     }
 
-    if (str_equals(typeNode.s1, "List") == 1 and parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
-        typeNode.i2 = 1 // is_list
-        typeNode.child1 = node_to_ptr(parseTypeAnnotation(p))
-        parserExpectCloseAngle(p, "list type argument")
+    // A type constructor applied to arguments: `List<Int>`, `Map<String, Int>`.
+    //
+    // `i2` used to mean `is_list` and now means "this name has type arguments",
+    // with the constructor in `s1` and the arguments a `next`-chain under
+    // `child1`. `List<Int>` parses to exactly what it parsed to before -- one
+    // argument, name "List" -- which is why generalising it changes no output.
+    //
+    // Unambiguous because this is type position. A `<` cannot be a less-than
+    // here, so it is always an argument list, and the name in front of it does
+    // not have to be known to the parser -- which is the whole point: `List` was
+    // the only generic type because it was the only name this test admitted.
+    if (parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
+        parseTypeArgList(p, typeNode)
     }
 
     // REQUIREMENTS 4. `T?` -- a reference that may be absent. Postfix, and after
@@ -331,6 +390,7 @@ fn parseFunctionDecl(p: Parser) -> ASTNode {
     fnNode.s1 = name.value
     parserExpect(p, TokenType.IDENTIFIER, "function name")
 
+    fnNode.s2 = parseGenericParams(p)
     fnNode.child1 = parseParameterList(p, false)
 
     if (parserMatchVal(p, TokenType.ARROW, "->")) {
@@ -462,6 +522,7 @@ fn parseStructDecl(p: Parser) -> ASTNode {
     structNode.s1 = name.value
     parserExpect(p, TokenType.IDENTIFIER, "struct name")
 
+    structNode.s2 = parseGenericParams(p)
     parserExpectVal(p, TokenType.SEPARATOR, "{", "struct body")
 
     let fields = nodeList()
@@ -490,6 +551,7 @@ fn parseEnumDecl(p: Parser) -> ASTNode {
     enumNode.s1 = name.value
     parserExpect(p, TokenType.IDENTIFIER, "enum name")
 
+    enumNode.s2 = parseGenericParams(p)
     parserExpectVal(p, TokenType.SEPARATOR, "{", "enum body")
 
     let variants = nodeList()
@@ -498,6 +560,20 @@ fn parseEnumDecl(p: Parser) -> ASTNode {
         let variantName = parserCurrent(p)
         variant.s1 = variantName.value
         parserExpect(p, TokenType.IDENTIFIER, "variant name")
+
+        // `Some(T)` -- a variant that carries values. The payload types hang off
+        // child1 as a `next`-chain, the same shape a parameter list has, because
+        // that is what a variant constructor is.
+        if (parserMatchVal(p, TokenType.SEPARATOR, "(")) {
+            let payload = nodeList()
+            loop {
+                nodeListPush(payload, parseTypeAnnotation(p))
+                if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+            }
+            variant.child1 = payload.head
+            parserExpectVal(p, TokenType.SEPARATOR, ")", "variant payload")
+        }
+
         nodeListPush(variants, variant)
 
         parserMatchVal(p, TokenType.SEPARATOR, ",")

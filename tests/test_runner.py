@@ -5,6 +5,7 @@ import sys
 import os
 import tempfile
 from pathlib import Path
+import shutil
 from shutil import which
 
 GREEN = '\033[92m'
@@ -659,6 +660,107 @@ def run_region_diagnostic_test():
     return True
 
 
+def run_placement_pin_test():
+    """SPEC 5.4 applied to placement -- `pin(<region-name>)` can fail a build.
+
+    **The point of this check is that the annotation can refute, on a program
+    that otherwise compiles.** `test_63_placement_pin.psm` compiles and both its
+    pins are honoured; `neg_26_placement_pin_refuted.psm` is rejected. Neither
+    alone is evidence: a compiler that honoured every placement pin passes the
+    first, one that refuted every placement pin passes the second, and an
+    annotation that cannot fail is this project's most-produced defect.
+
+    So this takes the file that compiles, adds a second call to its bracketed
+    callee -- the exact edit SPEC 5.2.1.1 says silently removes the placement --
+    and requires the compiler to reject the result *for that reason*. One edit,
+    both directions, on one program.
+
+    It also reads the manifest, because "honoured" has to be visible there
+    (SPEC 5.4) and because a pin that was silently dropped and one that was
+    honoured are indistinguishable from the exit code alone.
+    """
+    print(f"\n{BLUE}--- Running placement_pin ---{RESET}")
+    problems = []
+
+    fixture = TEST_DIR / "test_63_placement_pin.psm"
+    manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+
+    records = {}
+    for line in manifest.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 6 and "#" in parts[0]:
+            records[parts[0]] = (parts[2], parts[5])
+
+    # SPEC 5.2 and SPEC 5.2.1.1, one each. The second is the one that can vanish
+    # because of an edit to a different function, and it is the reason the
+    # annotation exists at all.
+    wanted = {
+        "lexical_pin__Void#1": "region:lex_arena",
+        "bracketed_make__Int#0": "region:call_arena",
+    }
+    matched = 0
+    for symbol, placement in wanted.items():
+        if symbol not in records:
+            problems.append(f"no manifest record named {symbol} -- this check is "
+                            f"reading nothing, which is how a comparison that "
+                            f"matched no program reported 45 of them identical")
+            continue
+        matched += 1
+        got_placement, got_origin = records[symbol]
+        if got_placement != placement:
+            problems.append(f"{symbol}: expected {placement}, got {got_placement}")
+        if got_origin != "pin":
+            problems.append(f"{symbol}: origin is {got_origin}, not `pin` -- SPEC 5.4 "
+                            f"requires an honoured pin to be recorded as honoured, "
+                            f"and a silently dropped one reads exactly like this")
+    if matched == 0:
+        problems.append("the manifest parse matched neither pinned symbol, so every "
+                        "assertion above it was vacuous")
+
+    # The regression, performed. test_63 marks the spot rather than letting this
+    # guess at one: an edit that landed in the wrong scope would fail obligation 3
+    # as well, and the mutant would then be rejected for a reason that has nothing
+    # to do with regime (a).
+    source = fixture.read_text(encoding="utf-8")
+    marker = "        // MUTATION-POINT-SECOND-CALL"
+    if marker not in source:
+        problems.append("test_63 lost its MUTATION-POINT marker, so the "
+                        "can-it-fail half of this check did not run")
+    else:
+        mutant = TEST_DIR / ".prismio-placement-pin-mutant.psm"
+        mutant.write_text(
+            source.replace(marker,
+                           "        let extra = bracketed_make(99)\n"
+                           "        if (extra.id != 99) { return fail(\"mutant\") }"),
+            encoding="utf-8")
+        out = TEST_DIR / ".prismio-placement-pin-mutant.exe"
+        built = run_command([str(PRISMIO_EXE), "build", str(mutant), "-o", str(out)])
+        text = (built.stdout or "") + (built.stderr or "")
+        if built.returncode == 0:
+            problems.append("a second call to the bracketed callee removed the "
+                            "placement and the build SUCCEEDED -- the pin cannot fail, "
+                            "which makes it worse than no annotation")
+        else:
+            if "pin(call_arena) cannot hold" not in text:
+                problems.append(f"the mutant was rejected, but not by the placement "
+                                f"pin: {text.strip().splitlines()[:2]}")
+            if "may have exactly one" not in text:
+                problems.append("the refusal does not name regime (a)'s call-site "
+                                "count, which is the one thing that tells a reader "
+                                "which edit to undo")
+        cleanup_files(mutant, out)
+
+    if problems:
+        print(f"{RED}[FAIL] pin(<region-name>) does not guard the placement{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] pin(<region-name>) is recorded honoured, and a second call "
+          f"site to a bracketed callee fails the build{RESET}")
+    return True
+
+
 def run_layout_cost_model_test():
     """LAYOUT 5's cost model ranks hot/cold cuts, and ranks them by cost rather
     than by the access counts.
@@ -677,11 +779,21 @@ def run_layout_cost_model_test():
     so the corpus is the evidence that the model's answer is the right one and
     this fixture is the assertion that it still gives it.
 
-    Also asserted: the ranking is **reported and not acted on**. `--layout` must
-    say so, and the manifest's `layout` column must still read AoS for a type the
-    model wants to split, because a split object is two allocations and the
-    release path is not built. A compiler that started emitting splits would keep
-    passing the ranking assertions above and fail here.
+    Also asserted: the ranking is **acted on**. This is the assertion that changed
+    when the split landed (2026-08-17) and it changed on purpose, the way
+    `test_58_region_serves` was rewritten when call-site placement landed. Until
+    then a split object had no release path, so `--layout` said "Reported only"
+    and the manifest's `layout` column read plain `AoS` for a type the model
+    wanted to split. Both are now the other way round: the row the model chose
+    carries `emitted`, and the manifest reads `AoS*+9/13`.
+
+    Keeping the ranking assertions above alongside the emission ones is the point.
+    A compiler that emitted *some* cut would pass the emission half on its own;
+    only the pair says it emitted the cut the model chose.
+
+    The release half of the split is `test_62_split_release.psm`, which is a
+    different question -- whether the object the model picked can be reclaimed --
+    and is checked by running one rather than by reading a manifest.
     """
     print(f"\n{BLUE}--- Running layout_cost_model ---{RESET}")
     problems = []
@@ -691,17 +803,21 @@ def run_layout_cost_model_test():
 
     rows = {}
     chosen = None
+    emitted = None
     for line in result.stdout.splitlines():
         parts = line.split()
         if len(parts) >= 7 and parts[0] == "Sample":
-            # "Sample 13 2 split 9/13 * 80 32 76"  |  "Sample 13 2 unsplit 104 0 100"
+            # "Sample 13 2 split 9/13 * 80 32 76 emitted" | "Sample 13 2 unsplit 104 0 100"
             star = "*" in parts
-            tail = [p for p in parts if p != "*"]
+            is_emitted = "emitted" in parts
+            tail = [p for p in parts if p not in ("*", "emitted")]
             label = tail[3] if tail[3] == "unsplit" else f"{tail[3]} {tail[4]}"
             ratio = int(tail[-1])
             rows[label] = ratio
             if star:
                 chosen = label
+            if is_emitted:
+                emitted = label
 
     if not rows:
         problems.append("--layout printed no candidate rows for Sample at all")
@@ -721,18 +837,31 @@ def run_layout_cost_model_test():
             f"split 9/13 scores {rows.get('split 9/13')}, which does not beat "
             f"the unsplit record -- the cut the corpus measures at 0.87x should")
 
-    # Reported, not acted on. The manifest must still say AoS.
+    # Acted on: the cut the model chose is the one codegen produced.
+    if emitted != "split 9/13":
+        problems.append(
+            f"codegen emitted {emitted!r} for Sample, expected 'split 9/13'. A "
+            f"model whose argmin is not what the binary contains is a manifest "
+            f"describing a program nobody built.")
+
     manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    saw_record = False
     for line in manifest.stdout.splitlines():
         if "Sample" in line and line.strip().startswith("make__"):
-            if "AoS" not in line:
+            saw_record = True
+            if "+9/13" not in line:
                 problems.append(
-                    f"the manifest no longer reports AoS for a split-preferred "
-                    f"type: {line.strip()!r}. If codegen has started emitting "
-                    f"splits, the release path has to land with it.")
+                    f"the manifest does not report the split in its layout "
+                    f"column: {line.strip()!r}. The column is what a reader and "
+                    f"the CI differ see; a split codegen emitted and the manifest "
+                    f"does not name is a layout change nothing can regress on.")
+    if not saw_record:
+        problems.append(
+            "the manifest printed no record for Sample, so the layout column was "
+            "never read -- the assertion below it matched nothing")
 
-    if "Reported only" not in result.stdout:
-        problems.append("--layout does not say the ranking is not acted on")
+    if "emitted" not in result.stdout:
+        problems.append("--layout does not say which candidate codegen produced")
 
     # A declared `workload` runs the whole engine twice in one process (LAYOUT
     # 3.2), so anything the analysis accumulates and does not tear down is
@@ -766,7 +895,540 @@ def run_layout_cost_model_test():
             print(f"{RED}[FAIL] {p}{RESET}")
         return False
     print(f"{GREEN}[PASS] the cost model ranks cuts by cost, not by frequency "
-          f"rank, and codegen still emits the unsplit record{RESET}")
+          f"rank, and codegen emits the cut it chose{RESET}")
+    return True
+
+
+def run_split_release_test():
+    """LAYOUT 6's hot/cold split -- the release half, checked by running it.
+
+    A split object is **two allocations**, and the two ways to get that wrong are
+    named in opposite directions: leak the cold block on the good path, or free it
+    twice on the bad one. Neither is visible in a manifest and neither is visible
+    in the IR; both are visible in `--verify`'s ledger, which is why this test
+    builds and runs rather than reads.
+
+    `test_62_split_release.psm` puts 4096 split `Body` objects through a
+    container's teardown -- the path where the release arrives holding nothing but
+    a pointer, and the one the type-blind `ir_free_object` cannot serve. What makes
+    it work is one clause: `aif_type_releases` is forced true for a split type, so
+    the element disposition is TYPED, `list_release` calls `__aif_release_Body`
+    per element, and that is where the cold block goes.
+
+    **`released` and `violation(s)` only.** `allocated` moves legitimately -- it is
+    two allocations per object now -- which is exactly why it is not compared.
+
+    Verified discriminating, both directions, 2026-08-17, by breaking the compiler
+    on purpose and rebuilding it:
+
+      * `ir_free_cold` made a no-op -- 4108 released against 8204, and 4100 leaked
+        against 4. Both the released and the leaked assertions fire.
+      * the cold block freed a second time inside `ir_free_cold` -- 4096
+        violation(s) against 0. The violation assertion fires.
+
+    The fixture is worthless if `Body` stops being split, because both assertions
+    then pass against an unsplit object -- so the split is asserted **first**, from
+    `--layout`'s `emitted` column, and a fixture that stopped discriminating fails
+    here rather than reporting a pass.
+    """
+    print(f"\n{BLUE}--- Running split_release ---{RESET}")
+    problems = []
+    fixture = TEST_DIR / "test_62_split_release.psm"
+    bodies = 4096
+
+    layout = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--layout"])
+    emitted = None
+    for line in layout.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 7 and parts[0] == "Body" and "emitted" in parts:
+            tail = [p for p in parts if p not in ("*", "emitted")]
+            emitted = tail[3] if tail[3] == "unsplit" else f"{tail[3]} {tail[4]}"
+    if emitted is None or not emitted.startswith("split"):
+        problems.append(
+            f"codegen emitted {emitted!r} for Body, not a split. Every assertion "
+            f"below passes trivially on an unsplit object, so this fixture is no "
+            f"longer discriminating and has to be rewritten rather than trusted.")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        exe = os.path.join(tmp, "t62")
+        build = run_command([str(PRISMIO_EXE), "build", str(fixture),
+                             "--verify", "-o", exe])
+        if build.returncode != 0 or not os.path.exists(exe):
+            print(f"{RED}[FAIL] the split-release fixture did not build{RESET}")
+            print(build.stdout + build.stderr)
+            return False
+        run = run_command([exe])
+
+        # The value is exact integer arithmetic on the cold fields plus a count of
+        # the hot ones: 15 + 15 + 4096. A field-access redirect that read the wrong
+        # side of the split cannot produce it.
+        if "4126" not in run.stdout:
+            problems.append(
+                f"the fixture printed {run.stdout.strip()!r}, expected 4126 -- "
+                f"cold fields are being read from the wrong block")
+
+        ledger = None
+        for line in (run.stdout + run.stderr).splitlines():
+            m = re.search(r"aif-verify:\s+(\d+) allocated,\s+(\d+) released,"
+                          r"\s+(\d+) leaked,\s+(\d+) violation", line)
+            if m:
+                ledger = m
+        if ledger is None:
+            problems.append(
+                "no aif-verify ledger line was matched at all, so nothing below "
+                "was checked -- the instrument is broken, not the program")
+        else:
+            released, leaked, violations = (int(ledger.group(2)), int(ledger.group(3)),
+                                            int(ledger.group(4)))
+            if released < 2 * bodies:
+                problems.append(
+                    f"{released} released against {bodies} split objects. Both "
+                    f"halves of every body have to be reclaimed, so this cannot "
+                    f"be below {2 * bodies}: the cold blocks are leaking.")
+            if violations != 0:
+                problems.append(
+                    f"{violations} violation(s). A split object freed twice is "
+                    f"the other failure mode -- the cold block must be reclaimed "
+                    f"once, from the generated release and nowhere else.")
+            if leaked > bodies:
+                problems.append(
+                    f"{leaked} leaked, which is more than the {bodies} objects "
+                    f"this program allocates -- consistent with every cold block "
+                    f"surviving its object")
+
+    if problems:
+        for p in problems:
+            print(f"{RED}[FAIL] {p}{RESET}")
+        return False
+    print(f"{GREEN}[PASS] a split object is reclaimed whole: both halves released, "
+          f"no double free, cold fields read back exact{RESET}")
+    return True
+
+
+def emitted_layout_for(fixture, type_name, extra=None):
+    """The candidate `--layout` marks `emitted` for one type, as a label string.
+
+    Returns None when the type has no rows at all, which is a different failure
+    from "emitted the unsplit record" and has to stay distinguishable: the first
+    means the table lost the type, the second is a real answer.
+    """
+    cmd = [str(PRISMIO_EXE), "aif", str(fixture), "--layout"]
+    if extra:
+        cmd += extra
+    out = run_command(cmd)
+    emitted, seen = None, False
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 7 and parts[0] == type_name:
+            seen = True
+            if "emitted" in parts:
+                tail = [p for p in parts if p not in ("*", "emitted")]
+                emitted = tail[3] if tail[3] == "unsplit" else f"{tail[3]} {tail[4]}"
+    return (emitted, seen, out.stdout + out.stderr)
+
+
+def run_object_cache_test():
+    """REQUIREMENTS 10, applied to the one module every build shares: the runtime.
+
+    Every build used to compile `lang_runtime.c` and `program_support.c` from
+    source and delete the objects, which on this host is 203 ms of a 411 ms build
+    of a 34-line program. They are cached now, keyed on the content of the source
+    and the compile flags.
+
+    Three assertions, because the first two alone are satisfied by a cache that is
+    never invalidated -- and a stale object cache is a silently wrong binary,
+    which is the failure this project produces most.
+
+      1. **A cold cache misses and a warm one hits.** Read off the trace rather
+         than off the clock: "the second build was faster" is not something a
+         test can assert on a shared host.
+      2. **A hit still produces a working program.** The cached object is linked,
+         so a cache that stored the wrong file would link the wrong runtime.
+      3. **A `--verify` build misses on a warm release cache, and hits itself.**
+         `--verify` compiles the same file with -DPRISMIO_AIF_VERIFY, so the two
+         objects are different objects. Serving the release one to a verify build
+         puts half the allocations outside the ledger, silently -- the same
+         failure the verify path already refuses an installed runtime.lib for.
+
+    And `PRISMIO_OBJ_CACHE=0` must not consult the cache at all, because a bypass
+    that does not bypass is how a stale entry survives the one instruction given
+    for getting rid of it.
+
+    **What this cannot check, and why.** The other half of the key is the source
+    text, and no test here can move it: a normal build unpacks the runtime
+    *embedded in the compiler binary* rather than reading runtime/ from disk
+    (build_driver.c, PRISMIO_EMBEDDED_SOURCE_AVAILABLE), so editing the tree
+    changes nothing a user build compiles. Content still belongs in the key --
+    `prismio bootstrap` does read the filesystem -- but the assertion that would
+    exercise it costs a bootstrap, which is minutes.
+    """
+    print(f"\n{BLUE}--- Running object_cache ---{RESET}")
+    problems = []
+
+    fixture = TEST_DIR / "test_09_strings.psm"
+    out = TEST_DIR / ".prismio-objcache-check.exe"
+
+    with tempfile.TemporaryDirectory(prefix="prismio-objcache-test-") as cache_dir:
+        def build(extra_env=None, extra_args=None):
+            env = dict(os.environ)
+            # Cleared rather than inherited: this check is about what the cache
+            # does, so an ambient PRISMIO_OBJ_CACHE=0 -- someone running the
+            # suite with caching off to measure it -- would otherwise fail the
+            # test for a reason that has nothing to do with the code.
+            env.pop("PRISMIO_OBJ_CACHE", None)
+            env["PRISMIO_OBJ_CACHE_DIR"] = cache_dir
+            env["PRISMIO_OBJ_CACHE_TRACE"] = "1"
+            env.update(extra_env or {})
+            cmd = [str(Path(PRISMIO_EXE).resolve()), "build", str(fixture), "-o", str(out)]
+            r = subprocess.run(cmd + (extra_args or []), capture_output=True, text=True, env=env)
+            return r, (r.stdout or "") + (r.stderr or "")
+
+        cold, cold_text = build()
+        warm, warm_text = build()
+
+        if cold.returncode != 0 or warm.returncode != 0:
+            problems.append("the build failed with the object cache enabled")
+        if "[objcache miss] lang_runtime" not in cold_text:
+            problems.append("the first build into an empty cache did not report a miss, "
+                            "so the trace this check reads is not being produced and "
+                            "every assertion below it is vacuous")
+        if "[objcache hit] lang_runtime" not in warm_text:
+            problems.append("the second build did not hit the cache -- the entry was "
+                            "not installed, or the key is not stable across runs")
+
+        # Said directly rather than inferred from the hit above, because the way
+        # an install fails is silent: `rename()` cannot cross a filesystem, so a
+        # cache directory on a different volume from the temporary would leave a
+        # working build that never populates anything.
+        installed = [n for n in os.listdir(cache_dir) if n.endswith(".obj")]
+        if not installed:
+            problems.append("the cache directory is empty after a build that reported a "
+                            "miss -- the object was compiled and never installed")
+        leftovers = [n for n in os.listdir(cache_dir) if n.startswith(".tmp-")]
+        if leftovers:
+            problems.append(f"the cache directory holds temporaries after a successful "
+                            f"build: {leftovers[:3]} -- an install failed, or the temporary "
+                            f"is not being cleaned up")
+
+        # 2. The cached object is the one that gets linked.
+        ran = run_command([str(out)])
+        if ran.returncode != 0 or "PASS" not in (ran.stdout or ""):
+            problems.append("the program built from the cached runtime object does not "
+                            "run correctly, so the cache is serving the wrong file")
+
+        # The documented bypass has to bypass.
+        _, bypass_text = build({"PRISMIO_OBJ_CACHE": "0"})
+        if "[objcache off] lang_runtime" not in bypass_text:
+            problems.append("PRISMIO_OBJ_CACHE=0 did not report the cache as off")
+        if "[objcache hit]" in bypass_text:
+            problems.append("PRISMIO_OBJ_CACHE=0 still served an object from the cache")
+
+        # 3. The flags are part of the key.
+        verify_first, verify_text = build(extra_args=["--verify"])
+        if verify_first.returncode != 0:
+            problems.append("the --verify build failed with the object cache enabled")
+        if "[objcache miss] lang_runtime" not in verify_text:
+            problems.append("a --verify build hit the entry a release build filled -- "
+                            "the flags are not in the key, so half the allocations in a "
+                            "verify build would be outside the ledger")
+        _, verify_again = build(extra_args=["--verify"])
+        if "[objcache hit] lang_runtime" not in verify_again:
+            problems.append("a second --verify build missed, so verify builds are not "
+                            "cached at all rather than cached separately")
+
+    cleanup_files(out)
+
+    if problems:
+        print(f"{RED}[FAIL] the toolchain object cache is not sound{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] the runtime object is cached: cold misses, warm hits, the "
+          f"program still runs, --verify keys separately, and the bypass bypasses{RESET}")
+    return True
+
+
+def run_bootstrap_command_test():
+    """`prismio bootstrap` builds a compiler, and the compiler it builds is right.
+
+    This command could not link between the move to the LLVM C API and
+    2026-08-17: its link line had no `-lLLVM-C`, so it compiled everything and
+    then failed with several hundred undefined `_LLVM*` symbols. Nothing in the
+    tree ran it -- CI and every session use `tools/bootstrap.sh` -- so nothing
+    noticed for months, while `compiler_build_executable` printed a NOTE
+    recommending it.
+
+    Two assertions, and the second is the one with teeth. "It linked" is what a
+    smoke test would check, and a compiler can link and still be wrong -- built
+    against stub headers, or against a different LLVM. So the binary it produces
+    is asked to compile a program, and its IR has to match byte for byte what
+    the compiler running this suite produces for the same program.
+
+    That is also what keeps the two recipes honest. There are two places that
+    know how to link a compiler now -- this command and the bootstrap scripts --
+    and two copies of a recipe that must agree is how this broke in the first
+    place. This is the check that makes a disagreement loud.
+    """
+    print(f"\n{BLUE}--- Running bootstrap_command ---{RESET}")
+    problems = []
+
+    with tempfile.TemporaryDirectory(prefix="prismio-bootstrap-cmd-") as wd:
+        built = Path(wd) / "selfbuilt"
+        r = subprocess.run([str(Path(PRISMIO_EXE).resolve()), "bootstrap",
+                            str(TEST_DIR.parent / "src" / "main.psm"), "-o", str(built)],
+                           capture_output=True, text=True)
+        if r.returncode != 0 or not built.exists():
+            text = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
+            problems.append("`prismio bootstrap` did not produce a compiler: "
+                            + " | ".join(text[-4:]))
+        else:
+            fixture = TEST_DIR / "test_09_strings.psm"
+            mine, theirs = Path(wd) / "a.ll", Path(wd) / "b.ll"
+            a = run_command([str(built), "build", str(fixture), "-o", str(mine)])
+            b = run_command([str(Path(PRISMIO_EXE).resolve()), "build", str(fixture),
+                             "-o", str(theirs)])
+            if a.returncode != 0 or not mine.exists():
+                problems.append("the compiler `prismio bootstrap` built cannot compile a program")
+            elif b.returncode != 0 or not theirs.exists():
+                problems.append("the compiler running this suite could not emit the "
+                                "reference IR, so there was nothing to compare against")
+            elif mine.read_bytes() != theirs.read_bytes():
+                problems.append("the compiler `prismio bootstrap` built emits different IR "
+                                "from the one running this suite -- it linked, and it is not "
+                                "the same compiler")
+
+    if problems:
+        print(f"{RED}[FAIL] `prismio bootstrap` does not build a working compiler{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] `prismio bootstrap` builds a compiler whose IR matches this one's"
+          f"{RESET}")
+    return True
+
+
+def run_bootstrap_cache_key_test():
+    """The bootstrap scripts cache toolchain objects, and the key has to be content.
+
+    `tools/bootstrap.sh` and `tools/bootstrap.ps1` compile seven C sources on
+    every generation -- 1.44 s of a 2.7 s self-build -- and now reuse them from
+    `$TMPDIR/prismio-objcache`. This is the one build path whose contract is that
+    an edit to `runtime/*.c` reaches the next generation, so a stale entry here
+    poisons a compiler generation rather than a test binary.
+
+    Both scripts therefore expose `--print-cache-key` / `-PrintCacheKey`, which
+    computes the key and nothing else, so this can assert the four properties
+    that matter in milliseconds instead of by bootstrapping:
+
+      1. **Stable.** The same tree twice gives the same key, or nothing is ever
+         reused and the cache is only overhead.
+      2. **Sensitive to the source.** Editing the `.c` changes its key.
+      3. **Sensitive to the headers.** Editing `prismio_runtime.h` changes the
+         key of a `.c` that was not touched. This is the assertion with teeth: a
+         header changes what a source compiles to without changing a byte of it,
+         and keying on the `.c` alone serves an object built against the previous
+         header — which is precisely what a session that regenerates
+         `embedded_sources.h` does.
+      4. **Distinct per source.** Two sources do not share an entry.
+
+    The edits are made in a copied tree, passed with `--repo`, so the real
+    `runtime/` is never touched. `PRISMIO_LLVM_DIR` is set to a fixed string so
+    the key does not depend on how this host found LLVM — no compiling happens
+    here, only hashing.
+    """
+    print(f"\n{BLUE}--- Running bootstrap_cache_key ---{RESET}")
+    problems = []
+
+    repo = TEST_DIR.parent
+    if os.name == "nt":
+        script = ["powershell", "-NoProfile", "-File", str(repo / "tools" / "bootstrap.ps1")]
+        key_flag, repo_flag = "-PrintCacheKey", "-Repo"
+    else:
+        script = ["bash", str(repo / "tools" / "bootstrap.sh")]
+        key_flag, repo_flag = "--print-cache-key", "--repo"
+
+    with tempfile.TemporaryDirectory(prefix="prismio-cachekey-") as tree:
+        shutil.copytree(repo / "runtime", Path(tree) / "runtime")
+
+        def key(source):
+            env = dict(os.environ)
+            env["PRISMIO_LLVM_DIR"] = "/fixed/llvm"
+            env.pop("PRISMIO_OBJ_CACHE", None)
+            r = subprocess.run(script + [key_flag, source, repo_flag, tree],
+                               capture_output=True, text=True, env=env)
+            if r.returncode != 0:
+                problems.append(f"printing the cache key for {source} failed: "
+                                f"{(r.stderr or r.stdout).strip()[:200]}")
+                return None
+            return (r.stdout or "").strip()
+
+        source = Path(tree) / "runtime" / "lang_runtime.c"
+        header = Path(tree) / "runtime" / "prismio_runtime.h"
+        original_source = source.read_text(encoding="utf-8")
+        original_header = header.read_text(encoding="utf-8")
+
+        base = key("lang_runtime.c")
+        if base and key("lang_runtime.c") != base:
+            problems.append("the key is not stable across two runs on one tree, so nothing "
+                            "would ever be reused and the cache is pure overhead")
+
+        other = key("aif_support.c")
+        if base and other == base:
+            problems.append("two different sources produce the same cache entry")
+
+        source.write_text(original_source + "\n// cache key check\n", encoding="utf-8")
+        edited = key("lang_runtime.c")
+        if base and edited == base:
+            problems.append("editing lang_runtime.c did not change its key -- the key is not "
+                            "the content, and the next generation would link the old object")
+        source.write_text(original_source, encoding="utf-8")
+
+        header.write_text("/* cache key check */\n" + original_header, encoding="utf-8")
+        after_header = key("lang_runtime.c")
+        if base and after_header == base:
+            problems.append("editing prismio_runtime.h did not change lang_runtime.c's key -- "
+                            "a header changes what a source compiles to without changing a byte "
+                            "of it, so this serves an object built against the old header")
+        header.write_text(original_header, encoding="utf-8")
+
+        if base and key("lang_runtime.c") != base:
+            problems.append("restoring the tree did not restore the key, so at least one of the "
+                            "differences above was caused by something other than the edit")
+
+    if problems:
+        print(f"{RED}[FAIL] the bootstrap object cache key is not sound{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] the bootstrap cache key is stable, per-source, and moves when "
+          f"either the source or a header does{RESET}")
+    return True
+
+
+def run_forced_layout_test():
+    """LAYOUT 8's forced candidate -- `--force-layout=<Type>:<hot>`.
+
+    §8 selects a layout by *measuring* the top-k candidates rather than trusting
+    §7.2's argmin, so the one mechanism it needs beyond `workload` is a way to emit
+    a candidate the model did not choose. This checks that mechanism in the three
+    directions it can be wrong, on `test_62_split_release.psm`, whose `Body` has
+    three candidates: `unsplit`, `split 4/12`, and `split 7/12` (the argmin).
+
+      1. **A force applies.** `Body:4` has to move the `emitted` column off the
+         argmin. A flag that parsed and did nothing would leave it on 7/12 -- and
+         would leave a search measuring the same binary k times while reporting k
+         candidates.
+      2. **A forced cut is still correct.** Every cut prints 4126 -- exact integer
+         arithmetic over the cold fields -- with 0 violations and both halves
+         released. This is the assertion that says the release path is right for
+         cuts *the model never chose*, which is precisely what §8 will compile.
+         Forced unsplit releases 4096 fewer objects than a forced split, and that
+         gap is what proves the force reached codegen rather than only the report.
+      3. **A force that does not apply changes nothing.** This is the one that
+         caught a real defect on the day it was written. `Body:5` is not a
+         candidate; the first version left `hot_count` at 0 for it, so a mistyped
+         cut did not fall back to the argmin -- it silently turned the split
+         *off*. The warning fired, so it was not silent, but a search script would
+         have filed a real number against a cut nothing emitted. "Did not apply"
+         has to mean the layout is what it would have been with no flag at all.
+
+    Verified discriminating: with the `pick < 0` fallback reverted to `continue`,
+    assertion 3 fires and the other two still pass -- which is why 3 is here rather
+    than left to the warning.
+    """
+    print(f"\n{BLUE}--- Running forced_layout ---{RESET}")
+    problems = []
+    fixture = TEST_DIR / "test_62_split_release.psm"
+    bodies = 4096
+
+    baseline, seen, _ = emitted_layout_for(fixture, "Body")
+    if not seen:
+        print(f"{RED}[FAIL] `aif --layout` printed no Body rows at all, so nothing "
+              f"below was checked -- the instrument is broken{RESET}")
+        return False
+    if baseline != "split 7/12":
+        problems.append(
+            f"Body's unforced layout is {baseline!r}, not 'split 7/12'. The forces "
+            f"below are chosen against that table, so they no longer test what "
+            f"they were written to test and have to be re-picked rather than "
+            f"trusted.")
+
+    # 1. A force applies, and lands on the candidate asked for.
+    forced, _, _ = emitted_layout_for(fixture, "Body", ["--force-layout=Body:4"])
+    if forced != "split 4/12":
+        problems.append(
+            f"--force-layout=Body:4 emitted {forced!r}, expected 'split 4/12' -- "
+            f"the flag parsed but did not reach the selection")
+
+    # 3. An unmatched force falls back to the argmin *and* says so. Both halves:
+    #    the layout must not move, and the warning must be there to be read.
+    missed, _, missed_out = emitted_layout_for(fixture, "Body",
+                                               ["--force-layout=Body:5"])
+    if missed != baseline:
+        problems.append(
+            f"a force that matched no candidate changed the layout to {missed!r} "
+            f"from {baseline!r}. 'Did not apply' has to mean nothing changed, or a "
+            f"typo produces a real measurement of a cut nobody asked for.")
+    if "did not apply" not in missed_out:
+        problems.append(
+            "a force that matched no candidate produced no warning, which is the "
+            "instrument-matched-nothing failure this project keeps rediscovering")
+
+    # 2. Every cut runs correctly, and the forced-unsplit ledger proves the force
+    #    reached codegen rather than only the manifest.
+    released_by_cut = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for cut in (4, 7, 12):
+            exe = os.path.join(tmp, f"t62_{cut}")
+            build = run_command([str(PRISMIO_EXE), "build", str(fixture), "--verify",
+                                 f"--force-layout=Body:{cut}", "-o", exe])
+            if build.returncode != 0 or not os.path.exists(exe):
+                problems.append(f"the fixture did not build at a forced cut of {cut}")
+                continue
+            run = run_command([exe])
+            if "4126" not in run.stdout:
+                problems.append(
+                    f"at a forced cut of {cut} the fixture printed "
+                    f"{run.stdout.strip()!r}, expected 4126 -- a field access is "
+                    f"reading the wrong side of this cut")
+            ledger = None
+            for line in (run.stdout + run.stderr).splitlines():
+                m = re.search(r"aif-verify:\s+(\d+) allocated,\s+(\d+) released,"
+                              r"\s+(\d+) leaked,\s+(\d+) violation", line)
+                if m:
+                    ledger = m
+            if ledger is None:
+                problems.append(
+                    f"no aif-verify ledger at a forced cut of {cut}, so its "
+                    f"accounting was not checked")
+                continue
+            released_by_cut[cut] = int(ledger.group(2))
+            if int(ledger.group(4)) != 0:
+                problems.append(
+                    f"{ledger.group(4)} violation(s) at a forced cut of {cut}. The "
+                    f"release path has to be right for every candidate §8 can "
+                    f"compile, not only for the argmin.")
+
+    if 4 in released_by_cut and 12 in released_by_cut:
+        # A split allocates the cold block per object; unsplit does not. The gap is
+        # the object count, and it is the check that separates "the force reached
+        # codegen" from "the report agreed with itself".
+        gap = released_by_cut[4] - released_by_cut[12]
+        if gap != bodies:
+            problems.append(
+                f"forced split released {gap} more objects than forced unsplit, "
+                f"expected exactly {bodies} -- one cold block per body. A force "
+                f"that only moved the manifest would read 0 here.")
+
+    if problems:
+        for p in problems:
+            print(f"{RED}[FAIL] {p}{RESET}")
+        return False
+    print(f"{GREEN}[PASS] a named candidate is emitted, runs correct at every cut, "
+          f"and an unmatched force changes nothing{RESET}")
     return True
 
 
@@ -2153,12 +2815,42 @@ def main():
     else:
         failed += 1
 
+    if run_placement_pin_test():
+        passed += 1
+    else:
+        failed += 1
+
     if run_bracket_summary_test():
         passed += 1
     else:
         failed += 1
 
     if run_layout_cost_model_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_split_release_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_forced_layout_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_object_cache_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_bootstrap_cache_key_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_bootstrap_command_test():
         passed += 1
     else:
         failed += 1

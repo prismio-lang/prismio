@@ -1,0 +1,16 @@
+// expect-error: cannot infer the type arguments of `Result`
+//
+// `Result.Ok(5)` cannot solve `E`: no argument mentions it, and there is no
+// inference from the expected type to fall back on. Worth a fixture because
+// before the diagnostic existed this read as "unknown function `Ok`", which
+// names neither the cause nor the fix.
+
+enum Result<T, E> {
+    Err(E),
+    Ok(T)
+}
+
+fn main() -> Int {
+    let r = Result.Ok(5)
+    return 0
+}

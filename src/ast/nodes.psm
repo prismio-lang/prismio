@@ -57,6 +57,21 @@ enum NodeKind {
     // expression allocate" has to answer *no* for it, and a kind is the thing
     // those walks already switch on.
     NONE_LITERAL_EXPR,
+    // REQUIREMENTS 15. `spawn f(a, b)` and `join t`.
+    //
+    // Their own kinds rather than a CALL_EXPR with a marker, for the reason
+    // NONE_LITERAL_EXPR gives one line up and one more that is specific to
+    // these: AIF asks "does this call hand its arguments to another task", and
+    // INFERENCE 4.1's E-SPAWN answers differently from E-CALL for every
+    // argument. A walk that had to re-derive that from a flag on a CALL_EXPR
+    // would get it right in sema and wrong in the three walks that only switch
+    // on the kind.
+    //
+    // SPAWN_EXPR.child1 is the CALL_EXPR being spawned -- kept whole so the
+    // existing argument checking, move checking and lowering apply unchanged.
+    // JOIN_EXPR.child1 is the task handle.
+    SPAWN_EXPR,
+    JOIN_EXPR,
 
     // Other
     FUNCTION_PARAMETER,

@@ -42,6 +42,13 @@ extern fn compiler_run_workload(exeFile: String, timeoutSeconds: Int) -> Int
 // Same ".prismio-<stem>-<suffix>" convention as compiler_temp_ir_path, and the
 // same malloc'd result.
 extern fn compiler_temp_path_for(sourcePath: String, suffix: String) -> String produce(free)
+// The same, with the pid in the name. For a temporary that must not be shared
+// between two compiles of one source -- RESULTS-layout 7, where sharing three of
+// them made the IR differential report a false difference under any concurrent
+// load. `compiler_publish_file` is how the one artifact that *is* supposed to
+// have a predictable name gets there afterwards.
+extern fn compiler_temp_private_path(sourcePath: String, suffix: String) -> String produce(free)
+extern fn compiler_publish_file(fromPath: String, toPath: String) -> Int
 // Forces the driver's link to compile the runtime rather than take an installed
 // runtime.lib, which may predate rt_profile_*. See the note at g_workload_mode.
 extern fn compiler_set_workload_mode(on: Int)
@@ -60,19 +67,10 @@ extern fn ir_llvm_version() -> String alias
 // Prismio targets one LLVM major, and the C API is not stable across them.
 let PRISMIO_VERSION = "0.1.0"
 
-fn isNamedTopLevel(stmt: ASTNode) -> Bool {
-    if (stmt.kind == NodeKind.EXTERN_FUNCTION) { return true }
-    if (stmt.kind == NodeKind.VARIABLE_DECL) { return true }
-    if (stmt.kind == NodeKind.FUNCTION) { return true }
-    if (stmt.kind == NodeKind.STRUCT_DECL) { return true }
-    if (stmt.kind == NodeKind.ENUM_DECL) { return true }
-    // LAYOUT 3.1 merges several workloads *by summation*, so a workload that
-    // arrives twice through two import paths would weight itself twice over. It
-    // is named and it is not overloadable, so the existing rule is exactly right
-    // for it.
-    if (stmt.kind == NodeKind.WORKLOAD_DECL) { return true }
-    return false
-}
+// The last statement appended to the module being merged. Reset with the module
+// in resolveImports(); see appendStatement() for why it is a cache rather than
+// the list's only tail.
+let mut mergeTailPtr = ""
 
 // Two same-named top-level declarations of the same kind are duplicates, with one
 // exception: FUNCTION. Overloading means several `fn` nodes legitimately share a
@@ -99,18 +97,23 @@ fn sameTopLevelName(a: ASTNode, b: ASTNode) -> Bool {
     return true
 }
 
+// Asks the declaration index, which appendStatement() keeps current as it
+// merges, rather than rescanning everything merged so far. The scan was
+// quadratic in the number of declarations and ran before sema -- this compiler's
+// own source merges about 1 500 of them.
 fn hasNamedTopLevel(module: ASTNode, stmt: ASTNode) -> Bool {
     if (isNamedTopLevel(stmt) == false) {
         return false
     }
 
-    let mut scanPtr = module.child1
-    while (nodeExists(scanPtr)) {
-        let scan = ptr_to_node(scanPtr)
+    let count = ir_decl_count(stmt.s1)
+    let mut i = 0
+    while (i < count) {
+        let scan = ptr_to_node(ir_decl_at(stmt.s1, i))
         if (sameTopLevelName(scan, stmt)) {
             return true
         }
-        scanPtr = scan.next
+        i = i + 1
     }
 
     return false
@@ -130,20 +133,32 @@ fn appendStatement(module: ASTNode, stmt: ASTNode) {
 
     if (nodeIsNull(module.child1)) {
         module.child1 = node_to_ptr(stmt)
+        mergeTailPtr = node_to_ptr(stmt)
+        indexTopLevel(stmt)
         return
     }
 
-    let mut tailPtr = module.child1
-    let mut searching = true
-    while (searching) {
-        let tail = ptr_to_node(tailPtr)
-        if (nodeIsNull(tail.next)) {
-            tail.next = node_to_ptr(stmt)
-            searching = false
-        } else {
-            tailPtr = tail.next
+    // Walking to the end per statement made merging quadratic. The cached tail
+    // is a shortcut, not a second source of truth: when it is empty -- a module
+    // that was appended to by something other than this function -- the walk it
+    // replaced still runs, once, and the cache picks up from there.
+    if (nodeIsNull(mergeTailPtr)) {
+        mergeTailPtr = module.child1
+        let mut searching = true
+        while (searching) {
+            let scan = ptr_to_node(mergeTailPtr)
+            if (nodeIsNull(scan.next)) {
+                searching = false
+            } else {
+                mergeTailPtr = scan.next
+            }
         }
     }
+
+    let tail = ptr_to_node(mergeTailPtr)
+    tail.next = node_to_ptr(stmt)
+    mergeTailPtr = node_to_ptr(stmt)
+    indexTopLevel(stmt)
 }
 
 // A dotted module name is a directory path: `ir.expr` becomes `ir/expr`.
@@ -221,7 +236,7 @@ fn importMemoKey(importPath: String) -> String {
 // `site` is the import that asked, and is only used to place the diagnostic.
 fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
                       baseDir: String, visited: String) -> String {
-    let importPath = joinImportPath(baseDir, moduleName)
+    let importPath = resolveImportPath(baseDir, moduleName)
     let key = importMemoKey(importPath)
     if (str_contains(visited, key) == 1) {
         return visited
@@ -315,27 +330,59 @@ fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited
     return seen
 }
 
-// Finds std/io.psm in a source checkout or an installed toolchain. Standard
-// modules are compiler-owned rather than relative to an application's entry
-// file, so a local `std/` directory cannot replace the shipped definitions.
-fn standardIoPath(baseDir: String) -> String {
-    let besideEntry = join_path(baseDir, "std/io.psm")
+// Finds a standard module in a source checkout or an installed toolchain.
+// Standard modules are compiler-owned rather than relative to an application's
+// entry file, so a local `std/` directory cannot replace the shipped
+// definitions.
+//
+// `leaf` is the file name, because the installed layout flattens the package:
+// `std/map.psm` in a checkout is `stdlib/map.psm` once installed.
+fn standardModulePath(baseDir: String, leaf: String) -> String {
+    let besideEntry = join_path(baseDir, str_concat("std/", leaf))
     if (file_exists(besideEntry) == 1) { return besideEntry }
 
-    let sourceRoot = get_directory(baseDir)
-    let inSourceTree = join_path(sourceRoot, "std/io.psm")
+    let inSourceTree = join_path(get_directory(baseDir), str_concat("std/", leaf))
     if (file_exists(inSourceTree) == 1) { return inSourceTree }
 
-    let compilerDir = executable_directory()
-    let toolchainRoot = get_directory(compilerDir)
+    let toolchainRoot = get_directory(executable_directory())
 
-    let installed = join_path(toolchainRoot, "stdlib/io.psm")
+    let installed = join_path(toolchainRoot, str_concat("stdlib/", leaf))
     if (file_exists(installed) == 1) { return installed }
 
-    let besideBuild = join_path(toolchainRoot, "std/io.psm")
+    let besideBuild = join_path(toolchainRoot, str_concat("std/", leaf))
     if (file_exists(besideBuild) == 1) { return besideBuild }
 
     return ""
+}
+
+fn standardIoPath(baseDir: String) -> String {
+    return standardModulePath(baseDir, "io.psm")
+}
+
+// Where `import std.map` reads from.
+//
+// An ordinary import is relative to the source root, and that is right for an
+// application's own modules. It is wrong for `std.*`: those are shipped with the
+// compiler, and a program that imports one is not asking for a file that happens
+// to sit next to it. Resolved relative to the entry first all the same, so a
+// checkout of the compiler compiles against its own `std/` rather than an
+// installed copy.
+//
+// Each branch rebuilds the path rather than binding it once. Strings are affine,
+// so a binding tested with file_exists and then returned is named twice; a fresh
+// temporary per use is a str_concat and avoids the question.
+fn resolveImportPath(baseDir: String, moduleName: String) -> String {
+    if (file_exists(joinImportPath(baseDir, moduleName)) == 1) {
+        return joinImportPath(baseDir, moduleName)
+    }
+    if (str_starts_with(moduleName, "std.") == 0) {
+        return joinImportPath(baseDir, moduleName)
+    }
+    let leaf = str_concat(str_substring(moduleName, 4, str_length(moduleName) - 4), ".psm")
+    if (str_equals(standardModulePath(baseDir, leaf), "") == 1) {
+        return joinImportPath(baseDir, moduleName)
+    }
+    return standardModulePath(baseDir, str_concat(str_substring(moduleName, 4, str_length(moduleName) - 4), ".psm"))
 }
 
 // std.io is the prelude's source-level I/O boundary. Loading it here gives every
@@ -367,8 +414,24 @@ fn mergeStandardIo(merged: ASTNode, baseDir: String, visited: String) -> String 
 // duplicate every function it defines.
 fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNode {
     let merged = createNode(NodeKind.MODULE)
+    // The index and the tail cache describe `merged`, so both start empty with
+    // it. analyzeModule and generateModule rebuild the index from the finished
+    // module; this fill is the merge's own, and it is the same one walk.
+    ir_reset_decl_index()
+    mergeTailPtr = ""
     let seen = mergeStandardIo(merged, baseDir, importMemoKey(entryPath))
     mergeModuleImports(merged, module, baseDir, seen)
+
+    // Generic declarations come out of the chain here, at the end of the merge
+    // rather than at the start of sema, so that every consumer of a resolved
+    // module sees the same thing: a chain of concrete declarations, plus
+    // whatever instantiation later appends to it.
+    monoCollectTemplates(merged)
+
+    // After the templates are out of the way, so that a *generic* payload enum
+    // is desugared once per instantiation rather than once as a template whose
+    // payload types are still type parameters.
+    enumDesugarModule(merged)
     return merged
 }
 
@@ -382,11 +445,65 @@ fn printUsage() {
     println("  prismio dump-ast <source.psm>")
     println("  prismio aif <source.psm> [--summary] [--layout] [--copyable-collections] [--theta-fields] [--budget=N]")
     println("  prismio aif <source.psm> --why=<symbol>   why one record has the tier it has")
+    println("  prismio build|aif <source.psm> --force-layout=<Type>:<hot>   emit a named layout candidate")
     println("")
     println("build/run link against the installed Prismio runtime only.")
     println("build with no source discovers build.ums and delegates the project to UMS.")
     println("bootstrap builds the compiler itself from the repository sources,")
-    println("linking the compiler backend as well and ignoring installed libraries.")
+    println("linking the compiler backend and the LLVM C API it calls.")
+}
+
+// LAYOUT 8's forced candidate: `--force-layout=<Type>:<hot>`.
+//
+// Accepted by `build` as well as `aif`, and that is the point rather than a
+// convenience -- 8 selects by *measuring*, so the flag has to be able to produce a
+// binary, not just a manifest describing one. `aif` takes it so the report and the
+// executable can be made to agree.
+//
+// The value names a layout by hot-field count because that is what `--layout`
+// prints (`split 8/12`), so the cut a reader picks off the table is the cut they
+// can ask for. Forcing the full field count is "no split", which is a candidate
+// like any other and is how a split type is measured against its own baseline.
+//
+// Returns false on a malformed value, and the caller turns that into an error
+// rather than a warning: a mistyped force that carried on would measure the argmin
+// twice and report it as two candidates.
+fn parseForceLayout(flag: String) -> Bool {
+    let value = str_substring(flag, 15, str_length(flag) - 15)
+    let colon = str_index_of(value, ":")
+    if (colon < 1) { return false }
+    let typeName = str_substring(value, 0, colon)
+    let hotText = str_substring(value, colon + 1, str_length(value) - colon - 1)
+    if (str_equals(hotText, "") == 1) { return false }
+    // str_to_int answers 0 for a non-numeric string, which is also the value a
+    // hot count can never legally take -- field 0 is pinned hot, so every real
+    // candidate keeps at least one field. One check covers both.
+    let hot = str_to_int(hotText)
+    if (hot < 1) { return false }
+    aif_layout_force(typeName, hot)
+    return true
+}
+
+// Every force has to match a candidate, and a force that matched nothing is the
+// one failure this flag can have that looks like success -- the build would emit
+// the argmin and the measurement would compare a layout against itself. So it is
+// a warning per unmatched force, named, rather than a silent fallback.
+//
+// A warning rather than an error because the same flag is legitimately passed to a
+// whole corpus by a search script, where most programs do not declare the type
+// being forced. The check that matters is that *nothing* matched silently.
+fn reportForcedLayouts() {
+    let mut i = 0
+    while (i < aif_layout_forced_count()) {
+        if (aif_layout_force_applied(i) == 0) {
+            diag_warning(str_concat(str_concat(str_concat(
+                "--force-layout did not apply: no candidate of ",
+                diagQuote(aif_layout_forced_type(i))),
+                str_concat(" keeps ", int_to_str(aif_layout_forced_hot(i)))),
+                " fields hot (see `aif --layout` for the candidates)"))
+        }
+        i = i + 1
+    }
 }
 
 // The installed runtime library carries the hash of the sources it was built from.
@@ -526,11 +643,14 @@ fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: 
     if (str_equals(why, "") == 0) {
         let converged = aifRunProfiled(merged, ownedCollections, thetaFields, budget,
                                         profilePath)
+        discardWorkloadProfile(profilePath)
         return 1 - aifExplain(why, converged)
     }
 
     aifAnalyzeProfiled(merged, path, PRISMIO_VERSION, ownedCollections, summary,
                         thetaFields, budget, profilePath, layout)
+    discardWorkloadProfile(profilePath)
+    reportForcedLayouts()
     return 0
 }
 
@@ -566,13 +686,29 @@ fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> 
     }
 
     let wl = findWorkload(module)
-    let driverIr = compiler_temp_path_for(sourcePath, "workload.ll")
-    let driverExe = compiler_temp_path_for(sourcePath, "workload.exe")
-    let profilePath = compiler_temp_path_for(sourcePath, "profile.txt")
+
+    // RESULTS-layout 7. All three were predictable paths, which made them shared
+    // state between two compiles of the same source: the driver executable one
+    // process ran could be the one another process had just overwritten, and a
+    // build that read someone else's profile.txt chose a different field order
+    // with no warning and no fallback -- so the IR differential, which is this
+    // project's definition of a behaviour-preserving change, reported a false
+    // difference whenever anything else was compiling.
+    //
+    // Nothing here wants to be predictable except the profile, and only as an
+    // *artifact* (LAYOUT 2.2, checked in beside the manifest). So the build
+    // writes and reads its own copy and publishes that one afterwards.
+    let driverIr = compiler_temp_private_path(sourcePath, "workload.ll")
+    let driverExe = compiler_temp_private_path(sourcePath, "workload.exe")
+    let profilePath = compiler_temp_private_path(sourcePath, "profile.txt")
+    let publishedProfile = compiler_temp_path_for(sourcePath, "profile.txt")
 
     // A stale profile from a previous build would be loaded as this build's if
     // the run below failed to write one -- the failure would then look like a
-    // success, which is the one way W2's fallback can go wrong silently.
+    // success, which is the one way W2's fallback can go wrong silently. Now
+    // that the path carries the pid a leftover is someone else's rather than
+    // this build's, which is a stronger reason to delete it rather than a
+    // weaker one: it cannot be ours, so it can only mislead.
     delete_file(profilePath)
 
     ir_reset()
@@ -642,7 +778,22 @@ fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> 
         diag_warning(failure)
         return ""
     }
+
+    // Published, not moved: this build still reads its own copy. Best-effort --
+    // a profile that cannot be copied is an artifact nobody gets, not a build
+    // that fails, which is the same W2 posture as everything else here.
+    compiler_publish_file(profilePath, publishedProfile)
     return profilePath
+}
+
+// The private half of the profile (RESULTS-layout 7). The published copy is the
+// durable artifact; this one exists only so the read cannot race, and it carries
+// this process's pid -- so no later build will ever clean it up and every
+// consumer of the path runWorkloadProfile returns has to.
+fn discardWorkloadProfile(profilePath: String) {
+    if (str_equals(profilePath, "") == 0) {
+        delete_file(profilePath)
+    }
 }
 
 // Restores everything runWorkloadProfile disturbed. Called on every path out of
@@ -764,6 +915,7 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
     }
 
     let aifConverged = aifRunProfiled(mergedAst, true, false, aif_rounds, profilePath)
+    discardWorkloadProfile(profilePath)
 
     // The one thing AIF can fail a build for, and SPEC 5.4.1 is explicit that it
     // is not a violation of SPEC 1: a pin a *converged* analysis refutes is a
@@ -780,6 +932,11 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
     // SPEC 5.2. Warns rather than fails, so it goes after the gate above: an
     // inert `region` is a pessimisation, not a false assertion about a value.
     aifReportInertRegions()
+
+    // After the analysis, because `applied` is set by the selection it reports on.
+    // A workload build runs the engine twice and this reads the second, real pass
+    // -- which is the one whose layout ships.
+    reportForcedLayouts()
 
     ir_reset()
 
@@ -973,11 +1130,16 @@ fn main() -> Int {
             if (str_equals(flag, "--summary") == 1) {
                 aifSummary = true
             } else if (str_equals(flag, "--layout") == 1) {
-                // LAYOUT 7.2's argmin and 8's ranked top-k, printed rather than
-                // acted on. The cost model exists; the transform that would use
-                // it does not, and a ranking nobody can read is a ranking nobody
-                // can check before it starts moving objects.
+                // LAYOUT 7.2's argmin and 8's ranked top-k. Acted on since
+                // 2026-08-17: the `emitted` column says which candidate the binary
+                // actually contains, which is what makes the table checkable
+                // rather than a ranking nobody can tie to an object.
                 aifLayout = true
+            } else if (str_starts_with(flag, "--force-layout=") == 1) {
+                if (parseForceLayout(flag) == false) {
+                    diag_error("--force-layout= takes <Type>:<hot-field-count>, e.g. Particle:8")
+                    return 1
+                }
             } else if (str_starts_with(flag, "--why=") == 1) {
                 // SPEC 6.3's minimal cause for one record. The symbol is the one
                 // the manifest prints, so it can be copied straight out of a
@@ -1144,6 +1306,14 @@ fn main() -> Int {
             // monomorphization cap to raise -- and a flag whose settings cannot
             // be told apart is a check that cannot fail.
             debugMode = true
+            argIndex = argIndex + 1
+        } else if (str_starts_with(arg, "--force-layout=") == 1) {
+            // LAYOUT 8 selects the measured winner, so the flag has to reach the
+            // path that produces something to measure.
+            if (parseForceLayout(arg) == false) {
+                diag_error("--force-layout= takes <Type>:<hot-field-count>, e.g. Particle:8")
+                return 1
+            }
             argIndex = argIndex + 1
         } else {
             if (str_equals(arg, "build") == 1 or str_equals(arg, "run") == 1) {

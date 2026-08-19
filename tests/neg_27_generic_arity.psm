@@ -1,0 +1,17 @@
+// expect-error: takes type parameters <K,V>
+//
+// A generic used with the wrong number of type arguments. Worth a fixture
+// because the failure is otherwise silent in a specific way: the mangled name is
+// built by walking the arguments written at the use site, so `Pair<Int>` would
+// name `Pair$Int` -- a perfectly well-formed instantiation of a template that
+// has a second field nothing was ever supplied for.
+
+struct Pair<K, V> {
+    key: K,
+    value: V
+}
+
+fn main() -> Int {
+    let p = Pair<Int> { key: 1, value: 2 }
+    return p.key
+}

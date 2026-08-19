@@ -162,5 +162,20 @@
   "160": "Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on",
   "161": "Prompt 1 is done — what it unblocked",
   "162": "str_split",
-  "163": "ir_snapshot.py"
+  "163": "ir_snapshot.py",
+  "164": "2 · Prediction vs measurement, per axis",
+  "165": "g2r_time.py",
+  "166": "9 · The budget rule",
+  "167": "Session of 2026-08-17 (second) — §8's forced candidate lands, and the IR differential turns out to have a concurrency hole",
+  "168": "The prompt for the next session",
+  "169": "Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on",
+  "170": "2026-08-17 (compile time) — the frontend is linear now, and incrementality is not an AIF problem",
+  "171": "decl_entry",
+  "172": "ir_slot_diff.py",
+  "173": "10 · Boundaries",
+  "174": "backend_fail",
+  "175": "struct_entry",
+  "176": "block_done",
+  "177": "LLVMValueRef",
+  "178": "The prompt for the next session"
 }

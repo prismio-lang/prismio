@@ -1,0 +1,23 @@
+// expect-error: this arm is unreachable: an earlier arm already matches `Circle`
+//
+// Arms are compiled to tag comparisons in source order, so a second arm for a
+// variant an earlier one already matches can never run. There is no reading of
+// that which is correct, so it is rejected rather than warned about.
+
+enum Shape {
+    Dot,
+    Circle(Int)
+}
+
+fn f(s: Shape) -> Int {
+    match (s) {
+        Shape.Circle(r) => { return r }
+        Shape.Dot => { return 0 }
+        Shape.Circle(x) => { return 99 }
+    }
+    return -1
+}
+
+fn main() -> Int {
+    return f(Shape.Dot)
+}

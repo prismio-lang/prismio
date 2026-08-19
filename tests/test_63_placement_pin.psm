@@ -1,0 +1,95 @@
+// SPEC 5.4 applied to placement -- the two regimes a `pin(<region-name>)` can
+// assert, on a program that compiles.
+//
+// This file is the positive half. `neg_26_placement_pin_refuted.psm` is the
+// negative half, and neither is evidence alone: a compiler that honoured every
+// placement pin passes this one, a compiler that refuted every placement pin
+// passes that one, and an annotation that cannot fail is this project's
+// most-produced defect. `run_placement_pin_test` closes the gap by performing the
+// regression on *this* file -- see MUTATION-POINT below.
+//
+// The `served` deltas are the whole point. A `region` that bump-allocates nothing
+// is indistinguishable from one that serves everything if you only read values
+// back, which is how a region was quoted as a tuning story while serving 0 of
+// 10 201 215 allocations. `arena_objects()` is the only thing that can tell an
+// arena pointer from a malloc'd one.
+//
+// **Reconstructed on 2026-08-19** after the file was deleted by a careless glob,
+// from the emitted IR of the previous generation plus the assertions in
+// `run_placement_pin_test`. It compiles to the same manifest records and passes
+// the same mutation check; the prose above is new.
+
+extern fn arena_objects() -> Int
+
+struct Cmd {
+    id: Int,
+    weight: Int
+}
+
+fn fail(what: String) -> Int {
+    print("FAIL ")
+    println(what)
+    return 1
+}
+
+// SPEC 5.2 -- lexical placement. The pinned site is written directly inside the
+// region that must serve it, so the only way to lose it is for the placement
+// itself to stop working.
+fn lexical_pin() -> Int {
+    let before = arena_objects()
+    region lex_arena {
+        let mut keep = Cmd { id: 0, weight: 0 }
+        let mut i = 0
+        while (i < 50) {
+            let pin(lex_arena) made = Cmd { id: i, weight: i * 2 }
+            keep = made
+            if (keep.id != i) { return fail("lexical_pin value") }
+            i = i + 1
+        }
+    }
+    let served = arena_objects() - before
+    if (served != 50) {
+        print("  served ")
+        println(served)
+        return fail("lexical_pin: the region did not serve the pinned site")
+    }
+    return 0
+}
+
+// SPEC 5.2.1.1 -- regime (a). The allocation is in a *callee*, and reaches the
+// arena only because the call site is bracketed, which regime (a) permits only
+// while the callee has exactly one call site in the whole program.
+fn bracketed_make(i: Int) -> Cmd {
+    let pin(call_arena) c = Cmd { id: i, weight: i * 2 }
+    return c
+}
+
+fn bracketed_pin() -> Int {
+    let before = arena_objects()
+    region call_arena {
+        let mut keep = Cmd { id: 0, weight: 0 }
+        let mut i = 0
+        while (i < 50) {
+            keep = bracketed_make(i)
+            if (keep.id != i) { return fail("bracketed_pin value") }
+            i = i + 1
+        }
+        // MUTATION-POINT-SECOND-CALL
+    }
+    let served = arena_objects() - before
+    if (served != 50) {
+        print("  served ")
+        println(served)
+        return fail("bracketed_pin: the bracketed call did not reach the arena")
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    bad = bad + lexical_pin()
+    bad = bad + bracketed_pin()
+    if (bad != 0) { return 1 }
+    println("test_63 ok")
+    return 0
+}

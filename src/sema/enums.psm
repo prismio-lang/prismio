@@ -1,0 +1,578 @@
+// Payload-carrying enum variants, desugared to a tagged struct.
+//
+//     enum Shape { Dot, Circle(Int), Rect(Int, Int) }
+//
+// becomes a struct with a tag and one field per payload slot:
+//
+//     struct Shape { $tag: Int, Circle$0: Int, Rect$0: Int, Rect$1: Int }
+//
+// **A tagged product, not a tagged union, and that is forced rather than
+// chosen.** Overlapping the variants' payloads needs the size of the widest one,
+// and the size of a type is REQUIREMENTS 18 -- still open. So the variants get
+// separate fields. The cost is space in a multi-variant payload enum and nothing
+// else: `Option<T>` pays nothing at all, since only one of its variants carries
+// anything. When 18 lands, this file is where the overlap goes, and no caller
+// changes.
+//
+// The rest of the compiler learns nothing. Sema, AIF, the layout optimiser and
+// codegen see a struct, so field access is the `getelementptr` it always was --
+// which is the same reason monomorphisation is an AST transform in
+// sema/generics.psm. Two features, one architecture.
+//
+// **A fieldless enum is left completely alone.** It stays an `i32` constant with
+// its existing ordinals, so every enum written before this file behaves exactly
+// as it did. `enumHasPayload` is the whole of the switch.
+
+import ast.nodes
+import ast.types
+import common.text
+import common.diagnostics
+import ir.bridge
+
+// `$` cannot occur in a Prismio identifier, so neither of these can collide with
+// a field a program declared -- which matters because they share a namespace
+// with the payload enum's own variant names.
+fn enumTagField() -> String { return "$tag" }
+
+fn enumPayloadField(variantName: String, index: Int) -> String {
+    return str_concat(str_concat(variantName, "$"), int_to_str(index))
+}
+
+fn enumHasPayload(enumDecl: ASTNode) -> Bool {
+    let mut p = enumDecl.child1
+    while (nodeExists(p)) {
+        let variant = ptr_to_node(p)
+        if (nodeExists(variant.child1)) { return true }
+        p = variant.next
+    }
+    return false
+}
+
+// ---------------------------------------------------------
+// The shadow chain
+// ---------------------------------------------------------
+
+// Once a payload enum has become a struct, nothing in the module says which
+// variant has which ordinal or what it carries. The original ENUM_DECL is kept
+// on `module.child3` so construction and `match` can ask.
+//
+// The same idiom as the template chain on `module.child2`: a declaration that
+// must survive the pass without being one of the module's declarations.
+fn enumShadowPush(module: ASTNode, decl: ASTNode) {
+    decl.next = module.child3
+    module.child3 = node_to_ptr(decl)
+}
+
+fn enumShadowFind(module: ASTNode, name: String) -> ASTNode {
+    let mut p = module.child3
+    while (nodeExists(p)) {
+        let decl = ptr_to_node(p)
+        if (str_equals(decl.s1, name) == 1) { return decl }
+        p = decl.next
+    }
+    return ptr_to_node("")
+}
+
+fn enumIsPayloadType(module: ASTNode, t: TypeInfo) -> Bool {
+    if (t.kind != TypeKind.STRUCT) { return false }
+    return nodeExists(node_to_ptr(enumShadowFind(module, t.name)))
+}
+
+fn enumVariantNode(enumDecl: ASTNode, variantName: String) -> ASTNode {
+    let mut p = enumDecl.child1
+    while (nodeExists(p)) {
+        let variant = ptr_to_node(p)
+        if (str_equals(variant.s1, variantName) == 1) { return variant }
+        p = variant.next
+    }
+    return ptr_to_node("")
+}
+
+// The value stored in the tag field, or -1 for an unknown variant.
+//
+// **One-based, and this is load-bearing rather than cosmetic.** The tag is the
+// struct's first field, and no type punned through `String` may have a
+// zero-valued first field -- a struct whose first four bytes are zero is
+// byte-for-byte indistinguishable from an empty slot, which is the invariant
+// NodeKind and TypeKind both reserve ordinal 0 for. A first variant with tag 0
+// would make every value of it read as absent.
+fn enumVariantTag(enumDecl: ASTNode, variantName: String) -> Int {
+    let mut p = enumDecl.child1
+    let mut index = 0
+    while (nodeExists(p)) {
+        let variant = ptr_to_node(p)
+        if (str_equals(variant.s1, variantName) == 1) { return index + 1 }
+        index = index + 1
+        p = variant.next
+    }
+    return -1
+}
+
+// ---------------------------------------------------------
+// The transform
+// ---------------------------------------------------------
+
+// Split in two so the annotation is a *returned* value rather than a local.
+// A node bound to a name and reached only through `node_to_ptr` is on the
+// scope's drop list and is freed at the closing brace; a returned one is moved
+// to the caller. Folding these back into one function reintroduces a
+// use-after-free that shows up nowhere near here.
+fn enumTypeAnnotation(typeName: String) -> ASTNode {
+    let annotation = createNode(NodeKind.TYPE_ANNOTATION)
+    annotation.s1 = typeName
+    return annotation
+}
+
+fn enumFieldNamed(name: String, typeName: String) -> ASTNode {
+    let field = createNode(NodeKind.STRUCT_FIELD)
+    field.s1 = name
+    field.child1 = node_to_ptr(enumTypeAnnotation(typeName))
+    return field
+}
+
+// One payload slot, built in its own function so that nothing inside the loop
+// below is a droppable local.
+//
+// This is the rule that has now cost three debugging sessions: a node bound to a
+// name is on that scope's drop list and is freed at the closing brace -- here,
+// at the end of each loop iteration -- while a node that is *returned* is moved
+// to the caller, and a node built inline as an argument is a temporary with no
+// owner and no free point. Both of those are safe; the named local is not.
+fn enumPayloadSlot(variant: ASTNode, payloadPtr: String, index: Int) -> ASTNode {
+    let slot = createNode(NodeKind.STRUCT_FIELD)
+    slot.s1 = enumPayloadField(variant.s1, index)
+    nodeSpanFrom(slot, variant)
+    slot.child1 = node_to_ptr(monoCopyOne(payloadPtr))
+    return slot
+}
+
+// Builds the struct that replaces a payload enum. The enum declaration itself is
+// not modified -- it becomes the shadow.
+fn enumDesugarToStruct(enumDecl: ASTNode) -> ASTNode {
+    let structDecl = createNode(NodeKind.STRUCT_DECL)
+    structDecl.s1 = enumDecl.s1
+    nodeSpanFrom(structDecl, enumDecl)
+
+    let fields = nodeList()
+
+    // The tag first, and it must stay first -- see enumVariantTag for why its
+    // values are one-based. `run_aif_layout_test` guards the ordering: the layout
+    // optimiser is not allowed to move field 0.
+    nodeListPush(fields, enumFieldNamed(enumTagField(), "Int"))
+
+    let mut p = enumDecl.child1
+    while (nodeExists(p)) {
+        let variant = ptr_to_node(p)
+        let mut payload = variant.child1
+        let mut index = 0
+        while (nodeExists(payload)) {
+            nodeListPush(fields, enumPayloadSlot(variant, payload, index))
+            index = index + 1
+            payload = ptr_to_node(payload).next
+        }
+        p = variant.next
+    }
+
+    structDecl.child1 = fields.head
+    return structDecl
+}
+
+// Rewrites every payload-carrying enum in the module into its tagged struct,
+// keeping the original on the shadow chain.
+//
+// Runs after monoCollectTemplates, so the generic ones are not here -- those are
+// desugared per instantiation instead, by monoInstantiateType.
+fn enumDesugarModule(module: ASTNode) {
+    let kept = nodeList()
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        // Read `next` before pushing: nodeListPush rewrites the tail's `next`,
+        // so the chain being walked is the chain being rebuilt.
+        let following = stmt.next
+        stmt.next = ""
+        if (stmt.kind == NodeKind.ENUM_DECL and enumHasPayload(stmt)) {
+            nodeListPush(kept, enumDesugarToStruct(stmt))
+            enumShadowPush(module, stmt)
+        } else {
+            nodeListPush(kept, stmt)
+        }
+        p = following
+    }
+    module.child1 = kept.head
+}
+
+// ---------------------------------------------------------
+// Constructing a variant
+// ---------------------------------------------------------
+
+fn enumTagLiteral(tag: Int) -> ASTNode {
+    let literal = createNode(NodeKind.LITERAL_EXPR)
+    literal.i1 = TokenType.NUMBER_LITERAL
+    literal.s1 = int_to_str(tag)
+    return literal
+}
+
+// A struct-literal field whose initialiser is an existing expression node.
+fn enumLiteralField(name: String, init: String) -> ASTNode {
+    let field = createNode(NodeKind.STRUCT_FIELD)
+    field.s1 = name
+    field.child1 = init
+    return field
+}
+
+// `Option<Int>` as a type annotation, built from a name and a solved argument
+// chain, so that instantiation can go through the one path that already knows
+// how to do it.
+fn enumTypeUse(name: String, argsPtr: String) -> ASTNode {
+    let tn = createNode(NodeKind.TYPE_ANNOTATION)
+    tn.s1 = name
+    if (nodeExists(argsPtr)) {
+        tn.i2 = 1
+        tn.child1 = argsPtr
+    }
+    return tn
+}
+
+// Solves a generic enum's type arguments from the values passed to one of its
+// variants: `Option.Some(5)` binds `T` to `Int`.
+//
+// Answers an empty chain when a parameter cannot be solved -- `Option.None`
+// carries nothing, so nothing there mentions `T` -- and the caller then requires
+// the arguments to have been written out.
+fn enumSolveArgs(module: ASTNode, template: ASTNode, variantName: String, argPtr: String) -> String {
+    let variant = enumVariantNode(template, variantName)
+    if (nodeIsNull(node_to_ptr(variant))) { return "" }
+
+    let params = template.s2
+    let count = monoParamCount(params)
+    let solved = nodeList()
+    let mut i = 0
+    while (i < count) {
+        let found = enumSolveOneArg(module, variant, argPtr, monoParamAt(params, i))
+        if (nodeIsNull(node_to_ptr(found))) { return "" }
+        nodeListPush(solved, found)
+        i = i + 1
+    }
+    return solved.head
+}
+
+fn enumSolveOneArg(module: ASTNode, variant: ASTNode, argPtr: String, paramName: String) -> ASTNode {
+    let mut payload = variant.child1
+    let mut arg = argPtr
+    while (nodeExists(payload) and nodeExists(arg)) {
+        let hit = monoMatchParam(module, ptr_to_node(payload),
+                                 semaExpr(module, ptr_to_node(arg)), paramName)
+        if (nodeExists(node_to_ptr(hit))) { return hit }
+        payload = ptr_to_node(payload).next
+        arg = ptr_to_node(arg).next
+    }
+    return ptr_to_node("")
+}
+
+// The concrete tagged-struct name for `EnumName` at a use site, instantiating a
+// generic enum if the arguments can be solved. Answers "" when this is not a
+// payload enum at all, which is how an ordinary `Color.Red` falls through to the
+// integer path untouched.
+fn enumConcreteName(module: ASTNode, enumName: String, variantName: String, argPtr: String,
+                    explicitArgs: String) -> String {
+    if (nodeExists(node_to_ptr(enumShadowFind(module, enumName)))) { return enumName }
+
+    let template = monoFindTypeTemplate(module, enumName)
+    if (nodeIsNull(node_to_ptr(template))) { return "" }
+    if (template.kind != NodeKind.ENUM_DECL) { return "" }
+    if (enumHasPayload(template) == false) { return "" }
+
+    if (nodeExists(explicitArgs)) {
+        return monoInstantiateStruct(module, enumTypeUse(enumName, explicitArgs))
+    }
+
+    // Solved from what the variant carries, which is the only place a type
+    // parameter can appear at a construction site. `Result.Ok(5)` cannot reach
+    // `E` that way -- no argument mentions it -- and there is no inference from
+    // the expected type to fall back on, so the arguments have to be written.
+    let solved = enumSolveArgs(module, template, variantName, argPtr)
+    if (nodeIsNull(solved)) { return "" }
+    return monoInstantiateStruct(module, enumTypeUse(enumName, solved))
+}
+
+// Rewrites `Shape.Circle(5)` or `Shape.Dot` into the struct literal that
+// represents it, in place. Answers false when this expression is not a payload
+// variant, leaving it exactly as it was.
+//
+// In place, and rewriting rather than wrapping, because everything downstream --
+// type checking, AIF's site registration, codegen -- already knows what to do
+// with a struct literal and knows nothing about enums with payloads. The same
+// trick as monomorphisation: put the feature in the AST, not in five passes.
+fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: String, variantName: String,
+                           argPtr: String, explicitArgs: String) -> Bool {
+    let concrete = enumConcreteName(module, enumName, variantName, argPtr, explicitArgs)
+    if (str_equals(concrete, "") == 1) {
+        // Naming the fix rather than letting this fall through as "unknown
+        // function `Ok`", which is what it looked like before and says nothing
+        // about the actual problem.
+        if (enumNeedsWrittenArgs(module, enumName)) {
+            semaErrorAt(expr, str_concat(str_concat(str_concat(
+                "cannot infer the type arguments of ", diagQuote(enumName)),
+                " here; write them, as "),
+                diagQuote(str_concat(str_concat(enumName, "<...>."), variantName))))
+        }
+        return false
+    }
+
+    let shadow = enumShadowFind(module, concrete)
+    if (nodeIsNull(node_to_ptr(shadow))) { return false }
+
+    let tag = enumVariantTag(shadow, variantName)
+    if (tag < 0) {
+        semaErrorAt(expr, str_concat(str_concat(diagQuote(enumName), " has no variant "),
+                                      diagQuote(variantName)))
+        return false
+    }
+
+    let fields = nodeList()
+    nodeListPush(fields, enumLiteralField(enumTagField(), node_to_ptr(enumTagLiteral(tag))))
+
+    let variant = enumVariantNode(shadow, variantName)
+    let mut payload = variant.child1
+    let mut arg = argPtr
+    let mut index = 0
+    while (nodeExists(payload)) {
+        if (nodeIsNull(arg)) {
+            semaErrorAt(expr, str_concat(str_concat("variant ", diagQuote(variantName)),
+                                          " is missing a payload value"))
+            return false
+        }
+        // The argument is detached from its siblings before it becomes a field
+        // initialiser. It is still linked into the call's argument list, and a
+        // field initialiser that carries a `next` is a second expression hanging
+        // off the first for every walk that follows sibling chains.
+        let following = ptr_to_node(arg).next
+        ptr_to_node(arg).next = ""
+        nodeListPush(fields, enumLiteralField(enumPayloadField(variantName, index), arg))
+        index = index + 1
+        payload = ptr_to_node(payload).next
+        arg = following
+    }
+    if (nodeExists(arg)) {
+        semaErrorAt(expr, str_concat(str_concat("variant ", diagQuote(variantName)),
+                                      " was given more payload values than it carries"))
+        return false
+    }
+
+    expr.kind = NodeKind.STRUCT_LITERAL_EXPR
+    expr.s1 = concrete
+    expr.child1 = fields.head
+    expr.child2 = ""
+    expr.child3 = ""
+    return true
+}
+
+// The type arguments written at a use site, when there are any.
+//
+// `Option<Int>.None` parses its qualifier as a TYPE_ANNOTATION carrying the
+// arguments; a bare `Option.None` parses it as an identifier and carries none,
+// and then the arguments have to be solved from the payload instead.
+fn enumExplicitArgs(target: ASTNode) -> String {
+    if (target.kind != NodeKind.TYPE_ANNOTATION) { return "" }
+    if (target.i2 != 1) { return "" }
+    return target.child1
+}
+
+// ---------------------------------------------------------
+// Matching a variant
+// ---------------------------------------------------------
+
+fn enumArmVariantName(pattern: ASTNode) -> String {
+    if (pattern.kind == NodeKind.CALL_EXPR) { return ptr_to_node(pattern.child1).s1 }
+    return pattern.s1
+}
+
+// The identifiers a pattern binds: the argument list of `Shape.Circle(r)`.
+fn enumArmBinders(pattern: ASTNode) -> String {
+    if (pattern.kind == NodeKind.CALL_EXPR) { return pattern.child2 }
+    return ""
+}
+
+// Checks one arm of a match over a payload enum, and records on the arm what
+// codegen needs: the tag to compare (`i1`) and the variant whose payload fields
+// the binders read (`s2`).
+//
+// The pattern is deliberately **not** run through semaExpr. `Shape.Circle(r)` as
+// an expression is a constructor call, and typing it would build a value and
+// complain that `r` is undefined -- it is a binding site, not a use.
+fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, expectedReturn: TypeInfo) {
+    let pattern = ptr_to_node(arm.child1)
+    if (pattern.kind != NodeKind.CALL_EXPR and pattern.kind != NodeKind.MEMBER_ACCESS_EXPR) {
+        semaErrorAt(pattern, "a match on an enum with payloads takes variant patterns, such as `Shape.Circle(r)`")
+        return
+    }
+
+    // Recorded on the arm first, and read back from there. Strings are affine,
+    // so a `let` holding the variant name could be named once where this needs
+    // it four times; a field read is a reborrow.
+    arm.s2 = enumArmVariantName(pattern)
+    let tag = enumVariantTag(shadow, arm.s2)
+    if (tag < 0) {
+        semaErrorAt(pattern, str_concat(str_concat(diagQuote(shadow.s1), " has no variant "),
+                                         diagQuote(arm.s2)))
+        return
+    }
+    arm.i1 = tag
+
+    // The binders live in a scope of their own, outside the block's, so they are
+    // visible throughout the arm and gone at the next one.
+    ir_scope_push()
+    let variant = enumVariantNode(shadow, arm.s2)
+    let mut payload = variant.child1
+    let mut binder = enumArmBinders(pattern)
+    while (nodeExists(payload) and nodeExists(binder)) {
+        let name = ptr_to_node(binder)
+        if (name.kind != NodeKind.IDENTIFIER_EXPR) {
+            semaErrorAt(name, "a variant pattern binds names, not expressions")
+        } else {
+            ir_set_var_type(name.s1, typeSemKey(semaAnnotationType(module, ptr_to_node(payload))))
+        }
+        payload = ptr_to_node(payload).next
+        binder = name.next
+    }
+    if (nodeExists(payload)) {
+        semaErrorAt(pattern, str_concat(str_concat("variant ", diagQuote(arm.s2)),
+                                         " carries more values than this pattern binds"))
+    }
+    if (nodeExists(binder)) {
+        semaErrorAt(pattern, str_concat(str_concat("variant ", diagQuote(arm.s2)),
+                                         " carries fewer values than this pattern binds"))
+    }
+
+    semaBlock(module, ptr_to_node(arm.child2), expectedReturn)
+    ir_scope_pop()
+}
+
+fn semaMatchHasWildcard(stmt: ASTNode) -> Bool {
+    let mut armPtr = stmt.child2
+    while (nodeExists(armPtr)) {
+        if (str_equals(ptr_to_node(armPtr).s1, "_") == 1) { return true }
+        armPtr = ptr_to_node(armPtr).next
+    }
+    return false
+}
+
+// Is some arm's tag this one? Arms carry the tag semaCheckPayloadArm resolved,
+// so this asks about the *variant* rather than about the text of a pattern --
+// two spellings of one variant cannot read as two.
+fn semaMatchCoversTag(stmt: ASTNode, tag: Int) -> Bool {
+    let mut armPtr = stmt.child2
+    while (nodeExists(armPtr)) {
+        let arm = ptr_to_node(armPtr)
+        if (str_equals(arm.s1, "_") == 0 and arm.i1 == tag) { return true }
+        armPtr = arm.next
+    }
+    return false
+}
+
+// Rejects a match that leaves a variant unhandled.
+//
+// Without it the omitted variant falls straight through the chain of tag
+// comparisons to the end of the statement, so the match silently does nothing
+// for exactly the input the author forgot -- and for a `Result`, the forgotten
+// input is usually the error.
+//
+// A `_` arm satisfies it, which is what makes this additive rather than a
+// restriction: every match that was going to handle its remaining cases already
+// says so.
+//
+// **Payload enums only.** A fieldless enum still matches as an integer, where
+// the scrutinee is not confined to the declared variants and a program may
+// legitimately match on a subset. Extending it there is a separate decision with
+// a real chance of rejecting existing code; see HANDOFF.
+fn semaCheckExhaustive(stmt: ASTNode, shadow: ASTNode) {
+    if (semaMatchHasWildcard(stmt)) { return }
+
+    let mut missing = ""
+    let mut p = shadow.child1
+    let mut index = 0
+    while (nodeExists(p)) {
+        let variant = ptr_to_node(p)
+        if (semaMatchCoversTag(stmt, index + 1) == false) {
+            if (str_equals(missing, "") == 1) {
+                missing = variant.s1
+            } else {
+                missing = str_concat(str_concat(missing, ", "), variant.s1)
+            }
+        }
+        index = index + 1
+        p = variant.next
+    }
+
+    if (str_equals(missing, "") == 0) {
+        semaErrorAt(stmt, str_concat(str_concat(str_concat(
+            "this match does not cover ", missing),
+            " of "), str_concat(diagQuote(shadow.s1), "; add the missing arms or a `_` arm")))
+    }
+}
+
+// Is this variant already taken by an arm before position `before`?
+//
+// Compared by position rather than by node pointer. `str_equals` on two punned
+// node pointers compares the *bytes of the nodes*, not their identity, so two
+// distinct arms that happened to agree byte-for-byte would read as one -- the
+// trap the punning invariant in ast/nodes.psm exists to warn about.
+fn semaTagCoveredBefore(stmt: ASTNode, before: Int, tag: Int) -> Bool {
+    let mut p = stmt.child2
+    let mut i = 0
+    while (nodeExists(p) and i < before) {
+        let arm = ptr_to_node(p)
+        if (str_equals(arm.s1, "_") == 0 and arm.i1 == tag) { return true }
+        i = i + 1
+        p = arm.next
+    }
+    return false
+}
+
+// A second arm for a variant an earlier arm already matches is dead code: the
+// tag comparisons run in order, so the first one wins and nothing reaches this
+// body. Rejected rather than warned about, because there is no reading of it
+// that is correct.
+fn semaCheckDuplicateArms(stmt: ASTNode) {
+    let mut armPtr = stmt.child2
+    let mut position = 0
+    while (nodeExists(armPtr)) {
+        let arm = ptr_to_node(armPtr)
+        if (str_equals(arm.s1, "_") == 0 and semaTagCoveredBefore(stmt, position, arm.i1)) {
+            semaErrorAt(arm, str_concat(str_concat(
+                "this arm is unreachable: an earlier arm already matches ",
+                diagQuote(arm.s2)), ""))
+        }
+        position = position + 1
+        armPtr = arm.next
+    }
+}
+
+fn semaMatchPayloadArms(module: ASTNode, stmt: ASTNode, scrutT: TypeInfo, expectedReturn: TypeInfo) {
+    let shadow = enumShadowFind(module, scrutT.name)
+    let mut armPtr = stmt.child2
+    while (nodeExists(armPtr)) {
+        let arm = ptr_to_node(armPtr)
+        if (str_equals(arm.s1, "_") == 1) {
+            semaBlock(module, ptr_to_node(arm.child2), expectedReturn)
+        } else {
+            semaCheckPayloadArm(module, arm, shadow, expectedReturn)
+        }
+        armPtr = arm.next
+    }
+
+    // Both after the arms, because both read the tags the arms resolved.
+    semaCheckDuplicateArms(stmt)
+    semaCheckExhaustive(stmt, shadow)
+}
+
+// Is this name a generic enum with payloads whose arguments could not be solved?
+// Used only to decide whether a failed construction deserves a diagnostic of its
+// own, so it must stay quiet about every other name.
+fn enumNeedsWrittenArgs(module: ASTNode, enumName: String) -> Bool {
+    let template = monoFindTypeTemplate(module, enumName)
+    if (nodeIsNull(node_to_ptr(template))) { return false }
+    if (template.kind != NodeKind.ENUM_DECL) { return false }
+    return enumHasPayload(template)
+}

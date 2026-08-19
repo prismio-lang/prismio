@@ -5,6 +5,54 @@ import ast.types
 import common.text
 import common.diagnostics
 
+// Whether this match is over an enum with payloads. Sema stamps the variant name
+// on every non-wildcard arm of one and on no other kind of match, so one arm
+// settles it.
+fn matchBindsPayload(stmt: ASTNode) -> Bool {
+    let mut armPtr = stmt.child2
+    while (str_equals(armPtr, "") == 0) {
+        let arm = ptr_to_node(armPtr)
+        if (str_equals(arm.s2, "") == 0) { return true }
+        armPtr = arm.next
+    }
+    return false
+}
+
+// Binds the names a variant pattern introduced, by loading the payload fields
+// this arm's variant occupies.
+fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: String) {
+    let pattern = ptr_to_node(arm.child1)
+    if (pattern.kind != NodeKind.CALL_EXPR) { return }
+
+    let mut binder = pattern.child2
+    let mut index = 0
+    while (str_equals(binder, "") == 0) {
+        let name = ptr_to_node(binder)
+        // enumPayloadField is sema's, and is called rather than copied because
+        // the two ends have to agree on the spelling exactly -- a second copy of
+        // the rule is a second thing to keep in step.
+        let fieldName = enumPayloadField(arm.s2, index)
+        let fieldType = fieldStorageType(ir_get_struct_field_type(structName, fieldName))
+        let fieldIndex = ir_get_struct_field_index(structName, fieldName)
+        let slot = ir_struct_field_ptr(structName, scrutVal, fieldIndex)
+
+        // The same rule as a field read in expr.psm: an inline struct field *is*
+        // its storage, so the GEP already is the value, and loading it would read
+        // the struct rather than address it.
+        let mut payloadVal = ir_get_temp_name(slot)
+        if (isStructTypeKey(fieldType) == false) {
+            payloadVal = ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
+        }
+
+        ir_set_var_type(name.s1, fieldType)
+        ir_alloca(storageType(fieldType), ir_get_var_slot(name.s1))
+        ir_store(storageType(fieldType), payloadVal, ir_get_var_slot(name.s1))
+
+        index = index + 1
+        binder = name.next
+    }
+}
+
 fn generateStatement(stmt: ASTNode) {
     if (stmt.kind == NodeKind.VARIABLE_DECL) {
         let varName = stmt.s1
@@ -293,23 +341,59 @@ fn generateStatement(stmt: ASTNode) {
     }
 
     if (stmt.kind == NodeKind.MATCH_STATEMENT) {
-        let scrutVal = generateExpression(ptr_to_node(stmt.child1))
+        // Parked on the statement so it can be read once per arm. A temp name is
+        // a String and Strings are affine, so a `let` holding it may be named
+        // exactly once, while a field read is a reborrow. The scrutinee is still
+        // generated exactly once, which is the property that matters.
+        stmt.s1 = generateExpression(ptr_to_node(stmt.child1))
         let scrutType = getExprType(ptr_to_node(stmt.child1))
         let endLabel = ir_get_label()
         let mut needsFinalBr = true
 
+        // A payload enum's arms compare the tag, not the value, and bind names
+        // out of the payload fields. Sema left the tag on `i1` and the variant on
+        // `s2`, so nothing here needs to know what an enum is.
+        //
+        // The scrutinee is generated exactly once, above. That is the reason this
+        // is done in codegen rather than desugared into `let r = c.Circle$0` in
+        // the arm body: the desugaring would re-evaluate the scrutinee expression
+        // once per arm, which for anything but a bare name is wrong.
+        let payloadMatch = matchBindsPayload(stmt)
+        if (payloadMatch) {
+            let tagSlot = ir_struct_field_ptr(structTypeName(scrutType), stmt.s1, 0)
+            stmt.s2 = ir_get_temp_name(ir_load_ptr("i32", ir_get_temp_name(tagSlot)))
+        } else {
+            stmt.s2 = stmt.s1
+        }
+
         let mut armPtr = stmt.child2
         while (str_equals(armPtr, "") == 0) {
             let arm = ptr_to_node(armPtr)
-            if (str_equals(arm.s1, "_") == 1) {
+            if (payloadMatch and str_equals(arm.s1, "_") == 0) {
+                let cmp = ir_icmp_eq("i32", stmt.s2, int_to_str(arm.i1))
+                let armLabel = ir_get_label()
+                let nextLabel = ir_get_label()
+                ir_cond_br_numbered(ir_get_temp_name(cmp), armLabel, nextLabel)
+
+                ir_label_numbered(armLabel)
+                generatePayloadBinders(arm, structTypeName(scrutType), stmt.s1)
+                generateBlock(ptr_to_node(arm.child2))
+                if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
+                ir_clear_returned()
+
+                ir_label_numbered(nextLabel)
+                needsFinalBr = true
+                armPtr = arm.next
+            } else if (str_equals(arm.s1, "_") == 1) {
                 // wildcard: runs in the current fall-through block
                 generateBlock(ptr_to_node(arm.child2))
                 if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
                 ir_clear_returned()
                 needsFinalBr = false
+                armPtr = arm.next
             } else {
                 let patVal = generateExpression(ptr_to_node(arm.child1))
-                let cmp = ir_icmp_eq(scrutType, scrutVal, patVal)
+                let cmp = ir_icmp_eq(scrutType, stmt.s2, patVal)
                 let armLabel = ir_get_label()
                 let nextLabel = ir_get_label()
                 ir_cond_br_numbered(ir_get_temp_name(cmp), armLabel, nextLabel)
@@ -321,8 +405,8 @@ fn generateStatement(stmt: ASTNode) {
 
                 ir_label_numbered(nextLabel)
                 needsFinalBr = true
+                armPtr = arm.next
             }
-            armPtr = arm.next
         }
 
         if (needsFinalBr) { ir_br_numbered(endLabel) }

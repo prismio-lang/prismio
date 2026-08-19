@@ -1,0 +1,26 @@
+// expect-error: this match does not cover Dot, Rect of `Shape`
+//
+// An unhandled variant used to fall straight through the chain of tag
+// comparisons to the end of the statement, so the match silently did nothing for
+// exactly the input the author forgot. For a `Result` that input is usually the
+// error, which is the case the type exists to make unmissable.
+//
+// A `_` arm satisfies the check, so this is additive: every match that already
+// intended to handle its remaining cases says so.
+
+enum Shape {
+    Dot,
+    Circle(Int),
+    Rect(Int, Int)
+}
+
+fn area(s: Shape) -> Int {
+    match (s) {
+        Shape.Circle(r) => { return 3 * r * r }
+    }
+    return -1
+}
+
+fn main() -> Int {
+    return area(Shape.Dot)
+}

@@ -43,6 +43,25 @@ int execute_command(const char* command);
 int cli_arg_count(void);
 char* cli_arg(int index);
 
+// --- REQUIREMENTS 15: tasks and channels ---
+// prismio_task_* are compiler-emitted: `spawn f(x)` and `join t` lower to them,
+// so no program declares them by hand. The chan_* set is ordinary FFI surface a
+// program externs for itself, because a channel is a library, not syntax.
+//
+// SPEC 11 item 10 is what shapes the split: a task *owns* its arguments and a
+// channel *moves* its messages, so nothing the solver tiers is ever reachable
+// from two tasks at once -- which is what keeps T3's count non-atomic.
+void* prismio_task_spawn(void* fn, int nargs, void* a0, void* a1, void* a2);
+int   prismio_task_join(void* handle);
+void  prismio_task_release(void* handle);
+
+void* chan_new(int capacity);
+int   chan_send(void* handle, void* msg);
+void* chan_recv(void* handle);
+void  chan_close(void* handle);
+int   chan_len(void* handle);
+void  chan_free(void* handle);
+
 // --- LAYOUT 2/3: the measured access profile ---
 // Present in every binary and called only from a workload driver, which is an
 // instrumented build the compiler produces, runs and discards. A shipped program

@@ -552,6 +552,26 @@ than frequency, this is deliberately left weak — **and that argument is itself
 BENCHMARKS should compare a workload-driven build against a static build directly; if the gap is
 large, §1's reframing is wrong and `workload` is closer to mandatory than SPEC §5 claims.
 
+### 10.4.1 A fabricated instance count decides the cache tier, and therefore the layout
+
+*(Added 2026-08-17, when §6's hot/cold row was first emitted rather than reported. See
+[RESULTS-layout.md](../evidence/RESULTS-layout.md) §2.2.)*
+
+§5.3's `FootprintCost` and §5.1's `μ` both read `N`, the number of live instances of the type, and no
+implementation has one: the compiler substitutes a constant (2²⁰ in this one, on §2.1's "length
+unknown statically" grounds). That is not merely imprecise, because `μ` is a **step function** of
+`N · size(τ,L)` over the cache hierarchy: shaving eight bytes off a type can cross a tier boundary
+and divide its modelled cost by the ratio between two tiers — a factor of six here.
+
+Measured: `g4_ecs_world`'s `World` is a **singleton** — one instance, five `List` fields and an `Int`
+— and the model scored a 2/6 split at 24 against 100 for not splitting, on a footprint saving that
+does not exist. It ran at 1.042×.
+
+An implementation SHALL NOT select a layout for a type whose instance count it is fabricating, unless
+some other input independently establishes that the layout pays. `alloc(τ)` and `live(τ)` are already
+in §2.1's profile; a **measured** profile supplies them and a static estimate does not, so this is one
+more thing `workload` decides rather than a defect in the cost function itself.
+
 ### 10.5 One profile, one target
 
 The profile is collected on the build machine under the baseline layout. Cross-compilation to a

@@ -1,0 +1,56 @@
+// Map<K, V> from std.map -- the first container written in Prismio rather than C.
+//
+// It is also the load test for generics: a generic struct whose fields are
+// themselves generic (`List<K>`), generic functions over two parameters, and a
+// constructor whose type arguments cannot be inferred from any argument because
+// it has none.
+
+import std.map
+import std.option
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let m = mapNew<Int, Int>()
+    if (mapLen(m) != 0) { return fail("a new map is not empty") }
+    if (mapHas(m, 3)) { return fail("a new map claims to hold a key") }
+
+    if (mapSet(m, 3, 30)) { return fail("first insert reported an overwrite") }
+    if (mapSet(m, 4, 40)) { return fail("second insert reported an overwrite") }
+    if (mapLen(m) != 2) { return fail("two inserts did not give length two") }
+
+    if (mapGetOr(m, 3, 0) != 30) { return fail("lookup of 3") }
+    if (mapGetOr(m, 4, 0) != 40) { return fail("lookup of 4") }
+    if (mapGetOr(m, 99, 7) != 7) { return fail("absent key did not fall back") }
+
+    // Overwrite: reports true, replaces the value, does not grow the map.
+    if (mapSet(m, 3, 33) == false) { return fail("overwrite not reported") }
+    if (mapGetOr(m, 3, 0) != 33) { return fail("overwrite did not take") }
+    if (mapLen(m) != 2) { return fail("overwrite grew the map") }
+
+    // Iteration in insertion order.
+    if (mapKeyAt(m, 0) != 3) { return fail("first key") }
+    if (mapValueAt(m, 1) != 40) { return fail("second value") }
+
+    // A second instantiation of the same template, with a different V. This is
+    // the part that would collide if the mangled name ignored V.
+    let flags = mapNew<Int, Bool>()
+    mapSet(flags, 1, true)
+    if (mapGetOr(flags, 1, false) == false) { return fail("Map<Int, Bool>") }
+    if (mapGetOr(flags, 2, false)) { return fail("Map<Int, Bool> absent key") }
+
+    // mapGet answers with an Option, which is the lookup that can tell "absent"
+    // apart from "present and equal to the fallback". mapGetOr cannot: a stored
+    // 0 and a missing key give it the same answer.
+    mapSet(m, 9, 0)
+    if (optionIsNone(mapGet(m, 9))) { return fail("a stored zero read as absent") }
+    if (optionIsSome(mapGet(m, 12345))) { return fail("a missing key read as present") }
+    if (optionOr(mapGet(m, 3), 0) != 33) { return fail("mapGet value") }
+
+    println("PASS: map")
+    return 0
+}

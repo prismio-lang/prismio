@@ -1,0 +1,104 @@
+// Map<K, V> -- an associative container, in Prismio.
+//
+// REQUIREMENTS 13 asked for `Map<K,V>` and a growable `Vec<T>`. Only one of
+// those was missing: `List<T>` **is** the growable vector -- runtime/lang_runtime.c
+// stores it as a `void**` that doubles on push, and its own comment calls
+// `list_new_with_capacity` "Vec::with_capacity". This is the half that did not
+// exist.
+//
+// **Association list, not a hash table, and the reason is a missing language
+// feature rather than a shortcut.** Hashing `K` needs a hash function per key
+// type, and dispatching to it needs bounded type parameters -- traits. Prismio
+// has neither, so a generic `Map` can only use the operations that typecheck for
+// every `K` it is instantiated at, which is `==`. Lookup is therefore a linear
+// scan. Written down here rather than discovered later: this is O(n) per lookup,
+// and INFERENCE's worklist wants O(1). Give it bounds and this file becomes a
+// hash table without its callers changing.
+//
+// **Keys must be comparable with `==`, which means scalar keys.** `String` keys
+// do not instantiate, and that is the language being consistent rather than this
+// module being weak: `String ==` compares pointers and is deliberately rejected
+// with a message naming `str_equals`. Struct keys are rejected for the same
+// reason. Instantiating `Map<String, V>` fails at the instantiation, not at this
+// declaration, which is monomorphisation showing through -- a template is checked
+// once per set of type arguments it is actually used with.
+//
+// Depends on std.option for `mapGet`. That is the only dependency this module
+// has, and it is the reason `mapGet` could not exist when this file was written.
+//
+// Integer keys are not a consolation prize for the caller this was written for:
+// runtime/aif_support.c interns every name, type and site to an `int` id and
+// keys its tables on those.
+
+import std.option
+
+struct Map<K, V> {
+    keys: List<K>,
+    values: List<V>
+}
+
+fn mapNew<K, V>() -> Map<K, V> {
+    return Map<K, V> { keys: list_new(), values: list_new() }
+}
+
+fn mapLen<K, V>(m: Map<K, V>) -> Int {
+    return list_len(m.keys)
+}
+
+// The index of `key`, or -1. Every other function here is written in terms of
+// this one, so the linear scan is in one place and a hash table would replace
+// exactly this body.
+fn mapIndexOf<K, V>(m: Map<K, V>, key: K) -> Int {
+    let mut i = 0
+    while (i < list_len(m.keys)) {
+        if (list_get(m.keys, i) == key) { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+fn mapHas<K, V>(m: Map<K, V>, key: K) -> Bool {
+    return mapIndexOf(m, key) >= 0
+}
+
+// The value for `key`, or `None`.
+//
+// This is the lookup that can distinguish "absent" from "present and equal to
+// the fallback", which mapGetOr cannot. It is what the earlier version of this
+// file said would arrive with REQUIREMENTS 14, and it did.
+fn mapGet<K, V>(m: Map<K, V>, key: K) -> Option<V> {
+    let at = mapIndexOf(m, key)
+    if (at < 0) { return Option<V>.None }
+    return Option.Some(list_get(m.values, at))
+}
+
+// Absence answered with a caller-supplied value. Kept alongside mapGet for the
+// many callers that have a sensible default and do not want to match on one.
+fn mapGetOr<K, V>(m: Map<K, V>, key: K, fallback: V) -> V {
+    let at = mapIndexOf(m, key)
+    if (at < 0) { return fallback }
+    return list_get(m.values, at)
+}
+
+// Insert or overwrite. Answers whether the key was already present, which is the
+// one bit a caller cannot recover afterwards without a second lookup.
+fn mapSet<K, V>(m: Map<K, V>, key: K, value: V) -> Bool {
+    let at = mapIndexOf(m, key)
+    if (at >= 0) {
+        list_set(m.values, at, value)
+        return true
+    }
+    list_push(m.keys, key)
+    list_push(m.values, value)
+    return false
+}
+
+// The key at a position, for iterating a map. Positions are insertion order and
+// stay valid until the next mapSet that inserts.
+fn mapKeyAt<K, V>(m: Map<K, V>, index: Int) -> K {
+    return list_get(m.keys, index)
+}
+
+fn mapValueAt<K, V>(m: Map<K, V>, index: Int) -> V {
+    return list_get(m.values, index)
+}

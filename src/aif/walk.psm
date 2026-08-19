@@ -404,9 +404,17 @@ fn aifIsStatementKind(k: NodeKind) -> Bool {
 // source points at one. `let unique b = a` therefore annotates whatever `a`
 // already named, which is the same value -- the move made it this scope's.
 //
-// A malformed tier has already been reported by sema and is skipped here rather
-// than guessed at: AIF reports nothing (SPEC 1) and must not turn a warning into
-// a different tier.
+// `pin(X)` carries one identifier and there are two things it can be. A tier
+// name is one; anything else is a **region name** (SPEC 5.4 as a placement
+// constraint), and this is the only place the two are told apart.
+//
+// Sema no longer adjudicates the name, and that is a deliberate move rather than
+// an omission. It used to warn "unknown tier" for anything not in the list here
+// and then *drop the annotation* -- which is this project's signature defect
+// wearing an annotation's clothes: the programmer asserted something, the
+// compiler said something back, and nothing could ever fail. A name is now
+// either a tier or a region, and a region that does not exist or does not serve
+// the value is refuted by aif_check_placement_pins, which is an error.
 fn aifTierFromName(name: String) -> Int {
     if (str_equals(name, "T0") == 1) { return 0 }
     if (str_equals(name, "T1") == 1) { return 1 }
@@ -429,7 +437,15 @@ fn aifApplyAnnotations(decl: ASTNode, vs: Int) {
         let space = str_index_of(name, " ")
         if (space >= 0) { name = str_substring(name, 0, space) }
         let tier = aifTierFromName(name)
-        if (tier >= 0) { aif_con_pin(vs, tier) }
+        if (tier >= 0) {
+            aif_con_pin(vs, tier)
+        } else {
+            // SPEC 5.4 on the placement rather than on the tier. Recorded here
+            // and adjudicated after aif_place_arenas, because what it asserts is
+            // an *output* of placement -- the tier pins are settled before the
+            // cost model runs, and this one cannot be.
+            aif_con_pin_region(vs, name)
+        }
     }
 }
 

@@ -1,0 +1,54 @@
+// expect-error: pin(call_arena) cannot hold: this value is not served by that arena
+// expect-error: and a bracketed callee may have exactly one
+//
+// SPEC 5.4.1 for a *placement* pin, on the exact regression SPEC 5.2.1.1 admits
+// it is silent about.
+//
+// Regime (a) brackets a call only while its callee has exactly one call site in
+// the program. `make` has two, both inside `call_arena`, so the bracket is
+// dropped and every allocation in `make` goes back to the heap. **Nothing else
+// about this program changes**: it still compiles, still returns the same value,
+// still passes every other test in this suite, and runs slower. That is the
+// failure mode SPEC 5.2.1.1 asks the manifest to record, and the reason a record
+// is not enough -- somebody has to read the diff.
+//
+// `pin(call_arena)` is that fact asserted, so the build stops here instead.
+//
+// **Delete the second call and this program compiles**, which is what makes this
+// fixture discriminate rather than merely fail. The test runner performs the
+// inverse edit on `test_63_placement_pin.psm` -- a program known to compile --
+// and requires the mutant to be rejected, so neither direction rests on a reader
+// believing this comment.
+//
+// The error is at the `let`, one function away from the edit that caused it, and
+// the note is what closes that distance: it names `make`, its call-site count and
+// the obligation. A diagnostic that only said "not served" would send a reader
+// looking for a missing `region` in a function that never had one.
+
+struct Cmd {
+    id: Int,
+    weight: Int
+}
+
+fn make(i: Int) -> Cmd {
+    let pin(call_arena) c = Cmd { id: i, weight: i * 2 }
+    return c
+}
+
+fn main() -> Int {
+    let mut total = 0
+    region call_arena {
+        let mut i = 0
+        while (i < 4) {
+            let keep = make(i)
+            total = total + keep.id
+            i = i + 1
+        }
+        // The whole of the regression. One more call, inside the same region, so
+        // obligation 3 still holds for both sites and nothing but the call count
+        // separates this from `test_63_placement_pin.psm`.
+        let extra = make(99)
+        total = total + extra.id
+    }
+    return total - total
+}

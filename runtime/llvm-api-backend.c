@@ -57,8 +57,17 @@
 // Module state
 // ============================================================================
 
-#define MAX_VALUES 65536
-#define MAX_LABELS 16384
+// The value and block tables are indexed by a counter that runs for the whole
+// module, so their old fixed sizes were a ceiling on *program size* rather than
+// on anything a single function could do: a 922 KB source stopped with
+// `value table exhausted`, which is the first hard limit anyone has hit here.
+// They grow now, the way every table in ir_symbols.c does and for the reason
+// stated there. These two names are the initial capacity, not a maximum.
+#define INITIAL_VALUES 65536
+#define INITIAL_LABELS 16384
+// Per *function*, unlike the two above -- ir_function_body_start() resets both
+// counts -- so this one is a bound on how many locals or parameters one function
+// may have, and 4096 of either is not a program anyone is writing.
 #define MAX_NAMED 4096
 #define MAX_CALL_DEPTH 64
 #define MAX_CALL_ARGS 64
@@ -75,15 +84,17 @@ static LLVMBuilderRef g_alloca_builder;
 static LLVMBasicBlockRef g_entry_block;
 static int g_initialized;
 
-static LLVMValueRef g_values[MAX_VALUES];
+static LLVMValueRef *g_values;
 static int g_value_count;
+static int g_value_capacity;
 
 // Blocks are reserved before they are created: the frontend asks for a label
 // number, branches to it, and only later says "the block starts here". So a slot
 // is handed out immediately and the LLVMBasicBlockRef is materialised on first
 // use.
-static LLVMBasicBlockRef g_blocks[MAX_LABELS];
+static LLVMBasicBlockRef *g_blocks;
 static int g_label_count;
+static int g_label_capacity;
 
 typedef struct {
     char name[NAME_LEN];
@@ -180,8 +191,26 @@ static void backend_fail(const char *what, const char *detail) {
 // Value table
 // ============================================================================
 
+// Doubling, and the allocation is kept across ir_reset() -- a second module in
+// one process is bootstrap, and it needs the same room the first one did.
+static void grow_table(void **items, int *capacity, int wanted, size_t item_size,
+                       int initial, const char *what) {
+    if (wanted < *capacity) return;
+    int next = *capacity ? *capacity * 2 : initial;
+    while (next <= wanted) next *= 2;
+    void *grown = realloc(*items, (size_t)next * item_size);
+    if (!grown) backend_fail("out of memory growing", what);
+    // New slots are zeroed: block_for() reads a slot to decide whether the block
+    // has been materialised, and ir_get_label() only clears the one it hands out.
+    memset((char *)grown + (size_t)*capacity * item_size, 0,
+           (size_t)(next - *capacity) * item_size);
+    *items = grown;
+    *capacity = next;
+}
+
 static int intern_value(LLVMValueRef v) {
-    if (g_value_count >= MAX_VALUES) backend_fail("value table exhausted", NULL);
+    grow_table((void **)&g_values, &g_value_capacity, g_value_count,
+               sizeof(LLVMValueRef), INITIAL_VALUES, "the value table");
     g_values[g_value_count] = v;
     return g_value_count++;
 }
@@ -229,17 +258,34 @@ static LLVMTypeRef type_from_key(const char *t) {
 
 // --- named struct types -----------------------------------------------------
 
+// LAYOUT 6's hot/cold split lives entirely in this table.
+//
+// `hot_count` is 0 for every type the search left alone, and otherwise the number
+// of fields the hot record keeps. The hot record then carries **one extra
+// element**, a pointer at index `hot_count`, and `cold` is the separately
+// allocated block it points at. That is LAYOUT 5.2.1's *linked* split: one
+// pointer still reaches the whole object, which is exactly why this needs no
+// handles and why it is emittable today.
+//
+// Codegen never learns any of it. The frontend emits fields in the order
+// `aif_layout_field` hands it -- hot ones first -- and indexes them from 0, so a
+// field index below `hot_count` is a GEP into the hot record and one at or above
+// it is a load of the link followed by a GEP into `cold`. `ir_struct_field_ptr`
+// is the single choke point for field access, which is what keeps the whole
+// transform inside this file instead of in a pass over the IR.
 typedef struct {
     char name[NAME_LEN];
     LLVMTypeRef type;
+    LLVMTypeRef cold;   // NULL unless split
+    int hot_count;      // 0 unless split
 } StructType;
 
 static StructType g_structs[256];
 static int g_struct_count;
 
-static LLVMTypeRef named_struct(const char *name) {
+static StructType *struct_entry(const char *name) {
     for (int i = 0; i < g_struct_count; i++) {
-        if (strcmp(g_structs[i].name, name) == 0) return g_structs[i].type;
+        if (strcmp(g_structs[i].name, name) == 0) return &g_structs[i];
     }
     if (g_struct_count >= 256) backend_fail("too many struct types", name);
     // Created opaque; the body is set by ir_struct_type_end().
@@ -247,18 +293,25 @@ static LLVMTypeRef named_struct(const char *name) {
     strncpy(g_structs[g_struct_count].name, name, NAME_LEN - 1);
     g_structs[g_struct_count].name[NAME_LEN - 1] = '\0';
     g_structs[g_struct_count].type = ty;
-    g_struct_count++;
-    return ty;
+    g_structs[g_struct_count].cold = NULL;
+    g_structs[g_struct_count].hot_count = 0;
+    return &g_structs[g_struct_count++];
 }
+
+static LLVMTypeRef named_struct(const char *name) { return struct_entry(name)->type; }
 
 static LLVMTypeRef g_struct_fields[64];
 static int g_struct_field_count;
 static char g_struct_building[NAME_LEN];
+static int g_struct_split;
 
 void ir_struct_type_begin(const char *name) {
     strncpy(g_struct_building, name, NAME_LEN - 1);
     g_struct_building[NAME_LEN - 1] = '\0';
     g_struct_field_count = 0;
+    // Cleared here as well as in ir_struct_type_end, so a type emitted without a
+    // split call cannot inherit the previous type's cut.
+    g_struct_split = 0;
 }
 
 void ir_struct_type_field(const char *field_type) {
@@ -266,9 +319,38 @@ void ir_struct_type_field(const char *field_type) {
     g_struct_fields[g_struct_field_count++] = type_from_key(field_type);
 }
 
+// How many of the fields just declared stay in the hot record. 0, or a count
+// covering the whole field list, means no split. Called between the last
+// ir_struct_type_field and ir_struct_type_end.
+void ir_struct_type_split(int hot_count) { g_struct_split = hot_count; }
+
 void ir_struct_type_end(void) {
-    LLVMTypeRef ty = named_struct(g_struct_building);
-    LLVMStructSetBody(ty, g_struct_fields, (unsigned)g_struct_field_count, 0);
+    StructType *s = struct_entry(g_struct_building);
+    int hc = g_struct_split;
+    g_struct_split = 0;
+
+    if (hc <= 0 || hc >= g_struct_field_count) {
+        s->hot_count = 0;
+        s->cold = NULL;
+        LLVMStructSetBody(s->type, g_struct_fields, (unsigned)g_struct_field_count, 0);
+        return;
+    }
+
+    char cold_name[NAME_LEN];
+    snprintf(cold_name, sizeof(cold_name), "%s.cold", g_struct_building);
+    LLVMTypeRef cold = LLVMStructCreateNamed(g_ctx, cold_name);
+    LLVMStructSetBody(cold, &g_struct_fields[hc], (unsigned)(g_struct_field_count - hc), 0);
+
+    // The link word is **appended, not prepended**, so field 0 of the hot record
+    // is still byte 0 of the object. tests/test_41_punned_slot_bytes.psm reads the
+    // first byte of the pointed-to struct and this must not move it.
+    LLVMTypeRef hot_fields[65];
+    for (int i = 0; i < hc; i++) hot_fields[i] = g_struct_fields[i];
+    hot_fields[hc] = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMStructSetBody(s->type, hot_fields, (unsigned)(hc + 1), 0);
+
+    s->hot_count = hc;
+    s->cold = cold;
 }
 
 // ============================================================================
@@ -500,7 +582,8 @@ void ir_function_end(void) {
 // ============================================================================
 
 int ir_get_label(void) {
-    if (g_label_count >= MAX_LABELS) backend_fail("too many labels", NULL);
+    grow_table((void **)&g_blocks, &g_label_capacity, g_label_count,
+               sizeof(LLVMBasicBlockRef), INITIAL_LABELS, "the block table");
     g_blocks[g_label_count] = NULL;
     return g_label_count++;
 }
@@ -628,6 +711,13 @@ void ir_store_ptr(const char *type, const char *value, const char *ptr_value) {
 // LLVMBuildMemCpy in prismio_llvm.h for the case that makes 8 wrong.
 void ir_copy_struct(const char *struct_name, const char *dest, const char *src) {
     if (block_done()) return;
+    // An inline struct field is the only caller, and `aif_layout_split_select`
+    // vetoes every type that appears as one -- so this is unreachable rather than
+    // guarded. It is spelled out because the failure it prevents is silent:
+    // copying a split record copies its *link*, so two objects would share one
+    // cold block and the second release would be a double free.
+    if (struct_entry(struct_name)->hot_count > 0)
+        backend_fail("byte-copy of a split struct", struct_name);
     LLVMTypeRef sty = named_struct(struct_name);
     unsigned align = LLVMABIAlignmentOfType(LLVMGetModuleDataLayout(g_module), sty);
     LLVMBuildMemCpy(g_builder,
@@ -679,7 +769,8 @@ void ir_store_global(const char *type, const char *value, const char *name) {
 // Unnamed and never deduplicated, unlike ir_alloca: two struct literals of the
 // same type in one function are two values and need two slots.
 int ir_alloc_stack(const char *struct_name) {
-    LLVMTypeRef sty = named_struct(struct_name);
+    StructType *s = struct_entry(struct_name);
+    LLVMTypeRef sty = s->type;
 
     LLVMValueRef entry_term = LLVMGetBasicBlockTerminator(g_entry_block);
     if (entry_term) {
@@ -688,11 +779,59 @@ int ir_alloc_stack(const char *struct_name) {
         LLVMPositionBuilderAtEnd(g_alloca_builder, g_entry_block);
     }
 
-    return intern_value(LLVMBuildAlloca(g_alloca_builder, sty, ""));
+    LLVMValueRef hot = LLVMBuildAlloca(g_alloca_builder, sty, "");
+    // A split T0 object is two slots and a link, not two allocations: nothing is
+    // reclaimed at either one, so this is the one allocator hook the release path
+    // has nothing to say about. Both slots are hoisted to the entry block for the
+    // reason above, and the link store goes with them -- it must run before any
+    // field access, and every field access is after the entry block by
+    // construction.
+    if (s->hot_count > 0) {
+        LLVMValueRef cold = LLVMBuildAlloca(g_alloca_builder, s->cold, "");
+        LLVMValueRef slot = LLVMBuildStructGEP2(g_alloca_builder, sty, hot,
+                                                (unsigned)s->hot_count, "");
+        LLVMBuildStore(g_alloca_builder, cold, slot);
+    }
+    return intern_value(hot);
+}
+
+// ---------------------------------------------------------------------------
+// The second half of a split object.
+//
+// Allocated through the **same allocator the hot record came from**, and that is
+// the whole of the accounting argument. A verify build swaps `g_alloc_fn` and
+// `g_free_fn` together, so both halves land in one ledger and a leaked cold block
+// reads as a leak rather than as a number nobody compares. An arena build routes
+// both to `arena_alloc`, so the region reclaims both in bulk and neither is ever
+// handed to a deallocator.
+//
+// Emitted immediately after the hot allocation and before any field initialiser,
+// because a struct literal's first cold field write is the next instruction.
+// ---------------------------------------------------------------------------
+static void attach_cold(const StructType *s, LLVMValueRef hot, const char *alloc_fn,
+                        LLVMTypeRef size_ty) {
+    if (!s || s->hot_count <= 0) return;
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+
+    LLVMValueRef size = LLVMSizeOf(s->cold);
+    if (size_ty != LLVMInt64TypeInContext(g_ctx)) {
+        size = LLVMBuildTrunc(g_builder, size, size_ty, "");
+    }
+
+    LLVMTypeRef alloc_ty = LLVMFunctionType(ptr, &size_ty, 1, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, alloc_fn);
+    if (!fn) fn = LLVMAddFunction(g_module, alloc_fn, alloc_ty);
+
+    LLVMValueRef args[1] = {size};
+    LLVMValueRef cold = LLVMBuildCall2(g_builder, alloc_ty, fn, args, 1, "");
+    LLVMValueRef slot = LLVMBuildStructGEP2(g_builder, s->type, hot,
+                                            (unsigned)s->hot_count, "");
+    LLVMBuildStore(g_builder, cold, slot);
 }
 
 int ir_alloc_object(const char *struct_name) {
-    LLVMTypeRef sty = named_struct(struct_name);
+    StructType *s = struct_entry(struct_name);
+    LLVMTypeRef sty = s->type;
     LLVMTypeRef size_ty = type_from_key(g_ptr_int);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
 
@@ -708,7 +847,9 @@ int ir_alloc_object(const char *struct_name) {
     if (!alloc_fn) alloc_fn = LLVMAddFunction(g_module, g_alloc_fn, alloc_ty);
 
     LLVMValueRef args[1] = {size};
-    return intern_value(LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, ""));
+    LLVMValueRef hot = LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, "");
+    attach_cold(s, hot, g_alloc_fn, size_ty);
+    return intern_value(hot);
 }
 
 // The third hook COMPILER-AUDIT 3 asked for. It expected `fn(arena, size) -> ptr`
@@ -721,7 +862,8 @@ int ir_alloc_object(const char *struct_name) {
 // name swap would mean a verify build tried to account for memory the arena
 // releases in bulk.
 int ir_alloc_region(const char *struct_name) {
-    LLVMTypeRef sty = named_struct(struct_name);
+    StructType *s = struct_entry(struct_name);
+    LLVMTypeRef sty = s->type;
     LLVMTypeRef size_ty = type_from_key(g_ptr_int);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
 
@@ -735,7 +877,12 @@ int ir_alloc_region(const char *struct_name) {
     if (!alloc_fn) alloc_fn = LLVMAddFunction(g_module, "arena_alloc", alloc_ty);
 
     LLVMValueRef args[1] = {size};
-    return intern_value(LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, ""));
+    LLVMValueRef hot = LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, "");
+    // Both halves from the arena, so the region's pop reclaims both and neither
+    // is ever handed to a deallocator -- which is also why an arena-served split
+    // site needs nothing at all from the release path.
+    attach_cold(s, hot, "arena_alloc", size_ty);
+    return intern_value(hot);
 }
 
 // AIF Level 5, and the fourth hook. COMPILER-AUDIT 3 rated T3 only "partly"
@@ -748,8 +895,46 @@ int ir_alloc_region(const char *struct_name) {
 // shim through the runtime's own rt_base_alloc, so both ends of the pairing swap
 // together when the runtime is compiled -- the same arrangement Level 4 needed for
 // strings, and for the same reason.
+// **T3 is where a split cracks, and the fix has room already.** `rc_release`
+// frees one block and cannot name the type -- a counted value's last holder is a
+// container's teardown, which reaches `rc_release(e)` holding a bare pointer. The
+// generated release is not on that path, so forcing `aif_type_releases` does not
+// reach it either.
+//
+// The answer is the one `cyc_set_type` already uses: tell the object at
+// construction. `RC_HDR` is 16 bytes with 8 in use, so the **byte offset of the
+// link word fits in the spare word** -- no function pointer, no per-type table,
+// and no extra call beyond the one allocating the cold block. `rc_release` then
+// loads the cold pointer at that offset and frees it before the base.
+//
+// Offset 0 is the sentinel for "not split", and it is a sound one rather than a
+// convenient one: field 0 is pinned hot and placed first, so a link word can
+// never sit at byte 0 of any hot record.
+static void attach_cold_rc(const StructType *s, LLVMValueRef hot, LLVMTypeRef size_ty) {
+    if (!s || s->hot_count <= 0) return;
+    LLVMTypeRef voidty = LLVMVoidTypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+
+    unsigned long long off = LLVMOffsetOfElement(LLVMGetModuleDataLayout(g_module),
+                                                 s->type, (unsigned)s->hot_count);
+
+    LLVMValueRef size = LLVMSizeOf(s->cold);
+    if (size_ty != LLVMInt64TypeInContext(g_ctx)) {
+        size = LLVMBuildTrunc(g_builder, size, size_ty, "");
+    }
+
+    LLVMTypeRef params[3] = {ptr, size_ty, size_ty};
+    LLVMTypeRef fn_ty = LLVMFunctionType(voidty, params, 3, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "rc_attach_cold");
+    if (!fn) fn = LLVMAddFunction(g_module, "rc_attach_cold", fn_ty);
+
+    LLVMValueRef args[3] = {hot, size, LLVMConstInt(size_ty, off, 0)};
+    LLVMBuildCall2(g_builder, fn_ty, fn, args, 3, "");
+}
+
 int ir_alloc_rc(const char *struct_name) {
-    LLVMTypeRef sty = named_struct(struct_name);
+    StructType *s = struct_entry(struct_name);
+    LLVMTypeRef sty = s->type;
     LLVMTypeRef size_ty = type_from_key(g_ptr_int);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
 
@@ -763,7 +948,9 @@ int ir_alloc_rc(const char *struct_name) {
     if (!alloc_fn) alloc_fn = LLVMAddFunction(g_module, "rc_alloc", alloc_ty);
 
     LLVMValueRef args[1] = {size};
-    return intern_value(LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, ""));
+    LLVMValueRef hot = LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, "");
+    attach_cold_rc(s, hot, size_ty);
+    return intern_value(hot);
 }
 
 // Region entry and exit. Emitted at every exit from the block, like the drops --
@@ -804,6 +991,43 @@ static void ir_release_call(const char *value, const char *fn_name) {
 
 void ir_free_object(const char *value) { ir_release_call(value, g_free_fn); }
 
+// LAYOUT 6's hot/cold split, the release half.
+//
+// A split object is two allocations and `ir_free_object` above frees one block
+// while knowing nothing about its type -- so this is emitted immediately before
+// it, from inside the generated `__aif_release_T`, which is the one place in the
+// program where the pointer and the type are both in hand. `aif_type_releases` is
+// forced true for every split type precisely so that this is on every path a
+// split object can die by.
+//
+// A no-op for an unsplit type, which is what lets generateReleaseFn call it
+// unconditionally: the frontend does not have to know which types were split, and
+// therefore cannot get it wrong for one of them.
+//
+// Ordering is not cosmetic. The cold pointer lives *inside* the hot record, so
+// reading it after the base has been freed is a use-after-free -- and in a verify
+// build, a read of poisoned bytes handed straight to the deallocator.
+void ir_free_cold(const char *struct_name, const char *value) {
+    StructType *s = struct_entry(struct_name);
+    if (s->hot_count <= 0) return;
+    if (block_done()) return;
+
+    LLVMTypeRef voidty = LLVMVoidTypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+
+    LLVMValueRef obj = resolve_value(value, "ptr");
+    LLVMValueRef slot = LLVMBuildStructGEP2(g_builder, s->type, obj,
+                                            (unsigned)s->hot_count, "");
+    LLVMValueRef cold = LLVMBuildLoad2(g_builder, ptr, slot, "");
+
+    LLVMTypeRef free_ty = LLVMFunctionType(voidty, &ptr, 1, 0);
+    LLVMValueRef free_fn = LLVMGetNamedFunction(g_module, g_free_fn);
+    if (!free_fn) free_fn = LLVMAddFunction(g_module, g_free_fn, free_ty);
+
+    LLVMValueRef args[1] = {cold};
+    LLVMBuildCall2(g_builder, free_ty, free_fn, args, 1, "");
+}
+
 // AIF Level 4. A list is a handle plus an element block, so the one-pointer
 // deallocator the seam names cannot reclaim it. `list_release` is the runtime's
 // own -- it frees both through the same allocator the list came from, which is
@@ -824,7 +1048,15 @@ void ir_free_rc(const char *value) { ir_release_call(value, "rc_release"); }
 // the LLVM struct type is untouched and cyc_set_type fills them in afterwards --
 // the same shape as list_set_elem_owner, and for the same reason.
 int ir_alloc_cycle(const char *struct_name) {
-    LLVMTypeRef sty = named_struct(struct_name);
+    StructType *s = struct_entry(struct_name);
+    // Not a fallback: `aif_layout_split_select` vetoes every type in a non-trivial
+    // SCC, and a T4b site's type is in one by the tier's definition, so the two
+    // sets are disjoint by construction. This is the assertion that says so out
+    // loud -- if the veto is ever loosened, `cyc_free_object` calls the generated
+    // release on the payload while the base is `payload - CYC_HDR`, and a split
+    // would put a second block behind that asymmetry.
+    if (s->hot_count > 0) backend_fail("split type reached the cycle allocator", struct_name);
+    LLVMTypeRef sty = s->type;
     LLVMTypeRef size_ty = type_from_key(g_ptr_int);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
 
@@ -868,12 +1100,29 @@ int ir_func_addr(const char *name) {
 }
 
 // Field address within a struct object. Replaces emitted getelementptr text.
+//
+// **The single choke point for field access, and therefore the whole of the
+// hot/cold redirection.** Codegen indexes fields 0..n-1 in the order
+// `aif_layout_field` chose; when the type is split that order is hot fields
+// first, so an index at or above `hot_count` is a cold field and is reached by
+// loading the link and GEPing into the cold block instead. One dependent load,
+// which is exactly what LAYOUT 5.2.1 prices a linked split at.
 int ir_struct_field_ptr(const char *struct_name, const char *object, int field_index) {
-    LLVMTypeRef sty = named_struct(struct_name);
+    StructType *s = struct_entry(struct_name);
     LLVMValueRef obj = resolve_value(object, "ptr");
     if (field_index < 0) backend_fail("negative struct field index", struct_name);
+
+    if (s->hot_count > 0 && field_index >= s->hot_count) {
+        LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+        LLVMValueRef link = LLVMBuildStructGEP2(g_builder, s->type, obj,
+                                                (unsigned)s->hot_count, "");
+        LLVMValueRef cold = LLVMBuildLoad2(g_builder, ptr, link, "");
+        return intern_value(LLVMBuildStructGEP2(g_builder, s->cold, cold,
+                                                (unsigned)(field_index - s->hot_count), ""));
+    }
+
     return intern_value(
-        LLVMBuildStructGEP2(g_builder, sty, obj, (unsigned)field_index, ""));
+        LLVMBuildStructGEP2(g_builder, s->type, obj, (unsigned)field_index, ""));
 }
 
 // Address of element `index` in a flat array of `elem_type`.

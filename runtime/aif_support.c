@@ -500,6 +500,30 @@ typedef struct {
     long long* field_lo;
     long long* field_hi;
     int* field_has_range;
+    // LAYOUT 6's hot/cold split, once it is emitted rather than reported.
+    //
+    // `hot_count` is 0 for an unsplit type and otherwise the number of fields the
+    // hot record keeps, in the *split* order aif_layout_field hands codegen --
+    // hot fields first, in the placement order, then the cold ones. `hot` is the
+    // same set by declaration index, which is the space the cost model works in.
+    //
+    // `no_split` is a veto pushed in before the decision is taken, never after:
+    // type_releases_of reads the decision during the solve, and a veto arriving
+    // later would leave a type whose release path had been decided one way and
+    // whose layout went the other.
+    //
+    // `no_split_unmodelled` is the *other* kind of veto, and the two are kept
+    // apart because LAYOUT 8 may override exactly one of them. `no_split` means
+    // the cold block cannot be reached at all (vetoes 1-3): a wild load or a
+    // double free, and no measurement makes it safe. `no_split_unmodelled` means
+    // the model declined to choose because an input is absent (vetoes 4-5) -- the
+    // layout is perfectly sound, there was just no evidence it pays. A forced
+    // candidate is evidence being gathered, so it clears the second and never the
+    // first.
+    int hot_count;
+    int no_split;
+    int no_split_unmodelled;
+    Bits hot;
 } Nominal;
 
 static Nominal* nominals;
@@ -555,6 +579,11 @@ static int nominal_intern(const char* name, int is_enum) {
     t->field_lo = NULL;
     t->field_hi = NULL;
     t->field_has_range = NULL;
+    t->hot_count = 0;
+    t->no_split = 0;
+    t->no_split_unmodelled = 0;
+    t->hot.w = NULL;
+    t->hot.nwords = 0;
     nominal_index_put(t->name, nominal_count);
     return nominal_count++;
 }
@@ -1283,6 +1312,120 @@ int aif_layout_candidates(void)        { return g_cand_count; }
 int aif_layout_best(void)              { return g_cand_best; }
 int aif_layout_cand_hot(int i)         { return (i >= 0 && i < g_cand_count) ? g_cands[i].hot_count : 0; }
 
+// LAYOUT 8 compiles "the top-k candidates, ranked by modelled cost". `g_cands` is
+// in cut order and `g_cand_best` is only the argmin, so the ranking is computed
+// here rather than stored: k = 0 is the argmin, k = 1 the next cheapest, and so on.
+//
+// Ties break on the candidate index, which is LAYOUT 9.1's total order -- the
+// candidates are generated in increasing cut order, so the index *is* the split
+// rank, and a tie between two equal-cost cuts resolves the same way on every host
+// rather than by whichever the scan reached first.
+int aif_layout_cand_at_rank(int k) {
+    if (k < 0 || k >= g_cand_count) return -1;
+    // Selection rather than a sort: g_cands must stay in cut order, because every
+    // other accessor here is indexed by it and the report prints it in that order.
+    int prev = -1;
+    for (int rank = 0; rank <= k; rank++) {
+        int pick = -1;
+        for (int i = 0; i < g_cand_count; i++) {
+            // Skip everything at or before `prev` in the (cost, index) order.
+            if (prev >= 0 && (g_cands[i].cost < g_cands[prev].cost ||
+                              (g_cands[i].cost == g_cands[prev].cost && i <= prev)))
+                continue;
+            // `i` ascends, so a strict `<` leaves ties on the lower index.
+            if (pick < 0 || g_cands[i].cost < g_cands[pick].cost) pick = i;
+        }
+        if (pick < 0) return -1;
+        prev = pick;
+    }
+    return prev;
+}
+
+// ---------------------------------------------------------------------------
+// LAYOUT 8's forced candidate
+//
+// §8 selects a layout by *measuring* the top-k candidates instead of trusting the
+// model's argmin, and §7.2's argmin is the only thing wired to codegen -- so the
+// one mechanism §8 needs that does not exist is a way to say "emit this candidate,
+// not the cheapest one". This is that, and it is deliberately the whole of it: the
+// search loop, the timing and the manifest record are the frontend's business.
+//
+// **A candidate is named by its hot-field count, not by its rank.** Ranks move
+// whenever the cost model changes, so a manifest record or a reproduction command
+// naming "the 2nd best candidate" stops meaning the same layout the moment a
+// constant is retuned. `hot_count` is a property of the layout itself, and it is
+// what `--layout` already prints (`split 8/12`), so the number a human reads off
+// the report is the number they can force.
+//
+// **It lives outside the Nominal table.** aif_reset tears every Nominal down, and
+// a declared `workload` runs the whole engine twice in one process (LAYOUT 3.2) --
+// so a force stored on the type would apply to the instrumented pass and silently
+// not to the real one, which is the pass that ships. Keyed by name string for the
+// same reason: the interned ids are per-run too.
+//
+// **A force that matches nothing is reported, not ignored.** Naming a type that is
+// not in the program, or a cut that is not a candidate, is the shape of mistake
+// this project has made most -- an instrument that matched nothing and reported
+// success. `aif_layout_force_applied` is how the frontend can raise it.
+// ---------------------------------------------------------------------------
+
+#define AIF_MAX_FORCED 32
+
+typedef struct {
+    char* type;
+    int hot_count;
+    int applied;
+} Forced;
+
+static Forced g_forced[AIF_MAX_FORCED];
+static int g_forced_count;
+
+void aif_layout_force(const char* type, int hot_count) {
+    if (!type || hot_count < 1) return;
+    for (int i = 0; i < g_forced_count; i++) {
+        if (strcmp(g_forced[i].type, type) == 0) {
+            g_forced[i].hot_count = hot_count;   // last writer wins, so a repeated
+            g_forced[i].applied = 0;             // --force-layout is not two forces
+            return;
+        }
+    }
+    if (g_forced_count >= AIF_MAX_FORCED) return;
+    size_t n = strlen(type) + 1;
+    char* copy = (char*)xmalloc(n, "AIF forced layout");
+    memcpy(copy, type, n);
+    g_forced[g_forced_count].type = copy;
+    g_forced[g_forced_count].hot_count = hot_count;
+    g_forced[g_forced_count].applied = 0;
+    g_forced_count++;
+}
+
+// -1 when `type` carries no force, which is the common case and the one the
+// selection loop asks about per type.
+static int forced_hot_for(const char* type) {
+    for (int i = 0; i < g_forced_count; i++)
+        if (strcmp(g_forced[i].type, type) == 0) return g_forced[i].hot_count;
+    return -1;
+}
+
+static void forced_mark_applied(const char* type) {
+    for (int i = 0; i < g_forced_count; i++)
+        if (strcmp(g_forced[i].type, type) == 0) g_forced[i].applied = 1;
+}
+
+int aif_layout_forced_count(void) { return g_forced_count; }
+
+const char* aif_layout_forced_type(int i) {
+    return (i >= 0 && i < g_forced_count) ? g_forced[i].type : "";
+}
+
+int aif_layout_forced_hot(int i) {
+    return (i >= 0 && i < g_forced_count) ? g_forced[i].hot_count : 0;
+}
+
+int aif_layout_force_applied(int i) {
+    return (i >= 0 && i < g_forced_count) ? g_forced[i].applied : 0;
+}
+
 // Costs are reported as a ratio against the unsplit baseline, x100, because the
 // absolute figure is in units nobody can act on. 100 means "no better than not
 // splitting"; 87 would mean the model expects 0.87x.
@@ -1318,6 +1461,207 @@ int aif_layout_cand_bytes(int i, int cold) {
     return b;
 }
 
+// ---------------------------------------------------------------------------
+// LAYOUT 6's hot/cold split, taken rather than reported
+//
+// The ranking above scores every admissible cut; this decides which one codegen
+// emits. The split is **linked** (LAYOUT 5.2.1): the hot record ends in a pointer
+// to a separately allocated cold block, which is why it needs no handles, and
+// which is also why a split object is *two* allocations and every release path
+// has to know it.
+//
+// **Three vetoes, and each is a way the second allocation cannot be reached --
+// not a way it would be slow.** The cost model decides the rest.
+//
+//   1. `no_split`, pushed in by the frontend for any type embedded **inline** in
+//      another struct. An inline field is storage inside its owner: nothing calls
+//      an allocator for it, so its link word would hold whatever the owner's
+//      allocation left there and the first cold read would be a wild load. The
+//      predicate is `typeAnnIsPod` + `ir_is_struct_type_name`, asked once in
+//      src/aif/layout.psm -- the same pair `fieldTypeFor` asks to decide
+//      inline-ness in the first place, so the two cannot drift.
+//   2. A type in a **non-trivial SCC**, i.e. a T4b candidate. `cyc_free_object`
+//      calls the generated release on the *payload* while the object's base is
+//      `payload - CYC_HDR`; forcing a release onto a type that reaches itself
+//      would put a second block behind that asymmetry. T4b splits are excluded
+//      because the collector's release contract is a separate question, not
+//      because they are hard.
+//   3. Fewer than three fields, or an enum -- there is no cut past the pinned
+//      field 0.
+//   4. **A type with no sequential traversal.** This one is a measurement, and it
+//      is the third time on this project that a measurement has refuted the cost
+//      model. The mechanism RESULTS-layout 2 measured is that a walk *in container
+//      order* over smaller hot records streams less and packs closer -- 0.87x on
+//      g1's shape. A type nobody walks in container order collects the split's
+//      cost, a dependent miss per cold touch, and none of that benefit. The model
+//      nevertheless prefers a split for such types, and the reason is nameable:
+//      `mu_for` reads a cache tier off `AIF_N_ASSUMED * hot_size`, and
+//      AIF_N_ASSUMED is a fabricated 2^20 for every type in the program, so
+//      shaving 8 bytes off a *singleton* can cross a tier boundary and divide its
+//      modelled cost by six. Measured, interleaved, 20 pairs: g4's `World` -- one
+//      instance, six fields, five of them Lists -- was split 2/6 at a modelled 24
+//      and ran at 1.04x. LAYOUT 10.4 already records that static frequency
+//      estimation is crude; this is the clause that stops it choosing a layout.
+//   5. **A type with an inline struct field.** The model does not know how big
+//      such a type is. `aifDeclare` sizes every field with `aifTypeBytes`, which
+//      answers 8 for a struct-typed field because the struct registry is empty
+//      during the analysis -- so `g3_scene_graph`'s `Node`, whose two inline
+//      `Transform`s are 48 bytes each, is modelled as 40 bytes and is really 112.
+//      A cut chosen from a shape that wrong is not a choice. Measured: Node was
+//      split 4/7 at a modelled 12 and ran at 1.11x, the largest regression in the
+//      corpus. Sizing inline fields correctly would move Theta_stack and therefore
+//      tiers, which is a separate change; declining to choose is not.
+//
+// Field 0 of the chosen order is pinned hot by `aif_layout_rank` and never
+// offered to a cut, because the punned-slot invariant is about the first byte of
+// the object (tests/test_41_punned_slot_bytes.psm). The split cannot move it, and
+// `str_equals(ptr, "")` still reads what it read.
+//
+// Runs after `aif_layout_select` and after `aifComputeSizes`, and *before* the
+// solve. Before the solve because `type_releases_of` reads the answer; after the
+// sizes because the sizes are computed from the unsplit order on purpose -- see
+// aif_layout_field_bytes.
+// ---------------------------------------------------------------------------
+
+void aif_layout_no_split(const char* type) {
+    int id = nominal_find(type);
+    if (id >= 0) nominals[id].no_split = 1;
+}
+
+// Veto 5's channel, separate from veto 1's because LAYOUT 8 may override this one
+// and must never override that one. Both are pushed in by aifLayoutVetoInline from
+// the same discovery -- a struct with an inline struct field -- but they say
+// different things: the *field's type* cannot be split at all (no allocator hook
+// writes its link word), while the *owner* merely cannot be modelled, because
+// aifTypeBytes sizes that field as one pointer. The owner's split is sound.
+void aif_layout_no_split_unmodelled(const char* type) {
+    int id = nominal_find(type);
+    if (id >= 0) nominals[id].no_split_unmodelled = 1;
+}
+
+// Veto 4's test. `sequential` is set by aif_traversal_elem when a loop binds a
+// container element -- `let p = list_get(ps, i)` -- which is exactly the shape
+// layout_repr.c measured and the only shape the 0.87x is evidence for.
+static int has_sequential_traversal(int id) {
+    for (int i = 0; i < traversal_count; i++) {
+        if (traversals[i].type == nominals[id].name && traversals[i].sequential)
+            return 1;
+    }
+    return 0;
+}
+
+// `forced` says a human named this type's cut, so the two vetoes that exist
+// because the *model* had no basis to choose (4 and 5) are not reasons to decline
+// -- gathering the missing evidence is what LAYOUT 8 does. The three that say the
+// cold block cannot be reached are checked either way, and a force cannot clear
+// them: no measurement makes a wild load or a double free acceptable.
+static int split_admissible(int id, int forced) {
+    Nominal* t = &nominals[id];
+    if (t->is_enum || t->nfields < 3) return 0;    // veto 3
+    if (t->no_split) return 0;                     // veto 1, and veto 2 via the frontend
+    if (bits_test(&t->reaches, id)) return 0;      // veto 2
+    if (forced) return 1;
+    if (t->no_split_unmodelled) return 0;          // veto 5
+    if (!has_sequential_traversal(id)) return 0;   // veto 4
+    return 1;
+}
+
+// The candidate whose hot group is exactly `hot_count` fields, or -1. Cuts are
+// generated one per distinct access-count boundary, so at most one candidate has
+// any given hot_count and this is a lookup rather than a search for a best match.
+static int candidate_with_hot(int hot_count) {
+    for (int i = 0; i < g_cand_count; i++)
+        if (g_cands[i].hot_count == hot_count) return i;
+    return -1;
+}
+
+void aif_layout_split_select(void) {
+    for (int n = 0; n < nominal_count; n++) {
+        Nominal* t = &nominals[n];
+        t->hot_count = 0;
+        bits_free(&t->hot);
+        t->hot.w = NULL;
+        t->hot.nwords = 0;
+        int forced = forced_hot_for(aif_str(t->name));
+        if (!split_admissible(n, forced >= 0)) continue;
+        if (aif_layout_rank(aif_str(t->name)) < 2) continue;
+
+        int pick = g_cand_best;
+        if (forced >= 0) {
+            // A forced cut still has to *be* a candidate. Anything else would let
+            // a typo emit a layout the model never scored and the report never
+            // printed -- and `--layout`'s table is where the number came from.
+            int match = candidate_with_hot(forced);
+            if (match >= 0) {
+                forced_mark_applied(aif_str(t->name));
+                pick = match;
+            } else if (!split_admissible(n, 0)) {
+                // **"Did not apply" has to mean nothing changed**, and getting
+                // here by `continue` is what it meant for one build of this
+                // function: an unmatched force left hot_count at 0, so a mistyped
+                // cut did not fall back to the argmin, it turned the split *off*.
+                // A search script would then measure the unsplit record, be told
+                // by the warning that its force missed, and still have a plausible
+                // number filed against a cut nothing emitted.
+                //
+                // So an unmatched force falls through to the argmin -- except for a
+                // type that only became admissible *because* it was forced, where
+                // the argmin is a split the vetoes had excluded. Re-asking without
+                // the force is what distinguishes the two, and it is the same
+                // question this loop already answered a few lines up.
+                continue;
+            }
+        }
+
+        // Candidate 0 is the unsplit record and wins ties, so `pick != 0` already
+        // means "strictly cheaper than not splitting" (see aif_layout_rank). A
+        // force of the unsplit candidate lands here too, and correctly: it applied,
+        // and what it asked for is no split.
+        if (pick == 0) continue;
+        int hc = g_cands[pick].hot_count;
+        if (hc < 1 || hc >= t->nfields) continue;
+        for (int f = 0; f < t->nfields; f++) {
+            if (bits_test(&g_cands[pick].hot, f))
+                bits_set(&t->hot, f, "AIF hot group");
+        }
+        t->hot_count = hc;
+    }
+    candidates_clear();
+}
+
+// How many fields the hot record keeps, or 0 when the type is not split. Codegen
+// reads it once per type and passes it straight to ir_struct_type_split; the
+// backend needs no other AIF fact to emit the whole transform.
+int aif_layout_hot_count(const char* type) {
+    int id = nominal_find(type);
+    return id >= 0 ? nominals[id].hot_count : 0;
+}
+
+// The declaration index of the field placed i-th in the order codegen emits.
+//
+// Unsplit that is `order` and nothing else. Split, it is `order` read twice --
+// the hot fields in placement order, then the cold ones -- so the emitted index
+// space is exactly `[0, hot_count)` hot and `[hot_count, nfields)` cold, and
+// ir_struct_field_ptr can decide which side a field is on by comparing one
+// integer.
+static int split_slot(Nominal* t, int i) {
+    if (t->hot_count <= 0) return t->order[i];
+    int seen = 0;
+    for (int j = 0; j < t->nfields; j++) {
+        int f = t->order[j];
+        if (!bits_test(&t->hot, f)) continue;
+        if (seen == i) return f;
+        seen++;
+    }
+    for (int j = 0; j < t->nfields; j++) {
+        int f = t->order[j];
+        if (bits_test(&t->hot, f)) continue;
+        if (seen == i) return f;
+        seen++;
+    }
+    return t->order[i];
+}
+
 // How many traversals the profile recorded for a type. A type with none is one
 // the model has nothing to say about, and the report says so rather than printing
 // a ratio derived from an empty sum.
@@ -1339,7 +1683,7 @@ const char* aif_layout_field(const char* type, int i) {
     if (id < 0) return "";
     Nominal* t = &nominals[id];
     if (i < 0 || i >= t->nfields) return "";
-    return aif_str(t->field_name[t->order[i]]);
+    return aif_str(t->field_name[split_slot(t, i)]);
 }
 
 int aif_layout_reordered(const char* type) {
@@ -1349,6 +1693,16 @@ int aif_layout_reordered(const char* type) {
 
 // The width of the field placed i-th, so the size computation walks the layout
 // the search chose rather than the one the source wrote.
+//
+// **Deliberately `order` and not `split_slot`, and the link word is deliberately
+// not counted.** This feeds aifComputeSizes, which feeds Theta_stack, which the
+// T0 clause reads -- so anything this returns can move a tier. The split is
+// chosen *after* the sizes are computed for exactly that reason: layout selection
+// runs before the solve (SPEC 7.2, test_49's note) so that a layout cannot change
+// what the analysis concludes, and a split that added 8 bytes per object to the
+// stack budget would be layout feeding back into the solve that chose it. The
+// cost is that a split T0 object's frame is understated by one pointer per
+// object; the alternative is a cycle.
 int aif_layout_field_bytes(const char* type, int i) {
     int id = nominal_find(type);
     if (id < 0) return 0;
@@ -1454,6 +1808,13 @@ typedef struct {
     // SPEC 5.4. The tier a `pin` froze, or -1. Applied after convergence.
     int pin_tier;
     int pin_verdict;        // AIF_PIN_*, decided by aif_check_pins
+    // SPEC 5.4 on placement rather than on the tier: the interned name of the
+    // `region` a `pin(<region-name>)` asserted must serve this value, or -1.
+    // Separate from pin_tier because they are orthogonal claims about one site
+    // and a single slot would make `let pin(T2) pin(frame) x` silently drop one
+    // of them.
+    int pin_region;
+    int pin_region_verdict; // AIF_PIN_*, decided by aif_check_placement_pins
 } Site;
 
 // SPEC 5.4's four outcomes, plus "there is no pin here".
@@ -1494,6 +1855,8 @@ int aif_site_new(const char* type, int kind, int fn, int scope,
     s->alias_suppressed = 0;
     s->pin_tier = -1;
     s->pin_verdict = AIF_PIN_NONE;
+    s->pin_region = -1;
+    s->pin_region_verdict = AIF_PIN_NONE;
     // Bottom, per INFERENCE 5.2 line 2: Region(defscope), Unique, Acyclic.
     s->E = scope;
     s->A = AIF_A_UNIQUE;
@@ -1818,6 +2181,17 @@ void aif_argv_end(int base) { argv.len = base; }
 // and the two would disagree without either one failing to build.
 #define AIF_CON_VIEW_OF      16
 
+// SPEC 5.4 applied to placement: `pin(<region-name>)`. Appended for the same
+// reason AIF_CON_VIEW_OF was -- AIF_RULE_ALLOC's ordinal is written out again in
+// src/aif/model.psm, so inserting anything below 16 renames the derivation root
+// there and neither side fails to build.
+//
+// `b` is the interned region name, not a tier. Applied in the same pass as
+// AIF_CON_PIN because it is an assertion about the result and not a transfer
+// rule; *adjudicated* much later than AIF_CON_PIN, because what it asserts is an
+// output of arena placement, which has not run yet.
+#define AIF_CON_PIN_REGION   17
+
 typedef struct {
     int kind, a, b, c;
     // Where in the source this constraint came from. Carried so a manifest diff
@@ -1856,6 +2230,9 @@ void aif_con_escape_caller(int vs)              { con_add(AIF_CON_ESCAPE_CALLER,
 void aif_con_escape_global(int vs)              { con_add(AIF_CON_ESCAPE_GLOBAL, vs, 0, 0); }
 void aif_con_unique(int vs)                     { con_add(AIF_CON_UNIQUE, vs, 0, 0); }
 void aif_con_pin(int vs, int tier)              { con_add(AIF_CON_PIN, vs, tier, 0); }
+void aif_con_pin_region(int vs, const char* name) {
+    con_add(AIF_CON_PIN_REGION, vs, aif_intern(name), 0);
+}
 
 // SPEC 8.4's E-VIEW is not a constraint. It rides the rules that already bound
 // how long a value lives, because that bound is exactly what its collection has
@@ -2244,12 +2621,22 @@ int aif_solve(int max_rounds) {
     // on constraint order -- and INFERENCE 5.1 lets the order vary.
     for (int ci = 0; ci < con_count; ci++) {
         Constraint* k = &cons[ci];
-        if (k->kind != AIF_CON_UNIQUE && k->kind != AIF_CON_PIN) continue;
+        if (k->kind != AIF_CON_UNIQUE && k->kind != AIF_CON_PIN
+            && k->kind != AIF_CON_PIN_REGION) continue;
         resolve(k->a, &scratch_val);
         bits_to_vec(&scratch_val, &vec_val);
         for (int i = 0; i < vec_val.len; i++) {
             if (k->kind == AIF_CON_UNIQUE) {
                 sites[vec_val.v[i]].alias_axiom = 1;
+            } else if (k->kind == AIF_CON_PIN_REGION) {
+                // First writer wins, unlike the tier pin below, and there is no
+                // "stricter reading" to prefer: two region names on one site are
+                // two incompatible claims, not two strengths of one claim. The
+                // second is left to refute on its own site rather than silently
+                // replacing the first.
+                if (sites[vec_val.v[i]].pin_region < 0) {
+                    sites[vec_val.v[i]].pin_region = k->b;
+                }
             } else if (k->b > sites[vec_val.v[i]].pin_tier) {
                 // Two pins on one site is a program that annotated the same
                 // allocation twice; the stricter reading is the more expensive
@@ -3350,6 +3737,70 @@ int aif_region_serves(int scope) {
     return n;
 }
 
+// ----------------------------------------------------------------------------
+// SPEC 5.4 applied to placement -- `pin(<region-name>)`
+//
+// SPEC 5.2.1.1 says this of its own regime (a): "(a) is fragile as a language
+// guarantee -- adding a second call to a bracketed callee silently removes the
+// placement -- which is why an implementation using it SHALL record in the
+// manifest which call sites it bracketed, so the loss appears as a diff rather
+// than as a slowdown." The manifest does record them. A diff is only read by
+// somebody who looks; this is the same fact stated by the *programmer*, so a
+// build fails instead.
+//
+// **It reads aif_region_name_at_site and computes nothing.** That is
+// site_arena_scope, the one arena gate every other consumer already reads --
+// codegen, the manifest's placement column, the zero-serving warning, the cost
+// model and `--why`. Re-deriving "is this bracketed" from the bracket table here
+// would be a fifth copy of a predicate this file has already paid for having
+// four of, and the copy that drifts is always the one that decides.
+//
+// It is an assertion, never a directive (SPEC 5.0.1): nothing below writes to
+// scopes[].arena or to site_bracket, so a build with these annotations deleted
+// emits the same instructions. That is what makes the feature diagnostic-only,
+// and what makes "the IR must not move" the test for it.
+//
+// Ordering: this runs after aif_place_arenas, unlike aif_check_pins which must
+// run before it. A tier pin is an *input* to placement (the cost model ranks
+// scopes by tier); a placement pin is an assertion about its *output*.
+// ----------------------------------------------------------------------------
+void aif_check_placement_pins(int converged) {
+    for (int i = 0; i < site_count; i++) {
+        Site* s = &sites[i];
+        if (s->pin_region < 0) continue;
+
+        const char* placed = aif_region_name_at_site(i);
+        if (placed[0] != '\0' && strcmp(placed, aif_str(s->pin_region)) == 0) {
+            s->pin_region_verdict = AIF_PIN_HONOURED;
+        } else if (converged) {
+            // SPEC 5.4.1. There is no third branch here and there is one in
+            // aif_check_pins: a tier pin *above* the derived tier is honoured
+            // because every tier is semantically valid and a more expensive one
+            // needs no proof (SPEC 5.4.4). Placement has no such order -- an
+            // arena either serves this site or does not -- so the direction
+            // limit has nothing to be a limit on, and "served by some other
+            // region" is a refutation rather than a weaker honour.
+            s->pin_region_verdict = AIF_PIN_REFUTED;
+        } else {
+            // SPEC 5.4.2, and it is not a formality here. A truncated analysis
+            // widens every unproven site to its top tier, which takes the arena
+            // away from sites a converged run keeps it for -- so a build that
+            // ran out of budget would refute pins a full one honours.
+            s->pin_region_verdict = AIF_PIN_UNPROVEN;
+        }
+    }
+}
+
+int aif_site_pin_region_verdict(int id) {
+    if (id < 0 || id >= site_count) return AIF_PIN_NONE;
+    return sites[id].pin_region_verdict;
+}
+
+const char* aif_site_pin_region(int id) {
+    if (id < 0 || id >= site_count || sites[id].pin_region < 0) return "";
+    return aif_str(sites[id].pin_region);
+}
+
 int aif_scope_region_file(int s) { return (s < 0 || s >= scope_count) ? 0 : scopes[s].region_file; }
 int aif_scope_region_line(int s) { return (s < 0 || s >= scope_count) ? 0 : scopes[s].region_line; }
 int aif_scope_region_col(int s)  { return (s < 0 || s >= scope_count) ? 0 : scopes[s].region_col; }
@@ -4400,6 +4851,26 @@ static int type_releases_of(int nominal) {
     if (nominal < 0 || nominal >= nominal_count) return 0;
     if (nominals[nominal].is_enum) return 0;
 
+    // **The release half of the hot/cold split, and it is one clause.**
+    //
+    // A split object is two allocations. The type-blind deallocator behind
+    // ir_free_object frees one block and cannot name the type, so it would leak
+    // the cold half of every split object it ever saw. Forcing this true routes
+    // every drop, every container element and every owned field of a split type
+    // through the generated `__aif_release_T` instead -- which *does* know the
+    // type, and which frees the cold block before the base (ir_free_cold).
+    //
+    // This is the "generated release even when the type owns no fields" the
+    // original brief names. It is safe to force because the generated body is the
+    // same code either way: it emits one release per field whose disposition is
+    // not NONE, and a type that owned nothing before still owns nothing now, so
+    // all the forcing adds is the wrapper and the cold free.
+    //
+    // Not cached, and deliberately ahead of the cache: the cache is keyed on the
+    // field walk alone, and a split decision that arrived after a cached 0 would
+    // be a leak nothing reports.
+    if (nominals[nominal].hot_count > 0) return 1;
+
     if (nominal >= type_releases_cap) {
         int grow = type_releases_cap ? type_releases_cap * 2 : 64;
         if (grow <= nominal) grow = nominal + 1;
@@ -4957,6 +5428,7 @@ void aif_reset(void) {
 
     for (int i = 0; i < nominal_count; i++) {
         bits_free(&nominals[i].reaches);
+        bits_free(&nominals[i].hot);
         free(nominals[i].field_name);
         free(nominals[i].field_type);
         free(nominals[i].field_bytes);

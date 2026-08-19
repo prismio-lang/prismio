@@ -643,6 +643,43 @@ relaxed comparison in an implementation is not a discharge obligation.
 no edge to increment, and the manifest SHALL say so (`rc:none`) rather than claim a mechanism the
 binary does not contain.
 
+#### 5.4.5 `pin(<region-name>)` — the placement form *(normative)*
+
+*(New in 1.2.3. Deferred through three sessions because until call-site placement landed its
+headline example refuted; §5.2.1.1's "Implemented, 2026-08-16" is what unblocked it.)*
+
+`pin`'s argument is one identifier and it names one of two things. A **tier name** constrains the
+tier, per §5.4 above. **Any other identifier is the name of a `region`**, and the annotation asserts:
+
+> the allocation this binding denotes is served by the arena of the `region` named `<name>`.
+
+An implementation SHALL adjudicate it **after** arena placement, unlike a tier pin, which §5.4
+applies after convergence and before it. A tier pin is an *input* to placement — a cost model ranks
+scopes by tier — and a placement pin is an assertion about its *output*.
+
+The outcomes are §5.4's, minus one. Honoured when the arena serving the site is the named region;
+**refuted, and an error, when the analysis converged and it is not** (§5.4.1); unproven and a
+warning when it did not (§5.4.2). §5.4.4's direction limit has nothing to apply to: tiers are
+ordered and placement is not — an arena either serves a site or it does not — so "served by a
+different region" is a refutation and not a weaker honour. A name no `region` in the program carries
+is likewise refuted, which is also what a mistyped tier now produces.
+
+**This exists because of §5.2.1.1's own admission.** Regime (a) brackets a call only while its
+callee has exactly one call site, so a second call silently removes the placement; that section
+requires the manifest to record every bracket so the loss "appears as a diff rather than as a
+slowdown". A diff is read by whoever looks. This is the same fact asserted by the programmer, so a
+build fails on it.
+
+Two obligations on an implementation, both of which the reference one meets:
+
+- **It SHALL derive the verdict from the same predicate that decides placement**, not from a second
+  reading of the bracket record. Two predicates that agree today are two predicates, and §5.2 already
+  records what four copies of an arena gate cost.
+- **It SHALL NOT alter placement.** §5.0.1 makes every annotation an assertion; a placement pin that
+  *caused* an arena to be chosen would be a directive, and the tier it pinned would then be
+  unverifiable. Deleting every `pin(<region-name>)` from a program SHALL leave the emitted code
+  unchanged — which is a testable property, and the test for this feature.
+
 ---
 
 ## 6 · The tier manifest
@@ -798,6 +835,52 @@ chosen layouts from the manifest; the search step rewrites them.
 
 This is what keeps a "release" build fast enough to run in CI while still permitting an hours-long
 autotuning pass on a schedule.
+
+### 7.5 Levels are per module, not per build
+
+§7.2 states levels as a property of a build. The target needs them as a property of a **module**:
+an engine compiled once at `max` and reused, beside gameplay code rebuilt at `debug` on every
+keystroke. A single per-build level forces a choice between a slow iteration loop and an
+unoptimised engine, and neither is the trade anyone wants to make.
+
+An implementation MAY assign a level per module. §7.1's guarantee is what makes it sound: every
+level assigns a semantically valid tier to every value, so mixing them cannot change what a program
+does. It changes *which* facts were proved, and that has consequences the rest of this section
+states.
+
+**A level boundary is an inference boundary.** A module compiled at `debug` proves nothing — its
+budget is zero rounds and every value takes its ⊤ tier. A module analysed at `release` or `max`
+therefore SHALL treat every function of a lower-level module exactly as it treats an `extern`
+whose contract is undeclared: with the conservative default of FFI §1, and never with facts the
+lower-level module did not compute. **An implementation that reads summaries across a level
+boundary without this rule produces a value whose tier rests on an analysis that never ran**, which
+is the one failure mode SPEC §1's invariant does not survive.
+
+The direction is asymmetric and only one way is safe. Raising a module's level can only refine
+facts, so a caller compiled against the conservative assumption stays correct; lowering it discards
+facts a caller may already rest on. An implementation SHALL therefore invalidate every module that
+depends on a module whose level falls, exactly as INFERENCE §9 invalidates the reverse-reachable
+set of an edited function. **The level is part of the cache key**, alongside the body hash and the
+callee summaries.
+
+**Layout is not per module.** A type has one layout in every module that uses it: two modules
+disagreeing about a field's offset is a miscompile, not a lost optimisation. Layout selection
+(§7.4, LAYOUT §7.2) is therefore a property of the module that *declares* the type, is recorded in
+the manifest, and is read from there by every other module regardless of that module's level. A
+module at `debug` that allocates a type declared at `max` allocates the `max` layout.
+
+**`verify` is not per module.** §7.3's assertions replace the allocator, and an implementation
+that swaps allocators has to swap both ends together: an object allocated by the verifying
+allocator and released by the ordinary one, or the reverse, is a spurious violation report at best.
+`verify` is a property of the whole artifact.
+
+**The manifest SHALL record each module's level.** Without it a diff is unreadable in exactly the
+case the feature creates: dropping one module from `max` to `debug` moves every tier in it, and
+§6.3 would report several hundred regressions where one line — the level changed — is the whole
+explanation. A record whose module was compiled at a different level from the baseline's SHALL be
+reported as *not comparable*, not as a regression. This is the same rule §9 states for a manifest
+produced under a truncated budget, and for the same reason: the two runs did not ask the same
+question.
 
 ---
 

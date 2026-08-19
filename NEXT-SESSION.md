@@ -1,5 +1,422 @@
 # Prompts for the next sessions
 
+## 2026-08-19 (payload enums) — `Option`/`Result` are in; exhaustiveness is the hole, and REQUIREMENTS 18 now gates two things
+
+**State, verified on the tree.** Suite **128/128**; two-generation fixpoint `S7x3 == S7x4`; cold
+build from the **committed seed** byte-identical to the warm chain on all 89 programs; IR unchanged
+from the previous build on every pre-existing program except `src/main.ll`; AIF differential agrees
+on 15 sources. **Last-good: `build/S7x4`.** The seed was not refreshed and did not need to be —
+`src/` still uses no new syntax.
+
+### What landed across the whole session
+
+Generics with monomorphisation (`src/sema/generics.psm`), `Map<K,V>` (`std/map.psm`),
+payload-carrying enum variants (`src/sema/enums.psm`), `Option`/`Result` (`std/option.psm`), and
+exhaustiveness plus arm-reachability checking over payload enums.
+Both features are AST-to-AST transforms: sema, AIF, the layout optimiser and codegen learned nothing
+about either. That is the pattern to keep.
+
+**Read HANDOFF's two 2026-08-19 entries before starting**, especially §3 of the payload-enum one —
+the node-lifetime rule cost three crashes and will cost a fourth otherwise.
+
+### Two things found rather than built
+
+- **A partial struct literal was reading uninitialised memory** and had been since struct literals
+  existed. Fixed for all structs, not just enums. No test or corpus program changed.
+- **`Vec<T>` was never missing** — `List<T>` is the growable vector. REQUIREMENTS 13 asked for two
+  containers and was missing one.
+
+### The tasks, ranked
+
+1. **REQUIREMENTS 18 — the size of a type**, plus a way to index raw memory as `T`. It now gates
+   *two* things, not one: containers written in Prismio (and therefore any migration out of
+   `runtime/aif_support.c`), and the tagged **union** that would collapse a payload enum's
+   per-variant fields into one overlapped slot. Decide whether `Ptr` grows arithmetic or whether a
+   `RawBuffer<T>` primitive is the seam.
+
+2. **Bounds on type parameters.** `std/map.psm` is an association list because a generic body may
+   only use operations that typecheck at every instantiation, and `==` is the widest available.
+   Every function there goes through `mapIndexOf`, so bounds turn one body into a hash table with no
+   caller change.
+
+3. **Ownership contexts** (INFERENCE 6), reusing the instantiation machinery keyed on a context
+   tuple rather than a type tuple. There is still no such mechanism in the tree; `aif_support.c:5156`
+   remains accurate.
+
+4. **Inference from the expected type**, which is what `Result.Ok(5)` needs to solve `E`. A
+   bidirectional pass, and the last ergonomic rough edge in the error-handling story.
+
+Deliberately not on this list: a propagation operator for `Result`, which needs the ownership and
+cleanup-during-non-local-exit story first; and `unwrap`, which is declined on purpose.
+
+### Small, and it will pay for itself immediately
+
+`tests/test_runner.py` takes **no arguments**. There is no way to run one check, so any change to a
+single fixture costs a full ~4-minute suite run. Most of the runner is a chain of
+`if run_X_test(): passed += 1 else: failed += 1`, so a `--only <substring>` that filters both the
+fixture globs and that chain is a contained change. It cost real time this session.
+
+### Not this session
+
+DWARF, concurrency.
+
+---
+
+## 2026-08-19 (generics) — monomorphisation is in; the stdlib floor is now gated on one missing primitive
+
+**State, verified on the tree.** Suite **123/123**; two-generation fixpoint `S7g10 == S7g11`; cold
+build from the **committed seed** byte-identical to the warm chain on all 89 programs; IR unchanged
+from the pre-session baseline on 88 of 89 (only `src/main.ll` moved); AIF differential agrees on 15
+sources. **Last-good: `build/S7g11`.** The seed was **not** refreshed and did not need to be —
+`src/` uses no new syntax.
+
+### What landed
+
+Generic functions and types with monomorphisation (`src/sema/generics.psm`), as an AST-to-AST
+transform: sema and codegen were not taught about generics and needed no change. `Box<Int>` emits
+`{ i32 }`. Inference is structural and argument-position only; explicit arguments cover the rest.
+`Map<K,V>` shipped as `std/map.psm`, the first container written in Prismio, and `std.*` imports now
+resolve against the compiler's library rather than the importing file.
+
+Read HANDOFF's 2026-08-19 entry before starting. Do not re-derive §4 — three crashes, all the
+affine model, all cheap to hit again.
+
+### Two premises in the last brief were wrong, and the correction matters
+
+- There is **no ownership-context mechanism** to share an implementation with; `aif_support.c:5156`
+  says INFERENCE 6 is unbuilt. Instantiation was built in 6.3's shape so contexts can reuse it —
+  one new key function, not a new pass.
+- **`Vec<T>` was never missing.** `List<T>` is the growable vector. REQUIREMENTS 13 asked for two
+  containers and was missing one.
+
+### The tasks, ranked
+
+1. **Payload-carrying enum variants, then `Option<T>` / `Result<T,E>`** (REQUIREMENTS 14). This is
+   the one users hit first and it did *not* land this session — generics did not make it cheap,
+   because a struct has no `T` to put in the absent case. Needs: payload variants in parser and
+   sema, a `{ i32 tag, payload }` layout sized by the widest variant, `match` arms that bind the
+   payload, and move/drop rules that know which variant is live. The generic half is already done —
+   `monoIsTemplate` admits FUNCTION and STRUCT_DECL, and ENUM_DECL is a one-line addition.
+
+2. **REQUIREMENTS 18 — the size of a type**, plus a way to index raw memory as `T`. This is the
+   gate on everything left in the container story, and it is why this session answered "almost
+   none" to how much of `aif_support.c` moves into Prismio. `List<T>` cannot be written in Prismio
+   without it, which is also why the brief's "replace the hardcoded `List<T>`" test could not be
+   run as written. Decide whether `Ptr` grows arithmetic or whether a `RawBuffer<T>` primitive is
+   the seam.
+
+3. **Bounds on type parameters.** `std/map.psm` is an association list because a generic body may
+   only use operations that typecheck at every instantiation, and `==` is the widest one available.
+   Every function there is written through `mapIndexOf`, so bounds turn one body into a hash table
+   with no caller change. INFERENCE's worklist wants the O(1).
+
+4. **Ownership contexts** (INFERENCE 6), reusing this session's machinery keyed on a context tuple.
+
+### Not this session
+
+DWARF, concurrency. And do not spend the session on a fifth container until task 2 lands — the
+answer will be the same one this session got.
+
+---
+
+## 2026-08-17 (compile time) — the frontend is linear now, and incrementality is not an AIF problem
+
+**State, verified on the tree rather than remembered.** Suite **120/120** (and green again with
+`PRISMIO_OBJ_CACHE=0`); warm fixpoint `W2 == W3`; cold fixpoint `Uc1 == Uc2` from the **committed**
+seed; **cold == warm byte-identical on all 89**; seed refreshed from `W3` afterwards and its gen0
+already produces the fixpoint IR; oracle agrees on **15** sources; `--verify`
+`released`/`violation(s)` identical on all 6 corpus ledgers with 0 violations.
+**Last-good: `build/W3`** warm, `build/Uc2` cold, `build/Wc1` from the refreshed seed. `build/L5`
+is the pre-session generation.
+
+**Two things that were broken for months and are not any more.** The workload profile race is
+**fixed** — `ir_snapshot.py` can be run concurrently again (2 of 30 rounds diverged before, 0 of 90
+after). And **`prismio bootstrap` builds a compiler again**: it had no `-lLLVM-C` on its link line
+since the move to the LLVM C API, so it compiled everything and then died in undefined symbols,
+while the driver's own error message recommended it. It resolves LLVM from the same two places the
+scripts do, and `run_bootstrap_command_test` requires the compiler it builds to emit byte-identical
+IR to the script-built one — because a compiler can link and still be the wrong compiler.
+
+**Incremental builds are half done, and the benchmark says which half.**
+`python3 aif/evidence/compile_bench.py --compiler build/T3 --baseline build/L5` prints four
+scenarios per program; the one that settles it is **no-change**, which costs the same as a real
+edit (0.176 vs 0.178 s small, 2.692 vs 2.702 s on 505 KB). Nothing about the program's own
+compilation is reused. What the cache does buy, measured: 34-line program **3.0×**, `g1` 1.5×,
+505 KB project 1.10×, the compiler's self-build **1.9×**, **the suite 226 s → 170 s**.
+
+**Diff IR across this session with `tools/ir_slot_diff.py`, not `diff`.** Taking the `$fn$` keys
+out of the binding table freed the slot serials they were consuming, so every `%name.N` in every
+program is renumbered: **89 of 89 programs move and 0 differ**. Inside the session everything is
+byte-identical.
+
+### What landed
+
+* **REQUIREMENTS 16 — done.** It was four scans in three passes, not the one the requirement names.
+  `check` on a 4 000-function module goes 1.241 s → **0.088 s**; on the compiler's own source
+  0.126 → **0.039**. Frontend time is now linear over 31 KB–1.85 MB.
+* **A content-keyed object cache, in the build driver and in both bootstrap scripts**, plus the
+  seven bootstrap compiles issued in parallel. The compiler's self-build goes **2.96 s → 1.58 s**
+  warm and 2.67 → **2.09 s** uncached. Three bugs were found in it and fixed, two of them the same
+  day they were written — see HANDOFF §5.2; the one worth carrying is that `rename()` cannot cross
+  a filesystem, so the cache would have silently never populated on a host whose `/tmp` is a
+  different volume.
+* **The first hard ceiling on program size is gone.** `value table exhausted` at ~3 500 functions
+  was two fixed arrays indexed per module; they grow now, the IR is byte-identical below the old
+  ceiling, and a 1.85 MB source compiles.
+* **SPEC §7.5**, per-module optimisation levels, specified (REQUIREMENTS 10).
+* **`tools/incremental_manifest.py`**, INFERENCE §9's required equality test, running today and
+  asserting three things about itself so it cannot pass vacuously.
+* **The per-module split is priced** — see below. It is the only large win left.
+
+### The measurement that should decide the next few sessions
+
+| | |
+|---|---|
+| `clang -O2` on the emitted IR | **75.8%** of a cold 505 KB build |
+| Prismio frontend (parse, sema, AIF, codegen) | 3.7% |
+| **AIF's entire whole-program fixed point** | **18 ms** on the compiler — 19% of the frontend, **<1% of a build** |
+
+The projection that incremental rebuilds might be worse than Rust's *because* whole-program
+inference is non-incremental is refuted at its premise. Compile time here is LLVM's time on the
+emitted IR, the same as Rust's. Full detail and the phase tables:
+[RESULTS-compile-time.md](aif/evidence/RESULTS-compile-time.md).
+
+### The per-module split, priced (RESULTS-compile-time §5)
+
+`llvm-split` stands in for the compilation unit the compiler does not have, so both halves of the
+trade are measured rather than argued. On the 505 KB project's 3.34 MB module:
+
+| | |
+|---|---|
+| unsplit `clang -O2` | 2.45 s |
+| split 8, **all parts** | **1.44 s** — LLVM's pipeline is superlinear, so splitting is a *cold* win too |
+| split 8, **one part** | 0.191 s — a rebuild touching one file |
+| a 505 KB rebuild, end to end | **≈0.5 s against 3.31 s**, frontend floor included |
+| runtime cost | `xlang/g2` 0.975×–0.986×, `xlang/g6` 1.014× — inside their noise bands |
+| the catch | `g1_particles` split 8 ways costs **5×** the total work. Below ~100 KB of IR, do not split |
+
+The runtime result has a mechanism behind it: the hot code in these programs is `list_get`,
+`list_push` and the allocator, which live in `lang_runtime.c` and were always a separate object.
+A program whose hot loop is its own code has to be re-measured.
+
+### Next, ranked
+
+1. **Build the per-module split.** Priced above; the only large win left, and the compilation unit
+   SPEC §7.5, REQUIREMENTS 10 and REQUIREMENTS 21 all need. Two known obstacles, both small and
+   both visible in this session's IR delta: string-literal names and slot serials are numbered per
+   module, so per-file IR is not stable under an edit elsewhere. One design choice: the crossover
+   says do not split a small program.
+2. **Then compile the parts in parallel**, the way `bootstrap.sh` now compiles the toolchain.
+   Everything in the table above is sequential; the cold number falls again by roughly the core
+   count.
+3. **Verify `tools/bootstrap.ps1` on Windows**, and give it the parallel compile `bootstrap.sh`
+   has. Its object cache is written to mirror the shell one and was read, never run — there is no
+   PowerShell on the host it was written on.
+4. **Do not build INFERENCE §9's summary cache** without re-taking the 18 ms first. It needs
+   `aif_support.c` partitioned per function with a reverse call graph, and it is worth 0.7% of a
+   build.
+5. §8's search loop, `list_get`'s call per element, the profile race, handles — unchanged from the
+   previous session's list.
+
+---
+
+## 2026-08-17 (second) — LAYOUT §8's forced candidate landed; read this before writing another brief
+
+**The brief that opened this session described three already-built items as open**, and cost a session
+of planning to unpick. Its `State:` paragraph read "suite 98/98, 82 programs, oracle 13" against a
+tree at **116/116, 89, 15**; it asked for the hot/cold split (built, uncommitted, in the tree), the
+cost-model port (committed 2026-08-16), and `bench.py`'s allocation fix (committed 2026-08-16). It
+also opened by instructing that a "hand-tuning prompt" be run first, for its container-disposition
+change — **no such prompt exists in this repo**, and the disposition mechanism it wanted to inherit
+had already landed with hot/cold.
+
+Two consecutive briefs claimed handles had landed when they had not. This one claimed three landed
+things had not. **The failure is the same failure and it has now gone in both directions**: a state
+paragraph written from memory rather than from the tree. Ten seconds of `--layout` or `git diff
+--stat` settles it either way.
+
+### What landed here
+
+`--force-layout=<Type>:<hot>` — emit a named layout candidate rather than §7.2's argmin, on `build`
+as well as `aif` — plus `aif_layout_cand_at_rank(k)` for §8's top-`k`. This was the hot/cold session's
+ranked #2 and the one mechanism it named as standing between §8 and implementability.
+
+Gate: **117/117**, **0 of 89 programs move** with no flag, warm and cold fixpoint, cold == warm on 89,
+oracle 15, `--verify` unmoved on all 6 corpus ledgers, seed refreshed and its cold start reaching the
+fixpoint in one generation. **Last-good: `build/L5`** warm, `build/Lc2` cold, `build/Ls1` from the
+refreshed seed.
+
+Design notes not to re-derive are in `HANDOFF.md` "Session of 2026-08-17 (second)" §1 and
+[RESULTS-layout §4.1](aif/evidence/RESULTS-layout.md): a candidate is named by hot-field count rather
+than rank, the forced table must live outside `Nominal`, and the five vetoes divide into three that a
+force may never clear and two that it must.
+
+### Two things found, one fixed and one not
+
+* **Fixed, and it is the reason the fixture exists.** An unmatched force first left `hot_count` at 0,
+  so a mistyped cut turned the split *off* rather than falling back to the argmin — a warning plus a
+  real measurement of a layout nothing emitted. `run_forced_layout_test` asserts this direction and is
+  verified discriminating.
+* **Not fixed: `tools/ir_snapshot.py` reports a false difference when anything else compiles the same
+  tree.** `runWorkloadProfile`'s three temp paths are the only ones in `build_driver.c` without a pid,
+  so concurrent builds of one source share `profile.txt`, and a build that reads another process's
+  profile picks a different field order with no warning. It cost an hour here, presenting as
+  "cold ≠ warm on exactly one program". **Run the snapshot alone**, and re-run sequentially before
+  believing a one-file `test_55` difference. Mechanism, reproduction and the shape of a fix that keeps
+  LAYOUT §2.2's predictable profile path: RESULTS-layout §7.
+
+### Next, ranked
+
+1. **§8's search loop** — compile top-`k`, run the workload on each, keep the measured winner, record
+   `origin = measured` plus machine identity. Both mechanisms exist now. §8's "at `max` only" is not
+   expressible: `max` was never added because it would have been byte-identical to `release`, and §8
+   is the first thing that would give it content.
+2. **Re-take the layout number on `g5`, not `g1`.** The `--runs 20` corpus pass ran here
+   (RESULTS-xlang §0.1). **g1's run-to-run spread is 15.9%, wider than the 13% effect being hunted on
+   it** — which explains the 0.958×–1.061× disagreement and means a quiet host may not be enough.
+   **g5's band is 3.6% and it carries three split types**; g4's is 29.1%. Measure where the
+   instrument can resolve the effect.
+3. **`list_get`'s call per element.**
+4. **The profile race** above.
+5. **Handles.**
+
+---
+
+## 2026-08-17 — tasks 1 and 2 both landed, in parallel, and were merged
+
+**Read this before either box below.** The hot/cold split (task 1) and `pin(<region-name>)` (task 2)
+were built in separate trees at the same time and merged afterwards. Each box states the gate *its
+own tree* passed, against a generation that **does not exist here** — `build/f2`/`build/n2` for
+hot/cold, `build/p3`/`build/pc2` for pin. Neither had seen the other's change.
+
+**The merged gate, which is the one that counts:**
+
+| check | result |
+|---|---|
+| suite | **116/116** (111 + hot/cold's 2 + pin's 3), 0 failed |
+| warm fixpoint | `x2 == x3` byte-identical on all 89 programs |
+| cold fixpoint | `xc1 == xc2`, cold-started from the **committed** seed |
+| cold == warm | byte-identical on all **89** programs |
+| seed parses `src/` | yes — the committed seed cold-starts the merged tree |
+| refreshed seed | regenerated from `x3`; reaches the warm fixpoint in one generation |
+| oracle | agrees on **15** sources |
+| IR delta vs `mg3` | **12** programs move, plus the 2 new fixtures. Pin contributes **0** — the 12 are hot/cold's, unchanged by the merge |
+| `--verify` | **0 violations on all 16** ledger programs; `released` up by exactly the split-object count; `leaked` **exactly unchanged on all 6 deterministic corpus programs**, including `g1_particles`, which gained 2 000 released objects while `leaked` held at 4 |
+| census | unchanged — 40 of 234 served, 2 bracketed, PLACEABLE 0 |
+
+**Last-good generations: `build/x3` (warm) and `build/xc2` (its cold twin).** `build/mg3` /
+`build/mcold2` are the pre-task-1-and-2 pair and are the ones to diff against. `build/f2`, `build/n2`,
+`build/p3` and `build/pc2` were per-session and are gone.
+
+> **On `leaked` in the xlang programs.** Those deltas run both positive and negative (−307 to +2198)
+> and are noise, verified rather than assumed: four runs of `g4.psm` on **one** binary span 2 410,
+> so a +2 198 single-sample delta sits inside the noise floor. The deterministic `aif/corpus/`
+> programs are the ones that carry signal, and they are unchanged. Compare `released` and
+> `violation(s)`; `allocated` and `leaked` remain uncomparable across runs on the timing programs.
+
+---
+
+> ## 2026-08-17 — task 1 is done. The hot/cold split landed, release path included.
+>
+> *Written by the hot/cold session, in its own tree, in parallel with the `pin(<region-name>)`
+> session. Everything below this box is pre-hot/cold, and its task list is stale in exactly one
+> place: **task 1 is no longer open**. Task 2 belongs to the other session. Tasks 3 and 4 stand.*
+>
+> `prismio` emits LAYOUT §6's hot/cold split as a **linked** split (§5.2.1) with a real release path.
+> Gate, on `build/f2` (warm) and `build/n2` (cold): suite **113/113** (was 111; +`test_62`,
+> +`run_split_release_test`), warm fixpoint `f2 == f3`, cold fixpoint from the committed seed
+> `n2 == n3`, **cold == warm byte-identical on all 88** compilable programs, seed generation `n0`
+> parses and checks `src/`, oracle agrees on **15** sources, `--verify` **0 violations everywhere**
+> with `released` up by exactly the number of split objects and `leaked` unchanged on every program.
+> IR moves on **12** programs plus the new fixture, characterised line by line in HANDOFF
+> "Session of 2026-08-17 (hot/cold)" §6.
+>
+> **Read HANDOFF "Session of 2026-08-17 (hot/cold)" and RESULTS-layout §2.1–§2.3 before quoting a
+> layout number.** Three things there are load-bearing and are not re-derivable from this file:
+>
+> * **The 0.87× did not reproduce on the corpus, and the benchmark is not the reason.**
+>   `layout_repr.c` still reads 0.88× for exactly the cut the compiler emits on g1, at every size —
+>   N = 2 000, 20 000 and 200 000 all read 0.87–0.89×. Four interleaved runs of the same
+>   before/after pair on g1's port span **0.958×–1.061×** on a **contended host**, with the median
+>   and the minimum disagreeing in sign. The number is *unresolved*, not zero. Re-take it on a quiet
+>   host before anything else.
+> * **The cost model chose two layouts the measurement rejected** — g3's `Node` at 1.110× and g4's
+>   `World` at 1.042× — for two nameable reasons: it sizes an inline struct field as one pointer
+>   (`ir_is_struct_type_name` answers 0 during the analysis), and it prices every type as if there
+>   were 2^20 instances, which lets an 8-byte saving on a singleton cross a cache tier and divide its
+>   modelled cost by six. Both are now vetoes; the second is written up as **LAYOUT §10.4.1**, new
+>   and normative.
+> * **The compiler self-hosted with its own `ASTNode` split** — warm and cold fixpoint, cold == warm,
+>   113/113 — and *then* the sequential-traversal veto removed every split from `src/`. The fixpoint
+>   is the evidence that the transform is sound on the hardest program in the tree; the veto is why
+>   the shipping compiler does not use it on itself.
+>
+> **The new top item is LAYOUT §8's empirical validation**, and it is no longer blocked on anything:
+> the split is emitted, so §8 needs only a way to force a candidate other than the argmin. The two
+> refuted cuts above are the argument for it — both vetoes were written from measured regressions
+> rather than from a search, which is what §8 exists to automate.
+>
+> **Last-good generations after this session:** `build/f2` (warm) and `build/n2` (its cold twin).
+> `build/mg3` and `build/mcold2` are untouched and remain the pre-hot/cold pair to diff against.
+> *(Superseded by the merged gate at the top of this file: `build/f2` and `build/n2` do not exist
+> here; the merged pair is `build/x3` / `build/xc2`.)*
+
+---
+
+## Task 2 is done — `pin(<region-name>)`, 2026-08-17 (pin session)
+
+**Item 2 of the consolidated prompt below has landed. Do not re-derive it; read `HANDOFF.md`
+"Session of 2026-08-17 (pin)" and the new SPEC §5.4.5.** This section is written by that session and
+covers only it — task 1 (the hot/cold split) was run in parallel in a separate tree and is not
+described here.
+
+`let pin(<region-name>) x = …` asserts that the allocation the binding denotes is served by the
+arena of the `region` with that name. **It needed no grammar change**: the parser has accepted
+`pin(<identifier>)` since the tier pin landed, so the two-step syntax rule never engaged. The
+verdict is `aif_region_name_at_site` compared with the pinned name and nothing else — the one arena
+gate, no second copy of it and no second copy of the bracket record. It is diagnostic-only and
+**moves no IR**: 87 of 87 pre-existing programs byte-identical, `src/main.psm` included.
+
+Verified on this tree: suite **114/114** (was 111), warm fixpoint `p2 == p3`, cold fixpoint
+`pc1 == pc2` **from the committed seed** so the seed still parses `src/`, cold == warm byte-identical
+on **88 of 88** programs, seed refreshed from `p3` afterwards and its cold start reaches the fixpoint
+in one generation, oracle agrees on 15 sources, `--verify` `released`/`violation(s)` identical on all
+16 corpus programs with a ledger and violations 0 everywhere, census unchanged at 40 of 234 served /
+2 bracketed / PLACEABLE 0.
+
+**Proven able to fail**, which is the whole point of it: adding a second call to a bracketed callee
+inside the same region is rejected with `pin(call_arena) cannot hold: this value is not served by
+that arena`, and a note naming the callee, its call-site count and the obligation.
+`tests/neg_26_placement_pin_refuted.psm` is that program; `tests/test_63_placement_pin.psm` is the
+one that compiles; and the runner's `placement_pin` check performs the edit on *test_63* and requires
+the mutant to be rejected, because a compiler that honoured every placement pin passes the first
+fixture and one that refuted every placement pin passes the second.
+
+**One defect found and deliberately not fixed — it is now the cheapest task in this file.**
+SPEC 5.4.2's UNPROVEN branch cannot fire from `prismio build`, **for the tier pin as well as this
+one**, and it has been that way for four sessions:
+
+* `--debug` is the only non-converged mode `build` offers, and its budget is zero rounds, so
+  `aif_solve` returns at `if (!solve_points_to(max_rounds))` before SPEC 5's annotations are applied
+  and no pin is recorded at all. `neg_25_pin_refuted.psm` builds clean at `--debug` on `build/mg3`
+  too, so this is pre-existing rather than introduced.
+* `--budget=N` is accepted only by the `aif` subcommand, and `aifReportPins` is called only from
+  `compileSource`. The one path that can truncate the analysis is the one that never reports pins.
+
+The unreachable branch is the *lenient* one, so pins are stricter than 5.4.2 describes rather than
+weaker — which is why it was recorded instead of rushed. **Whoever takes it: build the fixture
+first.** A pin that must warn-and-be-ignored needs a program the analysis genuinely cannot settle
+inside the budget, and if `--budget` has to reach `build` to get one, that is a CLI change with its
+own two-generation cost. `test_63_placement_pin.psm` is a ready starting shape.
+
+Generations left behind: `build/p1`, `build/p2`, `build/p3` (warm), `build/pc0..pc2` (cold from the
+committed seed), `build/pseed0..pseed1` (cold from the refreshed seed). `build/mg3` and
+`build/mcold2` are untouched. `bootstrap/prismio-seed.ll` was refreshed from `p3` because the FFI
+surface gained four `extern fn`s — regenerate it, never merge it, and the same goes for
+`runtime/embedded_sources.h`.
+
+---
+
 **Both prompts have been run, in parallel, in separate trees, and merged.** Prompt 1 (arena
 call-site placement) landed in full: `region` is no longer inert on `g2_region.psm`, which serves
 **10 200 000 of 10 201 215** allocations against 0, measured at **0.332×** whole-program. Prompt 2
@@ -48,7 +465,9 @@ everywhere. Census: 40 of 234 sites arena-served, 2 by a bracketed call, **PLACE
 
 ## The tasks, ranked
 
-1. **The hot/cold split — the prize, and the reason this session exists.** Measured **0.87×** on g1's
+1. **DONE 2026-08-17 — see the box at the top of this file.** *(Original text kept below because its
+   design notes were correct and were used as written; only its status is stale.)*
+   **The hot/cold split — the prize, and the reason this session exists.** Measured **0.87×** on g1's
    shape, and the cost model independently selects exactly that cut (`split 8/12`). *Do the release
    half or don't start* — the failure mode is a leak on the good path and a double free on the bad
    one. The residual prompt "Prompt 2 (residual)" below has the four worked-out pieces: the transform
@@ -59,10 +478,11 @@ everywhere. Census: 40 of 234 sites arena-served, 2 by a bracketed call, **PLACE
    Budget a seed refresh and a cold start, and keep `build/mg3` and `build/mcold2` untouched — a
    broken compiler can be unable to build the fix to its own bug.
 
-2. **`pin(<region-name>)`.** Deferred until placement landed, and it has. Regime (a) means **a second
-   call to a bracketed callee silently removes the placement** — the manifest already records every
-   bracket for exactly that reason; turn that record into an assertion a build can fail on. Small
-   next to task 1, and it is the one that makes the placement safe to depend on.
+2. ~~**`pin(<region-name>)`.**~~ **DONE, 2026-08-17 (pin session)** — see the section at the top of
+   this file and `HANDOFF.md` "Session of 2026-08-17 (pin)". What replaces it, and it is smaller:
+   **SPEC 5.4.2's UNPROVEN branch cannot fire from `prismio build`, for the tier pin as well as the
+   new placement pin.** Diagnosed, not fixed; the top section says why and what a fixture for it has
+   to look like.
 
 3. **The footprint estimate for bracketed sites.** `peak-bytes` and the `pin(N)` gate now count
    bracketed sites, but the weight is a product of two *intra*-procedural loop-depth estimates:

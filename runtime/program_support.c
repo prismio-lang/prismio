@@ -305,3 +305,257 @@ char* cli_arg(int index) {
     }
     return prismio_argv[index];
 }
+
+// ============================================
+// Tasks and channels
+// ============================================
+//
+// REQUIREMENTS 15, and the shape is fixed by SPEC 11 item 10: *isolation*
+// concurrency, no shared mutable heap, no atomic counts on the common path.
+// Everything here exists to make that sentence enforceable rather than
+// aspirational -- and to give AIF's `T` domain (INFERENCE 2.3) something to
+// attach to, which it has never had.
+//
+// Two primitives, and the split between them is the whole design:
+//
+//   * A **task** takes ownership of its arguments. `spawn f(x)` moves `x` in;
+//     the move checker makes the parent's binding dead, so no second owning
+//     reference exists and INFERENCE's T-SPAWN-MOVE lands the value at
+//     `Transferred` rather than `CrossThread`. Transferred is the tier
+//     isolation exists to produce: the spawn is itself a synchronisation edge,
+//     so a release/acquire pair there is sufficient and the *count stays
+//     non-atomic*. That is the sentence SPEC 11 item 10 is protecting.
+//   * A **channel** carries messages between tasks. The message is moved, not
+//     shared -- send hands the pointer over and the sender must not keep it.
+//     The channel is the one object both tasks hold at once, which is exactly
+//     why it is a runtime object with its own lock rather than a Prismio heap
+//     value: nothing the solver tiers is shared, so nothing the solver tiers
+//     needs an atomic count.
+//
+// The arity ceiling is three, and it is a real ceiling rather than a variadic
+// call through a mistyped pointer. Calling a one-argument function through a
+// three-argument function pointer happens to work on every ABI anyone ships and
+// is still undefined; the switch below costs four lines and is defined.
+
+#ifdef _WIN32
+#define PRISMIO_THREAD_T           HANDLE
+#define PRISMIO_MUTEX_T            CRITICAL_SECTION
+#define PRISMIO_COND_T             CONDITION_VARIABLE
+#define PRISMIO_MUTEX_INIT(m)      InitializeCriticalSection(m)
+#define PRISMIO_MUTEX_DESTROY(m)   DeleteCriticalSection(m)
+#define PRISMIO_MUTEX_LOCK(m)      EnterCriticalSection(m)
+#define PRISMIO_MUTEX_UNLOCK(m)    LeaveCriticalSection(m)
+#define PRISMIO_COND_INIT(c)       InitializeConditionVariable(c)
+#define PRISMIO_COND_DESTROY(c)    ((void)(c))
+#define PRISMIO_COND_WAIT(c, m)    SleepConditionVariableCS(c, m, INFINITE)
+#define PRISMIO_COND_SIGNAL(c)     WakeConditionVariable(c)
+#define PRISMIO_COND_BROADCAST(c)  WakeAllConditionVariable(c)
+#else
+#include <pthread.h>
+#define PRISMIO_THREAD_T           pthread_t
+#define PRISMIO_MUTEX_T            pthread_mutex_t
+#define PRISMIO_COND_T             pthread_cond_t
+#define PRISMIO_MUTEX_INIT(m)      pthread_mutex_init(m, NULL)
+#define PRISMIO_MUTEX_DESTROY(m)   pthread_mutex_destroy(m)
+#define PRISMIO_MUTEX_LOCK(m)      pthread_mutex_lock(m)
+#define PRISMIO_MUTEX_UNLOCK(m)    pthread_mutex_unlock(m)
+#define PRISMIO_COND_INIT(c)       pthread_cond_init(c, NULL)
+#define PRISMIO_COND_DESTROY(c)    pthread_cond_destroy(c)
+#define PRISMIO_COND_WAIT(c, m)    pthread_cond_wait(c, m)
+#define PRISMIO_COND_SIGNAL(c)     pthread_cond_signal(c)
+#define PRISMIO_COND_BROADCAST(c)  pthread_cond_broadcast(c)
+#endif
+
+typedef int (*PrismioTaskFn0)(void);
+typedef int (*PrismioTaskFn1)(void*);
+typedef int (*PrismioTaskFn2)(void*, void*);
+typedef int (*PrismioTaskFn3)(void*, void*, void*);
+
+typedef struct {
+    PRISMIO_THREAD_T thread;
+    void* fn;
+    int nargs;
+    void* a[3];
+    int result;
+    int joined;
+    int started;
+} PrismioTask;
+
+static int prismio_task_invoke(PrismioTask* t) {
+    switch (t->nargs) {
+        case 0:  return ((PrismioTaskFn0)t->fn)();
+        case 1:  return ((PrismioTaskFn1)t->fn)(t->a[0]);
+        case 2:  return ((PrismioTaskFn2)t->fn)(t->a[0], t->a[1]);
+        default: return ((PrismioTaskFn3)t->fn)(t->a[0], t->a[1], t->a[2]);
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI prismio_task_entry(LPVOID arg) {
+    PrismioTask* t = (PrismioTask*)arg;
+    t->result = prismio_task_invoke(t);
+    return 0;
+}
+#else
+static void* prismio_task_entry(void* arg) {
+    PrismioTask* t = (PrismioTask*)arg;
+    t->result = prismio_task_invoke(t);
+    return NULL;
+}
+#endif
+
+// Emitted by generate_expression for a SPAWN_EXPR. Returns an opaque handle;
+// the language types it `Ptr`, which is this codebase's handle idiom.
+//
+// A task that cannot be started runs **inline** rather than failing. SPEC 1's
+// invariant is about inference, but the same principle applies with more force
+// here: a program that silently does not run its work is worse than one that
+// runs it on the calling thread. The result is identical either way, because
+// isolation means the task shares nothing with its parent -- which is the one
+// property that makes a serial fallback observationally equivalent.
+void* prismio_task_spawn(void* fn, int nargs, void* a0, void* a1, void* a2) {
+    PrismioTask* t = (PrismioTask*)calloc(1, sizeof(PrismioTask));
+    if (!t) return NULL;
+    t->fn = fn;
+    t->nargs = (nargs < 0) ? 0 : (nargs > 3 ? 3 : nargs);
+    t->a[0] = a0;
+    t->a[1] = a1;
+    t->a[2] = a2;
+
+#ifdef _WIN32
+    t->thread = CreateThread(NULL, 0, prismio_task_entry, t, 0, NULL);
+    t->started = (t->thread != NULL);
+#else
+    t->started = (pthread_create(&t->thread, NULL, prismio_task_entry, t) == 0);
+#endif
+
+    if (!t->started) {
+        t->result = prismio_task_invoke(t);
+    }
+    return t;
+}
+
+// Joining twice returns the same result rather than waiting on a dead thread.
+// The language does not stop a program from doing it -- a task handle is a `Ptr`
+// and `Ptr` is copyable -- so the runtime has to.
+int prismio_task_join(void* handle) {
+    PrismioTask* t = (PrismioTask*)handle;
+    if (!t) return 0;
+    if (!t->joined) {
+        if (t->started) {
+#ifdef _WIN32
+            WaitForSingleObject(t->thread, INFINITE);
+            CloseHandle(t->thread);
+#else
+            pthread_join(t->thread, NULL);
+#endif
+        }
+        t->joined = 1;
+    }
+    return t->result;
+}
+
+// The join is the synchronisation edge, so the handle is dead the moment it
+// returns and the caller has nothing left to free by hand.
+void prismio_task_release(void* handle) {
+    if (handle) free(handle);
+}
+
+typedef struct {
+    PRISMIO_MUTEX_T lock;
+    PRISMIO_COND_T not_empty;
+    PRISMIO_COND_T not_full;
+    void** slots;
+    int cap, head, len;
+    int closed;
+} PrismioChan;
+
+void* chan_new(int capacity) {
+    if (capacity < 1) capacity = 1;
+    PrismioChan* c = (PrismioChan*)calloc(1, sizeof(PrismioChan));
+    if (!c) return NULL;
+    c->slots = (void**)calloc((size_t)capacity, sizeof(void*));
+    if (!c->slots) { free(c); return NULL; }
+    c->cap = capacity;
+    PRISMIO_MUTEX_INIT(&c->lock);
+    PRISMIO_COND_INIT(&c->not_empty);
+    PRISMIO_COND_INIT(&c->not_full);
+    return c;
+}
+
+// Blocks while the channel is full. Sending on a closed channel drops the
+// message and reports 0; the alternative is aborting the program, and a closed
+// channel is a race the receiver won rather than a defect in the sender.
+int chan_send(void* handle, void* msg) {
+    PrismioChan* c = (PrismioChan*)handle;
+    if (!c) return 0;
+    PRISMIO_MUTEX_LOCK(&c->lock);
+    while (c->len == c->cap && !c->closed) {
+        PRISMIO_COND_WAIT(&c->not_full, &c->lock);
+    }
+    if (c->closed) {
+        PRISMIO_MUTEX_UNLOCK(&c->lock);
+        return 0;
+    }
+    c->slots[(c->head + c->len) % c->cap] = msg;
+    c->len++;
+    PRISMIO_COND_SIGNAL(&c->not_empty);
+    PRISMIO_MUTEX_UNLOCK(&c->lock);
+    return 1;
+}
+
+// Blocks until a message arrives. Returns NULL once the channel is closed and
+// drained, which is how a receiving loop terminates without a sentinel value.
+void* chan_recv(void* handle) {
+    PrismioChan* c = (PrismioChan*)handle;
+    if (!c) return NULL;
+    PRISMIO_MUTEX_LOCK(&c->lock);
+    while (c->len == 0 && !c->closed) {
+        PRISMIO_COND_WAIT(&c->not_empty, &c->lock);
+    }
+    if (c->len == 0) {
+        PRISMIO_MUTEX_UNLOCK(&c->lock);
+        return NULL;
+    }
+    void* msg = c->slots[c->head];
+    c->head = (c->head + 1) % c->cap;
+    c->len--;
+    PRISMIO_COND_SIGNAL(&c->not_full);
+    PRISMIO_MUTEX_UNLOCK(&c->lock);
+    return msg;
+}
+
+// Wakes every blocked party. Both waits above re-test `closed`, so a broadcast
+// is enough and no waiter can be left holding the old predicate.
+void chan_close(void* handle) {
+    PrismioChan* c = (PrismioChan*)handle;
+    if (!c) return;
+    PRISMIO_MUTEX_LOCK(&c->lock);
+    c->closed = 1;
+    PRISMIO_COND_BROADCAST(&c->not_empty);
+    PRISMIO_COND_BROADCAST(&c->not_full);
+    PRISMIO_MUTEX_UNLOCK(&c->lock);
+}
+
+int chan_len(void* handle) {
+    PrismioChan* c = (PrismioChan*)handle;
+    if (!c) return 0;
+    PRISMIO_MUTEX_LOCK(&c->lock);
+    int n = c->len;
+    PRISMIO_MUTEX_UNLOCK(&c->lock);
+    return n;
+}
+
+// Freeing a channel someone is still blocked on is a program defect this cannot
+// detect. Every caller in the corpus closes, joins, then frees -- the join is
+// what makes the free safe, and it is the same edge that makes the counts
+// non-atomic.
+void chan_free(void* handle) {
+    PrismioChan* c = (PrismioChan*)handle;
+    if (!c) return;
+    PRISMIO_MUTEX_DESTROY(&c->lock);
+    PRISMIO_COND_DESTROY(&c->not_empty);
+    PRISMIO_COND_DESTROY(&c->not_full);
+    free(c->slots);
+    free(c);
+}

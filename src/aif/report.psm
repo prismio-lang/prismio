@@ -217,7 +217,7 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
                                     str_concat(int_to_str(aif_t4b_site_count()), " T4b site(s))"))))
     }
     println("#")
-    println("# symbol                                      tier  placement         type            layout  origin            site")
+    println("# symbol                                      tier  placement         type            layout      origin            site")
 
     let mut i = 0
     while (i < total) {
@@ -245,18 +245,35 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
         if (aif_site_arena_is_pinned(site) == 1) { origin = "region" }
         if (aif_site_alias_axiom(site) == 1) { origin = "unique" }
         if (aif_site_pin_verdict(site) == AIF_PIN_HONOURED) { origin = "pin" }
+        // SPEC 5.4: "A `pin` that is honoured SHALL be recorded in the manifest
+        // as honoured." A placement pin reads `pin` for the same reason a tier
+        // pin does, and loses nothing by it -- the `placement` column three to
+        // the left already names the region, so the pair says which arena was
+        // asserted *and* that it was asserted rather than inferred.
+        if (aif_site_pin_region_verdict(site) == AIF_PIN_HONOURED) { origin = "pin" }
         if (aif_site_widened(site) == 1) { origin = "budget-exhausted" }
         print(aifPad(aif_order_symbol(r), 44))
         print(aifPad(aifTierName(tier), 6))
         print(aifPad(aifPlacement(tier, site), 18))
         print(aifPad(aif_site_type(site), 16))
         // LAYOUT 6's grouping dimension is always AoS -- SoA needs handles, which
-        // is 1's finding 6 -- so what this column can actually report is whether
-        // the field-order search moved anything. `AoS*` is a struct whose physical
-        // order is not its declaration order.
+        // is RESULTS-layout 1's finding -- so what this column reports is the two
+        // dimensions that *are* emitted. `AoS*` is a struct whose physical order is
+        // not its declaration order; `+h/n` is a hot/cold split keeping `h` of `n`
+        // fields in the hot record, with the rest behind the link pointer.
+        //
+        // The column is 12 wide rather than 8 because `AoS*+13/15` is 10. A field
+        // wider than its column runs into the next one, the CI differ ignores what
+        // it cannot parse, and a tier regression then cannot fail the gate --
+        // which has happened here once already.
         let mut grouping = "AoS"
         if (aif_layout_reordered(aif_site_type(site)) == 1) { grouping = "AoS*" }
-        print(aifPad(grouping, 8))
+        let hotCount = aif_layout_hot_count(aif_site_type(site))
+        if (hotCount > 0) {
+            grouping = str_concat(grouping, str_concat("+", str_concat(int_to_str(hotCount),
+                        str_concat("/", int_to_str(aif_struct_nfields(aif_site_type(site)))))))
+        }
+        print(aifPad(grouping, 12))
         print(aifPad(origin, 18))
         println(aifSitePosition(site))
         r = r + 1
@@ -683,6 +700,27 @@ fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
     }
     aifComputeSizes(module)
 
+    // LAYOUT 6's hot/cold split, and it has to sit exactly here -- between the
+    // sizes and the solve.
+    //
+    // **After the sizes**, because a split must not change what the analysis
+    // concludes. aifComputeSizes feeds Theta_stack, which the T0 clause reads, so
+    // sizing a split record would be a layout decision feeding back into the solve
+    // that layout is chosen ahead of (SPEC 7.2, test_49's note). The sizes stay
+    // the unsplit ones, deliberately.
+    //
+    // **Before the solve**, because the release half *is* `aif_type_releases` and
+    // the solve is what reads it -- through elem_disposition_of, which is how a
+    // container learns to reclaim a split element. A split decided afterwards is a
+    // type whose cold block nothing ever frees.
+    //
+    // Gated on the same budget as the search above: SPEC 7.2's `debug` level is a
+    // budget of zero rounds and its row also says "layout search: none".
+    if (budget > 0) {
+        aifLayoutVetoInline(module)
+        aif_layout_split_select()
+    }
+
     let converged = aif_solve(budget) == 1
     if (converged == false) {
         // INFERENCE 5.3: a truncated ascending iteration is a pre-fixed point,
@@ -704,6 +742,18 @@ fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
     // model is a converged (or conservatively raised) tier, so placing arenas
     // earlier would be ranking scopes by numbers still in motion.
     aif_place_arenas()
+
+    // SPEC 5.4 on placement, and the ordering is the whole difference from the
+    // tier pins above. A tier pin is settled *before* the cost model, because
+    // the model ranks scopes by tiers. A placement pin asserts what the model
+    // and SPEC 5.2.1.1's bracketing then decided, so it can only be adjudicated
+    // once both have run -- asking earlier would read an arena table that is
+    // still empty and refute every pin in the program.
+    if (converged) {
+        aif_check_placement_pins(1)
+    } else {
+        aif_check_placement_pins(0)
+    }
     return converged
 }
 
@@ -1062,9 +1112,89 @@ fn aifReportPins() -> Int {
             diag_note("raising --budget may settle it; the derived tier is used meanwhile")
         }
 
+        errors = errors + aifReportPlacementPin(i)
         i = i + 1
     }
     return errors
+}
+
+// Is any `region` in this program named `name`? Only for the diagnostic: it is
+// what separates "you misspelled the region" from "the placement went away", and
+// those two call for opposite repairs.
+fn aifRegionExists(name: String) -> Bool {
+    let n = aif_budget_count()
+    let mut s = 0
+    while (s < n) {
+        if (str_equals(aif_scope_region(s), name) == 1) { return true }
+        s = s + 1
+    }
+    return false
+}
+
+// SPEC 5.4 on placement, reported. Returns 1 when it raised an error.
+//
+// **This is the assertion SPEC 5.2.1.1 asked for and could not make.** That
+// section requires the manifest to record every bracketed call, because regime
+// (a) drops the placement the moment a bracketed callee acquires a second call
+// site -- silently, with the program still correct and merely slower. A record
+// only helps a reader who diffs it. `pin(<region-name>)` on the binding is the
+// same fact asserted, so the build stops instead.
+//
+// The verdict comes from aif_check_placement_pins, which reads
+// aif_region_name_at_site -- the one arena gate. Nothing here re-decides
+// placement; this only phrases the answer that gate already gave.
+fn aifReportPlacementPin(i: Int) -> Int {
+    let verdict = aif_site_pin_region_verdict(i)
+    if (verdict == AIF_PIN_NONE) { return 0 }
+    if (verdict == AIF_PIN_HONOURED) { return 0 }
+
+    let want = aif_site_pin_region(i)
+    let got = aif_region_name_at_site(i)
+
+    if (verdict == AIF_PIN_UNPROVEN) {
+        // SPEC 5.4.2, and it bites harder here than for a tier pin: a truncated
+        // analysis widens every unproven site to its top tier, which takes the
+        // arena away from sites a converged run keeps it for. Refusing the build
+        // on that would fail a program for the budget it was given.
+        diag_warning_at(aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
+                        str_concat(str_concat("pin(", want), ") is unproven: the analysis budget ran out"))
+        diag_note("raising --budget may settle it; placement is unchanged meanwhile")
+        return 0
+    }
+
+    diag_error_at(aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
+                  str_concat(str_concat("pin(", want), ") cannot hold: this value is not served by that arena"))
+
+    if (aifRegionExists(want) == false) {
+        diag_note(str_concat(str_concat("no `region` in this program is named ", diagQuote(want)),
+                             "; a tier pin is one of T0, T1, T2, T3, T4b"))
+        return 1
+    }
+
+    if (str_equals(got, "") == 0) {
+        diag_note(str_concat(str_concat("it is served by region:", got),
+                             " -- a nested region takes the values that die earlier"))
+        return 1
+    }
+
+    // The case this annotation exists for. The site has no region in its own
+    // function, so the only way it was ever served is a caller's `region`
+    // reaching it through a bracketed call -- and SPEC 5.2.1.1 regime (a) drops
+    // that bracket as soon as the callee has a second call site. Naming the
+    // obligation that failed is the difference between a diagnostic and a
+    // riddle, and aif_fn_bracket_blockers already answers it.
+    let f = aif_site_fn(i)
+    if (f >= 0 and aif_fn_bracket_blockers(f) / AIF_BR_B_SHARED_BODY % 2 == 1) {
+        diag_note(str_concat(str_concat("the call that reached it was bracketed into ", want),
+                             " (SPEC 5.2.1.1 regime (a)) and no longer is:"))
+        diag_note(str_concat(str_concat(aif_fn_name(f), " now has "),
+                  str_concat(int_to_str(aif_fn_call_sites(f)),
+                             " call sites, and a bracketed callee may have exactly one")))
+        return 1
+    }
+
+    diag_note("no arena serves this site; `prismio aif <file> --why=<symbol>` prints every clause that declined it")
+    return 1
 }
 
 // REQUIREMENTS 19's gate. A `region name pin(N)` whose arena is estimated to
@@ -1163,10 +1293,13 @@ fn aifEmitLayout(module: ASTNode, sourcePath: String) {
     aifKv("source", sourcePath)
     aifKv("profile", aif_profile_source())
     println("#")
-    println("# LAYOUT 7.2 argmin over candidates(tau). Reported only -- codegen emits")
-    println("# the unsplit record until the release path for a split object lands.")
+    println("# LAYOUT 7.2 argmin over candidates(tau). `*` is the model's choice;")
+    println("# `emitted` is what codegen actually produced. The two differ when a")
+    println("# type is vetoed -- embedded inline in another struct, or in a")
+    println("# non-trivial SCC (see aif_layout_split_select) -- and when")
+    println("# --force-layout names a different candidate (LAYOUT 8).")
     println("#")
-    println("# type                      fields  trav  candidate      hot B  cold B  modelled")
+    println("# type                      fields  trav  candidate      hot B  cold B  modelled  emitted")
 
     let mut p = module.child1
     while (nodeExists(p)) {
@@ -1176,6 +1309,10 @@ fn aifEmitLayout(module: ASTNode, sourcePath: String) {
             if (n > 0) {
                 let trav = aif_layout_traversals(d.s1)
                 let best = aif_layout_best()
+                // 0 means codegen emitted the unsplit record for this type,
+                // whether because the model preferred it or because a veto took
+                // the cut away. The row marked `emitted` is the one the binary has.
+                let emittedHot = aif_layout_hot_count(d.s1)
                 let mut i = 0
                 while (i < n) {
                     let hot = aif_layout_cand_hot(i)
@@ -1186,6 +1323,14 @@ fn aifEmitLayout(module: ASTNode, sourcePath: String) {
                                  str_concat("/", int_to_str(total))))
                     }
                     if (i == best) { label = str_concat(label, " *") }
+                    let mut emitted = ""
+                    if (emittedHot == 0) {
+                        if (hot == total) { emitted = "emitted" }
+                    } else {
+                        if (hot == emittedHot) {
+                            if (hot < total) { emitted = "emitted" }
+                        }
+                    }
                     print("  ")
                     print(aifPad(d.s1, 24))
                     print(aifPad(int_to_str(total), 8))
@@ -1193,7 +1338,8 @@ fn aifEmitLayout(module: ASTNode, sourcePath: String) {
                     print(aifPad(label, 15))
                     print(aifPad(int_to_str(aif_layout_cand_bytes(i, 0)), 7))
                     print(aifPad(int_to_str(aif_layout_cand_bytes(i, 1)), 8))
-                    println(int_to_str(aif_layout_cand_ratio(i)))
+                    print(aifPad(int_to_str(aif_layout_cand_ratio(i)), 10))
+                    println(emitted)
                     i = i + 1
                 }
                 // A type nothing traverses has no evidence behind its ranking:

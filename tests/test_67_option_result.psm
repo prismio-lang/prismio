@@ -1,0 +1,51 @@
+// Option<T> and Result<T, E> from std.option -- REQUIREMENTS 14.
+//
+// These are generic enums with payloads, so they exercise both features at once:
+// the instantiation has to happen before the desugaring, and the shadow the
+// `match` reads has to be the *instantiated* enum rather than the template.
+
+import std.option
+
+extern fn str_equals(s1: String, s2: String) -> Int
+
+fn half(n: Int) -> Result<Int, String> {
+    if (n % 2 != 0) { return Result<Int, String>.Err("odd") }
+    return Result<Int, String>.Ok(n / 2)
+}
+
+// A function generic over the payload, so `T` must be solvable from `Option<T>`
+// after the instantiation has erased it into a struct name.
+fn orZero(o: Option<Int>) -> Int {
+    return optionOr(o, 0)
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let some = Option.Some(7)
+    let absent = Option<Int>.None
+
+    if (optionOr(some, 0) != 7) { return fail("Some carries its value") }
+    if (optionOr(absent, 42) != 42) { return fail("None falls back") }
+    if (optionIsSome(some) == false) { return fail("optionIsSome") }
+    if (optionIsNone(absent) == false) { return fail("optionIsNone") }
+    if (optionIsSome(absent)) { return fail("None is not Some") }
+    if (orZero(Option.Some(5)) != 5) { return fail("Option through a second function") }
+
+    // Two instantiations of one template, with different payload types.
+    let text = Option.Some("here")
+    if (str_equals(optionOr(text, "missing"), "here") == 0) { return fail("Option<String>") }
+
+    if (resultOr(half(10), 0) != 5) { return fail("Ok carries its value") }
+    if (resultIsOk(half(7))) { return fail("odd input is an error") }
+    if (resultOr(half(7), 99) != 99) { return fail("Err falls back") }
+    if (str_equals(resultErrOr(half(7), "none"), "odd") == 0) { return fail("Err payload") }
+    if (str_equals(resultErrOr(half(8), "none"), "none") == 0) { return fail("Ok has no error") }
+
+    println("PASS: option and result")
+    return 0
+}

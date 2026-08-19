@@ -217,6 +217,166 @@ void ir_reset_named_types(void) {
 }
 
 // ============================================================================
+// Top-level declaration index -- "which declarations carry this name?"
+//
+// REQUIREMENTS 16. Every pass that wanted a declaration by name used to walk the
+// module's statement list looking for it, and overload resolution does that once
+// per call site: a module with D declarations and C calls paid D*C. It is the
+// dominant cost on a large module and it is quadratic, so it does not show on
+// the corpus and does show on anything the size of a real program.
+//
+// Filled once per module by index_module_declarations() (src/ast/types.psm),
+// which every pass that reads the index calls first. It is a cache of exactly
+// what a walk of the module would have found, in exactly the order the walk
+// would have found it -- source order matters to two readers: the
+// duplicate-definition diagnostic points at the *first* declaration carrying a
+// symbol, and overload resolution reports the first match.
+//
+// The nodes are AST pointers, which the frontend puns as String. They are
+// stored as opaque addresses and never compared as text -- strcmp on one would
+// compare the bytes of the node.
+// ============================================================================
+
+#define DECL_INDEX_BUCKETS 1024
+
+typedef struct DeclEntry {
+    struct DeclEntry* next;
+    const char* name; // interned
+    const char** nodes;
+    int count;
+    int capacity;
+} DeclEntry;
+
+static DeclEntry* decl_buckets[DECL_INDEX_BUCKETS];
+
+static DeclEntry* decl_entry(const char* name, int create) {
+    const char* interned = ir_intern(name);
+    unsigned bucket = hash_str(interned) & (DECL_INDEX_BUCKETS - 1);
+
+    for (DeclEntry* e = decl_buckets[bucket]; e; e = e->next) {
+        if (e->name == interned) return e;
+    }
+    if (!create) return NULL;
+
+    DeclEntry* e = (DeclEntry*)xmalloc(sizeof(DeclEntry), "the declaration index");
+    e->name = interned;
+    e->nodes = NULL;
+    e->count = 0;
+    e->capacity = 0;
+    e->next = decl_buckets[bucket];
+    decl_buckets[bucket] = e;
+    return e;
+}
+
+// Empties the index without freeing it. A second module is compiled in the same
+// process during bootstrap, and reusing the node arrays is both simpler and
+// correct -- the same reason ir_reset_types() keeps its field arrays.
+void ir_reset_decl_index(void) {
+    for (int b = 0; b < DECL_INDEX_BUCKETS; b++) {
+        for (DeclEntry* e = decl_buckets[b]; e; e = e->next) e->count = 0;
+    }
+}
+
+void ir_index_decl(const char* name, const char* node) {
+    DeclEntry* e = decl_entry(name, 1);
+    if (e->count == e->capacity) {
+        int next = e->capacity ? e->capacity * 2 : 4;
+        e->nodes = (const char**)xrealloc((void*)e->nodes, (size_t)next * sizeof(char*),
+                                          "a declaration index entry");
+        e->capacity = next;
+    }
+    e->nodes[e->count++] = node;
+}
+
+int ir_decl_count(const char* name) {
+    DeclEntry* e = decl_entry(name, 0);
+    return e ? e->count : 0;
+}
+
+// "" rather than NULL for an out-of-range index: the frontend spells "no node"
+// as the empty string, and nodeExists() tests exactly that.
+const char* ir_decl_at(const char* name, int index) {
+    DeclEntry* e = decl_entry(name, 0);
+    if (!e || index < 0 || index >= e->count) return "";
+    return e->nodes[index];
+}
+
+// ============================================================================
+// Function return types, by mangled symbol
+//
+// This was a binding in the table below, under a "$fn$" key that could not
+// collide with a variable name. That made every one of them permanent -- they
+// survive ir_clear_local_var_types() by design -- so find_binding(), which
+// scans the table backwards, walked past one entry per function in the module
+// for every identifier in every function body *and* for every call expression
+// in codegen. Same shape as the walk above: quadratic, invisible on a small
+// program.
+//
+// A table of its own also retires the "$fn$" prefix and the str_concat that
+// built one per call site. There is no shared namespace left to disambiguate.
+// ============================================================================
+
+#define FN_RETURN_BUCKETS 1024
+
+typedef struct FnReturn {
+    struct FnReturn* next;
+    const char* symbol; // interned
+    const char* type;   // interned
+} FnReturn;
+
+static FnReturn* fn_return_buckets[FN_RETURN_BUCKETS];
+
+void ir_set_fn_return_type(const char* symbol, const char* type) {
+    const char* interned = ir_intern(symbol);
+    unsigned bucket = hash_str(interned) & (FN_RETURN_BUCKETS - 1);
+
+    for (FnReturn* r = fn_return_buckets[bucket]; r; r = r->next) {
+        if (r->symbol == interned) {
+            // Last writer wins, which is what a shadowing binding did.
+            r->type = ir_intern(type);
+            return;
+        }
+    }
+
+    FnReturn* r = (FnReturn*)xmalloc(sizeof(FnReturn), "the function return-type table");
+    r->symbol = interned;
+    r->type = ir_intern(type);
+    r->next = fn_return_buckets[bucket];
+    fn_return_buckets[bucket] = r;
+}
+
+// "i64" for an unknown symbol, which is what ir_get_var_type() answered for a
+// "$fn$" key that was never set. Same default, deliberately: a different one
+// would change the IR emitted for a call the frontend failed to predeclare.
+const char* ir_get_fn_return_type(const char* symbol) {
+    const char* interned = ir_intern(symbol);
+    unsigned bucket = hash_str(interned) & (FN_RETURN_BUCKETS - 1);
+
+    for (FnReturn* r = fn_return_buckets[bucket]; r; r = r->next) {
+        if (r->symbol == interned) return r->type;
+    }
+    return "i64";
+}
+
+// Frees, where ir_reset_decl_index() keeps its entries. The difference is that
+// this table is read with two different vocabularies: sema stores its own type
+// keys and codegen stores LLVM storage types. An entry left behind by sema and
+// not overwritten by codegen -- an extern that a profile build stubs rather than
+// declares -- would be read as a storage type. Emptying it is what kept the two
+// apart when both lived in the binding table.
+void ir_reset_fn_return_types(void) {
+    for (int b = 0; b < FN_RETURN_BUCKETS; b++) {
+        FnReturn* r = fn_return_buckets[b];
+        while (r) {
+            FnReturn* next = r->next;
+            free(r);
+            r = next;
+        }
+        fn_return_buckets[b] = NULL;
+    }
+}
+
+// ============================================================================
 // Struct / enum type registry
 // ============================================================================
 

@@ -6,10 +6,6 @@ import ast.types
 import ir.bridge
 import common.diagnostics
 
-fn semaFnKey(name: String) -> String {
-    return str_concat("$fn$", name)
-}
-
 fn semaMangleType(t: TypeInfo) -> String {
     if (t.kind == TypeKind.VOID) { return "Void" }
     if (t.kind == TypeKind.INT) { return t.name }
@@ -62,26 +58,6 @@ fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
     return str_concat(str_concat(fnNode.s1, "__"), semaParamSignature(module, fnNode.child1))
 }
 
-// Compares the symbol cached on each node by semaCacheFunctionSymbols()
-// rather than re-mangling. Mangling walks a function's parameter list and reads
-// a type annotation per parameter, so doing it inside this loop -- which is
-// itself called once per function -- made predeclaration cubic in the number of
-// functions.
-fn semaFunctionSymbolCount(module: ASTNode, symbol: String) -> Int {
-    let mut count = 0
-    let mut stmtPtr = module.child1
-    while (str_equals(stmtPtr, "") == 0) {
-        let stmt = ptr_to_node(stmtPtr)
-        if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
-            if (str_equals(stmt.s2, symbol) == 1) {
-                count = count + 1
-            }
-        }
-        stmtPtr = stmt.next
-    }
-    return count
-}
-
 // Mangles every function's symbol once and stores it on the node, so the
 // duplicate-detection passes can compare strings instead of recomputing.
 fn semaCacheFunctionSymbols(module: ASTNode) {
@@ -95,38 +71,35 @@ fn semaCacheFunctionSymbols(module: ASTNode) {
     }
 }
 
-fn semaOverloadKey(module: ASTNode, fnNode: ASTNode) -> String {
-    return semaFnKey(semaFunctionSymbol(module, fnNode))
-}
-
 fn semaSamePosition(a: ASTNode, b: ASTNode) -> Bool {
     return a.file == b.file and a.line == b.line and a.col == b.col
 }
 
-// The earliest declaration whose mangled symbol is `symbol`. Used to point a
-// duplicate-definition diagnostic at the definition it collides with.
-fn semaFirstFunctionWithSymbol(module: ASTNode, symbol: String) -> ASTNode {
-    let mut stmtPtr = module.child1
-    while (str_equals(stmtPtr, "") == 0) {
-        let stmt = ptr_to_node(stmtPtr)
+// The earliest declaration whose mangled symbol matches `fnNode`'s. Used to
+// point a duplicate-definition diagnostic at the definition it collides with.
+//
+// Two declarations can only collide if they share a *name*, so the whole
+// candidate set is one entry of the declaration index -- which is also why no
+// separate count is needed. This answers `fnNode` itself when nothing collides,
+// and a duplicate is reported against the later declaration, so "the first one
+// is not me" is exactly the condition that used to read `count > 1`.
+//
+// Compares the symbol cached on each node by semaCacheFunctionSymbols() rather
+// than re-mangling: mangling walks a parameter list and reads a type annotation
+// per parameter, and this runs once per function.
+fn semaFirstFunctionWithSymbol(module: ASTNode, fnNode: ASTNode) -> ASTNode {
+    let name = fnNode.s1
+    let symbol = fnNode.s2
+    let count = ir_decl_count(name)
+    let mut i = 0
+    while (i < count) {
+        let stmt = ptr_to_node(ir_decl_at(name, i))
         if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
             if (str_equals(stmt.s2, symbol) == 1) {
                 return stmt
             }
         }
-        stmtPtr = stmt.next
-    }
-    return createNode(NodeKind.MODULE)
-}
-
-fn semaFindFunction(module: ASTNode, name: String) -> ASTNode {
-    let mut stmtPtr = module.child1
-    while (str_equals(stmtPtr, "") == 0) {
-        let stmt = ptr_to_node(stmtPtr)
-        if ((stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) and str_equals(stmt.s1, name) == 1) {
-            return stmt
-        }
-        stmtPtr = stmt.next
+        i = i + 1
     }
     return createNode(NodeKind.MODULE)
 }
@@ -182,13 +155,14 @@ fn semaDefaultLiteralScore(module: ASTNode, fnNode: ASTNode, argPtr: String) -> 
 // True when the module contains a real `fn` body for `name`, as opposed to only an
 // `extern fn` declaration of it.
 fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
-    let mut scanPtr = module.child1
-    while (str_equals(scanPtr, "") == 0) {
-        let scan = ptr_to_node(scanPtr)
-        if (scan.kind == NodeKind.FUNCTION and str_equals(scan.s1, name) == 1) {
+    let count = ir_decl_count(name)
+    let mut i = 0
+    while (i < count) {
+        let scan = ptr_to_node(ir_decl_at(name, i))
+        if (scan.kind == NodeKind.FUNCTION) {
             return true
         }
-        scanPtr = scan.next
+        i = i + 1
     }
     return false
 }
@@ -211,14 +185,22 @@ fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr
     // applies the same rule when deciding whether to emit a `declare`.
     let definitionExists = semaHasFunctionDefinition(module, name)
 
-    let mut stmtPtr = module.child1
-    while (str_equals(stmtPtr, "") == 0) {
+    // REQUIREMENTS 16. This used to walk every top-level declaration in the
+    // module, once per call site -- the compiler's dominant cost, and quadratic.
+    // The index holds the declarations carrying this name, in source order, so
+    // the loop below visits the overload set and nothing else. Source order is
+    // what keeps the diagnostics identical: `bestPtr` breaks a literal-score tie
+    // by keeping the first candidate seen.
+    let count = ir_decl_count(name)
+    let mut i = 0
+    while (i < count) {
+        let stmtPtr = ir_decl_at(name, i)
         let stmt = ptr_to_node(stmtPtr)
         let mut isCandidate = stmt.kind == NodeKind.FUNCTION
         if (stmt.kind == NodeKind.EXTERN_FUNCTION and definitionExists == false) {
             isCandidate = true
         }
-        if (isCandidate and str_equals(stmt.s1, name) == 1) {
+        if (isCandidate) {
             nameSeen = true
             if (semaSignatureMatchesCall(module, stmt, argPtr)) {
                 let literalScore = semaDefaultLiteralScore(module, stmt, argPtr)
@@ -231,7 +213,7 @@ fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr
                 }
             }
         }
-        stmtPtr = stmt.next
+        i = i + 1
     }
 
     // Each of these used to fall through to the next, which was harmless only

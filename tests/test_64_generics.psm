@@ -1,0 +1,90 @@
+// Generic functions and types, and the monomorphisation behind them.
+//
+// The interesting cases here are not "does a type parameter substitute" but the
+// three that were each a bug first: two instantiations of one template must not
+// collide, a self-referential generic must terminate, and a generic type nested
+// in another must resolve inner-first.
+
+extern fn str_equals(s1: String, s2: String) -> Int
+
+struct Box<T> {
+    value: T
+}
+
+struct Pair<K, V> {
+    key: K,
+    value: V
+}
+
+// The termination case. Instantiating this reaches `Node<Int>` again from inside
+// its own field list, so the name has to be reserved before the fields are
+// substituted or it instantiates forever.
+struct Node<T> {
+    value: T,
+    next: Node<T>?
+}
+
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+fn boxUp<T>(x: T) -> Box<T> {
+    return Box<T> { value: x }
+}
+
+fn firstOr<T>(items: List<T>, fallback: T) -> T {
+    if (list_len(items) == 0) { return fallback }
+    return list_get(items, 0)
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // One template, two instantiations, different layouts.
+    let bi = Box<Int> { value: 7 }
+    let bs = Box<String> { value: "seven" }
+    if (bi.value != 7) { return fail("Box<Int> did not keep its value") }
+    if (str_equals(bs.value, "seven") == 0) { return fail("Box<String> did not keep its value") }
+
+    let p = Pair<Int, String> { key: 3, value: "three" }
+    if (p.key != 3) { return fail("Pair key") }
+    if (str_equals(p.value, "three") == 0) { return fail("Pair value") }
+
+    // Nested: the inner instantiation has to exist before the outer one can be
+    // named, because the outer one's name is built from the inner one's.
+    let nested = Box<Box<Int>> { value: Box<Int> { value: 9 } }
+    if (nested.value.value != 9) { return fail("nested Box<Box<Int>>") }
+
+    // Self-referential.
+    let tail = Node<Int> { value: 2, next: none }
+    let head = Node<Int> { value: 1, next: tail }
+    if (head.value != 1) { return fail("Node<Int> head") }
+    let after = expect(head.next)
+    if (after.value != 2) { return fail("Node<Int> tail") }
+
+    // Inference from the argument type.
+    if (identity(41) != 41) { return fail("inferred identity on Int") }
+    if (str_equals(identity("text"), "text") == 0) { return fail("inferred identity on String") }
+
+    // Written out, for the case inference cannot reach.
+    if (identity<Int>(5) != 5) { return fail("explicit identity<Int>") }
+
+    // A generic function returning a generic type.
+    let made = boxUp(12)
+    if (made.value != 12) { return fail("boxUp") }
+
+    // A type parameter solved through a constructor rather than directly.
+    let mut xs: List<Int> = list_new()
+    list_push(xs, 100)
+    if (firstOr(xs, 0) != 100) { return fail("firstOr through List<T>") }
+
+    let mut empty: List<Int> = list_new()
+    if (firstOr(empty, 55) != 55) { return fail("firstOr fallback") }
+
+    println("PASS: generics")
+    return 0
+}
