@@ -794,10 +794,281 @@ void compiler_set_workload_mode(int on) { g_workload_mode = on ? 1 : 0; }
 // (aif/evidence/xlang/optlevel.py). -flto is speed-neutral too and worth ~15%
 // of binary size, but needs linker plugin support that is not portable enough
 // to make a default.
-static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
+// Both live in the object-cache section below and are used here: the curated
+// module is cached on the same key shape and in the same directory as the
+// toolchain objects, because it is the same kind of thing -- a build product of
+// the runtime sources that no program-specific input can change.
+static char* object_cache_dir(void);
+static char* object_cache_temp_path(const char* entry);
+
+// ============================================
+// M1.1 -- the curated inlinable module
+//
+// Every container access in a Prismio loop is a `bl` into the separately
+// compiled C runtime, and the optimiser cannot see through it. Measured, that
+// seam is worth 1.03x-2.31x across the corpus and 2.00x on g2_tuned
+// (aif/evidence/RESULTS-M1-lto.md).
+//
+// The fix is Swift's `@inlinable` spelled at IR level: take the hot container
+// ops out of the runtime's own IR, rewrite their linkage to
+// `available_externally` -- the body is visible to the inliner but emits no
+// code -- and link that module into the program's before -O2. Calls that do not
+// get inlined still resolve to the runtime archive's copy, so nothing is
+// defined twice and the ordinary native link is unchanged.
+//
+// **Why not -flto.** It was measured and it does not work here without more
+// machinery, for a reason worth recording: the backend emits program functions
+// carrying no target attributes at all, while clang stamps `target-cpu` and a
+// 33-entry `target-features` on every runtime function, so the LTO inliner
+// answers `cost=never: conflicting attributes` before it ever prices the call.
+// Making that match needs the *exact* string clang used -- a superset fails, a
+// newer CPU fails, and LLVMGetHostCPUName() answers a different chip than clang
+// picks on this host. Merging sidesteps all of it, because `clang -O2` on the
+// merged module fills its own defaults into the attribute-less functions, and
+// does so self-consistently under --target since one invocation supplies both
+// halves. The merge is also faster to compile (1.18x against -flto's 1.21x and
+// a whole-runtime merge's 1.88x) and needs no linker plugin.
+//
+// **The curated set is not a list of whatever looked hot.** A function may be
+// curated only if every symbol its body references is *exported* by the runtime
+// object. `list_push` is the counter-example and it is excluded for that
+// reason: its body reads `rt_arena_hint`, `arena_depth` and `arena_alloc_slot`,
+// all `static` in lang_runtime.c and therefore absent from the object's symbol
+// table. Inlining it produces a program that references symbols nothing
+// exports, and the link fails with "Undefined symbols ... _arena_alloc_slot".
+// That is not hypothetical -- it was reproduced by forcing the inline. It stays
+// silent today only because the cost model happens to decline `list_push`
+// anyway, which is exactly the kind of luck that stops being luck later.
+// `run_curated_closure_test` is what keeps this honest.
+static const char* const PRISMIO_CURATED_OPS[] = {
+    "list_get", "list_set", "list_len",
+    "list_set_elem_owner", "list_set_elem_releaser",
+    "rc_retain", "rc_release",
+};
+#define PRISMIO_CURATED_OP_COUNT \
+    ((int)(sizeof(PRISMIO_CURATED_OPS) / sizeof(PRISMIO_CURATED_OPS[0])))
+
+// Opt-in while it is measured. Default-off means the gate can run old against
+// new on one tree, and a bad result is a variable away rather than a revert.
+static int inline_runtime_enabled(void) {
+    const char* v = getenv("PRISMIO_INLINE_RUNTIME");
+    return v && v[0] && !(v[0] == '0' && v[1] == '\0');
+}
+
+// `define <...>` -> `define available_externally <...>`, in place.
+//
+// Text rather than the C API because this runs on llvm-extract's output, where
+// every `define` at column 0 is one of the curated ops and nothing else is. The
+// C API version belongs in llvm-api-backend.c with the rest of the LLVM
+// dependency; this file drives clang and does not link LLVM.
+static int rewrite_to_available_externally(const char* ll_path) {
+    char* text = read_file(ll_path);
+    if (!text) return 1;
+
+    size_t len = strlen(text);
+    // Worst case every line gains the keyword.
+    size_t cap = len + 64 * 256 + 1;
+    char* out = (char*)malloc(cap);
+    if (!out) { free(text); return 1; }
+
+    size_t w = 0;
+    const char* p = text;
+    int at_line_start = 1;
+    while (*p) {
+        if (at_line_start && strncmp(p, "define ", 7) == 0) {
+            const char* kw = "define available_externally ";
+            size_t n = strlen(kw);
+            if (w + n >= cap) { free(out); free(text); return 1; }
+            memcpy(out + w, kw, n);
+            w += n;
+            p += 7;
+            at_line_start = 0;
+            continue;
+        }
+        at_line_start = (*p == '\n');
+        if (w + 1 >= cap) { free(out); free(text); return 1; }
+        out[w++] = *p++;
+    }
+    out[w] = '\0';
+
+    int result = write_text_file(ll_path, out);
+    free(out);
+    free(text);
+    return result;
+}
+
+// Produce the curated module, or NULL if it cannot be produced for any reason.
+//
+// NULL is always safe: the caller compiles exactly as it did before. That is the
+// same contract object_cache_path has, and for the same reason -- an
+// optimisation that can fail a build is worse than no optimisation.
+//
+// Cached on the content of lang_runtime.c plus the compile flags, because the
+// module is a function of both and of nothing else in the program being built.
+// It is therefore produced once per toolchain per target and reused by every
+// subsequent build, which is what keeps the cost at "one llvm-link".
+static char* build_curated_module(const char* target_flags) {
+    char lr_source[1024];
+    if (!find_toolchain_source(lr_source, sizeof(lr_source), "lang_runtime.c")) return NULL;
+
+    char* text = read_file(lr_source);
+    if (!text) return NULL;
+
+    // --verify compiles the runtime with -DPRISMIO_AIF_VERIFY, so its IR
+    // differs and a module built for one mode must not serve the other. Same
+    // hazard the object cache guards, same fix.
+    const char* verify = g_verify_mode ? "-DPRISMIO_AIF_VERIFY " : "";
+
+    unsigned long long hash = PRISMIO_FNV_OFFSET;
+    hash = fnv1a_bytes(hash, (const unsigned char*)"curated");
+    hash = fnv1a_bytes(hash, (const unsigned char*)target_flags);
+    hash = fnv1a_bytes(hash, (const unsigned char*)verify);
+    hash = fnv1a_bytes(hash, (const unsigned char*)text);
+    for (int i = 0; i < PRISMIO_CURATED_OP_COUNT; i++) {
+        hash = fnv1a_bytes(hash, (const unsigned char*)PRISMIO_CURATED_OPS[i]);
+    }
+    free(text);
+
+    char* dir = object_cache_dir();
+    if (!dir) return NULL;
+    if (ensure_directory_exists(dir) != 0) { free(dir); return NULL; }
+
+    char name[128];
+    snprintf(name, sizeof(name), "curated-%016llx.ll", hash);
+    char* entry = join_path(dir, name);
+    free(dir);
+    if (!entry) return NULL;
+
+    if (file_exists(entry)) return entry;
+
+    // Built to a pid-qualified sibling and renamed into place, never written at
+    // the cache path directly -- two builds racing on one entry would otherwise
+    // link a half-written module. See object_cache_temp_path.
+    char* tmp_ll = object_cache_temp_path(entry);
+    char* tmp_raw = NULL;
+    int failed = 0;
+
+    {
+        size_t n = strlen(tmp_ll) + 16;
+        tmp_raw = (char*)malloc(n);
+        if (!tmp_raw) { failed = 1; }
+        else snprintf(tmp_raw, n, "%s.raw", tmp_ll);
+    }
+
+    char* q_src = failed ? NULL : command_quote_arg(lr_source);
+    char* q_tmp = failed ? NULL : command_quote_arg(tmp_ll);
+    char* q_raw = failed ? NULL : command_quote_arg(tmp_raw);
+
+    if (!failed) {
+        int len = (int)(strlen(q_src) + strlen(q_tmp) + strlen(q_raw)
+                        + strlen(target_flags) + 256
+                        + PRISMIO_CURATED_OP_COUNT * 64);
+        char* command = (char*)malloc(len);
+        if (!command) failed = 1;
+
+        // 1. the runtime's own IR, at the same -O2 the runtime object is built
+        //    with, so the bodies being inlined are the bodies that would have
+        //    been called.
+        if (!failed) {
+            snprintf(command, len, "clang %s%s-O2 -Wno-deprecated-declarations -S -emit-llvm %s -o %s",
+                     target_flags, verify, q_src, q_raw);
+            if (run_build_command(command) != 0) failed = 1;
+        }
+
+        // 2. the curated ops out of it. llvm-extract leaves everything else as a
+        //    declaration, which is what makes the module small enough that the
+        //    merge costs 1.18x rather than the whole runtime's 1.88x.
+        if (!failed) {
+            int w = snprintf(command, len, "llvm-extract");
+            for (int i = 0; i < PRISMIO_CURATED_OP_COUNT; i++) {
+                w += snprintf(command + w, len - w, " --func=%s", PRISMIO_CURATED_OPS[i]);
+            }
+            snprintf(command + w, len - w, " %s -S -o %s", q_raw, q_tmp);
+            if (run_build_command(command) != 0) failed = 1;
+        }
+
+        free(command);
+    }
+
+    if (!failed && rewrite_to_available_externally(tmp_ll) != 0) failed = 1;
+
+    if (!failed && rename(tmp_ll, entry) != 0) {
+        // A failed install is not a failed build: use the temporary this once
+        // and pay for it again next time.
+        free(q_src); free(q_tmp); free(q_raw);
+        if (tmp_raw) { delete_file(tmp_raw); free(tmp_raw); }
+        free(entry);
+        return tmp_ll;
+    }
+
+    if (tmp_raw) { delete_file(tmp_raw); free(tmp_raw); }
+    free(q_src); free(q_tmp); free(q_raw);
+
+    if (failed) {
+        delete_file(tmp_ll);
+        free(tmp_ll);
+        free(entry);
+        return NULL;
+    }
+
+    free(tmp_ll);
+    return entry;
+}
+
+// Merge the curated module into the program's, returning a path to the merged
+// IR, or NULL to compile the program's IR unchanged.
+static char* merge_curated_into_program(const char* ir_file, const char* target_flags) {
+    char* curated = build_curated_module(target_flags);
+    if (!curated) return NULL;
+
+    size_t n = strlen(ir_file) + 32;
+    char* merged = (char*)malloc(n);
+    if (!merged) { free(curated); return NULL; }
+    snprintf(merged, n, "%s.merged.ll", ir_file);
+
     char* q_ir = command_quote_arg(ir_file);
-    char* q_obj = command_quote_arg(program_obj);
+    char* q_cur = command_quote_arg(curated);
+    char* q_out = command_quote_arg(merged);
+    int len = (int)(strlen(q_ir) + strlen(q_cur) + strlen(q_out) + 64);
+    char* command = (char*)malloc(len);
+
+    int ok = 0;
+    if (command) {
+        snprintf(command, len, "llvm-link %s %s -S -o %s", q_ir, q_cur, q_out);
+        ok = run_build_command(command) == 0;
+    }
+
+    free(command);
+    free(q_ir); free(q_cur); free(q_out); free(curated);
+
+    if (!ok) {
+        delete_file(merged);
+        free(merged);
+        return NULL;
+    }
+    return merged;
+}
+
+static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     char* target = target_clang_flags();
+
+    // M1.1. Merge the curated inlinable module in before -O2, so the container
+    // ops are ordinary local calls the inliner can price rather than a `bl` into
+    // another translation unit.
+    //
+    // **Declined under -g, deliberately.** The object step drops to -O0 there,
+    // and at -O0 nothing is inlined, so the merge would cost a clang invocation
+    // and an llvm-link to produce identical code. Worse, it would put the
+    // runtime's bodies into the module a debugger walks, which is a change to
+    // what `-g` builds -- and "the merge must not silently change what -g
+    // builds" is the risk this milestone was told to watch.
+    char* merged = NULL;
+    if (inline_runtime_enabled() && !g_debug_info) {
+        merged = merge_curated_into_program(ir_file, target);
+    }
+
+    char* q_ir = command_quote_arg(merged ? merged : ir_file);
+    char* q_obj = command_quote_arg(program_obj);
     int len = (int)(strlen(q_ir) + strlen(q_obj) + strlen(target) + 96);
     char* command = (char*)malloc(len);
 
@@ -824,6 +1095,10 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
              target, g_debug_info ? "-O0" : "-O2", q_ir, q_obj);
     int result = run_build_command(command);
 
+    if (merged) {
+        delete_file(merged);
+        free(merged);
+    }
     free(command);
     free(target);
     free(q_ir);

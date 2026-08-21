@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1787334888.5299075,
-    "ast_hash": "30d4dc00cba163c79ea8dda245b84d4b",
+    "mtime": 1787336035.5034113,
+    "ast_hash": "8148791beebf1cecce5b7672447cd9ed",
     "semantic_hash": ""
   },
   "PORTING.md": {
@@ -635,8 +635,8 @@
     "semantic_hash": ""
   },
   "SESSION-PROMPT.md": {
-    "mtime": 1787334888.5118876,
-    "ast_hash": "d0cc9161895086dc5fbfbf66ea3ad96e",
+    "mtime": 1787336035.482312,
+    "ast_hash": "664c12baeb9561d6c69bfd4f27c4ef1b",
     "semantic_hash": ""
   },
   "aif/evidence/xlang/results-s10-pass2.json": {
@@ -662,6 +662,26 @@
   "docs/ARCHITECTURE-DIRECTION.md": {
     "mtime": 1787334869.8381908,
     "ast_hash": "f2aa66cd1c299e47d181741c6d679a74",
+    "semantic_hash": ""
+  },
+  "aif/evidence/xlang/milestone.json": {
+    "mtime": 1787335718.6263006,
+    "ast_hash": "c02c679e9899a1a9995e9dc29ca063b2",
+    "semantic_hash": ""
+  },
+  "tools/milestone_bench.py": {
+    "mtime": 1787335682.402062,
+    "ast_hash": "331368870a50fe6091f8f1ae06fd5bf2",
+    "semantic_hash": ""
+  },
+  "TODO.md": {
+    "mtime": 1787340257.6302874,
+    "ast_hash": "8d7f84b63bfdfc23068bc6e7915d4243",
+    "semantic_hash": ""
+  },
+  "aif/evidence/RESULTS-M1-lto.md": {
+    "mtime": 1787340228.1635277,
+    "ast_hash": "df5442264b5dfacf0c6a127189c73725",
     "semantic_hash": ""
   }
 }

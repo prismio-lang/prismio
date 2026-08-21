@@ -12,22 +12,85 @@ The rule that decides which side anything falls on:
 > **If getting it wrong produces a miscompile, it belongs to the compiler.**
 > **If getting it wrong produces a link error or a missing feature, it does not.**
 
-**Last-good: `build/E2`.** Suite 136/136, fixpoint `E1b == E2`, cold seed chain `Es1 == E2`, IR
-snapshot clean.
+**Last-good: `build/S12b`.** Suite 137/137, fixpoint `S12a == S12b`. Bootstrapped
+`S10b → S11a → S11b → S12a → S12b`; `S10b` and `E2` remain good behind it. The 2026-08-26 session
+landed M1.0 and M1.1 (the curated inlinable module), which is why the compiler moved.
 
 ---
 
 ## Read this before looking for something to do
 
-**The candidate list is empty.** Four sessions ran off a list of findings; on 2026-08-24 the last
-five were taken in order and all five landed. That is a different situation from the last four
-sessions and should be treated as one: **the first job here is deciding what the compiler is for
-next, not picking the top item.**
+**The candidate list is no longer empty — 2026-08-25 refilled it by measuring.** It *was* empty
+after 2026-08-24 took the last five in order. The final cross-language benchmark
+([`aif/evidence/RESULTS-final.md`](aif/evidence/RESULTS-final.md), and the HANDOFF entry of the
+same date) then produced five items, ranked here by measured prize:
 
-Nothing below is a queue. The two sections are (1) what is genuinely blocked and on whom, and
-(2) what was considered and deliberately declined, with the reasoning, so it is not rediscovered.
+1. ~~**Close the runtime call seam.**~~ **Largely done, 2026-08-26.** M1.0 established why
+   `-flto` declines (the backend emits no target attributes; `cost=never: conflicting attributes`)
+   and M1.1 shipped the curated `available_externally` module behind
+   `PRISMIO_INLINE_RUNTIME=1`. Driver-measured: **corpus median 0.864×**, g5 2.69× → **1.29×** of
+   idiomatic Rust, RSS and exe size unmoved, suite 137/137, gate passed.
+   **What is left, and why it is still ranked:**
+   - **The exit gate is not met.** g3 reads **1.05×** of idiomatic Rust, not < 1.00×. The 0.94×
+     that motivated this item came from a hand-built baseline that put g3 at 1.01× before the
+     change; the driver puts it at 1.12×. The *worth* reproduced; the baseline did not. **Treat
+     "the first Prismio program to beat idiomatic Rust" as unsupported until re-measured.**
+   - **M1.1b keeps it opt-in**: the merge shells out to `llvm-extract`/`llvm-link` (Windows risk),
+     cold compile time is unmeasured, and `--verify`/object cache/`--target` are covered by
+     construction rather than measurement.
+   - **M1.3 is untouched** — the hot container ops written in Prismio itself, which is what would
+     close the remaining 0.05× on g3.
+   Evidence: [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md).
 
-If you find yourself with nothing to do, the honest answers in rough order of value are:
+2. **Automatic arena placement does not fire on the corpus** — 0 of 10,202,214 allocations on g2,
+   where the `region` annotation now delivers **2.16×** on that same program. The escape hatch was
+   unblocked by the call-site placement work; inference did not follow it. Worth the distance
+   between plain g2 at 5.89× idiomatic Rust and `g2_region` at 2.62×. **This is the item that
+   decides whether the product claim is "tuned-Rust behaviour from untuned code" or
+   "…from code with one annotation".**
+3. **Inline element storage for `List<T>`** — ranked second at session 3, still unbuilt, still the
+   only change projected to move the corpus band (~1.2–1.3× across the board). The representation
+   is 9.23× of the g2 gap and 2.51× of the g4 gap against a **1.24–1.27×** compiler. Needs
+   views/slices to be expressible, which is why item 1 outranks it despite a similar prize.
+4. **Peak RSS reversed** — 0.84–1.00× → **1.09–1.60×** of idiomatic Rust, +27% to +86% absolute,
+   with Rust's figure unmoved. Already excluded by measurement: fixed runtime footprint (ours is
+   1.34 MB against Rust's 1.47 MB) and the hot/cold split *on g3 and g6 only* — those two emit no
+   split and carry +35% and +86%. g1, g2, g4 and g5 **do** emit splits, so it stays a live
+   candidate there. Scales with live set rather than churn. Needs a bisect against a
+   session-3-era compiler.
+5. **Genuinely-cold compile regressed 19–28%** — 183 → 235 ms (g1), 203 → 241 ms (g6) with
+   `PRISMIO_OBJ_CACHE=0`. Hidden in the default path, where the object cache reaches 0.71–0.85× of
+   rustc. Affects first builds and uncached CI only.
+
+**The plan, as a checklist with a runnable gate:** [`TODO.md`](TODO.md) — five milestones, each
+with its papers, its concepts, its tasks and an exit gate that includes
+`tools/milestone_bench.py` (old vs new vs Rust, interleaved) **and a docs-update checklist covering
+both this repo and the public site at `../docs/content`.**
+
+**Architecture direction and the supporting literature:**
+[`docs/ARCHITECTURE-DIRECTION.md`](docs/ARCHITECTURE-DIRECTION.md) — written 2026-08-25, it ranks
+these items against what Perceus, Spegion, ThinLTO, Tofte–Talpin, MLton and the PPAM data-views
+work already settled, and records the measured dead ends (`-flto`, chasing the residual, and the
+assumption that boxed layout costs indirection — it costs **allocations**, measured 0.86× free).
+**One correction in it re-ranks this list:** inline `List<T>` storage is worth having because it
+removes *allocations*, not indirection, so reuse analysis (Perceus-style) attacks the same cost
+without a language change and should be weighed ahead of it.
+
+**Item 1 is the one to take first** unless the framework question below says otherwise: it is the
+largest measured prize, it needs no language change, and both sides are already LLVM IR when they
+meet. Item 2 is the one that decides which version of the product claim is true.
+
+**The standing caveat from that session:** the corpus band has not moved in seven sessions
+(1.12–5.57× → 1.13–5.89×) across ten landed features. **The features that landed are not the
+features this corpus measures.** If the next thing is chosen for reasons other than this corpus —
+and that is legitimate — say so explicitly rather than expecting the numbers to move.
+
+**Nothing *after* that list is a queue.** The two sections below it are (1) what is genuinely
+blocked and on whom, and (2) what was considered and deliberately declined, with the reasoning, so
+it is not rediscovered.
+
+If you decline all five items above — which is a legitimate call, per the caveat — the honest
+alternatives in rough order of value are:
 
 1. **Ask what the framework needs next.** Every remaining gap in this compiler is a language gap —
    methods, closures, slices, an error-handling story past `Option`/`Result` — and which one

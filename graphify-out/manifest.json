@@ -1,7 +1,7 @@
 {
   "runtime/embedded_sources.h": {
-    "mtime": 1787328774.3220358,
-    "ast_hash": "403ace3cb27f5c962c78afbcb44c9a10",
+    "mtime": 1787342337.0885854,
+    "ast_hash": "b5f7f277121948829e9f87506a567756",
     "semantic_hash": ""
   },
   "runtime/lang_runtime.c": {
@@ -10,8 +10,8 @@
     "semantic_hash": ""
   },
   "tests/test_runner.py": {
-    "mtime": 1787328760.4125886,
-    "ast_hash": "baf3435798d7c97c9664d725ea5e615f",
+    "mtime": 1787342321.2280579,
+    "ast_hash": "67bbe228c53043f89d857fdf9f3a4422",
     "semantic_hash": ""
   },
   "CONTRIBUTING.md": {
@@ -55,8 +55,8 @@
     "semantic_hash": ""
   },
   "runtime/build_driver.c": {
-    "mtime": 1787328169.0501702,
-    "ast_hash": "adf809742646b7e6c1e15c2a22115337",
+    "mtime": 1787342330.4022706,
+    "ast_hash": "e8f7c12bac6f7b5f9d09ed1030bf418a",
     "semantic_hash": ""
   },
   "runtime/diagnostics.c": {
@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1787329023.6270382,
-    "ast_hash": "c80dd98deeccdb8184745e87999e5084",
+    "mtime": 1787342736.7618556,
+    "ast_hash": "df7fd84ebf9c8d8745888a783903c0c0",
     "semantic_hash": ""
   },
   "PORTING.md": {
@@ -635,8 +635,58 @@
     "semantic_hash": ""
   },
   "SESSION-PROMPT.md": {
-    "mtime": 1787329164.8570485,
-    "ast_hash": "9e9bd8feae960708b64247e1b7cc382d",
+    "mtime": 1787342757.0191994,
+    "ast_hash": "fffbaea110737f1a99f4829496dc553b",
+    "semantic_hash": ""
+  },
+  "aif/evidence/xlang/results-s10-pass2.json": {
+    "mtime": 1787330647.849801,
+    "ast_hash": "58700f6b5579b196aa8bba426baa1cb2",
+    "semantic_hash": ""
+  },
+  "aif/evidence/xlang/results-s10.json": {
+    "mtime": 1787330548.9496357,
+    "ast_hash": "021ac1b9e37435f98c2b65657b77f66c",
+    "semantic_hash": ""
+  },
+  "aif/evidence/RESULTS-final.md": {
+    "mtime": 1787332645.3397443,
+    "ast_hash": "c003b0f6faffe9d12b9520efbee265d6",
+    "semantic_hash": ""
+  },
+  "aif/evidence/xlang/rust/g2_tunedboxed.rs": {
+    "mtime": 1787332621.3586438,
+    "ast_hash": "7c6f22568fdd2255278f336207579360",
+    "semantic_hash": ""
+  },
+  "docs/ARCHITECTURE-DIRECTION.md": {
+    "mtime": 1787334869.8381908,
+    "ast_hash": "f2aa66cd1c299e47d181741c6d679a74",
+    "semantic_hash": ""
+  },
+  "aif/evidence/xlang/milestone.json": {
+    "mtime": 1787335718.6263006,
+    "ast_hash": "c02c679e9899a1a9995e9dc29ca063b2",
+    "semantic_hash": ""
+  },
+  "tools/milestone_bench.py": {
+    "mtime": 1787335682.402062,
+    "ast_hash": "331368870a50fe6091f8f1ae06fd5bf2",
+    "semantic_hash": ""
+  },
+  "TODO.md": {
+    "mtime": 1787342696.7976391,
+    "ast_hash": "51c498b8ad243c02c22817415af1e434",
+    "semantic_hash": ""
+  },
+  "aif/evidence/RESULTS-M1-lto.md": {
+    "mtime": 1787342668.24738,
+    "ast_hash": "d14e690aa8d8afdee705c7f5443a8b8d",
+    "semantic_hash": ""
+  },
+  "aif/evidence/xlang/results-m1.json": {
+    "mtime": 1787342255.9745185,
+    "ast_hash": "8f6be39f3a17bf3412570fba9ce4f4ae",
     "semantic_hash": ""
   }
 }

@@ -1,0 +1,1842 @@
+{
+  "meta": {
+    "platform": "darwin",
+    "runs": 25,
+    "compiler": "/Users/vibrant/Desktop/Projects/Prismio/prismio/build/S10b",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "swiftc": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)",
+    "clang": "Homebrew clang version 22.1.8",
+    "when": "2026-08-21 22:12:28"
+  },
+  "results": {
+    "g1": [
+      {
+        "variant": "prismio",
+        "label": "Prismio",
+        "language": "prismio",
+        "frames": 6000,
+        "p50_us": [
+          4.208,
+          3.917,
+          4.875
+        ],
+        "p99_us": [
+          9.083,
+          4.125,
+          9.5
+        ],
+        "p999_us": [
+          17.792,
+          14.958,
+          26.625
+        ],
+        "loop_ms": [
+          26.214387,
+          23.869918,
+          29.777342
+        ],
+        "wall_ms": [
+          42.421125000000615,
+          39.32083399999797,
+          46.05875000000026
+        ],
+        "rss_mb": [
+          2.15625,
+          2.140625,
+          2.171875
+        ],
+        "allocs": 4213,
+        "frees": 34,
+        "alloc_raw": {
+          "malloc": 28092,
+          "calloc": 162,
+          "realloc": 1,
+          "free": 4038,
+          "loop_malloc": 4050,
+          "loop_calloc": 162,
+          "loop_realloc": 1,
+          "loop_free": 34,
+          "clock_calls": 12014
+        },
+        "process_allocs": 28255,
+        "process_frees": 4038,
+        "allocs_per_s": 160713.2755002053,
+        "frees_per_s": 1296.997713507472,
+        "exe_bytes": 61784,
+        "compile_ms": 103.86433299999997,
+        "checksums": [
+          "checksum alive 2000",
+          "checksum beyond 1095"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_idiomatic",
+        "label": "Rust idiomatic",
+        "language": "rust",
+        "frames": 6000,
+        "p50_us": [
+          3.125,
+          2.875,
+          3.125
+        ],
+        "p99_us": [
+          3.916,
+          3.292,
+          6.125
+        ],
+        "p999_us": [
+          13.542,
+          12.209,
+          16.208
+        ],
+        "loop_ms": [
+          18.995856,
+          17.789699,
+          19.073061
+        ],
+        "wall_ms": [
+          21.068457999998458,
+          19.825416999999845,
+          21.513040999998623
+        ],
+        "rss_mb": [
+          1.953125,
+          1.953125,
+          1.984375
+        ],
+        "allocs": 204,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 34,
+          "calloc": 163,
+          "realloc": 10,
+          "free": 19,
+          "loop_malloc": 31,
+          "loop_calloc": 163,
+          "loop_realloc": 10,
+          "loop_free": 14,
+          "clock_calls": 12019
+        },
+        "process_allocs": 207,
+        "process_frees": 19,
+        "allocs_per_s": 10739.184377898002,
+        "frees_per_s": 737.0028494635883,
+        "exe_bytes": 468688,
+        "compile_ms": 121.9403750000001,
+        "checksums": [
+          "checksum alive 2000",
+          "checksum beyond 1095"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_arena",
+        "label": "Rust arena",
+        "language": "rust",
+        "frames": 6000,
+        "p50_us": [
+          3.084,
+          2.75,
+          3.125
+        ],
+        "p99_us": [
+          3.875,
+          3.459,
+          6.125
+        ],
+        "p999_us": [
+          13.625,
+          11.667,
+          17.666
+        ],
+        "loop_ms": [
+          18.719507,
+          16.862388,
+          19.444462
+        ],
+        "wall_ms": [
+          20.833832999997526,
+          19.35987499999925,
+          23.108707999998757
+        ],
+        "rss_mb": [
+          2.125,
+          2.109375,
+          2.125
+        ],
+        "allocs": 204,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 43,
+          "calloc": 163,
+          "realloc": 1,
+          "free": 28,
+          "loop_malloc": 40,
+          "loop_calloc": 163,
+          "loop_realloc": 1,
+          "loop_free": 14,
+          "clock_calls": 12018
+        },
+        "process_allocs": 207,
+        "process_frees": 28,
+        "allocs_per_s": 10897.722894091175,
+        "frees_per_s": 747.8829437121394,
+        "exe_bytes": 486784,
+        "compile_ms": 132.29625000000001,
+        "checksums": [
+          "checksum alive 2000",
+          "checksum beyond 1095"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_tuned",
+        "label": "Rust hand-tuned",
+        "language": "rust",
+        "frames": 6000,
+        "p50_us": [
+          0.792,
+          0.75,
+          0.958
+        ],
+        "p99_us": [
+          0.958,
+          0.875,
+          1.25
+        ],
+        "p999_us": [
+          1.125,
+          1.0,
+          1.833
+        ],
+        "loop_ms": [
+          4.890826,
+          4.635963,
+          5.790178
+        ],
+        "wall_ms": [
+          6.893792000003174,
+          6.573209000002578,
+          7.670333000000085
+        ],
+        "rss_mb": [
+          1.859375,
+          1.859375,
+          1.859375
+        ],
+        "allocs": 206,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 45,
+          "calloc": 163,
+          "realloc": 1,
+          "free": 30,
+          "loop_malloc": 42,
+          "loop_calloc": 163,
+          "loop_realloc": 1,
+          "loop_free": 14,
+          "clock_calls": 12020
+        },
+        "process_allocs": 209,
+        "process_frees": 30,
+        "allocs_per_s": 42119.67467253998,
+        "frees_per_s": 2862.5021622114546,
+        "exe_bytes": 485200,
+        "compile_ms": 146.43041699999992,
+        "checksums": [
+          "checksum alive 2000",
+          "checksum beyond 1095"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_boxed",
+        "label": "Rust boxed [dx]",
+        "language": "rust",
+        "frames": 6000,
+        "p50_us": [
+          3.375,
+          3.167,
+          3.583
+        ],
+        "p99_us": [
+          4.209,
+          3.792,
+          7.375
+        ],
+        "p999_us": [
+          15.083,
+          12.833,
+          18.042
+        ],
+        "loop_ms": [
+          20.678612,
+          19.803169,
+          22.20814
+        ],
+        "wall_ms": [
+          22.880540999999255,
+          21.910041999998242,
+          24.340458000001064
+        ],
+        "rss_mb": [
+          1.9375,
+          1.9375,
+          1.9375
+        ],
+        "allocs": 2204,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 2034,
+          "calloc": 163,
+          "realloc": 10,
+          "free": 2019,
+          "loop_malloc": 2031,
+          "loop_calloc": 163,
+          "loop_realloc": 10,
+          "loop_free": 14,
+          "clock_calls": 12023
+        },
+        "process_allocs": 2207,
+        "process_frees": 2019,
+        "allocs_per_s": 106583.55599495748,
+        "frees_per_s": 677.0280326358461,
+        "exe_bytes": 468784,
+        "compile_ms": 124.68870799999988,
+        "checksums": [
+          "checksum alive 2000",
+          "checksum beyond 1095"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "swift",
+        "label": "Swift idiomatic",
+        "language": "swift",
+        "frames": 6000,
+        "p50_us": [
+          3.084,
+          2.75,
+          3.125
+        ],
+        "p99_us": [
+          3.875,
+          3.333,
+          6.375
+        ],
+        "p999_us": [
+          13.75,
+          11.417,
+          17.833
+        ],
+        "loop_ms": [
+          18.94257,
+          17.094324,
+          19.396575
+        ],
+        "wall_ms": [
+          22.700291999999678,
+          20.73562500000037,
+          23.399583000003332
+        ],
+        "rss_mb": [
+          6.328125,
+          6.3125,
+          6.328125
+        ],
+        "allocs": 939,
+        "frees": 165,
+        "alloc_raw": {
+          "malloc": 203,
+          "calloc": 741,
+          "realloc": 4,
+          "free": 172,
+          "loop_malloc": 199,
+          "loop_calloc": 736,
+          "loop_realloc": 4,
+          "loop_free": 165,
+          "clock_calls": 12022
+        },
+        "process_allocs": 948,
+        "process_frees": 172,
+        "allocs_per_s": 49570.88716050673,
+        "frees_per_s": 8710.539277405336,
+        "exe_bytes": 55160,
+        "compile_ms": 300.6166250000004,
+        "checksums": [
+          "checksum alive 2000",
+          "checksum beyond 1095"
+        ],
+        "runs": 25
+      }
+    ],
+    "g2": [
+      {
+        "variant": "prismio",
+        "label": "Prismio",
+        "language": "prismio",
+        "frames": 20000,
+        "p50_us": [
+          5.625,
+          5.333,
+          6.042
+        ],
+        "p99_us": [
+          12.375,
+          10.959,
+          15.084
+        ],
+        "p999_us": [
+          22.75,
+          19.958,
+          58.875
+        ],
+        "loop_ms": [
+          115.824312,
+          109.683428,
+          171.527761
+        ],
+        "wall_ms": [
+          248.87704100000008,
+          239.4787909999998,
+          333.36333399999774
+        ],
+        "rss_mb": [
+          3.265625,
+          3.25,
+          3.328125
+        ],
+        "allocs": 10202214,
+        "frees": 10199532,
+        "alloc_raw": {
+          "malloc": 10282355,
+          "calloc": 162,
+          "realloc": 1,
+          "free": 10202039,
+          "loop_malloc": 10202051,
+          "loop_calloc": 162,
+          "loop_realloc": 1,
+          "loop_free": 10199532,
+          "clock_calls": 40018
+        },
+        "process_allocs": 10282518,
+        "process_frees": 10202039,
+        "allocs_per_s": 88083527.74847476,
+        "frees_per_s": 88060371.98822299,
+        "exe_bytes": 61496,
+        "compile_ms": 100.53474999999956,
+        "checksums": [
+          "checksum submitted 10020000",
+          "checksum culled 9980000"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_idiomatic",
+        "label": "Rust idiomatic",
+        "language": "rust",
+        "frames": 20000,
+        "p50_us": [
+          0.958,
+          0.917,
+          1.0
+        ],
+        "p99_us": [
+          1.166,
+          1.083,
+          2.334
+        ],
+        "p999_us": [
+          6.709,
+          2.792,
+          9.791
+        ],
+        "loop_ms": [
+          19.674205,
+          19.124586,
+          21.230667
+        ],
+        "wall_ms": [
+          22.29841700000179,
+          21.641749999993465,
+          23.668667000002586
+        ],
+        "rss_mb": [
+          2.21875,
+          2.203125,
+          2.21875
+        ],
+        "allocs": 160203,
+        "frees": 20014,
+        "alloc_raw": {
+          "malloc": 20034,
+          "calloc": 163,
+          "realloc": 140009,
+          "free": 20019,
+          "loop_malloc": 20031,
+          "loop_calloc": 163,
+          "loop_realloc": 140009,
+          "loop_free": 20014,
+          "clock_calls": 40015
+        },
+        "process_allocs": 160206,
+        "process_frees": 20019,
+        "allocs_per_s": 8142794.079862439,
+        "frees_per_s": 1017271.0917671133,
+        "exe_bytes": 468816,
+        "compile_ms": 122.171625,
+        "checksums": [
+          "checksum submitted 10020000",
+          "checksum culled 9980000"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_arena",
+        "label": "Rust arena",
+        "language": "rust",
+        "frames": 20000,
+        "p50_us": [
+          0.833,
+          0.833,
+          0.875
+        ],
+        "p99_us": [
+          1.541,
+          1.0,
+          1.584
+        ],
+        "p999_us": [
+          5.958,
+          1.833,
+          8.333
+        ],
+        "loop_ms": [
+          17.052011,
+          16.89247,
+          18.33512
+        ],
+        "wall_ms": [
+          19.503624999998692,
+          19.195332999998982,
+          20.820583000002557
+        ],
+        "rss_mb": [
+          2.125,
+          2.125,
+          2.140625
+        ],
+        "allocs": 210,
+        "frees": 20,
+        "alloc_raw": {
+          "malloc": 41,
+          "calloc": 163,
+          "realloc": 9,
+          "free": 26,
+          "loop_malloc": 38,
+          "loop_calloc": 163,
+          "loop_realloc": 9,
+          "loop_free": 20,
+          "clock_calls": 40016
+        },
+        "process_allocs": 213,
+        "process_frees": 26,
+        "allocs_per_s": 12315.262991561523,
+        "frees_per_s": 1172.882189672526,
+        "exe_bytes": 487008,
+        "compile_ms": 131.8063339999993,
+        "checksums": [
+          "checksum submitted 10020000",
+          "checksum culled 9980000"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_tuned",
+        "label": "Rust hand-tuned",
+        "language": "rust",
+        "frames": 20000,
+        "p50_us": [
+          0.541,
+          0.5,
+          1.125
+        ],
+        "p99_us": [
+          1.0,
+          0.583,
+          1.292
+        ],
+        "p999_us": [
+          2.375,
+          0.667,
+          26.292
+        ],
+        "loop_ms": [
+          10.785897,
+          10.23663,
+          23.420637
+        ],
+        "wall_ms": [
+          13.119540999994683,
+          12.516208000000972,
+          45.57062500000342
+        ],
+        "rss_mb": [
+          2.015625,
+          2.015625,
+          2.046875
+        ],
+        "allocs": 196,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 35,
+          "calloc": 163,
+          "realloc": 1,
+          "free": 20,
+          "loop_malloc": 32,
+          "loop_calloc": 163,
+          "loop_realloc": 1,
+          "loop_free": 14,
+          "clock_calls": 40018
+        },
+        "process_allocs": 199,
+        "process_frees": 20,
+        "allocs_per_s": 18171.87759163656,
+        "frees_per_s": 1297.9912565454686,
+        "exe_bytes": 468736,
+        "compile_ms": 120.67995799999932,
+        "checksums": [
+          "checksum submitted 10020000",
+          "checksum culled 9980000"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_boxed",
+        "label": "Rust boxed [dx]",
+        "language": "rust",
+        "frames": 20000,
+        "p50_us": [
+          8.833,
+          8.5,
+          9.708
+        ],
+        "p99_us": [
+          18.042,
+          17.834,
+          19.0
+        ],
+        "p999_us": [
+          33.708,
+          29.167,
+          39.458
+        ],
+        "loop_ms": [
+          181.650439,
+          175.410732,
+          197.701017
+        ],
+        "wall_ms": [
+          184.38287499999717,
+          178.38925000000216,
+          200.75241600000027
+        ],
+        "rss_mb": [
+          2.203125,
+          2.1875,
+          2.234375
+        ],
+        "allocs": 10181203,
+        "frees": 10040014,
+        "alloc_raw": {
+          "malloc": 10041034,
+          "calloc": 163,
+          "realloc": 140009,
+          "free": 10041019,
+          "loop_malloc": 10041031,
+          "loop_calloc": 163,
+          "loop_realloc": 140009,
+          "loop_free": 10040014,
+          "clock_calls": 40023
+        },
+        "process_allocs": 10181206,
+        "process_frees": 10041019,
+        "allocs_per_s": 56048325.87274948,
+        "frees_per_s": 55271069.287093766,
+        "exe_bytes": 468640,
+        "compile_ms": 125.49387500000009,
+        "checksums": [
+          "checksum submitted 10020000",
+          "checksum culled 9980000"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "swift",
+        "label": "Swift idiomatic",
+        "language": "swift",
+        "frames": 20000,
+        "p50_us": [
+          1.708,
+          1.625,
+          1.792
+        ],
+        "p99_us": [
+          3.25,
+          2.375,
+          3.459
+        ],
+        "p999_us": [
+          10.25,
+          7.334,
+          13.042
+        ],
+        "loop_ms": [
+          35.228067,
+          33.093721,
+          38.908231
+        ],
+        "wall_ms": [
+          39.90354199999757,
+          37.58979099999493,
+          43.71600000000342
+        ],
+        "rss_mb": [
+          6.765625,
+          6.75,
+          6.78125
+        ],
+        "allocs": 200939,
+        "frees": 200166,
+        "alloc_raw": {
+          "malloc": 200203,
+          "calloc": 741,
+          "realloc": 4,
+          "free": 200172,
+          "loop_malloc": 200199,
+          "loop_calloc": 736,
+          "loop_realloc": 4,
+          "loop_free": 200166,
+          "clock_calls": 40021
+        },
+        "process_allocs": 200948,
+        "process_frees": 200172,
+        "allocs_per_s": 5703946.231282006,
+        "frees_per_s": 5682003.500220435,
+        "exe_bytes": 56200,
+        "compile_ms": 322.5328750000003,
+        "checksums": [
+          "checksum submitted 10020000",
+          "checksum culled 9980000"
+        ],
+        "runs": 25
+      }
+    ],
+    "g3": [
+      {
+        "variant": "prismio",
+        "label": "Prismio",
+        "language": "prismio",
+        "frames": 10000,
+        "p50_us": [
+          5.375,
+          5.084,
+          5.708
+        ],
+        "p99_us": [
+          11.167,
+          10.375,
+          11.583
+        ],
+        "p999_us": [
+          22.5,
+          19.25,
+          28.583
+        ],
+        "loop_ms": [
+          55.739232,
+          53.243597,
+          58.696831
+        ],
+        "wall_ms": [
+          82.04375000000397,
+          78.61383399999511,
+          86.4790830000004
+        ],
+        "rss_mb": [
+          2.703125,
+          2.6875,
+          2.703125
+        ],
+        "allocs": 5674,
+        "frees": 35,
+        "alloc_raw": {
+          "malloc": 45646,
+          "calloc": 162,
+          "realloc": 1,
+          "free": 1404,
+          "loop_malloc": 5511,
+          "loop_calloc": 162,
+          "loop_realloc": 1,
+          "loop_free": 35,
+          "clock_calls": 20019
+        },
+        "process_allocs": 45809,
+        "process_frees": 1404,
+        "allocs_per_s": 101795.44633840668,
+        "frees_per_s": 627.9239728312008,
+        "exe_bytes": 61864,
+        "compile_ms": 106.1440840000003,
+        "checksums": [
+          "checksum nodes 1365",
+          "checksum visited 1365",
+          "checksum visible 1365"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_idiomatic",
+        "label": "Rust idiomatic",
+        "language": "rust",
+        "frames": 10000,
+        "p50_us": [
+          4.833,
+          4.542,
+          5.0
+        ],
+        "p99_us": [
+          9.791,
+          6.333,
+          9.875
+        ],
+        "p999_us": [
+          20.041,
+          18.209,
+          23.5
+        ],
+        "loop_ms": [
+          49.395242,
+          46.773082,
+          51.374521
+        ],
+        "wall_ms": [
+          51.74366600000013,
+          49.06520899999833,
+          53.737375000004306
+        ],
+        "rss_mb": [
+          2.046875,
+          2.046875,
+          2.0625
+        ],
+        "allocs": 204,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 34,
+          "calloc": 163,
+          "realloc": 10,
+          "free": 19,
+          "loop_malloc": 31,
+          "loop_calloc": 163,
+          "loop_realloc": 10,
+          "loop_free": 14,
+          "clock_calls": 20019
+        },
+        "process_allocs": 207,
+        "process_frees": 19,
+        "allocs_per_s": 4129.952435499758,
+        "frees_per_s": 283.4281083186109,
+        "exe_bytes": 468864,
+        "compile_ms": 130.15095799999978,
+        "checksums": [
+          "checksum nodes 1365",
+          "checksum visited 1365",
+          "checksum visible 1365"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_tuned",
+        "label": "Rust hand-tuned",
+        "language": "rust",
+        "frames": 10000,
+        "p50_us": [
+          3.209,
+          3.083,
+          3.292
+        ],
+        "p99_us": [
+          7.416,
+          4.417,
+          7.459
+        ],
+        "p999_us": [
+          16.041,
+          13.042,
+          17.584
+        ],
+        "loop_ms": [
+          32.75468,
+          31.335426,
+          33.576674
+        ],
+        "wall_ms": [
+          35.0823329999983,
+          33.55116699999883,
+          35.92541599999777
+        ],
+        "rss_mb": [
+          2.0625,
+          2.046875,
+          2.0625
+        ],
+        "allocs": 550,
+        "frees": 356,
+        "alloc_raw": {
+          "malloc": 377,
+          "calloc": 163,
+          "realloc": 13,
+          "free": 362,
+          "loop_malloc": 374,
+          "loop_calloc": 163,
+          "loop_realloc": 13,
+          "loop_free": 356,
+          "clock_calls": 20018
+        },
+        "process_allocs": 553,
+        "process_frees": 362,
+        "allocs_per_s": 16791.493612515827,
+        "frees_per_s": 10868.6758655557,
+        "exe_bytes": 485424,
+        "compile_ms": 147.95420799999982,
+        "checksums": [
+          "checksum nodes 1365",
+          "checksum visited 1365",
+          "checksum visible 1365"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "swift",
+        "label": "Swift idiomatic",
+        "language": "swift",
+        "frames": 10000,
+        "p50_us": [
+          5.375,
+          5.334,
+          5.833
+        ],
+        "p99_us": [
+          11.166,
+          7.125,
+          11.708
+        ],
+        "p999_us": [
+          24.416,
+          19.625,
+          35.25
+        ],
+        "loop_ms": [
+          55.693208,
+          55.053857,
+          58.820755
+        ],
+        "wall_ms": [
+          59.99349999999737,
+          59.34154099999489,
+          63.60833300000479
+        ],
+        "rss_mb": [
+          6.5625,
+          6.5625,
+          6.5625
+        ],
+        "allocs": 940,
+        "frees": 166,
+        "alloc_raw": {
+          "malloc": 204,
+          "calloc": 741,
+          "realloc": 4,
+          "free": 173,
+          "loop_malloc": 200,
+          "loop_calloc": 736,
+          "loop_realloc": 4,
+          "loop_free": 166,
+          "clock_calls": 20026
+        },
+        "process_allocs": 949,
+        "process_frees": 173,
+        "allocs_per_s": 16878.18019030256,
+        "frees_per_s": 2980.614799564069,
+        "exe_bytes": 56312,
+        "compile_ms": 318.1696669999994,
+        "checksums": [
+          "checksum nodes 1365",
+          "checksum visited 1365",
+          "checksum visible 1365"
+        ],
+        "runs": 25
+      }
+    ],
+    "g4": [
+      {
+        "variant": "prismio",
+        "label": "Prismio",
+        "language": "prismio",
+        "frames": 10000,
+        "p50_us": [
+          7.25,
+          6.667,
+          8.083
+        ],
+        "p99_us": [
+          16.25,
+          13.333,
+          17.167
+        ],
+        "p999_us": [
+          28.0,
+          24.042,
+          33.375
+        ],
+        "loop_ms": [
+          74.366484,
+          67.798536,
+          82.462502
+        ],
+        "wall_ms": [
+          101.04175000000026,
+          94.70637500000123,
+          111.09654100000199
+        ],
+        "rss_mb": [
+          2.671875,
+          2.625,
+          2.6875
+        ],
+        "allocs": 9259,
+        "frees": 71,
+        "alloc_raw": {
+          "malloc": 49235,
+          "calloc": 162,
+          "realloc": 1,
+          "free": 9084,
+          "loop_malloc": 9096,
+          "loop_calloc": 162,
+          "loop_realloc": 1,
+          "loop_free": 71,
+          "clock_calls": 20017
+        },
+        "process_allocs": 49398,
+        "process_frees": 9084,
+        "allocs_per_s": 124505.01223104753,
+        "frees_per_s": 954.7311662603278,
+        "exe_bytes": 61784,
+        "compile_ms": 108.08950000000017,
+        "checksums": [
+          "checksum entities 1500",
+          "checksum draws 1215783"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_idiomatic",
+        "label": "Rust idiomatic",
+        "language": "rust",
+        "frames": 10000,
+        "p50_us": [
+          2.333,
+          2.209,
+          2.667
+        ],
+        "p99_us": [
+          5.583,
+          2.459,
+          5.708
+        ],
+        "p999_us": [
+          11.958,
+          7.0,
+          15.708
+        ],
+        "loop_ms": [
+          23.961162,
+          23.355705,
+          27.353784
+        ],
+        "wall_ms": [
+          26.2953330000002,
+          25.65954099999601,
+          29.979750000002525
+        ],
+        "rss_mb": [
+          2.25,
+          2.25,
+          2.265625
+        ],
+        "allocs": 244,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 38,
+          "calloc": 163,
+          "realloc": 46,
+          "free": 23,
+          "loop_malloc": 35,
+          "loop_calloc": 163,
+          "loop_realloc": 46,
+          "loop_free": 14,
+          "clock_calls": 20021
+        },
+        "process_allocs": 247,
+        "process_frees": 23,
+        "allocs_per_s": 10183.14554193991,
+        "frees_per_s": 584.2788425703227,
+        "exe_bytes": 485424,
+        "compile_ms": 137.98637500000055,
+        "checksums": [
+          "checksum entities 1500",
+          "checksum draws 1215783"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_tuned",
+        "label": "Rust hand-tuned",
+        "language": "rust",
+        "frames": 10000,
+        "p50_us": [
+          1.875,
+          1.875,
+          1.958
+        ],
+        "p99_us": [
+          4.417,
+          2.334,
+          4.792
+        ],
+        "p999_us": [
+          10.5,
+          6.709,
+          14.0
+        ],
+        "loop_ms": [
+          19.476534,
+          19.29523,
+          20.797166
+        ],
+        "wall_ms": [
+          21.94333399999948,
+          21.52591700000528,
+          23.051709000000642
+        ],
+        "rss_mb": [
+          2.03125,
+          2.03125,
+          2.046875
+        ],
+        "allocs": 199,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 38,
+          "calloc": 163,
+          "realloc": 1,
+          "free": 23,
+          "loop_malloc": 35,
+          "loop_calloc": 163,
+          "loop_realloc": 1,
+          "loop_free": 14,
+          "clock_calls": 20022
+        },
+        "process_allocs": 202,
+        "process_frees": 23,
+        "allocs_per_s": 10217.423695612371,
+        "frees_per_s": 718.8137273295135,
+        "exe_bytes": 485328,
+        "compile_ms": 139.2324589999987,
+        "checksums": [
+          "checksum entities 1500",
+          "checksum draws 1215783"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_boxed",
+        "label": "Rust boxed [dx]",
+        "language": "rust",
+        "frames": 10000,
+        "p50_us": [
+          5.875,
+          5.125,
+          6.375
+        ],
+        "p99_us": [
+          13.209,
+          11.167,
+          14.042
+        ],
+        "p999_us": [
+          23.417,
+          18.583,
+          29.042
+        ],
+        "loop_ms": [
+          60.127776,
+          52.339031,
+          64.975038
+        ],
+        "wall_ms": [
+          62.56637500000295,
+          55.06320900000361,
+          67.50629100000083
+        ],
+        "rss_mb": [
+          2.265625,
+          2.234375,
+          2.28125
+        ],
+        "allocs": 7744,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 7538,
+          "calloc": 163,
+          "realloc": 46,
+          "free": 7523,
+          "loop_malloc": 7535,
+          "loop_calloc": 163,
+          "loop_realloc": 46,
+          "loop_free": 14,
+          "clock_calls": 20014
+        },
+        "process_allocs": 7747,
+        "process_frees": 7523,
+        "allocs_per_s": 128792.39039208769,
+        "frees_per_s": 232.83748263032382,
+        "exe_bytes": 468720,
+        "compile_ms": 139.01287500000058,
+        "checksums": [
+          "checksum entities 1500",
+          "checksum draws 1215783"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "swift",
+        "label": "Swift idiomatic",
+        "language": "swift",
+        "frames": 10000,
+        "p50_us": [
+          9.666,
+          9.333,
+          10.375
+        ],
+        "p99_us": [
+          19.542,
+          18.458,
+          41.292
+        ],
+        "p999_us": [
+          33.958,
+          27.459,
+          355.083
+        ],
+        "loop_ms": [
+          98.999404,
+          96.393906,
+          174.695613
+        ],
+        "wall_ms": [
+          103.55854200000181,
+          100.79662499999387,
+          179.1746249999946
+        ],
+        "rss_mb": [
+          6.8125,
+          6.8125,
+          6.84375
+        ],
+        "allocs": 994,
+        "frees": 213,
+        "alloc_raw": {
+          "malloc": 256,
+          "calloc": 743,
+          "realloc": 4,
+          "free": 224,
+          "loop_malloc": 252,
+          "loop_calloc": 738,
+          "loop_realloc": 4,
+          "loop_free": 213,
+          "clock_calls": 20022
+        },
+        "process_allocs": 1003,
+        "process_frees": 224,
+        "allocs_per_s": 10040.464486028623,
+        "frees_per_s": 2151.5281041489907,
+        "exe_bytes": 60136,
+        "compile_ms": 366.94525000000056,
+        "checksums": [
+          "checksum entities 1500",
+          "checksum draws 1215783"
+        ],
+        "runs": 25
+      }
+    ],
+    "g5": [
+      {
+        "variant": "prismio",
+        "label": "Prismio",
+        "language": "prismio",
+        "frames": 4000,
+        "p50_us": [
+          20.5,
+          19.291,
+          21.292
+        ],
+        "p99_us": [
+          39.959,
+          33.625,
+          40.667
+        ],
+        "p999_us": [
+          61.875,
+          51.125,
+          83.291
+        ],
+        "loop_ms": [
+          83.543507,
+          78.911799,
+          87.445517
+        ],
+        "wall_ms": [
+          95.01429200000189,
+          90.23941699999227,
+          99.02191700000174
+        ],
+        "rss_mb": [
+          1.9375,
+          1.921875,
+          1.9375
+        ],
+        "allocs": 4293,
+        "frees": 39,
+        "alloc_raw": {
+          "malloc": 24144,
+          "calloc": 162,
+          "realloc": 1,
+          "free": 4118,
+          "loop_malloc": 4130,
+          "loop_calloc": 162,
+          "loop_realloc": 1,
+          "loop_free": 39,
+          "clock_calls": 8024
+        },
+        "process_allocs": 24307,
+        "process_frees": 4118,
+        "allocs_per_s": 51386.39918479841,
+        "frees_per_s": 466.8226341036892,
+        "exe_bytes": 62424,
+        "compile_ms": 108.0590000000008,
+        "checksums": [
+          "checksum entities 2000",
+          "checksum submitted 8000000",
+          "checksum batches 12",
+          "checksum evicted 0"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_idiomatic",
+        "label": "Rust idiomatic",
+        "language": "rust",
+        "frames": 4000,
+        "p50_us": [
+          7.084,
+          7.083,
+          8.958
+        ],
+        "p99_us": [
+          16.5,
+          10.083,
+          40.333
+        ],
+        "p999_us": [
+          29.75,
+          25.209,
+          383.375
+        ],
+        "loop_ms": [
+          29.723087,
+          29.124241,
+          52.488717
+        ],
+        "wall_ms": [
+          31.84945799999639,
+          31.15991699999654,
+          55.7162089999963
+        ],
+        "rss_mb": [
+          1.78125,
+          1.78125,
+          1.78125
+        ],
+        "allocs": 213,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 37,
+          "calloc": 163,
+          "realloc": 16,
+          "free": 22,
+          "loop_malloc": 34,
+          "loop_calloc": 163,
+          "loop_realloc": 16,
+          "loop_free": 14,
+          "clock_calls": 8017
+        },
+        "process_allocs": 216,
+        "process_frees": 22,
+        "allocs_per_s": 7166.146638806394,
+        "frees_per_s": 471.0143330670869,
+        "exe_bytes": 485648,
+        "compile_ms": 150.57020800000132,
+        "checksums": [
+          "checksum entities 2000",
+          "checksum submitted 8000000",
+          "checksum batches 12",
+          "checksum evicted 0"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_tuned",
+        "label": "Rust hand-tuned",
+        "language": "rust",
+        "frames": 4000,
+        "p50_us": [
+          1.125,
+          1.083,
+          1.25
+        ],
+        "p99_us": [
+          1.917,
+          1.208,
+          16.375
+        ],
+        "p999_us": [
+          5.333,
+          1.209,
+          26.375
+        ],
+        "loop_ms": [
+          5.096681,
+          4.36768,
+          6.473411
+        ],
+        "wall_ms": [
+          7.020792000005827,
+          6.322041999993644,
+          8.521708000003514
+        ],
+        "rss_mb": [
+          1.828125,
+          1.828125,
+          1.828125
+        ],
+        "allocs": 298,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 50,
+          "calloc": 163,
+          "realloc": 88,
+          "free": 35,
+          "loop_malloc": 47,
+          "loop_calloc": 163,
+          "loop_realloc": 88,
+          "loop_free": 14,
+          "clock_calls": 8017
+        },
+        "process_allocs": 301,
+        "process_frees": 35,
+        "allocs_per_s": 58469.423532687244,
+        "frees_per_s": 2746.8856693208772,
+        "exe_bytes": 485776,
+        "compile_ms": 170.1441250000002,
+        "checksums": [
+          "checksum entities 2000",
+          "checksum submitted 8000000",
+          "checksum batches 12",
+          "checksum evicted 0"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "swift",
+        "label": "Swift idiomatic",
+        "language": "swift",
+        "frames": 4000,
+        "p50_us": [
+          17.5,
+          17.417,
+          34.791
+        ],
+        "p99_us": [
+          34.208,
+          33.375,
+          84.875
+        ],
+        "p999_us": [
+          52.0,
+          44.625,
+          1455.958
+        ],
+        "loop_ms": [
+          71.739243,
+          71.20874,
+          147.177409
+        ],
+        "wall_ms": [
+          75.84941700000059,
+          75.17770799999823,
+          151.60020800000495
+        ],
+        "rss_mb": [
+          6.125,
+          6.125,
+          6.15625
+        ],
+        "allocs": 965,
+        "frees": 182,
+        "alloc_raw": {
+          "malloc": 225,
+          "calloc": 745,
+          "realloc": 4,
+          "free": 193,
+          "loop_malloc": 221,
+          "loop_calloc": 740,
+          "loop_realloc": 4,
+          "loop_free": 182,
+          "clock_calls": 8025
+        },
+        "process_allocs": 974,
+        "process_frees": 193,
+        "allocs_per_s": 13451.49404489813,
+        "frees_per_s": 2536.965716239855,
+        "exe_bytes": 60840,
+        "compile_ms": 395.1907089999995,
+        "checksums": [
+          "checksum entities 2000",
+          "checksum submitted 8000000",
+          "checksum batches 12",
+          "checksum evicted 0"
+        ],
+        "runs": 25
+      }
+    ],
+    "g6": [
+      {
+        "variant": "prismio",
+        "label": "Prismio",
+        "language": "prismio",
+        "frames": 30000,
+        "p50_us": [
+          7.291,
+          6.958,
+          7.959
+        ],
+        "p99_us": [
+          16.792,
+          16.041,
+          28.709
+        ],
+        "p999_us": [
+          33.625,
+          30.958,
+          71.292
+        ],
+        "loop_ms": [
+          245.023046,
+          235.071452,
+          305.660301
+        ],
+        "wall_ms": [
+          453.16937500000165,
+          439.178333000001,
+          567.3645420000071
+        ],
+        "rss_mb": [
+          4.125,
+          4.109375,
+          4.1875
+        ],
+        "allocs": 15137004,
+        "frees": 15133210,
+        "alloc_raw": {
+          "malloc": 15022206,
+          "calloc": 240162,
+          "realloc": 1,
+          "free": 15136829,
+          "loop_malloc": 14896841,
+          "loop_calloc": 240162,
+          "loop_realloc": 1,
+          "loop_free": 15133210,
+          "clock_calls": 60020
+        },
+        "process_allocs": 15262369,
+        "process_frees": 15136829,
+        "allocs_per_s": 61777878.64085242,
+        "frees_per_s": 61762394.383098155,
+        "exe_bytes": 62600,
+        "compile_ms": 110.10683299999968,
+        "checksums": [
+          "checksum alive 120000",
+          "checksum orders 13800000",
+          "checksum kills 120000"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_idiomatic",
+        "label": "Rust idiomatic",
+        "language": "rust",
+        "frames": 30000,
+        "p50_us": [
+          1.791,
+          1.75,
+          1.958
+        ],
+        "p99_us": [
+          3.792,
+          3.166,
+          8.417
+        ],
+        "p999_us": [
+          12.0,
+          8.792,
+          23.958
+        ],
+        "loop_ms": [
+          60.24472,
+          59.263366,
+          81.219263
+        ],
+        "wall_ms": [
+          65.10774999999569,
+          63.93187499999442,
+          86.67516700000988
+        ],
+        "rss_mb": [
+          2.640625,
+          2.578125,
+          2.671875
+        ],
+        "allocs": 289094,
+        "frees": 36009,
+        "alloc_raw": {
+          "malloc": 36033,
+          "calloc": 163,
+          "realloc": 252901,
+          "free": 36018,
+          "loop_malloc": 36030,
+          "loop_calloc": 163,
+          "loop_realloc": 252901,
+          "loop_free": 36009,
+          "clock_calls": 60017
+        },
+        "process_allocs": 289097,
+        "process_frees": 36018,
+        "allocs_per_s": 4798661.193877239,
+        "frees_per_s": 597712.1314531796,
+        "exe_bytes": 485520,
+        "compile_ms": 153.65783400000055,
+        "checksums": [
+          "checksum alive 120000",
+          "checksum orders 13800000",
+          "checksum kills 120000"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_arena",
+        "label": "Rust arena",
+        "language": "rust",
+        "frames": 30000,
+        "p50_us": [
+          1.458,
+          1.416,
+          1.541
+        ],
+        "p99_us": [
+          2.792,
+          2.625,
+          3.916
+        ],
+        "p999_us": [
+          10.166,
+          9.083,
+          12.25
+        ],
+        "loop_ms": [
+          50.183701,
+          47.732096,
+          54.11513
+        ],
+        "wall_ms": [
+          55.11954199999991,
+          52.437875000009626,
+          66.5325829999972
+        ],
+        "rss_mb": [
+          2.765625,
+          2.71875,
+          2.796875
+        ],
+        "allocs": 13102,
+        "frees": 1516,
+        "alloc_raw": {
+          "malloc": 1541,
+          "calloc": 163,
+          "realloc": 11401,
+          "free": 1526,
+          "loop_malloc": 1538,
+          "loop_calloc": 163,
+          "loop_realloc": 11401,
+          "loop_free": 1516,
+          "clock_calls": 60017
+        },
+        "process_allocs": 13105,
+        "process_frees": 1526,
+        "allocs_per_s": 261080.78397804897,
+        "frees_per_s": 30209.011487614276,
+        "exe_bytes": 487200,
+        "compile_ms": 165.26108400000084,
+        "checksums": [
+          "checksum alive 120000",
+          "checksum orders 13800000",
+          "checksum kills 120000"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_tuned",
+        "label": "Rust hand-tuned",
+        "language": "rust",
+        "frames": 30000,
+        "p50_us": [
+          1.25,
+          1.209,
+          1.375
+        ],
+        "p99_us": [
+          2.5,
+          2.416,
+          3.458
+        ],
+        "p999_us": [
+          9.542,
+          6.792,
+          10.542
+        ],
+        "loop_ms": [
+          43.76584,
+          42.270217,
+          46.981528
+        ],
+        "wall_ms": [
+          47.53791699999965,
+          45.89174999999557,
+          50.73854100000119
+        ],
+        "rss_mb": [
+          2.453125,
+          2.453125,
+          2.453125
+        ],
+        "allocs": 239,
+        "frees": 14,
+        "alloc_raw": {
+          "malloc": 40,
+          "calloc": 163,
+          "realloc": 39,
+          "free": 25,
+          "loop_malloc": 37,
+          "loop_calloc": 163,
+          "loop_realloc": 39,
+          "loop_free": 14,
+          "clock_calls": 60019
+        },
+        "process_allocs": 242,
+        "process_frees": 25,
+        "allocs_per_s": 5460.879992249663,
+        "frees_per_s": 319.88418364642376,
+        "exe_bytes": 485424,
+        "compile_ms": 153.69300000000052,
+        "checksums": [
+          "checksum alive 120000",
+          "checksum orders 13800000",
+          "checksum kills 120000"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "swift",
+        "label": "Swift idiomatic",
+        "language": "swift",
+        "frames": 30000,
+        "p50_us": [
+          5.333,
+          5.208,
+          5.708
+        ],
+        "p99_us": [
+          15.042,
+          14.542,
+          24.791
+        ],
+        "p999_us": [
+          26.583,
+          24.25,
+          90.916
+        ],
+        "loop_ms": [
+          189.882389,
+          182.336832,
+          270.188928
+        ],
+        "wall_ms": [
+          203.32033400001137,
+          196.6278339999974,
+          289.1865840000065
+        ],
+        "rss_mb": [
+          7.671875,
+          7.5625,
+          7.703125
+        ],
+        "allocs": 361837,
+        "frees": 361059,
+        "alloc_raw": {
+          "malloc": 361097,
+          "calloc": 745,
+          "realloc": 4,
+          "free": 361065,
+          "loop_malloc": 361093,
+          "loop_calloc": 740,
+          "loop_realloc": 4,
+          "loop_free": 361059,
+          "clock_calls": 60022
+        },
+        "process_allocs": 361846,
+        "process_frees": 361065,
+        "allocs_per_s": 1905584.8301971809,
+        "frees_per_s": 1901487.557121477,
+        "exe_bytes": 61816,
+        "compile_ms": 393.9001250000018,
+        "checksums": [
+          "checksum alive 120000",
+          "checksum orders 13800000",
+          "checksum kills 120000"
+        ],
+        "runs": 25
+      }
+    ]
+  }
+}

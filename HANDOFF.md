@@ -11,8 +11,15 @@ Don't re-derive what's in them.
 Everything below is verified, not asserted — the commands that verify it are in the next section.
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
-  IR for `src/main.psm` is byte-identical to the warm build's.
-- **136/136 tests** as of 2026-08-24 (135 before the candidate-list session, which added `jit`;
+  IR for `src/main.psm` is byte-identical to the warm build's. Last-good is **`build/S12b`**
+  (`S10b → S11a → S11b → S12a → S12b`, `a.ll == b.ll`); `build/S10b` and `build/E2` remain good
+  behind it. The two generations after S11b exist because regenerating `embedded_sources.h` for
+  the M1.1 change to `build_driver.c` changes what the *next* compiler compiles.
+- **Cross-language standing, re-measured 2026-08-25** against session 3's harness unchanged:
+  **1.13×–5.89× idiomatic Rust, 1.70×–16.4× hand-tuned Rust**, residual **1.24×–1.27×**.
+  The band has not moved in seven sessions. Full matrix and the four open items in
+  [`aif/evidence/RESULTS-final.md`](aif/evidence/RESULTS-final.md).
+- **137/137 tests** as of 2026-08-26 (136 before the M1 session, which added `curated_closure`) (135 before the candidate-list session, which added `jit`;
   133 before the packaged-runtime session, which added the `runtime_library` runner test — it
   packages a toolchain into a temporary directory rather than shipping a fixture — and
   `incremental_manifest`, which shells out to the tool of that name;
@@ -428,6 +435,249 @@ LAYOUT §3.2's W3 sandbox obligations. Shipping the syntax without the runner is
 this item was ordered around, pointed the other way: a producer that produces nothing. The
 instrumentation point already exists when someone wants it — `ir_struct_field_ptr` is the single
 choke point for field access, the way `ir_alloc_object` is for allocation.
+
+---
+
+## Session of 2026-08-26 (M1.0 + M1.1) — the runtime call seam closes, and the number that motivated it does not survive re-measurement
+
+TODO.md's M1, taken in order. Full writeup in
+[`aif/evidence/RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md); corpus JSON in
+`aif/evidence/xlang/results-m1.json`.
+
+*(Date is the next in sequence, not the wall clock — the clock read 2026-08-22 when this ran. The
+entry below it is dated 2026-08-25 and the sequence is kept monotonic on purpose.)*
+
+**M1.0 — why `-flto` never did this.** It does not decline the inline on cost, it refuses:
+`cost=never: conflicting attributes`. The backend emits program functions with **no function
+attributes at all** while clang stamps `target-cpu=apple-m1` and 33 `target-features` on every
+runtime function, so `areInlineCompatible` fails before the call is priced. The `llvm-link` merge
+in RESULTS-final §9.2 only ever worked because `clang -O2` on the merged module quietly fills its
+own defaults into the attribute-less functions. Matching by hand needs clang's *exact* string — a
+superset fails, a *newer* CPU fails (`apple-m4` against `apple-m1`), the feature list without the
+CPU fails, and `LLVMGetHostCPUName()` answers `apple-m4` here where clang picks `apple-m1`, with
+`LLVMGetHostCPUFeatures()` returning empty.
+
+**M1.1 — and the route is not the one M1.0 implies.** Four routes were measured before any code
+was written. The curated `available_externally` module wins on every axis but binary size: 2.00×
+against `-flto`'s 1.87× and a whole-runtime merge's 1.88×, at **1.18× compile time** against 1.21×
+and 1.88×. It also needs neither `-flto` nor the attribute stamping, so both of M1.2's named risks
+disappear. An intermediate revision of TODO.md redirected M1.1 towards attribute stamping on the
+strength of M1.0 alone; that was wrong, and the original "curated bitcode module" wording was
+right.
+
+**Measured through the driver**, `milestone_bench --runs 25`, both arms the same binary:
+
+```
+corpus median new/old: 0.864x   range 0.481-0.982x     GATE PASSED
+g5 0.481x (2.69x -> 1.29x of idiomatic Rust)   g4 0.772x   g6 0.837x
+g2 0.892x   g3 0.940x   g1 0.982x (flat)
+```
+
+RSS regresses nowhere and improves on three; exe size is unchanged, because `available_externally`
+bodies emit no code.
+
+**The curated set must be closed over exported symbols, and it is now a test.** `list_push` reads
+`rt_arena_hint`, `arena_depth` and `arena_alloc_slot`, all `static` in lang_runtime.c. Forcing its
+inline reproduces `Undefined symbols … _arena_alloc_slot`. It is quiet today only because the cost
+model declines `list_push` at its current size — a refactor that shrinks it, or a threshold that
+moves, turns a silent success into somebody else's link error. `run_curated_closure_test` reads
+`PRISMIO_CURATED_OPS` out of build_driver.c rather than duplicating it, and was verified to fail
+when `list_push` is added back.
+
+**What did not reproduce, and it is the headline.** M1's exit gate wants g3 under 1.00× of
+idiomatic Rust. It reads **1.05×**. §9.3 predicted 0.94× from a *hand-built* baseline that put g3
+at 1.01× before the change; `milestone_bench` puts it at 1.12×. The change's worth reproduced
+(1.064× against 1.07×) — the baseline ratio it was applied to did not. So **"the first Prismio
+program to beat idiomatic Rust" is not currently supported by a driver-built measurement.** This is
+precisely why the exit gate said §9's table must be re-measured rather than cited.
+
+**The public docs site needed no edit, and that is a decision rather than a skip.** The gate's
+checklist points M1 at `compiler/overview.md`, `compiler/cli.md` and `roadmap.md`. Nothing
+user-visible changed: the feature is default-off behind an environment variable, no CLI flag moved,
+the default build stages are byte-for-byte what they were, no page on the site documents
+environment variables at all, and `roadmap.md` has no row about the call seam to go stale. Bumping
+`lastUpdated` on a page nothing changed would be claiming an edit that did not happen — which is
+the same rot the checklist exists to prevent, pointed the other way.
+
+**Still opt-in** behind `PRISMIO_INLINE_RUNTIME=1`, for three reasons tracked as M1.1b: the merge
+shells out to `llvm-extract`/`llvm-link` (a Windows risk — `prismio_llvm.h` exists because that
+installer is minimal, and CI runs three platforms); cold compile time is unmeasured; and
+`--verify`, the object cache and `--target` are covered by construction rather than by
+measurement. `-g` declines the merge outright, which is the answer to M1.2's named risk.
+
+---
+
+## Session of 2026-08-25 (final benchmark) — the corpus standing has not moved in seven sessions, and `region` is fixed
+
+Session 3's harness re-run unchanged against everything since: same six programs, same three-way
+Rust split, same Swift baseline, same axes. Full writeup in
+[`aif/evidence/RESULTS-final.md`](aif/evidence/RESULTS-final.md); JSON for both passes is in
+`aif/evidence/xlang/results-s10.json` and `-pass2.json`.
+
+*(Date is the next in sequence, not the wall clock — the clock read 2026-08-21 when this ran. The
+entry above it is dated 2026-08-24 and the sequence is kept monotonic on purpose.)*
+
+**No compiler change landed. This session measured.** `build/S10b`, bootstrapped `E2 → S10a →
+S10b`, fixpoint `a.ll == b.ll`, suite **136/136** before any timing. Two independent 25-run passes.
+
+### The claim under test is false, and the shape of the falsification matters
+
+The claim was **"as fast as *tuned* Rust, without the tuning"**, with the bracket test: if
+idiomatic and tuned Rust straddle us, that is the headline. **They do not straddle us.** Untuned
+Prismio is **1.13×–5.89× idiomatic Rust** and **1.70×–16.4× hand-tuned Rust** — outside the
+bracket on the slow side, on all six programs.
+
+**The band has not moved in seven sessions:** 1.12–5.57× (session 3) → 1.15–5.59× (2026-08-17) →
+**1.13–5.89×** (now). The arena, the hot/cold split, `pin`, generics, payload enums, concurrency,
+DWARF, targets, the packaged runtime and the JIT all landed inside that window. **The features
+that landed are not the features this corpus measures.** That is the largest open fact about the
+project and it should be said out loud rather than re-derived every time someone re-runs the suite.
+
+**The residual held.** With the representation fixed against `rust_boxed`, this compiler is
+**1.24×–1.27×** of rustc (session 3: 1.20×–1.30×; g2 still 0.64×, i.e. we beat rustc's own code
+for the same allocation profile). It is the only number here that is a statement about the
+compiler's design, and it has been stable for seven sessions.
+
+### `region` on g2 went from inert to 2.16×, which is the one large movement
+
+Session 3's sharpest negative result — the annotation is *inert*, 0 of 10,201,215 allocations
+served, and **1.73× slower** — is fixed by the call-site placement work:
+
+| | loop ms | vs plain | windowed allocs | arena served |
+|---|---:|---:|---:|---:|
+| `g2.psm` | 111.5 | 1.00× | 10,202,214 | **0** |
+| `g2_region.psm` | **51.6** | **0.46×** | **2,222** | **10,200,000** |
+
+A 3.75× swing on the annotated variant. Cross-checked on the ledger: `released` drops
+10,202,025 → 2,025 and `arena_objects` reads 10,200,000, so the difference is accounted for to the
+allocation. `0 violation(s)` on both. (`aif-verify: FAILED` on both is the pre-existing
+leak-driven verdict from the `frame_ns` dump — `violations` is 0 on all six corpus programs.)
+
+**Inference still does not reach it.** Plain `g2.psm` allocates 10,202,214 times with 0 arena
+objects — unchanged from session 3. The escape hatch works; the automatic tier does not.
+
+### The runtime call boundary — found by asking why *hand-tuned* Prismio still loses, and it is the largest item here
+
+`g2_tuned.psm` and `g2_tuned.rs` apply the same tuning and both allocate nothing in the frame loop.
+Prismio is still **2.45×** slower. Three causes measured in order, and only the third survives:
+
+- **Not the representation.** `rust/g2_tunedboxed.rs` (new, a diagnostic) is the Prismio tuning
+  written in Rust — `Vec<Box<DrawCmd>>` pre-filled and mutated in place. It runs at **0.86×** of
+  inline `Vec<DrawCmd>`, i.e. **the boxed layout is free** once allocation is out of the loop. The
+  representation is the whole story on *untuned* g2 and **none** of the hand-tuned gap.
+- **It is the un-inlinable call into the C runtime.** Every container access is a `bl` into the
+  separately-compiled runtime; `cull_into` is 53 instructions containing two `bl _list_get` per
+  iteration, ~40 M calls the optimiser cannot see through. The post-`-O2` IR is otherwise clean.
+- **Sized by forcing it.** `llvm-link` the program IR with the runtime IR, optimise as one module
+  (0 calls remain, checksums unchanged): **24.7 → 13.2 ms, worth 1.87×**, landing at **1.32×** of
+  hand-tuned Rust — the same 1.20–1.30× residual seen everywhere else.
+
+Across the untuned corpus, each against an identically-built baseline:
+
+| prog | worth | vs idiomatic Rust, before → after |
+|---|---:|---|
+| g1 | 1.17× | 1.31× → 1.12× |
+| g3 | 1.07× | 1.01× → **0.94×** |
+| g4 | 1.28× | 2.84× → 2.21× |
+| g5 | **1.82×** | 2.58× → **1.42×** |
+
+**g3 at 0.94× is the first time a Prismio program has beaten idiomatic Rust** — no rewrite, no
+annotation, no layout change. **This needs no language change**: both sides are already LLVM IR
+when they meet.
+
+**`-flto` does not do it and that is why it was never seen.** Re-measured at **1.00×**, confirming
+the standing "LTO is speed-neutral" note — but the `-flto` link leaves two `bl _list_get` in the
+inner loop while the IR-level merge leaves none. Why the linker's LTO declines an inline the same
+pipeline performs on a merged module is **one experiment, not a conclusion**.
+
+*Two verification traps hit while establishing this, both worth not repeating: a `sed` range keyed
+on `_cull_into` returned 0 calls because LTO had **deleted that symbol**, which looks identical to
+"the calls are gone" — count over the whole binary instead. And the first merged module inlined
+nothing because the runtime IR was emitted at `-O0`, so every function carried `noinline optnone`.*
+
+### Five things now losing that are not accepted tradeoffs — the next list
+
+1. **Automatic arena placement does not fire on the corpus.** 0 of 10,202,214 on g2, where the
+   annotation delivers 2.16× on that exact program. Sized: the distance between plain g2 at 5.89×
+   idiomatic Rust and `g2_region` at 2.62×, on the two of six programs that allocate per frame.
+   This decides whether the product claim can be "tuned-Rust behaviour from untuned code" or has
+   to stay "…from code with one annotation".
+
+2. **Peak RSS reversed: 0.84–1.00× → 1.09–1.60× of idiomatic Rust.** +27% (g5) to +86% (g6) in
+   absolute MB, with **Rust's figure unmoved on all six**, reproducing across both passes to two
+   decimals. Two causes are already excluded by measurement: **not** fixed runtime footprint (a
+   minimal program is 1.34 MB against Rust's 1.47 MB — our floor is still lower), and **not** the
+   hot/cold split (vetoed on g3, `unsplit` chosen and emitted on g6). It scales with **live set,
+   not churn** — g3 has ~1,800× fewer allocations than g2 but carries 54% of g2's excess — which
+   points at per-object overhead in what is retained. Bisecting needs a session-3-era compiler,
+   which is not in the tree.
+
+3. **Genuinely-cold compile regressed 19%–28%.** g1 183 → 235 ms, g6 203 → 241 ms with
+   `PRISMIO_OBJ_CACHE=0`, i.e. 1.56×–1.93× rustc against session 3's 1.5×. **Invisible in the
+   default configuration**, where the object cache lands us at 103–110 ms and 0.71×–0.85× rustc —
+   a genuine win that is masking a real slowdown on the first-build and uncached-CI path.
+
+4. **Close the runtime call seam** — the item above, and the largest on this list: **1.07×–1.87×**
+   corpus-wide, g3 to 0.94× of idiomatic Rust, no language change required. Compile the program IR
+   and the runtime as one module, or ship the hot container operations as IR the backend can
+   splice in. Costs to establish: compile time, binary size, and whether `--verify`, `-g` and the
+   object cache survive the merge.
+
+5. **Inline element storage for `List<T>`** — ranked item 2 at session 3, still unbuilt, and still
+   the only change with a projected effect large enough to move the band (~1.2–1.3× across the
+   board). Everything above is downstream of it: the representation is 2.51× of the g4 gap and
+   9.23× of the g2 gap, against a 1.24–1.27× compiler.
+
+### The plan is now a checklist with a runnable gate
+
+[`TODO.md`](TODO.md) carries the five milestones, each with papers, concepts, tasks and an exit
+gate. `tools/milestone_bench.py` is the gate: it builds the corpus with two compilers, **asserts
+every variant's checksums agree before timing anything**, times them interleaved, and reports both
+arms against Rust idiomatic and Rust hand-tuned.
+
+**One thing it learned the hard way, do not undo it.** The gate does *not* fail on a single
+regressed program. `build/E2` against a compiler bootstrapped from it **with no source change**
+reads **1.098× on g1** while the other five read 0.989–1.019×, and their emitted IR for `g1.psm` is
+byte-identical — g1 is layout-sensitive, and two builds from the *same* compiler time within 0.5%,
+so the floor is ~1% and the 10% is real code layout. The gate therefore fails on the **corpus
+median** (3%) or on **two or more** programs past 10%, and `--calibrate` runs A/A to measure the
+floor before anyone trusts a single-program number. An earlier draft gated per-program at 5% and
+failed a change that did not happen.
+
+### The architecture direction that follows, and the correction that re-ranks the roadmap
+
+Written up with the supporting literature in
+[`docs/ARCHITECTURE-DIRECTION.md`](docs/ARCHITECTURE-DIRECTION.md).
+
+**The correction:** the project has treated `List<T>`-as-pointers as an *indirection* problem and
+ranked inline storage as the fix. `rust/g2_tunedboxed.rs` refutes that — Prismio's exact boxed
+layout, in Rust, pre-filled and mutated in place, runs at **0.86× of inline `Vec<T>`**. The
+representation is expensive **because of the allocations it forces, not the indirection it adds.**
+That means there are two routes to the same prize, and the project has only pursued the expensive
+one: change the representation (needs views, slices, a language change) *or* stop allocating
+(reuse analysis, non-lexical regions, a better allocator — no language change, and already
+industrialised in Lean 4 and Koka).
+
+Ranked: **(1)** close the runtime seam — 1.07–1.87× measured, no language change, the ThinLTO /
+Swift `@inlinable` / MLton shape; **(2)** reuse analysis (Perceus, *Counting Immutable Beans*) to
+attack the 20–63× allocation ratio that has never moved; **(3)** non-lexical + region-polymorphic
+regions (Spegion 2025 is the closest paper to the recorded "the arena is lexical and allocation is
+not" blocker; Tofte–Talpin region polymorphism is the `CallerRegion` mechanism); **(4)** views and
+slices, which unlock both inline storage and the layout work; **(5)** mimalloc, which was built for
+exactly this workload shape and is also RSS-adjacent.
+
+### Two methodology notes worth not re-deriving
+
+- **A median resists what a p99 is defined to catch.** Pass 1 ran straight after 31 compilations;
+  every p99 in it is inflated — Prismio's *and* Rust's — while the loop medians agree with pass 2
+  within 3% on all 31 binaries. Quote loop time from either pass and the tail only from a quiet
+  one. Read that way, the tail result **holds**: p99/p50 within 0.07 of idiomatic Rust on all six
+  against a 3× kill criterion, and p999/p50 lower than Rust's on five of six.
+- **`xlang/results.json` in the tree does not back RESULTS-xlang §0.1.** Its meta reads
+  `"runs": 5` and it contains **g1 only**, while §0.1 describes a 20-run pass over six programs;
+  its absolutes are also ~1.9× inflated (Rust idiomatic g1 at 35.6 ms against 18.5 ms at session 3
+  and 19.0 ms now), so that pass was taken on a loaded host. **Only §0.1's ratios are usable.**
+  This session's JSON is written to `results-s10*.json` rather than over it.
 
 ---
 

@@ -4380,6 +4380,109 @@ def run_aif_widening_test():
     return True
 
 
+def run_curated_closure_test():
+    """M1.1's curated inlinable module: the set must be closed over exported symbols.
+
+    `compile_ir_to_object` merges a handful of the runtime's container ops into
+    the program's module as `available_externally` bodies, so the inliner can see
+    through the call. That is only sound for a function whose body references
+    nothing the runtime object keeps to itself.
+
+    **The failure it exists to prevent, stated exactly.** `list_push` reads
+    `rt_arena_hint`, `arena_depth` and `arena_alloc_slot`, all `static` in
+    lang_runtime.c and therefore absent from the object's symbol table. Merge its
+    body in, let the inliner take it, and the program references symbols nothing
+    exports:
+
+        Undefined symbols for architecture arm64:
+          "_arena_alloc_slot", referenced from: _main in program.o
+
+    That is a reproduced failure, not a worry -- forcing the inline produces it.
+    It stays quiet in the shipped configuration only because the cost model
+    happens to decline `list_push` at its current size. A refactor that shrinks
+    it, or a threshold that moves, turns a silent success into a link error in
+    somebody else's build. So the property is asserted here rather than trusted.
+
+    The curated list is read out of build_driver.c rather than duplicated, for
+    the reason check_source_lists.py exists: two lists that must agree will
+    eventually not.
+    """
+    print(f"\n{BLUE}--- Running curated_closure ---{RESET}")
+
+    driver = PROJECT_ROOT / "runtime" / "build_driver.c"
+    runtime_c = PROJECT_ROOT / "runtime" / "lang_runtime.c"
+    if not driver.is_file() or not runtime_c.is_file():
+        print(f"{RED}[FAIL] curated closure: runtime sources not found{RESET}")
+        return False
+
+    text = driver.read_text()
+    m = re.search(r"PRISMIO_CURATED_OPS\[\]\s*=\s*\{(.*?)\};", text, re.S)
+    if not m:
+        print(f"{RED}[FAIL] curated closure: PRISMIO_CURATED_OPS not found in build_driver.c{RESET}")
+        return False
+    curated = re.findall(r'"([A-Za-z0-9_]+)"', m.group(1))
+    if not curated:
+        print(f"{RED}[FAIL] curated closure: PRISMIO_CURATED_OPS is empty{RESET}")
+        return False
+
+    clang = which("clang")
+    if not clang:
+        print(f"{YELLOW}[SKIP] curated closure: clang not found{RESET}")
+        return True
+
+    with tempfile.TemporaryDirectory() as td:
+        ll = Path(td) / "lang_runtime.ll"
+        proc = subprocess.run(
+            [clang, "-O2", "-Wno-deprecated-declarations",
+             "-I", str(PROJECT_ROOT / "runtime"),
+             "-S", "-emit-llvm", str(runtime_c), "-o", str(ll)],
+            capture_output=True, text=True)
+        if proc.returncode != 0:
+            print(f"{RED}[FAIL] curated closure: could not compile lang_runtime.c to IR{RESET}")
+            print(proc.stderr[:600])
+            return False
+
+        ir = ll.read_text()
+
+    # Everything the runtime keeps to itself. `internal` and `private` are the
+    # two linkages that do not reach the object's symbol table.
+    internal = set()
+    for mm in re.finditer(r'^define\s+((?:internal|private)\s+)?[^@\n]*@"?([A-Za-z0-9_.$]+)"?\(',
+                          ir, re.M):
+        if mm.group(1):
+            internal.add(mm.group(2))
+    for mm in re.finditer(r'^@"?([A-Za-z0-9_.$]+)"?\s*=\s*((?:internal|private)\s+)?', ir, re.M):
+        if mm.group(2):
+            internal.add(mm.group(1))
+
+    bodies = dict()
+    for mm in re.finditer(r'^define[^\n]*@"?([A-Za-z0-9_.$]+)"?\((.*?)^\}', ir, re.M | re.S):
+        bodies[mm.group(1)] = mm.group(2)
+
+    ok = True
+    for name in curated:
+        body = bodies.get(name)
+        if body is None:
+            print(f"{RED}[FAIL] curated closure: '{name}' is curated but has no body in the runtime IR{RESET}")
+            ok = False
+            continue
+        leaked = sorted(set(re.findall(r'@"?([A-Za-z0-9_.$]+)"?', body)) & internal)
+        if leaked:
+            print(f"{RED}[FAIL] curated closure: '{name}' references non-exported "
+                  f"symbol(s): {', '.join(leaked)}{RESET}")
+            print(f"       Inlining it emits references the runtime object does not define,")
+            print(f"       and the link fails. Remove it from PRISMIO_CURATED_OPS, or give")
+            print(f"       those symbols external linkage in lang_runtime.c.")
+            ok = False
+
+    if not ok:
+        return False
+
+    print(f"{GREEN}[PASS] curated closure: {len(curated)} op(s) reference only exported "
+          f"symbols{RESET}")
+    return True
+
+
 def main():
     print(f"{YELLOW}{'='*60}{RESET}")
     print(f"{YELLOW}Prismio Compiler Test Suite{RESET}")
@@ -4561,6 +4664,11 @@ def main():
         failed += 1
 
     if run_debug_info_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_curated_closure_test():
         passed += 1
     else:
         failed += 1

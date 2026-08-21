@@ -212,5 +212,7 @@
   "210": "Session of 2026-08-25 (final benchmark) — the corpus standing has not moved in seven sessions, and `region` is fixed",
   "211": "2026-08-19 (generics) — monomorphisation is in; the stdlib floor is now gated on one missing primitive",
   "212": "The prompt for the next session",
-  "213": "2026-08-17 (second) — LAYOUT §8's forced candidate landed; read this before writing another brief"
+  "213": "2026-08-17 (second) — LAYOUT §8's forced candidate landed; read this before writing another brief",
+  "214": "Concepts",
+  "216": "milestone_bench.py"
 }
