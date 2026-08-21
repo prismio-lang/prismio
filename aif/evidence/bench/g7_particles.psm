@@ -9,6 +9,7 @@
 // Nothing here is annotated and nothing mentions memory: the shape is the point.
 // If inlining does not move this program it does not move anything.
 
+import std.io
 struct Vec3 {
     x: Float,
     y: Float,

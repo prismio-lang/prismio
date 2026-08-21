@@ -1,8 +1,9 @@
-// IR generation state: the target flag, the tier and drop-kind constants the
-// AIF-driven emission switches on, and the bridge surface every other module in
-// this package calls into.
+// IR generation state: the tier and drop-kind constants the AIF-driven emission
+// switches on, and the bridge surface every other module in this package calls
+// into.
 
 import ast.types
+import common.target
 
 // IR Generator
 // Traverses the AST and emits LLVM IR via bridge.psm
@@ -11,7 +12,6 @@ import ast.types
 import ast.types
 
 let mut irStringCounter = 0
-let mut irTargetWasm = false
 let mut irShortCircuitCounter = 0
 
 // LAYOUT 3.2. On only while generating a workload driver -- the instrumented
@@ -142,11 +142,9 @@ extern fn aif_field_is_counted(type: String, field: String) -> Int
 
 extern fn exit(code: Int)
 
-fn irSetTargetWasm(enabled: Bool) {
-    irTargetWasm = enabled
-}
-
+// The integer the backend sizes an allocation and indexes an array GEP with:
+// pointer width, in LLVM spelling. A target property, read from the target
+// record -- see src/ir/target.psm.
 fn irPtrIntType() -> String {
-    if (irTargetWasm) { return "i32" }
-    return "i64"
+    return targetPtrIntType(targetCurrent())
 }

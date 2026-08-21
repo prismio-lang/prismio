@@ -1,6 +1,7 @@
 // std/io.psm is loaded as source before sema. These calls must resolve through
 // ordinary exact-type overload selection, not compiler-known print branches.
 
+import std.io
 fn main() -> Int {
     print("String=")
     println("ok")

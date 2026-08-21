@@ -7,6 +7,7 @@
 //    initializer (`@g =  global ptr hello`), which llc rejects.
 //  - Bool output used to cross a mismatched i1/i32 runtime ABI directly.
 
+import std.io
 extern fn str_equals(s1: String, s2: String) -> Int
 
 let greeting = "hello from a global"

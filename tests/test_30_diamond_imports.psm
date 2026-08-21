@@ -12,6 +12,7 @@
 // "invalid redefinition of function" -- so this test fails at compile time, not on
 // its assertions. str_length is additionally declared by all three modules, which
 // exercises the same-extern-in-several-modules case.
+import std.io
 import diamond_left
 import diamond_right
 

@@ -28,6 +28,7 @@
 // where it would then pass while asserting the opposite of what it is for.
 // test_48's header measures the same cliff for the same reason.
 
+import std.io
 struct Job {
     lo: Int,
     hi: Int

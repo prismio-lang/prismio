@@ -55,12 +55,13 @@ documentation claims.
 > - **Concurrency**: `spawn`/`join`, OS threads and channels, thread-affinity inference.
 >
 > **Still not done:** methods / `impl` blocks, closures, slices, module namespacing and
-> visibility, first-class pointers, and cross-compilation — `--target wasm32` exists but builds
-> nothing and is slated for removal.
+> visibility, and first-class pointers. Cross-compilation landed 2026-08-21 (`--target`,
+> `--sysroot`, a per-triple runtime archive) and has been proven against one non-host target.
 >
 > **The superlinear compile time in the box below no longer reproduces.** Measured 2026-08-20:
 > 733 B → 29 ms, 3 KB → 21 ms, 60 KB → 72 ms, i.e. 82× the input for ~2.5× the time. The fixed
-> cost is the `std.io` prelude, which dominates small programs. The 2026-08-17 session removed
+> cost is the `std.io` prelude, which dominates small programs — no longer implicit as of
+> 2026-08-21, so a program with no I/O no longer pays it. The 2026-08-17 session removed
 > the cubic term and made lexing linear.
 
 ## The bar being used
@@ -242,7 +243,7 @@ decorative — you can annotate with it, but you can't compute across it.
 | **Debug info (DWARF/PDB)** | ✗ | **Compiled programs cannot be source-debugged** |
 | Backend | ◑ | Text IR today; LLVM C API port in progress |
 | Linking | ✅ | clang driver, embedded runtime sources, runtime-hash staleness guard |
-| **Cross-compilation** | ✗ | Host only; `--target wasm32` switches pointer width and little else |
+| **Cross-compilation** | ◑ | `--target <triple>` + `--sysroot`; triple/pointer width/layout from LLVM. Built and run for `x86_64-apple-macos`; other triples produce verifying IR but are unlinked here |
 | **Object output / `-c`** | ✗ | Whole-program to executable only |
 | **Incremental compilation** | ✗ | |
 | Compile speed | ◑ | **Quadratic** — 2.05× input costs 4.2× time (audit §5) |
@@ -263,7 +264,7 @@ the CFG first; they are the enabling work for roughly half the remaining v1 scop
 |---|---|---|
 | **Self-hosting to a byte-identical fixed point** | ✅ | `a.ll` == `b.ll`. The strongest thing in the project |
 | **Committed bootstrap seed** | ✅ | `bootstrap/prismio-seed.ll`, with a rationale comment. Correct practice |
-| CLI driver | ◑ | `build`/`run`/`bootstrap`/`runtime-hash`, `-o`, `--target` |
+| CLI driver | ◑ | `build`/`run`/`bootstrap`/`runtime-hash`, `-o`, `-g`, `-O`, `--verify` |
 | **`--help` / `--version`** | ✗ | `prismio --help` is treated as a filename |
 | **`-O` / `-g` / `-c` / `--emit` / `-D` / warning flags** | ✗ | None exist |
 | Test runner | ◑ | **Exit-code-only oracle.** No expected-output comparison |

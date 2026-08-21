@@ -6,6 +6,7 @@
 // IR, so the failure surfaced as a backend error about generated code rather
 // than as the source-level mistake.
 
+import std.io
 fn pick(x: Int) -> String {
     if (x > 0) {
         return "positive"

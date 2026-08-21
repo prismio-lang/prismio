@@ -13,6 +13,7 @@
 // what `unique` being an axiom rather than a proof means. That is also why
 // deleting the annotation is always safe (SPEC 11 item 7): it can only ever
 // remove an assertion, never add one.
+import std.io
 struct Buf {
     a: Int,
     b: Int

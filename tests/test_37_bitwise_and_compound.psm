@@ -8,6 +8,7 @@
 // Right shift follows the left operand's signedness: arithmetic for signed so
 // the sign is preserved, logical for unsigned so the top bit is not smeared.
 
+import std.io
 fn fail(message: String) -> Int {
     print("FAIL: ")
     println(message)

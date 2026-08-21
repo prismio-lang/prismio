@@ -11,6 +11,7 @@
 // engine values flow back out (`world_transform`). If the boundary is opaque,
 // everything on both sides sinks.
 
+import std.io
 import g6_engine
 
 // Per-member gameplay state. Holds an engine handle plus data the engine knows

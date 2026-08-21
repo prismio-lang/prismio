@@ -8,6 +8,7 @@
 // The expected tiers are asserted in tests/test_runner.py. Editing this file
 // means editing those.
 
+import std.io
 struct Small {
     a: Int,
     b: Int

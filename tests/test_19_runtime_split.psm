@@ -1,3 +1,4 @@
+import std.io
 extern fn executable_directory() -> String
 extern fn join_path(directory: String, filename: String) -> String
 extern fn command_quote_arg(arg: String) -> String

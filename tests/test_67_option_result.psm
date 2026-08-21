@@ -4,6 +4,7 @@
 // the instantiation has to happen before the desugaring, and the shadow the
 // `match` reads has to be the *instantiated* enum rather than the template.
 
+import std.io
 import std.option
 
 extern fn str_equals(s1: String, s2: String) -> Int

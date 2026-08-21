@@ -10,6 +10,7 @@
 // bare integer literals default to Int. Write the elements' type explicitly or
 // leave the annotation off.
 
+import std.io
 extern fn str_equals(s1: String, s2: String) -> Int
 
 fn fail(message: String) -> Int {

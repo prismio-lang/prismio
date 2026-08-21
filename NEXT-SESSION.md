@@ -1,15 +1,89 @@
 # Prompts for the next sessions
 
-## 2026-08-21 — see `SESSION-PROMPT.md`
+## 2026-08-24 — see `SESSION-PROMPT.md`
 
-The live prompt moved to its own file at the repo root. This entry is a pointer so the archive
-does not carry a second, diverging copy.
+The live prompt is that file. This entry is a pointer so the archive does not carry a second,
+diverging copy.
 
-An earlier draft of it lived here and **was ordered wrong**: it put `-g` follow-through and JIT
-ahead of cross-compilation. Two things settled after it was written moved JIT off the critical
-path entirely — iOS is out of scope, and a web reload needs no JIT, because a whole-program
-rebuild of a compiler-sized app measures 83 ms frontend + 116 ms LLVM at `-O0`. `SESSION-PROMPT.md`
-carries the corrected order: layering, then targets, then `-g`, then JIT as optional.
+
+## 2026-08-23 (packaged runtime) — candidate A, chosen over the optional task; worked
+
+The prompt offered one optional task (`--jit`, optional for three sessions) and five unassigned
+candidates, and said to pick by what the work needs. Candidate A won on its own wording: the path
+that matters most for shipping was the one path with no test. See HANDOFF's 2026-08-23 entry.
+
+**The state paragraph was accurate on every claim**, checked before planning: `build/S16b` alone in
+`build/`, 133/133 against it, HANDOFF's top entry the one the prompt named, and the two untracked
+files belonging to the targets session rather than to something half-finished. Second time running
+the check has come back clean; keep running it anyway.
+
+**The prompt's framing of candidate A was right but incomplete.** It said `find_runtime_library` →
+`link_against_runtime_library` is covered only by installed toolchains. What it did not say, and
+what decides how the test has to be written, is that **a missing archive is invisible** — the
+fallback unpacks the runtime sources embedded in the compiler binary and the build succeeds
+anyway. Any test of this seam that asserts "a packaged toolchain compiles a program" is asserting
+nothing. `PRISMIO_OBJ_CACHE_TRACE` is the observation channel that works, and `run_target_test`
+had already established it.
+
+**Two things on that path were already broken**, which is the argument for the candidate rather
+than a surprise: `tools/verify_separation.{sh,ps1}` had not compiled a probe since `std.io` stopped
+being a prelude on 2026-08-21, taking three checks down with it silently, and the staleness guard
+in `src/main.psm` told macOS and Linux users to run a PowerShell script. Neither is reachable from
+the suite, which is why both survived.
+
+**`tools/verify_separation.sh` still is not run by anything.** It passes now. Wiring it into CI or
+the suite is a decision someone should make deliberately rather than a repair.
+
+
+## 2026-08-22 (finish `-g`) — worked; tasks 1–4 all landed
+
+Four small independent holes, done in order. See HANDOFF's 2026-08-22 entry. The prompt was
+accurate about all four and its pointers were good — `ir_register_enum_variant` really did already
+hold the map, `i1`/`i2` really were free on a BLOCK, and `LLVMGetNamedGlobal` really was all the
+backend needed.
+
+**Its one wrong premise is worth carrying forward.** Task 4 said cleanup code "inherits the
+**previous statement's** line". True, but the previous statement's line was itself wrong: an
+expression statement was stamped with the token that *follows* it, so a call on line 7 already
+reported line 8 and the cleanup inheriting it landed on the `}` by accident. The task's own change
+had no visible effect until that was fixed. **A line-table task should verify against a block whose
+last statement is not a call**, or it cannot tell the two apart.
+
+**The reusable finding is in the test, not the compiler.** `run_debug_info_test` collected
+`!DILocation` lines from the whole module, and `std/io.psm` — 170 lines, merged into every program
+— made any line number under 170 "located" for free. The `// MARK` assertions could pass on a
+coincidence, and did. Locations are now resolved to their DIFile first. Any future assertion over
+line numbers in a merged module needs the same care.
+
+**Two of the session's own new assertions passed against a compiler that was broken**, and only the
+house standard of breaking each one caught it. That standard is now three sessions deep and has
+found something every time.
+
+
+## 2026-08-21 (layering + targets) — worked; tasks 1–4 all landed
+
+The prompt asked for four tasks in order and all four are in. See HANDOFF's 2026-08-21 entry for
+what each one turned out to be. The prompt's own ordering held up: the layering tasks really were
+prerequisites, and task 1's FFI two-step really would have broken a fresh checkout if merged.
+
+**Two of its premises were wrong, and both are worth carrying forward.**
+
+**"Expect most fixtures to shrink" (task 2) was backwards.** 91 of 99 programs came out
+byte-identical, because a program that prints imports `std.io` and gets exactly what it always got.
+Only the seven that print *nothing* shrank. That is the better outcome — it means the change is
+provably confined — but a reviewer expecting a broad diff would have gone looking for a bug.
+
+**"Web is the one that matters here" (task 3) could not be done.** clang emits a wasm32 object,
+but there is no `wasm-ld` on the box, and task 1 had just deleted the wasm runtime *on purpose* —
+which host functions exist is an embedder's decision. A `.wasm` full of unresolved `env` imports
+with nothing to run it in is not "end to end". `x86_64-apple-macos` was used instead: a genuine
+cross-compile that this host can also run. Every wasm claim in the handoff is IR-level and labelled
+as such.
+
+An earlier draft of the 2026-08-21 prompt lived here and **was ordered wrong**: it put `-g`
+follow-through and JIT ahead of cross-compilation. Two things settled after it was written moved
+JIT off the critical path entirely — iOS is out of scope, and a web reload needs no JIT, because a
+whole-program rebuild of a compiler-sized app measures 83 ms frontend + 116 ms LLVM at `-O0`.
 
 
 ## 2026-08-20 (DWARF) — `-g` is in; the compiler itself still cannot be stepped through

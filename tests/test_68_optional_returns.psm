@@ -25,6 +25,7 @@
 // every optional in it is a field. Anything added here must go through a
 // binding or it is testing test_51's ground again.
 
+import std.io
 extern fn print(s: String)
 extern fn println(s: String)
 extern fn int_to_str(n: Int) -> String

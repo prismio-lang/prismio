@@ -16,6 +16,7 @@
 // computed. `Wide` is 33 pointer-width fields for the reason test_44's is: at
 // 264 bytes it clears Theta_stack, so it is T1 and an arena serves it.
 
+import std.io
 extern fn str_length(s: String) -> Int
 
 struct Wide {

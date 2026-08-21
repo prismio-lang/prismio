@@ -33,9 +33,13 @@ lldb hello
 | `DW_TAG_lexical_block` | per `{ }`, so two `let x` in sibling blocks are two variables |
 | `DW_TAG_formal_parameter` / `DW_TAG_variable` | per binding, at its frame slot |
 | `DW_TAG_structure_type` | per declared struct, with members at their **real** offsets |
+| `DW_TAG_enumeration_type` | per declared enum, with every variant, so `p kind` prints `STRUCT_DECL` and not `12` |
+| `DW_TAG_variable` (global) | per module-level `let`, so `target variable counter` works outside any frame |
 
 `String` is described as `char *`, which is what it is — a NUL-terminated buffer — so a
-debugger prints the characters rather than the address.
+debugger prints the characters rather than the address. The lower case is load-bearing:
+lldb auto-summarises a `char *` and prints a `signed char *` as a bare address, and it
+tells them apart by the base type's name.
 
 ```
 (lldb) breakpoint set --file hello.psm --line 21
@@ -46,6 +50,25 @@ struct Point {
     int y;
 }
 ```
+
+`prismio bootstrap -g` builds the compiler itself this way, which is the largest Prismio
+program there is and a far harder test of the line table than any fixture. It also passes
+`-g` to the toolchain's C sources, so a backtrace that leaves generated code keeps a file
+and a line on the other side of the FFI boundary instead of stopping at `str_concat`:
+
+```
+(lldb) bt 4
+  * frame #0: str_concat(s1="std", s2=".") at lang_runtime.c:168:16 [opt]
+    frame #1: parseImportStatement__Struct_Parser(p=0x…) at parser.psm:219:25
+    frame #2: parseDeclaration__Struct_Parser(p=0x…) at decl.psm:10:66
+    frame #3: parseModule__Struct_Parser(p=0x…) at parser.psm:233:13
+```
+
+Those C frames are compiled `-O2 -g`, not `-O0 -g`: their arguments and return values read
+correctly and their *locals* are `<variable not available>`. The trade is deliberate — what
+a backtrace across the boundary needs is a named frame with a line, and building the runtime
+at `-O0` would slow every `-g` build's execution to make locals readable in code nobody is
+stepping through.
 
 Two things `-g` changes about the build, both on purpose:
 
@@ -127,11 +150,11 @@ Two smaller omissions, recorded rather than smoothed over:
   drops and monomorphised clones carry line 0. Rather than claim line 0 — which puts the
   debugger at the top of the file — the previous location stands, so the instruction is
   attributed to the statement that caused it.
-- **Cleanup code inherits the preceding statement's line.** A scope's drops, an arena pop
-  and a region exit are emitted after the last statement of a block, and the AST records no
-  closing-brace position, so there is no `}` to point at. Attributing them to the last real
-  statement is the closest true answer available; giving the block's *opening* line would
-  make the debugger appear to jump backwards.
+- **Cleanup code is attributed to the closing brace.** A scope's drops, an arena pop and a
+  region exit are emitted after the last statement of a block, and belong to the `}` the
+  program is leaving through rather than to the last thing that ran. A block with nothing to
+  emit on the way out — one that ends in a `return` — claims no line at all, and a block the
+  parser did not build a brace for keeps the previous location rather than claiming line 0.
 - **Debug info needs a compiler built against real llvm-c headers.** `tools/setup_llvm.py`
   requires them, so the supported configuration has it. A compiler built against the
   fallback declarations in `runtime/prismio_llvm.h` says so and exits rather than emitting

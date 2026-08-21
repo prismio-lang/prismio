@@ -9,6 +9,7 @@
 // The scanner also stops at the first unescaped quote only, so \" no longer ends
 // the literal early.
 
+import std.io
 extern fn str_equals(s1: String, s2: String) -> Int
 extern fn str_length(s: String) -> Int
 extern fn str_char_at(s: String, index: Int) -> Char

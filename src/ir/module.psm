@@ -794,10 +794,14 @@ fn generateModule(module: ASTNode) {
     // Tell the backend the target's pointer width -- it sizes the allocator's
     // size argument and array GEP indices.
     ir_set_pointer_int_type(irPtrIntType())
-    if (irTargetWasm) {
-        ir_module_start_wasm("self_hosted_module")
-    } else {
-        ir_module_start("self_hosted_module")
+    ir_module_start("self_hosted_module")
+    // A named target is written onto the module, so that clang (which is handed
+    // the same triple) and -g (which reads member offsets from the layout) agree
+    // with codegen about what is being built. The implicit host stamps nothing,
+    // which is why a plain build emits what it always did.
+    let target = targetCurrent()
+    if (target.explicit) {
+        ir_module_set_target(target.triple, target.dataLayout)
     }
 
     // Immediately after the module exists and before anything is built into it:
@@ -835,6 +839,12 @@ fn generateModule(module: ASTNode) {
         let debugStructStmt = ptr_to_node(debugStructPtr)
         if (debugStructStmt.kind == NodeKind.STRUCT_DECL) {
             debugStruct(debugStructStmt)
+        }
+        // Enums ride this walk rather than one of their own: they need no
+        // finished LLVM type, but the variant map has to be registered, which
+        // registerEnumDecl above has already done for the whole module.
+        if (debugStructStmt.kind == NodeKind.ENUM_DECL) {
+            debugEnum(debugStructStmt)
         }
         debugStructPtr = debugStructStmt.next
     }
@@ -1070,6 +1080,10 @@ fn generateModule(module: ASTNode) {
                 }
             }
             ir_global_var(stmt.s1, storageType(varType), initVal, 0)
+            // `varType`, not `storageType(varType)`: the debug layer wants the
+            // uncollapsed key, since `struct:T` is what tells it to describe a
+            // T rather than an anonymous pointer.
+            debugGlobal(stmt.s1, varType, debugTypeName(stmt.child1, stmt.child2), stmt)
             ir_register_global_name(stmt.s1)
             // Must be declared as a global, not a local: codegen asks
             // ir_var_is_global() to choose between @name and a stack slot, and

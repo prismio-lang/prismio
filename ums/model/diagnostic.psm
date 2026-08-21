@@ -1,6 +1,7 @@
 // Diagnostics are data until a CLI chooses to print them. Keeping them out of
 // the compiler's diagnostic registry lets UMS be embedded by other Prismio tools.
 
+import std.io
 extern fn print(value: String)
 extern fn println(value: String)
 extern fn int_to_str(value: Int) -> String

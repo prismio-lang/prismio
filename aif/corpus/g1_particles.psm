@@ -7,6 +7,7 @@
 // a particle system actually has: one bulk container, filled once, updated every
 // frame, never individually freed.
 
+import std.io
 struct Particle {
     px: Float,
     py: Float,

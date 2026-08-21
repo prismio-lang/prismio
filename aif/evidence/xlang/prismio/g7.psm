@@ -16,6 +16,7 @@
 // that needs the value to *be* (base, offset, length), which is the
 // representation half of SPEC 8.4 and is not built.
 
+import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> Int
 
 extern fn str_length(s: String) -> Int

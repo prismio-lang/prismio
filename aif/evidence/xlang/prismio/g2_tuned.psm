@@ -10,6 +10,7 @@
 // Workload semantics are unchanged: same scene, same cull predicate, same
 // checksums as g2.psm.
 
+import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> Int
 
 struct DrawCmd {

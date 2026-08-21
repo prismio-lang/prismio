@@ -12,7 +12,7 @@
 # here, at the point the libraries are built: runtime.a gets lang_runtime.c +
 # program_support.c, backend.a gets build_driver.c + ir_symbols.c + diagnostics.c +
 # llvm-api-backend.c. Because a
-# compiled program links only runtime.a (see find_toolchain_library and
+# compiled program links only runtime.a (see find_runtime_library and
 # link_against_runtime_library in build_driver.c), no ir_* backend symbol can reach
 # a user binary -- tools/verify_separation.sh checks that against the artifacts.
 

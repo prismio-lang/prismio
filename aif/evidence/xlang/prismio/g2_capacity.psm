@@ -13,6 +13,7 @@
 // the argument is a value rather than a fact the analysis must trust, and a wrong
 // hint costs a reallocation rather than correctness.
 
+import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> Int
 
 struct DrawCmd {

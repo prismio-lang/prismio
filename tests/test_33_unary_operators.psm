@@ -9,6 +9,7 @@
 // that fold, and `let i: I8 = -100` only type-checks because folded literals
 // still reach sema's int-literal coercion.
 
+import std.io
 let neg_global = -42
 
 fn fail(message: String) -> Int {

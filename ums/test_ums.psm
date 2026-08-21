@@ -1,3 +1,4 @@
+import std.io
 import ums.ums
 
 extern fn str_equals(left: String, right: String) -> Int

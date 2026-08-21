@@ -75,6 +75,21 @@ fn parserMatchVal(p: Parser, t: TokenType, val: String) -> Bool {
 // Creates a node already stamped with the position of the token the parser is
 // sitting on. Every node the parser builds comes from here rather than from
 // createNode(), so a node without a span means "synthesised", not "forgotten".
+// The same, from a token the caller kept rather than the one the parser is
+// looking at now. A statement whose node is built *after* its body is parsed --
+// an expression statement, `break`, `continue` -- is looking at the token that
+// follows it by then, which is the next statement's first token, or the closing
+// brace. Stamping that is an off-by-one in the line table and an underline in
+// the wrong place in a diagnostic.
+fn parserNodeFrom(kind: NodeKind, tok: Token) -> ASTNode {
+    let node = createNode(kind)
+    node.line = tok.line
+    node.col = tok.col
+    node.len = tok.len
+    node.file = tok.file
+    return node
+}
+
 fn parserNode(p: Parser, kind: NodeKind) -> ASTNode {
     let node = createNode(kind)
     let tok = parserCurrent(p)

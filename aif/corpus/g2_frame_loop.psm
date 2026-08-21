@@ -12,6 +12,7 @@
 // The `culled` list is the interesting part: it is built per frame, passed to a
 // consumer, and dropped. A call boundary must not be enough to make it escape.
 
+import std.io
 struct DrawCmd {
     mesh_id: Int,
     material_id: Int,

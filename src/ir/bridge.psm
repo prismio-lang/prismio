@@ -10,8 +10,12 @@ extern fn ir_get_temp() -> Int
 
 // Module
 extern fn ir_module_start(moduleName: String)
-extern fn ir_module_start_wasm(moduleName: String)
 extern fn ir_module_end()
+
+// Stamps the selected target onto the module being built. The target record
+// itself lives in common.target, because a type's width is an `ast` question
+// and `common` is the only package both it and `ir` may import.
+extern fn ir_module_set_target(triple: String borrow, layout: String borrow)
 
 // Types
 extern fn ir_type_void() -> String alias
@@ -378,6 +382,12 @@ extern fn ir_debug_location(fileId: Int, line: Int, col: Int)
 extern fn ir_debug_local(name: String, slot: String, typeKey: String, typeName: String,
                           fileId: Int, line: Int, argNo: Int)
 
+// A module-level global and the type it was declared with. No slot, because a
+// global *is* its storage -- the description attaches to the global itself, so
+// this is said during the module's global loop rather than inside a function.
+extern fn ir_debug_global(name: String, typeKey: String, typeName: String,
+                           fileId: Int, line: Int)
+
 // The source-level type of one field, said while the struct is being built.
 // Same reason a local carries one: the registered field type is a storage key,
 // and String, List<T>, [T], `T?` and every struct are all `ptr` there.
@@ -386,3 +396,8 @@ extern fn ir_debug_field_type(owner: String, field: String, typeName: String)
 // A struct type and where it was declared. Emitted for every declared struct
 // rather than on demand, so `p` can name a type a program only passes around.
 extern fn ir_debug_struct(name: String, fileId: Int, line: Int)
+
+// The same for an enum, which becomes a DW_TAG_enumeration_type from the variant
+// map ir_register_enum_variant already holds. Nothing else is needed: the
+// variants are the type.
+extern fn ir_debug_enum(name: String, fileId: Int, line: Int)

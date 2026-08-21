@@ -25,6 +25,7 @@
 // obligations by breaking the analysis under them fails here too rather than
 // only in the counts. `run_bracket_summary_test` reads the counts.
 
+import std.io
 extern fn print(s: String)
 extern fn println(s: String)
 

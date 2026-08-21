@@ -195,5 +195,12 @@
   "193": "str_split",
   "194": "run_aif_stack_slot_test",
   "195": "add_binding",
-  "196": "run_aif_view_test"
+  "196": "run_aif_view_test",
+  "197": "HANDOFF.md",
+  "198": "The prompt for the next session",
+  "199": "aif_verify_alloc",
+  "200": "list_new_cap",
+  "202": "Session of 2026-08-22 (finishing `-g`) — four holes closed, and two bugs the tasks walked into",
+  "203": "Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on",
+  "204": "find_struct"
 }

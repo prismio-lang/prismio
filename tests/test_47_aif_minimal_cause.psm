@@ -14,6 +14,7 @@
 // It also runs, because a fixture whose program never executes stops being
 // checked the moment its syntax drifts.
 
+import std.io
 extern fn str_length(s: String) -> Int
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn int_to_str(n: Int) -> String

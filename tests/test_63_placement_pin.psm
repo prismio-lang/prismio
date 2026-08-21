@@ -19,6 +19,7 @@
 // `run_placement_pin_test`. It compiles to the same manifest records and passes
 // the same mutation check; the prose above is new.
 
+import std.io
 extern fn arena_objects() -> Int
 
 struct Cmd {

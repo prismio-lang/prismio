@@ -37,6 +37,7 @@
 // suite would notice. What makes the teardown safe today is that it is complete,
 // not that it is tested.
 
+import std.io
 extern fn print(s: String)
 extern fn println(s: String)
 extern fn arena_objects() -> Int

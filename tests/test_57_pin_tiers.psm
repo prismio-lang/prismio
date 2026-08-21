@@ -30,6 +30,7 @@
 //      program asserting its own answers is what makes a wrong claim an exit code
 //      rather than a number nobody reads.
 
+import std.io
 extern fn print(s: String)
 extern fn println(s: String)
 extern fn int_to_str(n: Int) -> String produce(free)

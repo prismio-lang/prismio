@@ -525,6 +525,47 @@ void ir_register_enum_variant(const char* enum_name, const char* variant_name, i
     enum_variant_count++;
 }
 
+// The variants of one enum, by position. The table is flat -- every variant of
+// every enum in one array -- so "index i of this enum" means the i-th entry
+// whose enum_name matches, not the i-th entry.
+//
+// The pair exists for DWARF: DW_TAG_enumeration_type needs every enumerator, and
+// ir_get_enum_variant answers the other direction (name -> value), which cannot
+// enumerate. Interned names make the comparison a pointer compare.
+int ir_get_enum_variant_count(const char* enum_name) {
+    const char* e = ir_intern(enum_name);
+    int n = 0;
+    for (int i = 0; i < enum_variant_count; i++) {
+        if (enum_variants[i].enum_name == e) n++;
+    }
+    return n;
+}
+
+// Empty name and a zero value for an index that is not there, matching
+// ir_get_struct_field_name_at: a made-up enumerator in a debugger is worse than
+// a gap, and the caller checks the name.
+const char* ir_get_enum_variant_name_at(const char* enum_name, int index) {
+    const char* e = ir_intern(enum_name);
+    int n = 0;
+    for (int i = 0; i < enum_variant_count; i++) {
+        if (enum_variants[i].enum_name != e) continue;
+        if (n == index) return enum_variants[i].variant_name;
+        n++;
+    }
+    return "";
+}
+
+int ir_get_enum_variant_value_at(const char* enum_name, int index) {
+    const char* e = ir_intern(enum_name);
+    int n = 0;
+    for (int i = 0; i < enum_variant_count; i++) {
+        if (enum_variants[i].enum_name != e) continue;
+        if (n == index) return enum_variants[i].value;
+        n++;
+    }
+    return 0;
+}
+
 int ir_get_enum_variant(const char* enum_name, const char* variant_name) {
     const char* e = ir_intern(enum_name);
     const char* v = ir_intern(variant_name);

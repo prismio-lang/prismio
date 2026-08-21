@@ -1,0 +1,27 @@
+// Fixture for run_target_test. Deliberately contains the three things a target
+// can be got wrong on:
+//
+//   - a `Usize`, which is pointer-width, and which std.io prints through a
+//     `value as U64` that is a no-op on a 64-bit target and a real widening on
+//     wasm32. If sema and codegen disagree about how wide Usize is, that cast
+//     compiles to nothing and the module fails verification.
+//   - a struct with a String between two scalars, so a member offset moves when
+//     the pointer width does.
+//   - I/O, so std.io's bodies are in the module and there is something for the
+//     linker to resolve on a real cross build.
+
+import std.io
+
+struct Mixed {
+    tag: Int,
+    name: String,
+    count: I64
+}
+
+fn main() -> Int {
+    let m = Mixed { tag: 1, name: "cross", count: 7 }
+    let width: Usize = 8
+    println(m.name)
+    println(width)
+    return m.tag - 1
+}

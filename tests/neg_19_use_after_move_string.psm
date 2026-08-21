@@ -1,6 +1,7 @@
 // expect-error: use of moved value
 // Strings are affine as of AIF Level 4, so binding one to a second name transfers
 // ownership -- and the scope exit frees it exactly once, through the new name.
+import std.io
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn str_length(s: String) -> Int
 

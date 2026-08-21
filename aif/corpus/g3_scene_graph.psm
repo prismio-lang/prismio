@@ -17,6 +17,7 @@
 // function that touches it, so it must land T1 or T2 -- never T3 -- despite
 // being passed through five functions and indexed from all of them.
 
+import std.io
 struct Transform {
     px: Float,
     py: Float,

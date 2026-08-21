@@ -14,6 +14,7 @@
 // check reads that: `unique` cuts the aliasing graph, `pin` freezes a tier, and
 // both show up in the origin column.
 
+import std.io
 extern fn str_length(s: String) -> Int
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn int_to_str(n: Int) -> String

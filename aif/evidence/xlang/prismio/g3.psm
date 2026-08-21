@@ -5,6 +5,7 @@
 // propagation over it, so this program allocates nothing per frame -- it
 // measures how a retained tree is *traversed*, not how it is allocated.
 
+import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> Int
 
 struct Transform {

@@ -1,3 +1,4 @@
+import std.io
 fn fail(message: String) -> Int {
     print("FAIL: ")
     println(message)

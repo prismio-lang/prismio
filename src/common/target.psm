@@ -1,0 +1,81 @@
+// What a target *is*, to this compiler: three facts, plus whether anyone named
+// it. Everything downstream -- pointer width in codegen, the triple clang is
+// given, the layout `-g` reads member offsets from -- comes from here.
+//
+// Every field is LLVM's answer to a triple, never a table in this tree. See the
+// "Targets" section of runtime/llvm-api-backend.c for why: a table would be a
+// second copy of facts LLVM already owns, and a wrong row is a miscompile rather
+// than a link error. This record is the frontend's view of that one copy, which
+// is why there is no setter for the fields -- `targetSelect` asks LLVM and
+// `targetCurrent` reads back what it said.
+//
+// `explicit` is false for the host, and that is what keeps a plain `prismio
+// build` emitting the module it always emitted: an implicit host target stamps
+// neither triple nor layout, so LLVM and clang go on choosing both the way they
+// did before targets existed. Only a named target stamps.
+
+import common.text
+
+// The C side keeps its `ir_` prefix because LLVM's answer lives where LLVM is:
+// runtime/llvm-api-backend.c. The record is in `common` rather than `ir` because
+// `ast` needs it too -- Isize and Usize are pointer-width, so what a type *is*
+// depends on the target -- and `common` is the only package both may import.
+extern fn ir_target_select(triple: String borrow) -> Int
+extern fn ir_target_triple() -> String alias
+extern fn ir_target_data_layout() -> String alias
+extern fn ir_target_pointer_bits() -> Int
+extern fn ir_target_is_explicit() -> Int
+
+
+struct Target {
+    triple: String,
+    pointerBits: Int,
+    dataLayout: String,
+    explicit: Bool
+}
+
+// The target in force, as one value. Resolves the host on first use, so this
+// never answers "unknown".
+fn targetCurrent() -> Target {
+    return Target {
+        triple: ir_target_triple(),
+        pointerBits: ir_target_pointer_bits(),
+        dataLayout: ir_target_data_layout(),
+        explicit: ir_target_is_explicit() == 1
+    }
+}
+
+// Selects a target by triple. False means LLVM does not know it: either the
+// triple is wrong, or this is a build without real LLVM headers, where the host
+// is the only target that can be named at all.
+fn targetSelect(triple: String) -> Bool {
+    return ir_target_select(triple) == 1
+}
+
+// The integer the backend sizes an allocation and indexes an array GEP with.
+//
+// 32 and 64 are the only widths any target in the table below has: web is
+// wasm32, everything else is 64-bit. A width that is neither would be a target
+// nobody here has seen, and i64 is the safer of two wrong answers -- it is what
+// every host build has always used.
+//
+//   macOS     arm64-apple-macos / x86_64-apple-macos   64
+//   Android   aarch64-linux-android                    64
+//   Windows   x86_64-pc-windows-msvc                   64
+//   Linux     x86_64-unknown-linux-gnu                 64
+//   Web       wasm32-unknown-unknown                   32
+//
+// That list is a comment and not code on purpose: `--target` takes a triple and
+// LLVM validates it, so nothing here has to be kept in step with reality.
+fn targetPtrIntType(t: Target) -> String {
+    if (t.pointerBits == 32) { return "i32" }
+    return "i64"
+}
+
+
+// Bytes in a pointer. AIF's layout model asks it three times over: a String
+// field, a reference edge and an Isize are all one pointer wide, and on wasm32
+// that is four bytes rather than eight.
+fn targetPointerBytes() -> Int {
+    return ir_target_pointer_bits() / 8
+}

@@ -31,6 +31,7 @@
 // measures at 0.87x. It is a fixture rather than a corpus program so that the
 // assertion can name exact numbers.
 
+import std.io
 struct Sample {
     tag: Int,
     a: Float,

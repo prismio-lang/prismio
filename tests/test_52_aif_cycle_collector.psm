@@ -23,6 +23,7 @@
 // strongest form of CYCLES 1's prediction that the residue is small, and it is
 // why the corpus and the compiler all report `cycles none`.
 
+import std.io
 extern fn node_to_ptr(n: Node borrow) -> String alias
 extern fn ptr_to_node(p: String borrow) -> Node alias
 

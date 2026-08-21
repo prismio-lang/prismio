@@ -6,6 +6,7 @@
 // llc rejects. Every string below sits in one of those positions, so this file
 // failing to compile at all is the regression.
 
+import std.io
 extern fn str_equals(s1: String, s2: String) -> Int
 
 fn fail(message: String) -> Int {

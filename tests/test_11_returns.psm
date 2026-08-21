@@ -1,3 +1,4 @@
+import std.io
 fn classify_number(n: Int) -> Int {
     if (n < 0) {
         return 0

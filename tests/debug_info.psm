@@ -6,6 +6,7 @@
 // the only way to catch a line table that is off by a constant. Adding a line
 // above one of the markers moves it; the marker comments say which.
 
+import std.io
 extern fn int_to_str(n: Int) -> String produce(free)
 
 struct Reading {
@@ -30,6 +31,46 @@ struct Checkpoint {
     stamp: I64
 }
 
+// An enum, for the DW_TAG_enumeration_type half. Every Prismio enum lowers to
+// i32, so the storage key cannot tell one from an Int and the source-level name
+// is the only thing that can -- which is what makes `p kind` print STRUCT_DECL
+// instead of 12 on a compiler written around NodeKind and TokenType.
+//
+// The runner reads the variants out of this declaration rather than repeating
+// them, so adding one here adds it to the assertion.
+//
+// Named `Channel` on purpose: it does not look like an enum, the way `TokenType`
+// in this compiler does not. A layer that decided enum-ness from the name would
+// describe it as a plain Int and the assertions below would say so.
+enum Channel {
+    NORTH,
+    EAST,
+    SOUTH
+}
+
+// A struct field of enum type. The member's base type has to be the enumeration
+// and not the i32 it is stored as.
+struct Probe {
+    channel: Channel,
+    depth: Int
+}
+
+// Module-level globals, for the DIGlobalVariable half.
+//
+// A global has no alloca and no scope stack, so it goes through a different path
+// from every local in this file, and its absence is invisible from inside a
+// frame: a debugger that cannot name any of these can still stop in `main` and
+// print everything there. Which is how it went unnoticed until it was looked for.
+//
+// The `// GLOBAL <name> <key>` comments are read by the runner the way `// MARK`
+// is -- the expected line and type come from this file, so moving a declaration
+// moves the assertion with it.
+let mut tally = 0                         // GLOBAL tally i32
+let unit = "reading"                      // GLOBAL unit ptr
+let epoch: I64 = 1700000000               // GLOBAL epoch i64
+let tolerance = 0.125                     // GLOBAL tolerance double
+let enabled = true                        // GLOBAL enabled i1
+
 fn scaled(r: Reading) -> Float {
     return r.scale * r.magnitude          // MARK scaled-return
 }
@@ -41,6 +82,38 @@ fn describe(r: Reading, prefix: String) -> String {
 
 fn checkpointTotal(c: Checkpoint) -> I64 {
     return c.stamp
+}
+
+fn channelOf(pr: Probe) -> Int {
+    // The idiom this compiler is written in, and the case worth a fixture: an
+    // enum bound from a struct field with no annotation anywhere. Sema infers
+    // `Channel` from the field's declared type, and the debug layer has to carry
+    // that name through or the binding is described as a plain Int.
+    let seen = pr.channel
+    if (seen == Channel.EAST) { return 1 }
+    return 0
+}
+
+// Two line-table cases that no other function here reaches.
+//
+// *The way out of a scope belongs to the closing brace.* Scope drops, arena pops
+// and region exits are emitted after the block's last statement and used to
+// inherit its line, so a debugger stepping out reported the last thing that ran.
+// `inner` is a String, so this block has something to emit on the way out; a
+// block that only returns has nothing, and claims no line at all.
+//
+// *A call statement is on its own line.* Its AST node used to be built after the
+// expression was parsed, so it was stamped with the token that *follows* it --
+// the next statement, or the `}`. `// MARK scope-call` is on a call and the
+// marks elsewhere in this file are not, which is why they never caught it.
+fn scopeExit(prefix: String, flag: Bool) -> Int {
+    let mut n = 0
+    if (flag) {
+        let inner = str_concat(prefix, "!")
+        n = 1
+    }                                     // CLOSE scope-inner
+    println(prefix)                       // MARK scope-call
+    return n
 }
 
 fn main() -> Int {
@@ -56,12 +129,21 @@ fn main() -> Int {
         let inner = count + 1             // MARK loop-inner
         count = inner
     }
-    println(describe(sample, "reading "))
+    if (enabled) {
+        tally = tally + 1
+    }
+    println(describe(sample, unit))
     println(int_to_str(count))
+    println(int_to_str(scopeExit("scope", true)))
     if (stamp > 0) {
         println("PASS: checkpoint")
     }
-    if (total > 0.0) {
+    let probe = Probe { channel: Channel.EAST, depth: 3 }
+    let heading: Channel = Channel.SOUTH
+    if (channelOf(probe) == 1 and heading == Channel.SOUTH) {
+        println("PASS: channel")
+    }
+    if (total > 0.0 and tolerance > 0.0 and epoch > 0 and tally == 1) {
         println("PASS: debug info fixture")
     }
     return 0

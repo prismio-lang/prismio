@@ -15,6 +15,7 @@
 // changed. That is good news, and src/ast.psm's invariant should be revisited
 // rather than this test patched.
 
+import std.io
 extern fn node_to_ptr(slot: Slot) -> String
 extern fn str_equals(s1: String, s2: String) -> Int
 

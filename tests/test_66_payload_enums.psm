@@ -6,6 +6,7 @@
 // be a defined value rather than whatever was in that memory, and a fieldless
 // enum must be completely unaffected.
 
+import std.io
 extern fn str_equals(s1: String, s2: String) -> Int
 
 enum Shape {

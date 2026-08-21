@@ -129,10 +129,43 @@ fn debugTypeName(annotation: String, initializer: String) -> String {
             let t = nodeGetType(initNode)
             if (t.kind == TypeKind.STRING) { return "String" }
             if (t.kind == TypeKind.STRUCT) { return t.name }
+            // An enum lowers to i32, so without this `let kind = node.kind` --
+            // which is how this codebase binds an enum nearly everywhere, with
+            // no annotation -- would be described as a plain Int and print as a
+            // number. The field's declared type is an enum, so sema's inferred
+            // TypeInfo carries the name even though nothing wrote it here.
+            //
+            // A bare variant is the one case this does not reach: sema types
+            // `Colour.RED` as `Int` (semaExpr's MEMBER_ACCESS_EXPR arm), so
+            // `let c = Colour.RED` is an Int as far as the whole compiler is
+            // concerned, and saying otherwise here would have the debug layer
+            // assert a type the compiler does not hold.
+            if (t.kind == TypeKind.ENUM) { return t.name }
         }
     }
 
     return ""
+}
+
+// The closing brace of a block, for the code that runs on the way out of it.
+//
+// Scope drops, arena pops and region exits are emitted after the block's last
+// statement, so without this they carry that statement's line and a debugger
+// stepping out of a scope reports the last thing that ran instead of the brace
+// it is leaving.
+//
+// A block with no recorded brace keeps the current location rather than being
+// given line 0: every block the parser builds has one, and a synthesised block
+// that does not is a block whose end is genuinely unknown. The previous
+// statement's line is at least a line inside this scope; zero is not a place.
+//
+// This is line attribution only. It does not change variable liveness -- LLVM
+// derives a DW_TAG_lexical_block's low_pc/high_pc from the instructions in the
+// scope, not from the DILexicalBlock's line.
+fn debugAtBlockEnd(block: ASTNode) {
+    if (irDebugInfo == false) { return }
+    if (block.i1 <= 0) { return }
+    ir_debug_location(block.file, block.i1, block.i2)
 }
 
 // A binding and the alloca holding it.
@@ -146,6 +179,14 @@ fn debugLocal(name: String, slot: String, typeKey: String, typeName: String,
     ir_debug_local(name, slot, typeKey, typeName, node.file, node.line, argNo)
 }
 
+// A module-level global. The span is the declaration's own, not a statement's:
+// a global is not executed anywhere, so there is no line a debugger would stop
+// on -- the line is where the name was written.
+fn debugGlobal(name: String, typeKey: String, typeName: String, node: ASTNode) {
+    if (irDebugInfo == false) { return }
+    ir_debug_global(name, typeKey, typeName, node.file, node.line)
+}
+
 fn debugFieldType(owner: String, field: String, typeNode: String) {
     if (irDebugInfo == false) { return }
     ir_debug_field_type(owner, field, debugTypeName(typeNode, ""))
@@ -154,6 +195,14 @@ fn debugFieldType(owner: String, field: String, typeNode: String) {
 fn debugStruct(structNode: ASTNode) {
     if (irDebugInfo == false) { return }
     ir_debug_struct(structNode.s1, structNode.file, structNode.line)
+}
+
+// An enum, described by its variants. Emitted from the same pass as the structs
+// and for the same reason -- an enum a program only compares against is still
+// one a debugger should be able to name.
+fn debugEnum(enumNode: ASTNode) {
+    if (irDebugInfo == false) { return }
+    ir_debug_enum(enumNode.s1, enumNode.file, enumNode.line)
 }
 
 // Opens the compile unit. Called once, immediately after ir_module_start, since

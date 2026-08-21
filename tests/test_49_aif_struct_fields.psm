@@ -16,6 +16,7 @@
 // finishing at all is most of the assertion. What the numbers add is that the
 // paths which must NOT free still do not.
 
+import std.io
 struct Slot {
     weight: Int
 }

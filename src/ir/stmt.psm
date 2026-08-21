@@ -495,6 +495,10 @@ fn generateBlock(block: ASTNode) {
         stmtPtr = stmt.next
     }
 
+    // Everything from here to the end of the block is the way *out* of it, and
+    // belongs to the closing brace rather than to the last statement that ran.
+    debugAtBlockEnd(block)
+
     // Only on fall-through. A block that returned or branched away already
     // emitted its drops at that statement, and emitting them again here would
     // be unreachable code after a terminator -- or, worse, reachable and a

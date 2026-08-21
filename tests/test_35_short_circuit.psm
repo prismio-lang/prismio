@@ -10,6 +10,7 @@
 // Side effects are tracked through a global counter: if the right operand is
 // evaluated when it should not be, the counter moves and the test fails.
 
+import std.io
 let mut side_effects = 0
 
 fn fail(message: String) -> Int {

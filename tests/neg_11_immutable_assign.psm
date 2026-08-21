@@ -5,6 +5,7 @@
 // mutability -- design principle #1 in the README -- was advertised and
 // completely unenforced. This program used to compile and print 6.
 
+import std.io
 fn main() -> Int {
     let x = 5
     x = 6

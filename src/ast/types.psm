@@ -1,5 +1,6 @@
 import ast.nodes
 import common.text
+import common.target
 
 // As with NodeKind (ast.psm), **nothing may take ordinal 0**: a TypeInfo is
 // punned as a String and `kind` is its first field, so a zero-valued kind makes
@@ -74,17 +75,23 @@ fn typeChar() -> TypeInfo { return typeMake(TypeKind.CHAR, "Char", "i8") }
 fn typeString() -> TypeInfo { return typeMake(TypeKind.STRING, "String", "ptr") }
 fn typePtr() -> TypeInfo { return typeMake(TypeKind.PTR, "Ptr", "ptr") }
 
-// Sized integers. `Int` is the 32-bit signed default. Unsigned names start with "U";
-// usize/isize are pointer-width (i64 on native; the wasm target lowers these to i32).
+// Sized integers. `Int` is the 32-bit signed default. Unsigned names start with "U".
+//
+// usize/isize are pointer-width, and that width comes from the target record --
+// **not** a constant. sema and codegen have to give the same answer here: src/ir
+// lowers Isize through the same call, and if this said i64 while codegen emitted
+// i32, `value as I64` in std/io would be a no-op cast (equal keys) and the
+// verifier would see a 32-bit value passed to a 64-bit parameter. That is the
+// whole reason `--target wasm32-unknown-unknown` used to build nothing at all.
 fn typeI8() -> TypeInfo { return typeMake(TypeKind.INT, "I8", "i8") }
 fn typeI16() -> TypeInfo { return typeMake(TypeKind.INT, "I16", "i16") }
 fn typeI64() -> TypeInfo { return typeMake(TypeKind.INT, "I64", "i64") }
-fn typeIsize() -> TypeInfo { return typeMake(TypeKind.INT, "Isize", "i64") }
+fn typeIsize() -> TypeInfo { return typeMake(TypeKind.INT, "Isize", targetPtrIntType(targetCurrent())) }
 fn typeU8() -> TypeInfo { return typeMake(TypeKind.INT, "U8", "i8") }
 fn typeU16() -> TypeInfo { return typeMake(TypeKind.INT, "U16", "i16") }
 fn typeU32() -> TypeInfo { return typeMake(TypeKind.INT, "U32", "i32") }
 fn typeU64() -> TypeInfo { return typeMake(TypeKind.INT, "U64", "i64") }
-fn typeUsize() -> TypeInfo { return typeMake(TypeKind.INT, "Usize", "i64") }
+fn typeUsize() -> TypeInfo { return typeMake(TypeKind.INT, "Usize", targetPtrIntType(targetCurrent())) }
 
 // Bit width of an integer type, from its LLVM spelling. Casting needs it to
 // choose between truncation and extension.

@@ -17,6 +17,7 @@
 // below must be *unaffected* by it, and they are the ones that regressed twice
 // while it was being built.
 
+import std.io
 struct Item {
     value: Int
 }

@@ -5,6 +5,7 @@
 // (12 materials x 2000 entities) and allocates nothing. The release/evict
 // lifecycle runs once at the end, as in the corpus.
 
+import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> Int
 
 struct Mesh {

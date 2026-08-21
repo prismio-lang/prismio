@@ -19,6 +19,7 @@
 // widening then narrowing recovers the sign bits, and a narrowing that used the
 // wrong instruction would not.
 
+import std.io
 fn sum_ints() -> Int {
     let nums: List<Int> = list_new()
     list_push(nums, 42)

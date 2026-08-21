@@ -4,6 +4,7 @@
 // This used to compile and print 42: the symbol table was flat and cleared only
 // once per function, so `inner` outlived the block that declared it.
 
+import std.io
 fn main() -> Int {
     if (true) {
         let inner = 42

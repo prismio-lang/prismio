@@ -1,3 +1,4 @@
+import std.io
 let x = 5
 let y = 10
 let mut z = 0

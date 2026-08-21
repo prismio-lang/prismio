@@ -3,6 +3,7 @@
 //
 // The std.io overload set has no two-argument candidate.
 
+import std.io
 fn main() -> Int {
     println(1, 2)
     return 0

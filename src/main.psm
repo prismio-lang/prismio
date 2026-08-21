@@ -1,3 +1,4 @@
+import std.io
 import lexer.scanner
 import lexer.token
 import common.text
@@ -37,6 +38,12 @@ extern fn compiler_set_verify_mode(on: Int)
 // info: the object step drops to -O0, and on Darwin a .dSYM is written before
 // the object -- which is where Mach-O keeps the DWARF -- is deleted.
 extern fn compiler_set_debug_info(on: Int)
+// `--sysroot`. Where *this machine* keeps the SDK for the target -- not a
+// property of the triple, which is why it is not in the target record: two hosts
+// building the same target legitimately pass different paths, and an SDK the
+// compiler picked for itself is the kind of helpful guess that ends in a link
+// error someone spends an afternoon on.
+extern fn compiler_set_sysroot(path: String borrow)
 extern fn compiler_bootstrap_executable(irFile: String, exeFile: String) -> Int
 extern fn compiler_run_executable(exeFile: String) -> Int
 // LAYOUT 3.2. Runs a workload driver with no argv and a wall-clock bound, so W2's
@@ -359,10 +366,6 @@ fn standardModulePath(baseDir: String, leaf: String) -> String {
     return ""
 }
 
-fn standardIoPath(baseDir: String) -> String {
-    return standardModulePath(baseDir, "io.psm")
-}
-
 // Where `import std.map` reads from.
 //
 // An ordinary import is relative to the source root, and that is right for an
@@ -389,30 +392,6 @@ fn resolveImportPath(baseDir: String, moduleName: String) -> String {
     return standardModulePath(baseDir, str_concat(str_substring(moduleName, 4, str_length(moduleName) - 4), ".psm"))
 }
 
-// std.io is the prelude's source-level I/O boundary. Loading it here gives every
-// program the same two overload sets without making the compiler special-case
-// either function during semantic analysis or IR generation.
-fn mergeStandardIo(merged: ASTNode, baseDir: String, visited: String) -> String {
-    let path = standardIoPath(baseDir)
-    if (str_equals(path, "") == 1) {
-        diag_error("cannot locate the Prismio standard module std.io")
-        return visited
-    }
-
-    let key = importMemoKey(path)
-    if (str_contains(visited, key) == 1) { return visited }
-
-    let content = read_file(path)
-    if (str_equals(content, "") == 1) {
-        diag_error(str_concat("cannot read Prismio standard module ", path))
-        return visited
-    }
-
-    let file = diag_add_file(path, content)
-    return mergeModuleImports(merged, parseSource(content, file),
-                              get_directory(path), str_concat(visited, key))
-}
-
 // The entry file is marked resolved before the walk begins, so that a package
 // import naming the package it lives in cannot pull it in a second time and
 // duplicate every function it defines.
@@ -423,8 +402,9 @@ fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNod
     // module; this fill is the merge's own, and it is the same one walk.
     ir_reset_decl_index()
     mergeTailPtr = ""
-    let seen = mergeStandardIo(merged, baseDir, importMemoKey(entryPath))
-    mergeModuleImports(merged, module, baseDir, seen)
+    // No prelude. `std.io` is an ordinary import, so a program that names no I/O
+    // carries none -- which is what lets a target with no stdout link at all.
+    mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))
 
     // Generic declarations come out of the chain here, at the end of the merge
     // rather than at the start of sema, so that every consumer of a resolved
@@ -442,9 +422,10 @@ fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNod
 fn printUsage() {
     println("Usage:")
     println("  prismio build [source.psm] [-o output.exe] [-g] [--verify]")
+    println("                [--target <triple>] [--sysroot <sdk>]")
     println("  prismio run <source.psm> [-o output.exe] [-g] [--verify]")
     println("  prismio check <source.psm> [--diagnostic-format=json]")
-    println("  prismio bootstrap [source.psm] [-o output.exe]")
+    println("  prismio bootstrap [source.psm] [-o output.exe] [-g]")
     println("  prismio runtime-hash")
     println("  prismio dump-ast <source.psm>")
     println("  prismio aif <source.psm> [--summary] [--layout] [--copyable-collections] [--theta-fields] [--budget=N]")
@@ -456,6 +437,14 @@ fn printUsage() {
     println("   the object step to -O0, because a variable folded into a register is")
     println("   a variable a debugger cannot show you. Distinct from --debug, which")
     println("   is the analysis level and says nothing about debug info.")
+    println("")
+    println("--target takes an LLVM target triple -- x86_64-apple-macos,")
+    println("   aarch64-linux-android, x86_64-pc-windows-msvc,")
+    println("   x86_64-unknown-linux-gnu, wasm32-unknown-unknown. LLVM validates")
+    println("   it and answers with the pointer width and data layout, so there")
+    println("   is no list of supported targets to fall out of date. --sysroot")
+    println("   points clang at that target's SDK, and a cross build links")
+    println("   runtime-<triple> rather than the host's runtime.")
     println("")
     println("build/run link against the installed Prismio runtime only.")
     println("build with no source discovers build.ums and delegates the project to UMS.")
@@ -541,8 +530,9 @@ fn checkRuntimeFreshness() {
     println(installed)
     print("  the runtime sources on disk now hash ")
     println(current)
-    println("  Re-package the toolchain (tools/package.ps1) so lib/ matches runtime/,")
-    println("  or move away from the source tree to use the installed runtime as-is.")
+    println("  Re-package the toolchain (tools/package.sh, or tools/package.ps1 on Windows)")
+    println("  so lib/ matches runtime/, or move away from the source tree to use the")
+    println("  installed runtime as-is.")
     exit(1)
 }
 
@@ -1220,13 +1210,18 @@ fn main() -> Int {
 
         if (cli_arg_count() > 2) {
             let candidate = cli_arg(2)
-            if (str_equals(candidate, "-o") == 0 and str_equals(candidate, "--target") == 0) {
+            // Every flag `bootstrap` accepts has to be named here too, or it
+            // is taken for the source path and the build silently compiles a
+            // file called `-g`.
+            if (str_equals(candidate, "-o") == 0 and str_equals(candidate, "-g") == 0) {
                 path = candidate
                 argIndex = 3
             }
         }
 
         outputFile = compiler_default_exe_path(path)
+
+        let mut bootstrapDebugInfo = false
 
         while (argIndex < cli_arg_count()) {
             let barg = cli_arg(argIndex)
@@ -1237,6 +1232,11 @@ fn main() -> Int {
                 }
                 outputFile = cli_arg(argIndex + 1)
                 argIndex = argIndex + 2
+            } else if (str_equals(barg, "-g") == 1) {
+                // The compiler is the largest Prismio program there is, and it
+                // was the one program that could not be stepped through.
+                bootstrapDebugInfo = true
+                argIndex = argIndex + 1
             } else {
                 diag_error(str_concat("unknown argument ", diagQuote(barg)))
                 printUsage()
@@ -1245,7 +1245,7 @@ fn main() -> Int {
         }
 
         return compileSource(path, outputFile, runAfterBuild, bootstrapMode, false, false,
-                              false, false)
+                              bootstrapDebugInfo, false)
     }
 
     if (str_equals(first, "build") == 1) {
@@ -1315,12 +1315,23 @@ fn main() -> Int {
             argIndex = argIndex + 1
         } else if (str_equals(arg, "--target") == 1) {
             if (argIndex + 1 >= cli_arg_count()) {
-                diag_error("`--target` requires a value (e.g. wasm32)")
+                diag_error("`--target` requires an LLVM target triple (e.g. x86_64-apple-macos)")
                 return 1
             }
-            if (str_equals(cli_arg(argIndex + 1), "wasm32") == 1) {
-                irSetTargetWasm(true)
+            // The triple is validated by LLVM rather than checked against a list
+            // here: a list would be a second copy of what LLVM knows, and the
+            // failure mode of a stale entry is a miscompile.
+            if (targetSelect(cli_arg(argIndex + 1)) == false) {
+                diag_error(str_concat("unknown target triple ", diagQuote(cli_arg(argIndex + 1))))
+                return 1
             }
+            argIndex = argIndex + 2
+        } else if (str_equals(arg, "--sysroot") == 1) {
+            if (argIndex + 1 >= cli_arg_count()) {
+                diag_error("`--sysroot` requires a path to the target's SDK")
+                return 1
+            }
+            compiler_set_sysroot(cli_arg(argIndex + 1))
             argIndex = argIndex + 2
         } else if (str_equals(arg, "--verify") == 1) {
             // SPEC 7.3. Slower and heavier by design: the mode exists to be run

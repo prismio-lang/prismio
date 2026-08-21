@@ -1,3 +1,4 @@
+import std.io
 let BUFFER_SIZE = 1024
 let MAX_TOKENS = 10000
 let mut global_counter = 0

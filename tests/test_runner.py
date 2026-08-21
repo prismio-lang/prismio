@@ -1,4 +1,5 @@
 import json
+import platform
 import re
 import subprocess
 import sys
@@ -1331,6 +1332,21 @@ def run_bootstrap_command_test():
     know how to link a compiler now -- this command and the bootstrap scripts --
     and two copies of a recipe that must agree is how this broke in the first
     place. This is the check that makes a disagreement loud.
+
+    **The bootstrap is done with `-g`**, which costs about a second and buys two
+    things a separate test would pay a whole second bootstrap for again. First,
+    the flag reaches this command at all: `build` and `run` parsed it and
+    `bootstrap` did not, so the largest Prismio program in existence was the one
+    that could not be stepped through. Second, and this is the assertion with
+    teeth, the compiler built *with* `-g` must still emit byte-identical IR --
+    debug info describes a program, it does not change one, and a `-g` build that
+    compiled differently would be a different compiler.
+
+    On Mach-O the `.dSYM` is checked too, because the executable carries only a
+    debug map and the DWARF it points at is in an object file the build deletes.
+    `compiler_build_executable` ran dsymutil before that delete and
+    `compiler_bootstrap_executable` did not, so `bootstrap -g` emitted every byte
+    of the metadata and then threw away the half describing Prismio code.
     """
     print(f"\n{BLUE}--- Running bootstrap_command ---{RESET}")
     problems = []
@@ -1338,7 +1354,8 @@ def run_bootstrap_command_test():
     with tempfile.TemporaryDirectory(prefix="prismio-bootstrap-cmd-") as wd:
         built = Path(wd) / "selfbuilt"
         r = subprocess.run([str(Path(PRISMIO_EXE).resolve()), "bootstrap",
-                            str(TEST_DIR.parent / "src" / "main.psm"), "-o", str(built)],
+                            str(TEST_DIR.parent / "src" / "main.psm"), "-o", str(built),
+                            "-g"],
                            capture_output=True, text=True)
         if r.returncode != 0 or not built.exists():
             text = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
@@ -1360,14 +1377,44 @@ def run_bootstrap_command_test():
                                 "from the one running this suite -- it linked, and it is not "
                                 "the same compiler")
 
+            if sys.platform == "darwin":
+                if not Path(str(built) + ".dSYM").is_dir():
+                    problems.append("`bootstrap -g` produced no .dSYM: on Mach-O the "
+                                    "executable carries a debug map and the DWARF it "
+                                    "points at is in the program object, which the "
+                                    "build deletes -- so the metadata was emitted and "
+                                    "then thrown away")
+            else:
+                print(f"  (no .dSYM check: only Mach-O keeps DWARF outside the binary)")
+
+    # `-g` has to be named in the guard that decides whether argument 2 is the
+    # source path, or `prismio bootstrap -g` compiles a file called `-g`. Run
+    # where `src/main.psm` cannot resolve, so the two outcomes are told apart by
+    # *which* path is reported missing and neither one builds anything.
+    with tempfile.TemporaryDirectory(prefix="prismio-bootstrap-flag-") as wd:
+        r = subprocess.run([str(Path(PRISMIO_EXE).resolve()), "bootstrap", "-g",
+                            "-o", str(Path(wd) / "out")],
+                           capture_output=True, text=True, cwd=wd)
+        said = ((r.stdout or "") + (r.stderr or ""))
+        if r.returncode == 0:
+            problems.append("`prismio bootstrap -g` succeeded in a directory with no "
+                            "`src/main.psm`, so it built something other than the "
+                            "default source")
+        elif "cannot read -g" in said:
+            problems.append("`prismio bootstrap -g` reports `-g` as the missing source: "
+                            "the flag was taken for the source path")
+        elif "cannot read src/main.psm" not in said:
+            problems.append("`prismio bootstrap -g` failed for a reason this test did "
+                            f"not expect, so it is not checking the guard: {said.strip()[:120]}")
+
     if problems:
         print(f"{RED}[FAIL] `prismio bootstrap` does not build a working compiler{RESET}")
         for p in problems:
             print(f"  {p}")
         return False
 
-    print(f"{GREEN}[PASS] `prismio bootstrap` builds a compiler whose IR matches this one's"
-          f"{RESET}")
+    print(f"{GREEN}[PASS] `prismio bootstrap -g` builds a debuggable compiler whose "
+          f"IR matches this one's{RESET}")
     return True
 
 
@@ -2209,6 +2256,43 @@ def _di_tuple(nodes, ref):
     return [int(x) for x in re.findall(r"!(\d+)", body)]
 
 
+def _di_scope_file(nodes, ref, depth=0):
+    """The DIFile a metadata node belongs to, following `scope:` upwards."""
+    text = nodes.get(ref, "")
+    if depth > 8:
+        return None
+    m = re.search(r"file: !(\d+)", text)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"scope: !(\d+)", text)
+    if m:
+        return _di_scope_file(nodes, int(m.group(1)), depth + 1)
+    return None
+
+
+def _di_located_lines(nodes, filename):
+    """Every line a DILocation names *in one source file*.
+
+    Pooling every file's locations is how a marked line can be `located` by
+    coincidence: `std/io.psm` is 170 lines long and is merged into every program
+    here, so any line number under 170 is in the set whether or not the fixture
+    put anything there. That made the `// MARK` assertions pass against a
+    compiler with the off-by-one they exist to catch.
+    """
+    files = {n for n, t in nodes.items() if "DIFile" in t and filename in t}
+    lines = set()
+    for text in nodes.values():
+        if not text.startswith("!DILocation"):
+            continue
+        at = re.search(r"line: (\d+)", text)
+        scope = re.search(r"scope: !(\d+)", text)
+        if not at or not scope:
+            continue
+        if _di_scope_file(nodes, int(scope.group(1))) in files:
+            lines.add(int(at.group(1)))
+    return lines
+
+
 def _di_composite(nodes, name):
     """The DICompositeType with this name, and its members as
     [(field, offset_bits, size_bits)] in declaration order within the record."""
@@ -2267,6 +2351,467 @@ def _emitted_struct(ir, name):
     if not m:
         return None
     return [e.strip() for e in m.group(1).split(",") if e.strip()]
+
+
+# ---------------------------------------------------------------------------
+# Cross-compilation
+# ---------------------------------------------------------------------------
+
+def _target_di_member_bit(ir, struct_name, field):
+    """The bit offset DWARF gives one member of one composite, or None."""
+    nodes = _di_nodes(ir)
+    members, _ = _di_composite(nodes, struct_name)
+    if members is None:
+        return None
+    for name, offset, _size in members:
+        if name == field:
+            return offset
+    return None
+
+
+def run_target_test():
+    """`--target`, checked on the four things it can get wrong silently.
+
+    `--target wasm32` used to exist and build *nothing*: `Isize`/`Usize` lowered
+    to i32 in codegen while `ast.types` told sema they were i64, so std.io's
+    `value as U64` was a cast between two equal keys -- which emits nothing --
+    and every program failed LLVMVerifyModule on a 32-bit value handed to a
+    64-bit parameter. That is the shape of failure this test exists for: sema and
+    codegen quietly disagreeing about what the target is.
+
+      1. *An unnamed target stamps nothing.* The host case must emit the module
+         it emitted before targets existed. A stray unconditional stamp would
+         move every program's IR at once.
+      2. *A named target reaches the module*, triple and data layout both, from
+         LLVM rather than from a table anyone can mistype.
+      3. *Pointer width follows the target, in sema as well as codegen.* On
+         wasm32 the allocator takes an i32 and the widening cast in std.io is
+         real, so it appears in the IR. Either half alone is a miscompile.
+      4. *`-g` reads member offsets from the target, not the host.* A String
+         between an Int and an I64 sits at bit 64 on a 64-bit target and at bit
+         32 on wasm32. Getting this from the host is the exact bug the DWARF
+         layer's data-layout pin was built to prevent, and cross-compilation is
+         the case that can reintroduce it.
+
+    Plus the object cache, where sharing one object between two targets is
+    silent: the same source and the same -D flags, a different triple.
+
+    A real cross *link* is checked only where this host can run the result --
+    arm64 macOS, where x86_64 runs under Rosetta. Everywhere else the IR-level
+    assertions above still run, and the link is reported as skipped rather than
+    passed.
+    """
+    print(f"\n{BLUE}--- Running target_cross ---{RESET}")
+    source = TEST_DIR / "target_cross.psm"
+    host_ll = TEST_DIR / "target_host.ll"
+    wasm_ll = TEST_DIR / "target_wasm.ll"
+    host_g = TEST_DIR / "target_host_g.ll"
+    wasm_g = TEST_DIR / "target_wasm_g.ll"
+    problems = []
+
+    builds = ((host_ll, []),
+              (wasm_ll, ["--target", "wasm32-unknown-unknown"]),
+              (host_g, ["-g"]),
+              (wasm_g, ["-g", "--target", "wasm32-unknown-unknown"]))
+    for out, extra in builds:
+        result = run_command([str(PRISMIO_EXE), "build", str(source),
+                              "-o", str(out)] + extra)
+        if result.returncode != 0:
+            print(f"{RED}[FAIL] build {' '.join(extra) or '(host)'} exited "
+                  f"{result.returncode}{RESET}")
+            print(result.stdout or result.stderr)
+            cleanup_files(host_ll, wasm_ll, host_g, wasm_g)
+            return False
+
+    host_ir = host_ll.read_text(encoding="utf-8", errors="replace")
+    wasm_ir = wasm_ll.read_text(encoding="utf-8", errors="replace")
+    host_g_ir = host_g.read_text(encoding="utf-8", errors="replace")
+    wasm_g_ir = wasm_g.read_text(encoding="utf-8", errors="replace")
+    cleanup_files(host_ll, wasm_ll, host_g, wasm_g)
+
+    # 1. The host stamps nothing.
+    for marker in ("target triple", "target datalayout"):
+        if marker in host_ir:
+            problems.append(f"a build with no --target emitted `{marker}` -- the "
+                            "implicit host is stamping the module, which moves "
+                            "the IR of every program at once")
+
+    # 2. A named target reaches the module, both halves.
+    if 'target triple = "wasm32-unknown-unknown"' not in wasm_ir:
+        problems.append("--target wasm32-unknown-unknown did not put its triple "
+                        "on the module")
+    if not re.search(r'^target datalayout = "e-m:e-p:32:32', wasm_ir, re.M):
+        problems.append("--target wasm32-unknown-unknown did not put a 32-bit "
+                        "data layout on the module")
+
+    # 3. Pointer width, in both halves of the compiler.
+    if "declare ptr @malloc(i32)" not in wasm_ir:
+        problems.append("the allocator still takes a 64-bit size on wasm32 -- "
+                        "codegen is not reading the target's pointer width")
+    if "declare ptr @malloc(i64)" not in host_ir:
+        problems.append("the allocator does not take a 64-bit size on the host")
+    if not re.search(r"= (zext|sext) i32 %\d+ to i64", wasm_ir):
+        problems.append("no widening cast in the wasm32 module: sema still "
+                        "believes Isize/Usize are 64-bit while codegen emits 32, "
+                        "so `value as U64` in std.io compiled to nothing. This is "
+                        "exactly how --target wasm32 used to build nothing at all")
+
+    # 4. -g offsets come from the target.
+    for ir, label, want in ((host_g_ir, "host", 64), (wasm_g_ir, "wasm32", 32)):
+        got = _target_di_member_bit(ir, "Mixed", "name")
+        if got is None:
+            problems.append(f"no DWARF member for `Mixed.name` in the {label} "
+                            "-g build, so the offset half of this test did not run")
+        elif got != want:
+            problems.append(f"`Mixed.name` is described at bit {got} in the "
+                            f"{label} -g build and belongs at {want} -- the "
+                            "member offsets came from the wrong data layout, "
+                            "which is a debugger confidently reading the wrong "
+                            "bytes")
+
+    # 5. An unknown triple is refused rather than silently ignored.
+    bad = run_command([str(PRISMIO_EXE), "build", str(source),
+                       "--target", "not-a-real-triple", "-o", str(host_ll)])
+    cleanup_files(host_ll)
+    if bad.returncode == 0:
+        problems.append("`--target not-a-real-triple` was accepted; a target the "
+                        "compiler cannot resolve must not produce a binary")
+    elif "unknown target triple" not in (bad.stdout or "") + (bad.stderr or ""):
+        problems.append("an unresolvable triple was rejected for the wrong reason")
+
+    # 6. Two targets must not share one cached object.
+    with tempfile.TemporaryDirectory() as cache:
+        env = dict(os.environ, PRISMIO_OBJ_CACHE_DIR=cache,
+                   PRISMIO_OBJ_CACHE_TRACE="1")
+        exe = TEST_DIR / ("target_cache" + (".exe" if os.name == "nt" else ""))
+        seen = []
+        for extra in ([], ["--target", "wasm32-unknown-unknown"]):
+            r = subprocess.run([str(PRISMIO_EXE), "build", str(source),
+                                "-o", str(exe)] + extra,
+                               capture_output=True, text=True, env=env)
+            seen.append(r.stderr or "")
+        cleanup_files(exe)
+        # The host build populates the cache; the cross build must miss it. A hit
+        # there means one object is being served to two targets, which links and
+        # then misbehaves.
+        if "[objcache miss] lang_runtime" not in seen[0]:
+            problems.append("the host build did not populate an empty object "
+                            "cache, so the sharing half of this test did not run")
+        elif "[objcache hit] lang_runtime" in seen[1]:
+            problems.append("a cross build reused the host's cached runtime "
+                            "object: the object cache key does not include the "
+                            "target, and two targets are sharing one object")
+
+    # 7. The real thing, where this host can run the result.
+    linked = "not attempted on this host"
+    if sys.platform == "darwin" and platform.machine() == "arm64":
+        sdk = run_command(["xcrun", "--show-sdk-path"])
+        if sdk.returncode == 0 and sdk.stdout.strip():
+            exe = TEST_DIR / "target_x86"
+            built = run_command([str(PRISMIO_EXE), "build", str(source),
+                                 "--target", "x86_64-apple-macos",
+                                 "--sysroot", sdk.stdout.strip(), "-o", str(exe)])
+            if built.returncode != 0:
+                problems.append("a cross build for x86_64-apple-macos failed: "
+                                + (built.stdout or built.stderr or "").strip())
+            else:
+                kind = run_command(["file", str(exe)]).stdout
+                if "x86_64" not in kind:
+                    problems.append(f"the cross build produced {kind.strip()!r} "
+                                    "rather than an x86_64 binary")
+                ran = run_command([str(exe)])
+                if ran.returncode != 0 or "cross" not in (ran.stdout or ""):
+                    problems.append("the cross-built binary did not run: "
+                                    f"exit {ran.returncode}, "
+                                    f"stdout {(ran.stdout or '').strip()!r}")
+                else:
+                    linked = "x86_64-apple-macos built and ran"
+            cleanup_files(exe)
+
+    if problems:
+        print(f"{RED}[FAIL] --target{RESET}")
+        for p in problems:
+            print(f"  - {p}")
+        return False
+
+    print(f"{GREEN}[PASS] --target: triple and layout from LLVM, pointer width "
+          f"agreed by sema and codegen, -g offsets from the target, cache keyed "
+          f"per target; link: {linked}{RESET}")
+    return True
+
+
+def run_runtime_library_test():
+    """A packaged toolchain links the prebuilt runtime archive, and a foreign target does not.
+
+    `tools/package.sh` builds `lib/runtime.a` and, until this test, nothing in the
+    tree linked against one. A dev checkout runs the compiler out of `build/`,
+    where `find_in_lib_dir` looks in `build/../lib` and `build/lib` and finds
+    nothing, so every build in this suite took the `build_from_toolchain_sources`
+    fallback instead. `find_runtime_library` -> `link_against_runtime_library` was
+    reached only on an installed toolchain, and nothing in CI assembles one.
+
+    That is the seam the whole target story rests on. A framework ships a
+    `runtime-<triple>.a` for a platform this compiler cannot build a runtime for
+    -- which module `print` is imported from on the web is an embedder's
+    decision, not a compiler's -- and the compiler links whatever it is pointed
+    at. **A missing archive is invisible**: the fallback compiles the runtime
+    from the sources embedded in the compiler binary and the build succeeds
+    anyway, which is exactly why "an installed toolchain compiles a program" is
+    not an assertion about this at all.
+
+    So every assertion here is made against `PRISMIO_OBJ_CACHE_TRACE`, which
+    prints one `[objcache ...] <role>` line per toolchain source the fallback
+    compiles. No line means the archive was linked; a line means it was not. The
+    negative control is not optional -- without it, "no trace lines" is also what
+    a compiler with a broken trace would print.
+
+    Seven assertions:
+
+      1. *The archive is linked*, and the program it produces runs. This resolves
+         `import std.io` out of the installed `stdlib/` too, which is the same
+         never-exercised layout.
+      2. *The negative control.* With the archive moved aside, the same build
+         must fall back and say so.
+      3. *A foreign target does not get the host's archive.* `runtime.a` here was
+         built for the host; linking it into a wasm32 or x86_64 binary is a
+         miscompile the linker will not always catch. `find_runtime_library` must
+         look for `runtime-<triple>.a` and fall back when it is absent. The wasm
+         build then fails for its own reasons -- no libc for that target, and
+         deliberately no runtime -- but the trace is printed before the link, so
+         what it reached for is settled either way.
+      4. *A shipped `runtime-<triple>.a` is found and linked*, and the
+         cross-built binary runs. Checked where this host can run the result --
+         arm64 macOS, where x86_64 runs under Rosetta -- and reported as skipped
+         elsewhere.
+      5. *`--verify` bypasses the archive even when it is there*, because an
+         installed runtime was compiled without `-DPRISMIO_AIF_VERIFY` and half
+         the allocations would be outside the accounting.
+      6. *A freshly packaged toolchain is not stale*, checked from the repository
+         root where the sources are visible. This is what keeps `package.sh` and
+         `compiler_runtime_source_hash` agreeing about how the hash is derived;
+         they cannot disagree by construction, because packaging asks the
+         compiler for it, and this is what makes a change to that arrangement
+         loud.
+      7. *The staleness guard fires* when `lib/runtime.hash` disagrees with
+         `runtime/*.c` on disk, rather than linking a runtime that no longer
+         matches the code in front of you.
+
+    The triple in the archive name is the one **as typed on the command line**,
+    not LLVM's normalisation of it: `ir_target_select` stores `use` verbatim, so
+    `--target x86_64-apple-macos` and `--target x86_64-apple-macosx26.0.0` look
+    for two different files describing one machine. Assertion 4 pins that,
+    because it is the name a framework has to ship under and nothing else in the
+    tree says so.
+    """
+    print(f"\n{BLUE}--- Running runtime_library ---{RESET}")
+    problems = []
+
+    if os.name == "nt":
+        shell = which("pwsh") or which("powershell")
+        if not shell:
+            print(f"{RED}[FAIL] runtime_library: no PowerShell to run "
+                  f"tools/package.ps1{RESET}")
+            return False
+        package = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                   str(PROJECT_ROOT / "tools" / "package.ps1")]
+    else:
+        package = ["bash", str(PROJECT_ROOT / "tools" / "package.sh")]
+
+    with tempfile.TemporaryDirectory(prefix="prismio-runtime-lib-") as tmp:
+        wd = Path(tmp)
+        dist = wd / "dist"
+        cache = wd / "objcache"
+        probe = wd / "probe.psm"
+        # std.io is an ordinary import, not a prelude, as of 2026-08-21. A probe
+        # that prints is the point: without I/O there is nothing in the module for
+        # the runtime archive to resolve, and the link would succeed against
+        # nothing at all.
+        probe.write_text('import std.io\n'
+                         '\n'
+                         'fn main() -> Int {\n'
+                         '    println("archive")\n'
+                         '    return 0\n'
+                         '}\n')
+
+        compiler = Path(PRISMIO_EXE).resolve()
+        if os.name == "nt":
+            package += ["-Compiler", str(compiler), "-OutDir", str(dist)]
+        else:
+            package += ["--compiler", str(compiler), "--out", str(dist)]
+
+        packaged = subprocess.run(package, capture_output=True, text=True,
+                                  cwd=str(PROJECT_ROOT))
+        installed = dist / "bin" / ("prismio.exe" if os.name == "nt" else "prismio")
+        lib = dist / "lib"
+        archive = next((lib / f"runtime{ext}" for ext in (".a", ".lib")
+                        if (lib / f"runtime{ext}").exists()), None)
+        if packaged.returncode != 0 or not installed.exists() or archive is None:
+            print(f"{RED}[FAIL] runtime_library: packaging a toolchain failed{RESET}")
+            print("  - " + ((packaged.stderr or packaged.stdout or "").strip()[-500:]
+                            or f"exit {packaged.returncode}, no runtime archive"))
+            return False
+
+        def build(args, cwd=wd):
+            env = dict(os.environ, PRISMIO_OBJ_CACHE_DIR=str(cache),
+                       PRISMIO_OBJ_CACHE_TRACE="1")
+            return subprocess.run([str(installed), "build", str(probe)] + args,
+                                  capture_output=True, text=True, cwd=str(cwd),
+                                  env=env)
+
+        # One line per toolchain source the fallback compiled -- hit, miss or
+        # off. Any of the three means the archive was not what got linked.
+        def from_source(r):
+            return "[objcache" in (r.stderr or "")
+
+        exe_suffix = ".exe" if os.name == "nt" else ""
+
+        # 1. The archive is linked, and what comes out runs.
+        exe = wd / ("probe" + exe_suffix)
+        built = build(["-o", str(exe)])
+        if built.returncode != 0 or not exe.exists():
+            problems.append("a packaged toolchain could not compile a program: "
+                            + (built.stdout or built.stderr or "").strip()[-300:])
+        else:
+            if from_source(built):
+                problems.append("the packaged toolchain compiled the runtime from "
+                                "source with the archive sitting in its own lib/: "
+                                "find_runtime_library did not find "
+                                f"{archive.name}")
+            ran = run_command([str(exe)])
+            if ran.returncode != 0 or "archive" not in (ran.stdout or ""):
+                problems.append("the program linked against the runtime archive "
+                                f"did not run: exit {ran.returncode}, stdout "
+                                f"{(ran.stdout or '').strip()!r}")
+
+        # 2. The negative control, without which assertion 1 proves nothing.
+        aside = archive.with_name(archive.name + ".aside")
+        archive.rename(aside)
+        without = build(["-o", str(wd / ("probe_nolib" + exe_suffix))])
+        aside.rename(archive)
+        if not from_source(without):
+            problems.append("with the archive moved aside the build still "
+                            "reported no toolchain object compiled, so the trace "
+                            "this test reads is not reporting and assertion 1 "
+                            "would pass however the lookup behaved")
+
+        # 3. A foreign target must not be handed the host's archive.
+        wasm = build(["--target", "wasm32-unknown-unknown",
+                      "-o", str(wd / "probe_wasm")])
+        if not from_source(wasm):
+            problems.append("a wasm32 build compiled no runtime of its own and "
+                            "reported no cache miss, which leaves the host's "
+                            f"{archive.name} as the only thing it can have "
+                            "linked into a wasm32 binary")
+
+        # 4. The real thing: an archive shipped for a target, where this host can
+        #    run the result.
+        cross = "not attempted on this host"
+        if sys.platform == "darwin" and platform.machine() == "arm64":
+            sdk = run_command(["xcrun", "--show-sdk-path"])
+            clang = which("clang")
+            ar = which("ar") or which("llvm-ar")
+            triple = "x86_64-apple-macos"
+            if sdk.returncode == 0 and sdk.stdout.strip() and clang and ar:
+                objs = []
+                failed = None
+                for name in ("lang_runtime.c", "program_support.c"):
+                    obj = wd / (name[:-2] + ".x86.o")
+                    made = run_command([clang, "-target", triple,
+                                        "-isysroot", sdk.stdout.strip(),
+                                        "-Wno-deprecated-declarations", "-c",
+                                        str(PROJECT_ROOT / "runtime" / name),
+                                        "-o", str(obj)])
+                    if made.returncode != 0:
+                        failed = f"could not build {name} for {triple}"
+                        break
+                    objs.append(str(obj))
+
+                shipped = lib / f"runtime-{triple}.a"
+                if not failed:
+                    made = run_command([ar, "rcs", str(shipped)] + objs)
+                    if made.returncode != 0:
+                        failed = f"could not archive a {triple} runtime"
+
+                if failed:
+                    # A missing cross toolchain is not a compiler defect; say so
+                    # rather than failing the suite for the host's setup.
+                    cross = f"skipped -- {failed}"
+                else:
+                    exe = wd / "probe_x86"
+                    r = build(["--target", triple,
+                               "--sysroot", sdk.stdout.strip(), "-o", str(exe)])
+                    if r.returncode != 0 or not exe.exists():
+                        problems.append(f"a build for {triple} with "
+                                        f"{shipped.name} beside the compiler "
+                                        "failed: "
+                                        + (r.stdout or r.stderr or "").strip()[-300:])
+                    elif from_source(r):
+                        problems.append(f"{shipped.name} was shipped for "
+                                        f"{triple} and the compiler compiled the "
+                                        "runtime from source anyway: the archive "
+                                        "a framework ships is never reached")
+                    else:
+                        kind = run_command(["file", str(exe)]).stdout
+                        ran = run_command([str(exe)])
+                        if "x86_64" not in kind:
+                            problems.append("the cross build produced "
+                                            f"{kind.strip()!r} rather than an "
+                                            "x86_64 binary")
+                        elif ran.returncode != 0 or "archive" not in (ran.stdout or ""):
+                            problems.append("a binary linked against the shipped "
+                                            f"{shipped.name} did not run: exit "
+                                            f"{ran.returncode}, stdout "
+                                            f"{(ran.stdout or '').strip()!r}")
+                        else:
+                            cross = f"{shipped.name} linked and ran"
+                    cleanup_files(shipped)
+
+        # 5. --verify must not use an archive built without its define.
+        verify = build(["--verify", "-o", str(wd / ("probe_verify" + exe_suffix))])
+        if not from_source(verify):
+            problems.append("--verify linked the installed runtime archive, which "
+                            "was compiled without -DPRISMIO_AIF_VERIFY: half the "
+                            "allocations would sit outside the accounting the "
+                            "flag exists to keep")
+
+        # 6 and 7. Freshness, from the repository root -- the guard needs both an
+        # installed hash and a source tree to compare it against, and only the
+        # repository root has the second.
+        hash_file = lib / "runtime.hash"
+        if not hash_file.exists():
+            problems.append("packaging recorded no lib/runtime.hash, so a stale "
+                            "installed runtime cannot be detected at all")
+        else:
+            fresh = build(["-o", str(wd / ("probe_fresh" + exe_suffix))],
+                          cwd=PROJECT_ROOT)
+            if fresh.returncode != 0 or "stale" in (fresh.stdout or "") + (fresh.stderr or ""):
+                problems.append("a toolchain packaged from these very sources was "
+                                "reported stale against them: packaging and "
+                                "compiler_runtime_source_hash disagree about the "
+                                "hash")
+
+            recorded = hash_file.read_text()
+            bogus = "1" * 16 if recorded.strip().startswith("0") else "0" * 16
+            hash_file.write_text(bogus)
+            stale = build(["-o", str(wd / ("probe_stale" + exe_suffix))],
+                          cwd=PROJECT_ROOT)
+            hash_file.write_text(recorded)
+            said = (stale.stdout or "") + (stale.stderr or "")
+            if stale.returncode == 0 or "stale" not in said:
+                problems.append("a runtime archive whose recorded hash disagrees "
+                                "with runtime/*.c on disk was linked anyway: exit "
+                                f"{stale.returncode}")
+
+    if problems:
+        print(f"{RED}[FAIL] runtime library{RESET}")
+        for p in problems:
+            print(f"  - {p}")
+        return False
+
+    print(f"{GREEN}[PASS] runtime library: a packaged toolchain links its own "
+          f"archive, a foreign target does not get the host's, --verify bypasses "
+          f"it, staleness is caught; cross: {cross}{RESET}")
+    return True
 
 
 def run_debug_info_test():
@@ -2369,15 +2914,35 @@ def run_debug_info_test():
         problems.append("the fixture has no `// MARK` comments -- this test "
                         "stopped checking the line table")
 
-    located = {int(m.group(1))
-               for m in re.finditer(r"!DILocation\(line: (\d+)", dbg_ir)}
+    dbg_nodes = _di_nodes(dbg_ir)
+    located = _di_located_lines(dbg_nodes, "debug_info.psm")
     for name, line in sorted(marks.items()):
         if line not in located:
             problems.append(f"nothing is attributed to line {line} "
                             f"(`{name}`) -- the line table has shifted")
-    if 0 in located:
+    if 0 in {int(m.group(1))
+             for m in re.finditer(r"!DILocation\(line: (\d+)", dbg_ir)}:
         problems.append("a DILocation claims line 0 -- a synthesised node was "
                         "given a location instead of inheriting the statement's")
+
+    # The closing braces. Same mechanism as `// MARK`, said separately because it
+    # is a different claim: a `}` is not a statement and carries a location only
+    # because the code that leaves the scope is emitted there. A block with
+    # nothing to emit on the way out is not marked and must not be.
+    closes = {}
+    for i, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+        m = re.search(r"// CLOSE ([\w-]+)", line)
+        if m:
+            closes[m.group(1)] = i
+    if not closes:
+        problems.append("the fixture has no `// CLOSE` comments -- this test "
+                        "stopped checking that a scope exit is attributed to the "
+                        "brace it leaves through")
+    for name, line in sorted(closes.items()):
+        if line not in located:
+            problems.append(f"nothing is attributed to line {line} (`{name}`), the "
+                            "closing brace of a block with cleanup -- the scope "
+                            "exit is inheriting the last statement's line instead")
 
     # 2c. Members sit where the host layout puts them, not where LLVM's default
     # specification would.
@@ -2430,6 +2995,171 @@ def run_debug_info_test():
             problems.append(f"`Checkpoint` is described as {ctotal} bits and is "
                             "128")
 
+    # 2e. Module-level globals. A global has no alloca and no scope stack, so
+    # nothing in 2b or 2c reaches it: the description hangs off the global's own
+    # value and is collected by the compile unit. Three ways it can be wrong, and
+    # the third is the one that matters -- describing something the program never
+    # declared is worse than describing nothing.
+    globals_wanted = {}
+    for i, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+        m = re.search(r"// GLOBAL (\w+) (\w+)", line)
+        if m:
+            globals_wanted[m.group(1)] = (i, m.group(2))
+    if not globals_wanted:
+        problems.append("the fixture has no `// GLOBAL` comments -- this test "
+                        "stopped checking module-level globals")
+
+    # What di_type_for owes each storage key. A global's type must come from its
+    # own declaration: getting it from the previous global, or from the
+    # initializer where an annotation disagrees, is a debugger printing an i64 as
+    # an int and being wrong about half of it.
+    want_basic = {"i32": ("Int", 32), "i64": ("I64", 64),
+                  "double": ("Float", 64), "i1": ("Bool", 8)}
+
+    described = {m.group(1): m.group(0) for m in
+                 re.finditer(r'!DIGlobalVariable\(name: "(\w+)".*', dbg_ir)}
+    for name, (line, key) in sorted(globals_wanted.items()):
+        text = described.get(name)
+        if text is None:
+            problems.append(f"no DIGlobalVariable for `{name}` -- a debugger "
+                            "cannot name a module-level global")
+            continue
+        at = re.search(r"line: (\d+)", text)
+        if at is None or int(at.group(1)) != line:
+            problems.append(f"`{name}` is described at line "
+                            f"{at.group(1) if at else '?'} and is declared on "
+                            f"{line}")
+        # The declaration must be attached to the global itself, not merely
+        # listed in the compile unit: lldb's `target variable` reaches it through
+        # the !dbg on the global.
+        if re.search(r"^@%s = .*!dbg !\d+" % re.escape(name), dbg_ir, re.M) is None:
+            problems.append(f"`@{name}` carries no `!dbg` attachment, so the "
+                            "description is not reachable from the global")
+        ref = re.search(r"type: !(\d+)", text)
+        ty = nodes.get(int(ref.group(1)), "") if ref else ""
+        if key in want_basic:
+            tname, bits = want_basic[key]
+            if (f'name: "{tname}"' not in ty) or (f"size: {bits}" not in ty):
+                problems.append(f"`{name}` is declared `{key}` and is described "
+                                f"as `{ty}` -- a global's type is not coming "
+                                "from its own declaration")
+        elif key == "ptr" and "DW_TAG_pointer_type" not in ty:
+            problems.append(f"`{name}` is a String and is described as `{ty}`")
+
+    # The compile unit has to list them, or the debug info is unreachable from
+    # the top of the module even with the attachments in place.
+    cu = next((t for t in nodes.values() if "DICompileUnit" in t), "")
+    listed = re.search(r"globals: !(\d+)", cu)
+    if not listed:
+        problems.append("the compile unit lists no `globals:` tuple")
+    elif len(_di_tuple(nodes, int(listed.group(1)))) != len(globals_wanted):
+        problems.append("the compile unit's `globals:` tuple does not hold one "
+                        f"entry per declared global ({len(globals_wanted)})")
+
+    # And nothing describes what the program did not declare. `prismio_argc` and
+    # the string-literal globals are codegen's own; naming them in the debug info
+    # would put compiler internals in a user's `target variable` output.
+    for internal in [n for n in described if n not in globals_wanted]:
+        problems.append(f"`{internal}` is described as a source-level global and "
+                        "is not one -- it is codegen's own")
+
+    # 2e-bis. A String prints its characters, which is a property of one word.
+    # lldb auto-summarises a `char *` and does not auto-summarise a
+    # `signed char *`, and it tells them apart by the base type's name -- so
+    # docs/DEBUGGING.md's promise that a String shows its contents rests on this
+    # basic type being spelled in lower case.
+    string_ptr = next((t for t in nodes.values()
+                       if "DW_TAG_pointer_type" in t
+                       and re.search(r"baseType: !(\d+)", t)
+                       and 'name: "char"' in nodes.get(
+                           int(re.search(r"baseType: !(\d+)", t).group(1)), "")), None)
+    if string_ptr is None:
+        problems.append("no `char *` in the module: a String's base type is not "
+                        "spelled `char`, and a debugger prints the address "
+                        "instead of the characters (docs/DEBUGGING.md)")
+
+    # 2f. Enums. Every Prismio enum lowers to i32, so the storage key cannot
+    # tell `Channel` from `Int` and only the source-level name can. Three things
+    # are checked, and the second is the one with teeth.
+    src_text = source.read_text(encoding="utf-8")
+    want_enum = re.search(r"^enum (\w+) \{(.*?)^\}", src_text, re.M | re.S)
+    if not want_enum:
+        problems.append("the fixture declares no enum -- this test stopped "
+                        "checking DW_TAG_enumeration_type")
+    else:
+        ename = want_enum.group(1)
+        eline = src_text[:want_enum.start()].count("\n") + 1
+        variants = [v.strip() for v in want_enum.group(2).split(",")
+                    if v.strip() and not v.strip().startswith("//")]
+
+        etext = next((t for t in nodes.values()
+                      if "DW_TAG_enumeration_type" in t
+                      and re.search(r'name: "%s"' % re.escape(ename), t)), None)
+        if etext is None:
+            problems.append(f"no DW_TAG_enumeration_type for `{ename}` -- an enum "
+                            "is described as the i32 it is stored as, so a "
+                            "debugger prints an ordinal")
+        else:
+            at = re.search(r"line: (\d+)", etext)
+            if at is None or int(at.group(1)) != eline:
+                problems.append(f"`{ename}` is described at line "
+                                f"{at.group(1) if at else '?'} and is declared "
+                                f"on {eline}")
+            elems = re.search(r"elements: !(\d+)", etext)
+            got = []
+            for ref in (_di_tuple(nodes, int(elems.group(1))) if elems else []):
+                m = re.search(r'DIEnumerator\(name: "(\w+)", value: (-?\d+)',
+                              nodes.get(ref, ""))
+                if m:
+                    got.append((m.group(1), int(m.group(2))))
+            if got != [(v, i) for i, v in enumerate(variants)]:
+                problems.append(f"`{ename}` is described as {got} and is declared "
+                                f"{[(v, i) for i, v in enumerate(variants)]} -- "
+                                "an enumerator with the wrong value is a debugger "
+                                "printing the wrong name")
+
+            # The assertion with teeth. `let seen = pr.channel` names no type:
+            # sema infers it from the field, and the debug layer has to carry
+            # that through. Bound from a field with no annotation is how this
+            # compiler binds an enum nearly everywhere.
+            seen = next((t for t in nodes.values()
+                         if "DILocalVariable" in t and 'name: "seen"' in t), "")
+            ref = re.search(r"type: !(\d+)", seen)
+            if not seen:
+                problems.append("no DILocalVariable for `seen`, so the "
+                                "inferred-enum case is not being checked")
+            elif not ref or "DW_TAG_enumeration_type" not in nodes.get(int(ref.group(1)), ""):
+                problems.append("`seen` is bound from an enum-typed struct field "
+                                "and is not described as the enum -- an inferred "
+                                "enum is being flattened to Int")
+
+            # A struct field of enum type. The member is stored as an i32 and
+            # has to be described as the enumeration.
+            #
+            # Found through `Probe`'s own element list, not by searching the
+            # module for a member named "channel": `Reading` has a `channel: Int`
+            # too, and the first version of this assertion read that one and
+            # failed against a compiler that was right.
+            probe = next((t for t in nodes.values()
+                          if "DICompositeType" in t and 'name: "Probe"' in t), "")
+            elems = re.search(r"elements: !(\d+)", probe)
+            if not elems:
+                problems.append("no composite type for `Probe`")
+            else:
+                base = None
+                for ref in _di_tuple(nodes, int(elems.group(1))):
+                    text = nodes.get(ref, "")
+                    if 'name: "channel"' not in text:
+                        continue
+                    m = re.search(r"baseType: !(\d+)", text)
+                    base = nodes.get(int(m.group(1)), "") if m else ""
+                if base is None:
+                    problems.append("`Probe` has no `channel` member")
+                elif "DW_TAG_enumeration_type" not in base:
+                    problems.append("`Probe.channel` is declared `Channel` and is "
+                                    f"described as `{base}` -- the field is being "
+                                    "described as the i32 it is stored as")
+
     # 3. A split type is described as what it is.
     snodes = _di_nodes(split_ir)
     hot, hot_size = _di_composite(snodes, "Reading")
@@ -2464,9 +3194,11 @@ def run_debug_info_test():
             print(f"  {p}")
         return False
 
-    print(f"{GREEN}[PASS] -g: {len(marks)} marked lines located, "
-          f"{len(members)} members at host offsets, a split type describes its "
-          f"cold block{RESET}")
+    print(f"{GREEN}[PASS] -g: {len(marks)} marked lines and {len(closes)} "
+          f"closing braces located, "
+          f"{len(members)} members at host offsets, {len(globals_wanted)} "
+          f"globals described, an enum with {len(variants)} enumerators, "
+          f"a split type describes its cold block{RESET}")
     return True
 
 
@@ -3390,6 +4122,16 @@ def main():
         failed += 1
 
     if run_debug_info_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_target_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_runtime_library_test():
         passed += 1
     else:
         failed += 1

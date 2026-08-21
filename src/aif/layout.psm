@@ -5,6 +5,7 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import common.target
 
 // ---------------------------------------------------------------------------
 // Building the fact graph
@@ -64,8 +65,8 @@ fn aifTypeBytes(ann: ASTNode) -> Int {
     if (str_equals(n, "U32") == 1) { return 4 }
     if (str_equals(n, "I64") == 1) { return 8 }
     if (str_equals(n, "U64") == 1) { return 8 }
-    if (str_equals(n, "Isize") == 1) { return 8 }
-    if (str_equals(n, "Usize") == 1) { return 8 }
+    if (str_equals(n, "Isize") == 1) { return targetPointerBytes() }
+    if (str_equals(n, "Usize") == 1) { return targetPointerBytes() }
     if (str_equals(n, "Float") == 1) { return 8 }
     if (aif_is_enum(n) == 1) { return 4 }
 
@@ -73,7 +74,7 @@ fn aifTypeBytes(ann: ASTNode) -> Int {
     // A struct field that is a *containment* edge is its own size instead, and
     // aifStructFieldBytes is where that is asked -- this function has no module
     // to resolve the name against.
-    return 8
+    return targetPointerBytes()
 }
 
 // The bytes a field occupies in its owner. An inline field contributes the whole

@@ -8,6 +8,7 @@
 // Widening is sign-extending for signed integers and zero-extending for
 // unsigned, Char and Bool, so 'A' as Int is 65 rather than a negative number.
 
+import std.io
 fn fail(message: String) -> Int {
     print("FAIL: ")
     println(message)

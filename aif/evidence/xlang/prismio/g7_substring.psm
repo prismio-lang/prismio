@@ -18,6 +18,7 @@
 // length the caller already has. The pair prices the superlinear term on its
 // own, the way rust/g7_owned.rs prices the copy on its own.
 
+import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> Int
 
 extern fn str_length(s: String) -> Int

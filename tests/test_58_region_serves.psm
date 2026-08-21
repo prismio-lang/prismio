@@ -44,6 +44,7 @@
 // brackets everything, and the negatives alone pass on one that brackets
 // nothing -- which is exactly the compiler this fixture was written against.
 
+import std.io
 extern fn print(s: String)
 extern fn println(s: String)
 extern fn arena_objects() -> Int

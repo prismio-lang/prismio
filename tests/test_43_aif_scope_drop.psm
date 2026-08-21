@@ -17,6 +17,7 @@
 // The compiler cannot cover this itself: it has no T1 struct sites, and neither
 // does aif/corpus. See COMPILER-AUDIT's Level 2 note.
 
+import std.io
 extern fn int_to_str(n: Int) -> String
 extern fn str_length(s: String) -> Int
 

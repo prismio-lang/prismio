@@ -73,7 +73,12 @@ PRISMIO="$DIST/bin/prismio"
 PROBE_DIR="$(mktemp -d)"
 PROBE_SRC="$PROBE_DIR/probe.psm"
 PROBE_EXE="$PROBE_DIR/probe"
+# std.io is an ordinary import rather than a prelude as of 2026-08-21, and a probe
+# without it does not compile -- which took every check below down with it, because
+# they are all guarded on the executable existing.
 cat > "$PROBE_SRC" <<'EOF'
+import std.io
+
 fn main() -> Int {
     println("ok")
     return 0

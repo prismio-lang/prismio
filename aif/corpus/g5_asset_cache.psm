@@ -17,6 +17,7 @@
 // what an engine programmer writes by hand today, and it is exactly the
 // bookkeeping AIF's T3 tier is supposed to make unnecessary.
 
+import std.io
 struct Mesh {
     vertex_count: Int,
     index_count: Int,

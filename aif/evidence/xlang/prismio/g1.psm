@@ -12,6 +12,7 @@
 // than added to the runtime because this session is not permitted a compiler
 // change, and an extern declaration is a language feature, not one.
 
+import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> Int
 
 struct Particle {

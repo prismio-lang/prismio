@@ -28,6 +28,7 @@
 // The values are asserted by the program itself, so a miscompile is an exit code
 // rather than a number nobody reads.
 
+import std.io
 extern fn print(s: String)
 extern fn println(s: String)
 extern fn int_to_str(n: Int) -> String produce(free)

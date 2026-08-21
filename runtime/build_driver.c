@@ -33,6 +33,12 @@ typedef struct {
     int runtime;
 } PrismioToolchainFile;
 
+// From llvm-api-backend.c: the target the frontend selected. Read rather than
+// copied, so this file and the backend cannot disagree about what is being
+// built. See the "Targets" section there.
+const char* ir_target_triple(void);
+int ir_target_is_explicit(void);
+
 static const PrismioToolchainFile prismio_toolchain_files[] = {
     { "prismio_platform.h", 0, NULL,              1 },
     { "prismio_runtime.h",  0, NULL,              1 },
@@ -526,6 +532,25 @@ static int find_toolchain_library(char* out, int out_size, const char* stem) {
     return 0;
 }
 
+// The runtime archive for the target in force. `runtime.a` is the host's;
+// anything else is `runtime-<triple>.a`.
+//
+// **This is the seam.** The compiler does not build a runtime for a foreign
+// target and does not know what host functions that target has -- which module
+// `print` is imported from on the web is an embedder's decision, not a
+// compiler's. A framework ships runtime-wasm32-unknown-unknown.a, defines the
+// host-import ABI it expects, and the compiler links whatever it is pointed at.
+// Nothing is found, the build falls back to compiling the runtime sources with
+// the same --target and --sysroot, which is what makes an SDK-based target like
+// x86_64-apple-macos work with no archive shipped at all.
+static int find_runtime_library(char* out, int out_size) {
+    if (!ir_target_is_explicit()) return find_toolchain_library(out, out_size, "runtime");
+
+    char stem[320];
+    snprintf(stem, sizeof(stem), "runtime-%s", ir_target_triple());
+    return find_toolchain_library(out, out_size, stem);
+}
+
 // ============================================
 // Runtime freshness (FNV-1a over the runtime sources)
 // ============================================
@@ -667,6 +692,70 @@ static int g_debug_info = 0;
 
 void compiler_set_debug_info(int on) { g_debug_info = on ? 1 : 0; }
 
+// ============================================
+// Cross-compilation
+//
+// The triple is not stored here: llvm-api-backend.c already holds it, because
+// that is where LLVM answered the question, and a second copy is a second thing
+// that can be stale. This file asks.
+//
+// The sysroot is stored here, and is not part of the target record, because it
+// is not a property of the triple -- it is where *this machine* keeps the SDK
+// for it. Two hosts building the same target legitimately pass different paths,
+// and the compiler has no business guessing either one: an SDK it picked itself
+// is exactly the kind of "helpfully wrong" that produces a link error someone
+// spends an afternoon on.
+// ============================================
+
+static char g_sysroot[1024] = "";
+
+void compiler_set_sysroot(const char* path) {
+    snprintf(g_sysroot, sizeof(g_sysroot), "%s", path ? path : "");
+}
+
+// The clang flags that name the target: either "" or a string ending in a
+// space, so a caller can always paste it straight in front of the rest of the
+// command. "" is the host case, where clang goes on defaulting exactly as it
+// always has and every existing build is byte-for-byte unaffected.
+//
+// Returned in a caller-owned buffer rather than a static one: it goes into the
+// object cache key, and a key built from a buffer a later call can rewrite is a
+// key that describes the wrong compile.
+static char* target_clang_flags(void) {
+    const char* triple = ir_target_is_explicit() ? ir_target_triple() : "";
+    int has_sysroot = g_sysroot[0] != '\0';
+    if (!triple[0] && !has_sysroot) {
+        char* empty = (char*)malloc(1);
+        if (empty) empty[0] = '\0';
+        return empty;
+    }
+
+    char* q_sysroot = has_sysroot ? command_quote_arg(g_sysroot) : NULL;
+    int len = (int)strlen(triple) + (q_sysroot ? (int)strlen(q_sysroot) : 0) + 64;
+    char* out = (char*)malloc(len);
+    snprintf(out, len, "%s%s%s%s%s%s",
+             triple[0] ? "--target=" : "", triple, triple[0] ? " " : "",
+             has_sysroot ? "-isysroot " : "", q_sysroot ? q_sysroot : "",
+             has_sysroot ? " " : "");
+    if (q_sysroot) free(q_sysroot);
+    return out;
+}
+
+// Whether the thing being produced is Mach-O. dsymutil is asked only of a build
+// that will have a debug map to walk, and after cross-compilation that is a
+// question about the *target*, not about the host this compiler is running on.
+static int target_is_mach_o(void) {
+    if (!ir_target_is_explicit()) {
+#ifdef __APPLE__
+        return 1;
+#else
+        return 0;
+#endif
+    }
+    const char* t = ir_target_triple();
+    return strstr(t, "apple") != NULL || strstr(t, "darwin") != NULL;
+}
+
 // LAYOUT 3.2. A workload driver calls rt_profile_*, and an *installed*
 // runtime.lib may predate them -- it is a binary someone built at some point,
 // and this feature is newer than some of those points. The link then fails on
@@ -708,13 +797,19 @@ void compiler_set_workload_mode(int on) { g_workload_mode = on ? 1 : 0; }
 static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     char* q_ir = command_quote_arg(ir_file);
     char* q_obj = command_quote_arg(program_obj);
-    int len = (int)(strlen(q_ir) + strlen(q_obj) + 64);
+    char* target = target_clang_flags();
+    int len = (int)(strlen(q_ir) + strlen(q_obj) + strlen(target) + 64);
     char* command = (char*)malloc(len);
 
-    snprintf(command, len, "clang %s -c %s -o %s", g_debug_info ? "-O0" : "-O2", q_ir, q_obj);
+    // --target as well as the triple already written on the module: the two
+    // agree, which is what stops clang's -Woverride-module, and clang needs the
+    // flag anyway to pick the right assembler and object format.
+    snprintf(command, len, "clang %s%s -c %s -o %s",
+             target, g_debug_info ? "-O0" : "-O2", q_ir, q_obj);
     int result = run_build_command(command);
 
     free(command);
+    free(target);
     free(q_ir);
     free(q_obj);
     return result;
@@ -730,13 +825,15 @@ static int link_against_runtime_library(const char* program_obj,
     char* q_obj = command_quote_arg(program_obj);
     char* q_lib = command_quote_arg(runtime_lib);
     char* q_exe = command_quote_arg(exe_file);
-    int len = (int)(strlen(q_obj) + strlen(q_lib) + strlen(q_exe) + 64);
+    char* target = target_clang_flags();
+    int len = (int)(strlen(q_obj) + strlen(q_lib) + strlen(q_exe) + strlen(target) + 64);
     char* command = (char*)malloc(len);
 
-    snprintf(command, len, "clang %s %s -o %s", q_obj, q_lib, q_exe);
+    snprintf(command, len, "clang %s%s %s -o %s", target, q_obj, q_lib, q_exe);
     int result = run_build_command(command);
 
     free(command);
+    free(target);
     free(q_obj);
     free(q_lib);
     free(q_exe);
@@ -1012,13 +1109,33 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
         // quoted path: clang takes `-I <path>` as two arguments.
         char* source_dir = get_directory(source_paths[include_backend ? 4 : 2]);
         char* q_source_dir = command_quote_arg(source_dir);
-        snprintf(compile_flags, command_len, "-O2 -Wno-deprecated-declarations %s%s%s%s%s%s",
+        // The target flags go in *first*, and into `compile_flags` rather than
+        // into the command, so that they reach the object cache key: two
+        // targets share one source and one set of -D flags, and an object built
+        // for one linked into the other is a silent, genuinely nasty failure.
+        char* target = target_clang_flags();
+        // -g reaches the toolchain's C sources as well, so a backtrace that
+        // leaves generated code does not stop at `str_concat` with no file or
+        // line. Deliberately *not* paired with -O0 the way the program object is
+        // (compile_ir_to_object): there, -O0 exists because a Prismio local
+        // folded into a register is a local the debugger cannot print, and that
+        // is the whole feature. Here what is wanted is a named frame with a
+        // source line in a trace, which -O2 -g gives; building the runtime at
+        // -O0 would slow every `-g` build's execution to improve inspection of
+        // code nobody is stepping through. It costs compile time, not run time.
+        //
+        // In `compile_flags` rather than in the command, so the object cache
+        // keys on it: a -g and a non-g object must not share an entry.
+        snprintf(compile_flags, command_len, "%s%s-O2 -Wno-deprecated-declarations %s%s%s%s%s%s",
+                 target,
+                 g_debug_info ? "-g " : "",
                  g_verify_mode ? "-DPRISMIO_AIF_VERIFY " : "",
                  include_backend ? "-DPRISMIO_LLVM_REAL_HEADERS -I " : "",
                  include_backend ? q_include : "",
                  include_backend ? " -I " : "",
                  include_backend ? q_source_dir : "",
                  include_backend ? " " : "");
+        free(target);
         free(q_include);
         free(q_source_dir);
         free(source_dir);
@@ -1084,7 +1201,9 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
     }
 
     if (result == 0) {
-        int written = snprintf(command, command_len, "clang %s", q_program_obj);
+        char* link_target = target_clang_flags();
+        int written = snprintf(command, command_len, "clang %s%s", link_target, q_program_obj);
+        free(link_target);
         for (int i = 0; i < PRISMIO_TOOLCHAIN_FILE_COUNT; i++) {
             if (!q_objs[i]) continue;
             written += snprintf(command + written, command_len - written, " %s", q_objs[i]);
@@ -1166,7 +1285,7 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
         // accounting. Compiling from source is slower and this is a debug mode.
         // A workload driver skips it too, for the vintage reason at g_workload_mode.
         if (!g_verify_mode && !g_workload_mode
-            && find_toolchain_library(runtime_lib, sizeof(runtime_lib), "runtime")) {
+            && find_runtime_library(runtime_lib, sizeof(runtime_lib))) {
             result = link_against_runtime_library(program_obj, runtime_lib, exe_file);
         } else {
             result = build_from_toolchain_sources(program_obj, exe_file, 0, 0);
@@ -1186,7 +1305,7 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
     // Before the object goes away, and only while it is still there to walk. See
     // g_debug_info: on Mach-O the executable carries a debug map, not DWARF, and
     // the DWARF it points at is in the object file the next line deletes.
-    if (result == 0 && g_debug_info) write_dsym(exe_file);
+    if (result == 0 && g_debug_info && target_is_mach_o()) write_dsym(exe_file);
 
     delete_file(program_obj);
     free(program_obj);
@@ -1235,6 +1354,15 @@ int compiler_bootstrap_executable(const char* ir_file, const char* exe_file) {
         // include_backend = 1: the artifact being produced is a compiler.
         result = build_from_toolchain_sources(program_obj, exe_file, 1, 1);
     }
+
+    // The same reason as in compiler_build_executable, and it was missing here:
+    // on Mach-O the executable carries a debug map rather than DWARF, and the
+    // DWARF it points at lives in the object file the next line deletes. Without
+    // this, `prismio bootstrap -g` emitted every byte of the metadata and then
+    // threw away the half describing the compiler's own code -- the runtime's C
+    // frames would still resolve, because their objects are in the object cache
+    // and outlive the build, and a Prismio frame would not.
+    if (result == 0 && g_debug_info && target_is_mach_o()) write_dsym(exe_file);
 
     delete_file(program_obj);
     free(program_obj);

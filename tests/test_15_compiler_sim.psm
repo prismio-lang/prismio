@@ -1,3 +1,4 @@
+import std.io
 struct Token {
     type: Int,
     value: Int,

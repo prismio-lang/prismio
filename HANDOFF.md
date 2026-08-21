@@ -12,7 +12,10 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
   IR for `src/main.psm` is byte-identical to the warm build's.
-- **132/132 tests** as of 2026-08-20 (131 before the DWARF session, which added the
+- **134/134 tests** as of 2026-08-23 (133 before the packaged-runtime session, which added the
+  `runtime_library` runner test and no fixture — it packages a toolchain into a temporary
+  directory rather than shipping one; 132 before the targets session, which added the
+  `target_cross` runner test and its fixture; 131 before the DWARF session, which added the
   `debug_info` runner test and its fixture; 128 before the concurrency session, which added the
   `aif_concurrency` runner test, `test_68_optional_returns.psm` and `test_69_task_results.psm`), of which
   **31** are negative and each asserts *which* diagnostic it
@@ -26,6 +29,10 @@ Everything below is verified, not asserted — the commands that verify it are i
   and `REQUIRED_MAJOR` (`tools/setup_llvm.py`) together.
 - **CI on three platforms**: source-list check → LLVM → bootstrap from seed → fixpoint → suite →
   seed target-neutrality.
+- **Cross-compilation exists** as of 2026-08-21: `--target <llvm-triple>` and `--sysroot <sdk>`,
+  with the triple, pointer width and data layout all answered by LLVM rather than by a table.
+  `x86_64-apple-macos` is the target it has actually been built and run against. `std.io` is an
+  ordinary import, not a prelude, so a program that names no I/O carries none.
 
 ### File roles
 
@@ -419,6 +426,363 @@ LAYOUT §3.2's W3 sandbox obligations. Shipping the syntax without the runner is
 this item was ordered around, pointed the other way: a producer that produces nothing. The
 instrumentation point already exists when someone wants it — `ir_struct_field_ptr` is the single
 choke point for field access, the way `ir_alloc_object` is for allocation.
+
+---
+
+## Session of 2026-08-23 (packaged runtime) — the shipping path gets a test, and two things on it were already broken
+
+Candidate A of `SESSION-PROMPT.md`, chosen over the optional `--jit` task because it is the one
+path that matters most for shipping and the one path with no test.
+
+**State, verified on the tree before starting.** The brief was accurate this time: `build/S16b`
+present and alone in `build/`, suite 133/133 against it, HANDOFF's top entry the 2026-08-22 `-g`
+session, `src/common/target.psm` and `tests/target_cross.psm` untracked but belonging to the
+2026-08-21 targets work rather than to a half-finished feature.
+
+**State on exit.** Suite **134/134**; two-generation fixpoint `N1 == N2`; cold seed chain
+`Ns1 == N2`; AIF differential agrees on 17 sources; source lists agree. The IR snapshot over
+`tests/`, `aif/corpus/`, `aif/evidence/` and `src/` moved in exactly **one** file, `src/main.ll`,
+and only by the string-table renumbering that adding one string constant causes.
+**Last-good: `build/N2`.**
+
+### 1. What was actually untested
+
+`tools/package.sh` builds `lib/runtime.a`, and nothing in the tree linked against one. A dev
+checkout runs the compiler out of `build/`, where `find_in_lib_dir` looks in `build/../lib` and
+`build/lib` and finds nothing, so **every build this suite has ever made took the
+`build_from_toolchain_sources` fallback**. `find_runtime_library` → `link_against_runtime_library`
+was reached only on an installed toolchain, and nothing in CI assembles one.
+
+**The reason this could not be tested by checking that a build works.** A missing archive is
+invisible: the fallback unpacks the runtime sources embedded in the compiler binary and the build
+succeeds anyway. So `run_runtime_library_test` makes every assertion against
+`PRISMIO_OBJ_CACHE_TRACE` — one `[objcache ...] <role>` line per toolchain source the fallback
+compiles. No line means the archive was linked; a line means it was not. That is the same
+observation channel `run_target_test` already uses for cache sharing, for the same reason: "the
+build was faster" is not an observation a test can make on a shared host.
+
+Seven assertions, and the negative control is not decoration — with the archive moved aside the
+build must print trace lines, because "no trace lines" is also what a compiler with a broken trace
+would print. Each assertion was checked by mutation before being believed: hiding the archive from
+the lookup while leaving it on disk fires assertion 1, blinding `from_source` fires 2, 3 and 5,
+naming the shipped cross archive with LLVM's normalised triple fires 4, and both directions of the
+hash comparison fire 6 and 7.
+
+**The seam works end to end.** A `runtime-x86_64-apple-macos.a` built the way a framework would
+build one is found, linked, and produces an x86_64 binary that runs. A foreign target is *not*
+handed the host's `runtime.a` — it falls back and compiles its own, which is the property that
+stops an arm64 archive being linked into an x86_64 binary.
+
+**Recorded because nothing else in the tree says it:** the triple in the archive name is the one
+**as typed on the command line**. `ir_target_select` stores `use` verbatim rather than LLVM's
+normalisation of it, so `--target x86_64-apple-macos` and `--target x86_64-apple-macosx26.0.0` look
+for two different files describing one machine. A framework has to ship under the name its users
+will type.
+
+### 2. `tools/verify_separation.sh` and `.ps1` had not compiled since 2026-08-21
+
+Both build a probe program to prove the link step pulls in only the runtime, and both wrote
+
+```
+fn main() -> Int {
+    println("ok")
+    return 0
+}
+```
+
+with no `import std.io`. Since `std.io` stopped being a prelude the probe does not compile, so
+`installed toolchain compiles a program` failed and **the three checks after it silently did not
+run** — including `no LLVM backend code in the user binary`, which is the check the script exists
+for. It is loud when run and nothing runs it, which is the same shape as the `prismio bootstrap`
+break the 2026-08-17 session found.
+
+Fixed in both scripts; all 11 checks pass against a freshly packaged toolchain.
+
+### 3. The staleness guard named the wrong script on two platforms out of three
+
+`checkRuntimeFreshness` told everyone to re-package with `tools/package.ps1`. On macOS and Linux
+that file is `tools/package.sh`. This is the only line in `src/` that changed this session, and the
+whole `src/main.ll` diff is the string-table renumbering it causes.
+
+### What this leaves
+
+`tools/verify_separation.sh` still is not run by anything — CI does not call it and neither does
+the suite. It now passes, so wiring it in is a decision rather than a repair.
+
+## Session of 2026-08-22 (finishing `-g`) — four holes closed, and two bugs the tasks walked into
+
+Tasks 1–4 of `SESSION-PROMPT.md` (Phase 3), in order, each through the full gate before the next
+started.
+
+**State, verified on the tree.** Suite **133/133**; two-generation fixpoint `S16a == S16b`; cold
+build from the refreshed seed byte-identical to the warm chain; AIF differential agrees on 17
+sources. **Last-good: `build/S16b`.** The IR snapshot over `tests/`, `aif/corpus/`, `aif/evidence/`
+and `src/` moved in exactly **two** files across all four tasks: `src/main.ll`, because `src/`
+changed, and `tests/debug_info.ll`, because the fixture was deliberately extended four times. Every
+other program is byte-identical to the session's start. That is the property this whole phase
+rests on — `-g` is one flag, and a release build must carry none of it.
+
+### 1. `DIGlobalVariable` for module-level globals
+
+`ir_debug_global` beside `ir_debug_local`, called from `generateModule`'s global loop. The
+description hangs off the global's own value as a `!dbg` attachment and the compile unit collects
+it at finalize, so it runs before any function exists and needs no scope stack.
+
+The type key passed is `varType`, **not** `storageType(varType)` — the uncollapsed key is what
+tells `di_type_for` to describe a `T` rather than an anonymous pointer. A global whose key does not
+map gets no entry.
+
+Verified under lldb: `target variable counter name ratio ready wide` prints all five with their
+declared types. `prismio_argc` and the string-literal globals get nothing, and the test says so —
+naming codegen's own globals would put compiler internals in a user's `target variable` output.
+
+### 2. `-g` for `prismio bootstrap`, and the dSYM that was missing with it
+
+The flag is now parsed by `bootstrap`, and **`-g` had to be named in the guard that decides whether
+argument 2 is the source path** — without that, `prismio bootstrap -g` compiles a file called `-g`.
+
+**Decision, recorded: the toolchain's C sources are compiled `-g` and stay at `-O2`.** The program
+object drops to `-O0` under `-g` because a Prismio local folded into a register is the whole
+feature; the runtime is not being stepped through line by line, and what a backtrace across the FFI
+boundary needs is a named frame with a source line, which `-O2 -g` gives. Measured: `str_concat`'s
+*arguments* (`s1="std"`, `s2="."`) and its return value read correctly; its *locals* are
+`<variable not available>`. Building the runtime at `-O0` would slow every `-g` build's execution
+to fix inspection nobody asked for. The flags go in `compile_flags`, so the object cache keys on
+them — proven by running a `-g` and a non-`-g` bootstrap against one empty cache directory and
+getting seven misses each, then seven hits on a repeat.
+
+**`compiler_bootstrap_executable` never called `write_dsym`.** `compiler_build_executable` does,
+and for a reason that applies identically here: on Mach-O the executable carries a debug map and
+the DWARF it points at is in the program object, which the next line deletes. So `bootstrap -g`
+emitted every byte of the metadata and threw away the half describing Prismio code — the runtime's
+C frames would still have resolved, because their objects live in the object cache and outlive the
+build, and a Prismio frame would not. One line, and the test fails loudly without it.
+
+**Stepped through the compiler under lldb, as the task required.** A backtrace through six Prismio
+frames resolves with file and line on each, and scalar arguments print (`runAfterBuild=false`,
+`debugInfo=false`). `n` steps line to line. The one rough edge: stepping past a `return` lands in
+the **epilogue**, where the frame pointer chain is half torn down, so `bt` shows a bare address for
+the caller and the parameter reads as garbage. That is ordinary "stopped in an epilogue" behaviour
+and not a line-table defect — and it is also the clearest argument for task 4, since the epilogue
+inherits the return statement's line.
+
+### 3. Enums as `DW_TAG_enumeration_type`
+
+`ir_get_enum_variant_count` / `_name_at` / `_value_at` over the flat variant table in
+`ir_symbols.c` (the table holds every enum's variants in one array, so "index i of this enum" is
+the i-th *matching* entry), then `di_enum_type` in the backend, cached under `$e:` like structs are
+under `$s:`. `di_type_for` returns it when the key is `i32` **and** `ir_named_type_kind(name) == 2`.
+
+An enum with no registered variants gets no type rather than an empty one: a
+`DW_TAG_enumeration_type` with no enumerators tells a debugger the value has a name it cannot find,
+which reads worse than plain `Int`.
+
+**The half that makes it worth having is in the frontend, not the backend.** `debugTypeName` now
+returns an inferred `TypeKind.ENUM`'s name, because `let kind = node.kind` — no annotation
+anywhere — is how this compiler binds an enum nearly everywhere, and sema infers `NodeKind` from
+the field's declared type. Verified: `(Colour) fromField = GREEN` for a binding with no annotation
+in sight.
+
+**What it deliberately does not reach: a bare variant.** Sema types `Colour.RED` as `Int`
+(`semaExpr`'s `MEMBER_ACCESS_EXPR` arm, which returns `typeInt()` for a non-payload variant), so
+`let c = Colour.RED` is an `Int` as far as the entire compiler is concerned. Describing it as a
+`Colour` would have the debug layer assert a type the compiler does not hold. Changing that is a
+*semantic* change — assignability, comparisons, `as`, match patterns — and is not a DWARF task.
+
+### 4. A closing-brace span on BLOCK — which found a second bug first
+
+`parseBlock` stamps the `}` token's line/col onto `blockNode.i1`/`i2` (both free on a BLOCK; `i3`
+is not taken, because a block's brace cannot be in a different file from its opening), and
+`generateBlock` sets the location from it before the drops, the arena pop and the region exit.
+
+**The first attempt appeared to do nothing, and the reason was a real defect.**
+`parseStatement` built an `EXPRESSION_STATEMENT` node *after* `parseExpression` had consumed the
+whole statement, so `parserNode` stamped it with the token that **follows** it — the next
+statement's first token, or the closing brace. So `println(x)` on line 7 was already reported as
+line 8, and the cleanup that inherited it was accidentally landing on the right line for the wrong
+reason. `break` and `continue` had the same shape.
+
+Fixed with `parserNodeFrom(kind, tok)` and a token held before anything is consumed. Measured
+containment: **no non-`-g` IR moved** (spans reach AIF's reporting and diagnostics, not codegen)
+and all 133 tests pass, including every `neg_*` fixture — no diagnostic underline moved, because
+they report against the expression inside the statement, which was always right.
+
+After both, every instruction names the line it came from: the call on its own line, the arena pop
+on the `}`, the `ret` on the `return`.
+
+### 5. Unplanned, and it made a documented promise true
+
+`docs/DEBUGGING.md` said a String prints its characters rather than its address. It did not:
+`frame variable s` rendered `(signed char *) 0x1000042fc`. The cause is one word — lldb
+auto-summarises a `char *` and prints a `signed char *` as a bare address, and tells them apart by
+the base type's **name**, which was `"Char"`. Renaming just the String pointee to `"char"` gives
+`(char *) lname = 0x… "local-string"`. Measured both ways on lldb 22.1.8.
+
+Only the String pointee moved. An `i8` binding is Prismio's `Char` and keeps that name, because it
+is a Char and not a C char.
+
+### Six ways it was broken on purpose
+
+`run_debug_info_test` and `run_bootstrap_command_test` grew assertions for each of the above, and
+each was checked against a compiler built with the mechanism broken.
+
+| break | what failed |
+|---|---|
+| `debugGlobal` call removed | no `DIGlobalVariable` for any of the five; compile unit lists no `globals:` |
+| `LLVMGlobalSetMetadata` dropped | all five described and none reachable — `@name` carries no `!dbg` |
+| the global's type key hardcoded to `i32` | `epoch`/`tolerance`/`enabled`/`unit` described as `Int` |
+| `write_dsym` removed from the bootstrap path | `bootstrap -g` produced no `.dSYM` |
+| the `TypeKind.ENUM` arm removed | `seen` flattened to `Int` |
+| enumerator values taken from the index | `Channel` described as `[('NORTH', 1), …]` |
+| `debugAtBlockEnd` removed | nothing attributed to the `}` line |
+| the expression-statement span reverted | nothing attributed to the call's own line |
+
+**Two of the new assertions were themselves wrong first, and only breaking them showed it.**
+
+- The `bootstrap -g` guard check asserted `"main.psm" not in said`, which is never true: the error
+  message's *help text* names `path/to/src/main.psm`. It passed against the broken compiler.
+  Now it keys on the exact phrase `cannot read -g`.
+- **`located` pooled every file's `DILocation` lines.** `std/io.psm` is 170 lines and is merged
+  into every program here, so any line number under 170 was "located" whether or not the fixture
+  put anything there — which is why the pre-existing `// MARK` assertions never caught the
+  off-by-one they exist to catch. `_di_located_lines` now resolves each location's scope to a
+  DIFile and counts only `debug_info.psm`. **This strengthens the assertions that were already
+  there**, and is the most reusable thing in this session.
+
+A third assertion was written and then deleted rather than kept: "a struct must not be described as
+an enumeration" can never fire, because a struct's type key is never `i32` and `di_type_for`'s enum
+branch is unreachable for it. A test that cannot fail is worse than no test.
+
+### Left alone, deliberately
+
+- **Assignment statements are stamped with the token after `=`.** Right line, wrong column. Same
+  class as the expression-statement bug and not fixed with it, because the blast radius is
+  diagnostics-only and nothing observed is wrong.
+- **A bare enum variant is an `Int`.** See task 3 — a semantic change, not a DWARF one.
+
+---
+
+## Session of 2026-08-21 (layering + targets) — the wasm pretence is gone, `std.io` stops being a prelude, and a cross-compiled binary runs
+
+Tasks 1–4 of `SESSION-PROMPT.md`, in order, each through the full gate before the next started.
+
+**State, verified on the tree.** Suite **133/133** (the new one is `target_cross`); two-generation
+fixpoint `S11a == S11b`; cold build from the **committed seed** byte-identical to the warm chain;
+the IR snapshot over `tests/`, `aif/corpus/`, `aif/evidence/` and `src/` is unchanged from the
+post-task-2 baseline except `src/main.ll` and the one new fixture; AIF differential agrees on 17
+sources. **Last-good: `build/S11b`.** The seed was refreshed twice — once as the second half of
+task 1's FFI removal, once at the end.
+
+### 1. The wasm runtime and `--target wasm32` are gone
+
+`runtime/lang_runtime.c` lost 523 lines: the whole `#ifdef PRISMIO_WASM` arm — bump allocator over
+`__heap_base`, hand-written `memcpy`, `free` as a no-op, four `env`-module host imports. Nothing
+defined `PRISMIO_WASM`, and which host functions exist is an embedder's decision, not a compiler's.
+`ir_module_start_wasm` went with it, and the frontend's `irTargetWasm` boolean.
+
+**The two-step mattered.** The committed seed's IR called `ir_module_start_wasm` twice. Step one
+removed the *calls* from `src/` and refreshed the seed; step two deleted the C. Merging them would
+have left a fresh checkout unable to link, and only CI's first step would have caught it.
+
+### 2. `std.io` is an ordinary import
+
+`resolveImports` no longer merges it into every program. **Decision, one rule always: explicit for
+`run` as well as `build`.** A prelude that is implicit for one command and not the other is a rule
+nobody can state, and `run` is the command people learn the language with.
+
+111 files gained `import std.io`, placed above every other statement so the merge order — and
+therefore emission order — is what it was.
+
+**The diff is the deliverable, and it is smaller than expected.** 91 of 99 programs are
+byte-identical, because a program that prints imports `std.io` and gets exactly what it got before.
+Seven changed: the ones that print nothing. Each lost the same 499 lines — 33 `print`/`println`
+bodies, three integer formatters, six declares, the digit table — and nothing else. Verified by
+normalising the three compiler-assigned serials (local-slot suffix, string-constant id, basic-block
+label), all three of which now start lower because `std/io`'s bodies are not consuming them first;
+after that normalisation the seven are identical to their old selves. A program with no I/O went
+from 546 lines of IR to **47**.
+
+`test_runner.py` does catch the trap: a `neg_*` fixture that failed only with "unknown function
+`println`" reports **"Rejected, but not for the expected reason"**. Confirmed by breaking one.
+
+### 3–4. A target record, and it reaches clang
+
+`--target` takes an **LLVM triple**, and there is no table of supported targets anywhere in the
+tree. `ir_target_select` hands the triple to LLVM and reads back the data layout and the pointer
+width; `src/common/target.psm` is the frontend's `Target` record over that one copy. A table would
+be a second copy of facts LLVM owns, and a wrong row is a *miscompile* — which is the rule this
+whole session was sorted by.
+
+- **The record is in `common`, not `ir`.** `Isize`/`Usize` are pointer-width, so what a type *is*
+  depends on the target, and `ast` needs the answer too. `common` is the only package both may
+  import.
+- **`--sysroot` is not in the record.** It is not a property of the triple — it is where *this*
+  machine keeps the SDK. Two hosts building one target legitimately pass different paths.
+- **The implicit host stamps nothing.** No triple, no layout on the module, so every existing
+  build is byte-for-byte what it was. Only a named target stamps. This is also why the whole of
+  tasks 3 and 4 moved no output except `src/main.ll`, which the prompt did not require.
+- **The `#ifdef _WIN32` triple pin survives** as the implicit-host case. Routing it through the
+  record would change the IR of every Windows build, on the one platform none of this was tested on.
+- **`find_toolchain_library(…, "runtime")` is now `runtime-<triple>`** for a named target, falling
+  back to compiling the runtime sources with the same `--target`/`--sysroot`. That fallback is what
+  makes an SDK-based target work with no archive shipped at all; the archive is the seam a framework
+  ships across.
+
+**`Isize`/`Usize`, the bug that made `--target wasm32` build nothing.** Codegen lowered them through
+`irPtrIntType()` (i32 on wasm32) while `ast.types` told sema they were `i64`. So `value as U64` in
+`std/io` was a cast between two *equal* keys, which emits nothing, and every program failed
+`LLVMVerifyModule` on a 32-bit value handed to a 64-bit parameter. The call site was already
+written to widen — it just never got the chance. Fixed by making `typeIsize`/`typeUsize` read the
+record, so sema and codegen give one answer. `aifTypeBytes`'s three pointer-width rows moved with
+them. **All 78 fixtures now produce verifying wasm32 IR**, where before none did.
+
+**`-g` across a target boundary was the sharp one.** `pin_data_layout()` asked
+`LLVMGetDefaultTargetTriple()`; a cross-compiled `-g` build would have described the *host's* member
+offsets. It already left an existing layout alone, so stamping the target's layout at module start
+fixes it by construction. Verified: `struct { Int, String, I64 }` puts `name` at bit 64 on the host
+and at bit **32** for wasm32.
+
+**The object cache keys on the triple**, because the target flags go into `compile_flags`, which is
+what the key hashes. Breaking that on purpose produces
+`ld: ignoring file … found architecture 'arm64', required architecture 'x86_64'` — silent until it
+is not.
+
+### End to end
+
+```bash
+prismio build hello.psm --target x86_64-apple-macos --sysroot "$(xcrun --show-sdk-path)" -o hello
+file hello    # Mach-O 64-bit executable x86_64
+./hello       # runs under Rosetta on an arm64 host
+```
+
+**Web was the target the prompt named, and it could not be the one.** clang emits a wasm32 object
+fine, but there is no `wasm-ld` here, and task 1 deleted the wasm runtime on purpose — a `.wasm`
+with unresolved `env` imports and nothing to run it in is not "end to end". `x86_64-apple-macos` is
+a real cross-compile (different arch, needs `-isysroot`) that this host can *run*, so it is what the
+plumbing was proven against. Everything wasm above is IR-level and says so.
+
+### The new test, and breaking it twice
+
+`run_target_test` asserts: the host stamps nothing; a named target's triple and layout reach the
+module; the allocator's size argument and `std/io`'s widening cast both follow the pointer width;
+`-g` member offsets come from the target; an unresolvable triple is refused; two targets do not
+share a cached object; and — on arm64 macOS only — the cross build links and runs.
+
+Broken deliberately twice, per the house standard. Reverting `typeIsize` to a hardcoded `i64`
+reproduces the original verifier failure; taking the target flags out of the cache key reproduces
+the arm64-object-into-an-x86_64-link.
+
+### Known-stale, corrected on the way
+
+`V1_GAP_ANALYSIS.md` claimed `--target wasm32` existed, and its CLI row listed `--target` but not
+`-g`/`-O`/`--verify`. Both fixed.
+
+### Left alone, deliberately
+
+- **`-Woverride-module` on every macOS build.** clang normalises `x86_64-apple-macos` to
+  `x86_64-apple-macosx26.0.0` and warns that it differs from the module's. It warns on host builds
+  with no triple at all, so this predates targets and is not a cross-compilation problem.
+- **`aif/layout.psm`'s enum size (4) and Float (8)** are not pointer-width and were left as they are.
 
 ---
 

@@ -11,6 +11,7 @@
 // fixpoint check -- the safety net COMPILER-AUDIT 5 assumes for Level 1 -- never
 // exercises the path. This test is the replacement for it.
 
+import std.io
 extern fn int_to_str(n: Int) -> String
 
 struct Point {

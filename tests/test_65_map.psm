@@ -5,6 +5,7 @@
 // constructor whose type arguments cannot be inferred from any argument because
 // it has none.
 
+import std.io
 import std.map
 import std.option
 

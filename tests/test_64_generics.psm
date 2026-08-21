@@ -5,6 +5,7 @@
 // collide, a self-referential generic must terminate, and a generic type nested
 // in another must resolve inner-first.
 
+import std.io
 extern fn str_equals(s1: String, s2: String) -> Int
 
 struct Box<T> {

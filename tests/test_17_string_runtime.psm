@@ -1,3 +1,4 @@
+import std.io
 extern fn str_equals(s1: String, s2: String) -> Int
 extern fn str_length(s: String) -> Int
 extern fn str_concat(s1: String, s2: String) -> String

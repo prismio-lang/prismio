@@ -26,8 +26,16 @@ fn parseBlock(p: Parser) -> ASTNode {
         nodeListPush(statements, parseStatement(p))
     }
 
+    // The closing brace, before it is consumed. A block's own span starts at `{`
+    // and there was nothing recording where it ended, so every scope drop, arena
+    // pop and region exit -- all emitted after the last statement -- inherited
+    // that statement's line. i1/i2 are otherwise unused on a BLOCK; i3 is not
+    // taken here because the file cannot differ from the block's own.
+    let close = parserCurrent(p)
     parserExpectVal(p, TokenType.SEPARATOR, "}", "block")
     blockNode.child1 = statements.head
+    blockNode.i1 = close.line
+    blockNode.i2 = close.col
     return blockNode
 }
 
@@ -212,11 +220,16 @@ fn parseStatement(p: Parser) -> ASTNode {
     if (parserCheckVal(p, TokenType.KEYWORD, "region")) { return parseRegionStatement(p) }
     if (parserCheckVal(p, TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
 
+    // Held before anything is consumed: every node built below is built *after*
+    // its own text has been parsed, so `parserCurrent` is by then the token that
+    // follows the statement.
+    let first = parserCurrent(p)
+
     if (parserMatchVal(p, TokenType.KEYWORD, "break")) {
-        return parserNode(p, NodeKind.BREAK_STATEMENT)
+        return parserNodeFrom(NodeKind.BREAK_STATEMENT, first)
     }
     if (parserMatchVal(p, TokenType.KEYWORD, "continue")) {
-        return parserNode(p, NodeKind.CONTINUE_STATEMENT)
+        return parserNodeFrom(NodeKind.CONTINUE_STATEMENT, first)
     }
     if (parserMatchVal(p, TokenType.KEYWORD, "return")) {
         return parseReturnStatement(p)
@@ -236,7 +249,7 @@ fn parseStatement(p: Parser) -> ASTNode {
         return parseCompoundAssignment(p, expr, operatorToken)
     }
 
-    let stmt = parserNode(p, NodeKind.EXPRESSION_STATEMENT)
+    let stmt = parserNodeFrom(NodeKind.EXPRESSION_STATEMENT, first)
     stmt.child1 = node_to_ptr(expr)
     return stmt
 }

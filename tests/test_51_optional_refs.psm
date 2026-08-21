@@ -20,6 +20,7 @@
 // which would be a real feature and is not this item. It is also the shape the
 // compiler already writes by hand -- `if (node_exists(p)) { let n = ptr_to_node(p) }`.
 
+import std.io
 struct Node {
     id: Int,
     parent: Node?

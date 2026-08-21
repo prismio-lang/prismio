@@ -1,3 +1,4 @@
+import std.io
 fn test_equal(a: Int, b: Int) -> Bool {
     return a == b
 }

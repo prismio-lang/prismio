@@ -76,7 +76,10 @@ Write-Host "`nCompiled user program"
 $prismio = Join-Path $Dist 'bin\prismio.exe'
 $probeSrc = Join-Path $env:TEMP 'prismio_sep_probe.psm'
 $probeExe = Join-Path $env:TEMP 'prismio_sep_probe.exe'
-Set-Content $probeSrc "fn main() -> Int {`n    println(`"ok`")`n    return 0`n}" -Encoding ascii
+# std.io is an ordinary import rather than a prelude as of 2026-08-21, and a probe
+# without it does not compile -- which took every check below down with it, because
+# they are all guarded on the executable existing.
+Set-Content $probeSrc "import std.io`n`nfn main() -> Int {`n    println(`"ok`")`n    return 0`n}" -Encoding ascii
 
 # Build from a directory with no runtime/ anywhere nearby, so a source-based build
 # could only succeed via sources embedded in the binary -- which the signature check

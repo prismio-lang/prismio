@@ -1,3 +1,4 @@
+import std.io
 fn test_mutation() -> Int {
     let mut counter = 0
     

@@ -5,6 +5,7 @@
 // match the declared element type -- even though writing `let n: U8 = 200` on
 // its own has always been fine.
 
+import std.io
 fn fail(message: String) {
     print("FAIL: ")
     println(message)

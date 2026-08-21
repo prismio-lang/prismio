@@ -25,6 +25,7 @@
 // `typeFromSemKey` reads it back. Optionals had exactly that hole for twelve
 // days (see test_68), so this file exercises the round-trip on purpose.
 
+import std.io
 extern fn print(s: String)
 extern fn println(s: String)
 extern fn int_to_str(n: Int) -> String

@@ -138,7 +138,8 @@ static int g_has_returned;
 static char g_alloc_fn[NAME_LEN] = "malloc";
 static char g_free_fn[NAME_LEN] = "free";
 
-// Pointer-sized integer for the current target: i64 natively, i32 on wasm32.
+// Pointer-sized integer for the current target, in LLVM spelling. Set once per
+// module from the front end's irPtrIntType(); i64 on every target so far.
 // Determines the width of the size argument passed to the allocator.
 static char g_ptr_int[16] = "i64";
 
@@ -463,6 +464,120 @@ static void ensure_context(void) {
     g_initialized = 1;
 }
 
+// ============================================================================
+// Targets
+//
+// The compiler's whole notion of a target is three facts -- triple, pointer
+// width, data layout -- and every one of them is answered by LLVM from the
+// triple rather than by a table in this repo. A table would be a second copy of
+// something LLVM already owns, and a wrong row here is a *miscompile*: an
+// allocation sized for the wrong pointer, or member offsets four bytes out. The
+// frontend reads all three back as one record (see src/ir/target.psm); this is
+// the only place they are stored, so the two cannot drift.
+//
+// The host is resolved lazily, on the first question anyone asks, and is marked
+// not-explicit: a build that never passed --target must emit exactly the module
+// it emitted before targets existed, which means no triple and no layout stamped
+// on it. Only an explicitly named target stamps.
+//
+// Without real headers (see prismio_llvm.h) nothing here can resolve anything.
+// The host then falls back to 64-bit with no triple -- which is what the
+// frontend hardcoded before this existed, so that path is unchanged -- and an
+// explicit --target fails loudly rather than guessing.
+// ============================================================================
+
+static char g_target_triple[256];
+static char g_target_layout[1024];
+static int  g_target_ptr_bits;
+static int  g_target_explicit;
+static int  g_target_selected;
+
+#ifdef PRISMIO_TARGETS
+static void ensure_all_targets(void) {
+    static int done = 0;
+    if (done) return;
+    LLVMInitializeAllTargetInfos();
+    LLVMInitializeAllTargets();
+    LLVMInitializeAllTargetMCs();
+    done = 1;
+}
+#endif
+
+// triple == NULL or "" selects the host. Returns 0 if LLVM does not recognise
+// the triple, in which case nothing is changed and the caller must stop.
+int ir_target_select(const char *triple) {
+    int want_host = !triple || !*triple;
+#ifdef PRISMIO_TARGETS
+    ensure_all_targets();
+
+    char *host = want_host ? LLVMGetDefaultTargetTriple() : NULL;
+    const char *use = want_host ? host : triple;
+
+    LLVMTargetRef target = NULL;
+    char *err = NULL;
+    if (!use || LLVMGetTargetFromTriple(use, &target, &err)) {
+        if (err) LLVMDisposeMessage(err);
+        if (host) LLVMDisposeMessage(host);
+        if (want_host) {
+            // The host is unresolvable only on a broken LLVM. Fall back to the
+            // width the frontend assumed before targets existed rather than
+            // failing a build that never asked for a target in the first place.
+            g_target_triple[0] = '\0';
+            g_target_layout[0] = '\0';
+            g_target_ptr_bits = 64;
+            g_target_explicit = 0;
+            g_target_selected = 1;
+            return 1;
+        }
+        return 0;
+    }
+
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
+        target, use, "", "", LLVMCodeGenLevelDefault, LLVMRelocDefault,
+        LLVMCodeModelDefault);
+    LLVMTargetDataRef td = LLVMCreateTargetDataLayout(tm);
+    char *rep = LLVMCopyStringRepOfTargetData(td);
+
+    snprintf(g_target_triple, sizeof(g_target_triple), "%s", use);
+    snprintf(g_target_layout, sizeof(g_target_layout), "%s", rep ? rep : "");
+    g_target_ptr_bits = (int)LLVMPointerSize(td) * 8;
+    g_target_explicit = want_host ? 0 : 1;
+    g_target_selected = 1;
+
+    if (rep) LLVMDisposeMessage(rep);
+    LLVMDisposeTargetData(td);
+    LLVMDisposeTargetMachine(tm);
+    if (host) LLVMDisposeMessage(host);
+    return 1;
+#else
+    if (!want_host) return 0;
+    g_target_triple[0] = '\0';
+    g_target_layout[0] = '\0';
+    g_target_ptr_bits = 64;
+    g_target_explicit = 0;
+    g_target_selected = 1;
+    return 1;
+#endif
+}
+
+static void ensure_target(void) {
+    if (!g_target_selected) ir_target_select(NULL);
+}
+
+const char *ir_target_triple(void) { ensure_target(); return g_target_triple; }
+const char *ir_target_data_layout(void) { ensure_target(); return g_target_layout; }
+int ir_target_pointer_bits(void) { ensure_target(); return g_target_ptr_bits; }
+int ir_target_is_explicit(void) { ensure_target(); return g_target_explicit; }
+
+// Stamps a named target onto the module being built, which is what makes -g and
+// clang agree about it: pin_data_layout() below leaves an existing layout alone,
+// so a cross build's member offsets come from the target rather than the host.
+void ir_module_set_target(const char *triple, const char *layout) {
+    if (!g_module) backend_fail("ir_module_set_target with no module", triple);
+    if (triple && *triple) LLVMSetTarget(g_module, triple);
+    if (layout && *layout) LLVMSetDataLayout(g_module, layout);
+}
+
 void ir_module_start(const char *module_name) {
     ensure_context();
     reset_state();
@@ -472,17 +587,14 @@ void ir_module_start(const char *module_name) {
     // Pinned only on Windows, where msvc and mingw are a real fork and msvc is
     // the configuration that is actually verified. Elsewhere LLVM's own host
     // triple is a better answer than a guess. Matches the text backend.
+    //
+    // Still a #ifdef and not a row in the target record above, because this is
+    // the *implicit host* case and changing it would change the IR every
+    // Windows build emits -- on the one platform none of this was tested on.
+    // `--target x86_64-pc-windows-msvc` goes through the record like any other
+    // named target; moving the default there is a job for someone with the box.
     LLVMSetTarget(g_module, "x86_64-pc-windows-msvc");
 #endif
-}
-
-void ir_module_start_wasm(const char *module_name) {
-    ensure_context();
-    reset_state();
-    g_module = LLVMModuleCreateWithNameInContext(module_name, g_ctx);
-    LLVMSetSourceFileName(g_module, "prismio_generated", strlen("prismio_generated"));
-    LLVMSetTarget(g_module, "wasm32-unknown-unknown");
-    LLVMSetDataLayout(g_module, "e-m:e-p:32:32-i64:64-n32:64-S128");
 }
 
 void ir_module_end(void) { /* nothing to flush -- the module is already built */ }
@@ -1510,7 +1622,7 @@ void ir_blank_line(void) { /* formatting only */ }
 // the DWARF would point into the middle of a field. So -g asks the host target
 // machine for its layout and writes it onto the module, which is what clang does
 // for a C translation unit and for the same reason. A module that already has a
-// layout (--target wasm32) keeps it.
+// layout keeps it -- nothing sets one today, but a cross-target build would.
 // ============================================================================
 
 #ifdef PRISMIO_DWARF
@@ -1534,6 +1646,14 @@ int ir_get_struct_field_count(const char *struct_name);
 const char *ir_get_struct_field_name_at(const char *struct_name, int index);
 const char *ir_get_struct_field_type_at(const char *struct_name, int index);
 int ir_is_struct_type_name(const char *name);
+
+// Same file. `ir_named_type_kind` is how a struct is told from an enum: guessing
+// from the name is wrong, because `TokenType` is an enum and does not look like
+// one. 1 = struct, 2 = enum, 0 = not a declared type.
+int ir_named_type_kind(const char *name);
+int ir_get_enum_variant_count(const char *enum_name);
+const char *ir_get_enum_variant_name_at(const char *enum_name, int index);
+int ir_get_enum_variant_value_at(const char *enum_name, int index);
 
 // DWARF base-type encodings. llvm-c/DebugInfo.h types LLVMDWARFTypeEncoding as a
 // bare `unsigned` and defines no constants for it, so these are DWARF 5 table
@@ -1607,6 +1727,12 @@ typedef struct {
 } DIStructSite;
 static DIStructSite g_di_struct_sites[256];
 static int g_di_struct_site_count;
+
+// The same, for enums. A separate table rather than a shared one keyed by kind:
+// the two are looked up by different code and a name can only be one of them,
+// so sharing would buy nothing and cost a kind check on every lookup.
+static DIStructSite g_di_enum_sites[256];
+static int g_di_enum_site_count;
 
 // The source-level type name of one field, for the same reason a local has one:
 // ir_symbols.c stores the *storage* key, and String, List<T>, [T], `T?` and every
@@ -1736,6 +1862,7 @@ static LLVMMetadataRef di_opaque_ptr(void) {
 }
 
 static LLVMMetadataRef di_struct_type(const char *name);
+static LLVMMetadataRef di_enum_type(const char *name);
 
 // `struct:Foo` in a local's slot means a *pointer* to Foo -- storageType()
 // collapses it before the alloca is made -- so the pointee is looked up and the
@@ -1757,7 +1884,18 @@ static LLVMMetadataRef di_type_for(const char *key, const char *name) {
     if (strcmp(key, "i1") == 0) return di_basic("Bool", 8, PRISMIO_DW_ATE_boolean);
     if (strcmp(key, "i8") == 0) return di_basic("Char", 8, PRISMIO_DW_ATE_signed_char);
     if (strcmp(key, "i16") == 0) return di_basic("I16", 16, PRISMIO_DW_ATE_signed);
-    if (strcmp(key, "i32") == 0) return di_basic("Int", 32, PRISMIO_DW_ATE_signed);
+    if (strcmp(key, "i32") == 0) {
+        // Every Prismio enum lowers to i32, so the storage key alone cannot tell
+        // `NodeKind` from `Int` -- only the source-level name can, and only when
+        // the frontend had one to send. With it, `p kind` prints STRUCT_DECL
+        // instead of 12, which on a compiler written around NodeKind, TypeKind
+        // and TokenType is most of what a debugger is for.
+        if (name && *name && ir_named_type_kind(name) == 2) {
+            LLVMMetadataRef e = di_enum_type(name);
+            if (e) return e;
+        }
+        return di_basic("Int", 32, PRISMIO_DW_ATE_signed);
+    }
     if (strcmp(key, "i64") == 0) return di_basic("I64", 64, PRISMIO_DW_ATE_signed);
     if (strcmp(key, "double") == 0) return di_basic("Float", 64, PRISMIO_DW_ATE_float);
 
@@ -1772,7 +1910,17 @@ static LLVMMetadataRef di_type_for(const char *key, const char *name) {
         // is a statement of fact, and it is what makes a debugger print the
         // contents instead of the address.
         if (name && strcmp(name, "String") == 0) {
-            return di_pointer_to("$char", di_basic("Char", 8, PRISMIO_DW_ATE_signed_char));
+            // Lowercase `char`, and the case is load-bearing rather than a
+            // style choice. lldb auto-prints a `char *` as its characters and
+            // prints a `signed char *` as an address, and it decides which by
+            // the base type's *name*: with "Char" here, `frame variable s`
+            // rendered `(signed char *) 0x1000042fc` and docs/DEBUGGING.md's
+            // promise that a String prints its contents was false. Measured
+            // both ways on lldb 22.1.8.
+            //
+            // Only the String pointee. An `i8` binding is Prismio's `Char` and
+            // keeps that name below, because it is a Char and not a C char.
+            return di_pointer_to("$char", di_basic("char", 8, PRISMIO_DW_ATE_signed_char));
         }
         // A struct-typed binding whose key was already collapsed to `ptr`.
         if (name && *name && ir_is_struct_type_name(name)) {
@@ -1819,6 +1967,59 @@ static LLVMMetadataRef di_type_for_llvm(LLVMTypeRef ty) {
 // the composite gets its hot members, a `__cold` member for the link, and a
 // second composite for what the link points at. `p obj->__cold->field` is a
 // longer thing to type than `p obj->field`, and it is the truth.
+// DW_TAG_enumeration_type: the name, and every enumerator with its value.
+//
+// Enums lower to i32 and every variant's value is one, so the size is fixed and
+// there is no layout to read -- which is why this needs none of the machinery
+// di_struct_type does, and no replaceable placeholder either: an enumerator
+// cannot refer back to its own type.
+//
+// An enum with no registered variants gets no type rather than an empty one. A
+// DW_TAG_enumeration_type with no enumerators tells a debugger the value has a
+// name it cannot find, which reads worse than plain `Int`.
+static LLVMMetadataRef di_enum_type(const char *name) {
+    char key[NAME_LEN];
+    snprintf(key, sizeof(key), "$e:%s", name);
+    LLVMMetadataRef hit = di_cached(key);
+    if (hit) return hit;
+
+    int total = ir_get_enum_variant_count(name);
+    if (total <= 0) return NULL;
+    if (total > 512) total = 512;
+
+    LLVMMetadataRef site_file = NULL;
+    unsigned site_line = 0;
+    for (int i = 0; i < g_di_enum_site_count; i++) {
+        if (strcmp(g_di_enum_sites[i].name, name) != 0) continue;
+        site_file = di_file(g_di_enum_sites[i].file);
+        if (g_di_enum_sites[i].line > 0) site_line = (unsigned)g_di_enum_sites[i].line;
+        break;
+    }
+
+    LLVMMetadataRef *values =
+        (LLVMMetadataRef *)malloc(sizeof(LLVMMetadataRef) * (size_t)total);
+    if (!values) return NULL;
+    unsigned count = 0;
+    for (int i = 0; i < total; i++) {
+        const char *vname = ir_get_enum_variant_name_at(name, i);
+        if (!vname || !*vname) continue;
+        values[count++] = LLVMDIBuilderCreateEnumerator(
+            g_di, vname, strlen(vname),
+            (int64_t)ir_get_enum_variant_value_at(name, i), 0);
+    }
+
+    LLVMMetadataRef type = NULL;
+    if (count > 0) {
+        type = LLVMDIBuilderCreateEnumerationType(
+            g_di, g_di_cu, name, strlen(name), site_file, site_line,
+            32, 32, values, count,
+            di_basic("Int", 32, PRISMIO_DW_ATE_signed));
+    }
+    free(values);
+    if (!type) return NULL;
+    return di_cache(key, type);
+}
+
 static LLVMMetadataRef di_struct_type(const char *name) {
     char key[NAME_LEN];
     snprintf(key, sizeof(key), "$s:%s", name);
@@ -1916,9 +2117,19 @@ static LLVMMetadataRef di_struct_type(const char *name) {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-// Asks the host target machine for the layout the object file will be built
-// with, and writes it onto the module. See the section header for why a -g build
-// cannot use LLVM's default specification.
+// Asks the target machine for the layout the object file will be built with, and
+// writes it onto the module. See the section header for why a -g build cannot
+// use LLVM's default specification.
+//
+// **A named target has already stamped its own layout** (ir_module_set_target,
+// in the "Targets" section above), and the early return below is what makes a
+// cross-compiled -g build read member offsets from the *target* rather than from
+// this host -- which is precisely the bug this layer exists to prevent. Verified:
+// a struct { Int, String, I64 } reports its String member at offset 64 on a
+// 64-bit host and at offset 32 for wasm32-unknown-unknown.
+//
+// The host default is reached only when nothing was named, and only then is
+// LLVMGetDefaultTargetTriple() the right question to ask.
 static void pin_data_layout(void) {
     const char *existing = LLVMGetDataLayoutStr(g_module);
     if (existing && *existing) {
@@ -1966,6 +2177,7 @@ void ir_debug_begin(const char *producer, const char *main_path, int is_optimize
     g_di_type_count = 0;
     g_di_scope_file_count = 0;
     g_di_struct_site_count = 0;
+    g_di_enum_site_count = 0;
     g_di_field_type_count = 0;
     g_di_sig_count = 0;
     g_di_depth = 0;
@@ -2189,6 +2401,55 @@ void ir_debug_local(const char *name, const char *slot, const char *type_key,
     LLVMDIBuilderInsertDeclareRecordAtEnd(g_di, storage, var, g_di_empty_expr, loc, bb);
 }
 
+// A module-level global.
+//
+// Unlike a local there is no alloca and no insert point: the description hangs
+// off the global's own LLVMValueRef as a `!dbg` attachment, and the compile unit
+// collects it when the DIBuilder is finalized. So this runs during the module's
+// global loop, before any function exists and with no scope stack to read.
+//
+// Scope is the compile unit rather than a file. `resolveImports` merges every
+// module into one unit here, and a Prismio global is visible across that whole
+// unit, so LocalToUnit is 0 -- which is also what ir_global_var's linkage says.
+void ir_debug_global(const char *name, const char *type_key, const char *type_name,
+                     int file_id, int line) {
+    if (!g_di) return;
+    if (line <= 0) return;
+
+    // Compiler-internal globals (prismio_argc, string literals) never reach this
+    // -- only the frontend's VARIABLE_DECL loop calls it -- but a name that does
+    // not resolve is still an "I cannot answer that" rather than a guess.
+    LLVMValueRef global = LLVMGetNamedGlobal(g_module, name);
+    if (!global) return;
+
+    LLVMMetadataRef file = di_file(file_id);
+    if (!file) return;
+
+    LLVMMetadataRef ty = di_type_for(type_key, type_name);
+    if (!ty) return; // a type this layer has no description for: no entry
+
+    LLVMMetadataRef gve = LLVMDIBuilderCreateGlobalVariableExpression(
+        g_di, g_di_cu, name, strlen(name), name, strlen(name), file,
+        (unsigned)line, ty, 0, g_di_empty_expr, NULL, 0);
+    LLVMGlobalSetMetadata(global, LLVMGetMDKindIDInContext(g_ctx, "dbg", 3), gve);
+}
+
+// One enumeration per declared enum, for the same reason ir_debug_struct emits
+// one composite per struct: a type a program only passes around is still a type
+// `p` should be able to name. The site is recorded first, because di_enum_type
+// reads it.
+void ir_debug_enum(const char *name, int file_id, int line) {
+    if (!g_di) return;
+    if (g_di_enum_site_count < 256) {
+        strncpy(g_di_enum_sites[g_di_enum_site_count].name, name, NAME_LEN - 1);
+        g_di_enum_sites[g_di_enum_site_count].name[NAME_LEN - 1] = '\0';
+        g_di_enum_sites[g_di_enum_site_count].file = file_id;
+        g_di_enum_sites[g_di_enum_site_count].line = line;
+        g_di_enum_site_count++;
+    }
+    di_enum_type(name);
+}
+
 // One composite per struct, emitted after generateStructDecl has registered
 // every type. Nothing references them until a variable does, so this exists to
 // make a type visible to `p` even in a program that only passes it around.
@@ -2234,6 +2495,10 @@ void ir_debug_local(const char *n, const char *s, const char *k, const char *t,
                     int f, int l, int a) {
     (void)n; (void)s; (void)k; (void)t; (void)f; (void)l; (void)a;
 }
+void ir_debug_global(const char *n, const char *k, const char *t, int f, int l) {
+    (void)n; (void)k; (void)t; (void)f; (void)l;
+}
+void ir_debug_enum(const char *name, int f, int l) { (void)name; (void)f; (void)l; }
 void ir_debug_struct(const char *name, int f, int l) { (void)name; (void)f; (void)l; }
 void ir_debug_field_type(const char *o, const char *f, const char *t) {
     (void)o; (void)f; (void)t;

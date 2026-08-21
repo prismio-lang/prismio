@@ -7,6 +7,7 @@
 // command list and ~501 DrawCmd objects and throws all of it away, so if a
 // memory model produces a hitch, it produces it here.
 
+import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> Int
 
 struct DrawCmd {

@@ -26,6 +26,7 @@
 // `run_split_release_test`. It emits the same split, prints the same value and
 // produces the same ledger; the prose above is new.
 
+import std.io
 struct Body {
     id: Int,
     px: Float,

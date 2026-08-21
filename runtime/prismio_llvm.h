@@ -70,6 +70,16 @@
 // nothing and letting -g look as though it worked.
 #define PRISMIO_DWARF 1
 
+// Naming a target other than the host is compiled in on this path only, and for
+// the same reason, though it is not debug info and a reader should not have to
+// know the two coincide.
+//
+// Resolving a triple means LLVMInitializeAllTargets, which is generated from the
+// set of backends LLVM was built with -- there is no portable way to write it
+// out by hand below. Without it the host is the only target that can be named,
+// and ir_target_select() refuses anything else instead of guessing a layout.
+#define PRISMIO_TARGETS 1
+
 #else
 
 #include <stddef.h> // size_t

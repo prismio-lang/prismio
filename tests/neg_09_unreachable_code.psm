@@ -5,6 +5,7 @@
 // the same basic block -- invalid IR that llc rejected with "expected
 // instruction opcode", pointing at generated output instead of at this line.
 
+import std.io
 fn main() -> Int {
     println("before")
     return 0

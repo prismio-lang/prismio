@@ -5,6 +5,7 @@
 // streaming over the component arrays, so this program also allocates nothing
 // per frame.
 
+import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> Int
 
 struct Position {

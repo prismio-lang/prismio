@@ -18,6 +18,7 @@
 // parameter forces them to T3, the call-boundary join is not being deleted and
 // ownership contexts are not doing their job.
 
+import std.io
 struct Position {
     x: Float,
     y: Float,

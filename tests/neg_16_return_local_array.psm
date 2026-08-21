@@ -9,6 +9,7 @@
 // produces the right answer during testing is the worst kind, which is why this
 // is rejected outright rather than left to escape analysis.
 
+import std.io
 fn make() -> [Int] {
     let a = [1, 2, 3]
     return a

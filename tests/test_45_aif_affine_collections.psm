@@ -16,6 +16,7 @@
 // storage, so types.psm leaves them copyable and aif_frees_at_scope_node declines
 // them by kind; neg_18 pins the `drop` half of that.
 
+import std.io
 extern fn str_length(s: String) -> Int
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn str_equals(s1: String, s2: String) -> Int

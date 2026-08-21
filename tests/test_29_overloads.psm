@@ -1,3 +1,4 @@
+import std.io
 extern fn str_equals(s1: String, s2: String) -> Int
 
 fn choose(value: Int) -> Int {

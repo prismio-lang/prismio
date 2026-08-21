@@ -1,3 +1,4 @@
+import std.io
 struct Counter {
     value: Int
 }
