@@ -46,6 +46,7 @@ extern fn compiler_set_debug_info(on: Int)
 extern fn compiler_set_sysroot(path: String borrow)
 extern fn compiler_bootstrap_executable(irFile: String, exeFile: String) -> Int
 extern fn compiler_run_executable(exeFile: String) -> Int
+extern fn ir_jit_run_main(programName: String) -> Int
 // LAYOUT 3.2. Runs a workload driver with no argv and a wall-clock bound, so W2's
 // "times out" is a case that can actually occur rather than a clause nothing
 // implements.
@@ -423,12 +424,13 @@ fn printUsage() {
     println("Usage:")
     println("  prismio build [source.psm] [-o output.exe] [-g] [--verify]")
     println("                [--target <triple>] [--sysroot <sdk>]")
-    println("  prismio run <source.psm> [-o output.exe] [-g] [--verify]")
+    println("  prismio run <source.psm> [-o output.exe] [-g] [--verify] [--jit]")
     println("  prismio check <source.psm> [--diagnostic-format=json]")
     println("  prismio bootstrap [source.psm] [-o output.exe] [-g]")
     println("  prismio runtime-hash")
     println("  prismio dump-ast <source.psm>")
     println("  prismio aif <source.psm> [--summary] [--layout] [--copyable-collections] [--theta-fields] [--budget=N]")
+    println("                            [--target <triple>]")
     println("  prismio aif <source.psm> --why=<symbol>   why one record has the tier it has")
     println("  prismio build|aif <source.psm> --force-layout=<Type>:<hot>   emit a named layout candidate")
     println("")
@@ -811,7 +813,8 @@ fn endWorkloadPass(verifyMode: Bool) {
 }
 
 fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstrapMode: Bool,
-                  verifyMode: Bool, debugMode: Bool, debugInfo: Bool, optimized: Bool) -> Int {
+                  verifyMode: Bool, debugMode: Bool, debugInfo: Bool, optimized: Bool,
+                  jitMode: Bool) -> Int {
     let mut outFile = ""
     let mut emitIrOnly = false
 
@@ -970,6 +973,23 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
 
     generateModule(mergedAst)
 
+    // Before `ir_write_file`, and that is the whole point: `--jit` writes no IR,
+    // spawns no clang and links nothing. The module generated above is the one
+    // that runs, so what executes is what a `build` of the same source would
+    // have produced.
+    if (jitMode) {
+        // Reported exactly as the non-JIT `run` reports it, and deliberately:
+        // `--jit` is a way of running the same program, so a caller must not be
+        // able to tell which path ran from the exit status or the diagnostic.
+        // That is also what makes the two comparable in run_jit_test.
+        let status = ir_jit_run_main(path)
+        if (status != 0) {
+            diag_error(str_concat(path, " exited with a failure status"))
+            return 1
+        }
+        return 0
+    }
+
     if (ir_write_file(outFile) != 0) {
         diag_error(str_concat("cannot write LLVM IR to ", outFile))
         return 1
@@ -1024,7 +1044,7 @@ fn buildUmsProject() -> Int {
     while (index < umsWorkspaceTargetCount(workspace)) {
         let target = umsWorkspaceTarget(workspace, index)
         if (compileSource(target.sourcePath, target.outputPath,
-                          false, false, false, false, false, false) != 0) {
+                          false, false, false, false, false, false, false) != 0) {
             return 1
         }
         index = index + 1
@@ -1039,6 +1059,7 @@ fn main() -> Int {
     let mut runAfterBuild = false
     let mut bootstrapMode = false
     let mut verifyMode = false
+    let mut jitMode = false
     let mut debugMode = false
     let mut argIndex = 0
 
@@ -1186,6 +1207,21 @@ fn main() -> Int {
                 // anything still compiles that way -- `prismio build` always
                 // analyses with collections owned (see aifRun below).
                 aifOwned = false
+            } else if (str_equals(flag, "--target") == 1) {
+                // The layout model is target-dependent -- a String field, a
+                // reference edge, an `Isize`, a `[T]` and a `List<T>` are all one
+                // pointer, and a pointer is four bytes on wasm32. Without this
+                // the model could only ever be inspected for the host, while
+                // `prismio build --target` compiled against a different one.
+                if (aifArg + 1 >= cli_arg_count()) {
+                    diag_error("`--target` requires an LLVM target triple (e.g. wasm32-unknown-unknown)")
+                    return 1
+                }
+                if (targetSelect(cli_arg(aifArg + 1)) == false) {
+                    diag_error(str_concat("unknown target triple ", diagQuote(cli_arg(aifArg + 1))))
+                    return 1
+                }
+                aifArg = aifArg + 1
             } else {
                 diag_error(str_concat("unknown argument ", diagQuote(flag)))
                 printUsage()
@@ -1245,7 +1281,7 @@ fn main() -> Int {
         }
 
         return compileSource(path, outputFile, runAfterBuild, bootstrapMode, false, false,
-                              bootstrapDebugInfo, false)
+                              bootstrapDebugInfo, false, false)
     }
 
     if (str_equals(first, "build") == 1) {
@@ -1325,6 +1361,15 @@ fn main() -> Int {
                 diag_error(str_concat("unknown target triple ", diagQuote(cli_arg(argIndex + 1))))
                 return 1
             }
+            // A contradiction rather than a combination: the JIT emits code for
+            // *this* process, so a named target could only ever be ignored.
+            // Silently running host code for someone who asked for wasm32 is the
+            // worst of the three available behaviours.
+            if (jitMode) {
+                diag_error("`--jit` and `--target` cannot be combined")
+                diag_note("the JIT runs the module in this process, so it can only ever target the host")
+                return 1
+            }
             argIndex = argIndex + 2
         } else if (str_equals(arg, "--sysroot") == 1) {
             if (argIndex + 1 >= cli_arg_count()) {
@@ -1337,6 +1382,23 @@ fn main() -> Int {
             // SPEC 7.3. Slower and heavier by design: the mode exists to be run
             // by CI, not by users.
             verifyMode = true
+            argIndex = argIndex + 1
+        } else if (str_equals(arg, "--jit") == 1) {
+            // `run` without the clang compile and the link. Off by default and
+            // scoped to `run`, so codegen and every emission path are untouched:
+            // this adds a way of executing the module, not a way of producing
+            // one. See ir_jit_run_main in runtime/llvm-api-backend.c.
+            if (str_equals(command, "run") == 0) {
+                diag_error("`--jit` is only meaningful with `prismio run`")
+                diag_note("`build` produces an object; there is nothing to run in this process")
+                return 1
+            }
+            if (ir_target_is_explicit() == 1) {
+                diag_error("`--jit` and `--target` cannot be combined")
+                diag_note("the JIT runs the module in this process, so it can only ever target the host")
+                return 1
+            }
+            jitMode = true
             argIndex = argIndex + 1
         } else if (str_equals(arg, "-g") == 1) {
             // Source-level debug info, and nothing else -- not an analysis level
@@ -1384,5 +1446,5 @@ fn main() -> Int {
     }
 
     return compileSource(path, outputFile, runAfterBuild, bootstrapMode, verifyMode, debugMode,
-                          debugInfo, optimized)
+                          debugInfo, optimized, jitMode)
 }

@@ -132,6 +132,14 @@ fn main() -> Int {
     if (enabled) {
         tally = tally + 1
     }
+    // Output-neutral on purpose: `adjust` never reaches 99, so these two exist
+    // only to be stamped. See the `// ASSIGN` block in run_debug_info_test.
+    let mut adjust = 0
+    adjust = 1                            // ASSIGN plain-assign
+    adjust += 2                           // ASSIGN compound-assign
+    if (adjust > 99) {
+        println("unreachable")
+    }
     println(describe(sample, unit))
     println(int_to_str(count))
     println(int_to_str(scopeExit("scope", true)))

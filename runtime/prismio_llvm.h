@@ -47,12 +47,22 @@
 #ifdef PRISMIO_LLVM_REAL_HEADERS
 
 #include <llvm-c/Analysis.h>
+#include <llvm-c/BitWriter.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/DebugInfo.h>
 #include <llvm-c/Error.h>
+#include <llvm-c/IRReader.h>
+#include <llvm-c/LLJIT.h>
+#include <llvm-c/Orc.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
+
+// LLJIT/Orc are here and not in the fallback block below for the same reason
+// DIBuilder is, and the reason is written out at that block: the linker checks
+// names, never signatures, so hand-transcribing an API whose types are opaque
+// handles passed by pointer buys a build that succeeds and a run that corrupts
+// memory. `--jit` is a convenience; `--jit` that mostly works is not one.
 
 // `-g` is compiled in only on this path, and deliberately.
 //

@@ -2293,6 +2293,29 @@ def _di_located_lines(nodes, filename):
     return lines
 
 
+def _di_located_spans(nodes, filename):
+    """Every (line, column) a DILocation names in one source file.
+
+    The column half matters for exactly one class of defect: a statement whose
+    node is built *after* part of its own text is consumed is stamped with
+    wherever the parser ended up. `_di_located_lines` cannot see that when the
+    parser lands on the same line, which is the usual case for an assignment.
+    """
+    files = {n for n, t in nodes.items() if "DIFile" in t and filename in t}
+    spans = set()
+    for text in nodes.values():
+        if not text.startswith("!DILocation"):
+            continue
+        at = re.search(r"line: (\d+)", text)
+        col = re.search(r"column: (\d+)", text)
+        scope = re.search(r"scope: !(\d+)", text)
+        if not at or not col or not scope:
+            continue
+        if _di_scope_file(nodes, int(scope.group(1))) in files:
+            spans.add((int(at.group(1)), int(col.group(1))))
+    return spans
+
+
 def _di_composite(nodes, name):
     """The DICompositeType with this name, and its members as
     [(field, offset_bits, size_bits)] in declaration order within the record."""
@@ -2528,6 +2551,126 @@ def run_target_test():
                     linked = "x86_64-apple-macos built and ran"
             cleanup_files(exe)
 
+    # 7b. The data layout we stamp must be the one clang computes for the same
+    # target.
+    #
+    # This is what `-Woverride-module` is *for*, and it is suppressed in
+    # compile_ir_to_object because it could never do the job: the clang driver
+    # always compiles for the SDK's deployment target
+    # (arm64-apple-macosx26.0.0) while a module carries at most LLVM's default
+    # triple (arm64-apple-darwin25.5.0), so it fired on literally every macOS
+    # build -- including, measured, a module with no triple at all. A warning
+    # nobody can act on and everybody scrolls past is worth less than this.
+    #
+    # The triple is deliberately *not* compared, because the two forms name one
+    # machine and never match textually. The data layout is the half with teeth:
+    # it is what `-g` member offsets and every size in the AIF model are derived
+    # from, and a disagreement there is an ABI disagreement.
+    layouts = "not attempted on this host"
+    if which("clang"):
+        def clang_layout(extra):
+            r = subprocess.run(["clang"] + extra + ["-S", "-emit-llvm", "-x", "c",
+                                                    "-", "-o", "-"],
+                               input="", capture_output=True, text=True)
+            m = re.search(r'target datalayout = "([^"]*)"', r.stdout or "")
+            return m.group(1) if m else None
+
+        def ours(ir):
+            m = re.search(r'target datalayout = "([^"]*)"', ir)
+            return m.group(1) if m else None
+
+        checked = 0
+        for label, ir, extra in (("host", host_g_ir, []),
+                                 ("wasm32", wasm_g_ir,
+                                  ["--target=wasm32-unknown-unknown"])):
+            theirs = clang_layout(extra)
+            mine = ours(ir)
+            if theirs is None:
+                continue
+            if mine is None:
+                problems.append(f"a -g build for {label} stamped no data layout, "
+                                "so -g offsets are being computed against nothing")
+            elif mine != theirs:
+                problems.append(f"for {label} the module stamps data layout "
+                                f"{mine!r} and clang compiles it as {theirs!r}: "
+                                "the target this compiler describes and the one "
+                                "clang codegens for disagree about the ABI")
+            else:
+                checked += 1
+        layouts = f"{checked} target(s) agree with clang"
+        if checked == 0:
+            problems.append("neither data layout could be compared against "
+                            "clang, so the check that replaced "
+                            "-Woverride-module did not run")
+
+    # 8. The AIF layout model must follow the target too, not just codegen.
+    #
+    # `aifTypeBytes` sizes a String field, a reference edge and an `Isize` from
+    # the target, and hardcoded **8** for `[T]` and `List<T>` -- with the comment
+    # "both a pointer to elements held elsewhere" sitting directly above the
+    # literal. On wasm32 a pointer is four bytes, so every container field was
+    # modelled at twice its width, and Theta_stack is what decides T0.
+    #
+    # The assertion is differential rather than absolute: three `List<T>` fields
+    # and three `String` fields are three pointers either way, so the two structs
+    # must model the same size on any one target. String was already correct, so
+    # this compares the suspect path against a known-good one in the same
+    # function and needs no magic number of its own. It also requires the wasm32
+    # figure to be *smaller* than the host's, which is what stops both paths
+    # being wrong in the same direction.
+    with tempfile.TemporaryDirectory(prefix="prismio-ptr-width-") as tmp:
+        probe = Path(tmp) / "widths.psm"
+        probe.write_text("import std.io\n"
+                         "\n"
+                         "struct OfList { a: List<Int>, b: List<Int>, c: List<Int> }\n"
+                         "struct OfArray { a: [Int], b: [Int], c: [Int] }\n"
+                         "struct OfString { a: String, b: String, c: String }\n"
+                         "\n"
+                         "fn main() -> Int {\n"
+                         "    let x = OfList { a: list_new(), b: list_new(), c: list_new() }\n"
+                         "    let y = OfArray { a: [1], b: [2], c: [3] }\n"
+                         "    let z = OfString { a: \"p\", b: \"q\", c: \"r\" }\n"
+                         "    println(1)\n"
+                         "    return 0\n"
+                         "}\n")
+
+        def modelled(extra):
+            r = run_command([str(PRISMIO_EXE), "aif", str(probe), "--layout"] + extra)
+            if r.returncode != 0:
+                return None
+            out = {}
+            for line in (r.stdout or "").splitlines():
+                parts = line.split()
+                # "  <type> <fields> <trav> <candidate...> <hotB> <coldB> ..."
+                if len(parts) >= 6 and parts[0].startswith("Of") and "unsplit" in line:
+                    hot = [p for p in parts if p.isdigit()]
+                    if len(hot) >= 3:
+                        out[parts[0]] = int(hot[2])
+            return out
+
+        host = modelled([])
+        wasm = modelled(["--target", "wasm32-unknown-unknown"])
+        if not host or not wasm:
+            problems.append("`prismio aif --layout` produced no sizes for the "
+                            "pointer-width probe, so the layout half of this "
+                            "test did not run")
+        else:
+            for name in ("OfList", "OfArray"):
+                if name not in host or name not in wasm or "OfString" not in wasm:
+                    problems.append(f"{name} or OfString is missing from the "
+                                    "layout table")
+                elif wasm[name] != wasm["OfString"]:
+                    problems.append(f"on wasm32 {name} models {wasm[name]} bytes "
+                                    f"where three String fields model "
+                                    f"{wasm['OfString']}: a container field is a "
+                                    "pointer and is not being sized from the "
+                                    "target")
+                elif wasm[name] >= host[name]:
+                    problems.append(f"{name} models {wasm[name]} bytes on wasm32 "
+                                    f"and {host[name]} on the host: a 32-bit "
+                                    "target must make a struct of pointers "
+                                    "smaller, not the same or larger")
+
     if problems:
         print(f"{RED}[FAIL] --target{RESET}")
         for p in problems:
@@ -2536,7 +2679,196 @@ def run_target_test():
 
     print(f"{GREEN}[PASS] --target: triple and layout from LLVM, pointer width "
           f"agreed by sema and codegen, -g offsets from the target, cache keyed "
-          f"per target; link: {linked}{RESET}")
+          f"per target, container fields sized from the target; layout vs clang: "
+          f"{layouts}; link: {linked}{RESET}")
+    return True
+
+
+def run_incremental_manifest_test():
+    """INFERENCE 9's required check: an incremental result must equal a cold one.
+
+    `tools/incremental_manifest.py` is the check INFERENCE 9 asks for. The spec
+    permits reusing a per-function inference summary across a rebuild and then
+    says an implementation SHOULD verify that doing so changes no answer,
+    "because summary-cache bugs are silent and produce wrong-tier binaries rather
+    than crashes". The script applies four edits to one file and requires the
+    manifests to be discriminating, reversible and budget-sensitive.
+
+    It is called from here for the same reason `run_runtime_library_test` calls
+    `tools/verify_separation.*`, and it is the second script found in the same
+    state: **nothing called it, and all three of its program templates stopped
+    compiling the day `std.io` stopped being a prelude.** A required check that
+    nobody runs is not coverage, and two of them broke on one day without a
+    single failure anywhere. It costs about 150 ms.
+    """
+    print(f"\n{BLUE}--- Running incremental_manifest ---{RESET}")
+    script = PROJECT_ROOT / "tools" / "incremental_manifest.py"
+    r = subprocess.run([sys.executable, str(script),
+                        "--compiler", str(Path(PRISMIO_EXE).resolve())],
+                       capture_output=True, text=True, cwd=str(PROJECT_ROOT))
+    said = (r.stdout or "") + (r.stderr or "")
+    if r.returncode != 0 or "OK" not in said:
+        print(f"{RED}[FAIL] incremental manifest{RESET}")
+        print("  - " + (said.strip()[-500:] or f"exit {r.returncode}"))
+        return False
+
+    print(f"{GREEN}[PASS] incremental manifest: cold and incremental agree, "
+          f"discriminating, reversible and budget-sensitive{RESET}")
+    return True
+
+
+def run_jit_test():
+    """`prismio run --jit`: the same program, without clang and without a link.
+
+    `run` otherwise compiles the module to an object, links an executable,
+    executes it and deletes it. The module is already in memory, so `--jit` hands
+    it to LLJIT and calls `main` in this process instead. Measured on this host
+    for a small program: **10-20 ms against 220-530 ms**, which is the whole
+    argument for it.
+
+    It is an *execution* path, not an emission path -- codegen is not told the
+    JIT exists -- so the assertion with real teeth is the first one: what the JIT
+    runs must be indistinguishable from what a build of the same source produces.
+
+    Six assertions:
+
+      1. *Same output, same status.* `run --jit` and `run` are compared on
+         stdout and exit code for one program. A JIT that ran a different module,
+         resolved a different runtime, or lost a write would show here.
+      2. *`cli_arg_count()` reports the program's arguments, not the compiler's.*
+         **This is the trap the design note in ir_jit_run_main is about.**
+         Generated code *defines* `@prismio_argc`, so the jitted module holds its
+         own copy while the runtime shims linked into this process read the
+         compiler's -- which holds `prismio run --jit prog.psm`. Without the host
+         globals being set, a jitted program asking for its arguments is quietly
+         told about the compiler's command line. The fixture prints the count and
+         both paths must say 1.
+      3. *A failing program fails the same way.* Same exit status and the same
+         diagnostic, so no caller can tell which path ran.
+      4. *`--jit` with `--target` is refused, in both orders.* The JIT emits for
+         this process, so a named target could only ever be ignored; silently
+         running host code for someone who asked for wasm32 is the worst of the
+         three available behaviours.
+      5. *`--jit` on `build` is refused.* There is nothing to run.
+      6. *Nothing is left on disk.* No IR, no executable, no temporary -- if
+         `--jit` still writes an object then it is not the path it claims to be.
+    """
+    print(f"\n{BLUE}--- Running jit ---{RESET}")
+    problems = []
+
+    with tempfile.TemporaryDirectory(prefix="prismio-jit-") as tmp:
+        wd = Path(tmp)
+        prog = wd / "jitted.psm"
+        # cli_arg_count is the compiler's own extern rather than a std.io export,
+        # so the fixture declares it. That is the point: it reaches the runtime
+        # already linked into the compiler process, which is where the two
+        # prismio_argc can differ.
+        prog.write_text('import std.io\n'
+                        '\n'
+                        'extern fn cli_arg_count() -> Int\n'
+                        '\n'
+                        'struct Point { x: Int, y: Int }\n'
+                        '\n'
+                        'fn total(p: Point) -> Int {\n'
+                        '    return p.x + p.y\n'
+                        '}\n'
+                        '\n'
+                        'fn main() -> Int {\n'
+                        '    let p = Point { x: 40, y: 2 }\n'
+                        '    let items = list_new()\n'
+                        '    list_push(items, "jit")\n'
+                        '    print("answer: ")\n'
+                        '    println(total(p))\n'
+                        '    print("argc: ")\n'
+                        '    println(cli_arg_count())\n'
+                        '    return 0\n'
+                        '}\n')
+
+        failing = wd / "failing.psm"
+        failing.write_text('import std.io\n'
+                           '\n'
+                           'fn main() -> Int {\n'
+                           '    println("about to fail")\n'
+                           '    return 3\n'
+                           '}\n')
+
+        exe = wd / ("built" + (".exe" if os.name == "nt" else ""))
+        jit = run_command([str(PRISMIO_EXE), "run", str(prog), "--jit"])
+        native = run_command([str(PRISMIO_EXE), "run", str(prog), "-o", str(exe)])
+
+        if jit.returncode != 0:
+            problems.append("`run --jit` failed: "
+                            + ((jit.stdout or "") + (jit.stderr or "")).strip()[-400:])
+        elif native.returncode != 0:
+            problems.append("the non-JIT `run` failed, so there is nothing to "
+                            "compare against: "
+                            + ((native.stdout or "") + (native.stderr or "")).strip()[-300:])
+        else:
+            # The native path prints `Built <path>` first; the JIT has nothing to
+            # report because it wrote nothing. Compare what the program said.
+            native_out = [l for l in (native.stdout or "").splitlines()
+                          if not l.startswith("Built ")]
+            jit_out = (jit.stdout or "").splitlines()
+            if jit_out != native_out:
+                problems.append(f"`run --jit` printed {jit_out!r} and `run` "
+                                f"printed {native_out!r}: the JIT is not running "
+                                "the module a build produces")
+            elif "argc: 1" not in jit_out:
+                problems.append(f"a jitted program reported {jit_out!r} rather "
+                                "than `argc: 1`: cli_arg_count is reading the "
+                                "compiler's prismio_argc, so the program was "
+                                "told about the compiler's command line")
+
+        # 3. A failing program fails identically.
+        jit_fail = run_command([str(PRISMIO_EXE), "run", str(failing), "--jit"])
+        native_fail = run_command([str(PRISMIO_EXE), "run", str(failing),
+                                   "-o", str(wd / ("failing" + (".exe" if os.name == "nt" else "")))])
+        if jit_fail.returncode == 0:
+            problems.append("a jitted program returning 3 exited 0: the JIT is "
+                            "swallowing the program's status")
+        elif jit_fail.returncode != native_fail.returncode:
+            problems.append(f"a failing program exits {jit_fail.returncode} under "
+                            f"--jit and {native_fail.returncode} without it: a "
+                            "caller can tell which path ran")
+        if "about to fail" not in (jit_fail.stdout or ""):
+            problems.append("a jitted program's output was lost when it returned "
+                            "non-zero")
+
+        # 4. --jit and --target, both orders.
+        for order in (["--jit", "--target", "wasm32-unknown-unknown"],
+                      ["--target", "wasm32-unknown-unknown", "--jit"]):
+            r = run_command([str(PRISMIO_EXE), "run", str(prog)] + order)
+            said = (r.stdout or "") + (r.stderr or "")
+            if r.returncode == 0 or "cannot be combined" not in said:
+                problems.append(f"`{' '.join(order)}` was accepted: the JIT emits "
+                                "for this process and would have ignored the "
+                                "target while appearing to honour it")
+
+        # 5. Nothing to run on a build.
+        r = run_command([str(PRISMIO_EXE), "build", str(prog), "--jit",
+                         "-o", str(wd / "unused")])
+        if r.returncode == 0:
+            problems.append("`build --jit` was accepted, which can only mean the "
+                            "flag was ignored")
+
+        # 6. The JIT leaves nothing behind. Run it in a directory of its own and
+        #    require that directory to hold only the two sources it started with.
+        before = {p.name for p in wd.iterdir()}
+        run_command([str(PRISMIO_EXE), "run", str(prog), "--jit"])
+        after = {p.name for p in wd.iterdir()}
+        if after != before:
+            problems.append(f"`run --jit` left {sorted(after - before)} behind: it "
+                            "is still writing IR or an object, which is the cost "
+                            "it exists to avoid")
+
+    if problems:
+        print(f"{RED}[FAIL] jit{RESET}")
+        for p in problems:
+            print(f"  - {p}")
+        return False
+
+    print(f"{GREEN}[PASS] jit: same output and status as a built run, arguments "
+          f"are the program's, --target refused both ways, nothing written{RESET}")
     return True
 
 
@@ -2565,7 +2897,7 @@ def run_runtime_library_test():
     negative control is not optional -- without it, "no trace lines" is also what
     a compiler with a broken trace would print.
 
-    Seven assertions:
+    Eight assertions:
 
       1. *The archive is linked*, and the program it produces runs. This resolves
          `import std.io` out of the installed `stdlib/` too, which is the same
@@ -2595,6 +2927,13 @@ def run_runtime_library_test():
       7. *The staleness guard fires* when `lib/runtime.hash` disagrees with
          `runtime/*.c` on disk, rather than linking a runtime that no longer
          matches the code in front of you.
+      8. *No backend symbol reaches a user binary*, by handing the packaged
+         toolchain to `tools/verify_separation.*` -- which is called from here
+         because it is otherwise called from nowhere, and spent two days broken
+         proving it. It reads the archive symbol tables and scans the linked
+         binary for backend-only strings, neither of which this test can do:
+         a linked binary's symbol table says nothing about which static-archive
+         members were folded into it.
 
     The triple in the archive name is the one **as typed on the command line**,
     not LLVM's normalisation of it: `ir_target_select` stores `use` verbatim, so
@@ -2703,6 +3042,23 @@ def run_runtime_library_test():
                             f"{archive.name} as the only thing it can have "
                             "linked into a wasm32 binary")
 
+        # 3b. And when that fallback fails -- which it does on any target with no
+        # C library of its own -- the note has to be about the target. It used to
+        # recommend `prismio bootstrap`, which builds a compiler for the *host*
+        # and cannot help a cross build at all. This is skipped rather than forced
+        # if some host does have a wasm32 sysroot and the build succeeds.
+        if wasm.returncode != 0:
+            told = (wasm.stdout or "") + (wasm.stderr or "")
+            if "runtime-wasm32-unknown-unknown.a" not in told:
+                problems.append("a cross build failed without naming the archive "
+                                "it looked for, so the one thing a framework has "
+                                "to know -- the exact filename to ship -- is not "
+                                "in the diagnostic")
+            if "prismio bootstrap" in told:
+                problems.append("a failed cross build told the user to run "
+                                "`prismio bootstrap`, which builds a compiler for "
+                                "the host and cannot help a cross build")
+
         # 4. The real thing: an archive shipped for a target, where this host can
         #    run the result.
         cross = "not attempted on this host"
@@ -2802,6 +3158,54 @@ def run_runtime_library_test():
                                 "with runtime/*.c on disk was linked anyway: exit "
                                 f"{stale.returncode}")
 
+        # 8. The runtime/backend boundary, checked by the script that owns it.
+        #
+        # `tools/verify_separation.*` is called from here rather than left as a
+        # tool nobody runs. Its probe program stopped compiling the day std.io
+        # stopped being a prelude and it went two days broken with three of its
+        # checks silently not running, because nothing in the tree called it.
+        # It builds no toolchain of its own -- it takes a --dist, and this test
+        # has already packaged one -- so wiring it in costs one process and makes
+        # the next break loud.
+        #
+        # It also makes two assertions this test cannot. `nm` over the archives
+        # proves the libraries were built from the right translation units in the
+        # first place, and a byte signature in the linked binary proves the *link
+        # step* pulled in only the runtime: a linked binary's symbol table says
+        # nothing about which static-archive members were folded into it, so nm
+        # cannot answer that one at all.
+        if os.name == "nt":
+            script = PROJECT_ROOT / "tools" / "verify_separation.ps1"
+            symbols = which("llvm-nm")
+            command = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                       "-File", str(script), "-Dist", str(dist)]
+        else:
+            script = PROJECT_ROOT / "tools" / "verify_separation.sh"
+            symbols = which("llvm-nm") or which("nm")
+            command = ["bash", str(script), "--dist", str(dist)]
+
+        if not symbols:
+            # The script exits 1 for a missing nm exactly as it does for a failed
+            # check, so the two are told apart here rather than by its exit code.
+            separation = "skipped -- no nm or llvm-nm on PATH"
+        else:
+            ran = subprocess.run(command, capture_output=True, text=True,
+                                 cwd=str(PROJECT_ROOT))
+            said = (ran.stdout or "") + (ran.stderr or "")
+            if ran.returncode != 0:
+                # The script colours its own output; the escapes would otherwise
+                # be quoted straight into this runner's failure line.
+                plain = re.sub(r"\x1b\[[0-9;]*m", "", said)
+                named = [l.split("[FAIL]", 1)[1].strip()
+                         for l in plain.splitlines() if "[FAIL]" in l]
+                problems.append(f"{script.name} failed against the packaged "
+                                "toolchain: "
+                                + ("; ".join(named) if named
+                                   else plain.strip()[-300:] or f"exit {ran.returncode}"))
+                separation = f"{script.name} failed"
+            else:
+                separation = f"{script.name} passed"
+
     if problems:
         print(f"{RED}[FAIL] runtime library{RESET}")
         for p in problems:
@@ -2810,7 +3214,8 @@ def run_runtime_library_test():
 
     print(f"{GREEN}[PASS] runtime library: a packaged toolchain links its own "
           f"archive, a foreign target does not get the host's, --verify bypasses "
-          f"it, staleness is caught; cross: {cross}{RESET}")
+          f"it, staleness is caught; cross: {cross}; separation: "
+          f"{separation}{RESET}")
     return True
 
 
@@ -2943,6 +3348,40 @@ def run_debug_info_test():
             problems.append(f"nothing is attributed to line {line} (`{name}`), the "
                             "closing brace of a block with cleanup -- the scope "
                             "exit is inheriting the last statement's line instead")
+
+    # 2b-ii. An assignment is stamped from its target, not from wherever the
+    # parser ended up.
+    #
+    # `// ASSIGN <name>` marks a statement whose location must be its own first
+    # non-space column. Two different defects, and the line check above catches
+    # only one of them:
+    #
+    #   - `x = e` built its node *after* `=` was consumed, so it took the column
+    #     of the right-hand side. Same line, one token to the right, invisible to
+    #     any assertion that only looks at line numbers.
+    #   - `x op= e` built its node after the whole RHS, so it took the *next
+    #     statement's* token -- the 2026-08-22 expression-statement bug again.
+    #     Under `-g` it left the compound assignment with no location of its own
+    #     at all: the two statements collapsed into one entry and a debugger
+    #     stepped straight over it.
+    assigns = {}
+    for i, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+        m = re.search(r"// ASSIGN ([\w-]+)", line)
+        if m:
+            assigns[m.group(1)] = (i, len(line) - len(line.lstrip()) + 1)
+    if not assigns:
+        problems.append("the fixture has no `// ASSIGN` comments -- this test "
+                        "stopped checking where an assignment is stamped")
+    spans = _di_located_spans(dbg_nodes, "debug_info.psm")
+    for name, (line, col) in sorted(assigns.items()):
+        if (line, col) not in spans:
+            got = sorted(c for (l, c) in spans if l == line)
+            problems.append(f"the assignment on line {line} (`{name}`) is not "
+                            f"attributed to column {col}, where it starts; "
+                            + (f"line {line} carries columns {got} instead"
+                               if got else
+                               f"nothing is attributed to line {line} at all, so "
+                               "the statement inherited a neighbour's location"))
 
     # 2c. Members sit where the host layout puts them, not where LLVM's default
     # specification would.
@@ -4132,6 +4571,16 @@ def main():
         failed += 1
 
     if run_runtime_library_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_incremental_manifest_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_jit_test():
         passed += 1
     else:
         failed += 1

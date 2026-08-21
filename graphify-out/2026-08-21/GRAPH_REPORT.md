@@ -1,16 +1,16 @@
 # Graph Report - prismio  (2026-08-21)
 
 ## Corpus Check
-- 126 files · ~423,386 words
+- 126 files · ~428,140 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2750 nodes · 4833 edges · 205 communities (197 shown, 8 thin omitted)
+- 2760 nodes · 4847 edges · 204 communities (196 shown, 8 thin omitted)
 - Extraction: 94% EXTRACTED · 6% INFERRED · 0% AMBIGUOUS · INFERRED: 306 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `526c6564`
+- Built from commit: `4c7fc637`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -205,10 +205,10 @@
 - run_aif_stack_slot_test
 - add_binding
 - run_aif_view_test
+- HANDOFF.md
 - The prompt for the next session
 - aif_verify_alloc
 - list_new_cap
-- ir_intern
 - Session of 2026-08-22 (finishing `-g`) — four holes closed, and two bugs the tasks walked into
 - Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on
 - find_struct
@@ -217,15 +217,17 @@
 1. `free()` - 63 edges
 2. `malloc()` - 59 edges
 3. `main()` - 37 edges
-4. `main()` - 34 edges
+4. `main()` - 36 edges
 5. `intern_value()` - 33 edges
-6. `resolve_value()` - 32 edges
-7. `run_command()` - 32 edges
+6. `run_command()` - 33 edges
+7. `resolve_value()` - 32 edges
 8. `bits_test()` - 30 edges
 9. `type_from_key()` - 30 edges
 10. `Engine` - 28 edges
 
 ## Surprising Connections (you probably didn't know these)
+- `ir_get_label_name()` --calls--> `malloc()`  [INFERRED]
+  runtime/llvm-api-backend.c → aif/evidence/xlang/allocount.c
 - `diag_reset()` --calls--> `free()`  [INFERRED]
   runtime/diagnostics.c → aif/evidence/xlang/allocount.c
 - `ir_reset_fn_return_types()` --calls--> `free()`  [INFERRED]
@@ -233,8 +235,6 @@
 - `arena_pop()` --calls--> `free()`  [INFERRED]
   runtime/lang_runtime.c → aif/evidence/xlang/allocount.c
 - `chan_free()` --calls--> `free()`  [INFERRED]
-  runtime/program_support.c → aif/evidence/xlang/allocount.c
-- `prismio_task_release()` --calls--> `free()`  [INFERRED]
   runtime/program_support.c → aif/evidence/xlang/allocount.c
 
 ## Import Cycles
@@ -246,7 +246,7 @@
 - **Shared fail(message) test-harness helper pattern across feature tests** — tests_test_01_variables_fail, tests_test_02_if_else_fail, tests_test_03_while_loops_fail, tests_test_04_structs_fail, tests_test_05_enums_fail, tests_test_06_recursion_fail, tests_test_07_booleans_fail, tests_test_08_mutability_fail, tests_test_09_strings_fail, tests_test_10_expressions_fail, tests_test_11_returns_fail, tests_test_12_imports_fail, tests_test_13_globals_fail [INFERRED 0.95]
 - **Prismio Ownership System (Move/Drop/Borrow) Demonstration** — tests_test_23_move_main, tests_test_24_drop_main, tests_test_25_conventions_main, tests_test_26_borrow_reuse_main [INFERRED 0.85]
 
-## Communities (205 total, 8 thin omitted)
+## Communities (204 total, 8 thin omitted)
 
 ### Community 0 - "malloc"
 Cohesion: 0.06
@@ -262,11 +262,11 @@ Nodes (28): Actor, apply_orders(), arena_alloc(), arena_reserve(), arena_reset()
 
 ### Community 3 - "ir_symbols.c"
 Cohesion: 0.06
-Nodes (5): drop_index(), ir_drop_kind(), ir_drop_slot(), ir_drop_type(), ir_reset_fn_return_types()
+Nodes (14): drop_index(), find_binding(), ir_binding_predates_loop(), ir_drop_kind(), ir_drop_slot(), ir_drop_type(), ir_get_var_slot(), ir_get_var_type() (+6 more)
 
 ### Community 4 - "free"
-Cohesion: 0.11
-Nodes (34): FILE, accept_if_exists(), build_from_toolchain_sources(), compiler_default_exe_path(), compiler_installed_runtime_hash(), compiler_publish_file(), compiler_runtime_source_hash(), compiler_temp_ir_path() (+26 more)
+Cohesion: 0.10
+Nodes (42): FILE, accept_if_exists(), build_from_toolchain_sources(), compiler_bootstrap_executable(), compiler_build_executable(), compiler_default_exe_path(), compiler_installed_runtime_hash(), compiler_prepare_output_path() (+34 more)
 
 ### Community 5 - "lang_runtime.c"
 Cohesion: 0.04
@@ -285,16 +285,16 @@ Cohesion: 0.09
 Nodes (27): Arithmetic Operators, Global Variables, Mutability (mut bindings), Operator Precedence / Expression Evaluation, Variable Declarations, bump_global(amount) function, fail(message) function (test_01_variables), main() function (test_01_variables) (+19 more)
 
 ### Community 10 - "g2_bench_arena.c"
-Cohesion: 0.07
-Nodes (60): buildSystem(), countAlive(), countBeyond(), fade(), G1, integrate(), Particle, spawnParticle() (+52 more)
+Cohesion: 0.08
+Nodes (55): buildSystem(), countAlive(), countBeyond(), fade(), G1, integrate(), Particle, spawnParticle() (+47 more)
 
 ### Community 11 - "bench.py"
 Cohesion: 0.43
 Nodes (7): main(), pct(), PROCESS_MEMORY_COUNTERS, Run the AIF benchmark set and report to BENCHMARKS 3.2's protocol.      python a, One run: wall milliseconds, and peak working set in MB.      The counters stay r, run_once(), suite()
 
 ### Community 12 - "ir_intern"
-Cohesion: 0.16
-Nodes (14): DeclEntry, add_binding(), decl_entry(), ir_decl_at(), ir_decl_count(), ir_index_decl(), ir_register_enum_variant(), ir_register_struct() (+6 more)
+Cohesion: 0.15
+Nodes (21): DeclEntry, add_binding(), decl_entry(), hash_str(), ir_decl_at(), ir_decl_count(), ir_get_enum_variant(), ir_get_fn_return_type() (+13 more)
 
 ### Community 13 - "setup_llvm.py"
 Cohesion: 0.25
@@ -334,7 +334,7 @@ Nodes (3): add_c_string(), escape_c_string(), main()
 
 ### Community 22 - "llvm-api-backend.c"
 Cohesion: 0.06
-Nodes (29): check_llvm_version(), debug_dispose(), ensure_all_targets(), ensure_context(), ensure_target(), ir_append(), ir_append_line(), ir_arena_call() (+21 more)
+Nodes (33): check_llvm_version(), debug_dispose(), ensure_all_targets(), ensure_context(), ensure_target(), ir_append(), ir_append_line(), ir_arena_call() (+25 more)
 
 ### Community 23 - "Enum Types"
 Cohesion: 0.24
@@ -349,12 +349,12 @@ Cohesion: 0.26
 Nodes (13): candidates(), field_align(), field_width(), Layout, main(), min_size(), mu_for(), grouping in {AoS, SoA, AoSoA(w)}; `hot` is the field subset kept in the     prim (+5 more)
 
 ### Community 26 - "diagnostics.c"
-Cohesion: 0.16
+Cohesion: 0.15
 Nodes (19): diag_add_file(), diag_digits(), diag_emit(), diag_emit_json(), diag_emit_json_summary(), diag_error(), diag_error_at(), diag_finish() (+11 more)
 
 ### Community 27 - "test_runner.py"
-Cohesion: 0.11
-Nodes (19): main(), `prismio bootstrap` builds a compiler, and the compiler it builds is right., The bootstrap scripts cache toolchain objects, and the key has to be content., SPEC 5.2.1 -- the per-function bracketing summary reports the obligations,     a, Nothing may take ordinal 0 in NodeKind or TypeKind.      A source check, because, SPEC 6.3's witness path, checked for shape rather than for prose.      The inter, The AIF memory model's tier derivation, one fixture per SPEC 4.2 clause.      As, The compiler and `aif/prototype/aif.py` must know the same builtins.      The di (+11 more)
+Cohesion: 0.12
+Nodes (17): main(), The bootstrap scripts cache toolchain objects, and the key has to be content., SPEC 8.4's E-VIEW, checked in the manifest and in the IR.      Both halves are l, INFERENCE 9's required check: an incremental result must equal a cold one., Nothing may take ordinal 0 in NodeKind or TypeKind.      A source check, because, SPEC 6.3's witness path, checked for shape rather than for prose.      The inter, The compiler and `aif/prototype/aif.py` must know the same builtins.      The di, SPEC 6.2 / 11 item 8 -- every record the manifest emits must be a record     the (+9 more)
 
 ### Community 28 - "check_source_lists.py"
 Cohesion: 0.20
@@ -437,8 +437,8 @@ Cohesion: 0.20
 Nodes (27): applyOrders(), Actor, EngTransform, EngVelocity, Bool, Double, Int, World (+19 more)
 
 ### Community 49 - "strcmp"
-Cohesion: 0.18
-Nodes (24): global_named(), intern_value(), ir_array_alloca(), ir_bitcast(), ir_call_end(), ir_fneg(), ir_fptosi(), ir_fptoui() (+16 more)
+Cohesion: 0.19
+Nodes (24): global_named(), intern_value(), ir_array_alloca(), ir_bitcast(), ir_call_end(), ir_elem_ptr(), ir_fneg(), ir_fptosi() (+16 more)
 
 ### Community 50 - "strlen"
 Cohesion: 0.23
@@ -470,11 +470,11 @@ Nodes (13): Current limitations, Decisions, Generated state is project-local and
 
 ### Community 58 - "g4.swift"
 Cohesion: 0.10
-Nodes (16): DWORD, LPVOID, PrismioTask, chan_free(), executable_directory(), execute_command(), get_directory(), prismio_executable_directory() (+8 more)
+Nodes (18): DWORD, LPVOID, PrismioTask, append_module_name(), chan_free(), executable_directory(), execute_command(), get_directory() (+10 more)
 
 ### Community 59 - "strncpy"
-Cohesion: 0.17
-Nodes (23): arena_reserve(), now_ms(), run_boxed_aos(), run_boxed_split(), run_chunked_inline(), run_chunked_split(), run_inline_aos(), run_inline_split() (+15 more)
+Cohesion: 0.22
+Nodes (22): now_ms(), run_boxed_aos(), run_boxed_split(), run_chunked_inline(), run_chunked_split(), run_inline_aos(), run_inline_split(), run_soa() (+14 more)
 
 ### Community 60 - "g4_idiomatic.rs"
 Cohesion: 0.30
@@ -701,8 +701,8 @@ Cohesion: 0.50
 Nodes (4): AIF Corpus, Building, Gaps to fill, Three things the corpus established
 
 ### Community 126 - "6 · The tier manifest"
-Cohesion: 0.33
-Nodes (14): Bounds, buildHierarchy(), countVisible(), G3, identityTransform(), linkChild(), makeNode(), Node (+6 more)
+Cohesion: 0.28
+Nodes (19): acquire(), AssetCache, buildAssets(), Entity, evictUnused(), G5, loadMaterial(), loadMesh() (+11 more)
 
 ### Community 127 - "Profile"
 Cohesion: 0.22
@@ -714,11 +714,11 @@ Nodes (11): NameList, ir_declare_named_type(), ir_is_borrowed(), ir_is_global_na
 
 ### Community 129 - "NEXT-SESSION.md"
 Cohesion: 0.14
-Nodes (12): Carry forward, Next, ranked, Not this session, Not this session, Prompt 1 is done — what it unblocked, Prompt 2 — layout, Prompt 2 (original, for reference), Prompt 2 (residual) — the hot/cold split, and only that (+4 more)
+Nodes (12): Carry forward, Not this session, Not this session, Prompt 2 — layout, Prompt 2 (original, for reference), Prompt 2 (residual) — the hot/cold split, and only that, The last-good generation, The one task (+4 more)
 
 ### Community 130 - "find_binding"
-Cohesion: 0.22
-Nodes (9): find_binding(), ir_binding_predates_loop(), ir_get_var_slot(), ir_get_var_type(), ir_has_var_type(), ir_mark_droppable(), ir_mark_mutable(), ir_var_is_global() (+1 more)
+Cohesion: 0.25
+Nodes (8): aif_key_var(), aif_var_note_scope(), aif_var_scope(), bracket_reject(), bracket_site_bounded(), escape_join(), scope_lca(), var_scope_grow()
 
 ### Community 131 - "aif_manifest_diff.py"
 Cohesion: 0.36
@@ -770,11 +770,11 @@ Nodes (10): 1 · The headline, 2 · Why an escape-lattice change does not move t
 
 ### Community 143 - "Handoff — continuing the Prismio work"
 Cohesion: 0.14
-Nodes (14): 1. SPEC 8.4's E-VIEW landed, and it closes a real use-after-free, 2. The speed half: it was never the malloc, 3. The cross-language numbers, and the axis that did not exist, Current state, File roles, Five rules learned the hard way, Four things to carry forward, Handoff — continuing the Prismio work (+6 more)
+Nodes (14): 1. What landed, 2. The bug in it, which is the interesting part, 3. `tools/ir_snapshot.py` reports a false difference under concurrency, 4. The gate, 5. Next, ranked, Current state, File roles, Five rules learned the hard way (+6 more)
 
 ### Community 144 - "Session of 2026-08-09 (second) — views: the safety half landed, the speed half was somewhere else"
-Cohesion: 0.30
-Nodes (14): compile_ir_to_object(), compiler_bootstrap_executable(), compiler_build_executable(), compiler_prepare_output_path(), find_runtime_library(), link_against_runtime_library(), run_build_command(), target_clang_flags() (+6 more)
+Cohesion: 0.33
+Nodes (6): 1. SPEC 8.4's E-VIEW landed, and it closes a real use-after-free, 2. The speed half: it was never the malloc, 3. The cross-language numbers, and the axis that did not exist, Four things to carry forward, Next, re-ranked on this session's measurements, Session of 2026-08-09 (second) — views: the safety half landed, the speed half was somewhere else
 
 ### Community 145 - "Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on"
 Cohesion: 0.25
@@ -817,7 +817,7 @@ Cohesion: 0.12
 Nodes (17): 1 · Handles did not land, and two dimensions depend on them, 2.1 · It was built on 2026-08-17, and the corpus does not reproduce the 0.87×, 2.2 · The cost model chose two layouts the measurement rejected, and both reasons are nameable, 2.3 · The compiler self-hosted with a split AST, and then stopped splitting it, 2 · Hot/cold does *not* need handles, and it pays, 3 · Bit-packing is blocked by the specification, not by codegen, 4.1 · Both blockers are gone, and the remaining piece is a search loop, 4 · Empirical validation (LAYOUT §8) is behind §7.2, not behind the runner (+9 more)
 
 ### Community 155 - "The cross-language suite — Prismio vs Rust vs Swift"
-Cohesion: 0.29
+Cohesion: 0.20
 Nodes (7): A note on what this suite found and changed, Fidelity notes, How each axis is measured, Results, The cross-language suite — Prismio vs Rust vs Swift, The four decisions worth arguing with, What is here
 
 ### Community 156 - "arena_census.py"
@@ -849,8 +849,8 @@ Cohesion: 0.14
 Nodes (14): 1. REQUIREMENTS 16 was four scans in three passes, not one, 2. The IR delta is a slot renumbering, on all 89 programs, and it is worth understanding, 3. INFERENCE §9: priced, then not built, and the price is the finding, 4.1 The same hole was in the build driver's cache, and it was mine, 4.2 The first hard ceiling on program size is gone, 4. The object cache, and the one thing its test cannot reach, 5.15 The profile race is fixed, and two more bugs with it, 5.1 Benchmarked, and the answer to "are incremental builds done" is no (+6 more)
 
 ### Community 164 - "2 · Prediction vs measurement, per axis"
-Cohesion: 0.06
-Nodes (36): 2026-08-17 (compile time) — the frontend is linear now, and incrementality is not an AIF problem, 2026-08-17 (second) — LAYOUT §8's forced candidate landed; read this before writing another brief, 2026-08-17 — tasks 1 and 2 both landed, in parallel, and were merged, 2026-08-19 (concurrency) — the `T` domain is live; the join analysis is the hole, 2026-08-19 (generics) — monomorphisation is in; the stdlib floor is now gated on one missing primitive, 2026-08-19 (payload enums) — `Option`/`Result` are in; exhaustiveness is the hole, and REQUIREMENTS 18 now gates two things, 2026-08-20 (DWARF) — `-g` is in; the compiler itself still cannot be stepped through, 2026-08-21 (layering + targets) — worked; tasks 1–4 all landed (+28 more)
+Cohesion: 0.10
+Nodes (20): 2026-08-17 (compile time) — the frontend is linear now, and incrementality is not an AIF problem, 2026-08-17 (second) — LAYOUT §8's forced candidate landed; read this before writing another brief, 2026-08-17 — tasks 1 and 2 both landed, in parallel, and were merged, 2026-08-19 (concurrency) — the `T` domain is live; the join analysis is the hole, 2026-08-21 (layering + targets) — worked; tasks 1–4 all landed, 2026-08-22 (finish `-g`) — worked; tasks 1–4 all landed, 2026-08-23 (packaged runtime) — candidate A, chosen over the optional task; worked, 2026-08-24 — see `SESSION-PROMPT.md` (+12 more)
 
 ### Community 166 - "9 · The budget rule"
 Cohesion: 0.25
@@ -862,19 +862,19 @@ Nodes (14): calloc(), clock_gettime(), clock_mark(), count_calloc(), count_clock
 
 ### Community 168 - "The prompt for the next session"
 Cohesion: 0.19
-Nodes (23): LLVMMetadataRef, diag_file_count(), diag_file_path(), ir_get_struct_field_count(), ir_get_struct_field_type_at(), di_basic(), di_cache(), di_cached() (+15 more)
+Nodes (22): LLVMMetadataRef, diag_file_count(), diag_file_path(), ir_get_enum_variant_count(), ir_get_enum_variant_name_at(), ir_get_enum_variant_value_at(), di_basic(), di_cache() (+14 more)
 
 ### Community 169 - "Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on"
 Cohesion: 0.18
 Nodes (10): Debugging Prismio programs, Part 1 — `-g`, Part 2 — where the memory went, and why, See also, The manifest — where each site went, `--verify` — did the inference hold?, What `-g` will not tell you, and why, Which tool answers which question (+2 more)
 
 ### Community 170 - "2026-08-17 (compile time) — the frontend is linear now, and incrementality is not an AIF problem"
-Cohesion: 0.13
-Nodes (14): A. A prebuilt `runtime.a` is never exercised in a dev checkout, B. Finish wasm32 past IR, C. `aif/layout.psm` hardcodes 4 bytes for an enum and 8 for a Float, Candidates, in the order they look worth doing, D. Assignment statements are stamped with the token after `=`, Deliberately not in this list, E. `-Woverride-module` on every macOS build, How to work this (+6 more)
+Cohesion: 0.15
+Nodes (12): A. Finish wasm32 past IR, B. `aif/layout.psm` hardcodes 4 bytes for an enum and 8 for a Float, C. Assignment statements are stamped with the token after `=`, Candidates, in the order they look worth doing, D. `-Woverride-module` on every macOS build, Deliberately not in this list, E. `prismio run --jit`, How to work this (+4 more)
 
 ### Community 171 - "decl_entry"
-Cohesion: 0.23
-Nodes (10): compile_prismio_file(), _di_located_lines(), _di_scope_file(), expected_errors(), Substrings the diagnostics must contain, from `// expect-error:` lines.      Wit, The DIFile a metadata node belongs to, following `scope:` upwards., Every line a DILocation names *in one source file*.      Pooling every file's lo, run_negative_test() (+2 more)
+Cohesion: 0.33
+Nodes (6): 2026-08-19 (payload enums) — `Option`/`Result` are in; exhaustiveness is the hole, and REQUIREMENTS 18 now gates two things, Not this session, Small, and it will pay for itself immediately, The tasks, ranked, Two things found rather than built, What landed across the whole session
 
 ### Community 172 - "ir_slot_diff.py"
 Cohesion: 0.83
@@ -886,19 +886,19 @@ Nodes (3): 10.1 FFI, 10.2 Library distribution, 10 · Boundaries
 
 ### Community 174 - "backend_fail"
 Cohesion: 0.10
-Nodes (25): backend_fail(), grow_table(), ir_alloca(), ir_br(), ir_call_arg(), ir_call_begin(), ir_cond_br(), ir_const_cstring() (+17 more)
+Nodes (27): backend_fail(), const_from_text(), grow_table(), ir_alloca(), ir_br(), ir_call_arg(), ir_call_begin(), ir_cond_br() (+19 more)
 
 ### Community 175 - "struct_entry"
-Cohesion: 0.17
-Nodes (16): LLVMTypeRef, attach_cold(), attach_cold_rc(), const_from_text(), ir_alloc_cycle(), ir_alloc_object(), ir_alloc_rc(), ir_alloc_region() (+8 more)
+Cohesion: 0.21
+Nodes (14): LLVMTypeRef, attach_cold(), attach_cold_rc(), ir_alloc_cycle(), ir_alloc_object(), ir_alloc_rc(), ir_alloc_region(), ir_alloc_stack() (+6 more)
 
 ### Community 176 - "block_done"
 Cohesion: 0.53
 Nodes (5): build(), main(), A one-line edit that is a real edit: it changes the text, the AST and the     em, scenario(), touch()
 
 ### Community 177 - "LLVMValueRef"
-Cohesion: 0.20
-Nodes (11): LLVMValueRef, NamedValue, apply_param_attrs(), debug_clear_location(), ir_debug_local(), ir_declare_function_end(), ir_function_body_start(), ir_load() (+3 more)
+Cohesion: 0.22
+Nodes (10): LLVMValueRef, NamedValue, apply_param_attrs(), debug_clear_location(), ir_declare_function_end(), ir_function_body_start(), ir_load(), ir_store() (+2 more)
 
 ### Community 178 - "The prompt for the next session"
 Cohesion: 0.18
@@ -910,19 +910,19 @@ Nodes (8): SPEC 8.4. Mark `v` as denoting views of `container`. Provenance, not 
 
 ### Community 180 - "cleanup_files"
 Cohesion: 0.11
-Nodes (19): cleanup_files(), REQUIREMENTS 10, applied to the one module every build shares: the runtime., `prismio run` with a forward-slash -o path.      Every other test goes through `, The T0 path has to be checked in the IR, not only in the output: falling     bac, SPEC 8.4's E-VIEW, checked in the manifest and in the IR.      Both halves are l, LAYOUT 3 -- `workload`, and the three normative constraints that are     checkab, LAYOUT 7.2's field-order search, checked where it is decided: the IR.      The l, Reclamation points, counted per function in the IR.      test_43 running clean a (+11 more)
+Nodes (19): cleanup_files(), REQUIREMENTS 10, applied to the one module every build shares: the runtime., `prismio run` with a forward-slash -o path.      Every other test goes through `, AIF Level 5, checked in the IR because neither half shows in a value.      The n, LAYOUT 3 -- `workload`, and the three normative constraints that are     checkab, A packaged toolchain links the prebuilt runtime archive, and a foreign target do, LAYOUT 7.2's field-order search, checked where it is decided: the IR.      The l, Reclamation points, counted per function in the IR.      test_43 running clean a (+11 more)
 
 ### Community 181 - "run_command"
-Cohesion: 0.15
-Nodes (15): aif_thread_records(), emitted_layout_for(), LAYOUT 6's hot/cold split -- the release half, checked by running it.      A spl, The candidate `--layout` marks `emitted` for one type, as a label string.      R, LAYOUT 8's forced candidate -- `--force-layout=<Type>:<hot>`.      §8 selects a, AIF Level 5, checked in the IR because neither half shows in a value.      The n, SPEC 7.1's zero-analysis mode, made falsifiable.      `src/aif.psm` used to carr, symbol -> (tier, thread) from a manifest run. (+7 more)
+Cohesion: 0.12
+Nodes (17): emitted_layout_for(), LAYOUT 6's hot/cold split -- the release half, checked by running it.      A spl, The candidate `--layout` marks `emitted` for one type, as a label string.      R, `prismio bootstrap` builds a compiler, and the compiler it builds is right., LAYOUT 8's forced candidate -- `--force-layout=<Type>:<hot>`.      §8 selects a, SPEC 5.2.1 -- the per-function bracketing summary reports the obligations,     a, The T0 path has to be checked in the IR, not only in the output: falling     bac, Struct-field ownership, read out of the emitted IR.      test_49 running clean p (+9 more)
 
 ### Community 182 - "manifest_records"
-Cohesion: 0.25
-Nodes (8): manifest_records(), SPEC 5.4 -- a honoured pin freezes the tier, and only where the mechanism     ex, symbol -> {column name: value} for every record line in a manifest., SPEC 5.2 / 5.2.1 / 5.2.1.1 -- the arena diagnostics, and which regions the     w, SPEC 5.4 applied to placement -- `pin(<region-name>)` can fail a build.      **T, run_pin_tier_test(), run_placement_pin_test(), run_region_diagnostic_test()
+Cohesion: 0.17
+Nodes (12): aif_thread_records(), manifest_records(), SPEC 5.4 -- a honoured pin freezes the tier, and only where the mechanism     ex, symbol -> {column name: value} for every record line in a manifest., symbol -> (tier, thread) from a manifest run., INFERENCE 4.3's thread module, one fixture function per rule.      The `T` domai, SPEC 5.2 / 5.2.1 / 5.2.1.1 -- the arena diagnostics, and which regions the     w, SPEC 5.4 applied to placement -- `pin(<region-name>)` can fail a build.      **T (+4 more)
 
 ### Community 183 - "block_done"
-Cohesion: 0.25
-Nodes (8): aif_key_var(), aif_var_note_scope(), aif_var_scope(), bracket_reject(), bracket_site_bounded(), escape_join(), scope_lca(), var_scope_grow()
+Cohesion: 0.33
+Nodes (6): 2026-08-20 (DWARF) — `-g` is in; the compiler itself still cannot be stepped through, Found in passing, not this session's bug, Not this session, The tasks, ranked, Two things not to re-derive, What landed
 
 ### Community 184 - "Session of 2026-08-19 (concurrency) — the `T` domain stops being vacuous, and T4a is emitted for the first time"
 Cohesion: 0.17
@@ -933,8 +933,8 @@ Cohesion: 0.31
 Nodes (8): The analysis-only IDE boundary and its versioned JSON Lines output., run_check_command_test(), main(), manifest(), Everything the compiler may have left behind that a later run could read., The tier records only: the header carries a budget and a round count, and     `-, records(), wipe_state()
 
 ### Community 186 - "test_runner.py"
-Cohesion: 0.15
-Nodes (15): _di_composite(), _di_nodes(), _di_tuple(), _emitted_struct(), _expected_layout(), Every `!N = ...` line of a module, as {N: text}., The members of a metadata tuple `!{!1, !2, ...}`, as ints., The DICompositeType with this name, and its members as     [(field, offset_bits, (+7 more)
+Cohesion: 0.11
+Nodes (25): compile_prismio_file(), _di_composite(), _di_located_lines(), _di_nodes(), _di_scope_file(), _di_tuple(), _emitted_struct(), expected_errors() (+17 more)
 
 ### Community 187 - "2026-08-19 (payload enums) — `Option`/`Result` are in; exhaustiveness is the hole, and REQUIREMENTS 18 now gates two things"
 Cohesion: 0.17
@@ -949,16 +949,16 @@ Cohesion: 0.20
 Nodes (11): LLVMBasicBlockRef, block_done(), block_for(), ir_br_numbered(), ir_call_indirect_ptr(), ir_cond_br_numbered(), ir_free_cold(), ir_label_numbered() (+3 more)
 
 ### Community 190 - "run_cli_test"
-Cohesion: 0.33
-Nodes (6): 1. What landed, 2. The bug in it, which is the interesting part, 3. `tools/ir_snapshot.py` reports a false difference under concurrency, 4. The gate, 5. Next, ranked, Session of 2026-08-17 (second) — §8's forced candidate lands, and the IR differential turns out to have a concurrency hole
+Cohesion: 0.29
+Nodes (7): 1. What was actually untested, 2. `tools/verify_separation.sh` and `.ps1` had not compiled since 2026-08-21, 3. The staleness guard named the wrong script on two platforms out of three, 4. `tools/verify_separation.*` is now called by the suite, 5. The same break, three more times — and the pattern behind it, Session of 2026-08-23 (packaged runtime) — the shipping path gets a test, and two things on it were already broken, What this leaves
 
 ### Community 191 - "run_aif_layout_test"
 Cohesion: 0.27
 Nodes (3): Scope forest. Each function's body block is a root; join is the LCA,     which e, Where a value assigned to `name` has to stay alive until., Scopes
 
 ### Community 192 - "run_aif_struct_field_test"
-Cohesion: 0.47
-Nodes (9): arena_alloc(), arena_reset(), build_scene(), List, cull(), list_init(), list_push(), main() (+1 more)
+Cohesion: 0.42
+Nodes (10): arena_alloc(), arena_reserve(), arena_reset(), build_scene(), List, cull(), list_init(), list_push() (+2 more)
 
 ### Community 193 - "str_split"
 Cohesion: 0.67
@@ -976,9 +976,13 @@ Nodes (7): build_scene(), List, cull(), list_init(), list_push(), main(), submit
 Cohesion: 0.25
 Nodes (8): 1. The wasm runtime and `--target wasm32` are gone, 2. `std.io` is an ordinary import, 3–4. A target record, and it reaches clang, End to end, Known-stale, corrected on the way, Left alone, deliberately, Session of 2026-08-21 (layering + targets) — the wasm pretence is gone, `std.io` stops being a prelude, and a cross-compiled binary runs, The new test, and breaking it twice
 
+### Community 197 - "HANDOFF.md"
+Cohesion: 0.40
+Nodes (5): 2026-08-19 (generics) — monomorphisation is in; the stdlib floor is now gated on one missing primitive, Not this session, The tasks, ranked, Two premises in the last brief were wrong, and the correction matters, What landed
+
 ### Community 198 - "The prompt for the next session"
 Cohesion: 0.40
-Nodes (5): Carry forward, Not this session, The prompt for the next session, The tasks, ranked, Verify, in this order
+Nodes (5): Carry forward, Next, ranked, Not this session, Prompt 1 is done — what it unblocked, What landed, so it is not re-derived
 
 ### Community 199 - "aif_verify_alloc"
 Cohesion: 0.40
@@ -987,10 +991,6 @@ Nodes (5): aif_live_hash(), aif_verify_alloc(), aif_verify_arm(), aif_verify_rel
 ### Community 200 - "list_new_cap"
 Cohesion: 0.40
 Nodes (5): arena_current_slot(), list_new(), list_new_cap(), list_new_with_capacity(), rt_arena_slot()
-
-### Community 201 - "ir_intern"
-Cohesion: 0.24
-Nodes (10): hash_str(), ir_get_enum_variant(), ir_get_enum_variant_count(), ir_get_enum_variant_name_at(), ir_get_enum_variant_value_at(), ir_get_fn_return_type(), ir_intern(), ir_set_fn_return_type() (+2 more)
 
 ### Community 202 - "Session of 2026-08-22 (finishing `-g`) — four holes closed, and two bugs the tasks walked into"
 Cohesion: 0.25
@@ -1001,15 +1001,15 @@ Cohesion: 0.33
 Nodes (6): Four things to carry forward, Next, re-ranked on this session's measurements, Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on, The defect: `prismio build` ran no optimiser, on either stage, The `region` annotation is inert on g2, and that is the sharpest result here, Where Prismio stands, after the fix
 
 ### Community 204 - "find_struct"
-Cohesion: 0.33
-Nodes (6): find_struct(), ir_get_struct_field_index(), ir_get_struct_field_name_at(), ir_get_struct_field_type(), ir_is_struct_type_name(), StructInfo
+Cohesion: 0.22
+Nodes (11): find_struct(), ir_get_struct_field_count(), ir_get_struct_field_index(), ir_get_struct_field_name_at(), ir_get_struct_field_type(), ir_get_struct_field_type_at(), ir_is_struct_type_name(), di_field_type_name() (+3 more)
 
 ## Ambiguous Edges - Review These
 - `Test naming convention (test_<NN>_<description>.psm)` → `fn main() -> Int`  [AMBIGUOUS]
   CONTRIBUTING.md · relation: conceptually_related_to
 
 ## Knowledge Gaps
-- **775 isolated node(s):** `Darwin`, `Foundation`, `1.1 Pipeline trace: `prismio build file.psm` → executable`, `1.2 How runtime libraries are included: embedded, external, or both?`, `1.3 Every file and function responsible` (+770 more)
+- **781 isolated node(s):** `Darwin`, `Foundation`, `1.1 Pipeline trace: `prismio build file.psm` → executable`, `1.2 How runtime libraries are included: embedded, external, or both?`, `1.3 Every file and function responsible` (+776 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **8 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -1018,12 +1018,12 @@ _Questions this graph is uniquely positioned to answer:_
 
 - **What is the exact relationship between `Test naming convention (test_<NN>_<description>.psm)` and `fn main() -> Int`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
-- **Why does `free()` connect `strncpy` to `str_split`, `g6_bench.c`, `add_binding`, `free`, `ir_symbols.c`, `lang_runtime.c`, `nominal_find`, `Session of 2026-08-17 (second) — §8's forced candidate lands, and the IR differential turns out to have a concurrency hole`, `aif_verify_alloc`, `The prompt for the next session`, `g4.swift`, `ir_intern`, `arena_would_serve`, `cyc_hdr`, `Session of 2026-08-09 (second) — views: the safety half landed, the speed half was somewhere else`, `diagnostics.c`, `aif_solve`?**
+- **Why does `free()` connect `strncpy` to `run_aif_struct_field_test`, `str_split`, `g6_bench.c`, `add_binding`, `free`, `ir_symbols.c`, `lang_runtime.c`, `Session of 2026-08-17 (second) — §8's forced candidate lands, and the IR differential turns out to have a concurrency hole`, `nominal_find`, `aif_verify_alloc`, `The prompt for the next session`, `g4.swift`, `ir_intern`, `arena_would_serve`, `cyc_hdr`, `llvm-api-backend.c`, `diagnostics.c`, `aif_solve`?**
   _High betweenness centrality (0.128) - this node is a cross-community bridge._
-- **Why does `di_enum_type()` connect `The prompt for the next session` to `ir_intern`, `strncpy`, `llvm-api-backend.c`?**
+- **Why does `di_enum_type()` connect `The prompt for the next session` to `strncpy`, `llvm-api-backend.c`?**
   _High betweenness centrality (0.066) - this node is a cross-community bridge._
-- **Why does `Handoff — continuing the Prismio work` connect `Handoff — continuing the Prismio work` to `Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on`, `Session of 2026-08-13 — `workload` lands; two of LAYOUT 6's dimensions are not blocked on what the brief said`, `arena_chunk_new`, `Session of 2026-08-16 (second) — call-site placement lands; `region` stops being inert on g2`, `Session of 2026-08-16 (layout) — the cost model lands, and it could not have ranked the cut it exists for`, `Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on`, `Prompt 1 is done — what it unblocked`, `str_split`, `aif_tier_of`, `9 · The budget rule`, `The prompt for the next session`, `Session of 2026-08-19 (concurrency) — the `T` domain stops being vacuous, and T4a is emitted for the first time`, `run_cli_test`, `The cross-language suite — Prismio vs Rust vs Swift`, `run_aif_view_test`, `HANDOFF.md`, `Session of 2026-08-08 — the tree did not compile, and the T3 residue was never real`, `Session of 2026-08-22 (finishing `-g`) — four holes closed, and two bugs the tasks walked into`, `Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on`?**
-  _High betweenness centrality (0.062) - this node is a cross-community bridge._
+- **Why does `Handoff — continuing the Prismio work` connect `Handoff — continuing the Prismio work` to `Session of 2026-08-09 (second) — views: the safety half landed, the speed half was somewhere else`, `Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on`, `Session of 2026-08-13 — `workload` lands; two of LAYOUT 6's dimensions are not blocked on what the brief said`, `arena_chunk_new`, `The cross-language suite — Prismio vs Rust vs Swift`, `Session of 2026-08-16 (second) — call-site placement lands; `region` stops being inert on g2`, `Session of 2026-08-16 (layout) — the cost model lands, and it could not have ranked the cut it exists for`, `Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on`, `Prompt 1 is done — what it unblocked`, `str_split`, `aif_tier_of`, `9 · The budget rule`, `The prompt for the next session`, `Session of 2026-08-19 (concurrency) — the `T` domain stops being vacuous, and T4a is emitted for the first time`, `run_cli_test`, `The cross-language suite — Prismio vs Rust vs Swift`, `run_aif_view_test`, `Session of 2026-08-08 — the tree did not compile, and the T3 residue was never real`, `Session of 2026-08-22 (finishing `-g`) — four holes closed, and two bugs the tasks walked into`, `Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on`?**
+  _High betweenness centrality (0.064) - this node is a cross-community bridge._
 - **Are the 59 inferred relationships involving `free()` (e.g. with `arena_reserve()` and `main()`) actually correct?**
   _`free()` has 59 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 56 inferred relationships involving `malloc()` (e.g. with `arena_reserve()` and `build_scene()`) actually correct?**

@@ -187,7 +187,8 @@ fn parseReturnStatement(p: Parser) -> ASTNode {
 // twice, so a target with a subexpression -- `a[i()] += 1`, or `f().field += 1`
 // -- would evaluate that subexpression twice. Rejecting those is better than
 // silently doing it, and the workaround is to write the assignment out in full.
-fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: Token) -> ASTNode {
+fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: Token,
+                            first: Token) -> ASTNode {
     let op = str_substring(operatorToken.value, 0, 1)
     parserAdvance(p)
 
@@ -205,7 +206,13 @@ fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: Token) -> 
     combined.child1 = node_to_ptr(target)
     combined.child2 = node_to_ptr(parseExpression(p, 0))
 
-    let compound = parserNode(p, NodeKind.ASSIGNMENT_STATEMENT)
+    // From `first`, not from where the parser is now. The RHS has been consumed
+    // by this point, so `parserCurrent` is the *next statement's* first token --
+    // the same off-by-one that made an expression statement report the following
+    // line until 2026-08-22. Under `-g` it cost `x += 1` a location of its own
+    // entirely: the statement inherited the next line's, so the two collapsed to
+    // one entry and a debugger stepped straight over the compound assignment.
+    let compound = parserNodeFrom(NodeKind.ASSIGNMENT_STATEMENT, first)
     compound.child1 = node_to_ptr(target)
     compound.child2 = node_to_ptr(combined)
     return compound
@@ -238,7 +245,11 @@ fn parseStatement(p: Parser) -> ASTNode {
     let expr = parseExpression(p, 0)
 
     if (parserMatchVal(p, TokenType.ASSIGNMENT_OPERATOR, "=")) {
-        let assignment = parserNode(p, NodeKind.ASSIGNMENT_STATEMENT)
+        // `parserMatchVal` has consumed the `=`, so the parser is sitting on the
+        // first token of the right-hand side. Stamping that put the statement's
+        // span on the value rather than on the target -- right line, wrong
+        // column, and one token to the right in anything that underlines it.
+        let assignment = parserNodeFrom(NodeKind.ASSIGNMENT_STATEMENT, first)
         assignment.child1 = node_to_ptr(expr)
         assignment.child2 = node_to_ptr(parseExpression(p, 0))
         return assignment
@@ -246,7 +257,7 @@ fn parseStatement(p: Parser) -> ASTNode {
 
     let operatorToken = parserCurrent(p)
     if (operatorToken.type == TokenType.ASSIGNMENT_OPERATOR and str_length(operatorToken.value) == 2) {
-        return parseCompoundAssignment(p, expr, operatorToken)
+        return parseCompoundAssignment(p, expr, operatorToken, first)
     }
 
     let stmt = parserNodeFrom(NodeKind.EXPRESSION_STATEMENT, first)

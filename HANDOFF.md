@@ -12,9 +12,11 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
   IR for `src/main.psm` is byte-identical to the warm build's.
-- **134/134 tests** as of 2026-08-23 (133 before the packaged-runtime session, which added the
-  `runtime_library` runner test and no fixture — it packages a toolchain into a temporary
-  directory rather than shipping one; 132 before the targets session, which added the
+- **136/136 tests** as of 2026-08-24 (135 before the candidate-list session, which added `jit`;
+  133 before the packaged-runtime session, which added the `runtime_library` runner test — it
+  packages a toolchain into a temporary directory rather than shipping a fixture — and
+  `incremental_manifest`, which shells out to the tool of that name;
+  132 before the targets session, which added the
   `target_cross` runner test and its fixture; 131 before the DWARF session, which added the
   `debug_info` runner test and its fixture; 128 before the concurrency session, which added the
   `aif_concurrency` runner test, `test_68_optional_returns.psm` and `test_69_task_results.psm`), of which
@@ -429,21 +431,169 @@ choke point for field access, the way `ir_alloc_object` is for allocation.
 
 ---
 
+## Session of 2026-08-24 (the candidate list) — all five taken in order, and the list is empty
+
+Every candidate in `SESSION-PROMPT.md`, one at a time, each through the full gate before the next
+started. Five gates, five green.
+
+**State on exit.** Suite **136/136**; fixpoint `E1b == E2`; cold seed chain `Es1 == E2`; AIF
+differential agrees on 17 sources; source lists agree. Across all five tasks the IR snapshot moved
+in exactly **two** files: `src/main.ll`, because `src/` changed four times, and
+`tests/debug_info.ll`, because task C deliberately extended that fixture. Every other program is
+byte-identical to the session's start. **Last-good: `build/E2`.**
+
+### A. wasm32 past IR — the blocked half is genuinely blocked, and the other half was a bad diagnostic
+
+**The external half cannot be done here and the reason is now precise.** There is no `wasm-ld` on
+this box, and more importantly `wasm32-unknown-unknown` has **no C library at all**: the runtime
+sources stop at `#include <stdio.h>`. No archive can be built for it from this repo, because what
+`print` resolves to on the web is an embedder's decision. That is unchanged and remains the
+blocker.
+
+**What was doable was the failure.** A cross build with no shipped archive falls back to compiling
+the runtime for the named target, and when that failed the compiler printed:
+
+    NOTE: a normal build links against the Prismio runtime only.
+          If you are building the Prismio compiler itself, use:
+              prismio bootstrap src/main.psm
+
+`prismio bootstrap` builds a compiler **for the host**. Telling that to someone cross-compiling to
+wasm32 is a signpost pointing at a trap, which is the same shape of defect the 2026-08-17 session
+found in `prismio bootstrap` itself. It now names what it looked for and where:
+
+    NOTE: no runtime library was found for --target wasm32-unknown-unknown, so the
+          runtime was compiled from source for that target instead.
+          Ship lib/runtime-wasm32-unknown-unknown.a beside the compiler, or pass
+          --sysroot pointing at an SDK that provides a C library for it.
+
+The exact filename a framework has to ship is now in the diagnostic, which is the one thing the
+person hitting this needs. Asserted in `run_runtime_library_test`, including that the note must
+*not* say `prismio bootstrap`.
+
+### B. The layout hardcodes — the prompt named two, and both were fine; the bug was next to them
+
+The prompt flagged `aifTypeBytes` returning 4 for an enum and 8 for a `Float`. **Both are correct
+and are now commented as deliberate**: `Float` lowers to `double` and an enum falls through to
+`i32` (`src/ir/types.psm`), and those are the same width on every target LLVM emits for. Routing
+them through the target would advertise a variation that does not exist.
+
+**Two lines above them was the real thing.** `[T]` and `List<T>` returned a literal `8` under a
+comment reading "both a pointer to elements held elsewhere" — while the String/Ptr case three lines
+below already called `targetPointerBytes()`. On wasm32 a pointer is four bytes, so every container
+field was modelled at twice its width, and `Theta_stack` is what decides T0. That is exactly the
+`Isize` class the prompt was pointing at, one function away from where it pointed.
+
+**Measured, before and after, on three structs of three fields each:** on wasm32 a struct of
+`List<Int>` modelled 24 bytes where a struct of `String` modelled 16. They now agree.
+
+`prismio aif` also learned `--target`, because without it the cost model could only ever be
+inspected for the host while `prismio build --target` compiled against a different one — and the
+fix would have had no way to be tested at all.
+
+### C. Assignment spans — the compound case was worse than the prompt thought
+
+`x = e` built its node *after* `parserMatchVal` consumed the `=`, so it took the column of the
+right-hand side: right line, one token to the right, as described.
+
+**`x op= e` was the 2026-08-22 expression-statement bug again**, and nobody had noticed because it
+is invisible unless you look at columns. Its node was built after the *whole* right-hand side, so
+it took the next statement's first token. Under `-g` that cost the compound assignment **a location
+of its own entirely** — measured on a six-line program, `a += 3` on line 6 produced no entry at
+all, the two statements collapsed into one, and a debugger stepped straight over it.
+
+Both now stamp from the statement's first token. `// ASSIGN` joins `// MARK` and `// CLOSE` in
+`tests/debug_info.psm`, checked with a new `_di_located_spans` that carries columns — because
+`_di_located_lines` cannot see a defect that stays on the same line, which is the usual case for an
+assignment.
+
+### D. `-Woverride-module` — the option everyone assumed existed does not
+
+The prompt offered two ways out and called neither obviously right. **Measurement removed one of
+them.** The clang *driver* always compiles for the SDK's deployment target
+(`arm64-apple-macosx26.0.0`) while a module carries at most `LLVMGetDefaultTargetTriple()`
+(`arm64-apple-darwin25.5.0`). Those never match — and clang warns **identically against a module
+with no triple at all**, which is exactly what a plain host build emits. So "stamp it better" and
+"stamp nothing" were both already refuted by the compiler's own behaviour; nothing we write on the
+module can silence it.
+
+Suppressed with `-Wno-override-module`, and **the check it could in principle have done is now an
+assertion instead**: `run_target_test` requires the data layout the module stamps to equal the one
+clang computes for the same target, for the host and for wasm32. That is the half with teeth — the
+layout is what `-g` member offsets and every size in the AIF model derive from, and a disagreement
+there is an ABI disagreement. The triple is deliberately not compared, because the two forms name
+one machine and never match textually.
+
+Verified by making `ir_target_data_layout` return the host layout regardless of target: three
+assertions fire, including the new one.
+
+### E. `prismio run --jit` — the last planned item
+
+`run` paid a full clang compile plus a link on every invocation to produce an executable it deleted
+moments later. **Measured on this host: 10-20 ms against 220-530 ms.**
+
+**Compiled in only on the real-headers path**, following the precedent set for DIBuilder and for
+the same reason written over that block in `prismio_llvm.h`: the linker checks names and never
+signatures, and Orc is opaque handles passed by pointer. Without real headers `--jit` says so and
+exits rather than mis-executing.
+
+Three things the prompt warned about, and what each turned into:
+
+- **Registering runtime symbols.** Not a table. The compiler links the runtime it hands to user
+  programs, so every extern the module names is already in this process; a
+  `DynamicLibrarySearchGeneratorForProcess` resolves them. A hand-kept table of names and addresses
+  would be a second copy of the runtime's surface, and the failure of a drifted entry is an
+  unresolved symbol at lookup — which is what the generator reports anyway.
+- **`prismio_argc`/`prismio_argv`, and this one was real.** Generated code *defines* those globals,
+  so the jitted module holds its own copy and its `main` fills that one, while the runtime shims
+  behind `cli_arg_count()` are the compiler's and read the compiler's. A jitted program asking for
+  its arguments was told about `prismio run --jit prog.psm`, quietly. The host globals are set
+  around the call and restored after. Confirmed by mutation: without it the fixture prints
+  `argc: 4`.
+- **`--jit` with `--target`.** Refused in both flag orders, and `--jit` on `build` is refused too.
+
+**One thing the prompt did not anticipate.** LLJIT requires a module owned by the context inside
+the ThreadSafeContext it is given, and `LLVMOrcThreadSafeContextGetContext` **does not exist in
+LLVM 22**. The module is serialised to an in-memory bitcode buffer and re-parsed into a fresh
+context which the ThreadSafeContext then adopts — one serialise and one parse of a module already
+in memory, against the clang compile and link it replaces. Handing over the backend's own `g_ctx`
+would have been a use-after-free at shutdown, since that call takes ownership.
+
+`run --jit` and `run` are deliberately indistinguishable from outside: same stdout, same exit
+status, same diagnostic on failure. That is what `run_jit_test` asserts first.
+
+### And the last open question in the prompt, closed
+
+`SESSION-PROMPT.md` carried a "suspected stale" note for three sessions saying `HANDOFF.md`'s
+"Known gaps" still claimed compile time was superlinear at ~290 ms. **The note was itself stale** —
+that bullet was struck through and corrected on 2026-08-20, and it ended "delete this bullet if it
+stays clean". Re-measured here: the whole of `src/`, **646 KB through the frontend and codegen in
+50-70 ms**. It stays clean, so the bullet is gone.
+
+### What this leaves
+
+The candidate list is empty. What remains is in "Deliberately not in this list" below, plus the one
+external blocker: a `runtime-wasm32-unknown-unknown.a` and a `wasm-ld`, neither of which this repo
+can produce, because the host imports a wasm build resolves against are an embedder's decision.
+
 ## Session of 2026-08-23 (packaged runtime) — the shipping path gets a test, and two things on it were already broken
 
 Candidate A of `SESSION-PROMPT.md`, chosen over the optional `--jit` task because it is the one
-path that matters most for shipping and the one path with no test.
+path that matters most for shipping and the one path with no test — and then the follow-on it
+produced, which was to stop `tools/verify_separation.*` being a script nobody runs.
 
 **State, verified on the tree before starting.** The brief was accurate this time: `build/S16b`
 present and alone in `build/`, suite 133/133 against it, HANDOFF's top entry the 2026-08-22 `-g`
 session, `src/common/target.psm` and `tests/target_cross.psm` untracked but belonging to the
 2026-08-21 targets work rather than to a half-finished feature.
 
-**State on exit.** Suite **134/134**; two-generation fixpoint `N1 == N2`; cold seed chain
-`Ns1 == N2`; AIF differential agrees on 17 sources; source lists agree. The IR snapshot over
+**State on exit.** Suite **135/135**; two-generation fixpoint `P1 == P2`; cold seed chain
+`Ps1 == P2`; AIF differential agrees on 17 sources; source lists agree. The IR snapshot over
 `tests/`, `aif/corpus/`, `aif/evidence/` and `src/` moved in exactly **one** file, `src/main.ll`,
-and only by the string-table renumbering that adding one string constant causes.
-**Last-good: `build/N2`.**
+and only by the string-table renumbering that adding one string constant causes — §3 below is the
+only line of `src/` that changed all session. The gate ran twice, once per task; the second task
+touched `tests/` only and its snapshot came back byte-identical everywhere.
+**Last-good: `build/P2`.** The gate ran three times, once per task; `N2`, `M2` and `P2` are
+successive rebuilds of one unchanged `src/`, so all three emit identical IR.
 
 ### 1. What was actually untested
 
@@ -504,10 +654,74 @@ Fixed in both scripts; all 11 checks pass against a freshly packaged toolchain.
 that file is `tools/package.sh`. This is the only line in `src/` that changed this session, and the
 whole `src/main.ll` diff is the string-table renumbering it causes.
 
+### 4. `tools/verify_separation.*` is now called by the suite
+
+Fixing the probe left the script passing and still run by nothing, which is the state it was in when
+it broke. So `run_runtime_library_test` now hands it the `--dist` it has already packaged, on both
+platform flavours. CI runs the suite on three platforms, so **no CI change was needed** — the
+Windows `.ps1` path is exercised there for the first time by this, and could not be run locally.
+
+Two of its checks are ones the suite cannot make itself, which is the other half of the argument
+for calling it rather than reimplementing it:
+
+- **`nm` over the archives** proves `runtime.a` and `backend.a` were built from the right
+  translation units in the first place — 0 `ir_*` symbols in one, 216 in the other.
+- **A byte-signature scan of the linked binary** proves the *link step* pulled in only the runtime.
+  A linked binary's symbol table says nothing about which static-archive members were folded into
+  it, so nm cannot answer this; the scan looks for diagnostic strings that exist only in
+  `llvm-api-backend.c`, and separately requires the compiler itself to contain them so the check
+  cannot pass trivially.
+
+**A missing `nm` is reported as a skip rather than a failure**, because the script exits 1 for that
+exactly as it does for a failed check and the two are otherwise indistinguishable.
+
+Verified by regressing a copy of the script to its 2026-08-21 state — probe with no
+`import std.io` — and confirming the suite fails with the failing check named:
+`installed toolchain compiles a program -- error: unknown function println`. That is the break that
+went two days unnoticed, and it is now loud.
+
+### 5. The same break, three more times — and the pattern behind it
+
+Writing §4 up as "check whether other tools are unreachable" turned into a finding rather than a
+note. The generalisable question is not "which scripts are unreachable" but **"which scripts embed
+a Prismio program"** — that is the set the prelude change could break. `grep -rl "fn main() -> Int"`
+over `*.py`, `*.sh`, `*.ps1` and `*.yml` answers it in one line and returns five files: the test
+runner, and four tools. **Three of the four were broken, all since 2026-08-21, none of them
+noticed.**
+
+- **`tools/incremental_manifest.py` is INFERENCE 9's required check** — reuse of a per-function
+  inference summary across a rebuild must change no answer, "because summary-cache bugs are silent
+  and produce wrong-tier binaries rather than crashes". **All three of its program templates** had
+  `println` with no `import std.io`. Fixed, and wired into the suite as
+  `run_incremental_manifest_test` — 150 ms, and it reports discriminating / reversible /
+  budget-sensitive separately.
+- **`tools/install.ps1` is the one that reached users.** Its post-install probe had the identical
+  break, so on Windows the installer verified a perfectly good install, printed
+  `[FAIL] installed compiler cannot build a program`, and exited 1. Nothing in CI runs the
+  installer, and the POSIX side has no counterpart script to disagree with it. Fixed. **It is not
+  wired into anything and deliberately so** — it installs, and a test that runs it would be
+  installing.
+- **`tools/ir_slot_diff.py` is left manual, deliberately.** It compares two IR snapshot trees
+  tolerating a global slot renumbering, which makes it an aid for *reading* a gate failure rather
+  than an assertion about the compiler. It embeds no Prismio source, which is exactly why it is the
+  one that did not break. Smoke-tested against this session's two snapshots:
+  `101 identical, 0 slot-renumbered only, 0 really differ, 0 missing`.
+
+**Four scripts, one commit, two days, zero failures anywhere** — and one of them was the installer.
+The 2026-08-21 prelude change was correct; its blast radius was every `println` outside `tests/`,
+and every one of those lived somewhere nothing runs. Two generalisations, and the second is the
+cheaper one:
+
+1. A script that asserts something and is called by nothing is not coverage. The two that assert
+   are now called by the suite; the one that assists is not, and the installer cannot be.
+2. **When a language change lands, grep for the construct in every file that embeds source, not
+   just the ones under `tests/`.** One `grep -rl` would have caught all four on the day.
+
 ### What this leaves
 
-`tools/verify_separation.sh` still is not run by anything — CI does not call it and neither does
-the suite. It now passes, so wiring it in is a decision rather than a repair.
+Nothing on this seam. The archive lookup, the target-specific archive, the `--verify` bypass, the
+staleness guard and the runtime/backend boundary all have assertions with teeth, and the script
+that owns the last of them is now called by the thing that packages the toolchain it needs.
 
 ## Session of 2026-08-22 (finishing `-g`) — four holes closed, and two bugs the tasks walked into
 
@@ -4032,12 +4246,6 @@ claims that the compiler does not implement.
 
 ### Known gaps, documented rather than fixed
 
-- ~~**Compile time is superlinear** in module size.~~ **Does not reproduce as of 2026-08-20.**
-  Measured: 733 B → 29 ms, 3 KB → 21 ms, 60 KB → 72 ms — 82× the input for about 2.5× the time,
-  and the floor on the small ones is the `std.io` prelude rather than anything superlinear. The
-  2026-08-17 session removed the cubic term and made lexing linear; whatever remains of sema's
-  per-identifier module scan is not visible at these sizes. Re-measure before treating it as a
-  problem, and delete this bullet if it stays clean.
 - ~~**No `-g`.**~~ Landed 2026-08-20 — see that session's entry. What it deliberately does
   not describe, and why, is `docs/DEBUGGING.md`.
 - **No error-handling story.** The one users hit first: failure can only be signalled by a

@@ -798,13 +798,29 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     char* q_ir = command_quote_arg(ir_file);
     char* q_obj = command_quote_arg(program_obj);
     char* target = target_clang_flags();
-    int len = (int)(strlen(q_ir) + strlen(q_obj) + strlen(target) + 64);
+    int len = (int)(strlen(q_ir) + strlen(q_obj) + strlen(target) + 96);
     char* command = (char*)malloc(len);
 
-    // --target as well as the triple already written on the module: the two
-    // agree, which is what stops clang's -Woverride-module, and clang needs the
-    // flag anyway to pick the right assembler and object format.
-    snprintf(command, len, "clang %s%s -c %s -o %s",
+    // --target as well as the triple already written on the module: clang needs
+    // the flag to pick the right assembler and object format.
+    //
+    // **-Wno-override-module, and the reason it is not a papered-over bug.**
+    // The clang *driver* always compiles for the SDK's deployment target --
+    // arm64-apple-macosx26.0.0 here -- while a module carries at most what
+    // LLVMGetDefaultTargetTriple() gives, arm64-apple-darwin25.5.0. Those never
+    // match, so clang always overrides and always warns. Measured: it warns
+    // identically against a module with **no triple at all**, which a plain host
+    // build emits, so this was never about what we stamp and could not be fixed
+    // by stamping better or by stamping nothing.
+    //
+    // What the warning could in principle have caught is a real ABI
+    // disagreement between the triple we describe `-g` offsets against and the
+    // one clang codegens for. That is worth keeping, so it is now an assertion
+    // instead of a warning: run_target_test requires the data layout we stamp to
+    // equal the one clang computes for the same target, for the host and for
+    // wasm32. A warning on every build that everyone learns to scroll past is
+    // worth less than one test that fails.
+    snprintf(command, len, "clang %s-Wno-override-module %s -c %s -o %s",
              target, g_debug_info ? "-O0" : "-O2", q_ir, q_obj);
     int result = run_build_command(command);
 
@@ -1284,21 +1300,45 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
         // verify build cannot use it: half the allocations would be outside the
         // accounting. Compiling from source is slower and this is a debug mode.
         // A workload driver skips it too, for the vintage reason at g_workload_mode.
-        if (!g_verify_mode && !g_workload_mode
-            && find_runtime_library(runtime_lib, sizeof(runtime_lib))) {
+        int have_runtime_lib = !g_verify_mode && !g_workload_mode
+                               && find_runtime_library(runtime_lib, sizeof(runtime_lib));
+        if (have_runtime_lib) {
             result = link_against_runtime_library(program_obj, runtime_lib, exe_file);
         } else {
             result = build_from_toolchain_sources(program_obj, exe_file, 0, 0);
         }
 
         if (result != 0) {
-            fprintf(stderr,
-                    "\nNOTE: a normal build links against the Prismio runtime only.\n"
-                    "      If you are building the Prismio compiler itself, use:\n"
-                    "          prismio bootstrap %s\n"
-                    "      which also links the compiler backend (the ir_* functions)\n"
-                    "      and the LLVM C API they call.\n",
-                    "src/main.psm");
+            // Two different failures, and the note that fits one is actively
+            // misleading for the other.
+            //
+            // A *cross* build with no shipped archive fell back to compiling the
+            // runtime for the named target, which needs a C library for it. With a
+            // --sysroot that provides one -- an Apple SDK, say -- that works, and
+            // it is how x86_64-apple-macos is built here today. With a target that
+            // has no C library at all, wasm32-unknown-unknown being the case that
+            // matters, it cannot: the sources stop at `#include <stdio.h>`. Telling
+            // that user to run `prismio bootstrap` is nonsense -- bootstrap builds
+            // a compiler for the host -- so say what was actually looked for and
+            // where, by the exact name a framework has to ship it under.
+            if (ir_target_is_explicit() && !have_runtime_lib) {
+                fprintf(stderr,
+                        "\nNOTE: no runtime library was found for --target %s, so the\n"
+                        "      runtime was compiled from source for that target instead.\n"
+                        "      Ship lib/runtime-%s.a beside the compiler, or pass\n"
+                        "      --sysroot pointing at an SDK that provides a C library for it.\n"
+                        "      A target with no C library of its own cannot be built the\n"
+                        "      second way.\n",
+                        ir_target_triple(), ir_target_triple());
+            } else {
+                fprintf(stderr,
+                        "\nNOTE: a normal build links against the Prismio runtime only.\n"
+                        "      If you are building the Prismio compiler itself, use:\n"
+                        "          prismio bootstrap %s\n"
+                        "      which also links the compiler backend (the ir_* functions)\n"
+                        "      and the LLVM C API they call.\n",
+                        "src/main.psm");
+            }
         }
     }
 

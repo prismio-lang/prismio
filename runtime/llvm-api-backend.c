@@ -2585,3 +2585,175 @@ void ir_print(void) {
         LLVMDisposeMessage(s);
     }
 }
+
+// ============================================
+// `prismio run --jit`
+//
+// `run` otherwise pays a full clang compile plus a link on every invocation to
+// produce an executable it deletes moments later. The module is already in
+// memory by the time compileSource asks for a build, so this hands it to LLJIT
+// instead and calls `main` in this process.
+//
+// **Off by default and behind its own flag, deliberately.** Nothing here is on
+// the emission path: codegen produces the same module either way, and a build
+// that writes an object is untouched. This adds an execution path, not an
+// emission one, which is why it cannot move any program's IR.
+//
+// Compiled in only on the real-headers path, for the reason given over the
+// DIBuilder block in prismio_llvm.h: the linker checks names and not
+// signatures, and this API is opaque handles passed by pointer.
+// ============================================
+
+#ifdef PRISMIO_LLVM_REAL_HEADERS
+
+// Defined by generated code -- see the note in program_support.c. Referenced,
+// never defined, so this stays a backend-only symbol reference and nothing
+// changes about what a user binary links.
+extern int prismio_argc;
+extern char **prismio_argv;
+
+// Reports an LLVMErrorRef and consumes it. Always returns 1 so callers can
+// `return jit_failed(...)`.
+static int jit_failed(const char *what, LLVMErrorRef err) {
+    char *message = LLVMGetErrorMessage(err);   // consumes err
+    fprintf(stderr, "ERROR: --jit: %s: %s\n", what, message ? message : "(no detail)");
+    if (message) LLVMDisposeErrorMessage(message);
+    return 1;
+}
+
+int ir_jit_run_main(const char *program_name) {
+    if (!g_module) {
+        fprintf(stderr, "ERROR: --jit: no module was generated\n");
+        return 1;
+    }
+
+    // The JIT emits code for this process, so the *native* target and its
+    // assembly printer are what it needs. ensure_all_targets() registers target
+    // infos and MCs for cross-compilation and deliberately no printers, so
+    // calling it is not enough here.
+    LLVMInitializeNativeTarget();
+    LLVMInitializeNativeAsmPrinter();
+
+    LLVMOrcLLJITRef jit = NULL;
+    LLVMErrorRef err = LLVMOrcCreateLLJIT(&jit, NULL);
+    if (err) return jit_failed("could not create an LLJIT", err);
+
+    // **The module cannot be handed over directly.** LLJIT requires a module
+    // owned by the LLVMContext inside the ThreadSafeContext it is given, and
+    // this one was built in the backend's own context long before any of this
+    // existed. Round-tripping through an in-memory bitcode buffer is how the two
+    // are reconciled without codegen having to know the JIT exists -- which is
+    // the property that keeps `--jit` off the emission path. It costs one
+    // serialise and one parse of a module already in memory, against the clang
+    // compile and link this replaces.
+    LLVMMemoryBufferRef bitcode = LLVMWriteBitcodeToMemoryBuffer(g_module);
+    if (!bitcode) {
+        fprintf(stderr, "ERROR: --jit: could not serialise the module\n");
+        LLVMOrcDisposeLLJIT(jit);
+        return 1;
+    }
+
+    // Into a context of its own, which the ThreadSafeContext then adopts.
+    // `LLVMOrcCreateNewThreadSafeContextFromLLVMContext` *takes ownership* of
+    // what it is given, so handing it the backend's `g_ctx` would leave the
+    // module teardown at shutdown disposing a context the JIT already owns.
+    // There is no way back from a ThreadSafeContext to its LLVMContext in LLVM
+    // 22 -- `LLVMOrcThreadSafeContextGetContext` is gone -- so this is also the
+    // only order that works: make the context, parse into it, then wrap it.
+    LLVMContextRef jit_ctx = LLVMContextCreate();
+    LLVMModuleRef jitted = NULL;
+    char *parse_error = NULL;
+    // Takes the buffer either way, so it must not be disposed here.
+    if (LLVMParseIRInContext(jit_ctx, bitcode, &jitted, &parse_error) != 0) {
+        fprintf(stderr, "ERROR: --jit: could not re-read the module: %s\n",
+                parse_error ? parse_error : "(no detail)");
+        if (parse_error) LLVMDisposeMessage(parse_error);
+        LLVMContextDispose(jit_ctx);
+        LLVMOrcDisposeLLJIT(jit);
+        return 1;
+    }
+
+    LLVMOrcThreadSafeContextRef tsc =
+        LLVMOrcCreateNewThreadSafeContextFromLLVMContext(jit_ctx);
+    LLVMOrcThreadSafeModuleRef tsm = LLVMOrcCreateNewThreadSafeModule(jitted, tsc);
+    LLVMOrcDisposeThreadSafeContext(tsc);
+
+    // Every `extern` the module names -- the string helpers, the allocator, the
+    // list shims -- is already in this process, because the compiler links the
+    // runtime it also hands to user programs. The generator resolves against
+    // the process rather than a table of names and addresses maintained here: a
+    // second copy of the runtime's surface would drift from the first, and the
+    // failure of a drifted entry is an unresolved symbol at lookup time, which
+    // is exactly what the generator reports anyway.
+    LLVMOrcJITDylibRef jd = LLVMOrcLLJITGetMainJITDylib(jit);
+    LLVMOrcDefinitionGeneratorRef generator = NULL;
+    err = LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(
+        &generator, LLVMOrcLLJITGetGlobalPrefix(jit), NULL, NULL);
+    if (err) {
+        LLVMOrcDisposeThreadSafeModule(tsm);
+        LLVMOrcDisposeLLJIT(jit);
+        return jit_failed("could not resolve this process's symbols", err);
+    }
+    LLVMOrcJITDylibAddGenerator(jd, generator);
+
+    err = LLVMOrcLLJITAddLLVMIRModule(jit, jd, tsm);
+    if (err) {
+        // The module is consumed even on failure; disposing it here would be a
+        // double free.
+        LLVMOrcDisposeLLJIT(jit);
+        return jit_failed("could not add the module to the JIT", err);
+    }
+
+    LLVMOrcExecutorAddress entry_address = 0;
+    err = LLVMOrcLLJITLookup(jit, &entry_address, "main");
+    if (err) {
+        LLVMOrcDisposeLLJIT(jit);
+        return jit_failed("could not find `main` in the jitted module", err);
+    }
+
+    // **The two prismio_argc are not the same variable, and this is the bug this
+    // line exists to prevent.** Generated code *defines* `@prismio_argc`, so the
+    // jitted module gets its own copy and its `main` fills that one. The runtime
+    // shims behind `cli_arg_count()` are the compiler's own, already linked into
+    // this process, and they read the *compiler's* copy -- which holds the
+    // compiler's argv. Without this a jitted program asking for its arguments is
+    // told about `prismio run --jit prog.psm`, quietly and with a straight face.
+    //
+    // One argument, the program's own name: `compiler_run_executable` runs the
+    // built binary with no arguments, and `--jit` is a way of running the same
+    // program, not a different calling convention.
+    char *jit_argv[2];
+    jit_argv[0] = (char *)(program_name ? program_name : "prismio");
+    jit_argv[1] = NULL;
+
+    int saved_argc = prismio_argc;
+    char **saved_argv = prismio_argv;
+    prismio_argc = 1;
+    prismio_argv = jit_argv;
+
+    int (*entry)(int, char **) = (int (*)(int, char **))(uintptr_t)entry_address;
+    int status = entry(1, jit_argv);
+
+    // Restored rather than left pointing at a stack array that is about to go
+    // away: the compiler keeps running after this returns.
+    prismio_argc = saved_argc;
+    prismio_argv = saved_argv;
+
+    LLVMOrcDisposeLLJIT(jit);
+    return status;
+}
+
+#else
+
+int ir_jit_run_main(const char *program_name) {
+    (void)program_name;
+    fprintf(stderr,
+            "ERROR: --jit needs an LLVM with the C headers installed.\n"
+            "       This build was compiled against the fallback declarations in\n"
+            "       runtime/prismio_llvm.h, which deliberately do not cover Orc or\n"
+            "       LLJIT. Build without --jit, or install LLVM's llvm-c headers\n"
+            "       (tools/setup_llvm.py checks for them).\n");
+    return 1;
+}
+
+#endif

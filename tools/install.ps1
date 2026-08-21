@@ -60,7 +60,10 @@ foreach ($f in 'runtime.lib', 'backend.lib', 'runtime.hash') {
 Write-Host "`nVerifying..."
 $probeSrc = Join-Path $env:TEMP 'prismio_install_probe.psm'
 $probeExe = Join-Path $env:TEMP 'prismio_install_probe.exe'
-Set-Content $probeSrc "fn main() -> Int {`n    println(`"ok`")`n    return 0`n}" -Encoding ascii
+# std.io is an ordinary import rather than a prelude as of 2026-08-21. Without the
+# import this probe does not compile, and the installer reports a good install as
+# a broken compiler and exits 1.
+Set-Content $probeSrc "import std.io`n`nfn main() -> Int {`n    println(`"ok`")`n    return 0`n}" -Encoding ascii
 Push-Location $env:TEMP
 try {
     & $exeDest build $probeSrc -o $probeExe | Out-Null

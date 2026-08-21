@@ -49,9 +49,13 @@ fn aifFieldTypeName(field: ASTNode) -> String {
 }
 
 fn aifTypeBytes(ann: ASTNode) -> Int {
-    // `[T]` and `List<T>` are both a pointer to elements held elsewhere.
-    if (ann.i1 == 1) { return 8 }
-    if (ann.i2 == 1) { return 8 }
+    // `[T]` and `List<T>` are both a pointer to elements held elsewhere, so they
+    // are pointer-width and not eight. These two read `8` until 2026-08-23 while
+    // the String/Ptr case three lines below already asked the target -- the same
+    // shape as the `Isize` bug, a table that disagreed with the target, in the
+    // one place a comment saying "a pointer" sat directly above a literal.
+    if (ann.i1 == 1) { return targetPointerBytes() }
+    if (ann.i2 == 1) { return targetPointerBytes() }
 
     let n = ann.s1
     if (str_equals(n, "I8") == 1) { return 1 }
@@ -67,6 +71,12 @@ fn aifTypeBytes(ann: ASTNode) -> Int {
     if (str_equals(n, "U64") == 1) { return 8 }
     if (str_equals(n, "Isize") == 1) { return targetPointerBytes() }
     if (str_equals(n, "Usize") == 1) { return targetPointerBytes() }
+    // These two are *not* target questions, which is why they are literals and
+    // stay literals. `Float` lowers to `double` (src/ir/types.psm) and an enum
+    // falls through to `i32`; both are the same width on every target LLVM
+    // emits for. Routing them through the target would suggest a variation that
+    // does not exist. If either lowering ever changes, this is the line to change
+    // with it.
     if (str_equals(n, "Float") == 1) { return 8 }
     if (aif_is_enum(n) == 1) { return 4 }
 

@@ -1,9 +1,42 @@
 # Prompts for the next sessions
 
-## 2026-08-24 — see `SESSION-PROMPT.md`
+## 2026-08-25 — see `SESSION-PROMPT.md`
 
 The live prompt is that file. This entry is a pointer so the archive does not carry a second,
 diverging copy.
+
+
+## 2026-08-24 (the candidate list) — all five, in order; worked
+
+Every candidate taken one at a time through the full gate. See HANDOFF's 2026-08-24 entry.
+
+**The prompt was right about which things were worth doing and wrong about three of the details**,
+and the pattern in how it was wrong is the useful part: **each candidate's real defect was one or
+two lines away from where the prompt pointed.**
+
+- *B* named two hardcoded sizes in `aifTypeBytes`. Both were correct and are now commented as
+  deliberate. **Two lines above them**, `[T]` and `List<T>` returned a literal `8` under a comment
+  reading "a pointer to elements held elsewhere", while the String case three lines *below* already
+  asked the target. That was the `Isize`-class bug the candidate existed for.
+- *C* said an assignment gets the right line and the wrong column. True for `x = e`. **`x op= e`
+  was the 2026-08-22 expression-statement bug again** and cost the statement a `-g` location
+  entirely, so a debugger stepped over it.
+- *D* offered two ways out and called neither obviously right. **Measurement refuted both**: clang
+  warns identically against a module with no triple at all, so nothing written on the module could
+  ever have silenced it. Only "suppress" was ever available; it is now suppressed *and* replaced by
+  an assertion that our data layout equals clang's.
+
+**Read a candidate as a pointer to a neighbourhood, not to a line.** Three for three this session.
+
+**E (`--jit`) had one thing the prompt could not have known.** LLJIT needs a module owned by the
+context inside its ThreadSafeContext, and `LLVMOrcThreadSafeContextGetContext` does not exist in
+LLVM 22 — so the module round-trips through an in-memory bitcode buffer into a fresh context. The
+prompt's own trap list was otherwise exactly right, and the `prismio_argc` one was real: without
+it a jitted program asking for its arguments is told about the compiler's command line.
+
+**The list is now empty.** The next prompt has no candidates, which is a genuinely different
+situation from the last four sessions and should be treated as one: the next session's first job is
+deciding what the compiler is *for* next, not picking from a list.
 
 
 ## 2026-08-23 (packaged runtime) — candidate A, chosen over the optional task; worked
@@ -31,8 +64,31 @@ being a prelude on 2026-08-21, taking three checks down with it silently, and th
 in `src/main.psm` told macOS and Linux users to run a PowerShell script. Neither is reachable from
 the suite, which is why both survived.
 
-**`tools/verify_separation.sh` still is not run by anything.** It passes now. Wiring it into CI or
-the suite is a decision someone should make deliberately rather than a repair.
+**Then the follow-on, which was the real repair.** Fixing the probe left the script passing and
+still called by nothing — the state it was in when it broke. `run_runtime_library_test` now hands
+it the `--dist` it has already packaged, so CI covers it on three platforms with no CI change, and
+the Windows `.ps1` half runs there for the first time. Verified by regressing a copy of the script
+to its broken state and watching the suite fail with the failing check named.
+
+**Checking for others found two more, not a hypothetical.** The right question turned out not to be
+"which scripts are unreachable" but **"which scripts embed a Prismio program"** —
+`grep -rl "fn main() -> Int"` over `*.py`, `*.sh`, `*.ps1`, `*.yml` returns five files and three of
+them were broken:
+
+- `tools/incremental_manifest.py` — INFERENCE 9's *required* check that an incremental result
+  equals a cold one — identical break in all three templates. Fixed and wired in as
+  `run_incremental_manifest_test` (150 ms).
+- `tools/install.ps1` — **the one that reached users.** Its post-install probe failed, so every
+  Windows install reported `[FAIL] installed compiler cannot build a program` and exited 1 on a
+  good install. Fixed; deliberately not wired into anything, since a test that ran it would be
+  installing.
+- `tools/ir_slot_diff.py` embeds no source and is the one that did not break; left manual, because
+  it assists in reading a gate failure rather than asserting anything.
+
+**The lesson worth carrying:** four scripts, one commit, two days, zero failures anywhere, and one
+of them was the installer. A script that asserts something and is called by nothing is not
+coverage — **and when a language change lands, grep for the construct in every file that embeds
+source, not just the ones under `tests/`.** One `grep -rl` would have caught all four on the day.
 
 
 ## 2026-08-22 (finish `-g`) — worked; tasks 1–4 all landed

@@ -3,6 +3,10 @@
 #
 #   tools/verify_separation.sh --dist dist/Prismio
 #
+# **Called by `run_runtime_library_test`**, against the toolchain that test
+# packages, so a break in here fails the suite. It did not used to be called by
+# anything, and spent two days unable to compile its own probe.
+#
 # The rule being checked: the LLVM backend is a compiler-only component. A program
 # compiled by Prismio links runtime.a and nothing else, so no backend symbol may
 # appear in a user binary -- while the compiler itself must contain the backend.

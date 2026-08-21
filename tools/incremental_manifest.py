@@ -28,11 +28,18 @@ two answers apart has not agreed about anything.
 
 import argparse, os, shutil, subprocess, sys, tempfile
 
+# The three sources below open with `import std.io` because std.io stopped being a
+# prelude on 2026-08-21 and they print. Nothing calls this script, so all three
+# went on failing to compile for two days without anyone seeing it -- the same
+# break, on the same day, as the one in tools/verify_separation.*.
+#
 # Each entry is (name, source). The series is ordered: every step is applied to
 # the same working file, and the last one returns to the first one's text. That
 # last step is the one a cache that never invalidates fails -- the text is the
 # base's, so the manifest must be the base's too.
 BASE = """\
+import std.io
+
 struct Point { x: Int, y: Int }
 
 fn make(a: Int) -> Point {
@@ -64,6 +71,8 @@ fn main() -> Int {
 # site whose tier moves is in `local` -- which is the whole point. A per-function
 # cache that invalidated only the edited function would keep the stale answer.
 ESCAPE = """\
+import std.io
+
 struct Point { x: Int, y: Int }
 
 fn make(a: Int) -> Point {
@@ -99,6 +108,8 @@ fn main() -> Int {
 
 # A `region` over the loop: placement moves, tiers may not.
 REGION = """\
+import std.io
+
 struct Point { x: Int, y: Int }
 
 fn make(a: Int) -> Point {

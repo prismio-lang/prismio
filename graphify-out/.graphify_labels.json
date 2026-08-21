@@ -200,7 +200,10 @@
   "198": "The prompt for the next session",
   "199": "aif_verify_alloc",
   "200": "list_new_cap",
+  "201": "find_binding",
   "202": "Session of 2026-08-22 (finishing `-g`) — four holes closed, and two bugs the tasks walked into",
   "203": "Session of 2026-08-08 (measurement) — the first cross-language numbers, and the optimiser was never on",
-  "204": "find_struct"
+  "204": "find_struct",
+  "205": "Session of 2026-08-24 (the candidate list) — all five taken in order, and the list is empty",
+  "206": "Session of 2026-08-17 (second) — §8's forced candidate lands, and the IR differential turns out to have a concurrency hole"
 }

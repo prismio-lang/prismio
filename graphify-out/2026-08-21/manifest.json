@@ -10,8 +10,8 @@
     "semantic_hash": ""
   },
   "tests/test_runner.py": {
-    "mtime": 1787300440.9736261,
-    "ast_hash": "806f39e3e0889582727d25a89ed76649",
+    "mtime": 1787323026.4780161,
+    "ast_hash": "7d642e18ecf5fbc545fa86fcfff5d2c6",
     "semantic_hash": ""
   },
   "CONTRIBUTING.md": {
@@ -115,8 +115,8 @@
     "semantic_hash": ""
   },
   "tools/install.ps1": {
-    "mtime": 1786200697.0,
-    "ast_hash": "0a5f1f1eb8732f77101bd35dca31f0fb",
+    "mtime": 1787323163.3042774,
+    "ast_hash": "fae6233f3d258250bf4e3cf0486d01b9",
     "semantic_hash": ""
   },
   "tools/package.ps1": {
@@ -145,13 +145,13 @@
     "semantic_hash": ""
   },
   "tools/verify_separation.ps1": {
-    "mtime": 1786200697.0,
-    "ast_hash": "b16356d3df9b7220e3446189e6e96671",
+    "mtime": 1787322740.790777,
+    "ast_hash": "acd8336cc7ba7a69f698046a9d5aaeeb",
     "semantic_hash": ""
   },
   "tools/verify_separation.sh": {
-    "mtime": 1786200697.0,
-    "ast_hash": "ae4e6f38de2e6a6741b142dd9091c3a5",
+    "mtime": 1787322740.7905097,
+    "ast_hash": "af304a971af0dd76aaef506c2a102947",
     "semantic_hash": ""
   },
   ".github/workflows/ci.yml": {
@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1787300722.9363282,
-    "ast_hash": "e69b95f35d23175c8c3835f84d8ff081",
+    "mtime": 1787323270.1290584,
+    "ast_hash": "2b7b38567896dea6d842b8af06a1dcd9",
     "semantic_hash": ""
   },
   "PORTING.md": {
@@ -320,8 +320,8 @@
     "semantic_hash": ""
   },
   "NEXT-SESSION.md": {
-    "mtime": 1787300740.4827652,
-    "ast_hash": "7438f659656ca38f620ed86641939ea6",
+    "mtime": 1787323224.9573965,
+    "ast_hash": "50987732d0af40398fc44d973d83e29f",
     "semantic_hash": ""
   },
   "CODE_STYLE.md": {
@@ -610,8 +610,8 @@
     "semantic_hash": ""
   },
   "tools/incremental_manifest.py": {
-    "mtime": 1786982153.0591266,
-    "ast_hash": "57f223b9a48bde87f2a9f33b0172c0c9",
+    "mtime": 1787322981.4238932,
+    "ast_hash": "246fe76bbe6914274f8ce6a51b6b4b82",
     "semantic_hash": ""
   },
   "tools/ir_slot_diff.py": {
@@ -635,8 +635,8 @@
     "semantic_hash": ""
   },
   "SESSION-PROMPT.md": {
-    "mtime": 1787300781.2140355,
-    "ast_hash": "06604a84cdcd21e58ec31683ae186447",
+    "mtime": 1787323270.1294084,
+    "ast_hash": "843a26ae8270f0451e0a68acc9be50b8",
     "semantic_hash": ""
   }
 }
