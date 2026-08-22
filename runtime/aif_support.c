@@ -516,6 +516,20 @@ typedef struct {
     long long* field_lo;
     long long* field_hi;
     int* field_has_range;
+    // 1 when the field's storage is the object's own -- a struct value copied in
+    // rather than a pointer stored. LAYOUT decides it (`typeAnnIsPod`, the single
+    // definition codegen's `fieldTypeFor` also asks) and the analysis has to be
+    // told, because an inline field **owns nothing**: the address is interior, so
+    // there is no release to emit, and the value that was copied in is still the
+    // caller's to free.
+    //
+    // Recorded 2026-08-28, and it was a disagreement rather than a gap. The
+    // analysis reported an inline field as a released field, which suppressed
+    // caller-side ownership transfer for everything stored into one; codegen then
+    // emitted no release for it, because it is interior storage. Two answers to
+    // one question, and every value copied into such a field leaked -- 4095 of
+    // g3's 5486 allocations.
+    int* field_inline;
     // LAYOUT 6's hot/cold split, once it is emitted rather than reported.
     //
     // `hot_count` is 0 for an unsplit type and otherwise the number of fields the
@@ -595,6 +609,7 @@ static int nominal_intern(const char* name, int is_enum) {
     t->field_lo = NULL;
     t->field_hi = NULL;
     t->field_has_range = NULL;
+    t->field_inline = NULL;
     t->hot_count = 0;
     t->no_split = 0;
     t->no_split_unmodelled = 0;
@@ -638,6 +653,8 @@ void aif_struct_add_field(const char* name, const char* field, const char* type,
                                            (size_t)grow * sizeof(long long), "AIF field range hi");
         t->field_has_range = (int*)xrealloc(t->field_has_range,
                                             (size_t)grow * sizeof(int), "AIF field range flag");
+        t->field_inline = (int*)xrealloc(t->field_inline,
+                                         (size_t)grow * sizeof(int), "AIF field inlineness");
         t->field_cap = grow;
     }
     int i = t->nfields++;
@@ -649,6 +666,30 @@ void aif_struct_add_field(const char* name, const char* field, const char* type,
     t->field_lo[i] = 0;
     t->field_hi[i] = 0;
     t->field_has_range[i] = 0;
+    t->field_inline[i] = 0;
+}
+
+// The layout half of a field, told to the analysis rather than derived by it.
+// Separate from aif_struct_add_field because adding an FFI function is one step
+// and changing one is two: the committed seed's IR calls the four-argument form.
+void aif_struct_field_inline(const char* name, const char* field, int inlined) {
+    int id = nominal_find(name);
+    if (id < 0) return;
+    Nominal* t = &nominals[id];
+    int f = aif_intern(field);
+    for (int i = 0; i < t->nfields; i++) {
+        if (t->field_name[i] == f) { t->field_inline[i] = inlined ? 1 : 0; return; }
+    }
+}
+
+static int field_is_inline(int type_name, int field_name) {
+    int id = nominal_find_id(type_name);
+    if (id < 0) return 0;
+    Nominal* t = &nominals[id];
+    for (int i = 0; i < t->nfields; i++) {
+        if (t->field_name[i] == field_name) return t->field_inline[i];
+    }
+    return 0;
 }
 
 // ============================================================================
@@ -2744,7 +2785,102 @@ static int solve_points_to(int max_rounds) {
     return 0;
 }
 
+// ============================================================================
+// Container element keys, and the one thing that makes keying them precisely
+// sound (INFERENCE 3.1)
+//
+// An element read gets back whatever was pushed, through a field key on the
+// container's type. Keying that on the *base* type -- `List` -- put every list
+// in the program into one set: `list_get(w.actors, i)` came back holding
+// `Order`s that only ever went into a different list, and obligation 3 then
+// refused to bracket the call that built them, because a function outside the
+// extent appeared to hold one. That is g6's whole placement, lost to a type name.
+//
+// Keying it on the full type -- `List<Actor>` against `List<Order>` -- separates
+// them, and is sound **because a container's static type is the same at every
+// mention**: Prismio has no subtyping, and generics are monomorphised into
+// concrete types before this walk runs (src/sema/generics.psm), so `List<T>`
+// never reaches here. Two spellings for one container would be a read that
+// misses its own writes, which is an element that appears to escape nowhere and
+// a use-after-free behind it.
+//
+// **The exception is a spelling the frontend could not resolve** -- a bare
+// `List`, or `List<Invalid>` where inference had nothing to give. Those really
+// can name the same container as a resolved spelling elsewhere. So they are
+// detected, and a base type with even one of them has all of its element keys
+// bound together, which is exactly the behaviour this replaced. Precision where
+// the types are known, and the old answer where they are not.
+// ============================================================================
+
+typedef struct { int base, full; } ElemKeyUse;
+static ElemKeyUse* elem_uses;
+static int elem_use_count, elem_use_cap;
+
+// The container type as the frontend spelled it, up to the first `<`.
+static int elem_base_of(const char* ty) {
+    const char* lt = strchr(ty, '<');
+    if (lt == NULL) return aif_intern(ty);
+    char buf[128];
+    size_t n = (size_t)(lt - ty);
+    if (n >= sizeof buf) n = sizeof buf - 1;
+    memcpy(buf, ty, n);
+    buf[n] = '\0';
+    return aif_intern(buf);
+}
+
+static int elem_spelling_resolved(const char* ty) {
+    if (strchr(ty, '<') == NULL) return 0;      // a bare base names every instance
+    if (strstr(ty, "Invalid") != NULL) return 0;  // inference had nothing to give
+    return 1;
+}
+
+int aif_elem_key(const char* container_type) {
+    if (container_type == NULL) container_type = "";
+    if (elem_use_count == elem_use_cap) {
+        elem_use_cap = elem_use_cap ? elem_use_cap * 2 : 64;
+        elem_uses = (ElemKeyUse*)xrealloc(elem_uses, (size_t)elem_use_cap * sizeof(ElemKeyUse),
+                                          "AIF element keys");
+    }
+    elem_uses[elem_use_count].base = elem_base_of(container_type);
+    elem_uses[elem_use_count].full = aif_intern(container_type);
+    elem_use_count++;
+    return aif_key_field(container_type, "@elem");
+}
+
+// Run before the solve, because it adds constraints. Binds both ways, so the
+// base key and every precise key of a tainted base hold the same set -- which is
+// the pre-2026-08-28 answer, restored for exactly the types that need it.
+static void elem_key_reconcile(void) {
+    int trace = getenv("AIF_BRACKET_TRACE") != NULL;
+    for (int i = 0; i < elem_use_count; i++) {
+        if (elem_spelling_resolved(aif_str(elem_uses[i].full))) continue;
+        int base = elem_uses[i].base;
+        // Loud, because the consequence shows up a long way from the cause: with
+        // the base merged, an element read comes back holding every element of
+        // every container of that base, and the site it wrongly names is what
+        // obligation 3 then refuses to bracket.
+        if (trace) {
+            fprintf(stderr, "aif: element keys for `%s` merged -- `%s` is not a "
+                            "resolved container type\n",
+                    aif_str(base), aif_str(elem_uses[i].full));
+        }
+        for (int j = 0; j < elem_use_count; j++) {
+            if (elem_uses[j].base != base) continue;
+            int precise = aif_key_field(aif_str(elem_uses[j].full), "@elem");
+            int bare = aif_key_field(aif_str(base), "@elem");
+            if (precise == bare) continue;
+            int a = aif_vs_new();
+            aif_vs_key(a, bare);
+            aif_con_bind(precise, a);
+            int b = aif_vs_new();
+            aif_vs_key(b, precise);
+            aif_con_bind(bare, b);
+        }
+    }
+}
+
 int aif_solve(int max_rounds) {
+    elem_key_reconcile();
     solver_alloc();
     solve_rounds = 0;
 
@@ -3716,6 +3852,15 @@ static long bracket_candidate_serves(int cand, long* held, long* live);
 // trace in aif_place_arenas is the first thing to ask for it.
 static int arena_stmt_range(int scope, int* first, int* last);
 
+// M3.2c-ii, the same range asked of a scope that has no arena yet -- declared up
+// here for the same reason, and defined next to c-i because the two share the
+// half that decides which keys hold what the arena serves.
+static int cand_stmt_range(int scope, int* first, int* last);
+
+// M3.2d's choice between the two, which is what codegen emits and therefore what
+// the trace has to print.
+static int arena_emit_range(int scope, int* first, int* last);
+
 // Placement is the input to bracketing now, so a bracket answer cached before
 // placement ran is stale. aif_check_pins asks for one, so this is not
 // hypothetical.
@@ -3800,6 +3945,24 @@ void aif_place_arenas(void) {
                 fprintf(stderr, "aif: arena scope %d extent whole-block%s\n", s,
                         scopes[s].region_name >= 0 ? " (written)" : " (auto)");
             }
+            // What codegen will actually bracket, which is the answer that
+            // matters and is not always c-i's -- see arena_emit_range.
+            int elo = -1, ehi = -1;
+            if (arena_emit_range(s, &elo, &ehi)) {
+                fprintf(stderr, "aif: arena scope %d emit [%d,%d]\n", s, elo, ehi);
+            } else {
+                fprintf(stderr, "aif: arena scope %d emit whole-block\n", s);
+            }
+        }
+        // And the candidate ranges, over every scope the obligation could have
+        // asked about. This is the half c-i cannot show: a scope printed here
+        // and absent above is one that has no arena *because* of what follows
+        // from the range -- which on `g2.psm` is the whole point.
+        for (int s = 0; s < scope_count; s++) {
+            int lo = -1, hi = -1;
+            if (!cand_stmt_range(s, &lo, &hi)) continue;
+            fprintf(stderr, "aif: candidate scope %d extent [%d,%d]%s\n", s, lo, hi,
+                    scopes[s].arena ? " (placed)" : " (not placed)");
         }
         // Over the buckets rather than key_by_id, which is built further down
         // the file than this runs.
@@ -3913,17 +4076,25 @@ int aif_arena_unsized_sites(void) {
     return n;
 }
 
-// 1 when this BLOCK node opens an arena the cost model chose. A `region`
-// statement is excluded: codegen already brackets that one, and bracketing it
-// twice would push two arenas and pop only the inner one at an early exit.
-int aif_auto_arena_at_node(const void* node) {
-    if (node == NULL) return 0;
+// The scope of the arena this BLOCK node opens, or -1. A `region` statement is
+// excluded: codegen already brackets that one, and bracketing it twice would
+// push two arenas and pop only the inner one at an early exit.
+//
+// M3.2d needs the scope and not just the fact, to ask it for a statement range,
+// so the lookup is the shared thing and the predicate below is a reading of it.
+static int auto_arena_scope_at_node(const void* node) {
+    if (node == NULL) return -1;
     for (int s = 0; s < scope_count; s++) {
         if (scopes[s].node != node) continue;
-        if (scopes[s].region_name >= 0) return 0;
-        return scopes[s].arena;
+        if (scopes[s].region_name >= 0) return -1;
+        return scopes[s].arena ? s : -1;
     }
-    return 0;
+    return -1;
+}
+
+// 1 when this BLOCK node opens an arena the cost model chose.
+int aif_auto_arena_at_node(const void* node) {
+    return auto_arena_scope_at_node(node) >= 0 ? 1 : 0;
 }
 
 // SPEC 5.2: may this value come from the enclosing region's arena?
@@ -4242,6 +4413,19 @@ int aif_site_arena_is_pinned(int id) {
 #define AIF_BR_B_OPAQUE       4
 #define AIF_BR_B_DROP         8
 #define AIF_BR_B_SHARED_BODY 16
+// Regime (a)'s *other* half, split out 2026-08-28. SPEC 5.2.1.1's table gives
+// the requirement as "one body, one placement regime" and "exactly one call
+// site" as the way to get it -- and the second is a sufficient condition for the
+// first, not a necessary one. A body every one of whose call sites is bracketed
+// into the **same** region also serves exactly one regime: it only ever runs
+// with that arena innermost.
+//
+// So this bit means "which regime this body serves is not a property of the
+// program, and has to be asked of a region" -- `bracket_regime_ok`. It is
+// reported separately from SHARED_BODY because the repair is different: a
+// SHARED_BODY callee needs specialisation (regime (b)), while this one needs
+// only that its callers agree, which they often already do.
+#define AIF_BR_B_MULTI_CALL  32
 
 // One entry per call *expression*, so the count of entries naming a callee is
 // its static call-site count -- which is what regime (a) asks about. A bitset
@@ -4288,6 +4472,10 @@ static Bits* fn_owner_fns;      // fn -> functions that allocated what it stores
 static char* fn_has_global;
 static char* fn_has_drop;
 static char* fn_calls_opaque;
+// 1 when this function or anything it reaches has an allocation site. See
+// bracket_prepare: it is what makes regime (a)'s shared-body clause a question
+// about bodies the bracket changes rather than about every body it touches.
+static char* fn_allocs_reach;
 static int bracket_ready;
 // How many functions the arrays above were sized for. Kept because aif_reset
 // runs after fn_count has been zeroed by the caller in some orders, and freeing
@@ -4335,9 +4523,16 @@ void aif_note_owner_use(int fn, int vs) {
     owner_use_count++;
 }
 
+static int bracket_trace;   // AIF_BRACKET_TRACE=1 -- why one site failed obligation 3
+
 static void bracket_prepare(void) {
     if (bracket_ready || fn_count == 0) return;
     bracket_ready = 1;
+    // Set here rather than in bracket_place, which is the pass that runs
+    // *second*. The candidate pass is the one that decides whether a scope gets
+    // an arena at all, and a trace that starts after that decision cannot say
+    // why a scope was never a candidate -- which is the question asked of it.
+    bracket_trace = getenv("AIF_BRACKET_TRACE") != NULL;
 
     bracket_fn_cap = fn_count;
     fn_callees   = (Bits*)xcalloc((size_t)fn_count, sizeof(Bits), "AIF call graph");
@@ -4345,6 +4540,7 @@ static void bracket_prepare(void) {
     fn_has_global = (char*)xcalloc((size_t)fn_count, 1, "AIF bracket facts");
     fn_has_drop   = (char*)xcalloc((size_t)fn_count, 1, "AIF bracket facts");
     fn_calls_opaque = (char*)xcalloc((size_t)fn_count, 1, "AIF opaque calls");
+    fn_allocs_reach = (char*)xcalloc((size_t)fn_count, 1, "AIF bracket facts");
 
     for (int i = 0; i < call_edge_count; i++) {
         CallEdge* e = &call_edges[i];
@@ -4353,6 +4549,39 @@ static void bracket_prepare(void) {
             fn_calls_opaque[e->caller] = 1;
         } else if (e->callee < fn_count) {
             bits_set(&fn_callees[e->caller], e->callee, "AIF call graph");
+        }
+    }
+
+    // Does this function, or anything it can reach, allocate at all?
+    //
+    // Regime (a)'s shared-body clause is about a body the bracket would
+    // *change*. A function with no allocation anywhere below it compiles
+    // identically inside and outside a bracket -- there is no site to route to
+    // an arena and none to take off a drop list -- so sharing it with the world
+    // outside the extent decides nothing. Transitive rather than local, and that
+    // is the whole of the care needed here: a site-free function that calls an
+    // allocating one *is* changed, one hop down, and treating it as harmless
+    // would compile that callee's sites for an arena and then run them with none.
+    //
+    // g6 is what this is for. `plan_orders` reaches `world_actor` and
+    // `world_transform`, two accessors that do nothing but `list_get`, and
+    // `resolve_combat` calls `world_actor` too -- so the extent read as shared
+    // on a pair of getters.
+    for (int s = 0; s < site_count; s++) {
+        int f = sites[s].fn;
+        if (f >= 0 && f < fn_count) fn_allocs_reach[f] = 1;
+    }
+    int spread = 1;
+    while (spread) {
+        spread = 0;
+        for (int g = 0; g < fn_count; g++) {
+            if (fn_allocs_reach[g]) continue;
+            for (int h = 0; h < fn_count; h++) {
+                if (!bits_test(&fn_callees[g], h) || !fn_allocs_reach[h]) continue;
+                fn_allocs_reach[g] = 1;
+                spread = 1;
+                break;
+            }
         }
     }
 
@@ -4427,21 +4656,48 @@ int aif_fn_bracket_blockers(int f) {
         if (!bits_subset(&fn_owner_fns[g], &bracket_closure)) mask |= AIF_BR_B_PARAM_STORE;
     }
 
-    // Regime (a). `f` itself must have exactly one call site -- the one that
-    // would be bracketed -- and everything it reaches must be reached only from
-    // inside the extent, or that callee's body would have to free arena memory
-    // on one path and heap memory on the other.
+    // Regime (a), in two clauses that used to be one bit.
+    //
+    // **SHARED_BODY** is the region-independent half: everything `f` reaches
+    // must be reached only from inside the extent, or that callee's body would
+    // have to free arena memory on one path and heap memory on the other. No
+    // choice of region fixes it; regime (b) -- specialisation -- is what does.
+    //
+    // **MULTI_CALL** is the half that depends on where the region is. One call
+    // site settles it from the program alone; more than one settles it only if
+    // they are all bracketed into the same region, which is a question
+    // `bracket_regime_ok` asks and this function cannot. Reported here so
+    // `--why` can still say "the body has N call sites", and **excluded from the
+    // reject in bracket_edge_ok_at**, which is the whole of the change: g6's
+    // `plan_orders` builds a per-tick order list, is called once per squad from
+    // the same loop body, and was refused for having two callers that agree.
     int f_calls = 0;
     for (int i = 0; i < call_edge_count; i++) {
         CallEdge* e = &call_edges[i];
         if (e->callee == f) { f_calls++; continue; }
         if (!bits_test(&bracket_closure, e->callee)) continue;
-        if (!bits_test(&bracket_closure, e->caller)) mask |= AIF_BR_B_SHARED_BODY;
+        if (bits_test(&bracket_closure, e->caller)) continue;
+        // Reached from outside the extent, and that only matters for a body the
+        // bracket would change. See fn_allocs_reach in bracket_prepare.
+        if (!fn_allocs_reach[e->callee]) continue;
+        mask |= AIF_BR_B_SHARED_BODY;
     }
-    if (f_calls != 1) mask |= AIF_BR_B_SHARED_BODY;
+    if (f_calls != 1) mask |= AIF_BR_B_MULTI_CALL;
 
     return mask;
 }
+
+// The obligations that are the *function's* alone. MULTI_CALL is not one of
+// them: a body with two call sites is bracketable or not depending on where they
+// are, and the answer belongs to bracket_regime_ok.
+static int aif_fn_bracket_hard_blockers(int f) {
+    return aif_fn_bracket_blockers(f) & ~AIF_BR_B_MULTI_CALL;
+}
+
+// Regime (a)'s other half. Defined with the placement machinery, because it
+// reads which scopes got arenas; declared here because the manifest's
+// "bracketable call sites" count asks it first.
+static int bracket_regime_ok(int r, int caller_fn, int callee);
 
 int aif_fn_call_sites(int f) {
     int n = 0;
@@ -4487,8 +4743,16 @@ int aif_bracketable_region_call_sites(void) {
     int n = 0;
     for (int i = 0; i < call_edge_count; i++) {
         if (call_edges[i].callee < 0) continue;
-        if (enclosing_region(call_edges[i].scope) < 0) continue;
-        if (aif_fn_bracket_blockers(call_edges[i].callee) == 0) n++;
+        int r = enclosing_region(call_edges[i].scope);
+        if (r < 0) continue;
+        // Both halves of regime (a), each asked where it can be answered: the
+        // hard obligations of the function, and the call-site half of the region
+        // this call actually sits in. Asking only the first would count a callee
+        // with two agreeing callers as unbracketable, which is precisely what
+        // this number stopped being able to see.
+        if (aif_fn_bracket_hard_blockers(call_edges[i].callee) != 0) continue;
+        if (!bracket_regime_ok(r, scopes[r].owner, call_edges[i].callee)) continue;
+        n++;
     }
     return n;
 }
@@ -4687,14 +4951,26 @@ static void region_confined(int r, int caller_fn, const Bits* extent, Bits* out)
 // caller is `return f(...)` straight through the region, and it is the case an
 // `E`-based test cannot see at all -- E is already Caller for every site in the
 // extent, by construction.
-static int bracket_trace;   // AIF_BRACKET_TRACE=1 -- why one site failed obligation 3
-
 static int bracket_reject(int s, const char* why, int detail) {
     if (bracket_trace) {
         fprintf(stderr, "aif: site %d (%s %s:%d) not bounded: %s %d\n",
                 s, aif_str(sites[s].type),
                 sites[s].fn >= 0 ? aif_str(fns[sites[s].fn].name) : "?",
                 sites[s].line, why, detail);
+    }
+    return 0;
+}
+
+// The same, where `detail` is a function id. Printed by name, because the id is
+// an index into a table the reader does not have and "bound in 38" costs a
+// session the time it takes to count functions.
+static int bracket_reject_fn(int s, const char* why, int fn) {
+    if (bracket_trace) {
+        fprintf(stderr, "aif: site %d (%s %s:%d) not bounded: %s %s (fn %d)\n",
+                s, aif_str(sites[s].type),
+                sites[s].fn >= 0 ? aif_str(fns[sites[s].fn].name) : "?",
+                sites[s].line, why,
+                (fn >= 0 && fn < fn_count) ? aif_str(fns[fn].name) : "?", fn);
     }
     return 0;
 }
@@ -4714,7 +4990,7 @@ static int bracket_site_bounded(int s, const Bits* confined, const Bits* extent,
         if (kn->kind != AIF_KEY_VAR) return bracket_reject(s, "extern key", k);
         int fn = kn->a;
         if (fn >= 0 && fn < fn_count && bits_test(confined, fn)) continue;
-        if (fn != caller_fn) return bracket_reject(s, "bound in", fn);
+        if (fn != caller_fn) return bracket_reject_fn(s, "bound in", fn);
         int declared = (k < var_scope_cap) ? var_scope[k] : -1;
         if (declared < 0) return bracket_reject(s, "undeclared binding", k);
         if (scope_lca(declared, r) != r) return bracket_reject(s, "binding above r, scope", declared);
@@ -4770,6 +5046,11 @@ static Bits bracket_place_extent, bracket_place_confined;
 // is the kind of aliasing that shows up as a placement that moved without a
 // source change.
 static Bits bracket_cand_extent, bracket_cand_confined;
+// And M3.2c-ii gets a third. cand_stmt_range is reached from inside
+// bracket_edge_ok, which was already called with one of the two pairs above and
+// reads its `confined` again after the call returns -- so the range pass cannot
+// borrow either without answering a question about the wrong extent.
+static Bits bracket_range_extent, bracket_range_confined;
 
 // One entry per bracketed call. SPEC 5.2.1.1 requires the manifest to record
 // them, because regime (a) is fragile as a language guarantee -- adding a second
@@ -4803,31 +5084,74 @@ static int bracket_count, bracket_cap;
 // again afterwards to stamp site_bracket, while the candidate pass needs only the
 // extent -- and one shared static would have the two passes overwriting each
 // other's answer mid-loop.
-static int bracket_edge_ok(int r, int caller_fn, const CallEdge* e,
-                           Bits* extent, Bits* confined) {
-    if (aif_fn_bracket_blockers(e->callee) != 0) return 0;
+// A call this compilation cannot summarise may be handed one of the extent's
+// values, and FFI 5.1's `borrow` default is an assumption adequate for assigning
+// a tier and **not** adequate for handing a callee arena memory -- SPEC
+// 5.2.1.1's last paragraph says so in as many words. It is invisible to every
+// other check: an undeclared extern's arguments produce only a borrow edge,
+// which raises A and leaves E and the points-to graph alone. So it is asked of
+// the call graph instead, over every function that can be running while the
+// region is.
+//
+// AIF_BR_B_OPAQUE already covers the extent. What this adds is the caller's own
+// region body, and the confined functions it reaches through calls other than
+// the bracketed one.
+//
+// **M3.2c-ii narrows the second half from the block to a statement range**, and
+// that is the whole of what unblocks the benchmarked `g2.psm`: its frame loop
+// holds two `clock_gettime_nsec_np` calls, one on either side of the two calls
+// that allocate, so an arena that opens after the first and closes before the
+// second never has an opaque call running inside it. Nothing is relaxed -- an
+// opaque call *inside* the extent still rejects, and so does one this pass
+// cannot position. The obligation is asked of a smaller region body because
+// codegen is about to emit a smaller region body; M3.2d is the half that makes
+// that true, and landing this one without it would put the clock calls inside
+// the arena.
+static int bracket_opaque_ok(int r, int caller_fn, const Bits* confined) {
+    int lo = 0, hi = 0;
+    int narrowed = 0, asked = 0;
+
+    for (int j = 0; j < call_edge_count; j++) {
+        CallEdge* o = &call_edges[j];
+        if (o->callee >= 0) continue;
+        // A confined function runs entirely inside the region however narrow the
+        // extent is -- there is no statement of `r` to compare it against, and
+        // the whole of its body is between the push and the pop.
+        if (bits_test(confined, o->caller)) return 0;
+        if (o->caller != caller_fn) continue;
+        if (scope_lca(o->scope, r) != r) continue;
+
+        // Only now, and once. Deriving the extent costs a pass over the call
+        // graph per candidate scope; every region body with no opaque call in it
+        // -- which is nearly all of them, and all of this compiler's own -- pays
+        // nothing for a narrowing it does not need.
+        if (!asked) {
+            asked = 1;
+            narrowed = cand_stmt_range(r, &lo, &hi);
+        }
+        if (!narrowed) return 0;
+        // `stmt` indexes the block the call sits in, and a nested block numbers
+        // its own from 0 -- so a call one level down has no position in `r`'s
+        // numbering to compare, and is refused rather than guessed at.
+        if (o->scope != r || o->stmt < 0) return 0;
+        if (o->stmt >= lo && o->stmt <= hi) return 0;
+    }
+    return 1;
+}
+
+// `ask_opaque` is 0 for exactly one caller: cand_stmt_range, which derives the
+// extent the clause above compares against. Asking it there would be asking the
+// obligation to depend on the range that depends on the obligation -- the M3.1
+// circularity, one level down -- so the range is built from the half of these
+// obligations that mentions no statement at all.
+static int bracket_edge_ok_at(int r, int caller_fn, const CallEdge* e,
+                              Bits* extent, Bits* confined, int ask_opaque) {
+    if (aif_fn_bracket_hard_blockers(e->callee) != 0) return 0;
 
     bracket_reachable(e->callee, extent);
     region_confined(r, caller_fn, extent, confined);
 
-    // A call this compilation cannot summarise may be handed one of the
-    // extent's values, and FFI 5.1's `borrow` default is an assumption
-    // adequate for assigning a tier and **not** adequate for handing a callee
-    // arena memory -- SPEC 5.2.1.1's last paragraph says so in as many words.
-    // It is invisible to every check above: an undeclared extern's arguments
-    // produce only a borrow edge, which raises A and leaves E and the
-    // points-to graph alone. So it is asked of the call graph instead, over
-    // every function that can be running while the region is.
-    //
-    // AIF_BR_B_OPAQUE already covers the extent. What this adds is the
-    // caller's own region body, and the confined functions it reaches
-    // through calls other than the bracketed one.
-    for (int j = 0; j < call_edge_count; j++) {
-        CallEdge* o = &call_edges[j];
-        if (o->callee >= 0) continue;
-        if (bits_test(confined, o->caller)) return 0;
-        if (o->caller == caller_fn && scope_lca(o->scope, r) == r) return 0;
-    }
+    if (ask_opaque && !bracket_opaque_ok(r, caller_fn, confined)) return 0;
 
     for (int s = 0; s < site_count; s++) {
         int f = sites[s].fn;
@@ -4835,6 +5159,54 @@ static int bracket_edge_ok(int r, int caller_fn, const CallEdge* e,
         if (!bracket_site_bounded(s, confined, extent, r, caller_fn)) return 0;
     }
     return 1;
+}
+
+static int bracket_edge_ok(int r, int caller_fn, const CallEdge* e,
+                           Bits* extent, Bits* confined) {
+    return bracket_edge_ok_at(r, caller_fn, e, extent, confined, 1);
+}
+
+// Regime (a), asked of a region instead of of the program.
+//
+// A callee with more than one call site serves one placement regime exactly when
+// **every one of those calls runs with `r`'s arena innermost**, because then the
+// body is only ever entered in one state. Three things have to hold at each of
+// them, and each is a use-after-free or a leak if dropped:
+//
+//   * the call is in `r`'s own function and lexically inside `r` -- otherwise
+//     some activation runs with the arena shut, and the body's `arena_alloc`
+//     falls back to the heap for a value nothing will free;
+//   * no arena sits between the call and `r`, so `r` really is the innermost --
+//     `enclosing_region` would bracket such a call into the nearer one, and two
+//     calls in two regions is two regimes;
+//   * the call is inside the *emitted* statement range, because M3.2d made
+//     "inside the region" a range rather than a block. A call after the extent
+//     closes is a call with the arena shut, which is the first bullet again.
+//
+// **It reads scopes[].arena, which is why it is a filter the callers of
+// bracket_edge_ok apply rather than a clause inside it.** The obligations stay
+// one-way, as M3.1 left them; this is the same place `bracket_candidate_serves`
+// already asks whether a nearer arena claimed the call.
+static int bracket_regime_ok(int r, int caller_fn, int callee) {
+    int lo = 0, hi = 0;
+    int narrowed = cand_stmt_range(r, &lo, &hi);
+
+    int seen = 0;
+    for (int i = 0; i < call_edge_count; i++) {
+        CallEdge* e = &call_edges[i];
+        if (e->callee != callee) continue;
+        seen++;
+        if (e->caller != caller_fn) return 0;
+        if (scope_lca(e->scope, r) != r) return 0;
+        for (int p = e->scope; p >= 0 && p != r; p = scopes[p].parent) {
+            if (scopes[p].arena) return 0;      // a nearer arena takes this one
+        }
+        if (narrowed) {
+            if (e->scope != r || e->stmt < 0) return 0;
+            if (e->stmt < lo || e->stmt > hi) return 0;
+        }
+    }
+    return seen > 0;
 }
 
 static void bracket_invalidate(void) {
@@ -4852,7 +5224,6 @@ static void bracket_place(void) {
     bracket_prepare();
     key_index_build();
     site_owners_build();
-    bracket_trace = getenv("AIF_BRACKET_TRACE") != NULL;
 
     site_bracket = (int*)xcalloc((size_t)site_count, sizeof(int), "AIF call-site placement");
     for (int s = 0; s < site_count; s++) site_bracket[s] = -1;
@@ -4877,6 +5248,12 @@ static void bracket_place(void) {
         // and enclosing_region walked its own parents -- and naming it this
         // way is what the obligation is actually about.
         int caller_fn = scopes[r].owner;
+
+        // Regime (a), and it has to be asked here rather than inside the
+        // obligations because it reads which scopes got arenas. See
+        // bracket_regime_ok: one call site settles it, more than one settles it
+        // only when they all bracket into this same region.
+        if (!bracket_regime_ok(r, caller_fn, e->callee)) continue;
 
         if (!bracket_edge_ok(r, caller_fn, e,
                              &bracket_place_extent, &bracket_place_confined)) continue;
@@ -5031,6 +5408,11 @@ static long bracket_candidate_serves(int cand, long* held, long* live) {
             if (scopes[p].arena) { claimed = 1; break; }
         }
         if (claimed) continue;
+        // The same regime question bracket_place will ask, asked here so the
+        // cost model does not justify an arena with traffic that will then be
+        // refused. The two passes must agree or a scope gets an arena nothing
+        // brackets into.
+        if (!bracket_regime_ok(cand, caller_fn, e->callee)) continue;
         if (!bracket_edge_ok(cand, caller_fn, e,
                              &bracket_cand_extent, &bracket_cand_confined)) continue;
 
@@ -5052,42 +5434,30 @@ static long bracket_candidate_serves(int cand, long* held, long* live) {
 
 // M3.2c. The statement range an arena at `scope` actually has to cover: from the
 // first statement that puts something in it to the last statement that still
-// reads something it holds. Returns 0 when the range cannot be narrowed, and
-// **every uncertainty returns 0 rather than a guess** -- a range that is too wide
-// is the arena we already emit, and a range that is too narrow frees memory the
-// program is still using.
+// reads something it holds, over a served set the caller supplies.
 //
-// Positions are taken in `scope`'s own numbering. For a lexically served site
-// that is the site's own `stmt`; for a bracketed one it is the *call's*
-// statement, because the site's own position is an index into the callee's block
-// and says nothing about where this region opens.
-static int arena_stmt_range(int scope, int* first, int* last) {
-    if (scope < 0 || scope >= scope_count || !scopes[scope].arena) return 0;
-    bracket_place();
-
+// `served[k]` is 1 for each site the arena takes and `at[k]` is the statement of
+// `scope` at which that site's memory appears, or -1 where nothing positions it.
+// Returns 0 when the range cannot be narrowed, and **every uncertainty returns 0
+// rather than a guess** -- a range that is too wide is the arena we already
+// emit, and a range that is too narrow frees memory the program is still using.
+//
+// Two callers fill those arrays: c-i from the arena that was placed, c-ii from
+// the one a candidate scope would get. What they share is the delicate half --
+// which keys count as holding the value, which of them may be skipped, and which
+// force "whole block" -- and a second copy of that would be a second answer to
+// the question codegen and the obligation check have to agree on.
+static int stmt_range_over(int scope, const signed char* served, const int* at,
+                           int* first, int* last) {
     int lo = -1, hi = -1;
     int any = 0;
 
     for (int k = 0; k < site_count; k++) {
-        if (site_arena_scope(k) != scope) continue;
+        if (!served[k]) continue;
         any = 1;
-        int at;
-        if (sites[k].scope == scope) {
-            at = sites[k].stmt;                 // lexical: the site is a statement here
-        } else {
-            at = -1;                            // bracketed: ask the call below
-            for (int b = 0; b < bracket_count; b++) {
-                if (brackets[b].scope != scope) continue;
-                if (brackets[b].call_scope != scope) continue;
-                bracket_reachable(brackets[b].callee, &bracket_cand_extent);
-                if (!bits_test(&bracket_cand_extent, sites[k].fn)) continue;
-                if (brackets[b].call_stmt < 0) return 0;
-                if (at < 0 || brackets[b].call_stmt < at) at = brackets[b].call_stmt;
-            }
-        }
-        if (at < 0) return 0;                   // unpositioned: cannot narrow
-        if (lo < 0 || at < lo) lo = at;
-        if (at > hi) hi = at;
+        if (at[k] < 0) return 0;                // unpositioned: cannot narrow
+        if (lo < 0 || at[k] < lo) lo = at[k];
+        if (at[k] > hi) hi = at[k];
     }
     if (!any || lo < 0) return 0;
 
@@ -5102,8 +5472,7 @@ static int arena_stmt_range(int scope, int* first, int* last) {
         if (kn == NULL || kn->kind != AIF_KEY_VAR) continue;
         int holds = 0;
         for (int s = 0; s < site_count && !holds; s++) {
-            if (!bits_test(&pt[k], s)) continue;
-            if (site_arena_scope(s) == scope) holds = 1;
+            if (bits_test(&pt[k], s) && served[s]) holds = 1;
         }
         if (!holds) continue;
         int d = (k < var_scope_cap) ? var_scope[k] : -1;
@@ -5125,6 +5494,262 @@ static int arena_stmt_range(int scope, int* first, int* last) {
     if (first) *first = lo;
     if (last) *last = hi;
     return 1;
+}
+
+// One buffer pair per builder rather than one shared pair. c-i's fill loop asks
+// site_arena_scope, which can run the whole bracket pass, which asks c-ii -- and
+// a shared pair would have the inner answer overwrite the outer one halfway
+// through building it.
+static signed char *placed_served, *cand_served;
+static int *placed_at, *cand_at;
+static int range_scratch_cap;
+
+static void range_scratch_ensure(void) {
+    if (site_count <= range_scratch_cap) return;
+    int n = site_count;
+    placed_served = (signed char*)xrealloc(placed_served, (size_t)n, "AIF arena extent");
+    cand_served   = (signed char*)xrealloc(cand_served,   (size_t)n, "AIF arena extent");
+    placed_at = (int*)xrealloc(placed_at, (size_t)n * sizeof(int), "AIF arena extent");
+    cand_at   = (int*)xrealloc(cand_at,   (size_t)n * sizeof(int), "AIF arena extent");
+    range_scratch_cap = n;
+}
+
+// M3.2c-i. The range of an arena that exists.
+//
+// Positions are taken in `scope`'s own numbering. For a lexically served site
+// that is the site's own `stmt`; for a bracketed one it is the *call's*
+// statement, because the site's own position is an index into the callee's block
+// and says nothing about where this region opens.
+static int arena_stmt_range(int scope, int* first, int* last) {
+    if (scope < 0 || scope >= scope_count || !scopes[scope].arena) return 0;
+    // Before the fill loop, not inside it: site_arena_scope below runs this on
+    // its first call, and a bracket pass starting halfway through the fill would
+    // reach cand_stmt_range with the arrays half written.
+    bracket_place();
+    if (site_count == 0) return 0;
+    range_scratch_ensure();
+
+    for (int k = 0; k < site_count; k++) {
+        placed_served[k] = 0;
+        placed_at[k] = -1;
+        if (site_arena_scope(k) != scope) continue;
+        placed_served[k] = 1;
+        if (sites[k].scope == scope) {
+            placed_at[k] = sites[k].stmt;       // lexical: the site is a statement here
+            continue;
+        }
+        for (int b = 0; b < bracket_count; b++) {       // bracketed: ask the call
+            if (brackets[b].scope != scope) continue;
+            if (brackets[b].call_scope != scope) continue;
+            bracket_reachable(brackets[b].callee, &bracket_cand_extent);
+            if (!bits_test(&bracket_cand_extent, sites[k].fn)) continue;
+            if (brackets[b].call_stmt < 0) { placed_at[k] = -1; break; }
+            if (placed_at[k] < 0 || brackets[b].call_stmt < placed_at[k]) {
+                placed_at[k] = brackets[b].call_stmt;
+            }
+        }
+    }
+
+    return stmt_range_over(scope, placed_served, placed_at, first, last);
+}
+
+// M3.2c-ii. The range of an arena that does not exist yet, and may never.
+//
+// c-i cannot answer for a candidate: it starts from site_arena_scope, which *is*
+// the decision. And the obligation check needs the range before deciding -- the
+// benchmarked `g2.psm` is rejected on its two opaque calls before any arena is
+// placed, so there is nothing for c-i to measure and never will be.
+//
+// **It is the M3.1 circularity again** (the range depends on which sites are
+// served, which depends on acceptance, which depends on the range) and it breaks
+// the same way: the served set here is drawn only from the call graph, the
+// points-to graph and scope shape. Nothing below reads scopes[].arena.
+//
+// The set is an over-approximation on purpose, and that is the safety argument
+// in one line: it is arena_would_serve and the bracket obligations with every
+// clause that reads a placement dropped, so it contains the set c-i will compute
+// once the decision is made. A superset can only widen the range or force "whole
+// block", never narrow it -- so an opaque call outside *this* range is outside
+// the range codegen ends up emitting.
+static int cand_range_compute(int scope, int* first, int* last) {
+    if (scope < 0 || scope >= scope_count) return 0;
+    if (scopes[scope].node == NULL) return 0;   // no block for codegen to bracket
+    // SPEC 5.2 brackets a written `region` at its braces and M3.2d does not
+    // narrow it, so neither may the obligation that guards it.
+    if (scopes[scope].region_name >= 0) return 0;
+    int owner = scopes[scope].owner;
+    if (owner < 0 || owner >= fn_count) return 0;
+    if (site_count == 0) return 0;
+
+    bracket_prepare();
+    key_index_build();
+    site_owners_build();
+    range_scratch_ensure();
+
+    for (int k = 0; k < site_count; k++) { cand_served[k] = 0; cand_at[k] = -1; }
+
+    // What an arena here would serve lexically: arena_would_serve, minus its one
+    // clause that reads scopes[].arena -- "a nearer arena claimed it" -- which
+    // can only ever take a site away.
+    for (int k = 0; k < site_count; k++) {
+        Site* s = &sites[k];
+        if (s->fn != owner) continue;           // a lexical arena and its site share a function
+        if (aif_tier_of(k) != AIF_T1) continue;
+        if (s->no_stack || s->in_container) continue;
+        if (s->kind == AIF_K_LIST) continue;
+        if (s->E < 0) continue;
+        if (!is_ancestor_or_self(scope, s->scope)) continue;
+        if (scope_lca(s->E, scope) != scope) continue;
+        cand_served[k] = 1;
+        if (s->scope == scope) cand_at[k] = s->stmt;
+        // Otherwise it stays -1 and stmt_range_over declines, which is what c-i
+        // does with the same site: a position in a nested block is not a
+        // position in this one.
+    }
+
+    // And what a bracketed call sitting here would serve. The edge set is the
+    // one bracket_place can draw from -- every call in this scope belonging to
+    // the function that owns it, which is exactly what enclosing_region would
+    // have found -- filtered by the obligations that mention no statement.
+    for (int i = 0; i < call_edge_count; i++) {
+        CallEdge* e = &call_edges[i];
+        if (e->callee < 0 || e->callee >= fn_count) continue;
+        if (e->caller != owner) continue;
+        if (scope_lca(e->scope, scope) != scope) continue;
+        if (!bracket_edge_ok_at(scope, owner, e,
+                                &bracket_range_extent, &bracket_range_confined, 0)) continue;
+
+        // Does this edge put anything in the arena at all? A bracket that serves
+        // nothing contributes no statement: c-i positions from served sites, and
+        // it would have none from this one. Counting it anyway would stretch the
+        // range over calls the arena never sees -- and on `g2.psm` that is the
+        // difference between an extent of [1,2] and one that swallows a clock.
+        int serves = 0;
+        for (int k = 0; k < site_count; k++) {
+            int f = sites[k].fn;
+            if (f < 0 || f >= fn_count || !bits_test(&bracket_range_extent, f)) continue;
+            int tier = aif_tier_of(k);
+            if (tier != AIF_T1 && tier != AIF_T2) continue;     // the bracketed gate
+            if (sites[k].no_stack) continue;
+            serves = 1;
+            break;
+        }
+        if (!serves) continue;
+
+        // The call has to be a statement of *this* block. `stmt` indexes the
+        // block the call sits in and a nested one numbers its own from 0, so a
+        // call one level down cannot be placed in this numbering -- and c-i
+        // declines on the same bracket for the same reason.
+        if (e->scope != scope || e->stmt < 0) return 0;
+
+        for (int k = 0; k < site_count; k++) {
+            int f = sites[k].fn;
+            if (f < 0 || f >= fn_count || !bits_test(&bracket_range_extent, f)) continue;
+            int tier = aif_tier_of(k);
+            if (tier != AIF_T1 && tier != AIF_T2) continue;
+            if (sites[k].no_stack) continue;
+            cand_served[k] = 1;
+            if (cand_at[k] < 0 || e->stmt < cand_at[k]) cand_at[k] = e->stmt;
+        }
+    }
+
+    return stmt_range_over(scope, cand_served, cand_at, first, last);
+}
+
+// Memoised per scope, and safe to memoise because nothing it reads changes after
+// the solve converges. It has to be: aif_place_arenas asks the obligation about
+// every scope in turn while it is setting arena flags, and bracket_place asks it
+// again afterwards. The two passes must get the same answer, or a scope gets an
+// arena that nothing brackets into.
+static int* cand_range_lo;
+static int* cand_range_hi;
+static signed char* cand_range_state;   // 0 not asked, 1 narrowed, -1 whole block
+static int cand_range_cap;
+
+static int cand_stmt_range(int scope, int* first, int* last) {
+    if (scope < 0 || scope >= scope_count) return 0;
+    if (scope >= cand_range_cap) {
+        int grow = cand_range_cap ? cand_range_cap * 2 : 256;
+        if (grow <= scope) grow = scope + 1;
+        cand_range_lo = (int*)xrealloc(cand_range_lo, (size_t)grow * sizeof(int),
+                                       "AIF candidate extent");
+        cand_range_hi = (int*)xrealloc(cand_range_hi, (size_t)grow * sizeof(int),
+                                       "AIF candidate extent");
+        cand_range_state = (signed char*)xrealloc(cand_range_state, (size_t)grow,
+                                                  "AIF candidate extent");
+        for (int i = cand_range_cap; i < grow; i++) {
+            cand_range_lo[i] = -1;
+            cand_range_hi[i] = -1;
+            cand_range_state[i] = 0;
+        }
+        cand_range_cap = grow;
+    }
+    if (cand_range_state[scope] == 0) {
+        int lo = -1, hi = -1;
+        int ok = cand_range_compute(scope, &lo, &hi);
+        cand_range_state[scope] = ok ? 1 : -1;
+        cand_range_lo[scope] = lo;
+        cand_range_hi[scope] = hi;
+    }
+    if (cand_range_state[scope] < 0) return 0;
+    if (first) *first = cand_range_lo[scope];
+    if (last) *last = cand_range_hi[scope];
+    return 1;
+}
+
+// M3.2d. The statement range codegen brackets an automatically placed arena
+// with, or 0 for "the whole block" -- which is what every arena got before this.
+//
+// Two ranges bracket the same arena from opposite sides and this picks between
+// them. c-i's is the tighter and describes what the arena actually holds; c-ii's
+// is the one the opaque-call obligation was checked against, and emitting
+// anything wider than it would put an opaque call inside the arena -- the exact
+// hazard the obligation exists to catch.
+//
+// c-i's range lies inside c-ii's by construction: c-ii's served set is a
+// superset, so it declines wherever c-i declines and its bounds are no tighter.
+// The first branch is therefore the one that fires. The second is what happens
+// if that argument is ever wrong, and it is safe rather than clever -- it falls
+// back to the range the obligation actually cleared, never to the whole block.
+static int arena_emit_range(int scope, int* first, int* last) {
+    if (scope < 0 || scope >= scope_count || !scopes[scope].arena) return 0;
+    if (scopes[scope].region_name >= 0) return 0;   // `region` brackets its braces
+
+    int clo = 0, chi = 0;
+    int narrowed = cand_stmt_range(scope, &clo, &chi);
+
+    int plo = 0, phi = 0;
+    if (arena_stmt_range(scope, &plo, &phi)) {
+        if (!narrowed || (plo >= clo && phi <= chi)) {
+            *first = plo;
+            *last = phi;
+            return 1;
+        }
+    }
+    if (narrowed) {
+        *first = clo;
+        *last = chi;
+        return 1;
+    }
+    return 0;
+}
+
+// M3.2d's two accessors. -1 from either means "bracket the whole block", which
+// is the lexical extent and what codegen did before the range existed. They are
+// two calls rather than one out-parameter because the frontend has no way to
+// spell one.
+int aif_arena_range_first(const void* node) {
+    int lo = 0, hi = 0;
+    int s = auto_arena_scope_at_node(node);
+    if (s < 0 || !arena_emit_range(s, &lo, &hi)) return -1;
+    return lo;
+}
+
+int aif_arena_range_last(const void* node) {
+    int lo = 0, hi = 0;
+    int s = auto_arena_scope_at_node(node);
+    if (s < 0 || !arena_emit_range(s, &lo, &hi)) return -1;
+    return hi;
 }
 
 // `unsized` counts sites whose size the frontend never computed -- a string or a
@@ -5435,6 +6060,15 @@ static int field_release_of(int type_name, int field_name, int declared_type) {
     int key = key_find(AIF_KEY_FIELD, type_name, field_name);
     if (key < 0 || key >= pt_len) return AIF_ELEM_NONE;
     if (field_closes_cycle(nominal_find_id(type_name), declared_type)) return AIF_ELEM_NONE;
+    // **An inline field owns nothing.** Its storage is the object's own and the
+    // value was copied in, so there is no pointer to release and the address is
+    // interior -- handing it to a deallocator would free the middle of this
+    // allocation. Codegen has always known this and skipped the field; saying it
+    // here as well is not a second copy of the rule but the *end* of one, because
+    // this answer is also what `site_in_released_field` reads, and reporting a
+    // field as owning what it does not is what stopped the caller from owning it
+    // either. See `field_inline`.
+    if (field_is_inline(type_name, field_name)) return AIF_ELEM_NONE;
 
     int agreed = AIF_ELEM_NONE;
     for (int s = 0; s < site_count; s++) {
@@ -5838,6 +6472,69 @@ void aif_note_call_result(const void* node, int vs, int fn) {
     call_buckets[b] = n;
 }
 
+// FFI 5.2's `alias` question, asked of a *Prismio* function: is every value this
+// one may return an allocation it made itself?
+//
+// The answer decides whether a caller may free the result, and it is only a
+// question for a type with a **literal form**. A `List` has none and a struct
+// has no sentinel, so every way to produce one is a site -- which is the
+// completeness argument aif_owns_call_result_at_node rests on. A `String` breaks
+// it: `return "0"` hands back static storage, contributes no site, and is
+// *invisible* in the returned value set, so a caller that freed it would hand
+// .rodata to the deallocator.
+//
+// So the fact is derived from the returns themselves. Every `return <expr>`
+// binds the RET key (src/aif/walk.psm), and a bind whose value set resolves to
+// **no site at all** is a path this pass cannot account for: a literal, a
+// borrowed parameter, an Int. One such return makes the function partial and its
+// result unowned -- which is the conservative direction, a leak rather than a
+// free of something the caller never owned.
+//
+// Read from the constraints rather than recorded separately, because the bind is
+// already there and a second record is a second thing to keep in step.
+static char* fn_ret_partial;
+static int ret_partial_ready;
+
+static int bits_any(const Bits* b) {
+    for (int i = 0; i < b->nwords; i++) {
+        if (b->w[i]) return 1;
+    }
+    return 0;
+}
+
+static void ret_partial_build(void) {
+    if (ret_partial_ready) return;
+    ret_partial_ready = 1;
+    if (fn_count == 0) return;
+    fn_ret_partial = (char*)xcalloc((size_t)fn_count, 1, "AIF return provenance");
+    key_index_build();
+
+    // Its own Bits: the only caller resolves into query_scratch immediately
+    // after, and one shared buffer would have this pass answering about the
+    // wrong value set on the first call.
+    static Bits ret_scratch;
+    for (int i = 0; i < con_count; i++) {
+        if (cons[i].kind != AIF_CON_BIND) continue;
+        int key = cons[i].a;
+        if (key < 0 || key >= key_count) continue;
+        KeyNode* kn = key_by_id[key];
+        if (kn == NULL || kn->kind != AIF_KEY_RET) continue;
+        int f = kn->a;
+        if (f < 0 || f >= fn_count) continue;
+        resolve(cons[i].b, &ret_scratch);
+        if (bits_any(&ret_scratch)) continue;
+        fn_ret_partial[f] = 1;
+    }
+}
+
+// 1 when some `return` in `f` yields a value with no site behind it, so the
+// caller must not take ownership of what `f` hands back.
+static int fn_returns_partial(int f) {
+    ret_partial_build();
+    if (f < 0 || f >= fn_count) return 1;
+    return fn_ret_partial ? fn_ret_partial[f] : 1;
+}
+
 int aif_owns_call_result_at_node(const void* node) {
     if (node == NULL) return AIF_ELEM_NONE;
     NodeCall* c = NULL;
@@ -5874,11 +6571,22 @@ int aif_owns_call_result_at_node(const void* node) {
         // Option-typed return would be the first struct-shaped value that is not
         // a site, and this is the line it would make unsound.
         //
-        // Restricted to structs that own something, which is a scope choice and
-        // not a soundness one -- the completeness argument says nothing about
-        // the fields. It is where the leak is (g4's `World`), and a plain struct
-        // return has a much wider blast radius for no measured gain.
-        if (d != AIF_ELEM_LIST && d != AIF_ELEM_TYPED) return AIF_ELEM_NONE;
+        // **A plain object joins them where the returns are accounted for.**
+        // This was restricted to LIST and TYPED because the completeness
+        // argument above does not survive a type with a literal form, and a
+        // `String` has one -- which was the right call while nothing derived the
+        // missing fact. `fn_returns_partial` derives it, so the clause is now the
+        // fact rather than the type: a callee with even one `return` this pass
+        // cannot place a site behind is declined exactly as before.
+        //
+        // It is where the remaining leak is. Every integer `print`/`println`
+        // goes through `prismio_std_io_signed_integer`, which returns a String
+        // the caller had no way to own -- 5 allocations and 5 leaks for a
+        // five-digit number, in every program that prints a number.
+        if (d != AIF_ELEM_LIST && d != AIF_ELEM_TYPED) {
+            if (d != AIF_ELEM_OBJECT) return AIF_ELEM_NONE;
+            if (fn_returns_partial(c->fn)) return AIF_ELEM_NONE;
+        }
         if (agreed != AIF_ELEM_NONE && agreed != d) return AIF_ELEM_NONE;
         agreed = d;
     }
@@ -5953,6 +6661,25 @@ void aif_reset(void) {
     free(key_last_stmt);
     key_last_stmt = NULL;
     key_last_stmt_cap = 0;
+    free(placed_served);
+    free(cand_served);
+    free(placed_at);
+    free(cand_at);
+    placed_served = NULL;
+    cand_served = NULL;
+    placed_at = NULL;
+    cand_at = NULL;
+    range_scratch_cap = 0;
+    free(cand_range_lo);
+    free(cand_range_hi);
+    free(cand_range_state);
+    cand_range_lo = NULL;
+    cand_range_hi = NULL;
+    cand_range_state = NULL;
+    cand_range_cap = 0;
+    free(fn_ret_partial);
+    fn_ret_partial = NULL;
+    ret_partial_ready = 0;
     for (int i = 0; i < pt_len; i++) bits_free(&pt[i]);
     for (int i = 0; i < holders_len; i++) bits_free(&holders[i]);
     for (int i = 0; i < holders_len; i++) bits_free(&container_of[i]);
@@ -5993,11 +6720,17 @@ void aif_reset(void) {
     free(fn_has_global);
     free(fn_has_drop);
     free(fn_calls_opaque);
+    free(fn_allocs_reach);
+    free(elem_uses);
+    elem_uses = NULL;
+    elem_use_count = 0;
+    elem_use_cap = 0;
     fn_callees = NULL;
     fn_owner_fns = NULL;
     fn_has_global = NULL;
     fn_has_drop = NULL;
     fn_calls_opaque = NULL;
+    fn_allocs_reach = NULL;
     bracket_fn_cap = 0;
     bracket_ready = 0;
     free(call_edges);
@@ -6070,6 +6803,7 @@ void aif_reset(void) {
         free(nominals[i].field_lo);
         free(nominals[i].field_hi);
         free(nominals[i].field_has_range);
+        free(nominals[i].field_inline);
     }
     nominal_count = 0;
 

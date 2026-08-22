@@ -11,8 +11,9 @@ Don't re-derive what's in them.
 Everything below is verified, not asserted — the commands that verify it are in the next section.
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
-  IR for `src/main.psm` is byte-identical to the warm build's. Last-good is **`build/S24b`**
-  (`S10b → … → S20b → S22b → S24b`, `a24.ll == b24.ll`); `build/S22b`, `build/S20b`, `build/S19b`,
+  IR for `src/main.psm` is byte-identical to the warm build's. Last-good is **`build/S27b`**
+  (`S10b → … → S25b → S26b → S27b`, `a27.ll == b27.ll`, and a fresh seed build matches
+  it); `build/S26b`, `build/S25b`, `build/S24b`, `build/S22b`, `build/S20b`, `build/S19b`,
   `build/S18b`, `build/S15b`, `build/S10b` and `build/E2` remain good behind it. S16/S17 were the M3.1 session's intermediate generations
   and are not last-good: S16b leaked on `test_48` and S17b leaked on `test_49`. S18b closed M3.1;
   **S19b adds the corrected zero-serving-region note and is the one that holds.** The paired generations exist because regenerating `embedded_sources.h`
@@ -20,9 +21,29 @@ Everything below is verified, not asserted — the commands that verify it are i
   two.
 - **Cross-language standing, re-measured 2026-08-25** against session 3's harness unchanged:
   **1.13×–5.89× idiomatic Rust, 1.70×–16.4× hand-tuned Rust**, residual **1.24×–1.27×**.
-  The band has not moved in seven sessions. Full matrix and the four open items in
+  Full matrix and the four open items in
   [`aif/evidence/RESULTS-final.md`](aif/evidence/RESULTS-final.md).
-- **139/139 tests** as of 2026-08-27 (138 before `test_71_nonlexical_extent.psm`, the M3.2d guard
+  **The band moved on 2026-08-28, for the first time in eight sessions, and on two programs:** g2
+  goes 5.77× → **2.59×** of idiomatic Rust once M3.2 places its frame arena automatically, and g6
+  goes 4.31× → **2.58×** once regime (a) stops counting call sites. The rest are flat (corpus
+  median 0.994×), so the *band* is now roughly **1.09×–3.23×** on the driver's own numbers and the
+  RESULTS-final matrix is stale for g2 and g6 — re-measure before quoting it.
+- **Peak RSS fell 0.49×–0.82× across the corpus** on 2026-08-28, from removing the integer-print
+  leak: 2.25→1.78, 3.47→1.94, 2.84→2.08, 2.84→2.05, 1.98→1.63, 4.55→2.23 MB. That is the direction
+  the standing "peak RSS reversed" candidate wanted. The ×-against-Rust figure needs
+  RESULTS-final's own harness to restate and has **not** been re-run.
+- **All seven benchmark programs have a completely clean `--verify` ledger** —
+  `allocated == released`, 0 leaked, 0 violations — as of 2026-08-28. g3 was the last, at 4095, and
+  the recorded cause for it was wrong: the container teardown was fine, and what leaked was the
+  value copied *into* each inline struct field.
+- **The noise band on this corpus is about ±5%**, which is `milestone_bench`'s own default
+  tolerance. Two programs read 1.02–1.05× on the last run with **byte-identical loop code** — the
+  only functions that differ in either are in `std/io`. Attribute before believing a number in that
+  band: `define .*@name` diffing the two `.ll` files takes a minute and settles it.
+- **140/140 tests** as of 2026-08-28 (139 before the `nonlexical_extent` runner check, which reads
+  the extents out of `AIF_STMT_TRACE` before it believes a value — `test_71_nonlexical_extent.psm`
+  had been passing *vacuously*, placing no arena at all, and that is what the check exists to catch;
+  138 before `test_71_nonlexical_extent.psm`, the M3.2d guard
   written *before* the feature it guards; 137 before the M3.1 session, which added
   `test_70_struct_field_release.psm` — the struct-field coverage that automatic arena placement
   took off `test_49`) (136 before the M1 session, which added `curated_closure`) (135 before the candidate-list session, which added `jit`;
@@ -443,6 +464,195 @@ instrumentation point already exists when someone wants it — `ir_struct_field_
 choke point for field access, the way `ir_alloc_object` is for allocation.
 
 ---
+
+## Session of 2026-08-28, third pass — the three open items, closed
+
+All three were taken to a definite answer; two were fixed and one is deferred with a better reason
+than it had. Full account: [`RESULTS-M3-leaks-and-regime.md`](aif/evidence/RESULTS-M3-leaks-and-regime.md) §5.
+
+**g3's 4095, and the recorded cause was wrong.** The note said struct fields leaked through a
+container teardown. The teardown was fine. `Node`'s three struct fields are **inline** — POD
+structs copied into the object's own storage — and what leaked was the value copied *from*:
+`Node { world: identity_transform(), ... }` allocated a `Transform`, memcpy'd six floats out of it
+and dropped the pointer, 2730 times, plus 1365 for the bound one.
+
+Underneath it was **a disagreement, not a gap**. `field_release_of` reported an inline field as a
+*released* field; `generateReleaseFn` emitted no release for it, because the address is interior.
+Both answers defensible, and together they lose the value — because the analysis's answer is also
+what `site_in_released_field` reads, so calling the field an owner is what stopped the **caller**
+from being one. Fixed on the analysis side from the layout's own definition
+(`aif_struct_field_inline` + `aifFieldIsInlineExact`), plus a free at the literal for the value with
+no binding to hang a drop on.
+
+**`byDecl` is the load-bearing part and worth knowing about.** `typeAnnIsPod` decides whether to
+recurse into a struct by asking the struct *registry* — which codegen fills and which is **empty
+during the analysis**, so mid-analysis it calls a non-POD struct POD. `aifFieldIsInlineStruct`
+already documented that trap for the split veto, where over-approximating is safe. For ownership it
+is the unsafe direction, so the ownership reading recurses through `findStructDeclNamed` instead.
+**Any new analysis-time use of `typeAnnIsPod` has to decide which of the two it wants.**
+
+g3: 1391 → **5486 released, 0 leaked**, checksums unchanged. **All seven benchmark programs now
+have a clean ledger.** The IR diff is three files and in g3 it is three `free`s, `__aif_release_Node`
+gone (a Node owns nothing now) and the list's element disposition TYPED → OBJECT.
+
+**`test_47`'s 6 is deferred, and the reason is sharper than "needs contexts".** The obvious
+relaxation — "the returned site's function is reachable from the callee" — leans entirely on
+`in_container` and `site_in_released_field` to catch a value also stored somewhere that outlives the
+call. `site_in_released_field` has a **known hole**, recorded at `field_release_of`: this compiler
+puns an `ASTNode` pointer as `String`, the declared-type test declines, and the field is not
+reported as released. `src/` is full of node pointers returned through helpers and stored into
+`.next`. A widened rule would hand those to the deallocator. Six allocations in one fixture against
+a use-after-free in the compiler is not a trade worth taking.
+
+**g4's 1.050× was measurement.** At 15 runs it reads 1.022× with the arms' ranges overlapping, and
+the attribution settles it: 22 functions changed in g4's IR and **every one is in `std/io`**. Not
+one function of g4's own compiles differently, and its four print calls are outside the timed loop.
+g1, which read 1.048× on the final run, gives the same answer.
+
+Corpus median **1.003×**, GATE PASSED, RSS 0.49×–0.81× against S25b.
+
+## Session of 2026-08-28, second half — the integer-print leak, and g6's arena
+
+Two items the first half left behind, both taken to green. Full account:
+[`RESULTS-M3-leaks-and-regime.md`](aif/evidence/RESULTS-M3-leaks-and-regime.md).
+
+**Every program that printed a number leaked, and had since integers could be printed.**
+`println(12345)` was 5 allocated, 0 released, 5 leaked. Two causes needing two fixes: the digit
+loop's intermediates (an assignment releases nothing, and a reassigned binding is deliberately never
+droppable), and the result — **a `String` returned across a call had no owner at all.**
+`aif_owns_call_result_at_node` transferred a returned `List` or owning struct and declined
+everything else, on a sound argument: the completeness of the returned value set rests on the type
+having no literal form, and `return "0"` contributes no site and is invisible. So the missing fact
+is now derived — `fn_returns_partial`, read off the RET binds, marks a function whose every return
+this pass cannot place a site behind. `std/io.psm`'s formatter became recursive (each intermediate
+gets its own `let`) and returns a concat on every path (a literal would poison it, and a
+**pass-through** — `return f(...)` — is declined because from the call site a value made below is
+indistinguishable from one handed down).
+
+Result: **six of the seven benchmark programs now have a completely clean ledger**, g2 goes ~83 000
+leaks → 0, and **peak RSS fell 0.49×–0.82× across the corpus** — which is the standing "peak RSS
+reversed" candidate moving without anyone taking it.
+
+**g6 was not blocked on the obligation both TODO.md and SESSION-PROMPT.md said it was.** They
+recorded obligation 2 (`br-param=4`); `--why` says `plan_orders` clears every allocation obligation
+and is refused for having two call sites. `br-param` is real and it is about `recruit`, whose
+`Member`s genuinely outlive the tick. Three things blocked the transient allocator and all three had
+to go:
+
+1. **Regime (a) asked the wrong question.** SPEC's table says the requirement is *"one body, one
+   placement regime"* and *"exactly one call site"* is a sufficient condition for it, not a
+   necessary one. Split into `SHARED_BODY` (region-independent) and a new `MULTI_CALL` that
+   `bracket_regime_ok` answers **per region**: every call in the region's own function, inside it,
+   no nearer arena, inside the emitted range. It reads `scopes[].arena`, so it is a filter the
+   callers of `bracket_edge_ok` apply — the obligations stay one-way, as M3.1 left them.
+2. **The shared-body clause bit on bodies that allocate nothing.** `plan_orders` reaches two
+   accessors that do nothing but `list_get`, and `resolve_combat` calls one of them. A body with no
+   allocation below it compiles identically inside and outside a bracket. `fn_allocs_reach`, and
+   **transitive** — a site-free function that calls an allocating one *is* changed.
+3. **Every `List` in the program shared one `@elem` node.** Keyed on the base type, so
+   `list_get(w.actors, i)` came back holding `Order`s from a different list and obligation 3 refused
+   the bracket. Keyed on the full type now, which is sound because generics are monomorphised before
+   this walk and there is no subtyping — with `elem_key_reconcile` merging any base that has an
+   unresolved spelling, verified firing on `let xs = list_new()` and silent everywhere else.
+
+g6: **50 470 → 3265 allocations, 0.599× wall clock, 4.31× → 2.58× of idiomatic Rust, RSS 0.491×**,
+extent `[0,3]` of the tick body. Corpus median 0.994×, GATE PASSED.
+
+**Four tests changed meaning, and none was deleted.** Generalising regime (a) broke exactly the
+checks that assert it — which is what they are for. `test_58` gained a fifth function for the
+newly-legal case (two calls in one region, 51 served) and its negative moved to a call **outside**
+the region, with the result **discarded** so obligation 3 stays out of it; `test_63` and `neg_26`
+moved their mutation points the same way. The **oracle** was updated in step and the differential now
+compares `br-multicall`, so two implementations sharing no code agree on what the new blocker means.
+
+**Three things worth carrying forward:**
+
+- **`AIF_BRACKET_TRACE` printed `bound in 38`** — a raw function index — and finding out which
+  function that was cost real time. It prints the name now.
+- **`--why` was right and the recorded note was wrong**, for the second session running. Read
+  `--why` on the site that matters before believing a blocker written down by an earlier session.
+- **g3's 4095 leaks** are now the largest single leak left anywhere: 1365 `Node`s with three owned
+  `String` fields each, freed as objects by a container teardown that does not touch their fields.
+
+## Session of 2026-08-28 (M3.2c-ii + M3.2d) — the arena stops being the block, and `g2.psm` finally gets one
+
+*(The date sequence here runs ahead of the wall clock and has for several sessions; kept monotonic
+on purpose. This entry follows 2026-08-27.)*
+
+**M3's exit gate is green.** Plain `g2.psm` — no annotation, no source change, the file every prior
+g2 number was measured on — serves arena objects and runs at **0.469×** of its own previous time.
+That is the figure `g2_region.psm` earns by hand-placing `region frame_arena` between the two clock
+calls; the compiler now derives the same range. Heap allocations **10 285 886 → 82 052 (125×)**,
+frame time median **5 250 → 2 416 ns**, p99 **12 042 → 2 917 ns**, checksums identical, 0
+violations. Corpus median **0.991×**, GATE PASSED, and the cross-language band moved for the first
+time in eight sessions — g2 5.77× → 2.70× of idiomatic Rust, everything else flat.
+Full account: [`RESULTS-M3-nonlexical.md`](aif/evidence/RESULTS-M3-nonlexical.md).
+
+**What landed, and why the two halves are one commit.** c-ii computes the statement range of a
+*candidate* arena inside the obligation check, before the accept/reject decision; d makes
+`generateBlock` open the arena at that range's first statement and close it after its last. Landing
+c-ii alone would narrow the obligation while codegen still bracketed the whole block, putting the
+opaque calls **inside** the arena — the exact hazard the obligation exists to catch.
+
+The circularity is M3.1's, one level down (the range depends on which sites are served, which
+depends on acceptance, which depends on the range) and it breaks the same way: `cand_stmt_range`
+reads the call graph, the points-to graph and scope shape and **never `scopes[].arena`**. Its
+served set is deliberately an over-approximation — `arena_would_serve` minus the one clause that
+reads a placement, plus every call that passes the obligations that mention no statement — so it is
+a **superset** of what c-i computes after the decision. A superset can only widen the range or
+force "whole block", so an opaque call outside it is outside what codegen emits. `arena_emit_range`
+takes c-i's tighter answer when it lies inside c-ii's, and c-ii's otherwise; never the whole block,
+which is the one answer the obligation was not asked about.
+
+**The three things worth carrying forward:**
+
+1. **The guard fixture was passing vacuously, and finding that was most of the session.**
+   `tests/test_71_nonlexical_extent.psm` was written before the feature and placed **no arena at
+   all**: five shapes sharing one `build`/`consume` pair made every callee `br-shared` under
+   regime (a), so its 79/79/0/0 baseline measured a program the feature never touched and all five
+   assertions passed against it. Two constraints had to be *measured* before it could be rewritten,
+   and neither is visible by reading the code: regime (a) needs **one call site per bracketed
+   callee** (hence nine builders), and **any `list_get` outside the extent un-brackets every other
+   shape**, because the points-to graph does not separate element sets by list — one unused
+   `consume(cmds: List<Cmd>)`, even typed on a different struct, drops the placement from nine
+   arenas to none. The shapes now consume through `list_len`.
+   `run_nonlexical_extent_test` reads the extents out of `AIF_STMT_TRACE` before it believes any
+   value, so this cannot recur silently.
+
+2. **`AIF_BRACKET_TRACE` was armed in the wrong pass.** It was set in `bracket_place`, which runs
+   *after* placement, so the pass that actually decides whether a scope becomes a candidate emitted
+   nothing and every rejection during placement was silent. Moved to `bracket_prepare`. This is
+   what turned "the fixture places no arena and I cannot see why" into one line naming the site and
+   the binding.
+
+3. **One clause that shipped is inert, and it is recorded so nobody deletes it by surprise.** The
+   `if (ir_has_returned() == 0)` guard on the close at `rangeLast` produces **byte-identical IR**
+   when removed: the extra `arena_pop` would be emitted after a terminator and the backend drops
+   it. Kept because the lexical close two lines down carries the same guard for the same reason.
+   The other two mutations do fire: no `ir_region_end` gives *"internal error: regions nested more
+   than 64 deep"*, and no `ir_region_exit` fails four of the five shapes with the outer arena's
+   list reading back 2 instead of 6.
+
+**What the IR diff is.** 20 files against the S24b snapshot; `src/main.ll` and `test_71` expected,
+and every one of the other 18 is `arena_push`/`arena_pop` moving inward plus the allocations that
+follow. `test_44_aif_region.psm`'s `arena_regions` went **20 → 11** and the expectation was updated:
+the nine that went are `check`'s own, whose arena a lexical bracket pushed once per call because
+its *failure* path builds two strings. A passing check now pushes nothing. The eleven from `region`
+statements did not move — **a written `region` keeps its lexical extent**, by SPEC 5.2 and by an
+explicit clause, and the manifest's account of which block owns a value depends on that.
+
+**SPEC changed, in two places.** §5.2.1.2 is new and normative: an implementation MAY end an arena
+it placed itself at last use, and where it does, the §5.2.1.1 obligations SHALL be asked of the
+statement range it will emit and of no wider a range, the range asked about SHALL contain the range
+emitted, and every uncertainty SHALL widen to the whole block. And §5.2.1.1's bullet *"Only a
+`region`-pinned arena may be bracketed into"* was **stale since M3.1** and is corrected — that
+exclusion is what kept automatic placement from reaching any callee at all.
+
+**Not done, and not attempted.** g6 is still blocked on obligation 2 (`br_param=4`). `g2.psm`
+leaks ~80 000 digit strings from `int_to_str` in its printing loop under `--verify`, on **both**
+arms and unrelated to this work — it is why the `--verify` verdict on that program reads FAILED,
+and it is worth a session of its own. And `--verify`'s `allocated`/`leaked` remain run-to-run noisy
+by thousands on a 10 M-allocation program; `released` and `violations` are the columns to read.
 
 ## Session of 2026-08-27 (M3.1) — automatic placement reaches a callee's allocations, and the milestone that was asked for could not have worked
 

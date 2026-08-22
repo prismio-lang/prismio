@@ -231,7 +231,25 @@ fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: Strin
             if (init.kind == NodeKind.STRUCT_LITERAL_EXPR) {
                 generateStructLiteralFields(init, innerName, ir_get_temp_name(slot))
             } else {
-                ir_copy_struct(innerName, ir_get_temp_name(slot), generateExpression(init))
+                // An inline field is the object's own storage, so this **copies**
+                // and the source keeps whatever ownership it had. Where the source
+                // is a call whose result the callee handed over, that ownership is
+                // ours and nothing else will ever name it -- so it is freed here or
+                // not at all.
+                //
+                // This is g3's residue: `Node { world: identity_transform(), ... }`
+                // allocated a Transform, copied six floats out of it and dropped
+                // the pointer on the floor, 2730 times. A binding gets the same
+                // treatment one level up, through ir_mark_droppable; an expression
+                // has no binding to hang it on and needs saying here.
+                let src = generateExpression(init)
+                ir_copy_struct(innerName, ir_get_temp_name(slot), src)
+                let owned = aif_owns_call_result_at_node(node_to_ptr(init))
+                if (owned == AIF_ELEM_TYPED) {
+                    ir_free_typed(src, releaseFnName(innerName))
+                } else if (owned != AIF_ELEM_NONE) {
+                    ir_free_object(src)
+                }
             }
         } else {
             let fieldVal = generateExpression(ptr_to_node(field.child1))

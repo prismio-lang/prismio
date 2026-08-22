@@ -477,7 +477,22 @@ fn generateBlock(block: ASTNode) {
     // same early-exit handling through ir_region_depth. The only difference is
     // who decided.
     let arena = aif_auto_arena_at_node(node_to_ptr(block)) == 1
+
+    // M3.2d. Where in the block it is bracketed. -1 is "at the braces", the
+    // lexical extent, and the two are not interchangeable: an arena narrowed to
+    // a range was accepted *because* of that range -- the obligation that
+    // refuses an opaque call in the region body was asked of these statements
+    // and no others -- so bracketing the whole block instead would put the calls
+    // it cleared back inside the arena.
+    let mut rangeFirst = 0 - 1
+    let mut rangeLast = 0 - 1
     if (arena) {
+        rangeFirst = aif_arena_range_first(node_to_ptr(block))
+        rangeLast = aif_arena_range_last(node_to_ptr(block))
+    }
+    // The braces still own it when there is no range to put it between.
+    let lexicalArena = arena and rangeFirst < 0
+    if (lexicalArena) {
         ir_region_begin()
         ir_region_enter()
     }
@@ -488,10 +503,29 @@ fn generateBlock(block: ASTNode) {
     ir_scope_push()
     debugPushScope(block)
 
+    // The index has to count what the AIF walk counted, which is every node of
+    // this chain. `aifWalk` numbers a BLOCK's child1/child2/child3 as one list
+    // and the parser only ever fills child1 (src/parse/stmt.psm), so this loop
+    // and that one agree -- and if that ever stops being true the arena opens at
+    // the wrong statement.
+    let mut stmtIndex = 0
     let mut stmtPtr = block.child1
     while (str_equals(stmtPtr, "") == 0) {
         let stmt = ptr_to_node(stmtPtr)
+        if (rangeFirst == stmtIndex) {
+            ir_region_begin()
+            ir_region_enter()
+        }
         generateStatement(stmt)
+        if (rangeLast == stmtIndex) {
+            // Only on fall-through, for the reason the lexical close below gives:
+            // a `return` or `break` in the range already popped it on its way
+            // out. ir_region_exit runs either way, or the depth every later exit
+            // is counted against stays one too high.
+            if (ir_has_returned() == 0) { ir_region_end() }
+            ir_region_exit()
+        }
+        stmtIndex = stmtIndex + 1
         stmtPtr = stmt.next
     }
 
@@ -510,7 +544,7 @@ fn generateBlock(block: ASTNode) {
     debugPopScope()
     ir_scope_pop()
 
-    if (arena) {
+    if (lexicalArena) {
         // Only on fall-through, for the same reason the drops are: a `return` or
         // `break` inside already popped every arena between itself and its
         // target, and popping twice releases the caller's.

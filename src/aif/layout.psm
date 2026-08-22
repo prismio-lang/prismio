@@ -291,6 +291,24 @@ fn aifFieldIsInlineStruct(module: ASTNode, ann: ASTNode) -> Bool {
     return typeAnnIsPod(module, ann, 0)
 }
 
+// The same question, answered **exactly** rather than in the split veto's safe
+// direction, because ownership needs it exact in the other one.
+//
+// The veto above may say "inline" too often and lose a split; this one may not,
+// because a field wrongly reported as inline is a field reported to own nothing,
+// and a caller then frees a value the field still points at. `byDecl` recurses
+// through the AST the way codegen's `fieldTypeFor` recurses through the filled
+// registry, so the two agree in both phases -- see `typeAnnIsPodIn`.
+fn aifFieldIsInlineExact(module: ASTNode, ann: ASTNode) -> Bool {
+    if (ann.i1 == 1) { return false }
+    if (ann.i2 == 1) { return false }
+    if (ann.i3 == 1) { return false }
+    if (nodeExists(node_to_ptr(findStructDeclNamed(module, ann.s1))) == false) {
+        return false
+    }
+    return typeAnnIsPodIn(module, ann, 0, true)
+}
+
 fn aifLayoutVetoInline(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {

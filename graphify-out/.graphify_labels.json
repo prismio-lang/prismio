@@ -89,7 +89,6 @@
   "87": "5 · A staged path",
   "88": "1 · AIF core — genuinely ours",
   "89": "AIF — The FFI Boundary",
-  "90": "aif_intern",
   "91": "AIF — The T4 Cycle Collector",
   "92": "AIF — Measurement and Falsification Plan",
   "93": "PIR — Prism Semantic IR",
@@ -210,14 +209,10 @@
   "208": "Session of 2026-08-09 (second) — views: the safety half landed, the speed half was somewhere else",
   "209": "HANDOFF.md",
   "210": "Session of 2026-08-25 (final benchmark) — the corpus standing has not moved in seven sessions, and `region` is fixed",
-  "211": "2026-08-19 (generics) — monomorphisation is in; the stdlib floor is now gated on one missing primitive",
-  "212": "The prompt for the next session",
   "213": "2026-08-17 (second) — LAYOUT §8's forced candidate landed; read this before writing another brief",
   "214": "Concepts",
-  "215": "2026-08-17 (second) — LAYOUT §8's forced candidate landed; read this before writing another brief",
   "216": "milestone_bench.py",
   "217": "Session of 2026-08-17 (second) — §8's forced candidate lands, and the IR differential turns out to have a concurrency hole",
   "218": "5 · The accepted tradeoffs, reported anyway",
-  "219": "add_binding",
   "220": "call_edge_push"
 }

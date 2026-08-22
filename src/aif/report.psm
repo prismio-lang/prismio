@@ -608,6 +608,7 @@ fn aifEmitBracketing() {
     let mut nOpaque = 0
     let mut nDrop = 0
     let mut nShared = 0
+    let mut nMulti = 0
 
     let mut f = 0
     while (f < fnCount) {
@@ -617,13 +618,16 @@ fn aifEmitBracketing() {
         if (mask / AIF_BR_B_OPAQUE % 2 == 1) { nOpaque = nOpaque + 1 }
         if (mask / AIF_BR_B_DROP % 2 == 1) { nDrop = nDrop + 1 }
         if (mask / AIF_BR_B_SHARED_BODY % 2 == 1) { nShared = nShared + 1 }
-        // The allocation obligations alone. SHARED_BODY is not one of them --
-        // it is regime (a)'s restriction on *codegen*, reported beside the
+        if (mask / AIF_BR_B_MULTI_CALL % 2 == 1) { nMulti = nMulti + 1 }
+        // The allocation obligations alone. Neither regime bit is one of them --
+        // both are regime (a)'s restriction on *codegen*, reported beside the
         // safety answer rather than folded into it, because the two would
         // otherwise be indistinguishable in one number and they call for
         // different work: specialisation lifts the second and nothing lifts
         // the first.
-        if (mask - (mask / AIF_BR_B_SHARED_BODY % 2) * AIF_BR_B_SHARED_BODY == 0) {
+        let regime = (mask / AIF_BR_B_SHARED_BODY % 2) * AIF_BR_B_SHARED_BODY
+                   + (mask / AIF_BR_B_MULTI_CALL % 2) * AIF_BR_B_MULTI_CALL
+        if (mask - regime == 0) {
             ok = ok + 1
             if (mask == 0) { sole = sole + 1 }
         }
@@ -641,7 +645,7 @@ fn aifEmitBracketing() {
 
     print("sole-regime  ")
     print(int_to_str(sole))
-    println("  (of those: one body, one placement regime -- SPEC 5.2.1 (a))")
+    println("  (of those: one call site, so regime (a) holds whatever the region)")
 
     print("region-calls ")
     print(int_to_str(aif_region_call_sites()))
@@ -661,6 +665,9 @@ fn aifEmitBracketing() {
     println(int_to_str(nDrop))
     print("br-shared    ")
     println(int_to_str(nShared))
+    print("br-multicall ")
+    print(int_to_str(nMulti))
+    println("  (more than one call site: regime (a) is then a question about the region)")
 
     // The placement itself (SPEC 5.2.1.1), and the two numbers are deliberately
     // separate. `bracketed` is how many calls the compiler took; `br-served` is
@@ -978,6 +985,9 @@ fn aifBracketBlockerText(bit: Int) -> String {
     if (bit == AIF_BR_B_DROP) {
         return "an explicit `drop` inside the extent frees one of its allocations"
     }
+    if (bit == AIF_BR_B_MULTI_CALL) {
+        return "the body has more than one call site, and they are not all in one region"
+    }
     return "the body is reachable from outside the bracket, so it would serve two placement regimes"
 }
 
@@ -1007,10 +1017,13 @@ fn aifEmitBracketing(site: Int) {
     let inRegion = aif_fn_calls_in_region(f)
     let calls = aif_fn_call_sites(f)
 
-    // The allocation obligations without regime (a)'s restriction, which is
-    // reported separately below because it calls for different work: SPEC
-    // 5.2.1.1's regime (b) lifts it and nothing lifts the others.
-    let unsafeMask = mask - (mask / AIF_BR_B_SHARED_BODY % 2) * AIF_BR_B_SHARED_BODY
+    // The allocation obligations without either half of regime (a), which are
+    // reported separately below because they call for different work: SPEC
+    // 5.2.1.1's regime (b) lifts SHARED_BODY, agreeing callers lift MULTI_CALL,
+    // and nothing lifts the others.
+    let regimeMask = (mask / AIF_BR_B_SHARED_BODY % 2) * AIF_BR_B_SHARED_BODY
+                   + (mask / AIF_BR_B_MULTI_CALL % 2) * AIF_BR_B_MULTI_CALL
+    let unsafeMask = mask - regimeMask
 
     println("")
     println("    bracketing (SPEC 5.2.1.1) -- may a caller's region reach this function?")
@@ -1020,11 +1033,19 @@ fn aifEmitBracketing(site: Int) {
             print("      yes  -- every obligation holds, and the body serves one regime (")
             print(int_to_str(calls))
             println(" call site)")
-        } else {
-            print("      no   -- the obligations hold, but the body has ")
-            print(int_to_str(calls))
-            println(" call sites, so it would serve two placement regimes")
+        } else if (mask / AIF_BR_B_SHARED_BODY % 2 == 1) {
+            println("      no   -- the body is reachable from outside the bracket, so it would")
+            println("              serve two placement regimes")
             println("      note     SPEC 5.2.1.1 regime (b) -- specialisation -- is what lifts this")
+        } else {
+            // MULTI_CALL alone. Not an answer on its own any more: it says the
+            // question belongs to a region, and the `callers` line below is
+            // where a reader finds out whether one was found.
+            print("      maybe -- every obligation holds, and the body has ")
+            print(int_to_str(calls))
+            println(" call sites")
+            println("      note     one regime iff all of them are bracketed into the same region,")
+            println("               which is decided per region, not here")
         }
     } else {
         println("      no   -- bracketing this call would outlive the region")
@@ -1034,6 +1055,7 @@ fn aifEmitBracketing(site: Int) {
         shown = aifEmitBracketBlocker(mask, AIF_BR_B_OPAQUE, shown)
         shown = aifEmitBracketBlocker(mask, AIF_BR_B_DROP, shown)
         shown = aifEmitBracketBlocker(mask, AIF_BR_B_SHARED_BODY, shown)
+        shown = aifEmitBracketBlocker(mask, AIF_BR_B_MULTI_CALL, shown)
     }
 
     // The half the obligations do not carry. A function that clears every one of
@@ -1251,16 +1273,27 @@ fn aifReportPlacementPin(i: Int) -> Int {
     // The case this annotation exists for. The site has no region in its own
     // function, so the only way it was ever served is a caller's `region`
     // reaching it through a bracketed call -- and SPEC 5.2.1.1 regime (a) drops
-    // that bracket as soon as the callee has a second call site. Naming the
-    // obligation that failed is the difference between a diagnostic and a
-    // riddle, and aif_fn_bracket_blockers already answers it.
+    // that bracket as soon as the callee is entered from somewhere the region is
+    // not. Naming the obligation that failed is the difference between a
+    // diagnostic and a riddle, and aif_fn_bracket_blockers already answers it.
     let f = aif_site_fn(i)
-    if (f >= 0 and aif_fn_bracket_blockers(f) / AIF_BR_B_SHARED_BODY % 2 == 1) {
+    let mask = aif_fn_bracket_blockers(f)
+    if (f >= 0 and mask / AIF_BR_B_SHARED_BODY % 2 == 1) {
         diag_note(str_concat(str_concat("the call that reached it was bracketed into ", want),
                              " (SPEC 5.2.1.1 regime (a)) and no longer is:"))
-        diag_note(str_concat(str_concat(aif_fn_name(f), " now has "),
+        diag_note(str_concat(aif_fn_name(f),
+                             " reaches a body that is also called from outside the region"))
+        return 1
+    }
+    // MULTI_CALL on its own is not an answer -- more than one call site is fine
+    // while they are all in the same region -- so the note names what a reader
+    // has to go and check rather than asserting the count is the fault.
+    if (f >= 0 and mask / AIF_BR_B_MULTI_CALL % 2 == 1) {
+        diag_note(str_concat(str_concat("the call that reached it was bracketed into ", want),
+                             " (SPEC 5.2.1.1 regime (a)) and no longer is:"))
+        diag_note(str_concat(str_concat(aif_fn_name(f), " has "),
                   str_concat(int_to_str(aif_fn_call_sites(f)),
-                             " call sites, and a bracketed callee may have exactly one")))
+                             " call sites, and a bracketed callee may have exactly one outside the region")))
         return 1
     }
 

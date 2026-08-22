@@ -1,26 +1,58 @@
 // The shape a non-lexical extent narrows, and the early exits that make
 // narrowing dangerous.
 //
-// **This fixture is deliberately older than the feature it guards.** M3.2 ends a
-// region at last use rather than at the closing brace, which means the arena
+// M3.2 ends a region at last use rather than at the closing brace, so the arena
 // push and pop stop being the block's braces and become two points *inside* it.
 // Every way of leaving the block between those points then has to pop exactly
-// once: a missed pop leaks the arena, a doubled one pops the caller's, and
-// neither shows up in a value. test_48 spent this session proving that a program
-// can print PASS while leaking, so the check that matters here is the ledger --
-// run it under `--verify` and read `released` and `violations`, not `leaked`,
-// which counts arena memory that never went through the deallocator.
+// once, and the two failures are silent on their own: a missed pop holds the
+// chunks for the rest of the program, and a doubled one releases the *caller's*
+// arena and lets the next allocation bump over memory that is still live.
 //
-// Written against the *lexical* build so the numbers below are a baseline that
-// M3.2d must reproduce, not a prediction of what it will do. On build/S22b, the
-// last generation before any of this narrows:
+// **How each failure is made loud, because neither is by default.** `arena_pop`
+// returns early at depth 0, so a doubled pop at the top level is a no-op by
+// design, and one leaked push in a program that then exits is invisible. Both
+// halves of the fixture exist to remove those escapes:
 //
-//     aif-verify: 79 allocated, 79 released, 0 leaked, 0 violation(s)
+//   * **Missed pop -> depth.** Every loop runs 80 times, above `ARENA_MAX_DEPTH`
+//     (64, `runtime/lang_runtime.c`). A pop lost on a path taken every iteration
+//     is 80 pushes and no pops, and `arena_push` exits(1) with "regions nested
+//     more than 64 deep". Deterministic, not probabilistic.
+//   * **Doubled pop -> data.** Every early-exit shape holds a `held` list in an
+//     *outer* arena that stays open across the loop, so the extra pop lands on
+//     something real. Chunks are pooled rather than returned to libc, so the
+//     next iteration bumps straight over `held`, and `list_len(held)` at the end
+//     reads back a length that is no longer 6.
 //
-// `allocated` is expected to fall once an arena serves these sites -- arena
-// memory does not pass the shim and so leaves the ledger entirely. What must not
-// change is that **whatever remains on the heap is fully released and
-// violations stay 0**, on every one of the five exit shapes below.
+// Both directions verified by mutating the compiler and rebuilding it, 2026-08-28:
+//
+//   * the close at `rangeLast` emitting no `ir_region_end` -- "internal error:
+//     regions nested more than 64 deep", exit 1, on `straight_line`.
+//   * the close emitting no `ir_region_exit`, so the compile-time depth stays one
+//     too high and every later exit pops once too often -- four of the five
+//     shapes fail with `held` reading back 2 instead of 6.
+//
+// **Why nine builders and no `consume`.** Both come from what makes a bracket
+// legal, and a fixture that ignores them places no arena and guards nothing:
+//
+//   * SPEC 5.2.1's regime (a) needs a bracketed callee to have exactly **one**
+//     call site. One shared `build` across five shapes is `br-shared`, and the
+//     first version of this fixture was exactly that -- five shapes, one helper,
+//     zero arenas, five assertions passing against a program the feature never
+//     touched.
+//   * A second function that reads an **element** back out of a list -- any
+//     `list_get` outside the extent -- aliases every element site in the
+//     program, because the points-to graph does not separate element sets by
+//     list. One `consume` helper therefore un-brackets every *other* shape's
+//     extent, whatever its element type. So the shapes consume through
+//     `list_len`, which reads the list handle and creates no key.
+//
+// Both were measured against this compiler rather than assumed: adding a single
+// unused `consume(cmds: List<Cmd>)` drops the placement from nine arenas to
+// none, and `AIF_BRACKET_TRACE=1` names the site and the binding that blocked it.
+//
+// `run_nonlexical_extent_test` reads the extents out of `AIF_STMT_TRACE` before
+// it believes any of the values below, so a fixture that stops being bracketed
+// fails rather than passing quietly.
 
 import std.io
 
@@ -29,7 +61,7 @@ struct Cmd {
     weight: Int
 }
 
-fn build(n: Int) -> List<Cmd> {
+fn build_a(n: Int) -> List<Cmd> {
     let mut out: List<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
@@ -39,28 +71,106 @@ fn build(n: Int) -> List<Cmd> {
     return out
 }
 
-fn consume(cmds: List<Cmd>) -> Int {
-    let n = list_len(cmds)
-    let mut sum = 0
+fn build_b0(n: Int) -> List<Cmd> {
+    let mut out: List<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
-        let c = list_get(cmds, i)
-        sum = sum + c.weight
+        list_push(out, Cmd { id: i, weight: i + 1 })
         i = i + 1
     }
-    return sum
+    return out
 }
 
-// The plain case. `cmds` is made at statement 1 and dead after statement 2, so
-// the statements on either side are what an extent must exclude -- and they are
-// what a lexical arena wrongly includes.
+fn build_b(n: Int) -> List<Cmd> {
+    let mut out: List<Cmd> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(out, Cmd { id: i, weight: i + 1 })
+        i = i + 1
+    }
+    return out
+}
+
+fn build_c0(n: Int) -> List<Cmd> {
+    let mut out: List<Cmd> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(out, Cmd { id: i, weight: i + 1 })
+        i = i + 1
+    }
+    return out
+}
+
+fn build_c(n: Int) -> List<Cmd> {
+    let mut out: List<Cmd> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(out, Cmd { id: i, weight: i + 1 })
+        i = i + 1
+    }
+    return out
+}
+
+fn build_d0(n: Int) -> List<Cmd> {
+    let mut out: List<Cmd> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(out, Cmd { id: i, weight: i + 1 })
+        i = i + 1
+    }
+    return out
+}
+
+fn build_d(n: Int) -> List<Cmd> {
+    let mut out: List<Cmd> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(out, Cmd { id: i, weight: i + 1 })
+        i = i + 1
+    }
+    return out
+}
+
+fn build_g(n: Int) -> List<Cmd> {
+    let mut out: List<Cmd> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(out, Cmd { id: i, weight: i + 1 })
+        i = i + 1
+    }
+    return out
+}
+
+fn build_e(n: Int) -> List<Cmd> {
+    let mut out: List<Cmd> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(out, Cmd { id: i, weight: i + 1 })
+        i = i + 1
+    }
+    return out
+}
+
+fn build_f(n: Int) -> List<Cmd> {
+    let mut out: List<Cmd> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(out, Cmd { id: i, weight: i + 1 })
+        i = i + 1
+    }
+    return out
+}
+// The plain case, and the only one with no exit at all. `cmds` is made at
+// statement 1 and dead after statement 2, so the statements on either side are
+// what an extent must exclude -- and they are what a lexical arena wrongly
+// includes. A pop lost here is lost on every one of the 80 iterations.
 fn straight_line(n: Int) -> Int {
     let mut total = 0
     let mut i = 0
     while (i < n) {
         let before = i * 2
-        let cmds = build(3)
-        total = total + consume(cmds)
+        let cmds = build_a(2)
+        total = total + list_len(cmds)
         let after = i * 3
         total = total + before + after
         i = i + 1
@@ -68,70 +178,107 @@ fn straight_line(n: Int) -> Int {
     return total
 }
 
-// `continue` taken *after* the last use: the extent is closed and the jump must
-// not pop it a second time.
+// `continue` taken *after* the last use: the extent is already closed, so the
+// jump must pop nothing. An `ir_region_exit` left out would leave the
+// compile-time depth one too high and have this jump pop `held`'s arena instead.
 fn exit_by_continue(n: Int) -> Int {
+    let held = build_b0(6)
     let mut total = 0
     let mut i = 0
     while (i < n) {
-        let cmds = build(2)
-        total = total + consume(cmds)
-        if (i == 1) {
+        let cmds = build_b(2)
+        total = total + list_len(cmds)
+        if (i < 40) {
             i = i + 1
             continue
         }
-        total = total + 100
+        total = total + 10
         i = i + 1
     }
+    total = total + list_len(held)
     return total
 }
 
-// `break` taken *between* the allocation and the last use, which is the case
-// that leaks if the exit path does not pop.
+// `break` taken *between* the allocation and the last use -- the path that leaks
+// if it does not pop. The break is out of an *inner* loop, so it is taken 80
+// times rather than once, and the program keeps allocating afterwards either way.
 fn exit_by_break(n: Int) -> Int {
+    let held = build_c0(6)
     let mut total = 0
-    let mut i = 0
-    while (i < n) {
-        let cmds = build(4)
-        if (i == 2) {
-            total = total + consume(cmds)
-            break
+    let mut outer = 0
+    while (outer < n) {
+        let mut i = 0
+        while (i < 4) {
+            let cmds = build_c(2)
+            if (i == 2) {
+                break
+            }
+            total = total + list_len(cmds)
+            i = i + 1
         }
-        total = total + consume(cmds)
-        i = i + 1
+        outer = outer + 1
     }
+    total = total + list_len(held)
     return total
 }
 
-// `return` straight out of the middle of the extent -- the deepest exit, and the
-// one that has to unwind the arena as well as the frame.
+// `return` straight out of the middle of an extent -- the deepest exit, and the
+// one that has to unwind the arena as well as the frame. Two call sites, so
+// regime (a) declines to bracket this into its caller and it keeps an arena of
+// its own; the `if` holds the last use, so the return is taken with that arena
+// open.
+fn returns_from_extent(k: Int) -> Int {
+    let cmds = build_d(k)
+    if (k > 0) {
+        return list_len(cmds)
+    }
+    return 0
+}
+
+// The other placement of a `return`: here it **is** the extent's last statement,
+// at the top level of the block, which is the only shape that reaches the
+// `ir_has_returned()` clause on the close -- a `return` nested in an `if` is
+// followed by `ir_clear_returned()`, so the close sees a fall-through.
+//
+// **And that clause turns out to be inert**, measured rather than assumed:
+// deleting it and rebuilding the compiler produces byte-identical IR for this
+// function, because the extra `arena_pop` would be emitted after a terminator
+// and the backend drops it. It is kept because the lexical close two lines down
+// carries the same guard for the same reason, and a reader comparing them should
+// not have to work out why only one of them asks.
+fn returns_at_extent_end(k: Int) -> Int {
+    let cmds = build_g(k)
+    return list_len(cmds)
+}
+
 fn exit_by_return(n: Int) -> Int {
+    let held = build_d0(6)
     let mut total = 0
     let mut i = 0
     while (i < n) {
-        let cmds = build(3)
-        let got = consume(cmds)
-        if (got > 0 and i == 1) {
-            return total + got
-        }
-        total = total + got
+        total = total + returns_from_extent(2)
+        total = total + returns_from_extent(3)
+        total = total + returns_at_extent_end(2)
+        total = total + returns_at_extent_end(3)
         i = i + 1
     }
+    total = total + list_len(held)
     return total
 }
 
-// Nested: the inner block's values die before the outer block's do, so the two
-// extents are not the same range and must not be confused for one another.
+// Nested with no exit at all: the inner block's values die before the outer
+// block's do, so the two extents are different ranges of different blocks and
+// must not be confused for one another.
 fn nested_extents(n: Int) -> Int {
+    let outer = build_e(6)
     let mut total = 0
-    let outer = build(2)
     let mut i = 0
     while (i < n) {
-        let inner = build(3)
-        total = total + consume(inner)
+        let inner = build_f(2)
+        total = total + list_len(inner)
         i = i + 1
     }
-    total = total + consume(outer)
+    total = total + list_len(outer)
     return total
 }
 
@@ -149,11 +296,17 @@ fn check(label: String, got: Int, want: Int) -> Int {
 fn main() -> Int {
     let mut bad = 0
 
-    bad = bad + check("straight_line", straight_line(4), 54)
-    bad = bad + check("exit_by_continue", exit_by_continue(3), 209)
-    bad = bad + check("exit_by_break", exit_by_break(5), 30)
-    bad = bad + check("exit_by_return", exit_by_return(4), 12)
-    bad = bad + check("nested_extents", nested_extents(3), 21)
+    // 80 lists of 2, plus 5i summed over 0..79.
+    bad = bad + check("straight_line", straight_line(80), 15960)
+    // 80 lists of 2, +10 on the 40 iterations that do not `continue`, +6 held.
+    bad = bad + check("exit_by_continue", exit_by_continue(80), 566)
+    // 4 per outer iteration -- two inner iterations of 2 before the break -- +6 held.
+    bad = bad + check("exit_by_break", exit_by_break(80), 326)
+    // 2 + 3 through the callee that returns from the middle of its extent and
+    // 2 + 3 through the one whose return *is* the extent's last statement, +6 held.
+    bad = bad + check("exit_by_return", exit_by_return(80), 806)
+    // 80 inner lists of 2, +6 outer.
+    bad = bad + check("nested_extents", nested_extents(80), 166)
 
     if (bad == 0) {
         println("PASS")

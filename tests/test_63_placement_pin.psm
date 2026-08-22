@@ -59,7 +59,15 @@ fn lexical_pin() -> Int {
 
 // SPEC 5.2.1.1 -- regime (a). The allocation is in a *callee*, and reaches the
 // arena only because the call site is bracketed, which regime (a) permits only
-// while the callee has exactly one call site in the whole program.
+// while every call site of the callee is inside the region that brackets it.
+//
+// The mutation point is **outside** the region, and that is the whole of what it
+// tests: a second call *inside* `call_arena` is legal -- the body still only
+// ever runs with that arena innermost -- while one outside would have it
+// allocating from the heap on one path and the arena on 50, which is two regimes
+// and a value nothing frees. The result is discarded so that the mutant fails on
+// the regime clause alone; a binding here would hold the loop's sites too and
+// obligation 3 would reject it for a different reason.
 fn bracketed_make(i: Int) -> Cmd {
     let pin(call_arena) c = Cmd { id: i, weight: i * 2 }
     return c
@@ -67,6 +75,7 @@ fn bracketed_make(i: Int) -> Cmd {
 
 fn bracketed_pin() -> Int {
     let before = arena_objects()
+    // MUTATION-POINT-SECOND-CALL
     region call_arena {
         let mut keep = Cmd { id: 0, weight: 0 }
         let mut i = 0
@@ -75,10 +84,14 @@ fn bracketed_pin() -> Int {
             if (keep.id != i) { return fail("bracketed_pin value") }
             i = i + 1
         }
-        // MUTATION-POINT-SECOND-CALL
+        let extra = bracketed_make(99)
+        if (extra.id != 99) { return fail("bracketed_pin extra value") }
     }
     let served = arena_objects() - before
-    if (served != 50) {
+    // 51: the loop's 50 plus the second call, which is inside the region and so
+    // is bracketed with it. That the count includes it is the positive half of
+    // the generalised regime (a) -- the negative half is the mutation above.
+    if (served != 51) {
         print("  served ")
         println(served)
         return fail("bracketed_pin: the bracketed call did not reach the arena")

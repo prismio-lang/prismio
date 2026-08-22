@@ -151,6 +151,38 @@ contract** (what is emitted), and its **cost**.
   (RAII). Non-escaping borrows are permitted and are plain reads.
 - **Cost:** allocation and free only. No header, no counter, no barrier.
 
+**A returned value's end of ownership is in its caller, and an implementation SHALL NOT assume it
+from the type alone** *(added in 1.2.3, from measurement)*. Where a callee allocates a value and
+returns it, the caller's binding is the release point — but only where the *whole* of what the callee
+may return is accounted for. A type with a **literal form** breaks that: `return "0"` hands back
+static storage, contributes no allocation site, and is invisible in the returned value set, so a
+caller that freed it would hand read-only memory to the deallocator. An implementation SHALL
+therefore derive the fact rather than reading the type: a callee with even one `return` behind which
+it can place no site returns something the caller does not own.
+
+A `List` and a struct need no such fact — neither has a literal form, so their returned value sets
+are complete by construction, and that is why an implementation may reach those first. Deriving it
+for the rest is what closes the last ordinary leak: on the reference implementation every integer
+`print` went through a `String`-returning function whose result nothing could own — **five
+allocations and five leaks for a five-digit number, in every program that printed one.**
+
+**An implementation SHALL NOT report an inline field as owning what it holds** *(added in 1.2.3,
+from measurement)*. Where a field's storage is the object's own — a value copied in rather than a
+pointer stored — the field owns nothing: there is no pointer to release, and the address is
+interior, so handing it to a deallocator would free the middle of the enclosing allocation. Code
+generation knows this from the layout and skips the field. The **analysis has to be told the same
+thing**, because the set of values a field owns is also what says whether anyone *else* may own
+them: a value copied into an inline field is still its producer's to free, and reporting the field
+as its owner leaves it with none.
+
+Two answers to one question is the failure this rule prevents, and it is not hypothetical. On the
+reference implementation the analysis called an inline field a released field while code generation
+emitted no release for it, so every value copied into one leaked — **4095 of `g3_scene_graph.psm`'s
+5486 allocations**, and the largest single leak in the corpus. The layout decides; the analysis
+asks. Where an implementation derives inlineness twice it SHALL derive both from one definition,
+and SHALL prefer "not inline" wherever the two could disagree — an over-reported owner leaks, an
+under-reported one is a use-after-free.
+
 ### T3 — Shared, non-atomic reference counting
 
 - **Obligation:** multiple references may exist; no two tasks may hold references simultaneously;
@@ -472,14 +504,26 @@ other. Three resolutions exist, and an implementation SHALL choose exactly one a
 
 | | regime | cost |
 |---|---|---|
-| **(a)** | Bracket only where the callee has **exactly one call site** in the program, so one body serves one regime | none; reaches less |
+| **(a)** | Bracket only where every call site of the callee is **bracketed into the same region**, so one body serves one regime | none; reaches less |
 | (b) | Specialise the callee per regime — INFERENCE §7's body duplication, of which (a) is the degenerate case | binary size; needs a cap with deterministic victim selection |
 | (c) | Record placement on the object and branch at release | works for containers; a bare struct freed by a scope drop has no header to read, so (c) is never sufficient alone |
 
 **The reference implementation uses (a).** It is the smallest sound choice, and (c) cannot stand on
-its own. **(a) is fragile as a language guarantee** — adding a second call to a bracketed callee
-silently removes the placement — which is why an implementation using it SHALL record in the
-manifest which call sites it bracketed, so the loss appears as a diff rather than as a slowdown.
+its own. **(a) is fragile as a language guarantee** — adding a call to a bracketed callee from
+outside the region silently removes the placement — which is why an implementation using it SHALL
+record in the manifest which call sites it bracketed, so the loss appears as a diff rather than as a
+slowdown.
+
+*(Widened in 1.2.3, from measurement. 1.2.2 stated (a) as "exactly one call site in the program".
+That is a **sufficient** condition for "one body, one placement regime" and not a necessary one: a
+body every one of whose call sites is bracketed into the same region is also only ever entered with
+that arena innermost, which is the property the regime question is actually about. The narrower
+reading refused the ordinary shape of a game loop — `g6_game.psm` calls `plan_orders` once per
+squad, from the same loop body, and lost its whole per-tick arena to the call count. What an
+implementation SHALL check at each call site is that it is in the region's own function, lexically
+inside the region, with no nearer arena between, and — where the extent is a statement range
+(§5.2.1.2) — within that range. A call site failing any of those is a body that would allocate from
+an arena on one path and from the heap on another.)*
 
 **The obligations.** For a call `f(args)` inside region `R` to be bracketed, all of the following
 SHALL hold. Each one is a use-after-free if omitted, not a lost optimisation:
@@ -522,15 +566,64 @@ Three consequences of this section that an implementer should not have to re-der
   function boundary has `E = Caller` by construction and nothing about bracketing changes that.
   Promoting it to T1 would move the tier distribution for a reason that is not an inference
   difference.
-- **Only a `region`-pinned arena may be bracketed into**, never one an implementation's own cost
-  model chose. Otherwise placement depends on bracketing depends on placement. `region` fixes the
-  arena before placement runs, which cuts the loop.
+- **A cost-model arena may be bracketed into, and the circularity is cut by direction rather than
+  by exclusion.** *(Corrected 2026-08-28. 1.2.2 said only a `region`-pinned arena could be, on the
+  grounds that placement would otherwise depend on bracketing depend on placement. That is the
+  right worry and the wrong remedy: excluding the cost model's arenas is what kept automatic
+  placement from reaching any callee at all, which is the whole of §5.2.1's measured 196.)* The
+  obligations above read the call graph, the points-to graph and scope shape, and **nothing about
+  which arenas exist**, so an implementation MAY ask them of a scope it has not yet chosen. The
+  dependency is then one-way: placement asks a hypothetical question, decides, and bracketing
+  answers the real one against the placement that resulted. An implementation that caches a
+  bracketing answer SHALL invalidate it when placement runs, or an answer computed while the auto
+  table was empty outlives the placement that would have justified one.
 - **Obligation 3 is not readable from the escape lattice.** `E` is already `Caller` for every site
   in the extent — that is what makes the extent an extent. The fact wanted is the *caller-side*
   binding of each callee-allocated value, which a points-to graph already carries: the locations
   that may hold it, and for a local binding the scope it was declared in. An implementation that
   tries to answer obligation 3 from `E` will find both the sound and the unsound case reporting the
   same value.
+
+#### 5.2.1.2 Non-lexical extent, and what it does to the obligations *(normative)*
+
+*(New in 1.2.3.)*
+
+An implementation MAY end an arena it placed itself at the **last use** of what it serves rather
+than at the closing brace, opening it at the first statement that puts something in it. Where it
+does, this section governs, and the reason it is normative rather than an internal matter is that
+§5.2.1.1's obligations are stated about "inside region `R`" — and a non-lexical extent changes what
+"inside" means.
+
+- **The obligations SHALL be asked of the statement range the implementation will emit**, and of no
+  wider a range. This is not a relaxation: an opaque call *within* the extent still fails, and so
+  does one the implementation cannot place in the range's numbering. What changes is that a call
+  outside the range is no longer inside the region, because the arena is not open when it runs.
+- **The range asked about SHALL contain the range emitted.** The two are computed at different
+  times — the obligation before the placement decision, from an over-approximation of what the
+  arena would serve; the emitted one after, from what it does serve — and an implementation that
+  emits a range the obligations were not asked of has put the calls it cleared back inside the
+  arena. Deriving both from one served set, with the earlier one a superset, is what makes this
+  hold by construction rather than by review.
+- **Every uncertainty SHALL widen to the whole block.** A statement position an implementation
+  cannot establish — a call or an allocation in a nested block, a binding with no use on record —
+  makes the extent lexical again. A range that is too wide is the arena that was already emitted; a
+  range that is too narrow frees memory the program is still using.
+- **The range SHALL cover every allocation the arena serves and every use of a value it holds**,
+  including uses in blocks nested inside it.
+- **A `region` the programmer wrote keeps its lexical extent.** §5.2's push on entry and pop on
+  every exit is what the keyword asserts, and the manifest's account of which block owns a value is
+  read against the block. An implementation wanting a narrower one inside a region has the nested
+  `region` for it.
+- Obligation 5 is unchanged and is where the cost lands: every exit **from the range** — a return,
+  a break, a continue taken between the first statement and the last — pops exactly once, and every
+  exit outside it pops nothing. A missed pop leaks the arena; a doubled one releases the caller's.
+
+**Implemented, 2026-08-28.** The clause this unblocks is the opaque-call one: a frame loop whose
+body holds a timing call on either side of the work is refused as a block and accepted as the range
+between them. On the benchmarked `g2.psm` — unannotated, and the baseline every prior g2 number was
+measured against — the derived extent is statements `[1,2]` of the frame body, excluding both
+`clock_gettime_nsec_np` calls, and the program runs at **0.46×** of its own previous time: the
+same figure `g2_region.psm` earns by placing that region by hand.
 
 An implementation MAY additionally record placement on a container that has a header, and the
 reference one does: a `List` stores which arena its element block came from, because `list_push`

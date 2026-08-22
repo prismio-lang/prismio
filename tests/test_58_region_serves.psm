@@ -34,15 +34,29 @@
 //                                      call site, every other obligation clear,
 //                                      and the binding declared *above* the
 //                                      region instead of inside it
-//   shared_body_serves_nothing    0 -- regime (a) alone: two call sites, both
-//                                      inside the same region, so every binding
-//                                      is at or below `r` and nothing but the
-//                                      call count separates this from the second
+//   shared_body_in_one_region    51 -- regime (a) generalised: two call sites,
+//                                      **both inside the same region**, so the
+//                                      body only ever runs with that arena
+//                                      innermost and serves exactly one regime
+//   shared_body_serves_nothing    0 -- regime (a) as a limit: one of the two
+//                                      call sites is **outside** every region,
+//                                      so the same body would have to allocate
+//                                      from an arena on one path and the heap on
+//                                      another
 //
-// Read the first two together and the last two together. Either pair alone
+// Read the first two together and the last three together. Either group alone
 // passes for the wrong reason: the positives alone pass on a compiler that
 // brackets everything, and the negatives alone pass on one that brackets
 // nothing -- which is exactly the compiler this fixture was written against.
+//
+// **The fourth and fifth were one function until 2026-08-28**, asserting that
+// two call sites blocked bracketing whatever else held. That was regime (a) as
+// SPEC 5.2.1.1 first stated it -- "exactly one call site" -- and it is a
+// sufficient condition for "one body, one placement regime" rather than a
+// necessary one. Two calls that are both inside one region give the same
+// guarantee, which is the shape g6's tick loop has: `plan_orders` once per
+// squad, from the same loop body. The fourth function is that case, and the
+// fifth is what still has to be refused.
 
 import std.io
 extern fn print(s: String)
@@ -160,20 +174,21 @@ fn outlives_serves_nothing() -> Int {
     return 0
 }
 
-// Regime (a), isolated. Two call sites, **both inside the same region**, so every
-// caller binding is at or below `r` and obligation 3 holds for both. Nothing
-// separates this from `serves_from_a_callee` except the call count.
+// Regime (a) generalised, isolated. Two call sites, **both inside the same
+// region**, so every caller binding is at or below `r`, obligation 3 holds for
+// both, and the body is only ever entered with `shared_work`'s arena innermost.
+// One body, one regime -- which is what SPEC 5.2.1.1's table actually asks for.
+// Nothing separates this from `serves_from_a_callee` except the call count, and
+// the call count is no longer the answer.
 //
-// Both sites being in one region is what makes the isolation real. Put the second
-// call in a second region and obligation 3 fails as well -- the points-to graph is
-// context-insensitive, so one callee site is held by both callers' bindings and
-// neither region contains the other's. The fixture would then pass whichever
-// clause was deleted, which is the defect this suite produces most.
+// 51 and not 50, for the reason `serves` is 50: the loop contributes its 50 and
+// the extra call contributes one. `keep`'s initialiser is T0 and stays in the
+// frame.
 fn make_shared(i: Int) -> Cmd {
     return Cmd { id: i, weight: i * 2 }
 }
 
-fn shared_body_serves_nothing() -> Int {
+fn shared_body_in_one_region() -> Int {
     let before = arena_objects()
     region shared_work {
         let mut keep = Cmd { id: 0, weight: 0 }
@@ -187,10 +202,50 @@ fn shared_body_serves_nothing() -> Int {
         if (extra.id != 99) { return fail("shared_body extra value") }
     }
     let served = arena_objects() - before
+    if (served != 51) {
+        print("  served ")
+        println(served)
+        return fail("shared_body_in_one_region: two calls in one region is one regime")
+    }
+    return 0
+}
+
+// And regime (a) as a limit, which is the half that still has to refuse.
+//
+// `make_outside` is byte-for-byte `make_shared`, the region is the same shape,
+// and the only difference is one call **outside** every region. That body would
+// then have to allocate from an arena on 50 paths and from the heap on one --
+// two regimes, and the one without an arena allocates a value nothing frees,
+// because a site compiled for a region is off every drop list.
+//
+// **The discarded result is what isolates it.** No binding holds the value from
+// the outside call, so obligation 3 is untouched and this fixture fails on the
+// regime clause alone. Bind it instead -- `let x = make_outside(99)` above the
+// region -- and obligation 3 rejects too, because the points-to graph is
+// context-insensitive and that binding then holds the loop's sites as well; the
+// fixture would pass whichever of the two clauses was deleted, which is the
+// defect this suite produces most.
+fn make_outside(i: Int) -> Cmd {
+    return Cmd { id: i, weight: i * 2 }
+}
+
+fn shared_body_serves_nothing() -> Int {
+    let before = arena_objects()
+    make_outside(99)
+    region outside_work {
+        let mut keep = Cmd { id: 0, weight: 0 }
+        let mut i = 0
+        while (i < 50) {
+            keep = make_outside(i)
+            if (keep.id != i) { return fail("shared_body outside value") }
+            i = i + 1
+        }
+    }
+    let served = arena_objects() - before
     if (served != 0) {
         print("  served ")
         println(served)
-        return fail("shared_body: a body with two call sites was bracketed anyway")
+        return fail("shared_body: a call site outside the region was bracketed anyway")
     }
     return 0
 }
@@ -200,6 +255,7 @@ fn main() -> Int {
     bad = bad + serves()
     bad = bad + serves_from_a_callee()
     bad = bad + outlives_serves_nothing()
+    bad = bad + shared_body_in_one_region()
     bad = bad + shared_body_serves_nothing()
     if (bad != 0) { return 1 }
     println("test_58 ok")

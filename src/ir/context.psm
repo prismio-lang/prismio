@@ -98,6 +98,17 @@ extern fn aif_arena_at_node(node: String borrow) -> Int
 // bracketing it twice would push two arenas and pop one.
 extern fn aif_auto_arena_at_node(node: String borrow) -> Int
 
+// M3.2d. Which statements of that block the arena has to cover: the first that
+// puts something in it, and the last that still reads something it holds, as
+// indices into the block's own statement list. Both answer -1 for "the whole
+// block", which is the lexical extent and what every arena got before the range
+// existed -- so a compiler that cannot narrow behaves exactly as it did.
+//
+// Two calls rather than one, because a pair is not a thing this language can
+// return; they ask the same question and are answered from one cached range.
+extern fn aif_arena_range_first(node: String borrow) -> Int
+extern fn aif_arena_range_last(node: String borrow) -> Int
+
 // AIF item 3. What the container allocated at this node owns: AIF_ELEM_NONE
 // unless every element site agrees on one release, because a teardown loop makes
 // one call per element and cannot dispatch per element.

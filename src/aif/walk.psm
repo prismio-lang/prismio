@@ -931,6 +931,16 @@ fn aifDeclare(module: ASTNode) {
                         width = aifTypeBytes(ptr_to_node(f.child1))
                     }
                     aif_struct_add_field(d.s1, f.s1, aifFieldTypeName(f), width)
+                    // The same question `fieldTypeFor` asks in src/ir/module.psm,
+                    // from the same definition, so the analysis and the layout
+                    // cannot disagree about which fields own a pointer. An inline
+                    // field owns nothing: the value is copied into the object's
+                    // own storage and whoever produced it still has to free it.
+                    if (nodeExists(f.child1)) {
+                        if (aifFieldIsInlineExact(module, ptr_to_node(f.child1))) {
+                            aif_struct_field_inline(d.s1, f.s1, 1)
+                        }
+                    }
                 }
                 fPtr = f.next
             }

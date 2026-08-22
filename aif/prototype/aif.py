@@ -167,6 +167,7 @@ BR_PARAM_STORE = 2
 BR_OPAQUE = 4
 BR_DROP = 8
 BR_SHARED_BODY = 16
+BR_MULTI_CALL = 32
 
 
 class Scopes:
@@ -1509,9 +1510,20 @@ def bracket_masks(model, eng):
       OPAQUE       a callee with no visible body and no complete contract.
       DROP         `drop(x)` inside the extent -- the source decided when that
                    value dies, and a bump pointer is not a thing free() takes.
-      SHARED_BODY  the body would serve more than one placement regime. Not an
-                   allocation obligation; regime (a)'s restriction on codegen,
-                   reported beside the safety answer rather than folded into it.
+      SHARED_BODY  a body inside the extent is reachable from outside it, so it
+                   would serve more than one placement regime. Not an allocation
+                   obligation; regime (a)'s restriction on codegen, reported
+                   beside the safety answer rather than folded into it. Only
+                   counted for a body that allocates -- one with nothing below it
+                   to allocate compiles identically inside and outside a bracket,
+                   so sharing it decides no regime.
+      MULTI_CALL   the body has other than exactly one call site, so which regime
+                   it serves is a question about a *region* rather than about the
+                   program. Split out of SHARED_BODY 2026-08-28: two call sites
+                   both bracketed into the same region is still one regime. The
+                   region-side half is `bracket_regime_ok` in the compiler and is
+                   deliberately not modelled here, for the same reason
+                   `region-calls` is not -- it depends on placement.
 
     Obligation 4 is not a blocker but how every clause is evaluated: mutual
     recursion makes the transitive callee set a closure, not a walk. Mirrors
@@ -1548,6 +1560,21 @@ def bracket_masks(model, eng):
                     work.append(h)
         return seen
 
+    # Does this function, or anything it can reach, allocate at all? Mirrors
+    # fn_allocs_reach in bracket_prepare.
+    allocs_reach = defaultdict(bool)
+    for site in model.sites:
+        allocs_reach[site.fn] = True
+    spread = True
+    while spread:
+        spread = False
+        for g in model.functions:
+            if allocs_reach[g]:
+                continue
+            if any(allocs_reach[h] for h in callees[g]):
+                allocs_reach[g] = True
+                spread = True
+
     masks = {}
     for f in model.functions:
         cl = reachable(f)
@@ -1561,16 +1588,15 @@ def bracket_masks(model, eng):
                 mask |= BR_OPAQUE
             if not owner_fns[g] <= cl:
                 mask |= BR_PARAM_STORE
-        # Regime (a): `f` has exactly one call site -- the one that would be
-        # bracketed -- and everything it reaches is reached only from inside the
-        # extent, or that callee's body would have to free arena memory on one
-        # path and heap memory on the other.
+        # Regime (a), in two clauses. MULTI_CALL is the half that depends on
+        # where the region is; SHARED_BODY is the half that does not, and it
+        # only bites on a body the bracket would change.
         if call_count[f] != 1:
-            mask |= BR_SHARED_BODY
+            mask |= BR_MULTI_CALL
         for caller, callee, _scope in eng.call_edges:
             if callee is None or callee == f:
                 continue
-            if callee in cl and caller not in cl:
+            if callee in cl and caller not in cl and allocs_reach[callee]:
                 mask |= BR_SHARED_BODY
         masks[f] = mask
     return masks
@@ -1590,19 +1616,23 @@ def report_bracketing(model, eng):
     """
     masks = bracket_masks(model, eng)
     n = len(masks)
-    ok = sum(1 for m in masks.values() if not m & ~BR_SHARED_BODY)
+    regime = BR_SHARED_BODY | BR_MULTI_CALL
+    ok = sum(1 for m in masks.values() if not m & ~regime)
     sole = sum(1 for m in masks.values() if m == 0)
 
     print("\n# call-site bracketing (SPEC 5.2.1) -- may a caller's region reach "
           "a callee's allocations?")
     print(f"bracketable  {ok} / {n}  (obligations 1, 2, 4: nothing the extent "
           f"allocates outlives the call)")
-    print(f"sole-regime  {sole}  (of those: one body, one placement regime -- "
-          f"SPEC 5.2.1 (a))")
+    print(f"sole-regime  {sole}  (of those: one call site, so regime (a) holds "
+          f"whatever the region)")
     for label, bit in (("br-global", BR_GLOBAL), ("br-param", BR_PARAM_STORE),
                        ("br-opaque", BR_OPAQUE), ("br-drop", BR_DROP),
                        ("br-shared", BR_SHARED_BODY)):
         print(f"{label:12} {sum(1 for m in masks.values() if m & bit)}")
+    print(f"br-multicall {sum(1 for m in masks.values() if m & BR_MULTI_CALL)}"
+          f"  (more than one call site: regime (a) is then a question about the "
+          f"region)")
 
 
 def report(model, eng, converged, args):

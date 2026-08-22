@@ -691,8 +691,10 @@ def run_region_diagnostic_test():
       * a region serving nothing warns, and one serving something does NOT. The
         second half is the discriminator -- a warning that fired on every region
         would satisfy any test that only looked for the text. Since call-site
-        placement landed (2026-08-16) the fixture has two of each, so the pairing
-        is checked in both directions on one compilation.
+        placement landed (2026-08-16) the fixture has both, so the pairing is
+        checked in both directions on one compilation. Regime (a)'s
+        generalisation (2026-08-28) moved `shared_work` from the inert side to
+        the serving side, and `outside_work` took its place.
       * a T1 site with no arena reports `region:none`. It reported
         `region:scope`, one column away from the real placements `region:auto`
         and `region:<name>`, so g2_region.psm's manifest showed `region:` on
@@ -718,12 +720,12 @@ def run_region_diagnostic_test():
     # what makes this a discriminator rather than a substring search: a warning
     # that fired on everything fails the second pair, one that fired on nothing
     # fails the first.
-    for region in ("outlived_work", "shared_work"):
+    for region in ("outlived_work", "outside_work"):
         if f"region {region} serves no allocation" not in text:
             problems.append(f"no warning for `{region}`, which serves nothing -- "
                             f"the region that a bracket declines is exactly the one "
                             f"a programmer needs told about")
-    for region in ("work", "callee_work"):
+    for region in ("work", "callee_work", "shared_work"):
         if f"region {region} serves no allocation" in text:
             problems.append(f"warned about `{region}`, which serves 50 allocations -- "
                             f"the diagnostic is firing on every region, not on inert ones")
@@ -746,9 +748,19 @@ def run_region_diagnostic_test():
     if placements.get("make_out__Int#0") == "region:outlived_work":
         problems.append("make_out__Int#0 was bracketed into a region its return "
                         "value outlives -- obligation 3 is not being applied")
-    if placements.get("make_shared__Int#0") == "region:shared_work":
-        problems.append("make_shared__Int#0 was bracketed with two call sites -- "
-                        "regime (a) is not being applied")
+    # Regime (a) generalised, 2026-08-28: `make_shared` has two call sites and
+    # both are inside `shared_work`, so the body only ever runs with that arena
+    # innermost and the bracket is legal. This assertion used to read the other
+    # way; `make_outside` below is what keeps it honest.
+    if placements.get("make_shared__Int#0") != "region:shared_work":
+        problems.append(f"make_shared__Int#0: expected region:shared_work -- two "
+                        f"call sites inside one region is one placement regime -- "
+                        f"got {placements.get('make_shared__Int#0')}")
+    if placements.get("make_outside__Int#0") == "region:outside_work":
+        problems.append("make_outside__Int#0 was bracketed with a call site outside "
+                        "the region -- that body would allocate from an arena on one "
+                        "path and the heap on another, and regime (a) is not being "
+                        "applied")
     # The bracket is recorded, which SPEC 5.2.1.1 requires of an implementation
     # using regime (a): the placement can be removed by an edit somewhere else in
     # the file, so it has to be visible in a diff.
@@ -756,8 +768,11 @@ def run_region_diagnostic_test():
         problems.append("the manifest does not record which call sites were bracketed")
     elif "#   make " not in manifest.stdout:
         problems.append("the bracketed-calls section does not name `make`")
-    if "peak-bytes  128 bytes" not in manifest.stdout:
-        problems.append("peak-bytes for a region that serves 50 sites is not 128")
+    # 136 and not 128 since `shared_work` started serving its 51 too: the peak is
+    # the largest root-to-leaf chain, and these regions are siblings, so it is the
+    # largest single one rather than the sum.
+    if "peak-bytes  136 bytes" not in manifest.stdout:
+        problems.append("peak-bytes for a region that serves 51 sites is not 136")
 
     # `region:none` -- a T1 site the heap serves. test_57's list sites are the
     # case, and `region:scope` must not come back.
@@ -784,11 +799,12 @@ def run_region_diagnostic_test():
     # about where the value lives, so a reader who fixed the tier found the
     # binary unchanged -- three sessions running. The gate short-circuits, so the
     # load-bearing property is that EVERY blocker is listed, not the first.
-    # `make_shared` and not `make`: since 2026-08-16 `make` is bracketed and so
-    # reports a placement rather than a blocker list. `make_shared` is the same
-    # allocation in the same shape that regime (a) declines, so it is the record
-    # that still exercises every clause of the gate.
-    why = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--why=make_shared__Int#0"])
+    # `make_outside` and not `make`: since 2026-08-16 `make` is bracketed and so
+    # reports a placement rather than a blocker list, and since 2026-08-28 so is
+    # `make_shared`. `make_outside` is the same allocation in the same shape that
+    # regime (a) still declines -- a call site outside the region -- so it is the
+    # record that exercises every clause of the gate.
+    why = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--why=make_outside__Int#0"])
     if "placement" not in why.stdout:
         problems.append("--why does not report placement at all")
     if "the tier is not T1" not in why.stdout:
@@ -832,6 +848,114 @@ def run_region_diagnostic_test():
     return True
 
 
+def run_nonlexical_extent_test():
+    """M3.2 -- an arena bracketed between statements rather than at the braces.
+
+    `generateBlock` opens the arena at the first statement that puts something in
+    it and closes it after the last statement that still reads something it
+    holds. Every early exit taken *between* those two points then has to pop
+    exactly once, and the two ways to get it wrong are invisible in a value on
+    their own: a missed pop holds the chunks for the rest of the program, and a
+    doubled one releases the caller's arena and lets the next allocation bump
+    over memory that is still live.
+
+    Three assertions, in the order that makes the later ones mean anything:
+
+      1. **The arenas are there.** `test_71_nonlexical_extent.psm` is only a
+         guard while the feature actually fires on it -- the first version of the
+         fixture shared one `build` helper across all five shapes, which made
+         every callee `br-shared`, placed **no arena at all**, and passed. So the
+         extents are read from `AIF_STMT_TRACE` first, and a fixture that stopped
+         being bracketed fails here rather than reporting a pass.
+      2. **At least one arena opens after the block's first statement.** That is
+         the thing a lexical bracket cannot do, and it is what separates "the
+         range was computed" from "the range was computed and then ignored".
+      3. **The program is right and the ledger is clean.** The five shapes are
+         the five ways out of an extent; a doubled pop shows up as a wrong sum
+         from `nested_extents`, whose outer arena holds the handle the inner loop
+         would bump over.
+
+    `released` and `violation(s)`, never `leaked` -- arena memory does not pass
+    the shim, so the heap side of this program is small and what matters is that
+    whatever *is* on the heap is fully reclaimed and nothing is freed twice.
+    """
+    print(f"\n{BLUE}--- Running nonlexical_extent ---{RESET}")
+    problems = []
+    fixture = TEST_DIR / "test_71_nonlexical_extent.psm"
+
+    env = dict(os.environ)
+    env["AIF_STMT_TRACE"] = "1"
+    traced = subprocess.run([str(PRISMIO_EXE), "aif", str(fixture)],
+                            capture_output=True, text=True, env=env)
+    extents = [(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+               for m in re.finditer(r"arena scope (\d+) emit \[(\d+),(\d+)\]",
+                                    traced.stderr)]
+    # std/io's `print`/`println` are one-statement bodies and emit [0,0], which a
+    # lexical bracket produces too. The fixture's own six extents are the ones
+    # that span more than a single statement.
+    spanning = [e for e in extents if e[2] > e[1] or e[1] > 0]
+    if len(spanning) < 10:
+        problems.append(
+            f"{len(spanning)} arena(s) with a non-trivial extent, expected at "
+            f"least 10 -- one per shape, one per `held` list that outlives a "
+            f"loop, and one in each of the two returning callees. The fixture is "
+            f"no longer being bracketed, so every assertion below passes against "
+            f"a program this feature never touched, and it has to be rewritten "
+            f"rather than trusted. `AIF_BRACKET_TRACE=1` names the site and the "
+            f"binding that blocked it.")
+    if not any(lo > 0 for _, lo, _ in extents):
+        problems.append(
+            "no arena opens after its block's first statement, so nothing here "
+            "exercises a non-lexical *start* -- which is the half a lexical "
+            "bracket cannot express, and the half `g2.psm` needs")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        exe = os.path.join(tmp, "t71")
+        build = run_command([str(PRISMIO_EXE), "build", str(fixture),
+                             "--verify", "-o", exe])
+        if build.returncode != 0 or not os.path.exists(exe):
+            print(f"{RED}[FAIL] the non-lexical extent fixture did not build{RESET}")
+            print(build.stdout + build.stderr)
+            return False
+        ran = run_command([exe])
+        if ran.returncode != 0 or "PASS" not in (ran.stdout or ""):
+            problems.append(
+                f"the fixture did not pass: exit {ran.returncode}, output "
+                f"{(ran.stdout or '').strip()!r}. Each FAIL line names the shape "
+                f"whose arena was popped at the wrong point.")
+
+        ledger = None
+        for line in (ran.stdout + ran.stderr).splitlines():
+            m = re.search(r"aif-verify:\s+(\d+) allocated,\s+(\d+) released,"
+                          r"\s+(\d+) leaked,\s+(\d+) violation", line)
+            if m:
+                ledger = m
+        if ledger is None:
+            problems.append(
+                "no aif-verify ledger line was matched at all, so nothing above "
+                "was checked -- the instrument is broken, not the program")
+        else:
+            allocated, released, violations = (int(ledger.group(1)), int(ledger.group(2)),
+                                               int(ledger.group(4)))
+            if released != allocated:
+                problems.append(
+                    f"{released} released against {allocated} allocated. Whatever "
+                    f"stays on the heap has to be reclaimed whatever the arena "
+                    f"does; a difference here is a drop the narrowed extent lost.")
+            if violations != 0:
+                problems.append(
+                    f"{violations} violation(s) -- something was freed twice, "
+                    f"which is what a doubled pop looks like from the heap side")
+
+    if problems:
+        for p in problems:
+            print(f"{RED}[FAIL] {p}{RESET}")
+        return False
+    print(f"{GREEN}[PASS] non-lexical extents: {len(extents)} arena(s) bracketed "
+          f"between statements, five exit shapes correct, ledger clean{RESET}")
+    return True
+
+
 def run_placement_pin_test():
     """SPEC 5.4 applied to placement -- `pin(<region-name>)` can fail a build.
 
@@ -843,9 +967,14 @@ def run_placement_pin_test():
     annotation that cannot fail is this project's most-produced defect.
 
     So this takes the file that compiles, adds a second call to its bracketed
-    callee -- the exact edit SPEC 5.2.1.1 says silently removes the placement --
-    and requires the compiler to reject the result *for that reason*. One edit,
-    both directions, on one program.
+    callee **outside the region** -- the exact edit SPEC 5.2.1.1 says silently
+    removes the placement -- and requires the compiler to reject the result *for
+    that reason*. One edit, both directions, on one program.
+
+    Outside, and not merely second: since 2026-08-28 regime (a) permits any
+    number of call sites as long as they are all bracketed into the same region,
+    so test_63 carries a second call *inside* `call_arena` that is served. The
+    edit that still removes the placement is one the region does not contain.
 
     It also reads the manifest, because "honoured" has to be visible there
     (SPEC 5.4) and because a pin that was silently dropped and one that was
@@ -891,16 +1020,19 @@ def run_placement_pin_test():
     # as well, and the mutant would then be rejected for a reason that has nothing
     # to do with regime (a).
     source = fixture.read_text(encoding="utf-8")
-    marker = "        // MUTATION-POINT-SECOND-CALL"
+    marker = "    // MUTATION-POINT-SECOND-CALL"
     if marker not in source:
         problems.append("test_63 lost its MUTATION-POINT marker, so the "
                         "can-it-fail half of this check did not run")
     else:
         mutant = TEST_DIR / ".prismio-placement-pin-mutant.psm"
+        # A call *outside* the region, with its result discarded. Outside because
+        # regime (a) now permits a second call inside one -- test_63 already has
+        # one, and it is served. Discarded because a binding out here would hold
+        # the loop's sites as well and obligation 3 would reject the mutant for a
+        # reason that has nothing to do with regime (a).
         mutant.write_text(
-            source.replace(marker,
-                           "        let extra = bracketed_make(99)\n"
-                           "        if (extra.id != 99) { return fail(\"mutant\") }"),
+            source.replace(marker, "    bracketed_make(99)"),
             encoding="utf-8")
         out = TEST_DIR / ".prismio-placement-pin-mutant.exe"
         built = run_command([str(PRISMIO_EXE), "build", str(mutant), "-o", str(out)])
@@ -913,10 +1045,10 @@ def run_placement_pin_test():
             if "pin(call_arena) cannot hold" not in text:
                 problems.append(f"the mutant was rejected, but not by the placement "
                                 f"pin: {text.strip().splitlines()[:2]}")
-            if "may have exactly one" not in text:
-                problems.append("the refusal does not name regime (a)'s call-site "
-                                "count, which is the one thing that tells a reader "
-                                "which edit to undo")
+            if "outside the region" not in text:
+                problems.append("the refusal does not name regime (a)'s condition -- "
+                                "a call site outside the region -- which is the one "
+                                "thing that tells a reader which edit to undo")
         cleanup_files(mutant, out)
 
     if problems:
@@ -1767,11 +1899,16 @@ def run_bracket_summary_test():
     # SPEC 5.2.1.1's placement counter, and the pairing is the check. On test_59
     # four functions clear the obligations and **nothing is placed**, because the
     # fixture has no `region` -- so a placement pass that fired on the summary
-    # alone reads non-zero here. On test_58 exactly one call is placed, and the
-    # same number has to come back off a second, independent surface: `--summary`
-    # counts it from the call graph, the manifest prints one line per bracket. If
-    # either wording moves, the two stop agreeing and this fails; a check that
-    # read only one of them would go quietly to zero.
+    # alone reads non-zero here. On test_58 exactly three calls are placed, and
+    # the same number has to come back off a second, independent surface:
+    # `--summary` counts it from the call graph, the manifest prints one line per
+    # bracket. If either wording moves, the two stop agreeing and this fails; a
+    # check that read only one of them would go quietly to zero.
+    #
+    # Three and not one since regime (a) was generalised (2026-08-28): `make`
+    # once, and `make_shared` twice, because both of its call sites are inside
+    # `shared_work` and each is its own bracket. `make_out` still fails
+    # obligation 3 and `make_outside` still fails regime (a).
     def bracketed_count(path):
         out = run_command([str(PRISMIO_EXE), "aif", str(path), "--summary"]).stdout
         m = re.search(r"^bracketed\s+(\d+)", out, re.M)
@@ -1789,10 +1926,11 @@ def run_bracket_summary_test():
                         f"{bracketed_count(fixture)} bracketed call(s) -- a function "
                         f"clearing the obligations is not a placement")
     served = TEST_DIR / "test_58_region_serves.psm"
-    if bracketed_count(served) != 1:
+    if bracketed_count(served) != 3:
         problems.append(f"--summary reports {bracketed_count(served)} bracketed "
-                        f"call(s) on test_58, expected exactly 1 (`make`; `make_out` "
-                        f"fails obligation 3 and `make_shared` fails regime (a))")
+                        f"call(s) on test_58, expected exactly 3 (`make` once and "
+                        f"`make_shared` twice; `make_out` fails obligation 3 and "
+                        f"`make_outside` fails regime (a))")
     if bracket_lines(served) != bracketed_count(served):
         problems.append(f"the manifest lists {bracket_lines(served)} bracketed "
                         f"call(s) and --summary counts {bracketed_count(served)} -- "
@@ -3998,17 +4136,27 @@ def run_aif_verify_test():
     fact looks like from the outside, and unlike a leak it is a crash waiting to
     happen rather than a slowdown.
 
-    Leak counts are asserted exactly, because right now they are not noise --
-    each one is a T2 value returned to a caller, and T2 has no free point until
-    ownership transfer is modelled. When that lands these numbers go to zero and
-    this test says so.
+    Leak counts are asserted exactly, because they are not noise -- each one is a
+    T2 value returned to a caller, and a returned value has a free point only
+    where ownership transfer is modelled for its shape.
+
+    **Three of them went to zero on 2026-08-28** and this docstring's promise is
+    the reason they are edited rather than argued with: `aif_owns_call_result_at_node`
+    now accepts a *plain object* return -- a String, or a struct that owns
+    nothing -- where the callee's returns are all accounted for, which is the
+    `fn_returns_partial` fact. What is left below is the shape it still does not
+    reach: a value returned **two** hops, which needs INFERENCE 6's contexts.
     """
     print(f"\n{BLUE}--- Running aif_verify ---{RESET}")
     expected_leaks = {
         "test_24_drop": 0,
         "test_25_conventions": 0,
-        "test_42_aif_stack_promotion": 1,   # escapes() -> Point
-        "test_43_aif_scope_drop": 1,        # escapes() -> Wide
+        # Both were 1 -- `escapes() -> Point` and `escapes() -> Wide`, each a T2
+        # struct returned to a caller that had no way to own it. A plain-object
+        # return is now transferred, so both are zero and a 1 reappearing here is
+        # that transfer going away.
+        "test_42_aif_stack_promotion": 0,   # escapes() -> Point
+        "test_43_aif_scope_drop": 0,        # escapes() -> Wide
         # Every other allocation in test_44 is served by an arena and released in
         # bulk, so verify never sees it. Two are not.
         #
@@ -4033,7 +4181,6 @@ def run_aif_verify_test():
         # as the accounting goes, so it shows up here as one fewer leak and not
         # as a violation:
         #
-        #   4 bytes  escapes() -> String, the T2 return, as above.
         #   9 bytes  `owned` in main, which reborrow() binds to a local name.
         #            E-BIND cannot name a scope inside a callee, so it raises the
         #            escape to Caller -- sound, imprecise, and why the drop at
@@ -4046,7 +4193,11 @@ def run_aif_verify_test():
         # The fourth was the initialiser in reassigned_from_borrow, which is now
         # served by an arena and reclaimed with the block -- and the allocation
         # total fell from 420 to 7, which is the headline for that change.
-        "test_45_aif_affine_collections": 3,
+        #
+        # And three until plain-object ownership transfer landed: the fifth was
+        # `escapes() -> String`, the 4-byte T2 return, which the caller now owns
+        # and frees.
+        "test_45_aif_affine_collections": 2,
         # AIF item 3. Every container in this fixture releases its elements, and
         # every binding that receives one from a known callee releases the
         # container -- so the ordinary cases are zero and what is left is one
@@ -4581,6 +4732,11 @@ def main():
         failed += 1
 
     if run_placement_pin_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_nonlexical_extent_test():
         passed += 1
     else:
         failed += 1

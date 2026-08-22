@@ -1,5 +1,55 @@
 # Prompts for the next sessions
 
+## 2026-08-28 (M3.2c-ii + M3.2d) — landed together, as the prompt insisted; worked
+
+The prompt asked for the candidate range and range-aware codegen **in one change**, and was right
+that they cannot be split: narrowing the obligation while codegen still brackets the whole block
+puts the opaque calls inside the arena. It was also right about the mechanism — derive the
+candidate range from the call edge's statement plus `bracket_reachable` and the points-to graph,
+none of which depends on the decision — and that is what shipped, essentially as described.
+
+**Where it was wrong, and it is the same shape as 2026-08-24's lesson.** The prompt named
+`tests/test_71_nonlexical_extent.psm` as the guard, with a baseline of 79 allocated / 79 released /
+0 leaked / 0 violations, and told this session to read `released` and `violations`. All of that was
+correct *about a fixture that placed no arena at all.* Five shapes shared one `build`/`consume`
+pair, regime (a) made every callee `br-shared`, and the five assertions passed against a program
+the feature never touched. The instruction to distrust `leaked` was right and insufficient: the
+thing to distrust first was whether the fixture exercised anything.
+
+**Two facts about this compiler that cost the most to find, neither readable from the code:**
+
+- a bracketed callee needs **exactly one call site**, so a fixture with N shapes needs N builders;
+- **any `list_get` outside the extent un-brackets every other extent in the program**, because the
+  points-to graph does not separate element sets by list — one *unused* `consume(cmds: List<Cmd>)`,
+  even typed on a different struct, took the placement from nine arenas to none.
+
+**And `AIF_BRACKET_TRACE` was armed in the pass that runs second**, so the pass that decides
+emitted nothing. Moved to `bracket_prepare`. Until then the symptom was "no arena, no reason".
+
+**Then "fix both of them too" — and one of the two was recorded wrong.** The session had closed by
+naming two leftovers: g2's ~80 000 leaked digit strings, and g6 blocked on obligation 2. The first
+was right and turned out to be a missing analysis fact rather than a library bug — a `String`
+returned across a call had **no owner at all**, so every program that printed a number leaked. The
+second was wrong in the way 2026-08-24 warned about: `--why` on the site that matters said
+`plan_orders` clears every allocation obligation and is refused on its **call-site count**.
+`br-param` belonged to a different function whose allocations genuinely outlive the tick.
+
+**Read `--why` before believing a blocker an earlier session wrote down.** Two sessions running now.
+
+**Then "finish which are still open".** All three closed in the same sitting: g3's 4095 (fixed —
+and its recorded cause was wrong again, the third time in three sessions), `test_47`'s 6 (deferred,
+with a sharper reason than the one it had), and g4's 1.050× (measurement, proved by attribution
+rather than by more timing runs).
+
+**The pattern across the whole session, stated once because it held every time:** every leak taken
+this session was a **missing owner**, not a missing free, and in both cases the analysis and codegen
+each had a defensible answer that together lost the value. Look for the disagreement, not the gap.
+
+See HANDOFF's three 2026-08-28 entries,
+[`RESULTS-M3-nonlexical.md`](aif/evidence/RESULTS-M3-nonlexical.md) and
+[`RESULTS-M3-leaks-and-regime.md`](aif/evidence/RESULTS-M3-leaks-and-regime.md).
+
+
 ## 2026-08-25 — see `SESSION-PROMPT.md`
 
 The live prompt is that file. This entry is a pointer so the archive does not carry a second,

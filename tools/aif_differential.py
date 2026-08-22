@@ -50,7 +50,8 @@ COUNTERS = ("sites", "opaque-ret", "extern-alloc", "static-ret",
 # here -- it counts call sites inside an arena, and arena placement is a codegen
 # decision the oracle does not model; see report_bracketing in aif.py.
 BRACKET = ("bracketable", "bracket-total", "sole-regime",
-           "br-global", "br-param", "br-opaque", "br-drop", "br-shared")
+           "br-global", "br-param", "br-opaque", "br-drop", "br-shared",
+           "br-multicall")
 
 
 def parse_bracketing(text, out):
@@ -59,7 +60,8 @@ def parse_bracketing(text, out):
     out["bracket-total"] = int(m.group(2)) if m else -1
     m = re.search(r"^sole-regime\s+(\d+)", text, re.M)
     out["sole-regime"] = int(m.group(1)) if m else -1
-    for k in ("br-global", "br-param", "br-opaque", "br-drop", "br-shared"):
+    for k in ("br-global", "br-param", "br-opaque", "br-drop", "br-shared",
+              "br-multicall"):
         m = re.search(rf"^{k}\s+(\d+)", text, re.M)
         out[k] = int(m.group(1)) if m else -1
 

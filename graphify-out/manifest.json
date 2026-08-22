@@ -1,7 +1,7 @@
 {
   "runtime/embedded_sources.h": {
-    "mtime": 1787383897.6977,
-    "ast_hash": "7866c79273682e5045aafb1ece6e08e9",
+    "mtime": 1787421942.0302482,
+    "ast_hash": "df69e1eb1ba8eab60300792aad14947c",
     "semantic_hash": ""
   },
   "runtime/lang_runtime.c": {
@@ -10,8 +10,8 @@
     "semantic_hash": ""
   },
   "tests/test_runner.py": {
-    "mtime": 1787380155.0678809,
-    "ast_hash": "b581627e6bd2e4dc168b64b3adcad553",
+    "mtime": 1787401110.8452513,
+    "ast_hash": "9ed62e2ebffba40883a8d24dd97ebea3",
     "semantic_hash": ""
   },
   "CONTRIBUTING.md": {
@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1787385009.4336102,
-    "ast_hash": "c1e965c5d16d0558201c848a5c42039c",
+    "mtime": 1787422533.121789,
+    "ast_hash": "7c47d8917948a0ab55fe8c92500de9ab",
     "semantic_hash": ""
   },
   "PORTING.md": {
@@ -190,8 +190,8 @@
     "semantic_hash": ""
   },
   "aif/prototype/aif.py": {
-    "mtime": 1787160014.908695,
-    "ast_hash": "5789a234dd479ea47c16047ac9e21dca",
+    "mtime": 1787401355.144726,
+    "ast_hash": "205297b4ad40ef778af25b1bd9f1335c",
     "semantic_hash": ""
   },
   "aif/prototype/layout.py": {
@@ -200,13 +200,13 @@
     "semantic_hash": ""
   },
   "runtime/aif_support.c": {
-    "mtime": 1787383897.595751,
-    "ast_hash": "3715cf56d432bac1340f02843876ff45",
+    "mtime": 1787421776.6338735,
+    "ast_hash": "60da4ad27201960d3fd0d8c68b75a0a3",
     "semantic_hash": ""
   },
   "tools/aif_differential.py": {
-    "mtime": 1787112002.9272158,
-    "ast_hash": "45a350ae3a9b3ff98b360d2f7d00ff14",
+    "mtime": 1787401380.812327,
+    "ast_hash": "1567104ce3e46eff91b7dd8d0d351383",
     "semantic_hash": ""
   },
   "aif/README.md": {
@@ -295,8 +295,8 @@
     "semantic_hash": ""
   },
   "aif/spec/INFERENCE.md": {
-    "mtime": 1786200697.0,
-    "ast_hash": "410d48d8c16836f282120d1ae8c17140",
+    "mtime": 1787401584.8021724,
+    "ast_hash": "bb218ba3b5757c961b3a8c1254c47beb",
     "semantic_hash": ""
   },
   "aif/spec/LAYOUT.md": {
@@ -310,8 +310,8 @@
     "semantic_hash": ""
   },
   "aif/spec/SPEC.md": {
-    "mtime": 1787160824.0530088,
-    "ast_hash": "d4433a962362dd048987a8318c90f6aa",
+    "mtime": 1787422454.108333,
+    "ast_hash": "781929be806bb7930f5f13fe1fe302ae",
     "semantic_hash": ""
   },
   "tools/aif_manifest_diff.py": {
@@ -320,8 +320,8 @@
     "semantic_hash": ""
   },
   "NEXT-SESSION.md": {
-    "mtime": 1787329061.9526463,
-    "ast_hash": "40aebeaf5927d3f15cd3088c235b7b73",
+    "mtime": 1787422587.6386065,
+    "ast_hash": "f252b3fa9c2f6ccc9438eb3de42d7cf9",
     "semantic_hash": ""
   },
   "CODE_STYLE.md": {
@@ -635,8 +635,8 @@
     "semantic_hash": ""
   },
   "SESSION-PROMPT.md": {
-    "mtime": 1787385009.4325569,
-    "ast_hash": "84ee1b798170750cde5611c825f0c995",
+    "mtime": 1787423163.0460992,
+    "ast_hash": "8e994e556b913e0b6228109042228d5d",
     "semantic_hash": ""
   },
   "aif/evidence/xlang/results-s10-pass2.json": {
@@ -660,13 +660,13 @@
     "semantic_hash": ""
   },
   "docs/ARCHITECTURE-DIRECTION.md": {
-    "mtime": 1787342788.1661413,
-    "ast_hash": "55659415c450bb4e0154138861e603ce",
+    "mtime": 1787423193.321818,
+    "ast_hash": "6ef8370528fec0ec11617e61a4fbb57d",
     "semantic_hash": ""
   },
   "aif/evidence/xlang/milestone.json": {
-    "mtime": 1787380434.5503397,
-    "ast_hash": "cd970a7f5205fc5498a9ed130131bf6d",
+    "mtime": 1787422409.7577775,
+    "ast_hash": "dbab0ffeabfcdd3e327e29e89ead6d02",
     "semantic_hash": ""
   },
   "tools/milestone_bench.py": {
@@ -675,8 +675,8 @@
     "semantic_hash": ""
   },
   "TODO.md": {
-    "mtime": 1787384164.1026783,
-    "ast_hash": "ee265774640a594b1cc38a08c1179991",
+    "mtime": 1787423136.9382906,
+    "ast_hash": "31c2c51b87babb93781f48492e20fda4",
     "semantic_hash": ""
   },
   "aif/evidence/RESULTS-M1-lto.md": {
@@ -712,6 +712,16 @@
   "aif/evidence/RESULTS-M3-callerregion.md": {
     "mtime": 1787385009.4327536,
     "ast_hash": "fead3387f5f7a7229a9bfc1e3e49c2be",
+    "semantic_hash": ""
+  },
+  "aif/evidence/RESULTS-M3-nonlexical.md": {
+    "mtime": 1787397257.6591568,
+    "ast_hash": "53084cb7df98a0bd7d1eb4f5ad499d1d",
+    "semantic_hash": ""
+  },
+  "aif/evidence/RESULTS-M3-leaks-and-regime.md": {
+    "mtime": 1787422497.9542089,
+    "ast_hash": "10ab3ad92dbfa182a3627409cdce6ed4",
     "semantic_hash": ""
   }
 }

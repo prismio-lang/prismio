@@ -576,6 +576,28 @@ fn findStructDeclNamed(module: ASTNode, name: String) -> ASTNode {
 }
 
 fn typeAnnIsPod(module: ASTNode, ann: ASTNode, depth: Int) -> Bool {
+    return typeAnnIsPodIn(module, ann, depth, false)
+}
+
+fn structDeclIsPod(module: ASTNode, name: String, depth: Int) -> Bool {
+    return structDeclIsPodIn(module, name, depth, false)
+}
+
+// `byDecl` picks which table answers "is this name a struct", and it is the only
+// difference between the two readings of this rule.
+//
+// The struct **registry** is filled by codegen, so during the analysis it is
+// empty and the registry reading stops recursing: a struct-typed field reads as
+// POD without anyone looking at its fields. For layout that over-approximation is
+// the safe direction and is deliberate -- see `aifFieldIsInlineStruct`, which
+// documents the corpus failure that established it.
+//
+// It is the **unsafe** direction for ownership. A field wrongly read as inline is
+// a field reported to own nothing, which lets a caller free a value the field
+// still points at. So the ownership reading passes `byDecl` and asks
+// `findStructDeclNamed` -- the AST the registry is built from, and therefore an
+// answer that agrees with it by construction in both phases.
+fn typeAnnIsPodIn(module: ASTNode, ann: ASTNode, depth: Int, byDecl: Bool) -> Bool {
     // A containment cycle would not terminate. semaCheckStructContainment
     // rejects one before this runs, so the cap is reached only by a program that
     // has already failed, and answering false keeps that path on the old layout.
@@ -583,15 +605,19 @@ fn typeAnnIsPod(module: ASTNode, ann: ASTNode, depth: Int) -> Bool {
     if (ann.i1 == 1) { return false }
     if (ann.i2 == 1) { return false }
     if (ann.i3 == 1) { return false }
-    if (ir_is_struct_type_name(ann.s1) == 1) {
-        return structDeclIsPod(module, ann.s1, depth + 1)
+    let mut named = ir_is_struct_type_name(ann.s1) == 1
+    if (byDecl) {
+        named = nodeExists(node_to_ptr(findStructDeclNamed(module, ann.s1)))
+    }
+    if (named) {
+        return structDeclIsPodIn(module, ann.s1, depth + 1, byDecl)
     }
     if (str_equals(ann.s1, "String") == 1) { return false }
     if (str_equals(ann.s1, "Ptr") == 1) { return false }
     return true
 }
 
-fn structDeclIsPod(module: ASTNode, name: String, depth: Int) -> Bool {
+fn structDeclIsPodIn(module: ASTNode, name: String, depth: Int, byDecl: Bool) -> Bool {
     if (depth > 16) { return false }
     let decl = findStructDeclNamed(module, name)
     if (nodeExists(node_to_ptr(decl)) == false) { return false }
@@ -600,7 +626,9 @@ fn structDeclIsPod(module: ASTNode, name: String, depth: Int) -> Bool {
         let f = ptr_to_node(p)
         if (f.kind == NodeKind.STRUCT_FIELD) {
             if (nodeExists(f.child1) == false) { return false }
-            if (typeAnnIsPod(module, ptr_to_node(f.child1), depth) == false) { return false }
+            if (typeAnnIsPodIn(module, ptr_to_node(f.child1), depth, byDecl) == false) {
+                return false
+            }
         }
         p = f.next
     }

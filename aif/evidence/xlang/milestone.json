@@ -1,148 +1,148 @@
 {
   "meta": {
-    "label": "M3.1 CallerRegion",
-    "old": "build/S15b",
-    "new": "build/S18b",
-    "runs": 25,
+    "label": "M3-open-items",
+    "old": "build/S25b",
+    "new": "build/S27b",
+    "runs": 15,
     "tolerance_pct": 10.0,
-    "when": "2026-08-22 12:03:54",
+    "when": "2026-08-22 23:43:29",
     "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
   },
   "results": {
     "g1": {
       "old_loop_ms": [
-        25.203145,
-        22.640051,
-        26.078777
+        22.894955,
+        21.423902,
+        25.909437
       ],
       "new_loop_ms": [
-        23.815584,
-        22.662922,
-        25.739512
+        23.983995,
+        22.418334,
+        25.235179
       ],
-      "ratio": 0.9449449265161154,
-      "old_rss_mb": 2.15625,
-      "new_rss_mb": 2.15625,
-      "rss_ratio": 1.0,
-      "old_exe_bytes": 61832,
-      "new_exe_bytes": 61832,
+      "ratio": 1.0475668111162482,
+      "old_rss_mb": 2.25,
+      "new_rss_mb": 1.78125,
+      "rss_ratio": 0.7916666666666666,
+      "old_exe_bytes": 61816,
+      "new_exe_bytes": 61816,
       "baselines": {
-        "rust_idiomatic": 18.409524,
-        "rust_tuned": 4.642239,
-        "swift": 18.370263
+        "rust_idiomatic": 18.202659,
+        "rust_tuned": 4.645525,
+        "swift": 17.906538
       },
       "checksums": [
         "checksum alive 2000",
         "checksum beyond 1095"
       ],
-      "runs": 25
+      "runs": 15
     },
     "g2": {
       "old_loop_ms": [
-        103.785678,
-        100.419052,
-        107.214846
+        47.888046,
+        46.136781,
+        48.4868
       ],
       "new_loop_ms": [
-        104.776971,
-        101.369613,
-        108.420486
+        47.585431,
+        46.048236,
+        49.282995
       ],
-      "ratio": 1.0095513467667476,
-      "old_rss_mb": 3.28125,
-      "new_rss_mb": 3.28125,
-      "rss_ratio": 1.0,
-      "old_exe_bytes": 61544,
-      "new_exe_bytes": 61544,
+      "ratio": 0.993680782047361,
+      "old_rss_mb": 3.46875,
+      "new_rss_mb": 1.953125,
+      "rss_ratio": 0.5630630630630631,
+      "old_exe_bytes": 61528,
+      "new_exe_bytes": 61528,
       "baselines": {
-        "rust_idiomatic": 18.294624,
-        "rust_tuned": 10.529326,
-        "swift": 33.163572
+        "rust_idiomatic": 18.006716,
+        "rust_tuned": 10.498865,
+        "swift": 33.231142
       },
       "checksums": [
         "checksum submitted 10020000",
         "checksum culled 9980000"
       ],
-      "runs": 25
+      "runs": 15
     },
     "g3": {
       "old_loop_ms": [
-        48.849561,
-        48.6316,
-        49.134722
+        49.791044,
+        48.761325,
+        51.351746
       ],
       "new_loop_ms": [
-        50.296459,
-        48.539673,
-        52.366118
+        50.103068,
+        48.728718,
+        50.821563
       ],
-      "ratio": 1.029619467818759,
-      "old_rss_mb": 2.6875,
-      "new_rss_mb": 2.6875,
-      "rss_ratio": 1.0,
-      "old_exe_bytes": 61912,
-      "new_exe_bytes": 61912,
+      "ratio": 1.00626666916243,
+      "old_rss_mb": 2.84375,
+      "new_rss_mb": 1.890625,
+      "rss_ratio": 0.6648351648351648,
+      "old_exe_bytes": 61896,
+      "new_exe_bytes": 61816,
       "baselines": {
-        "rust_idiomatic": 45.305338,
-        "rust_tuned": 30.571928,
-        "swift": 50.590411
+        "rust_idiomatic": 45.342978,
+        "rust_tuned": 30.631347,
+        "swift": 50.638802
       },
       "checksums": [
         "checksum nodes 1365",
         "checksum visited 1365",
         "checksum visible 1365"
       ],
-      "runs": 25
+      "runs": 15
     },
     "g4": {
       "old_loop_ms": [
-        68.094673,
-        62.796777,
-        87.466145
+        67.175611,
+        64.712219,
+        81.152312
       ],
       "new_loop_ms": [
-        67.987406,
-        64.402656,
-        69.834004
+        69.943842,
+        65.75291,
+        81.900313
       ],
-      "ratio": 0.9984247372771728,
-      "old_rss_mb": 2.65625,
-      "new_rss_mb": 2.671875,
-      "rss_ratio": 1.0058823529411764,
-      "old_exe_bytes": 61832,
-      "new_exe_bytes": 61832,
+      "ratio": 1.0412088696893282,
+      "old_rss_mb": 2.84375,
+      "new_rss_mb": 2.046875,
+      "rss_ratio": 0.7197802197802198,
+      "old_exe_bytes": 61816,
+      "new_exe_bytes": 61816,
       "baselines": {
-        "rust_idiomatic": 21.709154,
-        "rust_tuned": 17.767245,
-        "swift": 83.414809
+        "rust_idiomatic": 21.688805,
+        "rust_tuned": 17.742598,
+        "swift": 83.79855
       },
       "checksums": [
         "checksum entities 1500",
         "checksum draws 1215783"
       ],
-      "runs": 25
+      "runs": 15
     },
     "g5": {
       "old_loop_ms": [
-        81.213823,
-        76.774421,
-        84.679439
+        77.036591,
+        76.832485,
+        80.943254
       ],
       "new_loop_ms": [
-        76.810567,
-        76.70526,
-        77.71068
+        76.943843,
+        76.798719,
+        77.203779
       ],
-      "ratio": 0.9457819391164483,
-      "old_rss_mb": 1.921875,
-      "new_rss_mb": 1.9375,
-      "rss_ratio": 1.008130081300813,
-      "old_exe_bytes": 62472,
-      "new_exe_bytes": 62472,
+      "ratio": 0.9987960526446452,
+      "old_rss_mb": 2.0,
+      "new_rss_mb": 1.625,
+      "rss_ratio": 0.8125,
+      "old_exe_bytes": 62456,
+      "new_exe_bytes": 62456,
       "baselines": {
-        "rust_idiomatic": 30.50793,
-        "rust_tuned": 4.358745,
-        "swift": 69.555452
+        "rust_idiomatic": 30.394924,
+        "rust_tuned": 4.348836,
+        "swift": 69.300179
       },
       "checksums": [
         "checksum entities 2000",
@@ -150,36 +150,36 @@
         "checksum batches 12",
         "checksum evicted 0"
       ],
-      "runs": 25
+      "runs": 15
     },
     "g6": {
       "old_loop_ms": [
-        224.737186,
-        214.272805,
-        243.336138
+        227.017637,
+        217.558325,
+        236.897317
       ],
       "new_loop_ms": [
-        226.119095,
-        216.208107,
-        238.60574
+        144.589265,
+        138.058356,
+        151.703684
       ],
-      "ratio": 1.006149000192607,
-      "old_rss_mb": 4.125,
-      "new_rss_mb": 4.109375,
-      "rss_ratio": 0.9962121212121212,
-      "old_exe_bytes": 62648,
-      "new_exe_bytes": 62648,
+      "ratio": 0.6369076293398297,
+      "old_rss_mb": 4.5625,
+      "new_rss_mb": 2.234375,
+      "rss_ratio": 0.4897260273972603,
+      "old_exe_bytes": 62632,
+      "new_exe_bytes": 62632,
       "baselines": {
-        "rust_idiomatic": 56.33877,
-        "rust_tuned": 39.473513,
-        "swift": 156.332173
+        "rust_idiomatic": 55.516066,
+        "rust_tuned": 39.421444,
+        "swift": 156.271971
       },
       "checksums": [
         "checksum alive 120000",
         "checksum orders 13800000",
         "checksum kills 120000"
       ],
-      "runs": 25
+      "runs": 15
     }
   },
   "gate": {

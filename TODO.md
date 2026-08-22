@@ -233,13 +233,27 @@ must drop by ≥ 10×"*, and the note above is why that cannot be met by reuse t
 contains the pattern they fire on. Either re-target the gate at `g7`, which does, or fold the g2/g6
 allocation count into M3 where the mechanism that moves it already lives.
 
+**M3 took both halves, 2026-08-28: g2 10 285 886 → 82 052 (125×) and g6 50 470 → 3265 (15×).** So
+the standing text is met by a different mechanism, which is exactly the reason a gate has to name
+the mechanism as well as the number. **The note that g6 was blocked on obligation 2 was wrong** —
+`br_param` is `recruit`'s, and its `Member`s genuinely outlive the tick; the transient allocator
+cleared every allocation obligation and was refused on its call-site count. An M2 restated against
+g7 is what is left.
+
 ---
 
 ## M3 · Non-lexical and region-polymorphic regions
 
-> **Measured prize: 2.16× on g2, already proven by the annotation.** `region` now serves
-> 10,200,000 allocations and runs at 0.46× of plain g2. The mechanism works. **The inference does
-> not reach it** — plain g2 still allocates 10,202,214 times with 0 arena objects.
+> **DONE, 2026-08-28. The prize was 2.16× on g2 and the inference now reaches it.** Plain
+> `g2.psm` — no annotation, no source change — allocates **82 052** times against 10 285 886, and
+> runs at **0.469×**: the same figure `region frame_arena` earns by hand. Corpus median 0.991×,
+> the first movement in the band in eight sessions.
+> [`RESULTS-M3-nonlexical.md`](aif/evidence/RESULTS-M3-nonlexical.md).
+>
+> *The entry as it stood, for the record: "Measured prize: 2.16× on g2, already proven by the
+> annotation. `region` now serves 10,200,000 allocations and runs at 0.46× of plain g2. The
+> mechanism works. **The inference does not reach it** — plain g2 still allocates 10,202,214 times
+> with 0 arena objects."*
 
 **Two recorded blockers, both named in the literature:**
 
@@ -273,7 +287,42 @@ Region-based memory management for Mercury.
         guarded by an ordering flag so a bracket answer cached before placement cannot survive it.
       **Container disposition needed no work** — `elem_disposition_of`'s arena clause was landed
       inert several sessions ago *in anticipation of exactly this change*, and its comment says so.
-- [ ] **M3.1b — the benchmarked `g2.psm` is still not placed, and declining is correct.** Its
+- [x] **M3.4 — the corpus has a clean `--verify` ledger, 2026-08-28.** All seven benchmark
+      programs report `allocated == released`, 0 leaked, 0 violations. Two causes, both a *missing
+      owner* rather than a missing free:
+      - **A `String` returned across a call had none.** `aif_owns_call_result_at_node` transferred a
+        returned `List` or owning struct and declined the rest, because the completeness of a
+        returned value set rests on the type having no literal form. `fn_returns_partial` derives
+        the fact instead — a callee with one `return` it cannot place a site behind returns
+        something the caller does not own — and `std/io.psm`'s formatter was rewritten to satisfy
+        it. Every program that printed a number leaked before this; g2 went ~83 000 → 0.
+      - **An inline struct field was reported as owning what it holds.** `field_release_of` said
+        released, `generateReleaseFn` emitted nothing (the address is interior), and the value
+        copied *in* was left with no owner at all — 4095 of g3's 5486. The analysis is now told the
+        layout's own answer (`aif_struct_field_inline`), and the value with no binding is freed at
+        the literal.
+      **Peak RSS fell 0.49×–0.82× across the corpus** as a consequence, which is the standing "peak
+      RSS reversed" candidate moving without anyone taking it.
+      Evidence: [`RESULTS-M3-leaks-and-regime.md`](aif/evidence/RESULTS-M3-leaks-and-regime.md).
+- [x] **M3.1c — g6 is placed, 2026-08-28.** Not obligation 2, whatever the line below M3.1 said.
+      `plan_orders` clears every allocation obligation; what refused it was regime (a)'s call-site
+      count, plus two things behind that. **Regime (a) widened** from "exactly one call site in the
+      program" to "every call site bracketed into the same region" — the second is what SPEC's
+      table actually asks for and the first is only a sufficient condition for it; `bracket_regime_ok`
+      answers it per region and reads `scopes[].arena`, so it is a filter the callers of
+      `bracket_edge_ok` apply and the obligations stay one-way. **The shared-body clause narrowed**
+      to bodies that allocate: two engine accessors that do nothing but `list_get` were making the
+      extent read as shared. **And the `@elem` points-to node is keyed on the container's full type**
+      rather than its base, so `list_get(w.actors, i)` stops coming back holding `Order`s — with
+      `elem_key_reconcile` restoring the base-keyed answer for any base with an unresolved spelling.
+      50 470 → 3265 allocations, **0.599×**, 4.31× → **2.58×** of idiomatic Rust, RSS 0.491×,
+      extent `[0,3]` of the tick body, 0 leaked, 0 violations.
+      Evidence: [`RESULTS-M3-leaks-and-regime.md`](aif/evidence/RESULTS-M3-leaks-and-regime.md).
+- [x] **M3.1b — the benchmarked `g2.psm` is placed, 2026-08-28.** M3.2c-ii + M3.2d derive the
+      sub-block extent this entry said was needed: the frame body's extent is statements `[1,2]`,
+      excluding both `clock_gettime_nsec_np` calls, and the program runs at **0.469×** — the same
+      figure `g2_region.psm` earns by hand. `g2.psm` was not edited. The original entry, for the
+      record: Its
       timing harness calls `clock_gettime_nsec_np` **inside** the frame loop, and an opaque extern
       in the region body is a sound rejection — it could be handed arena memory. `g2_region.psm`
       earns its 0.46× by hand-placing `region frame_arena` *between* the two clock calls, which is
@@ -281,7 +330,12 @@ Region-based memory management for Mercury.
       the corpus copy `g2_frame_loop.psm` — same workload, no harness — is placed automatically
       today. Do **not** "fix" this by editing `g2.psm`: it is the baseline every prior g2 number
       was measured on.
-- [ ] **M3.2 — Non-lexical extent**: end a region at last use rather than scope close.
+- [x] **M3.2 — Non-lexical extent**: end a region at last use rather than scope close.
+      **Done 2026-08-28.** All five parts (a, b, c-i, c-ii, d) are in, and M3's exit gate is green:
+      plain `g2.psm` serves 4 arena-placed sites unannotated and runs at 0.469×, corpus median
+      0.991×, suite 140/140, fixpoint `a25.ll == b25.ll`.
+      Evidence: [`RESULTS-M3-nonlexical.md`](aif/evidence/RESULTS-M3-nonlexical.md).
+      The original entry, for the record:
       **This is what M3's exit gate now turns on**, because M3.1 built the placement machinery and
       the only thing keeping the *benchmarked* `g2.psm` out is that its frame-loop block also holds
       two `clock_gettime_nsec_np` calls. `g2_region.psm` gets its 0.46× by hand-placing the region
@@ -329,32 +383,39 @@ Region-based memory management for Mercury.
             Verified: `AIF_STMT_TRACE=1` on `g2_frame_loop.psm` gives `arena scope 91 extent [0,1]`
             against `0: cmds=cull`, `1: drawn=submit`, then three statements holding nothing.
             Byte-identical IR vs S22b; suite 139/139.
-      - [ ] **M3.2c-ii — the range of a *candidate*, and this is the one that unblocks g2.**
-            **The earlier note in this file conflated the two and was wrong.** c-i answers "how
-            narrow can this arena be", which needs an arena to already exist. The benchmarked
-            `g2.psm` has none — M3.1 rejects it on the opaque calls *before* any range is computed
-            — so c-i can never fire there. The obligation check has to evaluate the range
-            **before deciding**, from the call edge's statement and the last use of keys holding
-            the extent's values.
-            **It is the M3.1 circularity again** (range depends on which sites are served, which
-            depends on acceptance, which depends on the range) and it breaks the same way: compute
-            the candidate range from `bracket_reachable` plus the points-to graph, neither of which
-            depends on the decision.
-      - [ ] **M3.2d — range-aware codegen.** Consumes c-i. `generateBlock` walks `block.child1`
-            with an index and opens/closes at `first`/`last` instead of at the braces.
+      - [x] **M3.2c-ii — the range of a *candidate*, and this is the one that unblocked g2.**
+            Done 2026-08-28, with M3.2d. `cand_stmt_range` derives the range **before** the
+            accept/reject decision, from a served set drawn only from the call graph, the points-to
+            graph and scope shape — the lexical half is `arena_would_serve` minus its one clause
+            that reads a placement, the bracketed half is every call in the scope that passes
+            `bracket_edge_ok_at(..., ask_opaque = 0)` and serves something. That makes it a
+            **superset** of what c-i computes once the decision is made, so an opaque call outside
+            it is outside the range codegen emits — which is the whole safety argument.
+            `bracket_opaque_ok` then asks for the range only when there *is* an opaque call in the
+            region body, so every other region in the program pays nothing.
+            `stmt_range_over` is the half c-i and c-ii share, because two answers to
+            "which keys hold what this arena serves" is a use-after-free.
+      - [x] **M3.2d — range-aware codegen.** Done 2026-08-28. `generateBlock` walks
+            `block.child1` with an index and opens/closes at `first`/`last` instead of at the
+            braces; `aif_arena_range_first`/`_last` answer -1 for "the whole block", which is what
+            every arena got before and what every uncertainty still returns.
             **Verified prerequisite:** the parser sets only `child1` on a BLOCK
             (`src/parse/stmt.psm:36`), while the AIF walk chains `child1`/`child2`/`child3` — the
             latter two are always empty, so the analysis and codegen numberings agree. If that
             ever stops being true the arena opens at the wrong statement.
-            Still the risky half: a missed pop leaks, a double pop frees the caller's arena, and
-            `tests/test_71_nonlexical_extent.psm` is the guard (baseline 79/79/0/0).
-      - [ ] **M3.2d — range-aware codegen. The risky one; do not start it without a fixture.**
-            `ir_region_begin`/`ir_region_enter` move from the block boundary to between statements,
-            and every `return`/`break`/`continue` inside the range must pop exactly once.
-            `generateRegionExits` and `ir_region_depth` already do this for lexical regions, so the
-            work is making existing machinery range-aware — but **a missed pop is a leak and a
-            double pop frees the caller's arena**, and neither is visible in a value. Write the
-            early-exit fixture first.
+            `generateRegionExits` and `ir_region_depth` needed no change: a `return`/`break`/
+            `continue` inside the range sees the arena in the depth and pops it, one outside sees a
+            depth that `ir_region_exit` already decremented.
+            **The guard was not one, and rewriting it was most of the work.**
+            `tests/test_71_nonlexical_extent.psm` placed no arena at all — five shapes sharing one
+            `build`/`consume` pair made every callee `br-shared` under regime (a) — so its
+            79/79/0/0 baseline measured a program the feature never touched. It now has nine
+            builders (regime (a) needs one call site each) and consumes through `list_len` rather
+            than a shared helper, because **any `list_get` outside the extent aliases every element
+            site in the program** and un-brackets every other shape. 12 arenas, six exit shapes,
+            loops of 80 so a missed pop trips `ARENA_MAX_DEPTH` rather than passing.
+            Discriminating in both directions, by mutated compiler:
+            [`RESULTS-M3-nonlexical.md`](aif/evidence/RESULTS-M3-nonlexical.md) §5.
 - [x] **M3.3 — `region` warns when it serves zero allocations.** **Already built — this line was
       stale, verified against the tree 2026-08-27.** `report.psm` emits
       `region <name> serves no allocation; it costs an arena push and pop per entry and reclaims
@@ -369,6 +430,12 @@ Region-based memory management for Mercury.
 
 **Exit gate:** the standard gate, plus plain `g2.psm` must serve **> 0** arena objects without any
 annotation, and `region` on a zero-serving scope must emit a diagnostic.
+
+**GREEN, 2026-08-28.** `g2.psm` serves 4 (2 of them the frame loop's, via a bracketed `cull`),
+against 2 before — both of which were in `std/io` and neither in the program. The diagnostic half
+was already green (M3.3). Suite 140/140, fixpoint `a25.ll == b25.ll`, differential 17/17, corpus
+median 0.991× with g2 at 0.469×, **GATE PASSED**.
+[`RESULTS-M3-nonlexical.md`](aif/evidence/RESULTS-M3-nonlexical.md).
 
 ---
 
@@ -410,17 +477,40 @@ runtimes (Koka, Lean), which is Prismio's workload shape.
 
 - [ ] **M5.1 — Evaluate mimalloc** behind the existing allocator seam. Weighted 20–63× more heavily
       here than in the Rust baseline, because that is how much more we allocate.
-- [ ] **M5.2 — Bisect the RSS regression.** 0.84–1.00× → **1.09–1.60×** of idiomatic Rust,
-      +27% (g5) to +86% (g6), Rust unmoved. Already excluded: fixed runtime footprint (ours is
-      1.34 MB vs Rust's 1.47 MB) and the hot/cold split *on g3 and g6* — but g1, g2, g4 and g5 **do**
-      emit splits and a split is two allocations plus a pointer, so it stays live there. Scales with
-      live set, not churn. **Needs a session-3-era compiler to bisect against; there isn't one in
-      the tree — build one from the tag first.**
+- [ ] **M5.2 — Bisect the RSS regression. Largely answered, 2026-08-28, and by accident.**
+      The standing text was 0.84–1.00× → **1.09–1.60×** of idiomatic Rust, +27% (g5) to +86% (g6),
+      Rust unmoved, with the fixed runtime footprint and the hot/cold split already excluded.
+      **The cause was the leaks.** Removing the integer-print leak and the inline-field leak dropped
+      peak RSS to **0.49×–0.82×** of the previous compiler across the whole corpus, in the same two
+      changes that took the ledgers to zero — a leak scales with live set rather than churn, which
+      is exactly the signature this entry recorded and nobody read as a leak.
+      **What is left is one measurement, not an investigation:** re-run
+      `RESULTS-final.md`'s own harness and restate the ×-against-Rust figure. The
+      `milestone_bench` numbers above are old-vs-new and cannot answer it.
+      Absolute peaks now: g1 1.78, g2 1.94, g3 2.08, g4 2.05, g5 1.63, g6 2.23 MB.
 
 ---
 
 ## Standing items, not milestones
 
+*(The first two were promoted here from `SESSION-PROMPT.md` on 2026-08-28. That file is the live
+prompt and this one is the plan — anything it tells the next session to do has to exist here as a
+checkbox, or the two drift and only one of them gets read.)*
+
+- [ ] **Re-measure `RESULTS-final.md`, before ranking anything. Do this first.** Three figures in
+      that matrix are stale in the same direction after 2026-08-28 and nothing in this file can be
+      ranked honestly until they are refreshed: **g2** (5.77× → ~2.6× of idiomatic Rust), **g6**
+      (4.31× → 2.58×), and **peak RSS on all six** (0.49×–0.82× of the previous compiler).
+      Its harness is the only thing that produces the ×-against-Rust RSS figure —
+      `tools/milestone_bench.py` is old-vs-new and cannot answer it. The band quoted throughout
+      this repo as **1.13×–5.89×** is roughly **1.09×–3.23×** on the driver's own numbers; do not
+      propagate either until the harness has run. Half a session, no design.
+- [ ] **Decide `PRISMIO_INLINE_RUNTIME`'s default.** M1's remainder, and the only part of it that
+      is not "M1 cannot close this". M1.1b is built, byte-identical to `llvm-extract`'s output,
+      ~5% warm compile cost, corpus median **0.812×** measured, and off by default for exactly one
+      reason: the portability claim is a macOS PATH test rather than **a green CI on three
+      platforms**. That run is the task; the flip follows from it, or the entry says why not.
+      Largest measured prize on this list per unit of work.
 - [ ] **Genuinely-cold compile regressed 19–28%** — g1 183 → 235 ms, g6 203 → 241 ms with
       `PRISMIO_OBJ_CACHE=0`. Hidden by the object cache in the default path (103–110 ms, 0.71–0.85×
       rustc). Affects first builds and uncached CI.

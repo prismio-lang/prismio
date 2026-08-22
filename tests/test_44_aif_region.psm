@@ -186,19 +186,24 @@ fn main() -> Int {
     // from strings_inside. string_escapes contributes none: it is the case the
     // arena has to decline.
     bad = bad + check("arena_objects", arena_objects(), 209)
-    // Eleven from the `region` statements -- inside, many, outer, inner,
-    // returns_out x2, per_turn x3, text, tmp -- plus nine from `check`, whose
-    // body LAYOUT 7.1's cost model gave an arena of its own because its failure
-    // path builds two strings. It is entered once per call and serves nothing
-    // when the check passes, which is what a static model without an access
-    // profile buys: the placement is right, the frequency is a guess.
+    // Eleven, all of them from the `region` statements -- inside, many, outer,
+    // inner, returns_out x2, per_turn x3, text, tmp.
     //
-    // That the eleven did not move is the assertion that matters. `region` is a
-    // pin on the placement decision (SPEC 5.2), so automatic placement fills
-    // scopes with no enclosing region and never undercuts one -- otherwise the
-    // arena inside `many`'s loop would have taken all 200 objects and `batch`
-    // would serve nothing.
-    bad = bad + check("arena_regions", arena_regions(), 20)
+    // **It was 20 until M3.2d**, and the nine that went are `check`'s own: the
+    // cost model gave its body an arena because its *failure* path builds two
+    // strings, and a lexical bracket pushed and popped that arena once per call
+    // whether the check failed or not. A non-lexical extent opens it at the
+    // first statement that puts something in it, which is past the
+    // `if (got == want) { return 0 }` -- so a passing check now pushes nothing.
+    // Nine calls, nine pushes saved, and the count is the only place that is
+    // visible: the arena served nothing on those entries, so no object moved.
+    //
+    // That the eleven did not move is still the assertion that matters. `region`
+    // is a pin on the placement decision (SPEC 5.2) and M3.2d does not narrow a
+    // written one -- automatic placement fills scopes with no enclosing region
+    // and never undercuts one, otherwise the arena inside `many`'s loop would
+    // have taken all 200 objects and `batch` would serve nothing.
+    bad = bad + check("arena_regions", arena_regions(), 11)
 
     if (bad == 0) {
         println("PASS")

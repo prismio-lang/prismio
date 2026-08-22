@@ -12,17 +12,31 @@ The rule that decides which side anything falls on:
 > **If getting it wrong produces a miscompile, it belongs to the compiler.**
 > **If getting it wrong produces a link error or a missing feature, it does not.**
 
-**Last-good: `build/S24b`.** Suite **139/139**, fixpoint `a24.ll == b24.ll`. Bootstrapped
-`S10b → … → S20b → S22b → S24b`; `S22b`, `S20b`, `S19b`, `S18b`, `S15b`, `S10b` and `E2` remain
-good behind it. **M3.2a, M3.2b and M3.2c-i are in and inert** — statement positions, last use, and
-the statement range of a placed arena, all byte-identical IR and each verified by
-`AIF_STMT_TRACE=1` rather than only by "nothing changed".
-**Next is M3.2c-ii**, the range of a *candidate*: c-i cannot unblock the benchmarked `g2.psm`
-because that program gets no arena for c-i to measure. See TODO § M3.2 — an earlier note in this
-file conflated the two. The 2026-08-27 session landed **M3.1** (automatic call-site placement), corrected the
-zero-serving-region note M3.1 falsified, and landed **M3.2a** (statement positions, verified
-byte-identical), which is why the compiler moved. S16/S17 are that
-session's intermediate generations and are **not** last-good — each leaked on a fixture.
+**Last-good: `build/S27b`.** Suite **140/140**, fixpoint `a27.ll == b27.ll`, differential 17/17,
+and a fresh seed build matches it. Bootstrapped `S10b → … → S25b → S26b → S27b`; `S26b`, `S25b`,
+`S24b`, `S22b`, `S20b`, `S19b`, `S18b`, `S15b`, `S10b` and `E2` remain good behind it. S16/S17 are
+the M3.1 session's intermediate generations and are **not** last-good — each leaked on a fixture.
+
+**M3 is finished, its exit gate is green, and the corpus is clean.** The 2026-08-28 session ran in
+three passes and everything it opened it also closed. What matters going in:
+
+- **Automatic arena placement reaches both programs it was supposed to.** Plain `g2.psm` —
+  no annotation, no source change — **10 285 886 → 82 052 allocations, 0.469×**, frame p99
+  12 042 → 2 917 ns. `g6_game.psm` — **50 470 → 3265, 0.599×, 4.31× → 2.58× of idiomatic Rust**.
+  The mechanisms: a **non-lexical extent** (the arena opens at the first statement that fills it,
+  so a harness's clock calls fall outside it), regime (a) widened from "one call site" to "all call
+  sites in one region", and the `@elem` points-to node keyed on the container's full type.
+  [`RESULTS-M3-nonlexical.md`](aif/evidence/RESULTS-M3-nonlexical.md),
+  [`RESULTS-M3-leaks-and-regime.md`](aif/evidence/RESULTS-M3-leaks-and-regime.md).
+- **All seven benchmark programs have a completely clean `--verify` ledger** —
+  `allocated == released`, 0 leaked, 0 violations. Two leaks did it, and **both were a missing
+  *owner*, not a missing free**: a `String` returned across a call had none, and an inline struct
+  field was reported as owning a value it only holds a copy of.
+- **Peak RSS fell 0.49×–0.82× across the corpus** as a consequence — g1 1.78, g2 1.94, g3 2.08,
+  g4 2.05, g5 1.63, g6 2.23 MB. That is the standing "peak RSS reversed" candidate, and **the cause
+  was the leaks**; see M5.2 in TODO for the one measurement still owed.
+
+Corpus median 1.003× on the final gate, **GATE PASSED**.
 
 **Run the test suite alone.** Two concurrent runs corrupt each other: `no_inference` writes the
 fixed paths `tests/ni_release.exe` / `tests/ni_debug.exe`, and the toolchain object cache is
@@ -57,39 +71,45 @@ same date) then produced five items, ranked here by measured prize:
      close the remaining 0.05× on g3.
    Evidence: [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md).
 
-2. ~~**Automatic arena placement does not fire on the corpus.**~~ **Half done, 2026-08-27 —
-   M3.1.** Placement now reaches a callee's allocations. On `aif/corpus/g2_frame_loop.psm`, with
-   no annotation and no source change, heap allocations go **63,220 → 2,020 (31×)**, 0 violations.
-   Corpus-wide brackets 2 → 6. Gate passed at corpus median 1.002×.
-   **What is left, and it is the whole reason this stays ranked first:**
-   - **The *benchmarked* `g2.psm` still does not fire, and declining is correct.** Its harness
-     calls `clock_gettime_nsec_np` **inside** the frame loop, and an opaque extern in the region
-     body could be handed arena memory. `g2_region.psm` earns its 0.46× by hand-placing the region
-     *between* the two clock calls — a **sub-block extent**, which is **M3.2**. That is the next
-     item, and it is what turns a 31× allocation drop into a wall-clock number.
-   - **M3's exit gate is red** until plain `g2.psm` serves > 0 arena objects unannotated.
-   - **Do not edit `g2.psm` to make this fire.** It is the baseline every prior g2 number was
-     measured on; `milestone_bench` checks its checksums before it times anything.
-   - g6 is blocked by obligation 2 — its callees store into parameters (`br_param=4`).
-   Evidence: [`RESULTS-M3-callerregion.md`](aif/evidence/RESULTS-M3-callerregion.md).
+2. ~~**Automatic arena placement does not fire on the corpus.**~~ **DONE, 2026-08-28.** M3.1 made
+   placement reach a callee's allocations; M3.2c-ii + M3.2d made the extent a statement range
+   rather than a block, which is what the benchmarked `g2.psm` needed — its harness calls
+   `clock_gettime_nsec_np` on either side of the work, and an arena that opens after the first and
+   closes before the second never has an opaque call inside it. **10 285 886 → 82 052
+   allocations, 0.469×, 0 violations, `g2.psm` unedited.** Corpus-wide brackets 2 → 6 → **12**.
+   Evidence: [`RESULTS-M3-callerregion.md`](aif/evidence/RESULTS-M3-callerregion.md) and
+   [`RESULTS-M3-nonlexical.md`](aif/evidence/RESULTS-M3-nonlexical.md).
+   **g6 followed on 2026-08-28** — 50 470 → 3265 allocations, 0.599×. **The note this file used to
+   carry about it was wrong**: it said obligation 2 (`br_param=4`), and `--why` says `plan_orders`
+   clears every allocation obligation and was refused on its call-site count. `br-param` is about
+   `recruit`, whose `Member`s genuinely outlive the tick, and declining those is correct.
+   - **Do not edit `g2.psm`.** Still true, and still for the same reason: it is the baseline every
+     prior g2 number was measured on, and `milestone_bench` checks its checksums before it times
+     anything.
+   - **Nothing in the corpus is a plausible-and-absent arena any more**, and every ledger is
+     clean. Placement is done as an item; the next allocation work is representation (item 3).
 
 2b. **M2 (reuse analysis) is not the next item, and its premise is wrong as written.** Reuse
    tokens pair a dead value with a same-size constructor *in the same branch*; `match` appears in
    **no corpus program at all** — not g1–g6 and not g7 — so there is nothing to pair anywhere in
    the corpus. (An earlier note here said "g7 only"; that was a grep hitting the *word* in a
-   comment.) M2's exit gate asked
-   for a ≥10× allocation drop on g2 — **M3.1 delivered 31× on the corpus g2**. Restate that gate
-   against g7 before starting it. Detail in [`TODO.md`](TODO.md) § M2.
+   comment.) M2's exit gate asked for a ≥10× allocation drop on g2 and g6 — **M3 delivered 125× on
+   g2 and 15× on g6**, by a different mechanism, which is why a gate has to name the mechanism as
+   well as the number. **Both halves of M2's gate are now met by something that is not M2.**
+   Restate it against g7 before starting, or drop the milestone. Detail in
+   [`TODO.md`](TODO.md) § M2.
 3. **Inline element storage for `List<T>`** — ranked second at session 3, still unbuilt, still the
    only change projected to move the corpus band (~1.2–1.3× across the board). The representation
    is 9.23× of the g2 gap and 2.51× of the g4 gap against a **1.24–1.27×** compiler. Needs
    views/slices to be expressible, which is why item 1 outranks it despite a similar prize.
-4. **Peak RSS reversed** — 0.84–1.00× → **1.09–1.60×** of idiomatic Rust, +27% to +86% absolute,
-   with Rust's figure unmoved. Already excluded by measurement: fixed runtime footprint (ours is
-   1.34 MB against Rust's 1.47 MB) and the hot/cold split *on g3 and g6 only* — those two emit no
-   split and carry +35% and +86%. g1, g2, g4 and g5 **do** emit splits, so it stays a live
-   candidate there. Scales with live set rather than churn. Needs a bisect against a
-   session-3-era compiler.
+4. ~~**Peak RSS reversed.**~~ **Cause found, 2026-08-28, and it was the leaks.** The entry read
+   0.84–1.00× → 1.09–1.60× of idiomatic Rust with Rust unmoved, and had already excluded the fixed
+   runtime footprint and the hot/cold split. It never said "leak", and it should have: a leak
+   scales with **live set rather than churn**, which is the signature this entry recorded verbatim.
+   Removing the two of them dropped peak RSS to **0.49×–0.82×** of the previous compiler across the
+   whole corpus. **What is left is one measurement**: re-run `RESULTS-final.md`'s own harness so the
+   ×-against-Rust figure can be restated. `milestone_bench` is old-vs-new and cannot answer it.
+   No bisect is needed and no session-3-era compiler has to be built.
 5. **Genuinely-cold compile regressed 19–28%** — 183 → 235 ms (g1), 203 → 241 ms (g6) with
    `PRISMIO_OBJ_CACHE=0`. Hidden in the default path, where the object cache reaches 0.71–0.85× of
    rustc. Affects first builds and uncached CI only.
@@ -108,14 +128,86 @@ assumption that boxed layout costs indirection — it costs **allocations**, mea
 removes *allocations*, not indirection, so reuse analysis (Perceus-style) attacks the same cost
 without a language change and should be weighed ahead of it.
 
-**Item 1 is the one to take first** unless the framework question below says otherwise: it is the
-largest measured prize, it needs no language change, and both sides are already LLVM IR when they
-meet. Item 2 is the one that decides which version of the product claim is true.
+---
 
-**The standing caveat from that session:** the corpus band has not moved in seven sessions
-(1.12–5.57× → 1.13–5.89×) across ten landed features. **The features that landed are not the
-features this corpus measures.** If the next thing is chosen for reasons other than this corpus —
-and that is legitimate — say so explicitly rather than expecting the numbers to move.
+## What to do next, in the order I would do it
+
+**[`TODO.md`](TODO.md) is the plan and this is the prompt.** Every task below is a checkbox there —
+the links say which — and nothing is here that is not. When you finish one, tick it *there* and
+re-rank *here*.
+
+Items 2 and 4 are done, and 1, 3 and 5 are what remain. Three of the four things below are cheap and
+one is the big one; the order is by *what makes the next number trustworthy*, not by prize.
+
+**A. Re-measure, before building anything.** — [`TODO.md`](TODO.md) § Standing items, first entry.
+Three separate figures in this repo are now stale in the same direction and nobody can quote the
+compiler's standing honestly until they are refreshed:
+
+- `RESULTS-final.md`'s cross-language matrix is stale for **g2 and g6** (both moved this session)
+  and for **peak RSS everywhere** (item 4's cause turned out to be the leaks). Its harness is the
+  only thing that produces the ×-against-Rust RSS figure — `milestone_bench` is old-vs-new and
+  cannot.
+- The **band** quoted throughout as 1.13×–5.89× is roughly **1.09×–3.23×** on the driver's own
+  numbers now. Do not propagate either until the harness has run.
+- **This is half a session at most**, it needs no design, and every ranking below depends on it.
+
+**B. Flip `PRISMIO_INLINE_RUNTIME` on, or decide not to** — [`TODO.md`](TODO.md) § Standing items,
+second entry; item 1's remainder here. M1.1b works,
+byte-identical to `llvm-extract`, ~5% warm compile cost, corpus median **0.864×** measured. It is
+off for one reason: the portability claim rests on a macOS PATH test rather than a green CI on
+three platforms. **That run is the whole task.** Largest measured prize on the list per unit of
+work, and it needs no language change.
+
+**C. Restate or retire M2** — [`TODO.md`](TODO.md) § M2 and its exit gate; item 2b here. That
+gate — a ≥10× allocation drop on g2 and g6 — is
+**met on both, by M3**, and reuse tokens still have nothing to fire on: `match` appears in no
+corpus program at all. Either re-target the milestone at g7 with a gate it can actually move, or
+close it and say why. Half an hour of honesty that stops a future session building the wrong thing.
+
+**D. Then item 3 — inline element storage for `List<T>`** — [`TODO.md`](TODO.md) § M4, checkbox
+M4.2 (and M4.1 before it). The only remaining
+change projected to move the whole band, and the expensive one. Read the correction in
+`ARCHITECTURE-DIRECTION.md` first: boxed layout costs **allocations**, not indirection (measured
+0.86× free), so the prize is the allocations M3's arenas did *not* remove. Needs views/slices to be
+expressible, which is the language design this milestone actually is.
+
+**What not to spend a session on:**
+
+- **`test_47`'s 6 and `test_45`'s 2.** Understood, deferred, reasons recorded above. Six
+  allocations in a fixture against a use-after-free in the compiler is not a trade worth taking.
+- **A bisect for the RSS regression.** There is nothing left to bisect; see item 4.
+- **More timing runs on a program in the ±5% band.** Attribute instead — diff the two `.ll` files
+  by function. It took a minute to prove g1 and g4 had byte-identical loop code, after two
+  benchmark runs had failed to settle it.
+
+---
+
+
+**Nothing that session opened is still open.** The three items it left were closed in a third
+pass — g3 fixed, `test_47` deferred with a reason, g4 attributed to measurement — and the details
+are in [`RESULTS-M3-leaks-and-regime.md`](aif/evidence/RESULTS-M3-leaks-and-regime.md) §5.
+
+**What is genuinely open, and it is small:**
+
+- **`test_47` leaks 6**: a value returned **two** hops. Deferred, and the reason is now the useful
+  part: the obvious relaxation leans on `site_in_released_field`, which has a **known hole** this
+  compiler exercises — `src/` puns an `ASTNode` pointer as `String`, so those fields are not
+  reported as released, and a widened rule would hand AST nodes to the deallocator. It needs
+  INFERENCE 6's contexts, not another clause.
+- **`test_45` leaks 2**, both documented in `run_aif_verify_test`: a binding reborrowed into a
+  callee's local name, and a field a reassignment guard deliberately protects.
+- **M5.2 owes one measurement**, not an investigation — re-run `RESULTS-final.md`'s harness so the
+  RSS figure against Rust can be restated.
+
+**The standing caveat, and what 2026-08-28 did to it:** the corpus band had not moved in seven
+sessions (1.12–5.57× → 1.13–5.89×) across ten landed features, because *the features that landed
+were not the features this corpus measures.* This session was the first that was — g2 goes
+**5.77× → 2.6×** and g6 **4.31× → 2.58×** of idiomatic Rust, and peak RSS fell everywhere — so the
+band is roughly **1.09×–3.23×** on the driver's own numbers and
+[`RESULTS-final.md`](aif/evidence/RESULTS-final.md)'s matrix is stale for g2, g6 and all six RSS
+figures. **Task A above is what makes it quotable again.** The caveat itself still stands for the
+rest: four of six programs are flat, and if the next thing is chosen for reasons other than this
+corpus — which is legitimate — say so rather than expecting the numbers to move.
 
 **Nothing *after* that list is a queue.** The two sections below it are (1) what is genuinely
 blocked and on whom, and (2) what was considered and deliberately declined, with the reasoning, so
@@ -182,6 +274,19 @@ hunks before assuming a change was bigger than it was.
 caught a test that passed against a broken compiler at least twice. The cheap form is a mutated
 copy of the file under test in the scratchpad; the honest form is a mutated *compiler*, which costs
 one bootstrap and is what the 2026-08-24 session used for all five of its tasks.
+**2026-08-28 found the failure this is for**: `test_71_nonlexical_extent.psm` had been passing
+while placing **no arena at all**, so all five of its assertions measured a program the feature
+never touched. Before trusting an arena fixture, read `AIF_STMT_TRACE=1` and count the extents.
+
+**When a recorded blocker names an obligation, check it with `--why` before planning around it.**
+Wrong three sessions running: g6's was "obligation 2" and was really the call-site count; g3's was
+"a container teardown that frees the object and not its fields" and was really the value copied
+*into* an inline field. `--summary` counts a *program*; `--why=<symbol>` answers for the site you
+actually care about and lists every failing clause rather than the first.
+
+**Every leak this project has found was a missing *owner*, not a missing free** — and in each case
+the analysis and codegen each had a defensible answer that together lost the value. Look for the
+disagreement, not the gap.
 
 **`build/` accumulates.** Keep the last-good and delete the rest; nothing in it is an input to
 anything.

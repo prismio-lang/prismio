@@ -15,6 +15,13 @@ Seven sessions of memory-model work did not move the corpus standing (1.12–5.5
 idiomatic Rust). The final benchmark decomposed the gap, and the decomposition is not what the
 roadmap assumed.
 
+> **The eighth moved it, 2026-08-28** — automatic arena placement finally reaching the two programs
+> shaped for it. g2 goes **5.77× → ~2.6×** and g6 **4.31× → 2.58×**; the other four are flat, so the
+> band is roughly **1.09×–3.23×** on the driver's own numbers. The decomposition below is still the
+> right one and the ranking below still holds — what changed is that the *arena* row is now spent.
+> `RESULTS-final.md`'s matrix has not been re-run and is stale for g2, g6 and every RSS figure;
+> TODO's first standing item is that run.
+
 | component | measured | what it means |
 |---|---:|---|
 | Compiler codegen (residual vs `rust_boxed`) | **1.24–1.27×** | Fine. Normal compiler territory. Not the problem. |
@@ -211,10 +218,17 @@ If the allocations cannot all be removed, make each one cheaper.
   **it was built specifically as the backend for reference-counted runtimes** — Koka and Lean. That
   is the same workload shape Prismio has: high allocation count, small objects, predictable sizes.
 
-Two reasons this is well-timed: Prismio allocates 20–63× more than Rust, so allocator cost is
-weighted 20–63× more heavily here than in the baseline; and peak RSS regressed this session from
-0.84–1.00× to **1.09–1.60×** of idiomatic Rust, which is an allocator-adjacent symptom that is
-still unexplained.
+One reason this is well-timed: Prismio allocates 20–63× more than Rust, so allocator cost is
+weighted 20–63× more heavily here than in the baseline.
+
+**The second reason is gone, and the correction is worth more than the entry was.** This section
+used to cite the peak RSS regression — 0.84–1.00× → 1.09–1.60× of idiomatic Rust — as "an
+allocator-adjacent symptom that is still unexplained". It was **leaks**. Removing two of them on
+2026-08-28 dropped peak RSS to **0.49×–0.82×** of the previous compiler across the whole corpus,
+and both were a *missing owner* rather than a missing free. The entry described the signature
+correctly for eight sessions — "scales with live set rather than churn" — and nobody read that
+sentence as the definition of a leak. mimalloc is still worth evaluating on allocation *cost*; it
+was never going to fix the footprint.
 
 ---
 

@@ -223,10 +223,20 @@ let AIF_BR_B_PARAM_STORE = 2
 let AIF_BR_B_OPAQUE = 4
 let AIF_BR_B_DROP = 8
 let AIF_BR_B_SHARED_BODY = 16
+// Regime (a)'s call-site half, split out from SHARED_BODY 2026-08-28. Reported
+// separately because the repair is different: SHARED_BODY needs specialisation
+// (regime (b)), while this one needs only that the callers agree on a region,
+// which `bracket_regime_ok` asks and often finds they already do.
+let AIF_BR_B_MULTI_CALL = 32
 
 extern fn aif_struct_new(name: String)
 extern fn aif_enum_new(name: String)
 extern fn aif_struct_add_field(name: String, field: String, type: String, bytes: Int)
+// The layout half of a field: 1 when its storage is the object's own -- a struct
+// value copied in rather than a pointer stored. A separate call rather than a
+// fifth argument above, because the committed seed's IR calls the four-argument
+// form and changing an FFI signature is a two-step change.
+extern fn aif_struct_field_inline(name: String, field: String, inlined: Int)
 
 // LAYOUT 2.1's access profile, statically estimated, and 7.2's search over it.
 // `weight` is AIF_LOOP_ITERS per enclosing loop -- the same estimator automatic
@@ -375,6 +385,7 @@ extern fn aif_var_scope(fnId: Int, name: String) -> Int
 extern fn aif_extern_contract_set(fnName: String, index: Int, contract: String)
 extern fn aif_extern_contract(fnName: String, index: Int) -> String alias
 extern fn aif_key_field(type: String, field: String) -> Int
+extern fn aif_elem_key(containerType: String) -> Int
 extern fn aif_key_ret(fnId: Int) -> Int
 extern fn aif_key_param(fnId: Int, index: Int) -> Int
 
@@ -585,8 +596,12 @@ fn aifKindName(kind: Int) -> String {
 // the spelled type would be neither, because `list_new()` types as `List<Invalid>`
 // and an annotated binding does not. Two spellings of one container that did not
 // share a key would lose edges, and a lost edge is the unsound direction.
+// INFERENCE 3.1. Keyed on the container's *full* type rather than its base, so
+// `List<Actor>` and `List<Order>` are different sets -- see aif_elem_key in
+// runtime/aif_support.c for why that is sound and for the guard that restores
+// the base-keyed answer where a spelling is not resolved.
 fn aifElemKey(containerType: String) -> Int {
-    return aif_key_field(aifBaseType(containerType), "@elem")
+    return aif_elem_key(containerType)
 }
 
 // ---------------------------------------------------------------------------

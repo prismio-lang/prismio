@@ -947,6 +947,25 @@ the standard precision/cost trade and it is the most likely source of spurious T
 Refinements exist (allocation-site-indexed field nodes, access paths of bounded length) and cost
 graph size. Deferred: measure the realised false-sharing rate first (BENCHMARKS §2.3).
 
+**A container's element node is keyed on its full type, not its base** *(narrowed in 1.2.3, from
+measurement)*. The element field of a collection is a field node like any other, and keying it on
+the base type — one `@elem` node for every `List` in the program — is a coarser partition than
+object-insensitivity requires: it merges containers whose *types* already distinguish them. An
+implementation SHALL key it on the container type as written, so `List<Actor>` and `List<Order>` are
+separate nodes, **and SHALL fall back to the base type for every spelling of a base whenever any
+spelling of that base is unresolved** — a bare `List`, or one whose element type inference could not
+supply. Two spellings for one container would be a read that misses its own writes, which is an
+element that appears to escape nowhere.
+
+This is sound in a language with no subtyping whose generics are monomorphised before the analysis
+runs, because a container's static type is then the same at every mention. It is not a general
+result and an implementation adding either feature has to revisit it.
+
+Measured on the reference implementation: with the base-keyed node, `list_get(w.actors, i)` came
+back holding `Order`s that only ever went into a different list, and SPEC §5.2.1.1's obligation 3
+then refused to bracket the call that built them — `g6_game.psm` lost its entire per-tick arena to a
+type name. With the type-keyed node it serves 47 205 of its 50 470 allocations.
+
 ### 11.2 The context set is discovered from facts that are still moving
 
 §6.3 forms `κ'` from the current round's `A(yᵢ)`, which can rise later, so a context instantiated

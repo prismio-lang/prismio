@@ -1,12 +1,17 @@
 // INFERENCE 4.3's T-SPAWN-SHARE -- a value reachable from two tasks at once.
 //
 // Its own file rather than a case in aif_concurrency.psm, and the split is
-// forced rather than tidy. The `@elem` key is one per container *base* type
-// (INFERENCE 3.1's object-insensitivity), and every `List<T>` shares the base
-// type `List` -- so one cross-container push marks every pushed site in the
-// file as multiply held. Putting this beside `transferred_is_not_atomic` would
-// drag that function's Report to Shared and land it at CrossThread, where it
-// would pass while asserting the exact opposite of what it is for.
+// forced rather than tidy. The `@elem` key is one per container *type*
+// (INFERENCE 3.1, narrowed 2026-08-28 from one per base type), so two lists of
+// the same element type still share it -- which is exactly what this file does,
+// and one cross-container push then marks every pushed site of that type as
+// multiply held. Putting this beside `transferred_is_not_atomic` would drag that
+// function's Report to Shared and land it at CrossThread, where it would pass
+// while asserting the exact opposite of what it is for.
+//
+// The base-type version of the same key merged `List<Report>` with every other
+// list in the file. That is no longer why the split is needed and the split is
+// still needed; keeping the note accurate matters more than keeping it short.
 // tests/test_48_aif_shared_elements.psm was split off from test_47 for the same
 // reason, and its header measures the cliff.
 //
