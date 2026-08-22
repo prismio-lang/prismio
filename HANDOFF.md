@@ -11,16 +11,21 @@ Don't re-derive what's in them.
 Everything below is verified, not asserted — the commands that verify it are in the next section.
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
-  IR for `src/main.psm` is byte-identical to the warm build's. Last-good is **`build/S15b`**
-  (`S10b → … → S15b`, `a.ll == b.ll`); `build/S10b` and `build/E2`
-  remain good behind it. The paired generations exist because regenerating `embedded_sources.h`
+  IR for `src/main.psm` is byte-identical to the warm build's. Last-good is **`build/S24b`**
+  (`S10b → … → S20b → S22b → S24b`, `a24.ll == b24.ll`); `build/S22b`, `build/S20b`, `build/S19b`,
+  `build/S18b`, `build/S15b`, `build/S10b` and `build/E2` remain good behind it. S16/S17 were the M3.1 session's intermediate generations
+  and are not last-good: S16b leaked on `test_48` and S17b leaked on `test_49`. S18b closed M3.1;
+  **S19b adds the corrected zero-serving-region note and is the one that holds.** The paired generations exist because regenerating `embedded_sources.h`
   for a change to `build_driver.c` changes what the *next* compiler compiles, so each edit costs
   two.
 - **Cross-language standing, re-measured 2026-08-25** against session 3's harness unchanged:
   **1.13×–5.89× idiomatic Rust, 1.70×–16.4× hand-tuned Rust**, residual **1.24×–1.27×**.
   The band has not moved in seven sessions. Full matrix and the four open items in
   [`aif/evidence/RESULTS-final.md`](aif/evidence/RESULTS-final.md).
-- **137/137 tests** as of 2026-08-26 (136 before the M1 session, which added `curated_closure`) (135 before the candidate-list session, which added `jit`;
+- **139/139 tests** as of 2026-08-27 (138 before `test_71_nonlexical_extent.psm`, the M3.2d guard
+  written *before* the feature it guards; 137 before the M3.1 session, which added
+  `test_70_struct_field_release.psm` — the struct-field coverage that automatic arena placement
+  took off `test_49`) (136 before the M1 session, which added `curated_closure`) (135 before the candidate-list session, which added `jit`;
   133 before the packaged-runtime session, which added the `runtime_library` runner test — it
   packages a toolchain into a temporary directory rather than shipping a fixture — and
   `incremental_manifest`, which shells out to the tool of that name;
@@ -436,6 +441,93 @@ LAYOUT §3.2's W3 sandbox obligations. Shipping the syntax without the runner is
 this item was ordered around, pointed the other way: a producer that produces nothing. The
 instrumentation point already exists when someone wants it — `ir_struct_field_ptr` is the single
 choke point for field access, the way `ir_alloc_object` is for allocation.
+
+---
+
+## Session of 2026-08-27 (M3.1) — automatic placement reaches a callee's allocations, and the milestone that was asked for could not have worked
+
+*(The date sequence here runs ahead of the wall clock and has for several sessions; kept monotonic
+on purpose. This entry follows 2026-08-26.)*
+
+**Asked for M2, built M3.1, and the reason is a measurement.** M2.1 pairs a dead value with a
+same-size constructor *in the same branch*, which needs a destructure-then-rebuild shape. `match`
+appears in **no corpus program at all** — not g1–g6, and not g7 either; there are zero `=>` arms
+under `aif/corpus/` or `aif/evidence/xlang/prismio/`, and a first pass that said "g7 only" was a
+grep hitting the word in a comment. g2's 10.2 M allocations are
+`DrawCmd` literals pushed inside `cull`, dying in `main` and rebuilt **in a different function**
+next iteration: cross-call, cross-iteration, ~510 blocks at once. That is an arena, not a token.
+TODO.md cited `g2_tuned.psm` as proof it would work; that file's own header says it hoists the
+buffer out of the loop and mutates in place, and that re-pushing "would still allocate one DrawCmd
+per element per frame" because `List` holds pointers — **M4.2, not reuse analysis.** Corrected in
+TODO.md rather than left for the next session to rediscover.
+
+**What landed.** `runtime/aif_support.c`. The recorded blocker was a circularity — *"placement
+depends on bracketing depends on placement"* — and it is breakable because **every bracket
+obligation is arena-flag-independent**. `bracket_edge_ok` factors the obligations out of
+`bracket_place` and parameterises them on the region scope, so `aif_place_arenas` can ask about a
+scope it has not chosen yet; `bracket_candidate_serves` feeds the cross-function traffic into the
+cost model, which `arena_would_serve` cannot see by construction (`is_ancestor_or_self` is lexical
+over a per-function tree); `bracket_place` then accepts cost-model arenas, guarded by
+`arenas_placed`. **Container disposition needed no work** — `elem_disposition_of`'s arena clause
+was landed inert several sessions ago *in anticipation of this exact change*, and was right.
+
+**A latent soundness hole, exposed by turning it on.** The bracketed gate discharged only an
+*escape* obligation. A container's teardown does a second job — applying the element disposition,
+which for a counted element is a decrement — and serving the container from the arena deletes the
+teardown. `test_48`'s `temp` holds an `Item` borrowed from the caller: **22 allocated, 21 released,
+1 leaked, 0 violations, and the program still printed `PASS`.** The ledger was the only witness.
+An intermediate fix (refuse lists) made it worse — `test_49` went to 44 leaked — because a heap
+container holding arena elements frees neither. **An extent is served whole or not at all.**
+`bracket_site_bounded` now carries the inverse of its owner clause.
+
+**Measured.** `aif/corpus/g2_frame_loop.psm`, `--verify`, no annotation, no source change:
+**63,220 → 2,020 allocations, 31×**, same 10 leaked, 0 violations. That is the axis TODO records
+as never having moved, and it clears the ≥10× bar **M2's** exit gate was asking for. Every other
+corpus program is unchanged in allocation count.
+
+**Where it does not fire, and both are correct.** The *benchmarked* `g2.psm` calls
+`clock_gettime_nsec_np` **inside** the frame loop; an opaque extern in the region body is a sound
+rejection, and `g2_region.psm` earns its 0.46× by hand-placing the region *between* the two clock
+calls — a sub-block extent, which is **M3.2**. So the timing gate reads **1.002×** because the
+benchmarked corpus contains no program this fires on; the prize is real and it is an allocation
+count, not a wall clock. g6 is blocked by obligation 2 (`br_param=4`). **Do not edit `g2.psm` to
+make this fire** — it is the baseline every prior g2 number was measured on.
+
+**M3.3 was already built and this plan said it was not.** Verified against the tree: the
+`region <name> serves no allocation` warning fires on the two inert regions in
+`test_58_region_serves.psm` and stays silent on the two that serve 50 each. **M3.1 falsified its
+note** — it read "a value allocated in a callee cannot reach it", which is the exact thing
+call-site placement changed — so the note was corrected in the same session to name the real
+conditions. A user-facing diagnostic is documentation; leaving it would have been the rot this
+file keeps warning about.
+
+**M3.2a landed too, and is verified inert.** `Site.stmt` and `CallEdge.stmt`, stamped through
+`aifWalkChain` by a one-based cursor. A scope is a lexical *set* of statements and carries no
+order, so "ends at last use" had nothing to end at. Fixpoint holds and the IR is **byte-identical
+to S19b for all 29 corpus programs and 72 test programs** — which is what CODE_STYLE asks of a
+behaviour-preserving change, and the only way to know a data-only change really was one.
+
+**M3's exit gate is still red.** It requires plain `g2.psm` to serve > 0 arena objects with no
+annotation. M3.2b–d close it, and M3.2d (range-aware codegen) wants an early-exit fixture written
+before a line of it: a missed pop is a leak, a double pop frees the caller's arena, and neither
+shows up in a value.
+
+**Gate.** Fixpoint `a18.ll == b18.ll`; suite **138/138**; all 29 corpus checksums agree; corpus
+median **1.002×** (range 0.945–1.030×), **GATE PASSED**; RSS worst case 1.008×; AIF differential
+agrees with the oracle on all 17 sources; cross-language matrix in
+`aif/evidence/xlang/results-m3.json`, standing unmoved (g2 5.77× loop / 63.68× allocs of idiomatic
+Rust). Full writeup: [`aif/evidence/RESULTS-M3-callerregion.md`](aif/evidence/RESULTS-M3-callerregion.md).
+
+**Two test expectations moved and neither was relaxed to go green.** `aif_struct_fields` lost two
+of three subjects because placement now arena-serves `test_49`'s structs (correct: 146→9 allocated,
+0 leaked). Coverage moved to **`test_70_struct_field_release.psm`** — same types, two call sites
+per constructor, a shape regime (a) refuses to bracket, so they stay on the heap in the *shipped*
+configuration. `region_diagnostics`' `peak-bytes` for test_49 goes 0 → 108.
+
+**Watch out: two concurrent test-suite runs corrupt each other.** `no_inference` writes fixed paths
+`tests/ni_release.exe` / `tests/ni_debug.exe`, and the toolchain object cache is shared. A "136/137
+flake" and a "132/137 regression" this session were both self-inflicted overlap, and neither
+reproduced in isolation. **Run the suite alone.**
 
 ---
 

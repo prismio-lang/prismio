@@ -155,6 +155,14 @@ extern fn aif_program_has_tasks() -> Int
 
 // INFERENCE 5.6 / SPEC 6.3. The derivation, read back as a witness path.
 extern fn aif_con_at(file: Int, line: Int, col: Int)
+// M3.2. Where in its block a statement sits. A scope is a set of statements and
+// carries no order, so an extent that ends at last use has nothing to end at
+// without this. Set as the walk goes, read by the next site or call edge made.
+extern fn aif_stmt_at(scope: Int, index: Int)
+// M3.2b. A read of a binding. Recorded against the statement of the binding's
+// *declaring* scope that encloses the read, which is what makes a use inside a
+// nested block still pin the enclosing region's extent open.
+extern fn aif_var_note_use(fnId: Int, name: String, scope: Int)
 extern fn aif_cause_domain_for(id: Int) -> Int
 extern fn aif_cause_build(id: Int, domain: Int) -> Int
 extern fn aif_cause_site(i: Int) -> Int
@@ -471,6 +479,13 @@ let mut aifBudget = 200
 // How many loops enclose the statement being walked. LAYOUT 7.1 weights a site's
 // contribution to an arena's benefit by the loops between them.
 let mut aifLoopDepth = 0
+// M3.2. Which statement of its block the walk is on, **one-based**: 0 means
+// "not in a statement list" and n means statement n-1. A global needs a constant
+// initializer and the language has no negative literal, so the off-by-one buys
+// the sentinel. Saved and restored around a nested block rather than reset
+// globally: a block numbers its own statements on the way down and the
+// enclosing chain has to resume its own on the way back out.
+let mut aifStmtCursor = 0
 
 // SPEC 5.4's verdicts, mirroring AIF_PIN_* in runtime/aif_support.c.
 let AIF_PIN_NONE = 0

@@ -1809,6 +1809,12 @@ typedef struct {
     int scope;
     int file, line, col;
     int nfields;
+    // M3.2. Position of the statement this site sits in, within its own block,
+    // or -1 where the walk did not stamp one. A scope is a lexical *set* of
+    // statements and says nothing about their order, so an extent that ends at
+    // last use rather than at the closing brace cannot be expressed without
+    // this. Recorded ahead of the analysis that reads it, and inert until then.
+    int stmt;
     int bytes;          // stamped once, before iteration
     int E, A, C, T;
     int type_acyclic;   // stamped once, before iteration
@@ -1843,6 +1849,60 @@ static Site* sites;
 static int site_count, site_cap;
 static int orphan_sites;    // sites with no enclosing function; none today
 
+// The statement the walk is currently inside, in the same style as aif_con_at's
+// source position: set by the frontend as it goes, read by whatever gets
+// created next. -1 means "not stamped", which is what every site had before
+// M3.2 and what any construction the walk reaches by another path still has.
+static int g_stmt = -1;
+
+// Per scope, the statement of *that* scope the walk is currently inside. The
+// array rather than a single cursor is what makes a nested use answerable: while
+// the walk is down inside a nested block, scope_stmt[outer] still names the
+// statement of `outer` that contains it, because only `outer`'s own chain ever
+// writes it. That is exactly the question an extent has to answer -- "which
+// statement of the region does this use pin open" -- and a single cursor would
+// have already been overwritten by the inner block.
+static int* scope_stmt;
+static int scope_stmt_cap;
+
+static void scope_stmt_grow(int scope) {
+    if (scope < scope_stmt_cap) return;
+    int grow = scope_stmt_cap ? scope_stmt_cap * 2 : 256;
+    if (grow <= scope) grow = scope + 1;
+    scope_stmt = (int*)xrealloc(scope_stmt, (size_t)grow * sizeof(int), "AIF statement positions");
+    for (int i = scope_stmt_cap; i < grow; i++) scope_stmt[i] = -1;
+    scope_stmt_cap = grow;
+}
+
+void aif_stmt_at(int scope, int index) {
+    g_stmt = index < 0 ? -1 : index;
+    if (scope < 0) return;
+    scope_stmt_grow(scope);
+    scope_stmt[scope] = g_stmt;
+}
+
+// M3.2b. The last statement, in a key's own declaring scope, at which the key is
+// read. The end of a non-lexical extent is the maximum of this over the keys
+// holding what the arena serves.
+//
+// **Monotone by construction, which is why one slot is enough.** Statements are
+// walked in source order, so scope_stmt[d] only ever grows while d's chain is
+// being walked; taking the max over mentions therefore lands on the last one
+// without having to know in advance which mention that is.
+static int* key_last_stmt;
+static int key_last_stmt_cap;
+
+static void key_last_stmt_grow(int key) {
+    if (key < key_last_stmt_cap) return;
+    int grow = key_last_stmt_cap ? key_last_stmt_cap * 2 : 1024;
+    if (grow <= key) grow = key + 1;
+    key_last_stmt = (int*)xrealloc(key_last_stmt, (size_t)grow * sizeof(int), "AIF last use");
+    for (int i = key_last_stmt_cap; i < grow; i++) key_last_stmt[i] = -1;
+    key_last_stmt_cap = grow;
+}
+
+
+
 int aif_site_new(const char* type, int kind, int fn, int scope,
                  int file, int line, int col, int nfields) {
     if (site_count == site_cap) {
@@ -1863,6 +1923,7 @@ int aif_site_new(const char* type, int kind, int fn, int scope,
     s->line = line;
     s->col = col;
     s->nfields = nfields;
+    s->stmt = g_stmt;
     s->bytes = 0;
     s->type_acyclic = 1;
     s->no_stack = 0;
@@ -1984,6 +2045,26 @@ void aif_var_note_scope(int fn, const char* name, int scope) {
     }
     int m = scope_lca(var_scope[key], scope);
     if (m >= 0) var_scope[key] = m;
+}
+
+// Called at every read of a binding. Declines rather than guesses in the two
+// cases where the answer would not mean anything: a name with no declaration on
+// record yet (a global, or an assignment the walk reached first -- the same case
+// aif_var_scope returns -1 for), and a read that is not underneath its declaring
+// scope's statement list at all.
+void aif_var_note_use(int fn, const char* name, int scope) {
+    (void)scope;
+    int key = aif_key_var(fn, name);
+    int d = (key < var_scope_cap) ? var_scope[key] : -1;
+    if (d < 0 || d >= scope_stmt_cap) return;
+    int at = scope_stmt[d];
+    if (at < 0) return;
+    key_last_stmt_grow(key);
+    if (at > key_last_stmt[key]) key_last_stmt[key] = at;
+}
+
+int aif_key_last_stmt(int key) {
+    return (key < 0 || key >= key_last_stmt_cap) ? -1 : key_last_stmt[key];
 }
 
 // -1 when the name has no declaration on record -- a global, or an assignment
@@ -3624,6 +3705,27 @@ static int arena_would_serve(int site_id, int cand) {
     return 1;
 }
 
+// SPEC 5.2.1.1, as an *input* to placement rather than a consequence of it: what
+// a bracketed call sitting in `cand` would serve, had `cand` an arena. Defined
+// with the bracket machinery below, because it asks that machinery's obligations
+// rather than a second copy of them, and declared here because aif_place_arenas
+// is its only caller.
+static long bracket_candidate_serves(int cand, long* held, long* live);
+
+// M3.2c. Defined with the bracket machinery it reads; declared here because the
+// trace in aif_place_arenas is the first thing to ask for it.
+static int arena_stmt_range(int scope, int* first, int* last);
+
+// Placement is the input to bracketing now, so a bracket answer cached before
+// placement ran is stale. aif_check_pins asks for one, so this is not
+// hypothetical.
+static void bracket_invalidate(void);
+
+// 1 once aif_place_arenas has run. Read by bracket_place to decide whether a
+// cost-model arena is a region it may bracket into -- see the note above
+// enclosing_pinned_region for why the answer used to be "never".
+static int arenas_placed;
+
 // Chosen after the fixed point, because every input is a converged fact.
 void aif_place_arenas(void) {
     // Innermost-first: a higher scope id is a scope created later, and the walk
@@ -3659,12 +3761,59 @@ void aif_place_arenas(void) {
             held += (long)sites[k].bytes * w;
             live += (long)sites[k].bytes;
         }
+        // The other half of the traffic, and on this corpus it is nearly all of
+        // it: 198 of 236 blocked sites are in a callee, where arena_would_serve
+        // cannot reach them by construction -- enclosing_region walks a lexical
+        // tree rooted per function, so scope_lca across two owners is -1 whatever
+        // the escape says. Those sites are asked of the bracket obligations
+        // instead, which are a call-graph question and answer across functions.
+        //
+        // This is the clause that makes an automatic region worth placing on g2:
+        // every DrawCmd in the frame loop is allocated inside `cull`, so the
+        // lexical sum above is 0 and the scope was never a candidate at all.
+        served += bracket_candidate_serves(s, &held, &live);
         if (served == 0) continue;
 
         long benefit = served * (AIF_ALPHA_T2 - AIF_ALPHA_T1)
                      - (long)AIF_ARENA_SETUP
                      - (AIF_LAMBDA_NUM * (held - live)) / AIF_LAMBDA_DEN;
         if (benefit > 0) scopes[s].arena = 1;
+    }
+
+    // From here a cost-model arena is as good a region to bracket into as a
+    // written one, and any answer cached while that was false has to go.
+    arenas_placed = 1;
+    bracket_invalidate();
+
+    // M3.2b's data, on demand. A field nothing reads yet is a field nothing has
+    // checked, and "the IR did not change" only proves it is inert -- not that
+    // it is right. Sibling of AIF_BRACKET_TRACE, and prints once because
+    // aif_place_arenas runs once.
+    if (getenv("AIF_STMT_TRACE") != NULL) {
+        for (int s = 0; s < scope_count; s++) {
+            if (!scopes[s].arena) continue;
+            int lo = -1, hi = -1;
+            if (arena_stmt_range(s, &lo, &hi)) {
+                fprintf(stderr, "aif: arena scope %d extent [%d,%d]%s\n", s, lo, hi,
+                        scopes[s].region_name >= 0 ? " (written)" : " (auto)");
+            } else {
+                fprintf(stderr, "aif: arena scope %d extent whole-block%s\n", s,
+                        scopes[s].region_name >= 0 ? " (written)" : " (auto)");
+            }
+        }
+        // Over the buckets rather than key_by_id, which is built further down
+        // the file than this runs.
+        for (int b = 0; b < AIF_KEY_BUCKETS; b++) {
+            for (KeyNode* kn = key_buckets[b]; kn; kn = kn->next) {
+                if (kn->kind != AIF_KEY_VAR) continue;
+                int last = aif_key_last_stmt(kn->id);
+                if (last < 0) continue;
+                int d = (kn->id < var_scope_cap) ? var_scope[kn->id] : -1;
+                fprintf(stderr, "aif: last-use %s.%s scope %d stmt %d\n",
+                        kn->a >= 0 && kn->a < fn_count ? aif_str(fns[kn->a].name) : "?",
+                        aif_str(kn->b), d, last);
+            }
+        }
     }
 }
 
@@ -4101,6 +4250,12 @@ typedef struct {
     int caller;
     int callee;
     int scope;      // the caller's scope the call sits in, for "calls in a region"
+    // M3.2, and the reason the call edge needs it as much as the site does: the
+    // clause that refuses `g2.psm` is "an opaque call is in the region body",
+    // asked of the whole block. A non-lexical extent has to ask it of a
+    // statement range instead, and `clock_gettime_nsec_np` sits outside the one
+    // that matters.
+    int stmt;
 } CallEdge;
 
 static CallEdge* call_edges;
@@ -4147,6 +4302,7 @@ void aif_call_edge(int caller, int callee, int scope) {
     e->caller = caller;
     e->callee = callee;
     e->scope = scope;
+    e->stmt = g_stmt;
 }
 
 // A call this compilation cannot summarise: a sealed function, or an extern
@@ -4164,6 +4320,7 @@ void aif_call_opaque(int caller, int scope) {
     e->caller = caller;
     e->callee = -1;
     e->scope = scope;
+    e->stmt = g_stmt;
 }
 
 void aif_note_owner_use(int fn, int vs) {
@@ -4574,6 +4731,32 @@ static int bracket_site_bounded(int s, const Bits* confined, const Bits* extent,
             return bracket_reject(s, "owner site outside the extent", o);
         }
     }
+    // **The inverse, and it is a separate obligation rather than the same one
+    // read backwards.** Above asks that nothing outside the extent *owns* this
+    // value, which is about the value outliving the region. This asks that this
+    // value owns nothing from outside, which is about the *teardown*: serving a
+    // container from the arena deletes its teardown (aif_frees_at_scope_node
+    // declines an arena site), and the teardown is what applies the element
+    // disposition. If an element came from outside the extent it is an ordinary
+    // heap object with a count, and the decrement that would have reclaimed it
+    // goes with the teardown.
+    //
+    // Measured, on test_48_aif_shared_elements: `temp` in borrow_into_temp is a
+    // List<Item> whose one element is borrowed out of `src`, allocated in the
+    // caller. Bracketed without this clause it read 22 allocated / 21 released /
+    // 1 leaked / 0 violations, and the program still printed PASS -- the leaked
+    // Item is one nobody reads again, so the ledger is the only witness.
+    //
+    // Rejecting the *container* rather than the element is deliberate: the
+    // element is not the site whose teardown was deleted, and an extent is
+    // served whole or not at all.
+    for (int o = 0; o < site_count; o++) {
+        if (!bits_test(&site_owner_sites[o], s)) continue;
+        int of = sites[o].fn;
+        if (of < 0 || of >= fn_count || !bits_test(extent, of)) {
+            return bracket_reject(s, "owns a site outside the extent", o);
+        }
+    }
     return 1;
 }
 
@@ -4581,6 +4764,12 @@ static int bracket_site_bounded(int s, const Bits* confined, const Bits* extent,
 static int* site_bracket;
 static int bracket_place_ready;
 static Bits bracket_place_extent, bracket_place_confined;
+// The candidate pass gets its own pair. It runs inside aif_place_arenas, which
+// is not on bracket_place's stack, but bracket_bytes_of and aif_bracket_served
+// both reuse the buffers above -- and two passes sharing one answer-in-progress
+// is the kind of aliasing that shows up as a placement that moved without a
+// source change.
+static Bits bracket_cand_extent, bracket_cand_confined;
 
 // One entry per bracketed call. SPEC 5.2.1.1 requires the manifest to record
 // them, because regime (a) is fragile as a language guarantee -- adding a second
@@ -4590,10 +4779,70 @@ typedef struct {
     int callee;     // function id
     int scope;      // the region scope that brackets it
     int call_scope; // the caller scope the call sits in, for the footprint estimate
+    // M3.2c. Which statement of the region the call sits at. A bracketed site's
+    // own `stmt` is a position in the *callee's* block and says nothing about
+    // where the region has to open; the call does.
+    int call_stmt;
 } Bracket;
 
 static Bracket* brackets;
 static int bracket_count, bracket_cap;
+
+// The obligations SPEC 5.2.1.1 puts on one bracketed call, asked of an arbitrary
+// region scope `r` instead of the one enclosing_region happens to return.
+//
+// **It reads no arena flag**, and that is the property the whole of M3.1 rests
+// on: aif_place_arenas can ask it about a scope it has not chosen yet, so the
+// circularity the note above describes ("placement depends on bracketing depends
+// on placement") is cut by making the dependency one-way. Placement asks a
+// hypothetical question here, decides, and bracketing then answers the real one
+// against the placement that resulted. Every input below is the call graph, the
+// points-to graph or scope shape; none of them is scopes[].arena.
+//
+// `extent` and `confined` belong to the caller because bracket_place needs both
+// again afterwards to stamp site_bracket, while the candidate pass needs only the
+// extent -- and one shared static would have the two passes overwriting each
+// other's answer mid-loop.
+static int bracket_edge_ok(int r, int caller_fn, const CallEdge* e,
+                           Bits* extent, Bits* confined) {
+    if (aif_fn_bracket_blockers(e->callee) != 0) return 0;
+
+    bracket_reachable(e->callee, extent);
+    region_confined(r, caller_fn, extent, confined);
+
+    // A call this compilation cannot summarise may be handed one of the
+    // extent's values, and FFI 5.1's `borrow` default is an assumption
+    // adequate for assigning a tier and **not** adequate for handing a callee
+    // arena memory -- SPEC 5.2.1.1's last paragraph says so in as many words.
+    // It is invisible to every check above: an undeclared extern's arguments
+    // produce only a borrow edge, which raises A and leaves E and the
+    // points-to graph alone. So it is asked of the call graph instead, over
+    // every function that can be running while the region is.
+    //
+    // AIF_BR_B_OPAQUE already covers the extent. What this adds is the
+    // caller's own region body, and the confined functions it reaches
+    // through calls other than the bracketed one.
+    for (int j = 0; j < call_edge_count; j++) {
+        CallEdge* o = &call_edges[j];
+        if (o->callee >= 0) continue;
+        if (bits_test(confined, o->caller)) return 0;
+        if (o->caller == caller_fn && scope_lca(o->scope, r) == r) return 0;
+    }
+
+    for (int s = 0; s < site_count; s++) {
+        int f = sites[s].fn;
+        if (f < 0 || f >= fn_count || !bits_test(extent, f)) continue;
+        if (!bracket_site_bounded(s, confined, extent, r, caller_fn)) return 0;
+    }
+    return 1;
+}
+
+static void bracket_invalidate(void) {
+    free(site_bracket);
+    site_bracket = NULL;
+    bracket_count = 0;
+    bracket_place_ready = 0;
+}
 
 static void bracket_place(void) {
     if (bracket_place_ready) return;
@@ -4611,48 +4860,26 @@ static void bracket_place(void) {
     for (int i = 0; i < call_edge_count; i++) {
         CallEdge* e = &call_edges[i];
         if (e->callee < 0 || e->callee >= fn_count) continue;
-        int r = enclosing_pinned_region(e->scope);
+        // Placement has run by now, so an arena the cost model chose is as good a
+        // region to bracket into as a written one -- that is M3.1, and the note
+        // above enclosing_pinned_region explains why the answer used to be
+        // "never". Before placement the only safe answer is still the pinned one:
+        // the auto table is empty, and a "no bracket" cached from it would
+        // outlive the placement that would have justified one. bracket_invalidate
+        // is what stops that cache from surviving; this clause is what stops it
+        // from being wrong in the window before it runs.
+        int r = arenas_placed ? enclosing_region(e->scope)
+                              : enclosing_pinned_region(e->scope);
         if (r < 0) continue;
-        if (aif_fn_bracket_blockers(e->callee) != 0) continue;
 
         // The bracketing caller. It is the region's owner and not e->caller,
         // because those are the same function -- e->scope is a scope of e->caller
-        // and enclosing_pinned_region walked its own parents -- and naming it this
+        // and enclosing_region walked its own parents -- and naming it this
         // way is what the obligation is actually about.
         int caller_fn = scopes[r].owner;
 
-        bracket_reachable(e->callee, &bracket_place_extent);
-        region_confined(r, caller_fn, &bracket_place_extent, &bracket_place_confined);
-
-        // A call this compilation cannot summarise may be handed one of the
-        // extent's values, and FFI 5.1's `borrow` default is an assumption
-        // adequate for assigning a tier and **not** adequate for handing a callee
-        // arena memory -- SPEC 5.2.1.1's last paragraph says so in as many words.
-        // It is invisible to every check above: an undeclared extern's arguments
-        // produce only a borrow edge, which raises A and leaves E and the
-        // points-to graph alone. So it is asked of the call graph instead, over
-        // every function that can be running while the region is.
-        //
-        // AIF_BR_B_OPAQUE already covers the extent. What this adds is the
-        // caller's own region body, and the confined functions it reaches
-        // through calls other than the bracketed one.
-        int opaque_in_region = 0;
-        for (int j = 0; j < call_edge_count && !opaque_in_region; j++) {
-            CallEdge* o = &call_edges[j];
-            if (o->callee >= 0) continue;
-            if (bits_test(&bracket_place_confined, o->caller)) opaque_in_region = 1;
-            else if (o->caller == caller_fn && scope_lca(o->scope, r) == r) opaque_in_region = 1;
-        }
-        if (opaque_in_region) continue;
-
-        int ok = 1;
-        for (int s = 0; s < site_count && ok; s++) {
-            int f = sites[s].fn;
-            if (f < 0 || f >= fn_count || !bits_test(&bracket_place_extent, f)) continue;
-            if (!bracket_site_bounded(s, &bracket_place_confined, &bracket_place_extent,
-                                      r, caller_fn)) ok = 0;
-        }
-        if (!ok) continue;
+        if (!bracket_edge_ok(r, caller_fn, e,
+                             &bracket_place_extent, &bracket_place_confined)) continue;
 
         if (bracket_count == bracket_cap) {
             bracket_cap = bracket_cap ? bracket_cap * 2 : 16;
@@ -4662,6 +4889,7 @@ static void bracket_place(void) {
         brackets[bracket_count].callee = e->callee;
         brackets[bracket_count].scope = r;
         brackets[bracket_count].call_scope = e->scope;
+        brackets[bracket_count].call_stmt = e->stmt;
         bracket_count++;
 
         for (int s = 0; s < site_count; s++) {
@@ -4752,6 +4980,151 @@ static long weight_in_own_fn(int site_scope) {
     long w = 1;
     for (int i = 0; i < loops; i++) w *= AIF_LOOP_ITERS;
     return w;
+}
+
+// SPEC 5.2.1.1 as an input to LAYOUT 7.1's cost model: what a bracketed call
+// sitting in `cand` would serve, had `cand` an arena.
+//
+// The cross-function mirror of arena_would_serve, and it has to be a separate
+// function rather than a clause in that one. arena_would_serve asks
+// `is_ancestor_or_self(cand, s->scope)`, and a site in a callee fails it however
+// its escape is spelled, because scopes[] is a lexical tree rooted per function.
+// No per-site clause can cross that; only the call graph can, which is what the
+// bracket obligations are asked of.
+//
+// **The per-site gate here is the bracketed one, not the lexical one** -- tier in
+// {T1,T2} and not explicitly dropped, exactly the two clauses
+// site_arena_scope_full applies once it has a bracket region. Applying the
+// lexical list instead would count in_container and is_list against these sites,
+// and those are precisely the clauses bracketing replaces: a bracketed value is
+// reclaimed with the region, so the container that holds it never hands its
+// pointer to the deallocator. Keeping this in step with that gate is the whole
+// correctness argument, so it reads those two conditions and no others.
+//
+// Weighting matches bracket_bytes_of and for the reason given above it: loop
+// depth is counted within a function, so the site's own depth and the call's
+// depth relative to `r` are two separate factors and their product is the count.
+static long bracket_candidate_serves(int cand, long* held, long* live) {
+    if (cand < 0 || cand >= scope_count || site_count == 0) return 0;
+    int caller_fn = scopes[cand].owner;
+    if (caller_fn < 0 || caller_fn >= fn_count) return 0;
+
+    bracket_prepare();
+    key_index_build();
+    site_owners_build();
+
+    long served = 0;
+    for (int i = 0; i < call_edge_count; i++) {
+        CallEdge* e = &call_edges[i];
+        if (e->callee < 0 || e->callee >= fn_count) continue;
+        // The call has to sit in this scope and belong to the function that owns
+        // it -- the same two facts enclosing_region would establish, asked
+        // directly because `cand` has no arena flag set yet for it to find.
+        if (e->caller != caller_fn) continue;
+        if (scope_lca(e->scope, cand) != cand) continue;
+        // Innermost-first, as the lexical loop above: an arena already placed
+        // between the call and `cand` brackets it first, and counting its traffic
+        // here too would justify `cand` with allocations it will never see. This
+        // is the automatic-placement form of the inert `region`.
+        int claimed = 0;
+        for (int p = e->scope; p >= 0 && p != cand; p = scopes[p].parent) {
+            if (scopes[p].arena) { claimed = 1; break; }
+        }
+        if (claimed) continue;
+        if (!bracket_edge_ok(cand, caller_fn, e,
+                             &bracket_cand_extent, &bracket_cand_confined)) continue;
+
+        long callw = weight_of(e->scope, cand);
+        for (int k = 0; k < site_count; k++) {
+            int f = sites[k].fn;
+            if (f < 0 || f >= fn_count || !bits_test(&bracket_cand_extent, f)) continue;
+            int tier = aif_tier_of(k);
+            if (tier != AIF_T1 && tier != AIF_T2) continue;
+            if (sites[k].no_stack) continue;
+            long w = weight_in_own_fn(sites[k].scope) * callw;
+            served += w;
+            if (held) *held += (long)sites[k].bytes * w;
+            if (live) *live += (long)sites[k].bytes;
+        }
+    }
+    return served;
+}
+
+// M3.2c. The statement range an arena at `scope` actually has to cover: from the
+// first statement that puts something in it to the last statement that still
+// reads something it holds. Returns 0 when the range cannot be narrowed, and
+// **every uncertainty returns 0 rather than a guess** -- a range that is too wide
+// is the arena we already emit, and a range that is too narrow frees memory the
+// program is still using.
+//
+// Positions are taken in `scope`'s own numbering. For a lexically served site
+// that is the site's own `stmt`; for a bracketed one it is the *call's*
+// statement, because the site's own position is an index into the callee's block
+// and says nothing about where this region opens.
+static int arena_stmt_range(int scope, int* first, int* last) {
+    if (scope < 0 || scope >= scope_count || !scopes[scope].arena) return 0;
+    bracket_place();
+
+    int lo = -1, hi = -1;
+    int any = 0;
+
+    for (int k = 0; k < site_count; k++) {
+        if (site_arena_scope(k) != scope) continue;
+        any = 1;
+        int at;
+        if (sites[k].scope == scope) {
+            at = sites[k].stmt;                 // lexical: the site is a statement here
+        } else {
+            at = -1;                            // bracketed: ask the call below
+            for (int b = 0; b < bracket_count; b++) {
+                if (brackets[b].scope != scope) continue;
+                if (brackets[b].call_scope != scope) continue;
+                bracket_reachable(brackets[b].callee, &bracket_cand_extent);
+                if (!bits_test(&bracket_cand_extent, sites[k].fn)) continue;
+                if (brackets[b].call_stmt < 0) return 0;
+                if (at < 0 || brackets[b].call_stmt < at) at = brackets[b].call_stmt;
+            }
+        }
+        if (at < 0) return 0;                   // unpositioned: cannot narrow
+        if (lo < 0 || at < lo) lo = at;
+        if (at > hi) hi = at;
+    }
+    if (!any || lo < 0) return 0;
+
+    // The end is the last *use*, not the last allocation, and it is asked of the
+    // keys because a value outlives the statement that made it. A key declared
+    // in a nested block is declined outright: key_last_stmt is recorded against
+    // that block's numbering, and there is no way from here to say which
+    // statement of `scope` contains it.
+    key_index_build();
+    for (int k = 0; k < key_count; k++) {
+        KeyNode* kn = key_by_id[k];
+        if (kn == NULL || kn->kind != AIF_KEY_VAR) continue;
+        int holds = 0;
+        for (int s = 0; s < site_count && !holds; s++) {
+            if (!bits_test(&pt[k], s)) continue;
+            if (site_arena_scope(s) == scope) holds = 1;
+        }
+        if (!holds) continue;
+        int d = (k < var_scope_cap) ? var_scope[k] : -1;
+        if (d < 0) return 0;                    // no declaration on record
+        // A key belonging to a *different* function needs no position here. It
+        // lives in the bracketed extent, and region_confined already proved every
+        // one of those activations is gone before the region exits -- that is the
+        // whole content of obligation 3. Asking it for a statement index of this
+        // block would be asking the wrong question, and declining on it would
+        // decline every bracketed region, which is all of the interesting ones.
+        if (scopes[d].owner != scopes[scope].owner) continue;
+        if (d != scope) return 0;               // same function, deeper: position unknown
+        int lu = aif_key_last_stmt(k);
+        if (lu < 0) return 0;                   // no use on record: do not narrow
+        if (lu > hi) hi = lu;
+    }
+
+    if (hi < lo) return 0;
+    if (first) *first = lo;
+    if (last) *last = hi;
+    return 1;
 }
 
 // `unsized` counts sites whose size the frontend never computed -- a string or a
@@ -5573,6 +5946,13 @@ int aif_order_site(int i) { return (i < 0 || i >= record_count) ? -1 : records[i
 // ============================================================================
 
 void aif_reset(void) {
+    g_stmt = -1;
+    free(scope_stmt);
+    scope_stmt = NULL;
+    scope_stmt_cap = 0;
+    free(key_last_stmt);
+    key_last_stmt = NULL;
+    key_last_stmt_cap = 0;
     for (int i = 0; i < pt_len; i++) bits_free(&pt[i]);
     for (int i = 0; i < holders_len; i++) bits_free(&holders[i]);
     for (int i = 0; i < holders_len; i++) bits_free(&container_of[i]);

@@ -191,8 +191,20 @@ measurement** — §9.3's table is hand-built with `clang -O2` invoked directly.
 
 ## M2 · Reuse analysis
 
-> **Projected prize: large on g2 and g6** — the two programs where allocation dominates. Attacks
-> the one axis that has never moved: Prismio allocates **20.2×–63.7×** more than idiomatic Rust.
+> **Reordered behind M3.1, 2026-08-27, and the exit gate below is not reachable as written.**
+> Reuse tokens pair a dead value with a same-size constructor *in the same branch*, which needs a
+> destructure-then-rebuild shape. **g1–g6 contain none**: `match` appears only in `g7.psm` and
+> `g7_substring.psm`. g2's 10.2 M allocations are `DrawCmd` literals pushed inside `cull`
+> ([g2.psm:62](aif/evidence/xlang/prismio/g2.psm)) — ~510 per frame × 20000 frames — which die in
+> `main` when the frame's `cmds` list drops and are rebuilt **in a different function** on the next
+> iteration. Cross-call, cross-iteration, ~510 blocks at once: that is an arena or a free list, not
+> a single same-branch token. g6 has the identical shape with `Order`.
+>
+> **The cited evidence does not say what this section said it said.** `g2_tuned.psm`'s own header:
+> the buffer is allocated **once outside the frame loop** and elements are mutated in place, and
+> "clearing and re-pushing would still allocate one DrawCmd per element per frame" because `List`
+> holds pointers. That is allocation hoisting plus boxed-element avoidance — **M4.2** — not reuse
+> analysis. Before building M2, restate its exit gate against a program that has the shape.
 
 **The problem.** AIF is a *classifier*. It reports 100% T0–T2 on g6 and still allocates 15.1 M
 times where Rust allocates 289 K. **Classification without reuse does not reduce allocation count.**
@@ -216,8 +228,10 @@ Reference Counting with Frame-Limited Reuse (MSR-TR 2021).
       automatic version was judged **not safe for space** and Koka deliberately does not do it.
       Either bound it or make it opt-in, and write down which.
 
-**Exit gate:** the standard gate, plus **allocation count on g2 and g6 must drop by ≥ 10×** —
-`bench.py`'s `allocs` column, windowed, not the process total.
+**Exit gate — restate before starting.** The standing text was *"allocation count on g2 and g6
+must drop by ≥ 10×"*, and the note above is why that cannot be met by reuse tokens: neither program
+contains the pattern they fire on. Either re-target the gate at `g7`, which does, or fold the g2/g6
+allocation count into M3 where the mechanism that moves it already lives.
 
 ---
 
@@ -241,11 +255,117 @@ polymorphism](#region-polymorphism), [sized allocation](#sized-allocation).
 2004) — **read the retrospective before the original**, it documents where region inference fails;
 Region-based memory management for Mercury.
 
-- [ ] **M3.1 — `CallerRegion` + container disposition**, designed several sessions ago, still
-      unbuilt. Unblocks *both* tiers, not only inference.
+- [x] **M3.1 — `CallerRegion` + container disposition.** **Built 2026-08-27.** Automatic
+      placement now reaches a callee's allocations, which is what the second recorded blocker
+      asked for. Three parts:
+      - **The obligations were factored out, not copied.** `bracket_edge_ok` in
+        `runtime/aif_support.c` asks SPEC 5.2.1.1's obligations of an *arbitrary* region scope
+        instead of the one `enclosing_region` returns. It reads the call graph, the points-to
+        graph and scope shape — **never `scopes[].arena`** — and that is the whole argument:
+        `aif_place_arenas` can ask it about a scope it has not chosen yet, so the recorded
+        circularity ("placement depends on bracketing depends on placement") is cut by making the
+        dependency one-way rather than by weakening an obligation.
+      - **`bracket_candidate_serves` feeds cross-function traffic into LAYOUT 7.1's cost model.**
+        `arena_would_serve` could not see it by construction — `is_ancestor_or_self` is a lexical
+        test on a per-function scope tree — so the frame-loop scope in `main` was never a
+        candidate at all: its lexical sum is 0 because every DrawCmd is allocated inside `cull`.
+      - **`bracket_place` now brackets into cost-model arenas**, not only `region`-pinned ones,
+        guarded by an ordering flag so a bracket answer cached before placement cannot survive it.
+      **Container disposition needed no work** — `elem_disposition_of`'s arena clause was landed
+      inert several sessions ago *in anticipation of exactly this change*, and its comment says so.
+- [ ] **M3.1b — the benchmarked `g2.psm` is still not placed, and declining is correct.** Its
+      timing harness calls `clock_gettime_nsec_np` **inside** the frame loop, and an opaque extern
+      in the region body is a sound rejection — it could be handed arena memory. `g2_region.psm`
+      earns its 0.46× by hand-placing `region frame_arena` *between* the two clock calls, which is
+      a sub-block extent. **So M3.2 is what unblocks the measured program, not more of M3.1**, and
+      the corpus copy `g2_frame_loop.psm` — same workload, no harness — is placed automatically
+      today. Do **not** "fix" this by editing `g2.psm`: it is the baseline every prior g2 number
+      was measured on.
 - [ ] **M3.2 — Non-lexical extent**: end a region at last use rather than scope close.
-- [ ] **M3.3 — `region` must warn when it serves zero allocations.** Cheap, and the current silence
-      is a user-visible trap — it was a 1.73× slowdown with no diagnostic for several sessions.
+      **This is what M3's exit gate now turns on**, because M3.1 built the placement machinery and
+      the only thing keeping the *benchmarked* `g2.psm` out is that its frame-loop block also holds
+      two `clock_gettime_nsec_np` calls. `g2_region.psm` gets its 0.46× by hand-placing the region
+      *between* them; M3.2 is the compiler deriving that range.
+      - [x] **M3.2a — statement positions.** Done 2026-08-27. `Site.stmt` and `CallEdge.stmt`,
+            stamped through `aifWalkChain` by a **one-based** cursor (`0` = not in a statement
+            list: a global needs a constant initializer and the language has no negative literal).
+            A scope is a lexical *set* of statements and carries no order, so nothing downstream
+            could express "ends at last use" without this. **Verified inert**: fixpoint holds and
+            the IR is byte-identical to S19b for all 29 corpus programs and 72 test programs.
+      - [x] **M3.2b — last use.** Done 2026-08-27. `scope_stmt[]` (per scope, the statement of
+            *that* scope the walk is inside) plus `key_last_stmt[]`, fed by `aif_var_note_use` at
+            every read of a reference. The array rather than one cursor is what answers a nested
+            use: while the walk is inside an inner block, `scope_stmt[outer]` still names the
+            statement of `outer` containing it, because only `outer`'s chain writes it. One slot
+            per key suffices because statements are walked in source order, so the max lands on
+            the last mention without knowing in advance which that is.
+            **Verified inert *and* verified correct** — byte-identical IR across corpus and tests,
+            and `AIF_STMT_TRACE=1` on `g2.psm` reports `main.cmds scope 92 stmt 2` against
+            statements `0: t0=clock`, `1: cmds=cull`, `2: drawn=submit`, `3: t1=clock`. The derived
+            extent is **[1,2]**, excluding both clock calls — exactly the range `g2_region.psm`
+            places by hand. A field nothing reads yet is a field nothing has checked; "the IR did
+            not change" only proves it inert.
+            **Caveat M3.2c must honour:** `aif_var_note_use` reads `var_scope[key]`, which the walk
+            is still LCA-merging, and skips when it is -1. The data is **not total** — a missing
+            last use must fall back to the *lexical* extent, never to a narrower one.
+      - [x] **The M3.2d fixture, written before the feature.**
+            `tests/test_71_nonlexical_extent.psm`, five exit shapes: straight-line, `continue`
+            after last use, `break` between allocation and last use, `return` from the middle, and
+            nested extents whose ranges differ. Baseline on S22b:
+            **79 allocated, 79 released, 0 leaked, 0 violations.** `allocated` may fall once an
+            arena serves these sites; what must not change is that whatever stays on the heap is
+            fully released and violations stay 0.
+      - [x] **M3.2c-i — the range of a *placed* arena.** Done 2026-08-27. `arena_stmt_range`
+            derives `[first, last]` in the region scope's own numbering: the start from the
+            statement of each served site (for a bracketed one, the **call's** statement, since
+            the site's own index is a position in the callee's block), the end from
+            `key_last_stmt` over the keys holding what the arena serves. **Every uncertainty
+            returns "whole block" rather than a guess** — a too-wide range is the arena already
+            emitted, a too-narrow one frees memory still in use.
+            Keys belonging to a *different* function are skipped rather than declined: they live
+            in the bracketed extent and `region_confined` already proved those activations are
+            gone before the region exits. Declining on them declined every bracketed region, which
+            is all the interesting ones — that was the first version and the trace caught it.
+            Verified: `AIF_STMT_TRACE=1` on `g2_frame_loop.psm` gives `arena scope 91 extent [0,1]`
+            against `0: cmds=cull`, `1: drawn=submit`, then three statements holding nothing.
+            Byte-identical IR vs S22b; suite 139/139.
+      - [ ] **M3.2c-ii — the range of a *candidate*, and this is the one that unblocks g2.**
+            **The earlier note in this file conflated the two and was wrong.** c-i answers "how
+            narrow can this arena be", which needs an arena to already exist. The benchmarked
+            `g2.psm` has none — M3.1 rejects it on the opaque calls *before* any range is computed
+            — so c-i can never fire there. The obligation check has to evaluate the range
+            **before deciding**, from the call edge's statement and the last use of keys holding
+            the extent's values.
+            **It is the M3.1 circularity again** (range depends on which sites are served, which
+            depends on acceptance, which depends on the range) and it breaks the same way: compute
+            the candidate range from `bracket_reachable` plus the points-to graph, neither of which
+            depends on the decision.
+      - [ ] **M3.2d — range-aware codegen.** Consumes c-i. `generateBlock` walks `block.child1`
+            with an index and opens/closes at `first`/`last` instead of at the braces.
+            **Verified prerequisite:** the parser sets only `child1` on a BLOCK
+            (`src/parse/stmt.psm:36`), while the AIF walk chains `child1`/`child2`/`child3` — the
+            latter two are always empty, so the analysis and codegen numberings agree. If that
+            ever stops being true the arena opens at the wrong statement.
+            Still the risky half: a missed pop leaks, a double pop frees the caller's arena, and
+            `tests/test_71_nonlexical_extent.psm` is the guard (baseline 79/79/0/0).
+      - [ ] **M3.2d — range-aware codegen. The risky one; do not start it without a fixture.**
+            `ir_region_begin`/`ir_region_enter` move from the block boundary to between statements,
+            and every `return`/`break`/`continue` inside the range must pop exactly once.
+            `generateRegionExits` and `ir_region_depth` already do this for lexical regions, so the
+            work is making existing machinery range-aware — but **a missed pop is a leak and a
+            double pop frees the caller's arena**, and neither is visible in a value. Write the
+            early-exit fixture first.
+- [x] **M3.3 — `region` warns when it serves zero allocations.** **Already built — this line was
+      stale, verified against the tree 2026-08-27.** `report.psm` emits
+      `region <name> serves no allocation; it costs an arena push and pop per entry and reclaims
+      nothing` plus a repair note, and `region_diagnostics` asserts all four cases on
+      `test_58_region_serves.psm`: it fires on the two inert regions and stays silent on the two
+      that serve 50 allocations each, which is what makes it a discriminator rather than a
+      substring search.
+      **M3.1 falsified its note and the note was corrected in the same session.** It read "a value
+      allocated in a callee cannot reach it", which is precisely what call-site placement changed.
+      It now names the real conditions: a callee called from more than one place, or a region
+      holding a call this compilation cannot see through.
 
 **Exit gate:** the standard gate, plus plain `g2.psm` must serve **> 0** arena objects without any
 annotation, and `region` on a zero-serving scope must emit a diagnostic.

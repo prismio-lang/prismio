@@ -723,6 +723,7 @@ fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
     aifStaticReturns = 0
     aifBudget = budget
     aifLoopDepth = 0
+    aifStmtCursor = 0
 
     if (ownedCollections) {
         aif_set_owned_collections(1)
@@ -1331,7 +1332,7 @@ fn aifReportInertRegions() {
                             aif_scope_region_col(s), 0,
                             str_concat(str_concat("region ", name),
                                        " serves no allocation; it costs an arena push and pop per entry and reclaims nothing"))
-            diag_note("an arena serves a value only where the region and the allocation are in the same function: a value allocated in a callee cannot reach it")
+            diag_note("an arena serves a value allocated in the same function, or one in a callee whose call this region brackets; a callee called from more than one place, or a region holding a call this compilation cannot see through, cannot reach it")
         }
         s = s + 1
     }

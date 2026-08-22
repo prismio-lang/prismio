@@ -767,12 +767,18 @@ def run_region_diagnostic_test():
     if "region:scope" in other.stdout:
         problems.append("region:scope is back -- it reads as a placement and is not one")
 
-    # The corrected budget estimate. 64 before the cost model learned the
-    # codegen gate's in_container clause, 0 after, and the arena holds zero.
+    # The budget estimate, and it has read three different numbers for three
+    # different reasons: 64 before the cost model learned the codegen gate's
+    # in_container clause, 0 after, and 108 once automatic call-site placement
+    # gave test_49 an arena that actually holds something. The assertion is not
+    # "zero" and never was -- it is that the estimate describes the build, so a
+    # non-zero arena must report non-zero bytes and an inert one must report 0.
+    # test_57 below still covers the inert direction.
     budget = run_command([str(PRISMIO_EXE), "aif", str(TEST_DIR / "test_49_aif_struct_fields.psm")])
-    if "peak-bytes  0 bytes" not in budget.stdout:
-        problems.append("test_49 still estimates arena bytes for an arena that "
-                        "serves nothing (REQUIREMENTS 19's gate reads this)")
+    if "peak-bytes  108 bytes" not in budget.stdout:
+        problems.append("test_49's arena bytes do not describe the build: expected "
+                        "108, the arena automatic placement gives it "
+                        "(REQUIREMENTS 19's gate reads this)")
 
     # SPEC 6.3's placement witness. `--why` explained the tier and said nothing
     # about where the value lives, so a reader who fixed the tier found the
@@ -3897,8 +3903,17 @@ def run_aif_struct_field_test():
         does not pay for a generated call.
     """
     print(f"\n{BLUE}--- Running aif_struct_fields ---{RESET}")
-    fixture = TEST_DIR / "test_49_aif_struct_fields.psm"
-    out = TEST_DIR / "t49_fields.ll"
+    # **Not test_49 any more, and the move is the point.** Automatic call-site
+    # placement (SPEC 5.2.1.1, the M3.1 session) reaches test_49's
+    # `make_inventory`: the Inventory is served by the arena, reclaimed in bulk,
+    # and no `__aif_release_Inventory` is generated at all. That is correct --
+    # test_49's ledger went from 146 allocated / 146 released to 9 / 9, still 0
+    # leaked and 0 violations -- but it removed two of the three subjects here.
+    # test_70 carries the same types with two call sites per constructor, which
+    # regime (a) refuses to bracket, so they stay on the heap in the shipped
+    # configuration and the generated release is once again the thing under test.
+    fixture = TEST_DIR / "test_70_struct_field_release.psm"
+    out = TEST_DIR / "t70_fields.ll"
 
     result = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(out)])
     if result.returncode != 0:

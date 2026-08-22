@@ -217,5 +217,7 @@
   "215": "2026-08-17 (second) — LAYOUT §8's forced candidate landed; read this before writing another brief",
   "216": "milestone_bench.py",
   "217": "Session of 2026-08-17 (second) — §8's forced candidate lands, and the IR differential turns out to have a concurrency hole",
-  "218": "5 · The accepted tradeoffs, reported anyway"
+  "218": "5 · The accepted tradeoffs, reported anyway",
+  "219": "add_binding",
+  "220": "call_edge_push"
 }

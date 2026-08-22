@@ -1,0 +1,182 @@
+// Struct-field ownership, on types an arena cannot take -- the sibling fixture
+// to test_49, and the reason it exists is a capability, not a duplication.
+//
+// test_49 asserted the generated `__aif_release_T` for `Inventory` and `Crate`
+// until automatic call-site placement (SPEC 5.2.1.1, the M3.1 session) started
+// reaching them: once a region brackets `make_inventory`, the Inventory is
+// served by the arena, reclaimed in bulk, and no release function is generated
+// at all. That is correct -- the ledger reads 9 allocated / 9 released / 0
+// leaked / 0 violations where it used to read 146 -- and it silently removed two
+// of the three subjects the struct-field test had.
+//
+// So the coverage moves here, onto types placement cannot claim. Every
+// constructor below has **two** call sites, and regime (a) requires a bracketed
+// callee to have exactly one (AIF_BR_B_SHARED_BODY). That keeps these types on
+// the heap in the *shipped* configuration -- not behind a flag, not at a
+// different analysis level -- which is the only place the assertion is worth
+// making. Deleting a second call site here does not fail this test; it quietly
+// stops testing anything, so if you touch one, check `aif` still reports these
+// types with `region:none`.
+
+import std.io
+
+struct Slot {
+    weight: Int
+}
+
+struct Item {
+    value: Int
+}
+
+// The mixed case, exactly as test_49 states it: an owned struct field, an owned
+// container field, and two scalars that must be stepped over.
+struct Inventory {
+    lead: Slot,
+    items: List<Item>,
+    capacity: Int,
+    version: Int
+}
+
+fn make_inventory(n: Int) -> Inventory {
+    let contents: List<Item> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(contents, Item { value: i })
+        i = i + 1
+    }
+    return Inventory {
+        lead: Slot { weight: 100 },
+        items: contents,
+        capacity: n,
+        version: 1
+    }
+}
+
+fn owned_struct_return(n: Int) -> Int {
+    let inv = make_inventory(n)
+    return inv.capacity + list_len(inv.items) + inv.lead.weight
+}
+
+// The second call site for `make_inventory`. Its whole job is to be a second
+// call site; the value it computes is checked only so that a compiler which
+// dropped the call would be caught by something other than this comment.
+fn owned_struct_again(n: Int) -> Int {
+    let inv = make_inventory(n)
+    return inv.version + list_len(inv.items)
+}
+
+// Called in a loop, so a missed release grows without bound and a doubled one
+// dies on the second iteration. Neither is visible in the value.
+fn per_iteration() -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < 20) {
+        total = total + owned_struct_return(3)
+        i = i + 1
+    }
+    return total
+}
+
+// Nested ownership: the release of a type whose field is another owning type
+// calls that type's release rather than freeing it, which would leak everything
+// hanging off it.
+struct Crate {
+    inner: Inventory,
+    label: Int
+}
+
+// Its own builder rather than `make_inventory`, for the reason test_49 records:
+// the facts are per site, not per call, so storing `make_inventory`'s result
+// into a field here would mark the literal *inside that function* as field-held
+// and this fixture would quietly stop releasing at the site it means to check.
+fn make_crate_inventory(n: Int) -> Inventory {
+    let contents: List<Item> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(contents, Item { value: i })
+        i = i + 1
+    }
+    return Inventory {
+        lead: Slot { weight: 5 },
+        items: contents,
+        capacity: n,
+        version: 2
+    }
+}
+
+// Second call site for `make_crate_inventory`.
+fn crate_inventory_again(n: Int) -> Int {
+    let inv = make_crate_inventory(n)
+    return inv.version + list_len(inv.items)
+}
+
+// Returned so the Crate escapes and takes T2. A Crate built and bound in one
+// scope would take the T0 clause and a frame slot has no release, so the nested
+// path would never run and this would pass for the wrong reason.
+fn make_crate(n: Int) -> Crate {
+    return Crate {
+        inner: make_crate_inventory(n),
+        label: 7
+    }
+}
+
+fn nested_owner(n: Int) -> Int {
+    let c = make_crate(n)
+    return c.label + list_len(c.inner.items) + c.inner.lead.weight
+}
+
+// Second call site for `make_crate`.
+fn nested_owner_again(n: Int) -> Int {
+    let c = make_crate(n)
+    return c.label + c.inner.capacity
+}
+
+// **The T0 owner.** `Holder` is small, does not escape, and nothing aliases it,
+// so it takes the T0 clause and lives in the frame -- nothing frees it and
+// nothing runs its release. The list stored in it is reclaimed by its own
+// binding, and barring that on the strength of `Holder` having a release
+// function would delete the only release there is.
+struct Holder {
+    items: List<Item>,
+    tag: Int
+}
+
+fn stack_owner_does_not_bar_its_field(n: Int) -> Int {
+    let contents: List<Item> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(contents, Item { value: i })
+        i = i + 1
+    }
+    let h = Holder { items: contents, tag: 3 }
+    return h.tag + list_len(h.items)
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    print("FAIL ")
+    print(label)
+    print(": got ")
+    print(got)
+    print(" want ")
+    println(want)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("owned_struct_return", owned_struct_return(4), 108)
+    bad = bad + check("owned_struct_again", owned_struct_again(4), 5)
+    bad = bad + check("per_iteration", per_iteration(), 2120)
+    bad = bad + check("nested_owner", nested_owner(5), 17)
+    bad = bad + check("nested_owner_again", nested_owner_again(5), 12)
+    bad = bad + check("crate_inventory_again", crate_inventory_again(5), 7)
+    bad = bad + check("stack_owner", stack_owner_does_not_bar_its_field(6), 9)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

@@ -1,0 +1,163 @@
+// The shape a non-lexical extent narrows, and the early exits that make
+// narrowing dangerous.
+//
+// **This fixture is deliberately older than the feature it guards.** M3.2 ends a
+// region at last use rather than at the closing brace, which means the arena
+// push and pop stop being the block's braces and become two points *inside* it.
+// Every way of leaving the block between those points then has to pop exactly
+// once: a missed pop leaks the arena, a doubled one pops the caller's, and
+// neither shows up in a value. test_48 spent this session proving that a program
+// can print PASS while leaking, so the check that matters here is the ledger --
+// run it under `--verify` and read `released` and `violations`, not `leaked`,
+// which counts arena memory that never went through the deallocator.
+//
+// Written against the *lexical* build so the numbers below are a baseline that
+// M3.2d must reproduce, not a prediction of what it will do. On build/S22b, the
+// last generation before any of this narrows:
+//
+//     aif-verify: 79 allocated, 79 released, 0 leaked, 0 violation(s)
+//
+// `allocated` is expected to fall once an arena serves these sites -- arena
+// memory does not pass the shim and so leaves the ledger entirely. What must not
+// change is that **whatever remains on the heap is fully released and
+// violations stay 0**, on every one of the five exit shapes below.
+
+import std.io
+
+struct Cmd {
+    id: Int,
+    weight: Int
+}
+
+fn build(n: Int) -> List<Cmd> {
+    let mut out: List<Cmd> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(out, Cmd { id: i, weight: i + 1 })
+        i = i + 1
+    }
+    return out
+}
+
+fn consume(cmds: List<Cmd>) -> Int {
+    let n = list_len(cmds)
+    let mut sum = 0
+    let mut i = 0
+    while (i < n) {
+        let c = list_get(cmds, i)
+        sum = sum + c.weight
+        i = i + 1
+    }
+    return sum
+}
+
+// The plain case. `cmds` is made at statement 1 and dead after statement 2, so
+// the statements on either side are what an extent must exclude -- and they are
+// what a lexical arena wrongly includes.
+fn straight_line(n: Int) -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < n) {
+        let before = i * 2
+        let cmds = build(3)
+        total = total + consume(cmds)
+        let after = i * 3
+        total = total + before + after
+        i = i + 1
+    }
+    return total
+}
+
+// `continue` taken *after* the last use: the extent is closed and the jump must
+// not pop it a second time.
+fn exit_by_continue(n: Int) -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < n) {
+        let cmds = build(2)
+        total = total + consume(cmds)
+        if (i == 1) {
+            i = i + 1
+            continue
+        }
+        total = total + 100
+        i = i + 1
+    }
+    return total
+}
+
+// `break` taken *between* the allocation and the last use, which is the case
+// that leaks if the exit path does not pop.
+fn exit_by_break(n: Int) -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < n) {
+        let cmds = build(4)
+        if (i == 2) {
+            total = total + consume(cmds)
+            break
+        }
+        total = total + consume(cmds)
+        i = i + 1
+    }
+    return total
+}
+
+// `return` straight out of the middle of the extent -- the deepest exit, and the
+// one that has to unwind the arena as well as the frame.
+fn exit_by_return(n: Int) -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < n) {
+        let cmds = build(3)
+        let got = consume(cmds)
+        if (got > 0 and i == 1) {
+            return total + got
+        }
+        total = total + got
+        i = i + 1
+    }
+    return total
+}
+
+// Nested: the inner block's values die before the outer block's do, so the two
+// extents are not the same range and must not be confused for one another.
+fn nested_extents(n: Int) -> Int {
+    let mut total = 0
+    let outer = build(2)
+    let mut i = 0
+    while (i < n) {
+        let inner = build(3)
+        total = total + consume(inner)
+        i = i + 1
+    }
+    total = total + consume(outer)
+    return total
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    print("FAIL ")
+    print(label)
+    print(": got ")
+    print(got)
+    print(" want ")
+    println(want)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("straight_line", straight_line(4), 54)
+    bad = bad + check("exit_by_continue", exit_by_continue(3), 209)
+    bad = bad + check("exit_by_break", exit_by_break(5), 30)
+    bad = bad + check("exit_by_return", exit_by_return(4), 12)
+    bad = bad + check("nested_extents", nested_extents(3), 21)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

@@ -12,9 +12,22 @@ The rule that decides which side anything falls on:
 > **If getting it wrong produces a miscompile, it belongs to the compiler.**
 > **If getting it wrong produces a link error or a missing feature, it does not.**
 
-**Last-good: `build/S15b`.** Suite 137/137, fixpoint `S15a == S15b`. Bootstrapped
-`S10b → … → S13b`; `S10b` and `E2` remain good behind it. The 2026-08-26 session
-landed M1.0 and M1.1 (the curated inlinable module), which is why the compiler moved.
+**Last-good: `build/S24b`.** Suite **139/139**, fixpoint `a24.ll == b24.ll`. Bootstrapped
+`S10b → … → S20b → S22b → S24b`; `S22b`, `S20b`, `S19b`, `S18b`, `S15b`, `S10b` and `E2` remain
+good behind it. **M3.2a, M3.2b and M3.2c-i are in and inert** — statement positions, last use, and
+the statement range of a placed arena, all byte-identical IR and each verified by
+`AIF_STMT_TRACE=1` rather than only by "nothing changed".
+**Next is M3.2c-ii**, the range of a *candidate*: c-i cannot unblock the benchmarked `g2.psm`
+because that program gets no arena for c-i to measure. See TODO § M3.2 — an earlier note in this
+file conflated the two. The 2026-08-27 session landed **M3.1** (automatic call-site placement), corrected the
+zero-serving-region note M3.1 falsified, and landed **M3.2a** (statement positions, verified
+byte-identical), which is why the compiler moved. S16/S17 are that
+session's intermediate generations and are **not** last-good — each leaked on a fixture.
+
+**Run the test suite alone.** Two concurrent runs corrupt each other: `no_inference` writes the
+fixed paths `tests/ni_release.exe` / `tests/ni_debug.exe`, and the toolchain object cache is
+shared. A "136/137 flake" and a "132/137 regression" last session were both overlap, and neither
+reproduced in isolation.
 
 ---
 
@@ -44,12 +57,29 @@ same date) then produced five items, ranked here by measured prize:
      close the remaining 0.05× on g3.
    Evidence: [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md).
 
-2. **Automatic arena placement does not fire on the corpus** — 0 of 10,202,214 allocations on g2,
-   where the `region` annotation now delivers **2.16×** on that same program. The escape hatch was
-   unblocked by the call-site placement work; inference did not follow it. Worth the distance
-   between plain g2 at 5.89× idiomatic Rust and `g2_region` at 2.62×. **This is the item that
-   decides whether the product claim is "tuned-Rust behaviour from untuned code" or
-   "…from code with one annotation".**
+2. ~~**Automatic arena placement does not fire on the corpus.**~~ **Half done, 2026-08-27 —
+   M3.1.** Placement now reaches a callee's allocations. On `aif/corpus/g2_frame_loop.psm`, with
+   no annotation and no source change, heap allocations go **63,220 → 2,020 (31×)**, 0 violations.
+   Corpus-wide brackets 2 → 6. Gate passed at corpus median 1.002×.
+   **What is left, and it is the whole reason this stays ranked first:**
+   - **The *benchmarked* `g2.psm` still does not fire, and declining is correct.** Its harness
+     calls `clock_gettime_nsec_np` **inside** the frame loop, and an opaque extern in the region
+     body could be handed arena memory. `g2_region.psm` earns its 0.46× by hand-placing the region
+     *between* the two clock calls — a **sub-block extent**, which is **M3.2**. That is the next
+     item, and it is what turns a 31× allocation drop into a wall-clock number.
+   - **M3's exit gate is red** until plain `g2.psm` serves > 0 arena objects unannotated.
+   - **Do not edit `g2.psm` to make this fire.** It is the baseline every prior g2 number was
+     measured on; `milestone_bench` checks its checksums before it times anything.
+   - g6 is blocked by obligation 2 — its callees store into parameters (`br_param=4`).
+   Evidence: [`RESULTS-M3-callerregion.md`](aif/evidence/RESULTS-M3-callerregion.md).
+
+2b. **M2 (reuse analysis) is not the next item, and its premise is wrong as written.** Reuse
+   tokens pair a dead value with a same-size constructor *in the same branch*; `match` appears in
+   **no corpus program at all** — not g1–g6 and not g7 — so there is nothing to pair anywhere in
+   the corpus. (An earlier note here said "g7 only"; that was a grep hitting the *word* in a
+   comment.) M2's exit gate asked
+   for a ≥10× allocation drop on g2 — **M3.1 delivered 31× on the corpus g2**. Restate that gate
+   against g7 before starting it. Detail in [`TODO.md`](TODO.md) § M2.
 3. **Inline element storage for `List<T>`** — ranked second at session 3, still unbuilt, still the
    only change projected to move the corpus band (~1.2–1.3× across the board). The representation
    is 9.23× of the g2 gap and 2.51× of the g4 gap against a **1.24–1.27×** compiler. Needs

@@ -93,6 +93,10 @@ fn aifSitesOf(nodePtr: String, fnId: Int, scope: Int) -> Int {
 
     if (e.kind == NodeKind.IDENTIFIER_EXPR) {
         if (aifIsRef(ty)) {
+            // M3.2b. Every read of a reference passes through here, which is what
+            // makes this the one place a last use can be counted without a second
+            // traversal disagreeing with this one about what a use is.
+            aif_var_note_use(fnId, e.s1, scope)
             return aifVsOfKey(aif_key_var(fnId, e.s1))
         }
         return aifVsEmpty()
@@ -508,9 +512,15 @@ fn aifWalk(nodePtr: String, fnId: Int, scope: Int) {
         let inner = aif_scope_new(scope, fnId)
         aif_scope_note_node(inner, nodePtr)
         aif_scope_set_loop_depth(inner, aifLoopDepth)
+        // M3.2. The three chains are one statement list, so they share one
+        // numbering. Saved and restored because `aifWalk` below descends into
+        // nested blocks, each of which numbers its own statements from 0.
+        let savedCursor = aifStmtCursor
+        aifStmtCursor = 1
         aifWalkChain(n.child1, fnId, inner)
         aifWalkChain(n.child2, fnId, inner)
         aifWalkChain(n.child3, fnId, inner)
+        aifStmtCursor = savedCursor
         return
     }
 
@@ -877,6 +887,14 @@ fn aifWalkChain(head: String, fnId: Int, scope: Int) {
                 if (aifSpawnIsJoined(n.next, n.s1)) { init.i1 = 1 }
             }
         }
+        // M3.2. Stamped before the statement is walked, so every site and call
+        // edge it creates carries the position -- and re-stamped each iteration
+        // rather than once per chain, because a nested block will have moved the
+        // engine's cursor by the time control returns here.
+        if (aifStmtCursor > 0) {
+            aif_stmt_at(scope, aifStmtCursor - 1)
+            aifStmtCursor = aifStmtCursor + 1
+        }
         aifWalk(p, fnId, scope)
         p = n.next
     }
@@ -1012,7 +1030,12 @@ fn aifBuild(module: ASTNode) {
                     paramPtr = param.next
                 }
 
+                // A function body is a statement list too, and the root scope is
+                // where a region on the whole body would sit.
+                let savedFnCursor = aifStmtCursor
+                aifStmtCursor = 1
                 aifWalkChain(d.child2, fid, root)
+                aifStmtCursor = savedFnCursor
             }
         }
         q = d.next
