@@ -12,8 +12,8 @@ The rule that decides which side anything falls on:
 > **If getting it wrong produces a miscompile, it belongs to the compiler.**
 > **If getting it wrong produces a link error or a missing feature, it does not.**
 
-**Last-good: `build/S12b`.** Suite 137/137, fixpoint `S12a == S12b`. Bootstrapped
-`S10b → S11a → S11b → S12a → S12b`; `S10b` and `E2` remain good behind it. The 2026-08-26 session
+**Last-good: `build/S15b`.** Suite 137/137, fixpoint `S15a == S15b`. Bootstrapped
+`S10b → … → S13b`; `S10b` and `E2` remain good behind it. The 2026-08-26 session
 landed M1.0 and M1.1 (the curated inlinable module), which is why the compiler moved.
 
 ---
@@ -35,9 +35,11 @@ same date) then produced five items, ranked here by measured prize:
      that motivated this item came from a hand-built baseline that put g3 at 1.01× before the
      change; the driver puts it at 1.12×. The *worth* reproduced; the baseline did not. **Treat
      "the first Prismio program to beat idiomatic Rust" as unsupported until re-measured.**
-   - **M1.1b keeps it opt-in**: the merge shells out to `llvm-extract`/`llvm-link` (Windows risk),
-     cold compile time is unmeasured, and `--verify`/object cache/`--target` are covered by
-     construction rather than measurement.
+   - **M1.1b is done.** The merge is in process (`LLVMLinkModules2` + a three-pass body delete),
+     byte-identical to `llvm-extract`'s output, builds with only `clang` on PATH, and the warm
+     compile-time cost fell to ~5%. `--verify`, `--target` and the object cache are exercised.
+     **The default is still off**, because the portability claim is a macOS PATH test rather than
+     a green CI on three platforms — that run is what should gate flipping it.
    - **M1.3 is untouched** — the hot container ops written in Prismio itself, which is what would
      close the remaining 0.05× on g3.
    Evidence: [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md).

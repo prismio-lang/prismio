@@ -1,0 +1,165 @@
+{
+  "meta": {
+    "label": "list_push split alone, feature off",
+    "old": "build/S14b",
+    "new": "build/S15b",
+    "runs": 25,
+    "tolerance_pct": 10.0,
+    "when": "2026-08-22 11:02:24",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "results": {
+    "g1": {
+      "old_loop_ms": [
+        24.09895,
+        23.181499,
+        26.723409
+      ],
+      "new_loop_ms": [
+        24.273604,
+        23.216967,
+        27.188724
+      ],
+      "ratio": 1.00724736969868,
+      "old_rss_mb": 2.15625,
+      "new_rss_mb": 2.15625,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 61784,
+      "new_exe_bytes": 61832,
+      "baselines": {},
+      "checksums": [
+        "checksum alive 2000",
+        "checksum beyond 1095"
+      ],
+      "runs": 25
+    },
+    "g2": {
+      "old_loop_ms": [
+        104.664694,
+        100.994669,
+        110.708151
+      ],
+      "new_loop_ms": [
+        106.434953,
+        101.327441,
+        113.973722
+      ],
+      "ratio": 1.0169136213210541,
+      "old_rss_mb": 3.28125,
+      "new_rss_mb": 3.28125,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 61496,
+      "new_exe_bytes": 61544,
+      "baselines": {},
+      "checksums": [
+        "checksum submitted 10020000",
+        "checksum culled 9980000"
+      ],
+      "runs": 25
+    },
+    "g3": {
+      "old_loop_ms": [
+        51.035578,
+        49.053981,
+        63.455775
+      ],
+      "new_loop_ms": [
+        50.872121,
+        48.644202,
+        52.219694
+      ],
+      "ratio": 0.9967971950861416,
+      "old_rss_mb": 2.6875,
+      "new_rss_mb": 2.6875,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 61864,
+      "new_exe_bytes": 61912,
+      "baselines": {},
+      "checksums": [
+        "checksum nodes 1365",
+        "checksum visited 1365",
+        "checksum visible 1365"
+      ],
+      "runs": 25
+    },
+    "g4": {
+      "old_loop_ms": [
+        68.058994,
+        64.452308,
+        71.742012
+      ],
+      "new_loop_ms": [
+        68.8163,
+        65.59265,
+        76.074902
+      ],
+      "ratio": 1.0111271994411202,
+      "old_rss_mb": 2.671875,
+      "new_rss_mb": 2.671875,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 61784,
+      "new_exe_bytes": 61832,
+      "baselines": {},
+      "checksums": [
+        "checksum entities 1500",
+        "checksum draws 1215783"
+      ],
+      "runs": 25
+    },
+    "g5": {
+      "old_loop_ms": [
+        77.312823,
+        76.941061,
+        91.018808
+      ],
+      "new_loop_ms": [
+        77.196696,
+        76.779996,
+        93.403957
+      ],
+      "ratio": 0.9984979593876686,
+      "old_rss_mb": 1.9375,
+      "new_rss_mb": 1.9375,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 62424,
+      "new_exe_bytes": 62472,
+      "baselines": {},
+      "checksums": [
+        "checksum entities 2000",
+        "checksum submitted 8000000",
+        "checksum batches 12",
+        "checksum evicted 0"
+      ],
+      "runs": 25
+    },
+    "g6": {
+      "old_loop_ms": [
+        225.972756,
+        216.122132,
+        239.909914
+      ],
+      "new_loop_ms": [
+        225.54001,
+        216.860575,
+        253.76578
+      ],
+      "ratio": 0.9980849638351978,
+      "old_rss_mb": 4.109375,
+      "new_rss_mb": 4.109375,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 62600,
+      "new_exe_bytes": 62648,
+      "baselines": {},
+      "checksums": [
+        "checksum alive 120000",
+        "checksum orders 13800000",
+        "checksum kills 120000"
+      ],
+      "runs": 25
+    }
+  },
+  "gate": {
+    "passed": true,
+    "failures": []
+  }
+}

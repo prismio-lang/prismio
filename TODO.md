@@ -75,12 +75,15 @@ touched, in the same session:
 
 ## M1 · Close the runtime call seam
 
-> **Measured, through the driver: corpus median 0.864×**, range 0.481–0.982×, RSS and exe size
-> unmoved. g5 goes **2.69× → 1.29× of idiomatic Rust**. **No language change.** Still the largest
-> measured item in the project. M1.0 and M1.1 are done;
-> [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md) has both.
-> **The exit gate is not met** — g3 reads 1.05× of idiomatic Rust, not < 1.00×, and the 0.94×
-> that number came from did not survive re-measurement. See the exit gate below.
+> **Done, except for its own exit gate. Measured through the driver: corpus median 0.812×**, range
+> 0.450–0.963×, RSS and exe size unmoved, suite 137/137. g5 goes **2.69× → 1.26× of idiomatic
+> Rust**. **No language change**, and it remained the largest measured item in the project.
+> All of M1.0–M1.3 in [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md).
+> **The exit gate is not met and M1 cannot meet it** — g3 reads 1.04×, not < 1.00×, and the seam on
+> g3 is already fully closed. The 0.94× that set the target was hand-built and did not survive
+> re-measurement. See the exit gate below.
+> **Still opt-in** behind `PRISMIO_INLINE_RUNTIME=1`: the portability claim is a macOS PATH test,
+> and a green CI on three platforms is what should gate flipping the default.
 
 **The problem.** Every container access (`list_get`, `list_set`, `list_len`, `list_push`) is a
 `bl` into the separately-compiled C runtime. `cull_into` compiles to 53 instructions containing two
@@ -116,28 +119,68 @@ compilation](#whole-program-compilation), [summary-based LTO](#summary-based-lto
       quiet in the shipped configuration only because the cost model declines it at its current
       size, so `run_curated_closure_test` asserts the property rather than trusting it — verified
       to fail when `list_push` is added back.
-- [ ] **M1.1b — What keeps it opt-in.** Each is a reason the default has not flipped:
-      - [ ] **Port the merge off the `llvm-extract`/`llvm-link` binaries** to `LLVMLinkModules2`
-            plus basic-block deletion, in `llvm-api-backend.c` where the LLVM dependency already
-            lives (`:2667` already parses IR in process). `prismio_llvm.h` exists because the
-            Windows installer is minimal, and CI runs three platforms.
-      - [ ] **Measure cold compile time.** §7's 1.18× is warm and one program; this adds two tool
-            invocations to a cold build, which already regressed 19–28%.
-      - [ ] **Exercise `--verify`, the object cache and `--target`.** Covered by construction —
-            verify define and target flags are both in the cache key — but not by measurement.
+- [x] **M1.1b — What kept it opt-in.** All three done; see
+      [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md) §9 and §10. **The default is still
+      off, on purpose:** the portability claim is a PATH test on macOS showing the compiler no
+      longer *invokes* `llvm-extract`/`llvm-link`, which is not the same as a green CI on three
+      platforms. That run is what should gate flipping it, not another local measurement.
+      - [x] **Merge ported off the `llvm-extract`/`llvm-link` binaries.** `ir_curate_module` and
+            `ir_link_modules` in `llvm-api-backend.c`; `LLVMLinkModules2` added to
+            `prismio_llvm.h` on both paths. Output is **byte-identical** to what `llvm-extract`
+            produced apart from the `ModuleID`/`source_filename` path lines, and `g2_tuned` builds
+            correctly with **only `clang` on PATH**. Also **cheaper**: two process spawns removed
+            takes the warm compile-time cost from ~16% to **~5%**, first build 1.26× → 1.16×.
+            The C API has no `Function::deleteBody` and erasing blocks front-to-back breaks on any
+            CFG back edge, so the body is emptied in three passes — RAUW to `undef`, erase
+            instructions (which is what drops the block-to-block references), then erase blocks —
+            followed by a fixpoint sweep for unreferenced declarations, which is what
+            `llvm-extract` gets from GlobalDCE.
+      - [x] **Cold compile time measured.** **+74 ms once, +16 ms per build after** — 1.35× on a
+            first build, **1.18× warm**, 1.31–1.37× permanently uncached. The one-time cost is
+            compiling lang_runtime.c to IR (49 ms) plus the extract (8 ms); reusing that IR to
+            produce the object too would recover only ~14 ms of 57.
+      - [x] **`--verify`, the object cache and `--target` exercised.** All three work.
+            `--verify` and each `--target` take their own cache entry, as the key intends.
+            **Found and fixed a real defect on the way**: `PRISMIO_OBJ_CACHE=0` did not reach the
+            curated module, which is the same stale-after-a-clang-upgrade hazard the bypass exists
+            for. `PRISMIO_OBJ_CACHE_TRACE=1` now reports the curated module too.
 
-- [ ] **M1.2 — Cost it.** M1.1's route drops the two risks that dominated this item: no `-flto`
-      means no linker-plugin portability question, and no attribute stamping means no per-target
-      CPU string. What remains and is still unmeasured: compile time **cold** (§7 measures warm,
-      one program; the cold path already regressed 19–28%), RSS, `--verify`, the object cache, and
-      `--target`. **`-g` is the risk**: it drops the object step to `-O0`, so the merge must not
-      silently change what `-g` builds.
-- [ ] **M1.3 — Decide on the deeper form.** Either write the hot container ops in Prismio itself
-      (they then land in the same module for free, and compound with monomorphisation), or adopt
-      ThinLTO-style summaries if the merge stops scaling.
+- [x] **M1.2 — Cost it.** Done; the route chosen in M1.1 dropped the two risks that dominated
+      this item before it started. **Compile time**: +~5% warm, 1.16× on a first build after the
+      in-process port (was 1.18×/1.35× when it shelled out). **RSS**: unmoved — 1.000× on four
+      programs, 0.968× and 0.996× on the other two. **Exe size**: unchanged, because
+      `available_externally` emits no code. **`--verify`, the object cache and `--target`**: all
+      exercised and working, each taking its own cache entry. **`-g`**: the merge is declined
+      outright under `-g`, since the object step is `-O0` there and nothing would inline — so it
+      cannot change what `-g` builds, which was the named risk.
+- [x] **M1.3 — Decided by measurement, and it is neither option.**
+      [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md) §11.
+      **ThinLTO summaries: trigger not met** — the merge costs ~5% warm with a 13.4 KB cached
+      module; it has not stopped scaling. **Hot ops in Prismio: would change nothing for the seam**
+      — with the merge on, g3's `propagate` and `count_visible` already contain *zero* runtime
+      calls, so "landing in the same module" is already true. That option's real prize is
+      monomorphisation and layout, which is M4's inline storage, not M1.
+      **What the corpus actually still called was `list_push`**, and the obvious fix — export the
+      three `static`s it reads and curate it — was built and **changed nothing**: the inliner
+      declines it at `cost=675` against a threshold of 225, and emitted call counts were identical
+      on all six programs. *(That experiment's timing table showed g5 swinging 1.48× → 2.57× from a
+      change that provably emitted identical code. Check what was emitted before believing what was
+      timed.)*
+      **The answer was to outline the growth path.** 159 of `list_push`'s 227 IR lines are
+      realloc-and-copy that runs once per doubling; moving them into `list_push_grow` drops the
+      fast path to 69 lines, takes all three statics with it — so **no mutable global has to be
+      exported** — and removes every `bl _list_push` in the corpus (3,5,3,6,15,9 → all 0).
+      **Corpus median 0.858× → 0.812×**, g5 **0.450×** and now **1.26× of idiomatic Rust** (from
+      2.69× before M1), RSS still regressing nowhere. The compiler emits byte-identical IR with the
+      feature off, since this is a runtime change and not a codegen one.
 
-**Exit gate: NOT met.** The standard gate passes (median 0.864×). `--only g3` reads **1.05× of
-idiomatic Rust**, not < 1.00×. §9's table has now been re-measured rather than cited, and it moved:
+**Exit gate: NOT met, and M1 cannot meet it.** The standard gate passes (median **0.812×** after
+M1.3). `--only g3` reads **1.04× of idiomatic Rust**, not < 1.00× — measured three times across
+three compiler generations at 1.05×, 1.05× and 1.04×, so the shortfall is a result, not a draw.
+**And it is no longer a seam problem**: with the merge on, g3's hot functions `propagate` and
+`count_visible` contain zero runtime calls (§11.1). There is nothing left in M1 to close it with.
+The remaining distance is the 1.24–1.27× residual §5.1 has reported for eight sessions, and
+whatever g3-specific codegen sits under it — neither is what this milestone was about. §9's table has now been re-measured rather than cited, and it moved:
 §9.3 put g3 at 1.01× of idiomatic Rust *before* the change, `milestone_bench` puts it at 1.12×.
 The change's *worth* reproduced (1.064× against 1.07×); the baseline it was applied to did not.
 **"The first Prismio program to beat idiomatic Rust" is not currently supported by a driver-built

@@ -11,10 +11,11 @@ Don't re-derive what's in them.
 Everything below is verified, not asserted — the commands that verify it are in the next section.
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
-  IR for `src/main.psm` is byte-identical to the warm build's. Last-good is **`build/S12b`**
-  (`S10b → S11a → S11b → S12a → S12b`, `a.ll == b.ll`); `build/S10b` and `build/E2` remain good
-  behind it. The two generations after S11b exist because regenerating `embedded_sources.h` for
-  the M1.1 change to `build_driver.c` changes what the *next* compiler compiles.
+  IR for `src/main.psm` is byte-identical to the warm build's. Last-good is **`build/S15b`**
+  (`S10b → … → S15b`, `a.ll == b.ll`); `build/S10b` and `build/E2`
+  remain good behind it. The paired generations exist because regenerating `embedded_sources.h`
+  for a change to `build_driver.c` changes what the *next* compiler compiles, so each edit costs
+  two.
 - **Cross-language standing, re-measured 2026-08-25** against session 3's harness unchanged:
   **1.13×–5.89× idiomatic Rust, 1.70×–16.4× hand-tuned Rust**, residual **1.24×–1.27×**.
   The band has not moved in seven sessions. Full matrix and the four open items in
@@ -499,7 +500,46 @@ environment variables at all, and `roadmap.md` has no row about the call seam to
 `lastUpdated` on a page nothing changed would be claiming an edit that did not happen — which is
 the same rot the checklist exists to prevent, pointed the other way.
 
-**Still opt-in** behind `PRISMIO_INLINE_RUNTIME=1`, for three reasons tracked as M1.1b: the merge
+**M1.1b: two of the three cleared, and a defect found doing it.** Cold compile time is
+**+74 ms once, +16 ms per build after** — 1.35× on a first build, **1.18× warm**, 1.31–1.37×
+permanently uncached; the one-time cost is compiling lang_runtime.c to IR (49 ms) plus the extract
+(8 ms). `--verify` and `--target x86_64-apple-macos --sysroot <SDK>` both work with the merge on
+(cross-built x86_64 goes 9 → 0 `call _list_get`), and each takes its own cache entry as the key
+intends. **The defect: `PRISMIO_OBJ_CACHE=0` did not reach the curated module** — the same
+stale-after-an-in-place-clang-upgrade hazard the object-cache bypass exists for, and a bypass that
+skips half the build products is a bypass that does not bypass. Fixed, and
+`PRISMIO_OBJ_CACHE_TRACE=1` now reports `curated` alongside the objects. *(A first attempt at the
+`--target` check ran the flags in the wrong argument order, got the usage text back, and read
+`bl _list_get: 0` from a grep whose input did not exist — the same empty-input trap RESULTS-final
+§9.4's method note records. The number above is from a build whose output was confirmed to exist.)*
+
+**M1.1b's last item is done: the merge is in process.** `ir_curate_module` and `ir_link_modules`
+in `llvm-api-backend.c`, `LLVMLinkModules2` added to `prismio_llvm.h` on both paths. The curated
+module it produces is byte-identical to `llvm-extract`'s apart from the two path lines, and
+`g2_tuned` builds correctly with **only `clang` on PATH**. Removing the two process spawns also
+took the warm compile-time cost from ~16% to **~5%**. The C API has no `Function::deleteBody`, and
+erasing blocks front-to-back breaks on any CFG back edge — a terminator in a later block naming an
+earlier one keeps that block used — so the body is emptied in three passes: RAUW to `undef`, erase
+instructions (which is what drops the block-to-block references, a terminator being an
+instruction), then erase blocks.
+
+**M1.3 — decided by measurement, and it is neither option TODO.md offered.** ThinLTO's trigger
+("if the merge stops scaling") is not met: ~5% warm compile cost, 13.4 KB cached module. And
+writing the hot ops in Prismio would change nothing for the *seam*, because with the merge on g3's
+`propagate` and `count_visible` already contain zero runtime calls — that option's real prize is
+monomorphisation and layout, which is M4. What the corpus still called was `list_push`, and the
+obvious fix (export the three `static`s it reads, curate it) was built and **changed nothing**: the
+inliner declines it at `cost=675` against a threshold of 225, with identical emitted call counts on
+all six programs. **That experiment's timing table showed g5 swinging 1.48× → 2.57× from a change
+that provably emitted identical code** — check what was emitted before believing what was timed.
+The answer was to outline the growth path: 159 of `list_push`'s 227 IR lines are realloc-and-copy
+that runs once per doubling, and moving them into an exported `list_push_grow` drops the fast path
+to 69 lines, takes all three statics with it (**so no mutable global needs exporting**), and
+removes every `bl _list_push` in the corpus. **Corpus median 0.858× → 0.812×; g5 0.450×, now 1.26×
+of idiomatic Rust against 2.69× before M1 began.** The compiler emits byte-identical IR with the
+feature off, since this is a runtime change and not a codegen one.
+
+**Still opt-in** behind `PRISMIO_INLINE_RUNTIME=1`, now for one reason: the merge
 shells out to `llvm-extract`/`llvm-link` (a Windows risk — `prismio_llvm.h` exists because that
 installer is minimal, and CI runs three platforms); cold compile time is unmeasured; and
 `--verify`, the object cache and `--target` are covered by construction rather than by

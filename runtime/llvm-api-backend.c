@@ -2621,6 +2621,210 @@ static int jit_failed(const char *what, LLVMErrorRef err) {
     return 1;
 }
 
+// ============================================
+// M1.1 -- the curated inlinable module, in process
+//
+// build_driver.c owns the decision to merge and the caching; this file owns the
+// LLVM. That split is the same one everywhere else here: the driver drives
+// clang, the backend touches the C API.
+//
+// **Why this is not a shell-out to llvm-extract and llvm-link.** Both ship with
+// LLVM and both were used to develop this, but prismio_llvm.h exists because the
+// official Windows installer ships LLVM-C.lib and the DLL and very little else,
+// and CI runs three platforms. A feature that silently does nothing on one of
+// them is worse than a feature that is off. The C API is already a hard
+// dependency of this binary, so doing it here adds nothing to install.
+//
+// The output is byte-identical to `llvm-extract --func=... | sed 's/^define/&
+// available_externally/'` on this runtime, which is how the port was checked.
+
+// Empty a function without disturbing anything that referred to it.
+//
+// The C API has no Function::deleteBody, and the obvious loop -- erase basic
+// blocks front to back -- breaks on any loop in the CFG: a back edge is a
+// terminator in a later block naming an earlier one, so the earlier block still
+// has a use when it is erased. Doing it in three passes avoids needing to know
+// the CFG at all: drop the values first, then the instructions (which is what
+// removes the block-to-block references, since a terminator *is* an
+// instruction), and only then the now-unreferenced blocks.
+static void ir_delete_function_body(LLVMValueRef fn) {
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb;
+         bb = LLVMGetNextBasicBlock(bb)) {
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst;
+             inst = LLVMGetNextInstruction(inst)) {
+            LLVMTypeRef ty = LLVMTypeOf(inst);
+            if (LLVMGetTypeKind(ty) != LLVMVoidTypeKind) {
+                LLVMReplaceAllUsesWith(inst, LLVMGetUndef(ty));
+            }
+        }
+    }
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb;
+         bb = LLVMGetNextBasicBlock(bb)) {
+        LLVMValueRef inst = LLVMGetFirstInstruction(bb);
+        while (inst) {
+            LLVMValueRef next = LLVMGetNextInstruction(inst);
+            LLVMInstructionEraseFromParent(inst);
+            inst = next;
+        }
+    }
+    while (LLVMGetFirstBasicBlock(fn)) {
+        LLVMDeleteBasicBlock(LLVMGetFirstBasicBlock(fn));
+    }
+}
+
+// Read `runtime_ir`, keep the named functions as `available_externally` bodies,
+// reduce everything else to a declaration, drop what nothing refers to, and
+// write the result to `out_path`. Returns 0 on success.
+//
+// `available_externally` is the whole point: the body is there for the inliner
+// and emits no code, so a call the inliner declines still resolves to the
+// runtime archive and nothing is defined twice.
+int ir_curate_module(const char *runtime_ir, const char *const *names, int count,
+                     const char *out_path) {
+    LLVMContextRef ctx = LLVMContextCreate();
+    LLVMMemoryBufferRef buf = NULL;
+    char *err = NULL;
+
+    if (LLVMCreateMemoryBufferWithContentsOfFile(runtime_ir, &buf, &err) != 0) {
+        if (err) LLVMDisposeMessage(err);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+
+    LLVMModuleRef m = NULL;
+    // Takes the buffer either way, so it must not be disposed here -- the same
+    // ownership rule the JIT path documents.
+    if (LLVMParseIRInContext(ctx, buf, &m, &err) != 0) {
+        if (err) LLVMDisposeMessage(err);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+
+    for (LLVMValueRef fn = LLVMGetFirstFunction(m); fn; fn = LLVMGetNextFunction(fn)) {
+        if (!LLVMGetFirstBasicBlock(fn)) continue;  // already a declaration
+        size_t len = 0;
+        const char *name = LLVMGetValueName2(fn, &len);
+        int curated = 0;
+        for (int i = 0; i < count; i++) {
+            if (strcmp(name, names[i]) == 0) { curated = 1; break; }
+        }
+        if (curated) {
+            LLVMSetLinkage(fn, LLVMAvailableExternallyLinkage);
+        } else {
+            ir_delete_function_body(fn);
+            LLVMSetLinkage(fn, LLVMExternalLinkage);
+        }
+    }
+
+    // A `static` in C is `internal` here, and an internal *declaration* is not
+    // valid IR. These become external declarations, which is sound only because
+    // nothing curated references them -- run_curated_closure_test is what
+    // asserts that, and the dead-declaration sweep below removes them anyway
+    // whenever it holds.
+    for (LLVMValueRef g = LLVMGetFirstGlobal(m); g; g = LLVMGetNextGlobal(g)) {
+        if (LLVMGetInitializer(g)) {
+            LLVMSetInitializer(g, NULL);
+            LLVMSetLinkage(g, LLVMExternalLinkage);
+        }
+    }
+
+    // What llvm-extract gets from GlobalDCE. Without it the module carries every
+    // declaration in the runtime -- valid, but roughly four times the bytes for
+    // the merge to parse on every build. A fixpoint because deleting one
+    // declaration can be what makes the next one unreferenced.
+    int removed = 1;
+    while (removed) {
+        removed = 0;
+        for (LLVMValueRef fn = LLVMGetFirstFunction(m); fn; ) {
+            LLVMValueRef next = LLVMGetNextFunction(fn);
+            if (!LLVMGetFirstBasicBlock(fn) && !LLVMGetFirstUse(fn)) {
+                size_t len = 0;
+                const char *name = LLVMGetValueName2(fn, &len);
+                int curated = 0;
+                for (int i = 0; i < count; i++) {
+                    if (strcmp(name, names[i]) == 0) { curated = 1; break; }
+                }
+                if (!curated) { LLVMDeleteFunction(fn); removed = 1; }
+            }
+            fn = next;
+        }
+        for (LLVMValueRef g = LLVMGetFirstGlobal(m); g; ) {
+            LLVMValueRef next = LLVMGetNextGlobal(g);
+            if (!LLVMGetInitializer(g) && !LLVMGetFirstUse(g)) {
+                LLVMDeleteGlobal(g);
+                removed = 1;
+            }
+            g = next;
+        }
+    }
+
+    int failed = 0;
+    if (LLVMVerifyModule(m, LLVMReturnStatusAction, &err) != 0) {
+        fprintf(stderr, "ERROR: curated module failed verification: %s\n",
+                err ? err : "(no detail)");
+        failed = 1;
+    }
+    if (err) { LLVMDisposeMessage(err); err = NULL; }
+
+    if (!failed && LLVMPrintModuleToFile(m, out_path, &err) != 0) {
+        if (err) LLVMDisposeMessage(err);
+        failed = 1;
+    }
+
+    LLVMDisposeModule(m);
+    LLVMContextDispose(ctx);
+    return failed;
+}
+
+// Link `src_ir` into `dest_ir` and write the result. Returns 0 on success.
+//
+// LLVMLinkModules2 consumes the source module, so it must not be disposed here
+// on success -- the same ownership shape as LLVMParseIRInContext above.
+int ir_link_modules(const char *dest_ir, const char *src_ir, const char *out_path) {
+    LLVMContextRef ctx = LLVMContextCreate();
+    LLVMMemoryBufferRef dbuf = NULL, sbuf = NULL;
+    LLVMModuleRef dm = NULL, sm = NULL;
+    char *err = NULL;
+
+    if (LLVMCreateMemoryBufferWithContentsOfFile(dest_ir, &dbuf, &err) != 0) {
+        if (err) LLVMDisposeMessage(err);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+    if (LLVMParseIRInContext(ctx, dbuf, &dm, &err) != 0) {
+        if (err) LLVMDisposeMessage(err);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+    if (LLVMCreateMemoryBufferWithContentsOfFile(src_ir, &sbuf, &err) != 0) {
+        if (err) LLVMDisposeMessage(err);
+        LLVMDisposeModule(dm);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+    if (LLVMParseIRInContext(ctx, sbuf, &sm, &err) != 0) {
+        if (err) LLVMDisposeMessage(err);
+        LLVMDisposeModule(dm);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+
+    int failed = 0;
+    if (LLVMLinkModules2(dm, sm) != 0) {
+        fprintf(stderr, "ERROR: could not merge the curated runtime module\n");
+        failed = 1;  // sm is consumed even on failure
+    }
+
+    if (!failed && LLVMPrintModuleToFile(dm, out_path, &err) != 0) {
+        if (err) LLVMDisposeMessage(err);
+        failed = 1;
+    }
+
+    LLVMDisposeModule(dm);
+    LLVMContextDispose(ctx);
+    return failed;
+}
+
 int ir_jit_run_main(const char *program_name) {
     if (!g_module) {
         fprintf(stderr, "ERROR: --jit: no module was generated\n");

@@ -1300,6 +1300,42 @@ void* prismio_expect(void* p) {
     return p;
 }
 
+// The growth half of list_push, outlined so the other half can be inlined.
+//
+// M1.1 makes the hot container ops available to the inliner as
+// `available_externally` bodies. `list_push` was the one that never took: the
+// inliner priced it at **cost=675 against a threshold of 225** and declined at
+// every site, because the realloc-and-copy below is 159 of its 227 IR lines and
+// runs once per doubling rather than once per push. Measured: with it outlined,
+// `list_push` drops to 69 IR lines, every `bl _list_push` in the corpus
+// disappears, and g5 -- fifteen push sites -- runs **1.87x** faster than with
+// the seven-op curated set.
+//
+// It takes `void*` rather than `XefyList*` so the exported surface stays the
+// same shape as every other op here and the struct stays private to this file.
+//
+// **It has to be exported.** A curated body may only reference symbols the
+// runtime object actually defines; `static` here would put an undefined
+// `_list_push_grow` in every program that inlined the fast path.
+// run_curated_closure_test is what enforces that, and it is why the three
+// `static`s this function still touches -- rt_arena_hint, arena_depth,
+// arena_alloc_slot, all reached through rt_alloc -- stay on this side of the
+// split and out of the inlined half.
+void list_push_grow(void* lp) {
+    XefyList* l = (XefyList*)lp;
+    int nc = l->cap * 2;
+    // Back into the arena that owns this list, not into whatever the hint
+    // says right now: the push is usually outside the bracket that created
+    // the list, so rt_alloc here would take the heap and the block below
+    // would be an arena pointer handed to free().
+    void** nd = l->arena ? (void**)arena_alloc_at(l->arena, sizeof(void*) * (size_t)nc)
+                         : (void**)rt_alloc(sizeof(void*) * (size_t)nc);
+    for (int i = 0; i < l->len; i++) nd[i] = l->data[i];
+    if (!l->arena) rt_free(l->data);
+    l->data = nd;
+    l->cap = nc;
+}
+
 void list_push(void* lp, void* value) {
     XefyList* l = (XefyList*)lp;
     // AIF Level 5. The retain and the release are the same container's, driven by
@@ -1309,19 +1345,7 @@ void list_push(void* lp, void* value) {
     if (l->elem_own == XEFY_ELEM_CYCLE) cyc_retain(value);
     if (l->elem_own == XEFY_ELEM_RC_ATOMIC) rc_retain_atomic(value);
     if (l->elem_own == XEFY_ELEM_CYCLE_ATOMIC) { rc_retain_atomic(value); cyc_retain(value); }
-    if (l->len >= l->cap) {
-        int nc = l->cap * 2;
-        // Back into the arena that owns this list, not into whatever the hint
-        // says right now: the push is usually outside the bracket that created
-        // the list, so rt_alloc here would take the heap and the block below
-        // would be an arena pointer handed to free().
-        void** nd = l->arena ? (void**)arena_alloc_at(l->arena, sizeof(void*) * (size_t)nc)
-                             : (void**)rt_alloc(sizeof(void*) * (size_t)nc);
-        for (int i = 0; i < l->len; i++) nd[i] = l->data[i];
-        if (!l->arena) rt_free(l->data);
-        l->data = nd;
-        l->cap = nc;
-    }
+    if (l->len >= l->cap) list_push_grow(lp);
     l->data[l->len] = value;
     l->len = l->len + 1;
 }

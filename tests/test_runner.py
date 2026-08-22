@@ -4386,22 +4386,29 @@ def run_curated_closure_test():
     `compile_ir_to_object` merges a handful of the runtime's container ops into
     the program's module as `available_externally` bodies, so the inliner can see
     through the call. That is only sound for a function whose body references
-    nothing the runtime object keeps to itself.
+    nothing the runtime object keeps to itself: a `static` in lang_runtime.c is
+    absent from that object's symbol table, so inlining a body that reads one
+    produces a program referencing a symbol nothing defines.
 
-    **The failure it exists to prevent, stated exactly.** `list_push` reads
-    `rt_arena_hint`, `arena_depth` and `arena_alloc_slot`, all `static` in
-    lang_runtime.c and therefore absent from the object's symbol table. Merge its
-    body in, let the inliner take it, and the program references symbols nothing
-    exports:
+    **The failure it exists to prevent, stated exactly.** Before `list_push` was
+    split, its body read `rt_arena_hint`, `arena_depth` and `arena_alloc_slot` on
+    the growth path. Curating it and forcing the inline produced:
 
         Undefined symbols for architecture arm64:
           "_arena_alloc_slot", referenced from: _main in program.o
 
-    That is a reproduced failure, not a worry -- forcing the inline produces it.
-    It stays quiet in the shipped configuration only because the cost model
-    happens to decline `list_push` at its current size. A refactor that shrinks
-    it, or a threshold that moves, turns a silent success into a link error in
-    somebody else's build. So the property is asserted here rather than trusted.
+    That is a reproduced failure, not a worry. It is also why `list_push_grow`
+    exists and why it is exported rather than `static`: the outlined half keeps
+    those three statics on the runtime's side of the split, and the half that
+    gets inlined references only `list_push_grow` itself.
+
+    **Why it cannot be left to code review.** The rule is invisible at the call
+    site -- a curated op that violates it still compiles, still passes every
+    value test, and fails only at link time in whatever program happens to
+    inline it. `list_push` sat in violation harmlessly for a while purely because
+    the inliner priced it at cost=675 against a threshold of 225 and declined
+    everywhere. A refactor that shrinks a body, or a threshold that moves, is
+    enough to turn that silence into somebody else's link error.
 
     The curated list is read out of build_driver.c rather than duplicated, for
     the reason check_source_lists.py exists: two lists that must agree will

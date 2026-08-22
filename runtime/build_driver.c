@@ -39,6 +39,13 @@ typedef struct {
 const char* ir_target_triple(void);
 int ir_target_is_explicit(void);
 
+// M1.1's two LLVM operations. They live in llvm-api-backend.c because that is
+// where the C API dependency lives; this file drives clang and does not link
+// LLVM itself.
+int ir_curate_module(const char* runtime_ir, const char* const* names, int count,
+                     const char* out_path);
+int ir_link_modules(const char* dest_ir, const char* src_ir, const char* out_path);
+
 static const PrismioToolchainFile prismio_toolchain_files[] = {
     { "prismio_platform.h", 0, NULL,              1 },
     { "prismio_runtime.h",  0, NULL,              1 },
@@ -800,6 +807,8 @@ void compiler_set_workload_mode(int on) { g_workload_mode = on ? 1 : 0; }
 // the runtime sources that no program-specific input can change.
 static char* object_cache_dir(void);
 static char* object_cache_temp_path(const char* entry);
+static int object_cache_disabled(void);
+static int object_cache_trace(void);
 
 // ============================================
 // M1.1 -- the curated inlinable module
@@ -831,19 +840,30 @@ static char* object_cache_temp_path(const char* entry);
 //
 // **The curated set is not a list of whatever looked hot.** A function may be
 // curated only if every symbol its body references is *exported* by the runtime
-// object. `list_push` is the counter-example and it is excluded for that
-// reason: its body reads `rt_arena_hint`, `arena_depth` and `arena_alloc_slot`,
-// all `static` in lang_runtime.c and therefore absent from the object's symbol
-// table. Inlining it produces a program that references symbols nothing
-// exports, and the link fails with "Undefined symbols ... _arena_alloc_slot".
-// That is not hypothetical -- it was reproduced by forcing the inline. It stays
-// silent today only because the cost model happens to decline `list_push`
-// anyway, which is exactly the kind of luck that stops being luck later.
-// `run_curated_closure_test` is what keeps this honest.
+// object. A `static` in lang_runtime.c is absent from that object's symbol
+// table, so inlining a body that reads one produces a program referencing a
+// symbol nothing defines, and the link fails with "Undefined symbols ...
+// _arena_alloc_slot". That is a reproduced failure, not a worry.
+// `run_curated_closure_test` asserts the property rather than trusting it.
+//
+// `list_push` is the case worth knowing about, because it failed the rule twice
+// over and both halves had to be fixed:
+//
+//   1. *It referenced three `static`s* -- rt_arena_hint, arena_depth and
+//      arena_alloc_slot, all reached through rt_alloc on the growth path.
+//   2. *It was too big to inline anyway.* The inliner priced it at cost=675
+//      against a threshold of 225 and declined at every site, so adding it to
+//      this list changed nothing at all: the emitted call counts were identical
+//      with and without it, and the timing differences between those two builds
+//      were pure measurement noise.
+//
+// Outlining the growth half into `list_push_grow` fixes both at once -- it takes
+// the three statics with it, and it drops the remaining fast path from 227 IR
+// lines to 69. See the comment on list_push_grow in lang_runtime.c.
 static const char* const PRISMIO_CURATED_OPS[] = {
     "list_get", "list_set", "list_len",
     "list_set_elem_owner", "list_set_elem_releaser",
-    "rc_retain", "rc_release",
+    "rc_retain", "rc_release", "list_push",
 };
 #define PRISMIO_CURATED_OP_COUNT \
     ((int)(sizeof(PRISMIO_CURATED_OPS) / sizeof(PRISMIO_CURATED_OPS[0])))
@@ -855,48 +875,6 @@ static int inline_runtime_enabled(void) {
     return v && v[0] && !(v[0] == '0' && v[1] == '\0');
 }
 
-// `define <...>` -> `define available_externally <...>`, in place.
-//
-// Text rather than the C API because this runs on llvm-extract's output, where
-// every `define` at column 0 is one of the curated ops and nothing else is. The
-// C API version belongs in llvm-api-backend.c with the rest of the LLVM
-// dependency; this file drives clang and does not link LLVM.
-static int rewrite_to_available_externally(const char* ll_path) {
-    char* text = read_file(ll_path);
-    if (!text) return 1;
-
-    size_t len = strlen(text);
-    // Worst case every line gains the keyword.
-    size_t cap = len + 64 * 256 + 1;
-    char* out = (char*)malloc(cap);
-    if (!out) { free(text); return 1; }
-
-    size_t w = 0;
-    const char* p = text;
-    int at_line_start = 1;
-    while (*p) {
-        if (at_line_start && strncmp(p, "define ", 7) == 0) {
-            const char* kw = "define available_externally ";
-            size_t n = strlen(kw);
-            if (w + n >= cap) { free(out); free(text); return 1; }
-            memcpy(out + w, kw, n);
-            w += n;
-            p += 7;
-            at_line_start = 0;
-            continue;
-        }
-        at_line_start = (*p == '\n');
-        if (w + 1 >= cap) { free(out); free(text); return 1; }
-        out[w++] = *p++;
-    }
-    out[w] = '\0';
-
-    int result = write_text_file(ll_path, out);
-    free(out);
-    free(text);
-    return result;
-}
-
 // Produce the curated module, or NULL if it cannot be produced for any reason.
 //
 // NULL is always safe: the caller compiles exactly as it did before. That is the
@@ -906,7 +884,7 @@ static int rewrite_to_available_externally(const char* ll_path) {
 // Cached on the content of lang_runtime.c plus the compile flags, because the
 // module is a function of both and of nothing else in the program being built.
 // It is therefore produced once per toolchain per target and reused by every
-// subsequent build, which is what keeps the cost at "one llvm-link".
+// subsequent build, which is what keeps the steady-state cost at one in-process module merge.
 static char* build_curated_module(const char* target_flags) {
     char lr_source[1024];
     if (!find_toolchain_source(lr_source, sizeof(lr_source), "lang_runtime.c")) return NULL;
@@ -939,7 +917,23 @@ static char* build_curated_module(const char* target_flags) {
     free(dir);
     if (!entry) return NULL;
 
-    if (file_exists(entry)) return entry;
+    // PRISMIO_OBJ_CACHE=0 has to reach this cache too, and for the same reason
+    // it exists for the objects: the key covers the source and the flags but
+    // *not* the clang that turned one into the other, so an in-place toolchain
+    // upgrade leaves a stale entry that nothing notices. A bypass that skipped
+    // only half the build products would be a bypass that does not bypass.
+    //
+    // It also makes "cold build" mean the same thing here as everywhere else,
+    // which is what the compile-time measurement depends on.
+    int bypass = object_cache_disabled();
+    if (bypass) {
+        if (object_cache_trace()) fprintf(stderr, "[objcache off] curated\n");
+    } else if (file_exists(entry)) {
+        if (object_cache_trace()) fprintf(stderr, "[objcache hit] curated\n");
+        return entry;
+    } else if (object_cache_trace()) {
+        fprintf(stderr, "[objcache miss] curated\n");
+    }
 
     // Built to a pid-qualified sibling and renamed into place, never written at
     // the cache path directly -- two builds racing on one entry would otherwise
@@ -975,22 +969,27 @@ static char* build_curated_module(const char* target_flags) {
             if (run_build_command(command) != 0) failed = 1;
         }
 
-        // 2. the curated ops out of it. llvm-extract leaves everything else as a
-        //    declaration, which is what makes the module small enough that the
-        //    merge costs 1.18x rather than the whole runtime's 1.88x.
-        if (!failed) {
-            int w = snprintf(command, len, "llvm-extract");
-            for (int i = 0; i < PRISMIO_CURATED_OP_COUNT; i++) {
-                w += snprintf(command + w, len - w, " --func=%s", PRISMIO_CURATED_OPS[i]);
-            }
-            snprintf(command + w, len - w, " %s -S -o %s", q_raw, q_tmp);
-            if (run_build_command(command) != 0) failed = 1;
-        }
-
         free(command);
     }
 
-    if (!failed && rewrite_to_available_externally(tmp_ll) != 0) failed = 1;
+    // 2. the curated ops out of it, in process. Everything else is reduced to a
+    //    declaration and then dropped, which is what makes the module small
+    //    enough that the merge costs 1.18x rather than the whole runtime's
+    //    1.88x. Byte-identical to what `llvm-extract` produced when this was a
+    //    shell-out, which is how the port was checked.
+    if (!failed && ir_curate_module(tmp_raw, PRISMIO_CURATED_OPS,
+                                    PRISMIO_CURATED_OP_COUNT, tmp_ll) != 0) {
+        failed = 1;
+    }
+
+    // A bypassed cache builds to the temporary and uses it in place; installing
+    // it would repopulate the very entry the caller asked to skip.
+    if (!failed && bypass) {
+        free(q_src); free(q_tmp); free(q_raw);
+        if (tmp_raw) { delete_file(tmp_raw); free(tmp_raw); }
+        free(entry);
+        return tmp_ll;
+    }
 
     if (!failed && rename(tmp_ll, entry) != 0) {
         // A failed install is not a failed build: use the temporary this once
@@ -1026,20 +1025,8 @@ static char* merge_curated_into_program(const char* ir_file, const char* target_
     if (!merged) { free(curated); return NULL; }
     snprintf(merged, n, "%s.merged.ll", ir_file);
 
-    char* q_ir = command_quote_arg(ir_file);
-    char* q_cur = command_quote_arg(curated);
-    char* q_out = command_quote_arg(merged);
-    int len = (int)(strlen(q_ir) + strlen(q_cur) + strlen(q_out) + 64);
-    char* command = (char*)malloc(len);
-
-    int ok = 0;
-    if (command) {
-        snprintf(command, len, "llvm-link %s %s -S -o %s", q_ir, q_cur, q_out);
-        ok = run_build_command(command) == 0;
-    }
-
-    free(command);
-    free(q_ir); free(q_cur); free(q_out); free(curated);
+    int ok = ir_link_modules(ir_file, curated, merged) == 0;
+    free(curated);
 
     if (!ok) {
         delete_file(merged);

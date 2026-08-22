@@ -53,6 +53,7 @@
 #include <llvm-c/Error.h>
 #include <llvm-c/IRReader.h>
 #include <llvm-c/LLJIT.h>
+#include <llvm-c/Linker.h>
 #include <llvm-c/Orc.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
@@ -290,6 +291,12 @@ LLVMValueRef LLVMBuildGlobalStringPtr(LLVMBuilderRef, const char *Str, const cha
 
 // --- output / diagnostics ---------------------------------------------------
 LLVMBool LLVMVerifyModule(LLVMModuleRef M, int Action, char **OutMessage);
+
+// Merging the curated inlinable module into the program's (M1.1). One function,
+// with a plain shape -- two opaque module handles and an int result -- which is
+// why it is transcribable here where LLJIT and DIBuilder are not. It *consumes*
+// Src whether it succeeds or fails; ir_link_modules is written around that.
+LLVMBool LLVMLinkModules2(LLVMModuleRef Dest, LLVMModuleRef Src);
 LLVMBool LLVMPrintModuleToFile(LLVMModuleRef M, const char *Filename, char **ErrorMessage);
 char *LLVMPrintModuleToString(LLVMModuleRef M);
 void LLVMDisposeMessage(char *Message);
