@@ -306,6 +306,10 @@ fn typeIrKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.FLOAT) { return "double" }
     if (t.kind == TypeKind.BOOL) { return "i1" }
     if (t.kind == TypeKind.CHAR) { return "i8" }
+    // The fat String. Kept in step with `mapType` in src/ir/types.psm, which is
+    // the same mapping reached from a type *name* rather than a TypeInfo -- two
+    // functions answering one question, and a String that is a struct in one and
+    // a pointer in the other is a call that disagrees with its own declaration.
     if (t.kind == TypeKind.STRING) { return "ptr" }
     if (t.kind == TypeKind.PTR) { return "ptr" }
     if (t.kind == TypeKind.ENUM) { return "i32" }

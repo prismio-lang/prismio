@@ -16,10 +16,6 @@
 #endif
 #include PRISMIO_EMBEDDED_SOURCES_HEADER
 
-// ============================================
-// The toolchain source set
-// ============================================
-
 // The C sources a compiled program is linked against, plus the headers they need
 // available beside them when they are unpacked from the embedded copies. Keeping
 // this as one table means the filesystem search, the embedded unpacking and the
@@ -80,10 +76,6 @@ static const char* prismio_embedded_text(int index) {
     }
 }
 #endif
-
-// ============================================
-// Path helpers (compiler-side only)
-// ============================================
 
 static const char* path_file_name(const char* path) {
     const char* last_slash = strrchr(path, '/');
@@ -219,10 +211,6 @@ static char* compiler_temp_source_dir(const char* exe_file) {
     return compiler_temp_path(exe_file, suffix);
 }
 
-// ============================================
-// Directories
-// ============================================
-
 static int ensure_directory_exists(const char* directory) {
     if (!directory || directory[0] == '\0' || strcmp(directory, ".") == 0) {
         return 0;
@@ -260,10 +248,6 @@ int compiler_prepare_output_path(const char* output_path) {
     free(directory);
     return result;
 }
-
-// ============================================
-// Locating toolchain sources on disk
-// ============================================
 
 static int accept_if_exists(char* out, int out_size, const char* candidate) {
     if (!file_exists(candidate)) {
@@ -315,16 +299,13 @@ static int find_toolchain_source(char* out, int out_size, const char* filename) 
     return 0;
 }
 
-// ============================================
 // Locating the LLVM C API
-//
 // The backend is built on it, so a build that includes the backend needs LLVM's
 // headers to compile and its C API library to link. The two places to look are
 // the same two the bootstrap scripts read, in the same order and with the same
 // names: PRISMIO_LLVM_DIR overrides, otherwise third_party/llvm-paths.json,
 // which tools/setup_llvm.py writes. A third answer would be a third thing to
 // keep in step.
-// ============================================
 
 // The value of a top-level "key": "value" pair. Not a JSON parser and does not
 // pretend to be one: this reads a file this toolchain generated, whose shape is
@@ -395,10 +376,6 @@ static int find_llvm_paths(char* include_out, int include_size, char* lib_out, i
     free(text);
     return ok;
 }
-
-// ============================================
-// Embedded source unpacking
-// ============================================
 
 static int write_text_file(const char* path, const char* content) {
     FILE* file = fopen(path, "wb");
@@ -479,10 +456,6 @@ static int write_embedded_sources_header(const char* path) {
 }
 #endif
 
-// ============================================
-// Installed toolchain discovery
-// ============================================
-
 // An installed toolchain looks like
 //
 //     <prefix>/bin/prismio(.exe)
@@ -557,10 +530,6 @@ static int find_runtime_library(char* out, int out_size) {
     snprintf(stem, sizeof(stem), "runtime-%s", ir_target_triple());
     return find_toolchain_library(out, out_size, stem);
 }
-
-// ============================================
-// Runtime freshness (FNV-1a over the runtime sources)
-// ============================================
 
 // Content hashing, not timestamps: a checkout, a copy or a touch all move mtimes
 // without changing code, and mtime comparison across machines is unreliable.
@@ -647,10 +616,6 @@ char* compiler_installed_runtime_hash(void) {
     return text;
 }
 
-// ============================================
-// Build orchestration
-// ============================================
-
 static int run_build_command(const char* command) {
     int result = system(command);
     return result == 0 ? 0 : 1;
@@ -699,20 +664,16 @@ static int g_debug_info = 0;
 
 void compiler_set_debug_info(int on) { g_debug_info = on ? 1 : 0; }
 
-// ============================================
 // Cross-compilation
-//
 // The triple is not stored here: llvm-api-backend.c already holds it, because
 // that is where LLVM answered the question, and a second copy is a second thing
 // that can be stale. This file asks.
-//
 // The sysroot is stored here, and is not part of the target record, because it
 // is not a property of the triple -- it is where *this machine* keeps the SDK
 // for it. Two hosts building the same target legitimately pass different paths,
 // and the compiler has no business guessing either one: an SDK it picked itself
 // is exactly the kind of "helpfully wrong" that produces a link error someone
 // spends an afternoon on.
-// ============================================
 
 static char g_sysroot[1024] = "";
 
@@ -810,21 +771,17 @@ static char* object_cache_temp_path(const char* entry);
 static int object_cache_disabled(void);
 static int object_cache_trace(void);
 
-// ============================================
 // M1.1 -- the curated inlinable module
-//
 // Every container access in a Prismio loop is a `bl` into the separately
 // compiled C runtime, and the optimiser cannot see through it. Measured, that
 // seam is worth 1.03x-2.31x across the corpus and 2.00x on g2_tuned
 // (aif/evidence/RESULTS-M1-lto.md).
-//
 // The fix is Swift's `@inlinable` spelled at IR level: take the hot container
 // ops out of the runtime's own IR, rewrite their linkage to
 // `available_externally` -- the body is visible to the inliner but emits no
 // code -- and link that module into the program's before -O2. Calls that do not
 // get inlined still resolve to the runtime archive's copy, so nothing is
 // defined twice and the ordinary native link is unchanged.
-//
 // **Why not -flto.** It was measured and it does not work here without more
 // machinery, for a reason worth recording: the backend emits program functions
 // carrying no target attributes at all, while clang stamps `target-cpu` and a
@@ -837,7 +794,6 @@ static int object_cache_trace(void);
 // does so self-consistently under --target since one invocation supplies both
 // halves. The merge is also faster to compile (1.18x against -flto's 1.21x and
 // a whole-runtime merge's 1.88x) and needs no linker plugin.
-//
 // **The curated set is not a list of whatever looked hot.** A function may be
 // curated only if every symbol its body references is *exported* by the runtime
 // object. A `static` in lang_runtime.c is absent from that object's symbol
@@ -845,10 +801,8 @@ static int object_cache_trace(void);
 // symbol nothing defines, and the link fails with "Undefined symbols ...
 // _arena_alloc_slot". That is a reproduced failure, not a worry.
 // `run_curated_closure_test` asserts the property rather than trusting it.
-//
 // `list_push` is the case worth knowing about, because it failed the rule twice
 // over and both halves had to be fixed:
-//
 //   1. *It referenced three `static`s* -- rt_arena_hint, arena_depth and
 //      arena_alloc_slot, all reached through rt_alloc on the growth path.
 //   2. *It was too big to inline anyway.* The inliner priced it at cost=675
@@ -856,7 +810,6 @@ static int object_cache_trace(void);
 //      this list changed nothing at all: the emitted call counts were identical
 //      with and without it, and the timing differences between those two builds
 //      were pure measurement noise.
-//
 // Outlining the growth half into `list_push_grow` fixes both at once -- it takes
 // the three statics with it, and it drops the remaining fast path from 227 IR
 // lines to 69. See the comment on list_push_grow in lang_runtime.c.
@@ -1118,15 +1071,12 @@ static int link_against_runtime_library(const char* program_obj,
     return result;
 }
 
-// ============================================
 // Toolchain object cache
-//
 // Every build compiles the toolchain sources from scratch and deletes the
 // objects afterwards. Measured on this host: lang_runtime.c and
 // program_support.c cost 203 ms of a 411 ms build of a 34-line program, so
 // **half of every small build is recompiling code that did not change**. It is
 // the same object every time -- the runtime does not depend on the program.
-//
 // The key is the content of the source plus the exact compile command, hashed
 // with the same FNV-1a used for the staleness check above, for the reason given
 // there: mtimes move on a checkout or a copy and content does not. Flags are in
@@ -1134,14 +1084,12 @@ static int link_against_runtime_library(const char* program_obj,
 // (-DPRISMIO_AIF_VERIFY), and an object built for one mode linked into the other
 // is exactly the "half the allocations are outside the accounting" failure the
 // verify path already guards against.
-//
 // **What the key does not cover: an in-place upgrade of clang itself.** The same
 // source and the same flags through a different compiler produce a different
 // object, and nothing here notices. Set `PRISMIO_OBJ_CACHE=0` to bypass the
 // cache after a toolchain upgrade, or delete the directory. Spawning
 // `clang --version` to fold into the key was measured at 28 ms -- 14% of what
 // the cache saves -- and was not worth paying on every build.
-// ============================================
 
 static int object_cache_disabled(void) {
     const char* v = getenv("PRISMIO_OBJ_CACHE");
@@ -1709,9 +1657,7 @@ static char* run_command_path(const char* exe_file) {
     return path;
 }
 
-// ============================================
 // LAYOUT 3.2 -- running a workload at build time
-//
 // The whole of the sandbox, and it is smaller than the clause makes it sound
 // because this language's surface is small. W3 names three effects to stub:
 // network, absolute filesystem paths, and environment access. Prismio's runtime
@@ -1721,9 +1667,7 @@ static char* run_command_path(const char* exe_file) {
 // other side: codegen gives every extern the runtime does not define a body of
 // rt_workload_stub instead of a link (see generateWorkloadStubs). So by the time
 // a driver runs, the only foreign code it can reach is the Prismio runtime.
-//
 // That leaves what this function owns: argv, the working directory, and time.
-//
 //  - **argv is empty.** cli_arg() reads the prismio_argv global, which a driver
 //    never fills, so a workload cannot branch on the compiler's own command line
 //    and produce a profile that depends on how the build was invoked.
@@ -1733,7 +1677,6 @@ static char* run_command_path(const char* exe_file) {
 //  - **Time is bounded.** W2 lists "times out" as a fallback case, so it has to
 //    be a case that can happen: a workload with an unbounded loop must warn and
 //    fall back rather than hang the build forever.
-//
 // The timeout is enforced with the platform's own tool rather than by forking:
 // `timeout` on Linux, and on macOS the same via a subshell watchdog, because
 // coreutils' timeout is not installed by default there. A missing watchdog is

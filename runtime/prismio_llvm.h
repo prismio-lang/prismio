@@ -236,7 +236,20 @@ LLVMValueRef LLVMBuildStore(LLVMBuilderRef, LLVMValueRef Val, LLVMValueRef Ptr);
 // shim is an implicit declaration and a hard error there while the bootstrap,
 // which does use the real headers, builds cleanly. That asymmetry is why the
 // test suite packages a toolchain rather than trusting a successful bootstrap.
+// Type introspection, for the fat-String coercion in `coerce_for`. The enum is
+// spelled out rather than included: this header is the LLVM C API as the
+// *packaging* build sees it, and it deliberately declares only what the backend
+// uses. LLVMStructTypeKind is 5 in llvm-c/Core.h and has been since the enum was
+// introduced -- it is append-only, so the ordinal is stable.
+typedef enum { PRISMIO_LLVM_STRUCT_TYPE_KIND = 5 } PrismioLLVMTypeKindProbe;
+#define LLVMStructTypeKind PRISMIO_LLVM_STRUCT_TYPE_KIND
+#define LLVMPointerTypeKind 12
+int LLVMGetTypeKind(LLVMTypeRef Ty);
+const char *LLVMGetStructName(LLVMTypeRef Ty);
+
 LLVMValueRef LLVMGetUndef(LLVMTypeRef Ty);
+LLVMBool LLVMIsConstant(LLVMValueRef Val);
+LLVMValueRef LLVMGetAggregateElement(LLVMValueRef C, unsigned Idx);
 LLVMValueRef LLVMBuildInsertValue(LLVMBuilderRef, LLVMValueRef AggVal,
                                   LLVMValueRef EltVal, unsigned Index,
                                   const char *Name);

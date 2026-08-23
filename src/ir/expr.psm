@@ -366,6 +366,42 @@ fn inlineElemSizeOfList(listExpr: ASTNode) -> Int {
 // Read from the declaration index rather than a separate registry, because the
 // index is already built (indexModuleDeclarations) and a second table is a second
 // thing to keep in step.
+// Does Prismio define this function itself?
+//
+// The complement of callIsExtern, and the one that actually decides inbound
+// marshalling: a Prismio function returns the fat `{ptr, i64}`, while *everything
+// else* -- a C extern, and equally the runtime builtins codegen calls by name
+// like `list_get` -- returns a bare pointer that has to be given a length. Asking
+// "is it extern" missed the builtins, which is a `trunc i64 to %prismio.str`.
+// Give a bare `const char*` a length, producing the fat `{ptr, i64}`.
+//
+// Every place a String crosses in from somewhere that does not carry one: a C
+// return, a container slot, a struct field. One `strlen` at the boundary, where
+// the thin representation paid one per access.
+//
+// `prismio_cstr_len` rather than `str_length`, which now takes a fat String and
+// would regress infinitely.
+fn fatFromPtr(raw: String) -> String {
+    ir_call_begin()
+    ir_call_arg("ptr", raw)
+    let len = ir_get_temp_name(ir_call_end("i32", "prismio_cstr_len"))
+    let wide = ir_get_temp_name(ir_sext("i32", len, "i64"))
+    let u = ir_get_temp_name(ir_undef("struct:prismio.str"))
+    let withPtr = ir_get_temp_name(ir_insert_value("struct:prismio.str", u, raw, "ptr", 0))
+    return ir_get_temp_name(ir_insert_value("struct:prismio.str", withPtr, wide, "i64", 1))
+}
+
+fn callIsPrismioFn(funcName: String) -> Bool {
+    let n = ir_decl_count(funcName)
+    let mut i = 0
+    while (i < n) {
+        let decl = ptr_to_node(ir_decl_at(funcName, i))
+        if (decl.kind == NodeKind.FUNCTION) { return true }
+        i = i + 1
+    }
+    return false
+}
+
 fn callIsExtern(funcName: String) -> Bool {
     let n = ir_decl_count(funcName)
     let mut i = 0
@@ -509,6 +545,23 @@ fn generateExpression(expr: ASTNode) -> String {
         }
         if (expr.i1 == TokenType.STRING_LITERAL) {
             // The literal's global was named by the collect_strings pre-pass.
+            //
+            // Named by the collect_strings pre-pass -- unless that pass has no
+            // case for the node this literal sits under. It enumerates node
+            // kinds, and `spawn`'s argument subtree is not among them, so
+            // `spawn f("x")` reached here with no global and the backend failed
+            // with `unknown string global ()`. That predates the fat String; the
+            // thin path handed the same empty name to `ir_string_ptr`.
+            //
+            // Naming it here makes the pre-pass an optimisation (it batches the
+            // globals) rather than a correctness requirement, so the next node
+            // kind nobody adds cannot reintroduce this.
+            if (str_equals(expr.s2, "") == 1) {
+                collectStringsExpr(expr)
+            }
+            // `ir_const_str(expr.s2, str_length(expr.s1))` is the fat form: a
+            // constant pair, costing no instructions. Held back with the
+            // representation; see the note in src/ir/types.psm.
             return ir_get_temp_name(ir_string_ptr(expr.s2))
         }
     }
@@ -613,6 +666,11 @@ fn generateExpression(expr: ASTNode) -> String {
         // does escape: references are raw `ptr`, so nothing downstream can tell
         // this apart from an address the allocator returned. Handles are the fix
         // and are not built -- see the note in HANDOFF.md.
+        // A String field is a value, not storage reached by GEP, so it loads
+        // like a scalar even though its key names a struct.
+        if (str_equals(fieldType, "struct:prismio.str") == 1) {
+            return ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
+        }
         if (isStructTypeKey(fieldType)) {
             return ir_get_temp_name(slot)
         }
@@ -829,6 +887,12 @@ fn generateExpression(expr: ASTNode) -> String {
         if (resultT.kind == TypeKind.INT) {
             return ir_get_temp_name(ir_call_end("i32", "prismio_task_join"))
         }
+        // A task's result crosses back through `void*`, so a `Task<String>`
+        // yields a bare pointer that has to be given a length -- the same
+        // boundary as any other value arriving from the runtime.
+        if (str_equals(typeIrKey(resultT), "struct:prismio.str") == 1) {
+            return fatFromPtr(ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p")))
+        }
         return ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p"))
     }
 
@@ -989,6 +1053,15 @@ fn generateExpression(expr: ASTNode) -> String {
 
         // Regular function call
         let inlineSize = inlineElemSizeOfCall(expr)
+        // Foreign iff Prismio does not define a function of this name.
+        //
+        // One test for both directions, and it has to be this one. Asking "is
+        // there an extern called this" is not the same question: a program may
+        // declare `extern fn print(s: String)` while std.io also defines `print`,
+        // and both are true at once. Overload resolution then picks the Prismio
+        // one, so extracting the pointer half on the argument side handed a bare
+        // pointer to `@print__String`, which wants the pair.
+        let isForeign = callIsPrismioFn(funcName) == false
         ir_call_begin()
         // REQUIREMENTS 20. `list_push` and `list_set` take the element as `ptr`,
         // so a scalar has to reach the slot as one -- without this the call
@@ -1000,10 +1073,26 @@ fn generateExpression(expr: ASTNode) -> String {
             let argNode = ptr_to_node(argPtr)
             let argVal = generateExpression(argNode)
             let argStore = storageType(getExprType(argNode))
-            if (argIndex == elemArg) {
-                ir_call_arg("ptr", scalarToSlot(argStore, argVal))
+            // Crossing into C: a String is `{ptr, i64}` here and `const char*`
+            // there, so the pointer half goes and the length stays. The buffer is
+            // NUL-terminated (FFI 7.1), which is what keeps this a field read
+            // rather than a copy.
+            //
+            // The two branches each name `argVal` once and never both -- a String
+            // is affine, so hoisting the common tail out would move it twice.
+            if (isForeign and str_equals(argStore, "struct:prismio.str") == 1) {
+                let half = ir_get_temp_name(ir_extract_value("struct:prismio.str", argVal, 0))
+                if (argIndex == elemArg) {
+                    ir_call_arg("ptr", scalarToSlot("ptr", half))
+                } else {
+                    ir_call_arg("ptr", half)
+                }
             } else {
-                ir_call_arg(argStore, argVal)
+                if (argIndex == elemArg) {
+                    ir_call_arg("ptr", scalarToSlot(argStore, argVal))
+                } else {
+                    ir_call_arg(argStore, argVal)
+                }
             }
             argPtr = argNode.next
             argIndex = argIndex + 1
@@ -1040,13 +1129,24 @@ fn generateExpression(expr: ASTNode) -> String {
             return ""
         }
 
+        // Crossing back in from C. The callee is declared to return `ptr`, so the
+        // length has to be supplied here -- one `strlen` at the boundary, where
+        // the thin representation used to pay one per access.
+        //
+        // `prismio_cstr_len` rather than `str_length`, which now takes a fat
+        // String and would regress infinitely.
+        if (isForeign and str_equals(retType, "struct:prismio.str") == 1) {
+            return fatFromPtr(ir_get_temp_name(ir_call_end("ptr", callName)))
+        }
+
         // REQUIREMENTS 20, the other end. `list_get` is declared to return `ptr`
         // and sema types it as the element type, so for a scalar element the two
         // disagree and the value has to come back out of the slot. Handled here
         // rather than below because the call's own type is `ptr` whatever the
         // element is -- and a scalar element is never arena-placed or refcounted,
         // since it registers no site to place or count.
-        if (str_equals(funcName, "list_get") == 1 and str_equals(retType, "ptr") == 0) {
+        if (str_equals(funcName, "list_get") == 1 and str_equals(retType, "ptr") == 0
+            and str_equals(retType, "struct:prismio.str") == 0) {
             let slot = ir_get_temp_name(ir_call_end("ptr", callName))
             return slotToScalar(retType, slot)
         }

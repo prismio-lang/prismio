@@ -1,13 +1,9 @@
-// ============================================================================
 // Prismio backend built on the real LLVM C API.
-//
 // This is the replacement for llvm-bridge.c, which assembled LLVM IR as text in
 // fixed-size buffers. Both implement the same ir_* surface declared in
 // src/bridge.psm, so exactly one is linked into the compiler and the frontend
 // does not know which. Select this one with:
-//
 //     clang -DPRISMIO_BACKEND_LLVM_API ...   (and link LLVM-C)
-//
 // Why this exists at all, beyond tidiness: the text emitter could only be
 // checked by llc's parser after the fact, so a malformed instruction surfaced as
 // a parse error pointing at generated IR rather than at the code that built it.
@@ -16,46 +12,34 @@
 // folded as they are built. It is also the prerequisite for a custom memory
 // model: allocation is a policy hook here (see "memory model" below) instead of
 // a hardcoded `call ptr @malloc` spelled out in the frontend.
-//
 // ---------------------------------------------------------------------------
 // How values cross the FFI
-//
 // Prismio has no pointer type, so the frontend passes everything as String. The
 // compiler already relies on this for AST nodes (ptr_to_node/node_to_ptr). Here
 // a value is a *handle string*, and every function that accepts a value resolves
 // it through resolve_value():
-//
 //     "$$v12"      -> g_values[12], an LLVMValueRef produced by an earlier call
 //     "%p_argc"    -> a parameter of the function being built, looked up by name
 //     "%x"         -> a named alloca in the current function
 //     anything else -> a literal constant, parsed according to the type argument
-//
 // The literal case is what lets the existing frontend keep passing "0", "42",
 // "true" and "null" straight through without being rewritten first. '$' cannot
 // appear in a Prismio identifier, so a handle can never collide with user text.
-//
 // ---------------------------------------------------------------------------
 // Status: this is the only backend. llvm-bridge.c has been deleted.
-//
 // The compiler self-hosts on this backend to a fixed point and passes the full
 // test suite. src/ir.psm no longer emits any IR text -- struct literals, member
 // access, array literals, indexing, string literals and struct type definitions
 // all go through the typed builders below.
-//
 // ir_append() is kept as a loud failure rather than removed. Nothing calls it,
 // and nothing should: it is the guard that stops raw text creeping back in,
 // where it would silently produce a module with instructions missing.
-// ============================================================================
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "prismio_llvm.h"
-
-// ============================================================================
-// Module state
-// ============================================================================
 
 // The value and block tables are indexed by a counter that runs for the whole
 // module, so their old fixed sizes were a ceiling on *program size* rather than
@@ -126,14 +110,11 @@ static int g_call_depth;
 
 static int g_has_returned;
 
-// ============================================================================
 // Memory model policy
-//
 // Object allocation is deliberately indirect. The frontend asks for "an object
 // of this struct type" and this layer decides what that means, so swapping
 // malloc for an arena, a refcounting allocator, or anything else is a change
 // here and not a change to codegen. Defaults keep today's behaviour exactly.
-// ============================================================================
 
 static char g_alloc_fn[NAME_LEN] = "malloc";
 static char g_free_fn[NAME_LEN] = "free";
@@ -177,20 +158,12 @@ const char *ir_llvm_version(void) {
     return buf;
 }
 
-// ============================================================================
-// Diagnostics
-// ============================================================================
-
 static void backend_fail(const char *what, const char *detail) {
     fprintf(stderr, "internal backend error: %s", what);
     if (detail) fprintf(stderr, " (%s)", detail);
     fprintf(stderr, "\n");
     exit(1);
 }
-
-// ============================================================================
-// Value table
-// ============================================================================
 
 // Doubling, and the allocation is kept across ir_reset() -- a second module in
 // one process is bootstrap, and it needs the same room the first one did.
@@ -230,10 +203,6 @@ const char *ir_get_label_name(int id) {
 
 // Reserves a slot without an instruction behind it yet.
 int ir_get_temp(void) { return intern_value(NULL); }
-
-// ============================================================================
-// Types
-// ============================================================================
 
 static LLVMTypeRef named_struct(const char *name);
 
@@ -354,10 +323,6 @@ void ir_struct_type_end(void) {
     s->cold = cold;
 }
 
-// ============================================================================
-// Value resolution
-// ============================================================================
-
 static LLVMValueRef lookup_named(NamedValue *table, int count, const char *name,
                                  LLVMTypeRef *out_type) {
     for (int i = 0; i < count; i++) {
@@ -382,6 +347,8 @@ static LLVMValueRef const_from_text(const char *s, LLVMTypeRef ty) {
 }
 
 // The single place that turns a frontend string into an LLVMValueRef.
+static LLVMValueRef coerce_for(LLVMValueRef v, const char *type_key);
+
 static LLVMValueRef resolve_value(const char *s, const char *type_key) {
     if (!s) backend_fail("null value", NULL);
 
@@ -390,7 +357,7 @@ static LLVMValueRef resolve_value(const char *s, const char *type_key) {
         if (idx < 0 || idx >= g_value_count) backend_fail("value handle out of range", s);
         LLVMValueRef v = g_values[idx];
         if (!v) backend_fail("value handle refers to an unset slot", s);
-        return v;
+        return coerce_for(v, type_key);
     }
 
     if (s[0] == '%') {
@@ -405,9 +372,49 @@ static LLVMValueRef resolve_value(const char *s, const char *type_key) {
     return const_from_text(s, type_from_key(type_key));
 }
 
-// ============================================================================
-// Module lifecycle
-// ============================================================================
+// A fat String where a pointer is wanted means its pointer half.
+//
+// `String` is `{ptr, i64}`, and the runtime entry points that take one -- `free`,
+// `str_clone`, the release paths, every `ir_call_arg("ptr", …)` codegen writes by
+// hand -- all want `const char*`. Coercing here rather than at each of those ~25
+// call sites is not a shortcut: it is the only place that *knows* the value's
+// LLVM type, so it cannot be forgotten at a site nobody thought about, and
+// forgetting one hands a length to `free`.
+//
+// Narrow on purpose. It fires only for this one struct type and only where a
+// `ptr` was asked for; any other struct reaching a pointer parameter is still
+// the error it always was.
+static LLVMValueRef coerce_for(LLVMValueRef v, const char *type_key) {
+    if (!v || !type_key || strcmp(type_key, "ptr") != 0) return v;
+    // Needs a live insert point. A constant folded at module scope has none, and
+    // a block that already has its terminator cannot take another instruction --
+    // building into one crashed inside LLVM's own `Value::setName` rather than
+    // failing cleanly, which is why this is a guard and not an assertion.
+    if (!g_builder) return v;
+    LLVMBasicBlockRef bb = LLVMGetInsertBlock(g_builder);
+    if (!bb || LLVMGetBasicBlockTerminator(bb) != NULL) return v;
+    LLVMTypeRef ty = LLVMTypeOf(v);
+    if (LLVMGetTypeKind(ty) != LLVMStructTypeKind) return v;
+    // Prefix, not equality. The LLVM *context* outlives a module, so a process
+    // that compiles two of them -- the workload sandbox, and any test that resets
+    // -- registers `prismio.str` twice and LLVM uniques the second to
+    // `prismio.str.0`. Same shape, same meaning; an exact match silently stopped
+    // coercing in exactly those builds, and the symptom was `free` handed a pair.
+    const char *name = LLVMGetStructName(ty);
+    if (!name || strncmp(name, "prismio.str", 11) != 0) return v;
+    // A constant pair folds, and naming the folded result crashes inside LLVM's
+    // own `Value::setName` -- a Constant has no parent symbol table to name into.
+    // Every string literal reaches here as one, so this is the common case, not
+    // the corner.
+    // `LLVMConstExtractValue` was removed when LLVM pruned constant expressions;
+    // `LLVMGetAggregateElement` reads a field out of a constant aggregate and is
+    // what replaced it.
+    if (LLVMIsConstant(v)) {
+        LLVMValueRef e = LLVMGetAggregateElement(v, 0);
+        if (e) return e;
+    }
+    return LLVMBuildExtractValue(g_builder, v, 0, "");
+}
 
 static void reset_state(void) {
     g_value_count = 0;
@@ -464,9 +471,7 @@ static void ensure_context(void) {
     g_initialized = 1;
 }
 
-// ============================================================================
 // Targets
-//
 // The compiler's whole notion of a target is three facts -- triple, pointer
 // width, data layout -- and every one of them is answered by LLVM from the
 // triple rather than by a table in this repo. A table would be a second copy of
@@ -474,17 +479,14 @@ static void ensure_context(void) {
 // allocation sized for the wrong pointer, or member offsets four bytes out. The
 // frontend reads all three back as one record (see src/ir/target.psm); this is
 // the only place they are stored, so the two cannot drift.
-//
 // The host is resolved lazily, on the first question anyone asks, and is marked
 // not-explicit: a build that never passed --target must emit exactly the module
 // it emitted before targets existed, which means no triple and no layout stamped
 // on it. Only an explicitly named target stamps.
-//
 // Without real headers (see prismio_llvm.h) nothing here can resolve anything.
 // The host then falls back to 64-bit with no triple -- which is what the
 // frontend hardcoded before this existed, so that path is unchanged -- and an
 // explicit --target fails loudly rather than guessing.
-// ============================================================================
 
 static char g_target_triple[256];
 static char g_target_layout[1024];
@@ -611,10 +613,6 @@ void ir_module_start(const char *module_name) {
 
 void ir_module_end(void) { /* nothing to flush -- the module is already built */ }
 
-// ============================================================================
-// Functions
-// ============================================================================
-
 static int g_pending_param_noalias[MAX_PENDING_PARAMS];
 
 void ir_function_begin(const char *name, const char *ret_type) {
@@ -664,6 +662,11 @@ static void apply_param_attrs(LLVMValueRef fn) {
     if (!kind) return;
     for (int i = 0; i < g_pending_param_count; i++) {
         if (!g_pending_param_noalias[i]) continue;
+        // LLVM permits `noalias` on pointers only, and a fat `String` parameter
+        // is `{ptr, i64}` -- `unique` on one is still a true statement about the
+        // buffer, but there is no pointer parameter to hang it on. Dropping the
+        // attribute loses an optimisation hint; applying it is a verifier error.
+        if (LLVMGetTypeKind(g_pending_params[i]) != LLVMPointerTypeKind) continue;
         LLVMAddAttributeAtIndex(fn, (unsigned)(i + 1),
                                 LLVMCreateEnumAttribute(g_ctx, kind, 0));
     }
@@ -712,10 +715,6 @@ void ir_function_end(void) {
     if (bb && !LLVMGetBasicBlockTerminator(bb)) LLVMBuildUnreachable(g_builder);
     g_function = NULL;
 }
-
-// ============================================================================
-// Basic blocks
-// ============================================================================
 
 int ir_get_label(void) {
     grow_table((void **)&g_blocks, &g_label_capacity, g_label_count,
@@ -772,10 +771,6 @@ void ir_ret_void(void) {
     if (block_done()) return;
     LLVMBuildRetVoid(g_builder);
 }
-
-// ============================================================================
-// Memory
-// ============================================================================
 
 int ir_alloca(const char *type, const char *name) {
     for (int i = 0; i < g_alloca_count; i++) {
@@ -881,10 +876,6 @@ void ir_store_global(const char *type, const char *value, const char *name) {
     LLVMTypeRef ty = type_from_key(type);
     LLVMBuildStore(g_builder, resolve_value(value, type), global_named(name, ty));
 }
-
-// ============================================================================
-// Object allocation -- the memory-model seam
-// ============================================================================
 
 // Allocates one object of a struct type through the configured allocator.
 // Replaces the hand-written getelementptr-null / ptrtoint / call malloc text
@@ -1121,7 +1112,7 @@ static void ir_release_call(const char *value, const char *fn_name) {
     LLVMValueRef free_fn = LLVMGetNamedFunction(g_module, fn_name);
     if (!free_fn) free_fn = LLVMAddFunction(g_module, fn_name, free_ty);
 
-    LLVMValueRef args[1] = {resolve_value(value, "ptr")};
+    LLVMValueRef args[1] = {coerce_for(resolve_value(value, "ptr"), "ptr")};
     LLVMBuildCall2(g_builder, free_ty, free_fn, args, 1, "");
 }
 
@@ -1356,10 +1347,6 @@ int ir_array_alloca(const char *elem_type, int count) {
     return intern_value(LLVMBuildInBoundsGEP2(g_builder, arr, slot, idx, 2, ""));
 }
 
-// ============================================================================
-// Arithmetic, comparison, conversion
-// ============================================================================
-
 #define BINOP(fn_name, builder_call)                                                   \
     int fn_name(const char *type, const char *lhs, const char *rhs) {                  \
         LLVMValueRef l = resolve_value(lhs, type);                                     \
@@ -1489,10 +1476,6 @@ int ir_fptoui(const char *from_type, const char *value, const char *to_type) {
                                         type_from_key(to_type), ""));
 }
 
-// ============================================================================
-// Calls
-// ============================================================================
-
 void ir_call_begin(void) {
     if (g_call_depth >= MAX_CALL_DEPTH) backend_fail("call nesting too deep", NULL);
     g_calls[g_call_depth].count = 0;
@@ -1503,7 +1486,7 @@ void ir_call_arg(const char *arg_type, const char *arg_value) {
     if (g_call_depth <= 0) backend_fail("call argument outside a call", arg_value);
     CallFrame *f = &g_calls[g_call_depth - 1];
     if (f->count >= MAX_CALL_ARGS) backend_fail("too many call arguments", NULL);
-    f->args[f->count++] = resolve_value(arg_value, arg_type);
+    f->args[f->count++] = coerce_for(resolve_value(arg_value, arg_type), arg_type);
 }
 
 int ir_call_end(const char *ret_type, const char *func_name) {
@@ -1538,10 +1521,6 @@ int ir_call_end(const char *ret_type, const char *func_name) {
 
     return is_void ? -1 : intern_value(call);
 }
-
-// ============================================================================
-// Globals and string constants
-// ============================================================================
 
 void ir_global_var(const char *name, const char *type, const char *init_value,
                    int is_const) {
@@ -1634,6 +1613,12 @@ int ir_insert_value(const char *agg_type, const char *agg,
 
 int ir_extract_value(const char *agg_type, const char *agg, int index) {
     LLVMValueRef a = resolve_value(agg, agg_type);
+    // Same constant guard as coerce_for: building on a constant folds, and
+    // naming the fold crashes in LLVM because a Constant has no symbol table.
+    if (LLVMIsConstant(a)) {
+        LLVMValueRef e = LLVMGetAggregateElement(a, (unsigned)index);
+        if (e) return intern_value(e);
+    }
     return intern_value(LLVMBuildExtractValue(g_builder, a, (unsigned)index, ""));
 }
 
@@ -1649,6 +1634,26 @@ int ir_const_str(const char *global_name, int length) {
     return intern_value(LLVMConstNamedStruct(named_struct("prismio.str"), fields, 2));
 }
 
+// A module-level `String`, whose initialiser is a constant pair rather than a
+// pointer. `ir_global_var` takes its initialiser as *text*, and `{ ptr @x, i64 n }`
+// is not something `const_from_text` can parse -- so the constant is built here
+// instead of spelled.
+void ir_global_str_var(const char *name, const char *str_global, int length) {
+    LLVMTypeRef ty = named_struct("prismio.str");
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (!g) g = LLVMAddGlobal(g_module, ty, name);
+    LLVMValueRef fields[2];
+    if (str_global && *str_global) {
+        LLVMValueRef sg = LLVMGetNamedGlobal(g_module, str_global);
+        if (!sg) backend_fail("unknown string global", str_global);
+        fields[0] = sg;
+    } else {
+        fields[0] = LLVMConstNull(LLVMPointerTypeInContext(g_ctx, 0));
+    }
+    fields[1] = LLVMConstInt(LLVMInt64TypeInContext(g_ctx), (unsigned long long)length, 0);
+    LLVMSetInitializer(g, LLVMConstNamedStruct(ty, fields, 2));
+}
+
 int ir_string_ptr(const char *global_name) {
     LLVMValueRef g = LLVMGetNamedGlobal(g_module, global_name);
     if (!g) backend_fail("unknown string global", global_name);
@@ -1659,10 +1664,6 @@ int ir_string_ptr(const char *global_name) {
 // Return tracking, the struct/enum/global registries, var types and move/borrow
 // state all live in ir_symbols.c -- they are compiler bookkeeping shared by both
 // backends, not emission state.
-
-// ============================================================================
-// Raw text: deliberately unsupported
-// ============================================================================
 
 // The text backend let the frontend splice arbitrary IR text into the output,
 // which is how struct literals, GEPs and array indexing were emitted. There is
@@ -1680,25 +1681,20 @@ void ir_append_line(const char *text) { ir_append(text); }
 void ir_comment(const char *text) { (void)text; /* comments have no IR representation */ }
 void ir_blank_line(void) { /* formatting only */ }
 
-// ============================================================================
 // Debug information (DWARF)
-//
 // `prismio build <src> -g` puts a DICompileUnit, a DISubprogram per source
 // function, a line table, and a DILocalVariable per binding into the module.
 // clang then emits DWARF from them; no `-g` is passed to clang, because for an
 // LLVM IR input the module's own metadata is what drives emission.
-//
 // Everything here is off unless the frontend calls ir_debug_begin(). A release
 // build takes not one branch differently, which is why -g could land without
 // moving a byte of anyone's output.
-//
 // ---------------------------------------------------------------------------
 // The rule this section is written around: **never emit a location that is
 // wrong.** A debugger that says "no location for x" sends the reader to a print
 // statement. A debugger that says "x is at frame offset 12" when x is at 16
 // sends the reader after a bug that does not exist. So every entry point below
 // has an "I cannot answer that" path, and takes it:
-//
 //   - an unregistered file id, or a line of 0 (a node the parser synthesised
 //     rather than read), emits no location and leaves the previous one standing;
 //   - a function whose declaration has no readable span gets no DISubprogram at
@@ -1707,10 +1703,8 @@ void ir_blank_line(void) { /* formatting only */ }
 //   - a struct is described only when its exact byte layout is known, and a
 //     field the hot/cold split moved out of the record is described where it
 //     really is (behind the link pointer) rather than at a made-up offset.
-//
 // ---------------------------------------------------------------------------
 // Three things Prismio makes harder than C does, and what is done about each.
-//
 // **1. AIF's T0 hoists an allocation into an alloca in the entry block**, and
 // one slot serves every iteration of the loop that declares it. The DWARF is
 // still true: the variable's storage *is* that slot, and its DILexicalBlock
@@ -1719,14 +1713,12 @@ void ir_blank_line(void) { /* formatting only */ }
 // that a pointer to a T0 object read in iteration 1 names iteration 2's object
 // afterwards. That is a property of the promotion, not of the location, and
 // docs/DEBUGGING.md is where it is written down.
-//
 // **2. An arena-placed value has no individual lifetime.** Its slot is a
 // pointer, and the pointer is right for as long as the binding is in scope; the
 // storage behind it dies with the enclosing region, all at once. Scoping covers
 // the binding. It does not cover a pointer copied out of the region, and DWARF
 // has no way to express "valid until this other PC" for a heap object. Again
 // documented rather than approximated.
-//
 // **3. A field may not be where the source says it is.** LAYOUT 7.2 permutes
 // field order and LAYOUT 6 can move the tail of a record into a separate cold
 // block. Member offsets here are therefore never computed from the declaration
@@ -1734,10 +1726,8 @@ void ir_blank_line(void) { /* formatting only */ }
 // a permutation is described rather than papered over, and a split type is
 // described as what it is: a hot record with a `__cold` pointer, and a second
 // composite behind it.
-//
 // ---------------------------------------------------------------------------
 // Why a -g build pins the module's data layout
-//
 // A module with no `target datalayout` is laid out by LLVM's *default*
 // specification, in which i64 has a 4-byte ABI alignment. `{ i32, i64 }` is 12
 // bytes there and 16 on every target this compiler supports, so member offsets
@@ -1747,7 +1737,6 @@ void ir_blank_line(void) { /* formatting only */ }
 // machine for its layout and writes it onto the module, which is what clang does
 // for a C translation unit and for the same reason. A module that already has a
 // layout keeps it -- nothing sets one today, but a cross-target build would.
-// ============================================================================
 
 #ifdef PRISMIO_DWARF
 
@@ -2630,10 +2619,6 @@ void ir_debug_field_type(const char *o, const char *f, const char *t) {
 
 #endif // PRISMIO_DWARF
 
-// ============================================================================
-// Output
-// ============================================================================
-
 // Verifies before writing. This is the check the text backend never had: a
 // malformed module is reported here, against the code that built it, instead of
 // surfacing later as an llc parse error pointing at generated text.
@@ -2710,23 +2695,18 @@ void ir_print(void) {
     }
 }
 
-// ============================================
 // `prismio run --jit`
-//
 // `run` otherwise pays a full clang compile plus a link on every invocation to
 // produce an executable it deletes moments later. The module is already in
 // memory by the time compileSource asks for a build, so this hands it to LLJIT
 // instead and calls `main` in this process.
-//
 // **Off by default and behind its own flag, deliberately.** Nothing here is on
 // the emission path: codegen produces the same module either way, and a build
 // that writes an object is untouched. This adds an execution path, not an
 // emission one, which is why it cannot move any program's IR.
-//
 // Compiled in only on the real-headers path, for the reason given over the
 // DIBuilder block in prismio_llvm.h: the linker checks names and not
 // signatures, and this API is opaque handles passed by pointer.
-// ============================================
 
 #ifdef PRISMIO_LLVM_REAL_HEADERS
 
@@ -2745,20 +2725,16 @@ static int jit_failed(const char *what, LLVMErrorRef err) {
     return 1;
 }
 
-// ============================================
 // M1.1 -- the curated inlinable module, in process
-//
 // build_driver.c owns the decision to merge and the caching; this file owns the
 // LLVM. That split is the same one everywhere else here: the driver drives
 // clang, the backend touches the C API.
-//
 // **Why this is not a shell-out to llvm-extract and llvm-link.** Both ship with
 // LLVM and both were used to develop this, but prismio_llvm.h exists because the
 // official Windows installer ships LLVM-C.lib and the DLL and very little else,
 // and CI runs three platforms. A feature that silently does nothing on one of
 // them is worse than a feature that is off. The C API is already a hard
 // dependency of this binary, so doing it here adds nothing to install.
-//
 // The output is byte-identical to `llvm-extract --func=... | sed 's/^define/&
 // available_externally/'` on this runtime, which is how the port was checked.
 

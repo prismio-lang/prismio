@@ -197,12 +197,12 @@ fn declareExternFunction(ext: ASTNode) {
     let mut retType = getDeclaredReturnType(ext, ext.child2)
     ir_set_fn_return_type(functionSymbolName(ext), retType)
 
-    ir_declare_function_begin(functionSymbolName(ext), storageType(retType))
+    ir_declare_function_begin(functionSymbolName(ext), ffiType(storageType(retType)))
     let mut paramPtr = ext.child1
     while (nodeExists(paramPtr)) {
         let paramNode = ptr_to_node(paramPtr)
         let pTypeNode = ptr_to_node(paramNode.child1)
-        ir_declare_function_param(storageType(mapTypeNode(pTypeNode)))
+        ir_declare_function_param(ffiType(storageType(mapTypeNode(pTypeNode))))
         paramPtr = paramNode.next
     }
     ir_declare_function_end()
@@ -929,6 +929,13 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_param("ptr")
     ir_declare_function_end()
 
+    // Codegen calls this at every FFI boundary that returns a String, to give
+    // the incoming `const char*` its length. Declared here rather than by any
+    // source, because no source mentions it.
+    ir_declare_function_begin("prismio_cstr_len", "i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
     ir_declare_function_begin("prismio_expect", "ptr")
     ir_declare_function_param("ptr")
     ir_declare_function_end()
@@ -1091,6 +1098,8 @@ fn generateModule(module: ASTNode) {
         
         if (stmt.kind == NodeKind.VARIABLE_DECL) {
             let mut initVal = "0"
+            let mut globalStrName = ""
+            let mut globalStrLen = 0
             let mut varType = "i32"
             let hasAnnotation = nodeExists(stmt.child1)
             if (hasAnnotation) {
@@ -1113,6 +1122,8 @@ fn generateModule(module: ASTNode) {
                         // emitting initNode.s1 raw produced
                         // `@g =  global ptr hello world`, which llc rejects.
                         collectStringsExpr(initNode)
+                        globalStrName = initNode.s2
+                        globalStrLen = str_length(initNode.s1)
                         initVal = str_concat("@", initNode.s2)
                     } else {
                         initVal = initNode.s1
@@ -1127,7 +1138,14 @@ fn generateModule(module: ASTNode) {
                     exit(1)
                 }
             }
-            ir_global_var(stmt.s1, storageType(varType), initVal, 0)
+            // When `String` is `{ptr, i64}` this takes the ir_global_str_var
+            // branch instead: a String global is a constant *pair*, which cannot
+            // be spelled in the text initialiser every other type uses.
+            if (str_equals(storageType(varType), "struct:prismio.str") == 1) {
+                ir_global_str_var(stmt.s1, globalStrName, globalStrLen)
+            } else {
+                ir_global_var(stmt.s1, storageType(varType), initVal, 0)
+            }
             // `varType`, not `storageType(varType)`: the debug layer wants the
             // uncollapsed key, since `struct:T` is what tells it to describe a
             // T rather than an anonymous pointer.

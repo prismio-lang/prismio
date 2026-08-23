@@ -1,18 +1,14 @@
-// ============================================================================
 // Compiler symbol tables and ownership bookkeeping.
-//
 // These are the frontend's own data structures -- what a struct's fields are,
 // which names are globals, what type each binding has, which values have been
 // moved from or borrowed, and where break/continue jump to. None of it is
 // backend state: it describes the program being compiled, not the IR being
 // produced.
-//
 // It used to live in llvm-bridge.c purely because that was the only C file the
 // frontend already talked to. That became a problem the moment a second backend
 // existed: linking the LLVM C API backend left every one of these undefined,
 // even though none of them have anything to do with emitting IR. They are
 // shared here so both backends link against the same copy and neither owns it.
-//
 // Every table was previously a fixed array of char[64] that truncated names at
 // 63 characters and silently stopped recording once full. Both were latent
 // silent-wrong-answer bugs rather than theoretical ones: mangled overload
@@ -21,7 +17,6 @@
 // and one would have been given the other's return type -- with no diagnostic,
 // at any point. Names are now interned at full length and every table grows,
 // so neither failure mode exists.
-// ============================================================================
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,18 +43,13 @@ static void* xrealloc(void* p, size_t n, const char* what) {
     return q;
 }
 
-// ============================================================================
-// Name interning
-//
 // Every name the tables hold is stored once, at full length, and referred to by
 // a canonical pointer. Two benefits: nothing is ever truncated, and a lookup
 // compares pointers instead of running strcmp against every entry -- which
 // matters because find_binding() is called once per identifier in the program
 // and scans backwards over the whole binding table.
-//
 // Interned strings live for the life of the process. There is nothing to free:
 // a compiler run ends when compilation does.
-// ============================================================================
 
 #define INTERN_BUCKETS 4096
 
@@ -100,10 +90,6 @@ const char* ir_intern(const char* name) {
     return n->text;
 }
 
-// ============================================================================
-// Loop context stack -- break/continue targets, supports nesting
-// ============================================================================
-
 #define MAX_LOOP_DEPTH 256
 
 static int loop_continue_stack[MAX_LOOP_DEPTH];
@@ -132,10 +118,8 @@ int ir_loop_break_label(void) {
     return loop_depth > 0 ? loop_break_stack[loop_depth - 1] : -1;
 }
 
-// ============================================================================
 // A growable list of interned names, shared by the several tables that are
 // exactly that (globals, moved-from values, borrowed values).
-// ============================================================================
 
 typedef struct {
     const char** items;
@@ -161,10 +145,6 @@ static int namelist_contains(const NameList* list, const char* name) {
     return 0;
 }
 
-// ============================================================================
-// Global variable name registry
-// ============================================================================
-
 static NameList global_names = { NULL, 0, 0, "the global name table" };
 
 void ir_register_global_name(const char* name) {
@@ -180,19 +160,15 @@ void ir_reset_globals(void) {
     global_names.count = 0;
 }
 
-// ============================================================================
 // Named type registry -- "is this identifier a struct, an enum, or neither?"
-//
 // Separate from the struct registry below, which holds field layouts and is
 // populated by codegen. This one is filled by sema before checking begins and
 // answers only the question a type annotation asks.
-//
 // It exists for speed. sema_annotation_type() used to answer by walking the
 // whole module looking for a matching declaration, once per annotation -- and
 // annotations are read for every parameter of every function, inside a loop over
 // every function. On a 1600-function module that was the difference between
 // quadratic and cubic.
-// ============================================================================
 
 static NameList struct_type_names = { NULL, 0, 0, "the struct name table" };
 static NameList enum_type_names = { NULL, 0, 0, "the enum name table" };
@@ -216,26 +192,21 @@ void ir_reset_named_types(void) {
     enum_type_names.count = 0;
 }
 
-// ============================================================================
 // Top-level declaration index -- "which declarations carry this name?"
-//
 // REQUIREMENTS 16. Every pass that wanted a declaration by name used to walk the
 // module's statement list looking for it, and overload resolution does that once
 // per call site: a module with D declarations and C calls paid D*C. It is the
 // dominant cost on a large module and it is quadratic, so it does not show on
 // the corpus and does show on anything the size of a real program.
-//
 // Filled once per module by index_module_declarations() (src/ast/types.psm),
 // which every pass that reads the index calls first. It is a cache of exactly
 // what a walk of the module would have found, in exactly the order the walk
 // would have found it -- source order matters to two readers: the
 // duplicate-definition diagnostic points at the *first* declaration carrying a
 // symbol, and overload resolution reports the first match.
-//
 // The nodes are AST pointers, which the frontend puns as String. They are
 // stored as opaque addresses and never compared as text -- strcmp on one would
 // compare the bytes of the node.
-// ============================================================================
 
 #define DECL_INDEX_BUCKETS 1024
 
@@ -301,9 +272,7 @@ const char* ir_decl_at(const char* name, int index) {
     return e->nodes[index];
 }
 
-// ============================================================================
 // Function return types, by mangled symbol
-//
 // This was a binding in the table below, under a "$fn$" key that could not
 // collide with a variable name. That made every one of them permanent -- they
 // survive ir_clear_local_var_types() by design -- so find_binding(), which
@@ -311,10 +280,8 @@ const char* ir_decl_at(const char* name, int index) {
 // for every identifier in every function body *and* for every call expression
 // in codegen. Same shape as the walk above: quadratic, invisible on a small
 // program.
-//
 // A table of its own also retires the "$fn$" prefix and the str_concat that
 // built one per call site. There is no shared namespace left to disambiguate.
-// ============================================================================
 
 #define FN_RETURN_BUCKETS 1024
 
@@ -375,10 +342,6 @@ void ir_reset_fn_return_types(void) {
         fn_return_buckets[b] = NULL;
     }
 }
-
-// ============================================================================
-// Struct / enum type registry
-// ============================================================================
 
 typedef struct {
     const char* name;
@@ -577,10 +540,6 @@ int ir_get_enum_variant(const char* enum_name, const char* variant_name) {
     return -1;
 }
 
-// ============================================================================
-// Variable type tracking
-// ============================================================================
-
 // Bindings, innermost last.
 //
 // A block pushes a scope on entry and pops it on exit, which simply truncates
@@ -680,23 +639,18 @@ int ir_binding_predates_loop(const char* name) {
     return i < loop_barriers[loop_barrier_depth - 1] ? 1 : 0;
 }
 
-// ============================================================================
 // Scope drop lists (AIF Level 2)
-//
 // A drop list is not a separate structure: the binding table is already a flat
 // array with a watermark per scope, so "what dies when this scope exits" is the
 // droppable bindings above that watermark. The same read with a different floor
 // answers it for a `return` (the whole function) and for `break`/`continue` (the
 // loop barrier), which is why those two watermarks already existing matters.
-//
 // Enumeration is reverse construction order, which SPEC's RAII requires: a value
 // may hold a reference to one constructed before it, never after.
-//
 // Whether a binding was *moved* is deliberately not consulted, here or by the
 // caller: move state belongs to sema and is cleared per function before codegen
 // starts. What would have needed it is carried by the facts instead -- see
 // generate_scope_drops.
-// ============================================================================
 
 void ir_mark_droppable(const char* name, int kind) {
     int i = find_binding(name);
@@ -908,10 +862,6 @@ void ir_clear_local_var_types(void) {
     scope_depth = 0;
 }
 
-// ============================================================================
-// Move tracking (MVS): names of move-only values that have been moved-from
-// ============================================================================
-
 static NameList moved_names = { NULL, 0, 0, "the moved-value table" };
 
 void ir_clear_moved(void) {
@@ -962,10 +912,6 @@ void ir_unmark_moved(const char* name) {
     }
 }
 
-// ============================================================================
-// Borrow tracking (MVS): names bound to non-owning (let/inout) parameters
-// ============================================================================
-
 static NameList borrowed_names = { NULL, 0, 0, "the borrowed-value table" };
 
 void ir_clear_borrowed(void) {
@@ -998,12 +944,8 @@ void ir_unmark_borrowed(const char* name) {
     }
 }
 
-// ============================================================================
-// Return tracking
-//
 // Set when a block has emitted its terminator, so the caller knows not to emit
 // a fall-through branch. break/continue reuse it for the same purpose.
-// ============================================================================
 
 static int has_returned = 0;
 

@@ -1,11 +1,8 @@
-// ============================================================================
 // AIF — the inference engine's data structures and fixed point.
-//
 // AIF (aif/) is Prismio's memory model. The engine assigns every allocation
 // site a tier T0-T4 from four inferred fact domains, and this file holds
 // everything iteration needs: the scope forest, the site table, the points-to
 // graph, the constraint list, and the solver loop itself.
-//
 // WHY THIS IS IN C. The policy lives in src/aif.psm -- which nodes become
 // sites, which transfer rule fires where, what an extern's ownership contract
 // is, how a tier becomes a manifest line. None of that is here. What is here is
@@ -15,15 +12,12 @@
 // most changes the schedule), so the engine would otherwise be written with
 // parallel arrays and integer indices -- in the one component where a silent
 // bug yields a wrong-tier binary rather than a crash.
-//
 // This is the same split ir_symbols.c already makes for the symbol tables, and
 // it is deliberate rather than expedient: the compiler is written in Prismio,
 // its containers are written in C.
-//
 // SOUNDNESS NOTE. Every fact here only ever *rises* (INFERENCE.md M2). No
 // operation in this file lowers E, A or C, which is what makes the iteration
 // monotone, terminating, and safe to abandon -- see aif_widen().
-// ============================================================================
 
 #include <stdio.h>
 #include <stdint.h>
@@ -54,14 +48,11 @@ static void* xrealloc(void* p, size_t n, const char* what) {
     return q;
 }
 
-// ============================================================================
 // Fact encodings
-//
 // Escape is a single int so that it fits an array slot and a Prismio `Int`
 // alike: the two top elements are negative, and every Region(s) is the scope id
 // itself. The ordering Region(s) < Caller < Global is not the integer ordering
 // -- escape_join() implements it.
-// ============================================================================
 
 #define AIF_E_GLOBAL (-2)
 #define AIF_E_CALLER (-1)
@@ -102,14 +93,11 @@ static void* xrealloc(void* p, size_t n, const char* what) {
 #define AIF_K_LIST   3
 #define AIF_K_OPAQUE 4
 
-// ============================================================================
 // Growable bitsets
-//
 // Both halves of the solver state are sets of small integers: a points-to node
 // holds a set of sites, and a site holds the set of nodes referencing it.
 // Bitsets make union and subset one word-loop each, which keeps the round cost
 // proportional to the graph rather than to the constraint list.
-// ============================================================================
 
 typedef unsigned long long Word;
 #define WORD_BITS 64
@@ -192,14 +180,11 @@ static void bits_free(Bits* b) {
     b->nwords = 0;
 }
 
-// ============================================================================
 // Int vectors
-//
 // Set membership is a bitset, but the solver's rules need to *enumerate* a set,
 // sometimes two of them nested. Materialising a bitset into a plain int array
 // keeps that a pair of ordinary loops. The buffers are reused across rounds,
 // so this allocates a handful of times for the whole run.
-// ============================================================================
 
 typedef struct {
     int* v;
@@ -238,13 +223,10 @@ static void bits_to_vec(const Bits* b, IntVec* out) {
     }
 }
 
-// ============================================================================
 // String interning
-//
 // Type names, field names and variable names all become integer ids, because
 // every key in the points-to graph is a tuple of small integers and comparing
 // tuples of ints is what makes the key map cheap. Id 0 is always "".
-// ============================================================================
 
 #define AIF_INTERN_BUCKETS 8192
 
@@ -299,14 +281,11 @@ const char* aif_str(int id) {
     return intern_by_id[id];
 }
 
-// ============================================================================
 // Scope forest
-//
 // Each function body is a root; a block nests inside its parent. The join of
 // two Region values is their least common ancestor, which exists because scopes
 // nest (INFERENCE 2.1). Scopes in different functions have no common region --
 // scope_lca reports -1 and escape_join falls back to Caller.
-// ============================================================================
 
 typedef struct {
     int parent;
@@ -415,10 +394,6 @@ static int escape_join(int x, int y) {
     return (m < 0) ? AIF_E_CALLER : m;
 }
 
-// ============================================================================
-// Functions
-// ============================================================================
-
 typedef struct {
     int symbol;     // interned mangled symbol -- the identity
     int name;       // interned plain name
@@ -478,14 +453,11 @@ int aif_fn_file(int f)           { return (f < 0 || f >= fn_count) ? 0 : fns[f].
 void aif_fn_seal(int f)          { if (f >= 0 && f < fn_count) fns[f].sealed = 1; }
 int aif_fn_is_sealed(int f)      { return (f < 0 || f >= fn_count) ? 0 : fns[f].sealed; }
 
-// ============================================================================
 // Nominal types
-//
 // Structs carry a field count (the T0/T1 size proxy -- see aif_tier_of) and an
 // edge set for the type reference graph. Enums are recorded only so the
 // frontend can exclude them: an enum is an i32 and participates in no memory
 // model.
-// ============================================================================
 
 typedef struct {
     int name;
@@ -692,23 +664,19 @@ static int field_is_inline(int type_name, int field_name) {
     return 0;
 }
 
-// ============================================================================
 // The access profile (LAYOUT 2.1) and layout selection (LAYOUT 7.2)
-//
 // LAYOUT 2 wants the profile measured, by running a declared `workload` under
 // instrumentation. When no workload is declared this is the static estimate
 // LAYOUT 10.4 names as the fallback -- one count per syntactic access, weighted
 // by AIF_LOOP_ITERS per enclosing loop, which is exactly how automatic arena
 // placement estimates allocs_in(s). Same estimator, same known crudeness, and
 // the same property that matters: it is deterministic and needs no profile file.
-//
 // When a workload *is* declared, aif_profile_load replaces the estimate with
 // measured counts. The two are not merged: a measured count and an estimated one
 // are in different units (AIF_LOOP_ITERS^depth against real iterations), and
 // adding them would produce a number that is neither. LAYOUT 2's diagram has the
 // same shape -- the two paths both produce *a profile*, and the cost model
 // consumes one of them.
-//
 // **Only one candidate dimension is searched, and the rest is not caution.**
 // LAYOUT 6's table lists grouping (AoS/SoA), a hot/cold split, field order,
 // bit-packing and handle width. Field order is the only one this compiler can
@@ -718,7 +686,6 @@ static int field_is_inline(int type_name, int field_name) {
 // touching every layer. Bit-packing needs a mask and a shift at every access.
 // Choosing a layout codegen cannot produce would be a manifest that describes a
 // binary nobody built.
-// ============================================================================
 
 // ---------------------------------------------------------------------------
 // Reading a measured profile back (LAYOUT 2.2)
@@ -982,27 +949,22 @@ void aif_layout_select(void) {
     }
 }
 
-// ============================================================================
 // LAYOUT 5's cost model, ported from aif/prototype/layout.py
-//
 // **What this is for.** LAYOUT 7.2 specifies selection as
 // `best := argmin over candidates(tau) of Cost(...)`, and until now this compiler
 // had neither half: `aif_layout_select` above runs one greedy placement and never
 // scores it, so "the top-k candidates ranked by modelled cost" (LAYOUT 8) named a
 // set with one member and a function that did not exist. This is that function.
-//
 // It is **reported and not yet acted on**. Nothing below changes a byte of IR:
 // `aif_layout_select` still chooses field order exactly as it did, and the
 // ranking is surfaced through `prismio aif --layout` so the hot/cold cut can be
 // audited before anything emits it. That ordering is deliberate -- a split object
 // is two allocations and needs the whole release path (RESULTS-layout 5) before
 // any of it may be emitted.
-//
 // ---------------------------------------------------------------------------
 // Three deliberate divergences from the prototype, each of which changes the
 // answer, and each measured rather than argued.
 // ---------------------------------------------------------------------------
-//
 // **1. Candidates are AoS x splits, not AoS/SoA x splits.** The prototype ranks
 // SoA and picks it: on `g1_particles.psm` it returns `SoA 5.37x`. SoA needs
 // handles, which do not exist (RESULTS-layout 1), so a compiler that ranked it
@@ -1013,7 +975,6 @@ void aif_layout_select(void) {
 // `aif/evidence/bench/layout_repr.c` variant B measures at **0.87x**. The
 // restriction is what makes the model useful here rather than a weaker version of
 // the prototype.
-//
 // **2. The hot record carries the link word, and the prototype's does not.**
 // `record_size(hot)` in layout.py is the hot fields alone, because its split is
 // indexed rather than linked. This implementation's cold block hangs off the hot
@@ -1022,7 +983,6 @@ void aif_layout_select(void) {
 // link) against the prototype's 64, and RESULTS-layout's "96 -> 72 bytes" is the
 // linked number. Without the link word the model over-values every split, and
 // most sharply the ones that barely pay.
-//
 // **3. There is no SimdCredit term, which resolves LAYOUT 5.4's defect by
 // construction.** layout.py records the defect at `traversal_cost`: 5.4 subtracts
 // SimdCredit from a sum of *memory* costs, so an arithmetic saving nets against
@@ -1034,15 +994,12 @@ void aif_layout_select(void) {
 // cannot move an argmin and is not computed. **This does not resolve the
 // specification defect**, it only means this port never reaches it; 5.4 still
 // needs fixing before any grouping dimension is searched.
-//
 // Integer arithmetic throughout, as LAYOUT 9 obligation 2 requires: a parallel
 // float reduction can flip a tie, and layout must be reproducible.
-//
 // Costs are per element and scaled by 100 (`pi` is already in hundredths), rather
 // than the prototype's per-collection absolute figures. N_ASSUMED is a common
 // factor of every term, so dividing it out changes no ordering and keeps the
 // products inside 64 bits by a wide margin. Only ratios are ever reported.
-// ============================================================================
 
 #define AIF_LINE        64
 #define AIF_C1      (32 * 1024)
@@ -1838,10 +1795,6 @@ const char* aif_nominal_name(int i) { return (i < 0 || i >= nominal_count) ? "" 
 int aif_nominal_is_struct(int i)    { return (i < 0 || i >= nominal_count) ? 0 : !nominals[i].is_enum; }
 int aif_nominal_acyclic(int i)      { return (i < 0 || i >= nominal_count) ? 1 : nominals[i].acyclic; }
 
-// ============================================================================
-// Allocation sites
-// ============================================================================
-
 typedef struct {
     int type;       // interned type display name
     int kind;
@@ -2001,14 +1954,11 @@ int aif_site_escape(int id)  { return (id < 0 || id >= site_count) ? AIF_E_GLOBA
 int aif_site_alias(int id)   { return (id < 0 || id >= site_count) ? AIF_A_SHARED : sites[id].A; }
 int aif_site_cyc(int id)     { return (id < 0 || id >= site_count) ? AIF_C_MAYBE : sites[id].C; }
 
-// ============================================================================
 // Points-to keys
-//
 // A key names a location that can hold references: a local binding, a struct
 // field (field-sensitive, object-insensitive -- INFERENCE 3.1), a return
 // position, or a parameter. Identity is the tuple, so the same name in two
 // functions is two keys, and `Lexer.source` is one key across every Lexer.
-// ============================================================================
 
 #define AIF_KEY_VAR    0
 #define AIF_KEY_FIELD  1
@@ -2158,16 +2108,12 @@ const char* aif_extern_contract(const char* fn, int index) {
     return aif_str(extern_contract[key]);
 }
 
-// ============================================================================
 // Value-set expressions
-//
 // The set of sites an expression may denote: part known while walking (a struct
 // literal is its own site), part only at the fixed point (an identifier is
 // whatever its binding points to). Holding both in one object is what lets the
 // AST walk compose expressions uniformly without knowing which it has.
-//
 // Items are tagged integers -- an even item is a site, an odd item is a key.
-// ============================================================================
 
 typedef struct {
     int* items;
@@ -2253,19 +2199,15 @@ int aif_vs_union(int a, int b) {
     return out;
 }
 
-// ============================================================================
 // Argument stacks
-//
 // Two FFI contracts refer to another argument of the same call: `retain_in(k)`
 // says "the callee stores me into argument k", and `alias` says "my return is
 // argument k". Both need the call's arguments addressable by index while it is
 // being walked -- and calls nest, because an argument can itself be a call.
-//
 // Evaluating an argument creates allocation sites, so it must happen exactly
 // once; re-walking to find argument k would duplicate every site inside it.
 // Hence a stack: the frontend opens a frame, pushes each argument's value set
 // as it evaluates it, indexes freely, and closes the frame.
-// ============================================================================
 
 static IntVec argv;
 
@@ -2285,12 +2227,9 @@ int aif_argv_get(int base, int i) {
 
 void aif_argv_end(int base) { argv.len = base; }
 
-// ============================================================================
 // Constraints
-//
 // One entry per transfer-rule instance the AST walk discovered. Solving is
 // re-applying all of them until nothing rises.
-// ============================================================================
 
 #define AIF_CON_BIND          0
 #define AIF_CON_ARG           1
@@ -2427,10 +2366,6 @@ void aif_con_no_stack(int vs)                   { con_add(AIF_CON_NO_STACK, vs, 
 
 int aif_con_count(void) { return con_count; }
 
-// ============================================================================
-// The fixed point
-// ============================================================================
-
 static Bits* pt;            // key id -> set of sites
 static Bits* holders;       // site id -> set of keys holding it
 // site id -> set of *container sites* holding it. Separate from `holders`, which
@@ -2482,23 +2417,18 @@ static int site_is_move_only(const Site* s) {
     return s->kind == AIF_K_STRING || s->kind == AIF_K_ARRAY || s->kind == AIF_K_LIST;
 }
 
-// ============================================================================
 // The derivation DAG (INFERENCE 5.6, SPEC 6.3)
-//
 // A manifest diff has to answer *why* a tier moved, and the answer is a witness
 // path from a root cause to the record. INFERENCE 5.6 specifies a backward BFS
 // through **maximal contributors**: for a fact `f` at node `n` holding value
 // `v`, the predecessors whose transfer produced `v`.
-//
 // Keeping every predecessor and searching backward is one way to get that. This
 // keeps **one edge per site per domain** instead, written the moment a rule
 // first raises the fact to the value it ends at -- which is a maximal
 // contributor by construction, because a rule that raises is one that set the
 // value rather than one that merely failed to contradict it. Walking those edges
 // backward is then a chain rather than a search.
-//
 // Two honest consequences of that choice:
-//
 //   * The path is *a* witness, not provably the *shortest* one. The first rule
 //     to reach the final value is recorded, which is the shortest among the
 //     rules that fired in that round, but a different constraint order could
@@ -2507,7 +2437,6 @@ static int site_is_move_only(const Site* s) {
 //   * Memory is O(sites), not O(edges). 5.6's requirement is that the DAG be
 //     *retained through tier assignment*, and one maximal edge per fact is
 //     enough to retain what a diff reads back.
-// ============================================================================
 
 typedef struct {
     int rule;   // the AIF_CON_* that fired, or -1 for "never raised"
@@ -2785,17 +2714,14 @@ static int solve_points_to(int max_rounds) {
     return 0;
 }
 
-// ============================================================================
 // Container element keys, and the one thing that makes keying them precisely
 // sound (INFERENCE 3.1)
-//
 // An element read gets back whatever was pushed, through a field key on the
 // container's type. Keying that on the *base* type -- `List` -- put every list
 // in the program into one set: `list_get(w.actors, i)` came back holding
 // `Order`s that only ever went into a different list, and obligation 3 then
 // refused to bracket the call that built them, because a function outside the
 // extent appeared to hold one. That is g6's whole placement, lost to a type name.
-//
 // Keying it on the full type -- `List<Actor>` against `List<Order>` -- separates
 // them, and is sound **because a container's static type is the same at every
 // mention**: Prismio has no subtyping, and generics are monomorphised into
@@ -2803,14 +2729,12 @@ static int solve_points_to(int max_rounds) {
 // never reaches here. Two spellings for one container would be a read that
 // misses its own writes, which is an element that appears to escape nowhere and
 // a use-after-free behind it.
-//
 // **The exception is a spelling the frontend could not resolve** -- a bare
 // `List`, or `List<Invalid>` where inference had nothing to give. Those really
 // can name the same container as a resolved spelling elsewhere. So they are
 // detected, and a base type with even one of them has all of its element keys
 // bound together, which is exactly the behaviour this replaced. Precision where
 // the types are known, and the old answer where they are not.
-// ============================================================================
 
 typedef struct { int base, full; } ElemKeyUse;
 static ElemKeyUse* elem_uses;
@@ -3340,22 +3264,17 @@ int aif_site_widened(int id) {
     return bits_test(&widened, id);
 }
 
-// ============================================================================
 // Tier derivation (SPEC 4.2)
-//
 // Here rather than in Prismio because the first clause needs defscope(s), and
 // the escape encoding that makes that comparison a single integer test is this
 // file's private business. The derivation itself is the spec's, clause for
 // clause, first match wins.
-//
 // Theta_stack is approximated by field count: at this stage the frontend has no
 // layout, so a byte threshold is not available. SPEC 4.2 requires the threshold
 // be documented by the implementation -- it is emitted in the manifest header.
-//
 // T4a was unreachable by construction until 2026-08-19, because the language had
 // no tasks and the thread domain was vacuous. REQUIREMENTS 15 built the task
 // model and the two `T` conjuncts below are no longer tautologies.
-//
 // **The single-threaded path is unchanged, and it is unchanged structurally
 // rather than by measurement.** A module with no `spawn` raises no site above
 // AIF_T_ISOLATED: T-SPAWN-* fires only on a spawn constraint, T-REACH can only
@@ -3364,7 +3283,6 @@ int aif_site_widened(int id) {
 // conjuncts are true, and T4a is unreachable -- exactly the shape the clauses
 // had before. This is the property the whole design is for, so it is stated
 // where the clauses are and not only in a document.
-// ============================================================================
 
 #define AIF_THETA_STACK_FIELDS 8
 #define AIF_THETA_STACK_BYTES 256
@@ -3520,20 +3438,16 @@ int aif_site_alias_axiom(int id) {
     return sites[id].alias_axiom;
 }
 
-// ============================================================================
 // Minimal cause (INFERENCE 5.6, SPEC 6.3)
-//
 // Walk the derivation backward from a site through maximal contributors until a
 // root -- an allocation, an axiom, or a rule with no incoming site. The result
 // is the witness path SPEC 6.3 prints under "minimal cause", innermost edge
 // first, which is the order it reads in: the change, then what made the change
 // matter.
-//
 // Which domain to walk is decided by the tier, and that mapping is the reason
 // the two are kept separately. A T1 -> T2 move is an *escape* question and a
 // T2 -> T3 move is an *aliasing* one; showing the E path for a value that lost
 // its tier to sharing would be a confident answer to the wrong question.
-// ============================================================================
 
 #define AIF_CAUSE_MAX 32
 
@@ -3645,21 +3559,17 @@ const char* aif_rule_name(int rule) {
     return "?";
 }
 
-// ============================================================================
 // Tier lookup by AST node
-//
 // Codegen has to ask "what tier is the value this expression allocates?", and
 // the answer has to survive the gap between the two passes. The join key is the
 // node itself: the AIF pass and codegen walk the same in-memory tree in the same
 // process, so the address the parser allocated is a name for the expression that
 // costs nothing to carry and cannot collide.
-//
 // It replaces a file:line:col key, which could: an array literal and its first
 // element start at the same column, and `[str_concat(a,b), ...]` puts a site at
 // each. That key had to resolve a collision by keeping the *highest* tier, since
 // codegen reads T0 as permission to use a stack slot and rounding down there is
 // heap corruption. Nothing rounds now -- one node, one site.
-// ============================================================================
 
 #define AIF_NODE_BUCKETS 8192
 
@@ -3736,18 +3646,14 @@ static int enclosing_region(int scope) {
     return -1;
 }
 
-// ============================================================================
 // Automatic arena placement (LAYOUT 7.1)
-//
 //     ArenaBenefit(s) = allocs_in(s)·(α_T2 − α_T1)
 //                     − entries(s)·arenaSetupCost
 //                     − λ·(bytes_held(s) − peak_live_bytes(s))
-//
 // Every scope is already an implicit region (SPEC 4.1), so the question is not
 // which scopes *could* have an arena but which ones are worth the setup. Both
 // inputs are supposed to come from an access profile; there is no profiler, so
 // they are estimated statically and the estimate is stated rather than hidden:
-//
 //   entries(s)     factors out. It multiplies both terms once `allocs_in` is
 //                  written as "allocations per entry of s", so the *sign* of the
 //                  benefit -- which is the only thing the decision reads -- does
@@ -3763,7 +3669,6 @@ static int enclosing_region(int scope) {
 //                  it died: one instance per site, unweighted. Two sites in one
 //                  loop body are both live, so it is a sum over sites and not a
 //                  maximum over them.
-//
 // The third term is the footprint one, and it is the only term that can make a
 // scope decline an arena on grounds other than speed. Their difference is
 // Σ bytes·(weight − 1): exactly the bytes a scope allocates and then abandons
@@ -3771,21 +3676,17 @@ static int enclosing_region(int scope) {
 // keeps almost none of it live now takes individual objects, which is the
 // trade LAYOUT 4 defines λ for and which the first two terms alone cannot see --
 // they are both counts, so arena-vs-object was decided purely on speed.
-//
 // Both new inputs are static estimates, like allocs_in above: bytes come from
 // the computed layout and the weight from AIF_LOOP_ITERS. A site whose size is
 // not statically known contributes 0 to both, so it moves the decision by
 // nothing rather than by a guess -- the same rule the peak-bytes report uses.
-//
 // Placement is greedy innermost-first, which needs no separate nesting rule.
 // A site can only be served by an arena its escape bottoms at or below, so an
 // inner arena takes exactly the values that die earlier -- LAYOUT's condition
 // for an inner arena being worth it, satisfied by construction rather than by a
 // heuristic. Whatever the inner one cannot take, the next one out sees.
-//
 // Ties break by scope id, which is creation order and therefore node order
 // (LAYOUT 7.1 last line).
-// ============================================================================
 
 #define AIF_ALPHA_T1        3     // LAYOUT 4: allocation cycles at T1 (bump)
 #define AIF_ALPHA_T2        90    //           and at T2 (a general allocator)
@@ -3980,25 +3881,20 @@ void aif_place_arenas(void) {
     }
 }
 
-// ============================================================================
 // REQUIREMENTS 19 -- memory budget reporting
-//
 // The arena high-water mark, statically estimated. Fixed budgets are a hard
 // constraint on console targets, and arenas are what make one tractable: a
 // region's peak is the sum of what it serves, and the peak for a program is the
 // largest sum along a **root-to-leaf chain** of arena scopes -- not the total,
 // which would add sibling regions that are never live at the same time.
-//
 // Weighted by AIF_LOOP_ITERS per enclosing loop, the same estimator automatic
 // placement uses for allocs_in(s), so the two cannot disagree about how much a
 // scope serves.
-//
 // **It is an estimate, and the manifest says which part it cannot see.** A
 // struct's size is known from its layout; a string's is its length, which is a
 // run-time value. Sites whose size is not statically known are counted
 // separately rather than guessed at, because a fabricated per-string constant
 // would make a budget gate that passes or fails on a number nobody computed.
-// ============================================================================
 
 // SPEC 5.2.1.1's contribution, defined with the placement it comes from.
 static long bracket_bytes_of(int scope, int* unsized);
@@ -4357,33 +4253,27 @@ int aif_site_arena_is_pinned(int id) {
     return scopes[r].region_name >= 0 ? 1 : 0;
 }
 
-// ============================================================================
 // Call-site bracketing: may a caller's region reach a callee's allocations?
 // (SPEC 5.2.1's first named repair. Report only -- nothing here places anything.)
-//
 // The gate above rejects a site whose `region` is in another function, and the
 // census says that is 196 of 196 blocked sites. The repair is not to make the
 // site's E name the caller's arena -- it cannot; E is a scope id in the site's
 // own function -- but to *bracket the call*, so that the arena serving the
 // callee's allocations is chosen at run time by the region stack that is
 // already there.
-//
 // That is only sound when nothing the callee allocates can outlive the region.
 // This computes exactly that question, per function, and answers it as a mask
 // rather than a verdict -- the same decision `aif_arena_blockers` records, for
 // the same reason: a conjunction reported as its first failure sends a reader
 // to the wrong work, and this file has three sessions of evidence for it.
-//
 //   GLOBAL       an allocation in the extent escapes to static storage. Nothing
 //                bounds its lifetime, so no region can.
 //   PARAM_STORE  the extent stores into something it did not allocate. This is
 //                the counterexample that kills the naive version:
-//
 //                    fn add_to(dest: List<Node>, n: Int) {
 //                        list_push(dest, Node { id: n })
 //                    }
 //                    region R { add_to(long_lived_list, 5) }
-//
 //                the Node comes from R's arena and the list outlives R. Caught
 //                by asking whether every *owner* the extent stores into was
 //                itself allocated inside the extent.
@@ -4399,14 +4289,12 @@ int aif_site_arena_is_pinned(int id) {
 //                arena memory on one path or leak heap memory on the other.
 //                Not an allocation obligation; reported separately for that
 //                reason, and the reason the manifest must say when it fired.
-//
 // Obligation 4 -- the summary is a fixpoint over the call graph -- is not a
 // blocker but how every clause above is evaluated: recursion and mutual
 // recursion mean the transitive callee set is a closure, not a walk. The
 // remaining obligation, "the returned value does not outlive R", is a property
 // of the *call site* rather than of the function, and `site_arena_scope`'s
 // scope_lca test already answers it in the caller.
-// ============================================================================
 
 #define AIF_BR_B_GLOBAL       1
 #define AIF_BR_B_PARAM_STORE  2
@@ -4769,12 +4657,9 @@ int aif_call_edge_count(void) {
     return n;
 }
 
-// ============================================================================
 // Call-site placement (SPEC 5.2.1.1)
-//
 // The section above answers "may a caller's region reach this function". This
 // one decides it, per call site, and hands the resulting sites an arena.
-//
 // **There is no new codegen mechanism, and that is the shape of the thing.** An
 // arena is on a dynamic stack: `region r { ... }` already emits arena_push at
 // entry and arena_pop at every exit, so while a bracketed callee runs, its
@@ -4787,9 +4672,7 @@ int aif_call_edge_count(void) {
 // line of frontend change. An earlier design bracketed the Prismio call itself
 // with the hint; that would have routed *every* runtime allocation in the extent
 // to the arena, including ones the per-site gate declined.
-//
 // Three decisions, none of them re-derivable from the code alone:
-//
 // **Only a `region`-pinned arena, never a cost-model-chosen one.** Otherwise
 // placement depends on bracketing depends on placement: enclosing_region reads
 // scopes[].arena, which aif_place_arenas sets from arena_would_serve, which
@@ -4797,7 +4680,6 @@ int aif_call_edge_count(void) {
 // parse time, before placement runs, so restricting to it cuts the loop -- and
 // leaves arena_would_serve, the one clause-list copy deliberately *not* behind
 // site_arena_scope, correct without change.
-//
 // **Obligation 3 is not readable from E.** "The value the call returns does not
 // outlive R" is a property of the call site, and E cannot express it:
 // AIF_CON_LIVE_IN's transfer sets E = Caller for every site whose fn is not the
@@ -4806,13 +4688,11 @@ int aif_call_edge_count(void) {
 // the points-to graph already holds it -- pt[k] for a VAR key names the function
 // and var_scope names the declaring scope. So obligation 3 is asked of the keys
 // and of the owner sites, not of E. bracket_site_bounded is that question.
-//
 // **Regime (a) is what makes one body serve one regime**, and it is checked by
 // aif_fn_bracket_blockers above: the callee has exactly one call site, and every
 // function the extent reaches is reached only from inside it. Together with the
 // bracketed call being inside the region, that means the extent's bodies run at
 // the region's arena depth on every path they can be entered from.
-// ============================================================================
 
 // Key ids are dense and the interning table is a hash, so a reverse index is the
 // only way to ask "what kind of location is key k". Rebuilt when key_count moves,
@@ -5854,25 +5734,20 @@ int aif_releases_on_overwrite_node(const void* node) {
     return 0;
 }
 
-// ============================================================================
 // Ownership inside containers
-//
 // A container teardown is a release point, and the container has to be told what
 // its elements are: probing a pointer's header to find out would be reading
 // memory in front of a pointer this compilation did not allocate, which is the
 // same unsound move that bars refcounting an OPAQUE site.
-//
 // So the disposition is decided here, once, and codegen stamps it on the
 // container at construction. It is a property of the *container site*, not of the
 // element, because that is the only granularity a teardown loop has: one call per
 // element, all elements alike.
-//
 // Which means a mixed container has no answer. If one element wants a free and
 // another wants a decrement, neither is right for both and the honest outcome is
 // to reclaim nothing -- today's behaviour, and a leak rather than a wrong free.
 // The same goes for anything the deallocator cannot take: an array element is
 // frame storage and an opaque one was never ours.
-// ============================================================================
 
 #define AIF_ELEM_NONE   0
 #define AIF_ELEM_OBJECT 1   // the deallocator
@@ -6016,18 +5891,14 @@ static int elem_disposition_of(int id, int tier) {
     return AIF_ELEM_OBJECT;
 }
 
-// ============================================================================
 // Struct-field ownership
-//
 // The sibling of container ownership, and deliberately not the same mechanism.
 // A container is *told* its element disposition at construction because its
 // contents are dynamic -- the runtime is the only thing that knows how many
 // elements there are or when the last one arrived. A struct's fields are known
 // statically, right here in the nominal registry, so the answer is a **function
 // generated per type** with one release per owned field emitted in line.
-//
 // Two consequences follow from that difference, and both are the point:
-//
 //   * **The disposition is per field, not per type.** A container reclaims
 //     nothing when its elements disagree, because a teardown loop makes one call
 //     for all of them. A generated function has a separate statement per field,
@@ -6036,12 +5907,10 @@ static int elem_disposition_of(int id, int tier) {
 //     NONE for all six, which is exactly the leak this closes.
 //   * **No runtime word.** The container needs `elem_own` on the object; a struct
 //     needs nothing, because the type is what selects the function.
-//
 // The fact this reads is not new. A struct literal's field initialiser has been
 // a STORE into `key_field(type, field)` since Level 0 -- that is what carries
 // E-STORE and A-STORE -- so the sites that may reach a field are exactly
 // `pt[key_field(type, field)]`. This adds a query, not a rule.
-// ============================================================================
 
 // Lookup without interning. A query after the solve must not add a key: pt is
 // sized to key_count at solve start, so a fresh id would index past it, and a
@@ -6542,9 +6411,7 @@ int aif_site_is_rc(int id) {
     return site_is_rc(&sites[id], aif_tier_of(id));
 }
 
-// ============================================================================
 // Ownership transfer across a return
-//
 // `let cmds = cull(scene, ...)` allocates in the callee and reclaims in the
 // caller, and the escape lattice cannot say so: E is per site, a site belongs to
 // one function, and Region(s) can only name a scope in that function. So a
@@ -6552,18 +6419,15 @@ int aif_site_is_rc(int id) {
 // keeps it. INFERENCE 6's ownership contexts are the specified fix -- instantiate
 // the callee per call site so the return lands in the caller's scope -- and that
 // is a project, not a clause.
-//
 // What is available without it: T2 already means "unique, and the callee kept no
 // other holder", which is the whole of what the caller needs to know. The rest is
 // asked of the syntax at the binding, the same way node_assigns_name is, because
 // the two things that could still go wrong are both visible there.
-//
 //   * The callee returned something it did not allocate -- a pass-through of its
 //     own argument. Then the caller frees a value it already owns elsewhere.
 //     Excluded by requiring every site in the return set to belong to the callee.
 //   * The caller returns it onward. Excluded in ir.psm by node_returns_name,
 //     which is the guard the escape fact would otherwise have supplied.
-//
 // Restricted to a returned **container**, and the restriction is a soundness
 // requirement rather than a conservative start. A value set records the sites an
 // expression may denote, and a string literal or a static is not a site -- so for
@@ -6572,7 +6436,6 @@ int aif_site_is_rc(int id) {
 // `.rodata`, which is the defect Level 4 found in `str_substring` arriving by a
 // different road. The same goes for a struct-returning function with a sentinel
 // path.
-//
 // A `List` has no literal form: `list_new` and `list_new_with_capacity` are the
 // only ways to make one and both always allocate. So the return set of a
 // list-returning function is complete, which is the property this needs and the
@@ -6580,9 +6443,7 @@ int aif_site_is_rc(int id) {
 // constructor is added, not a fact about the count. Recovering the other two
 // needs the points-to lattice to carry "may hold something untracked", which is a
 // real extension and not this item.
-//
 // Returns the deallocator the result needs: 0 none, 2 list.
-// ============================================================================
 
 typedef struct NodeCall {
     struct NodeCall* next;
@@ -6729,18 +6590,14 @@ int aif_owns_call_result_at_node(const void* node) {
     return any ? agreed : AIF_ELEM_NONE;
 }
 
-// ============================================================================
 // Manifest ordering
-//
 // SPEC 6.2 makes the record order normative -- byte-wise ascending by symbol --
 // because an unstable order makes every diff useless. The frontend builds each
 // record's symbol (it knows what a symbol means) and hands it here to be sorted
 // (sorting is a container operation).
-//
 // Insertion-order-stable, so equal symbols keep the order they were added in.
 // There should be no equal symbols; relying on that rather than asserting it
 // would make a future collision reorder the manifest silently.
-// ============================================================================
 
 typedef struct {
     int symbol;     // interned
@@ -6780,14 +6637,11 @@ int aif_order_count(void) { return record_count; }
 const char* aif_order_symbol(int i) { return (i < 0 || i >= record_count) ? "" : aif_str(records[i].symbol); }
 int aif_order_site(int i) { return (i < 0 || i >= record_count) ? -1 : records[i].site; }
 
-// ============================================================================
 // Reset
-//
 // A compiler run analyses one program, but the test harness and any future
 // per-module invocation want a clean slate. Interned names are deliberately
 // kept: they cost nothing and nothing outside this file holds an id across a
 // reset.
-// ============================================================================
 
 void aif_reset(void) {
     g_stmt = -1;

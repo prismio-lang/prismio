@@ -40,7 +40,11 @@ fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: String) {
         // its storage, so the GEP already is the value, and loading it would read
         // the struct rather than address it.
         let mut payloadVal = ir_get_temp_name(slot)
-        if (isStructTypeKey(fieldType) == false) {
+        if (str_equals(fieldType, "struct:prismio.str") == 1) {
+            // A String payload is a value like any scalar, despite its key
+            // naming a struct -- see the same test in expr.psm's field read.
+            payloadVal = ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
+        } else if (isStructTypeKey(fieldType) == false) {
             payloadVal = ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
         }
 

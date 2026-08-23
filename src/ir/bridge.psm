@@ -253,6 +253,7 @@ extern fn ir_undef(type: String) -> Int
 extern fn ir_insert_value(aggType: String, agg: String, value: String, valueType: String, index: Int) -> Int
 extern fn ir_extract_value(aggType: String, agg: String, index: Int) -> Int
 extern fn ir_const_str(globalName: String, length: Int) -> Int
+extern fn ir_global_str_var(name: String, strGlobal: String, length: Int)
 
 extern fn ir_load_ptr(type: String, ptrValue: String) -> Int
 extern fn ir_store_ptr(type: String, value: String, ptrValue: String)

@@ -74,7 +74,6 @@ void print(const char* str) {
     fflush(stdout);
 }
 
-// Print integer
 void print_int(int value) {
     printf("%d", value);
     fflush(stdout);
@@ -86,7 +85,6 @@ void println_int(int value) {
     fflush(stdout);
 }
 
-// Print float
 void print_float(double value) {
     printf("%g", value);
     fflush(stdout);
@@ -116,7 +114,6 @@ void prismio_rt_println_float(double value) {
     println_float(value);
 }
 
-// Print boolean
 void print_bool(int value) {
     printf("%s", value ? "true" : "false");
     fflush(stdout);
@@ -128,7 +125,6 @@ void println_bool(int value) {
     fflush(stdout);
 }
 
-// Print character
 void print_char(char c) {
     printf("%c", c);
     fflush(stdout);
@@ -140,10 +136,6 @@ void println_char(char c) {
     fflush(stdout);
 }
 
-// ============================================
-// String Comparison
-// ============================================
-
 int str_equals(const char* s1, const char* s2) {
     return strcmp(s1, s2) == 0 ? 1 : 0;
 }
@@ -152,17 +144,9 @@ int str_compare(const char* s1, const char* s2) {
     return strcmp(s1, s2);
 }
 
-// ============================================
-// String Length
-// ============================================
-
 int str_length(const char* s) {
     return strlen(s);
 }
-
-// ============================================
-// String Concatenation
-// ============================================
 
 char* str_concat(const char* s1, const char* s2) {
     int len1 = strlen(s1);
@@ -174,10 +158,6 @@ char* str_concat(const char* s1, const char* s2) {
 
     return result;
 }
-
-// ============================================
-// String Substring
-// ============================================
 
 char* str_substring(const char* s, int start, int length) {
     int str_len = strlen(s);
@@ -247,10 +227,6 @@ char* str_slice(const char* s, int start, int length, int base_len) {
     return result;
 }
 
-// ============================================
-// String Character At
-// ============================================
-
 char str_char_at(const char* s, int index) {
     int len = strlen(s);
 
@@ -267,17 +243,9 @@ char str_byte_at(const char* s, int index) {
     return s[index];
 }
 
-// ============================================
-// String Contains
-// ============================================
-
 int str_contains(const char* haystack, const char* needle) {
     return strstr(haystack, needle) != NULL ? 1 : 0;
 }
-
-// ============================================
-// String Starts With
-// ============================================
 
 int str_starts_with(const char* s, const char* prefix) {
     int s_len = strlen(s);
@@ -290,10 +258,6 @@ int str_starts_with(const char* s, const char* prefix) {
     return strncmp(s, prefix, prefix_len) == 0 ? 1 : 0;
 }
 
-// ============================================
-// String Ends With
-// ============================================
-
 int str_ends_with(const char* s, const char* suffix) {
     int s_len = strlen(s);
     int suffix_len = strlen(suffix);
@@ -305,10 +269,6 @@ int str_ends_with(const char* s, const char* suffix) {
     return strcmp(s + (s_len - suffix_len), suffix) == 0 ? 1 : 0;
 }
 
-// ============================================
-// String Index Of
-// ============================================
-
 int str_index_of(const char* haystack, const char* needle) {
     const char* pos = strstr(haystack, needle);
 
@@ -319,15 +279,10 @@ int str_index_of(const char* haystack, const char* needle) {
     return pos - haystack;
 }
 
-// ============================================
-// String Replace (first occurrence)
-// ============================================
-
 char* str_replace(const char* s, const char* old_str, const char* new_str) {
     const char* pos = strstr(s, old_str);
 
     if (pos == NULL) {
-        // No match, return copy
         char* result = (char*)rt_alloc(strlen(s) + 1);
         strcpy(result, s);
         return result;
@@ -340,18 +295,23 @@ char* str_replace(const char* s, const char* old_str, const char* new_str) {
 
     char* result = (char*)rt_alloc(prefix_len + new_len + suffix_len + 1);
 
-    // Copy prefix
     strncpy(result, s, prefix_len);
     result[prefix_len] = '\0';
 
-    // Copy new string
     strcat(result, new_str);
 
-    // Copy suffix
     strcat(result, pos + old_len);
 
     return result;
 }
+
+// The length of a C string, for codegen's use only.
+//
+// A `String` is `{ptr, i64}` inside Prismio and a bare `const char*` across the
+// FFI, so a result coming *back* from an extern has to be given a length. It
+// cannot go through `str_length`, which now takes a fat String -- that is a
+// regress. This takes the raw pointer.
+int prismio_cstr_len(const char* s) { return s ? (int)strlen(s) : 0; }
 
 // The first occurrence of `b` at or after `from`, or -1.
 //
@@ -416,27 +376,15 @@ void str_put_byte(char* s, int index, char value) {
     s[index] = value;
 }
 
-// ============================================
-// String To Integer
-// ============================================
-
 int str_to_int(const char* s) {
     return atoi(s);
 }
-
-// ============================================
-// Integer To String
-// ============================================
 
 char* int_to_str(int n) {
     char* result = (char*)rt_alloc(32);  // enough for any int
     sprintf(result, "%d", n);
     return result;
 }
-
-// ============================================
-// String Clone/Copy
-// ============================================
 
 char* str_clone(const char* s) {
     int len = strlen(s);
@@ -455,12 +403,7 @@ char* str_from_char(char c) {
     return result;
 }
 
-// ============================================
-// String Trim (whitespace)
-// ============================================
-
 char* str_trim(const char* s) {
-    // Find start (skip leading whitespace)
     while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') {
         s++;
     }
@@ -469,7 +412,6 @@ char* str_trim(const char* s) {
     // returning the literal "" -- see str_substring for why a String return is
     // always something the caller can release.
 
-    // Find end (skip trailing whitespace)
     const char* end = s + strlen(s) - 1;
     while (end > s && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) {
         end--;
@@ -483,17 +425,12 @@ char* str_trim(const char* s) {
     return result;
 }
 
-// ============================================
-// String Split (simplified - single delimiter)
-// ============================================
-
 typedef struct {
     char** parts;
     int count;
 } StringArray;
 
 StringArray* str_split(const char* s, char delimiter) {
-    // Count delimiters
     int count = 1;
     for (const char* p = s; *p; p++) {
         if (*p == delimiter) count++;
@@ -569,13 +506,10 @@ void* type_to_ptr(void* ptr) { return ptr; }
 // Native builds use libc malloc; the per-frame arena reset is a no-op here.
 void heap_reset(void) { }
 
-// ============================================================================
 // Arenas (AIF Level 3, SPEC 5.2)
-//
 // A stack of bump allocators. `region r { ... }` pushes one on entry and pops it
 // on every exit; an allocation the analysis proved cannot outlive that region
 // comes from the top of the stack, and the whole block goes back at once.
-//
 // COMPILER-AUDIT 3 expected the arena handle to be *threaded* to each allocation
 // site as a second argument. It is dynamically scoped instead, which keeps
 // ir_alloc_region a `fn(size) -> ptr` like the other two hooks and needs no new
@@ -583,11 +517,9 @@ void heap_reset(void) { }
 // different arena from its caller's -- which does not arise, because only sites
 // lexically inside the block are routed here (SPEC 5.2's own wording), and the
 // analysis has already proved each of those dies no later than this region.
-//
 // Chunks are a linked list so a region that outgrows its first block keeps
 // going rather than falling back to the heap; pointers already handed out stay
 // valid because earlier chunks are not moved.
-// ============================================================================
 
 #define ARENA_CHUNK_MIN 8192
 #define ARENA_MAX_DEPTH 64
@@ -730,36 +662,28 @@ long arena_objects(void) { return arena_objects_served; }
 long arena_bytes(void)   { return arena_bytes_served; }
 long arena_regions(void) { return arena_regions_entered; }
 
-// ============================================================================
 // AIF `verify` mode (SPEC 7.3)
-//
 // A verify build swaps the allocator and deallocator names through
 // ir_set_alloc_function / ir_set_free_function and changes nothing else -- the
 // same seam COMPILER-AUDIT 3 describes for T2, used here for its first real
 // purpose. Codegen is identical to a release build.
-//
 // What this covers, of SPEC 7.3's table:
-//
 //   Tier T0/T1, "no access after frame or region exit" -- partially. Released
 //   memory is poisoned before it goes back to the allocator, so a read that
 //   should not have happened returns a recognisable pattern rather than data
 //   that is merely stale-but-plausible. Reads are not instrumented, so this
 //   makes such a bug loud rather than impossible.
-//
 //   The balance itself, which is not in the table and should be: every object
 //   released exactly once, and none left over. That is what catches a missed
 //   drop path (leak) and a doubled one (release of something not live), which
 //   are the two ways Level 2 can be wrong.
-//
 // What it does not cover, and why:
-//
 //   A = Unique / A <= Borrowed  need a count word in the object header, which
 //                               is the same layout change T3 needs.
 //   E = Region(r)               needs arenas; Level 3.
 //   E <= Caller                 needs static-root reachability at return.
 //   T = Isolated / Transferred  vacuous -- the language has no tasks.
 //   C = Acyclic                 needs a periodic heap walk.
-// ============================================================================
 
 #define AIF_VERIFY_BUCKETS 4096
 #define AIF_VERIFY_POISON  0xDD
@@ -857,13 +781,9 @@ void aif_verify_release(void* p) {
     aif_releases++;
 }
 
-// ============================================
 // Growable list (List<T> for reference elements) — backs Prismio's List<T>.
 // Stores pointer-sized elements.
-// ============================================
-// ============================================
 // AIF Level 5 -- T3, non-atomic reference counting (SPEC 3, T3).
-//
 // The count lives in a **prefix header**: rc_alloc returns base + RC_HDR, and the
 // count is the word immediately in front of the pointer the program holds. That
 // choice is what keeps the seam a fourth allocator name and nothing else.
@@ -872,7 +792,6 @@ void aif_verify_release(void* p) {
 // ir_struct_field_ptr index would have to account for" -- true of a header word
 // inside the object, and avoided entirely by putting it in front. The struct type
 // LLVM sees is unchanged and every field index still means what it meant.
-//
 // **The count starts at zero, not one**, and that is the whole design rather than
 // an off-by-one. What is counted here is *container edges*, because they are the
 // only holder class this compiler both tracks and releases: a T3 value's escape is
@@ -881,16 +800,13 @@ void aif_verify_release(void* p) {
 // container is therefore held by nothing that will ever release, and counting the
 // creating expression would put every such value permanently at one. At zero it
 // simply leaks, which is exactly what it did before this existed.
-//
 // So: one container is one count, the teardown decrements, and the value dies with
 // the last container that held it. A release without a matching retain cannot
 // happen -- only a container retains, and only the same container releases.
-//
 // **An OPAQUE site is never refcounted.** The pointer came back from a function
 // this compilation cannot see, so there is no header in front of it and reading
 // one is reading whatever the allocator put there. That excludes all 37 of the
 // compiler's own T3 sites, which is why the self-host exercises none of this.
-// ============================================
 
 #define RC_HDR 16       // >= sizeof(size_t), and keeps the payload 16-byte aligned
 
@@ -1005,9 +921,7 @@ void rc_release(void* p) {
     }
 }
 
-// ============================================
 // AIF T4b -- the cycle collector (CYCLES 3)
-//
 // Trial deletion (Bacon-Rajan), scoped to the T4b residue, traversing **only
 // cyclic edges** (CYCLES 4). That restriction is the design's own contribution
 // and it is available because the compiler owns the type graph: every edge of a
@@ -1016,18 +930,15 @@ void rc_release(void* p) {
 // skeleton. A Node with two child pointers and six fields of strings and spans
 // is walked through two edges, not eight, and the collector never descends into
 // the string graph at all.
-//
 // **A T4b object is told what its cyclic children are.** `cyc_set_type` stamps a
 // per-type function generated by codegen, for the same reason `list_set_elem_owner`
 // exists: reading a header in front of a pointer to find out would be reading
 // memory this compilation did not allocate.
-//
 // The count is container edges, exactly as at Level 5 -- a T4b value's escape is
 // Caller or Global by the tier's definition, so no binding ever releases it.
 // What T4b adds over T3 is the case Level 5 cannot handle: a decrement that does
 // *not* reach zero is the only way a cycle can become garbage, so that is when a
 // candidate root is buffered.
-// ============================================
 
 #define CYC_BLACK  0
 #define CYC_GREY   1
@@ -1396,9 +1307,7 @@ void list_set_elem_releaser(void* lp, void (*fn)(void*)) {
     if (lp) ((RtList*)lp)->elem_release = fn;
 }
 
-// ============================================================================
 // M4.2 -- inline element storage
-//
 // A `List<T>` whose T is *flat* (SPEC 8.2's unboxed layout: no pointer anywhere
 // inside the type, and not split hot/cold) stores element **bodies** in the list
 // rather than pointers to separately allocated ones. What that removes is an
@@ -1406,14 +1315,11 @@ void list_set_elem_releaser(void* lp, void (*fn)(void*)) {
 // ARCHITECTURE-DIRECTION measured, where Prismio's boxed layout mutated in place
 // ran at 0.86x of an inline Vec: indirection was never the cost, the allocations
 // were.
-//
 // **Everything here is a separate entry point.** The element type is a static
 // fact at every call site, so codegen picks the family and the boxed ops keep
 // the code they had. See the note on `elem_size` for the 1.159x that established
 // this shape.
-//
 // Four facts hold the mode together, and each is load-bearing:
-//
 //  1. **A push builds in place where it can.** `list_push(l, T { ... })` lowers
 //     to `list_push_slot` plus the literal's field stores, so the common push
 //     allocates nothing and copies nothing. Five of the six corpus programs push
@@ -1432,7 +1338,6 @@ void list_set_elem_releaser(void* lp, void (*fn)(void*)) {
 //     lazily, so the two can only disagree by the list having been boxed first
 //     -- and then the fallback keeps it boxed instead of writing a body where a
 //     pointer belongs.
-// ============================================================================
 
 void list_push(void* lp, void* value);
 void list_set(void* lp, int index, void* value);
@@ -1762,9 +1667,7 @@ int list_len(void* lp) {
     return l->len;
 }
 
-// ============================================================================
 // LAYOUT 2 -- the measured access profile
-//
 // These counters exist only in a workload driver: an instrumented build the
 // compiler produces, runs and throws away (LAYOUT 3.2). A shipped program never
 // calls any of them, which is why they are compiled unconditionally rather than
@@ -1772,19 +1675,16 @@ int list_len(void* lp) {
 // changes allocation *pairing* and both ends have to swap together; profiling
 // changes nothing at all, it only counts, so a second runtime compile mode would
 // buy nothing and would be one more thing that can be half-applied.
-//
 // **W4 is what this arrangement is for.** "Two builds with different profiles
 // SHALL produce behaviourally identical programs" is not enforced here by
 // checking anything -- it holds because the profile reaches codegen only through
 // the layout search, and the shipped binary contains no call to any function
 // below. The instrumented binary is a different artifact with a different main.
-//
 // The counters are deliberately unsynchronised. A workload runs single-threaded
 // by construction (the driver is generated, and the corpus is single-threaded);
 // if that stops being true this is the line that breaks, and it should become a
 // per-task table merged at the end rather than a lock, so the measurement does
 // not serialise the thing it is measuring.
-// ============================================================================
 
 #define RT_PROF_SLOTS 8192
 

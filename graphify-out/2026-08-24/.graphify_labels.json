@@ -129,7 +129,7 @@
   "127": "Profile",
   "128": "namelist_contains",
   "129": "NEXT-SESSION.md",
-  "130": "find_binding",
+  "130": "g5.swift",
   "131": "aif_manifest_diff.py",
   "132": "g1_idiomatic.rs",
   "133": "g2_arena.rs",
@@ -212,14 +212,10 @@
   "210": "Session of 2026-08-25 (final benchmark) — the corpus standing has not moved in seven sessions, and `region` is fixed",
   "211": "M2.1a — recursive releases for self-referential types (fork (a))",
   "212": "Prompt 1 is done — what it unblocked",
-  "213": "Prompt 2 (residual) — the hot/cold split, and only that",
   "214": "Concepts",
-  "215": "backend_fail",
   "216": "milestone_bench.py",
   "217": "Session of 2026-08-17 (second) — §8's forced candidate lands, and the IR differential turns out to have a concurrency hole",
   "218": "5 · The accepted tradeoffs, reported anyway",
   "219": "find_binding",
-  "220": "g4.swift",
-  "221": "Session of 2026-08-23 (M2.0) — the accumulator gets an owner, and \"all seven are clean\" was six",
-  "222": "aif_layout_split_select"
+  "221": "Session of 2026-08-23 (M2.0) — the accumulator gets an owner, and \"all seven are clean\" was six"
 }

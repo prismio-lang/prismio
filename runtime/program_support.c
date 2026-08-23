@@ -16,10 +16,6 @@
 extern int prismio_argc;
 extern char** prismio_argv;
 
-// ============================================
-// File I/O
-// ============================================
-
 int file_exists(const char* path) {
     FILE* file = fopen(path, "r");
     if (file) {
@@ -65,10 +61,6 @@ int delete_file(const char* path) {
     if (!path || path[0] == '\0') return 0;
     return remove(path) == 0 ? 0 : 1;
 }
-
-// ============================================
-// Paths
-// ============================================
 
 char* get_directory(const char* path) {
     const char* last_slash = strrchr(path, '/');
@@ -132,10 +124,6 @@ char* current_directory(void) {
     strcpy(fallback, ".");
     return fallback;
 }
-
-// ============================================
-// Listing a module directory
-// ============================================
 
 static int compare_names(const void* a, const void* b) {
     return strcmp(*(const char* const*)a, *(const char* const*)b);
@@ -220,10 +208,6 @@ char* list_modules(const char* directory) {
     return result;
 }
 
-// ============================================
-// Locating the running executable
-// ============================================
-
 char* prismio_executable_directory(void) {
 #ifdef _WIN32
     char exe_path[1024];
@@ -268,10 +252,6 @@ char* executable_directory(void) {
     return fallback;
 }
 
-// ============================================
-// Commands
-// ============================================
-
 char* command_quote_arg(const char* arg) {
     int len = strlen(arg);
     char* result = (char*)rt_base_alloc((len * 2) + 3);
@@ -301,10 +281,6 @@ int execute_command(const char* command) {
 #endif
 }
 
-// ============================================
-// Command line
-// ============================================
-
 int cli_arg_count(void) {
     return prismio_argc;
 }
@@ -316,9 +292,6 @@ char* cli_arg(int index) {
     return prismio_argv[index];
 }
 
-// ============================================
-// Tasks and channels
-// ============================================
 //
 // REQUIREMENTS 15, and the shape is fixed by SPEC 11 item 10: *isolation*
 // concurrency, no shared mutable heap, no atomic counts on the common path.

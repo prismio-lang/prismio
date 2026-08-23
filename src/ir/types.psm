@@ -9,6 +9,9 @@ fn mapType(t: String) -> String {
     if (str_equals(t, "Int") == 1) { return "i32" }
     if (str_equals(t, "Float") == 1) { return "double" }
     if (str_equals(t, "Bool") == 1) { return "i1" }
+    // A String is a pointer *and* a length. The buffer stays NUL-terminated
+    // (FFI 7.1), so crossing to C is still `.ptr` and still zero-copy -- see
+    // ffiType below, which is what an `extern` declaration uses.
     if (str_equals(t, "String") == 1) { return "ptr" }
     // The fourth and last of the type-name tables (the others are
     // typeFromAnnotation, semaAnnotationType and typeFromSemKey). Missing here,
@@ -77,8 +80,19 @@ fn mapTypeNode(tn: ASTNode) -> String {
 
 fn storageType(t: String) -> String {
     if (str_equals(t, "ptrptr") == 1) { return "ptr" }
+    // The fat String is a value, not a heap object reached by pointer, so it is
+    // the one struct key that must survive this collapse.
+    if (str_equals(t, "struct:prismio.str") == 1) { return t }
     if (isStructTypeKey(t)) { return "ptr" }
     return t
+}
+
+// What C sees. Identical to `storageType` except that a String flattens to the
+// pointer half, because the buffer is NUL-terminated and the length is Prismio's
+// bookkeeping rather than part of the ABI.
+fn ffiType(t: String) -> String {
+    if (str_equals(t, "struct:prismio.str") == 1) { return "ptr" }
+    return storageType(t)
 }
 
 // What a *field* of this type occupies in its owner, which is not what a local
@@ -99,6 +113,12 @@ fn storageType(t: String) -> String {
 // recursive type with, and therefore what lets containment be required acyclic.
 fn fieldStorageType(t: String) -> String {
     if (str_equals(t, "ptrptr") == 1) { return "ptr" }
+    // A String field embeds the pair. Storing only the pointer would be one word
+    // instead of two, but `ir_register_struct_field` records the *storage* type,
+    // so a String field would come back indistinguishable from any other pointer
+    // -- and a `match` binding its payload would have no way to know it must
+    // rebuild the length. Keeping the pair keeps the type. The release paths are
+    // unaffected: `coerce_for` in the backend hands them the pointer half.
     return t
 }
 
@@ -235,6 +255,14 @@ fn scalarBitsOf(t: String) -> Int {
 
 fn scalarToSlot(storeType: String, value: String) -> String {
     if (str_equals(storeType, "ptr") == 1) { return value }
+    // A String in a container slot is its pointer. The length is not stored --
+    // it is recovered on the way out, from the NUL the buffer always carries
+    // (FFI 7.1), which is one `strlen` per read against a word per element in
+    // every container. Widening the pair into a slot is what `zext
+    // %prismio.str to i64` was.
+    if (str_equals(storeType, "struct:prismio.str") == 1) {
+        return ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 0))
+    }
     let pi = irPtrIntType()
 
     if (str_equals(storeType, "double") == 1) {

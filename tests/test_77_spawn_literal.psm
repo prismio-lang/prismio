@@ -1,0 +1,49 @@
+// A string literal inside a `spawn` argument.
+//
+// `collect_strings` gives every string literal a module-level global and stamps
+// the name into the node, and codegen then resolves that name. The pass walks
+// the AST by enumerating node kinds -- binary, call, index, member access, array
+// literal -- and had no case for `spawn`'s argument subtree. A literal there was
+// never named, so codegen asked the backend for the global `""` and got
+// `internal backend error: unknown string global ()`.
+//
+// Nothing in the suite spawned with a literal, which is why it survived. The
+// tasks tests all pass a struct.
+//
+// The fix is in the literal's *codegen* rather than in the pre-pass: an unnamed
+// literal names itself on the spot. That makes the pre-pass an optimisation --
+// it batches the globals into one walk -- instead of a correctness requirement,
+// so the next node kind nobody adds a case for cannot bring this back.
+
+import std.io
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn measure(s: String) -> Int {
+    return str_length(s)
+}
+
+extern fn str_length(s: String) -> Int
+
+fn main() -> Int {
+    // The literal is the spawned argument, which is the shape that broke.
+    let t = spawn measure("twelve chars")
+    if (join t != 12) {
+        return fail("a string literal spawned as an argument should reach the task intact")
+    }
+
+    // And nested one level down, inside a call in the argument.
+    let u = spawn measure(str_concat("six", "six"))
+    if (join u != 6) {
+        return fail("a literal under a call in a spawn argument should be named too")
+    }
+
+    println("spawn literal tests passed")
+    return 0
+}
+
+extern fn str_concat(a: String, b: String) -> String
