@@ -145,12 +145,12 @@ fn parsePostfix(p: Parser) -> ASTNode {
 // literal, a call -- settles it as a comparison immediately.
 fn parserLooksLikeTypeArgs(p: Parser, opener: String) -> Bool {
     let mut tok = ptr_to_token(p.current).tokNext
-    if (str_equals(tok, "") == 1) { return false }
+    if (nodeIsNull(tok)) { return false }
     if (str_equals(ptr_to_token(tok).value, "<") == 0) { return false }
 
     let mut depth = 1
     tok = ptr_to_token(tok).tokNext
-    while (str_equals(tok, "") == 0 and depth > 0) {
+    while (nodeExists(tok) and depth > 0) {
         let current = ptr_to_token(tok)
         if (current.type == TokenType.IDENTIFIER) {
             // nothing to do: a type name
@@ -175,7 +175,7 @@ fn parserLooksLikeTypeArgs(p: Parser, opener: String) -> Bool {
     }
 
     if (depth != 0) { return false }
-    if (str_equals(tok, "") == 1) { return false }
+    if (nodeIsNull(tok)) { return false }
     return str_equals(ptr_to_token(tok).value, opener) == 1
 }
 

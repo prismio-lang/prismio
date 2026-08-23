@@ -109,8 +109,8 @@ fn debugPopScope() {
 // `T?` and every struct to `ptr`, so without a name every one of them is an
 // anonymous address in the debugger. With it, a String prints its characters and
 // a struct pointer prints its fields.
-fn debugTypeName(annotation: String, initializer: String) -> String {
-    if (str_equals(annotation, "") == 0) {
+fn debugTypeName(annotation: Ptr, initializer: Ptr) -> String {
+    if (nodeExists(annotation)) {
         let typeNode = ptr_to_node(annotation)
         // An array or a list annotation names its *element* in s1, and reporting
         // `[Int]` as `Int` would describe the wrong thing. Both are addresses of
@@ -123,7 +123,7 @@ fn debugTypeName(annotation: String, initializer: String) -> String {
         }
     }
 
-    if (str_equals(initializer, "") == 0) {
+    if (nodeExists(initializer)) {
         let initNode = ptr_to_node(initializer)
         if (nodeHasType(initNode)) {
             let t = nodeGetType(initNode)
@@ -187,9 +187,9 @@ fn debugGlobal(name: String, typeKey: String, typeName: String, node: ASTNode) {
     ir_debug_global(name, typeKey, typeName, node.file, node.line)
 }
 
-fn debugFieldType(owner: String, field: String, typeNode: String) {
+fn debugFieldType(owner: String, field: String, typeNode: Ptr) {
     if (irDebugInfo == false) { return }
-    ir_debug_field_type(owner, field, debugTypeName(typeNode, ""))
+    ir_debug_field_type(owner, field, debugTypeName(typeNode, ptr_null()))
 }
 
 fn debugStruct(structNode: ASTNode) {

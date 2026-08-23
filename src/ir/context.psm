@@ -37,7 +37,10 @@ fn irSetProfileMode(enabled: Bool, profilePath: String) {
 
 // The body of the function being generated, so a droppable candidate can ask
 // whether the binding is ever reassigned. See nodeAssignsName.
-let mut irFunctionBody = ""
+// No initializer: nothing runs before main, so a global cannot be initialized by
+// a call, and `ptr_null()` is one. An uninitialized global is zero-filled, which
+// for a pointer is exactly NULL -- the value this wants.
+let mut irFunctionBody: Ptr
 
 // AIF's T0. The only tier codegen currently acts on -- everything else keeps
 // the allocator hook it always used. Kept as a named constant here rather than
@@ -83,29 +86,29 @@ let AIF_ELEM_CYCLE_ATOMIC = 7
 // allocates it -- both passes walk the same tree, so the node is a name for the
 // expression that cannot collide. -1 means no inference ran for this node; see
 // the use site in generateExpression.
-extern fn aif_tier_at_node(node: String borrow) -> Int
+extern fn aif_tier_at_node(node: Ptr) -> Int
 
 // Whether the value this node allocates dies with the scope that allocates it,
 // which is what licenses a free at that scope's exits. Not derivable from the
 // tier: T1 is "some region", and it may be an enclosing one.
-extern fn aif_frees_at_scope_node(node: String borrow) -> Int
+extern fn aif_frees_at_scope_node(node: Ptr) -> Int
 
 // The same question at an assignment rather than at a scope exit: may the store
 // release what it overwrites? Every clause of the one above holds except
 // confinement, because an accumulator allocates in a loop body and binds outside
 // it -- and `return out` puts E at Caller for a value no return ever carried.
-extern fn aif_releases_on_overwrite_node(node: String borrow) -> Int
+extern fn aif_releases_on_overwrite_node(node: Ptr) -> Int
 
 
 // Whether it may come from the enclosing `region`'s arena instead of the heap.
 // Stricter than "is inside a region block": the value must also be unable to
 // outlive that region, which a nested region makes a real question.
-extern fn aif_arena_at_node(node: String borrow) -> Int
+extern fn aif_arena_at_node(node: Ptr) -> Int
 
 // Whether the cost model placed an arena at this block (LAYOUT 7.1). A `region`
 // statement answers 0 here -- codegen already brackets that one by keyword, and
 // bracketing it twice would push two arenas and pop one.
-extern fn aif_auto_arena_at_node(node: String borrow) -> Int
+extern fn aif_auto_arena_at_node(node: Ptr) -> Int
 
 // M3.2d. Which statements of that block the arena has to cover: the first that
 // puts something in it, and the last that still reads something it holds, as
@@ -115,19 +118,19 @@ extern fn aif_auto_arena_at_node(node: String borrow) -> Int
 //
 // Two calls rather than one, because a pair is not a thing this language can
 // return; they ask the same question and are answered from one cached range.
-extern fn aif_arena_range_first(node: String borrow) -> Int
-extern fn aif_arena_range_last(node: String borrow) -> Int
+extern fn aif_arena_range_first(node: Ptr) -> Int
+extern fn aif_arena_range_last(node: Ptr) -> Int
 
 // AIF item 3. What the container allocated at this node owns: AIF_ELEM_NONE
 // unless every element site agrees on one release, because a teardown loop makes
 // one call per element and cannot dispatch per element.
-extern fn aif_elem_owner_at_node(node: String borrow) -> Int
+extern fn aif_elem_owner_at_node(node: Ptr) -> Int
 
 // AIF Level 5. Whether this node's value carries a reference count. Reads the
 // same predicate the element disposition does, because a container told its
 // elements are counted decrements every one of them -- so a site that reached it
 // without a header would be a write into someone else's allocation.
-extern fn aif_rc_at_node(node: String borrow) -> Int
+extern fn aif_rc_at_node(node: Ptr) -> Int
 
 // LAYOUT 7.2. The i-th field of this struct in the physical order the search
 // chose, or "" when no inference ran.
@@ -136,7 +139,7 @@ extern fn aif_layout_field(type: String, i: Int) -> String alias
 // Whether binding this call's result gives the binding something to release.
 // Answers the question the escape lattice structurally cannot: a returned value
 // is Caller and stays Caller, however briefly the caller keeps it.
-extern fn aif_owns_call_result_at_node(node: String borrow) -> Int
+extern fn aif_owns_call_result_at_node(node: Ptr) -> Int
 
 // Struct-field ownership. Whether this type owns anything, and what each field
 // needs. Per field, because a struct mixes -- `World` is five owned Lists and an
@@ -147,11 +150,18 @@ extern fn aif_field_release(type: String, field: String) -> Int
 // The element type of a container whose elements are released by type. Read from
 // the sites, because `list_new()` types as `List<Invalid>` and the annotation is
 // not always there to read.
-extern fn aif_elem_type_at_node(node: String borrow) -> String alias
+extern fn aif_elem_type_at_node(node: Ptr) -> String alias
+
+// M4.2. Whether any site of this type is reference-counted or collected, asked
+// of the type rather than of a container -- inline element storage is decided
+// per element type at four different call sites and they have to agree, and a
+// container's own disposition is visible only where it is constructed. A counted
+// value's header cannot survive being copied into an element block.
+extern fn aif_type_is_counted(type: String) -> Int
 
 // AIF T4b (CYCLES). Whether this node's value is collected as a possible cycle
 // member, and which of a type's fields are the cyclic edges the collector walks.
-extern fn aif_cycle_at_node(node: String borrow) -> Int
+extern fn aif_cycle_at_node(node: Ptr) -> Int
 extern fn aif_type_in_cycle(type: String) -> Int
 extern fn aif_field_is_cyclic(type: String, field: String) -> Int
 

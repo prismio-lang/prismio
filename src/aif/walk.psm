@@ -15,7 +15,7 @@ import common.diagnostics
 // the same idiom dumpast.psm uses.
 // ---------------------------------------------------------------------------
 
-fn aifSitesOf(nodePtr: String, fnId: Int, scope: Int) -> Int {
+fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
     if (nodeIsNull(nodePtr)) {
         return aifVsEmpty()
     }
@@ -183,7 +183,7 @@ fn aifSitesOf(nodePtr: String, fnId: Int, scope: Int) -> Int {
     return out
 }
 
-fn aifSitesOfChain(head: String, fnId: Int, scope: Int) -> Int {
+fn aifSitesOfChain(head: Ptr, fnId: Int, scope: Int) -> Int {
     let mut out = aifVsEmpty()
     let mut p = head
     while (nodeExists(p)) {
@@ -198,7 +198,7 @@ fn aifSitesOfChain(head: String, fnId: Int, scope: Int) -> Int {
 // whose body this compilation can see gets real parameter and return edges,
 // while an extern -- or a sealed function, which is the same situation (PIR 5)
 // -- gets its contracts and nothing more.
-fn aifCallSites(callPtr: String, fnId: Int, scope: Int) -> Int {
+fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     let e = ptr_to_node(callPtr)
     let ty = aifNodeType(e)
 
@@ -494,7 +494,7 @@ fn aifApplyAnnotations(decl: ASTNode, vs: Int) {
     }
 }
 
-fn aifWalk(nodePtr: String, fnId: Int, scope: Int) {
+fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
     if (nodeIsNull(nodePtr)) { return }
     let n = ptr_to_node(nodePtr)
 
@@ -672,7 +672,7 @@ fn aifWalk(nodePtr: String, fnId: Int, scope: Int) {
 // Stops dead at any statement kind, which is what keeps it from wandering out
 // of the expression it was handed and into a nested block's statements. Without
 // that guard `if (c) { join t }` would read as an unconditional join.
-fn aifExprHasJoinOf(ptr: String, name: String) -> Bool {
+fn aifExprHasJoinOf(ptr: Ptr, name: String) -> Bool {
     if (nodeIsNull(ptr)) { return false }
     let n = ptr_to_node(ptr)
     if (aifIsStatementKind(n.kind)) { return false }
@@ -741,8 +741,8 @@ fn aifStmtDirectJoin(n: ASTNode, name: String) -> Bool {
 }
 
 // The statement chain under a block, or "" when there is no block there.
-fn aifBlockChain(ptr: String) -> String {
-    if (nodeIsNull(ptr)) { return "" }
+fn aifBlockChain(ptr: Ptr) -> Ptr {
+    if (nodeIsNull(ptr)) { return ptr_null() }
     return ptr_to_node(ptr).child1
 }
 
@@ -835,7 +835,7 @@ fn aifStmtAlwaysJoins(n: ASTNode, name: String, inLoop: Bool) -> Bool {
 
 // Some path through this chain leaves the scope without joining. Statements
 // after one that always joins cannot contribute -- the join already happened.
-fn aifChainEscapesUnjoined(head: String, name: String, inLoop: Bool) -> Bool {
+fn aifChainEscapesUnjoined(head: Ptr, name: String, inLoop: Bool) -> Bool {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -853,7 +853,7 @@ fn aifChainEscapesUnjoined(head: String, name: String, inLoop: Bool) -> Bool {
 // without joining, and asking "does something later join" first would answer
 // yes and miss it. That shape is tests/aif_concurrency.psm's
 // `unjoined_is_cross_thread`, which is why it still reports CrossThread.
-fn aifChainJoins(head: String, name: String, inLoop: Bool) -> Bool {
+fn aifChainJoins(head: Ptr, name: String, inLoop: Bool) -> Bool {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -865,13 +865,13 @@ fn aifChainJoins(head: String, name: String, inLoop: Bool) -> Bool {
     return false
 }
 
-fn aifSpawnIsJoined(afterPtr: String, name: String) -> Bool {
+fn aifSpawnIsJoined(afterPtr: Ptr, name: String) -> Bool {
     // `inLoop` is false at the top: the scope being analysed is the block
     // holding the spawn, and a `break` written directly in it leaves that block.
     return aifChainJoins(afterPtr, name, false)
 }
 
-fn aifWalkChain(head: String, fnId: Int, scope: Int) {
+fn aifWalkChain(head: Ptr, fnId: Int, scope: Int) {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -902,7 +902,7 @@ fn aifWalkChain(head: String, fnId: Int, scope: Int) {
 
 // A child is either a nested statement, which keeps walking, or an expression,
 // which is evaluated for its allocations.
-fn aifWalkChildren(head: String, fnId: Int, scope: Int) {
+fn aifWalkChildren(head: Ptr, fnId: Int, scope: Int) {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)

@@ -50,7 +50,7 @@ fn monoCollectTemplates(module: ASTNode) {
         // Read `next` before pushing: nodeListPush rewrites the tail's `next`,
         // so the chain being walked is the chain being rebuilt.
         let following = stmt.next
-        stmt.next = ""
+        stmt.next = ptr_null()
         if (monoIsTemplate(stmt)) {
             nodeListPush(templates, stmt)
         } else {
@@ -77,7 +77,7 @@ fn monoFindTypeTemplate(module: ASTNode, name: String) -> ASTNode {
         }
         p = stmt.next
     }
-    return ptr_to_node("")
+    return ptr_to_node(ptr_null())
 }
 
 fn monoFindTemplate(module: ASTNode, name: String, kind: NodeKind) -> ASTNode {
@@ -87,7 +87,7 @@ fn monoFindTemplate(module: ASTNode, name: String, kind: NodeKind) -> ASTNode {
         if (stmt.kind == kind and str_equals(stmt.s1, name) == 1) { return stmt }
         p = stmt.next
     }
-    return ptr_to_node("")
+    return ptr_to_node(ptr_null())
 }
 
 fn monoHasTemplate(module: ASTNode, name: String, kind: NodeKind) -> Bool {
@@ -102,7 +102,7 @@ fn monoHasTemplate(module: ASTNode, name: String, kind: NodeKind) -> Bool {
 // walk to matter would be one where the instantiations themselves dominate.
 // Measure before replacing it.
 fn monoAppendDeclaration(module: ASTNode, decl: ASTNode) {
-    decl.next = ""
+    decl.next = ptr_null()
     if (nodeIsNull(module.child1)) {
         module.child1 = node_to_ptr(decl)
         return
@@ -127,7 +127,7 @@ fn monoAppendDeclaration(module: ASTNode, decl: ASTNode) {
 // type *parameter*, not of the argument substituted for it. Carrying one over
 // would make the instantiation agree with the template about a type it no longer
 // has.
-fn monoCopyOne(ptr: String) -> ASTNode {
+fn monoCopyOne(ptr: Ptr) -> ASTNode {
     let src = ptr_to_node(ptr)
     let dup = createNode(src.kind)
     dup.s1 = src.s1
@@ -152,7 +152,7 @@ fn monoCopyOne(ptr: String) -> ASTNode {
 // reader. Returning the ASTNode moves it to the caller; nodeListPush moves it
 // into the chain. Every node-building function in the frontend is shaped this
 // way -- parseParameterList returns `params.head` for exactly this reason.
-fn monoCopyChain(ptr: String) -> String {
+fn monoCopyChain(ptr: Ptr) -> Ptr {
     let copies = nodeList()
     let mut p = ptr
     while (nodeExists(p)) {
@@ -204,7 +204,7 @@ fn monoParamIndex(params: String, name: String) -> Int {
     return -1
 }
 
-fn monoChainLength(ptr: String) -> Int {
+fn monoChainLength(ptr: Ptr) -> Int {
     let mut count = 0
     let mut p = ptr
     while (nodeExists(p)) {
@@ -214,7 +214,7 @@ fn monoChainLength(ptr: String) -> Int {
     return count
 }
 
-fn monoChainAt(ptr: String, index: Int) -> String {
+fn monoChainAt(ptr: Ptr, index: Int) -> Ptr {
     let mut p = ptr
     let mut i = 0
     while (nodeExists(p)) {
@@ -222,7 +222,7 @@ fn monoChainAt(ptr: String, index: Int) -> String {
         i = i + 1
         p = ptr_to_node(p).next
     }
-    return ""
+    return ptr_null()
 }
 
 // ---------------------------------------------------------
@@ -237,7 +237,7 @@ fn monoChainAt(ptr: String, index: Int) -> String {
 // that must survive the rewrite are the sibling link, which belongs to the list
 // this annotation sits in and not to the type, and the `?` suffix: `T?` with
 // `T := Node` is `Node?`, so the suffix is or-ed rather than overwritten.
-fn monoSubstituteInto(target: ASTNode, argPtr: String) {
+fn monoSubstituteInto(target: ASTNode, argPtr: Ptr) {
     let arg = monoCopyOne(argPtr)
     target.s1 = arg.s1
     target.i1 = arg.i1
@@ -246,7 +246,7 @@ fn monoSubstituteInto(target: ASTNode, argPtr: String) {
     target.child1 = arg.child1
 }
 
-fn monoSubstituteChain(ptr: String, params: String, argsPtr: String) {
+fn monoSubstituteChain(ptr: Ptr, params: String, argsPtr: Ptr) {
     let mut p = ptr
     while (nodeExists(p)) {
         let node = ptr_to_node(p)
@@ -272,7 +272,7 @@ fn monoSubstituteChain(ptr: String, params: String, argsPtr: String) {
 // the text written at the use site, so `Box<Int>` and a `Box<T>` whose `T` was
 // itself substituted with `Int` name the same instantiation instead of two that
 // differ only in spelling.
-fn monoMangledName(module: ASTNode, base: String, argsPtr: String) -> String {
+fn monoMangledName(module: ASTNode, base: String, argsPtr: Ptr) -> String {
     let mut name = base
     let mut p = argsPtr
     while (nodeExists(p)) {
@@ -412,7 +412,7 @@ fn monoInstantiateStruct(module: ASTNode, tn: ASTNode) -> String {
 // ownership contexts -- discovery at the call site, instantiation into a
 // monotonically growing module -- which is why the two can share this machinery
 // rather than each grow their own. See the note at the end of this file.
-fn monoInstantiateFunction(module: ASTNode, template: ASTNode, argsPtr: String) -> String {
+fn monoInstantiateFunction(module: ASTNode, template: ASTNode, argsPtr: Ptr) -> String {
     let params = template.s2
     // Built onto the copy for the reason monoInstantiateStruct sets out at
     // length: a name owned only by a local does not outlive this call.
@@ -452,7 +452,7 @@ fn monoInstantiateFunction(module: ASTNode, template: ASTNode, argsPtr: String) 
 // found in argument position, never solved from a return type.
 fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, paramName: String) -> ASTNode {
     if (tn.i1 == 0 and tn.i2 == 0 and str_equals(tn.s1, paramName) == 1) {
-        if (typeIsValid(actual) == false) { return ptr_to_node("") }
+        if (typeIsValid(actual) == false) { return ptr_to_node(ptr_null()) }
         return monoAnnotationFromType(actual)
     }
     if (tn.i1 == 1 and actual.kind == TypeKind.ARRAY and nodeExists(tn.child1)) {
@@ -479,10 +479,10 @@ fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, paramName: Str
             }
         }
     }
-    return ptr_to_node("")
+    return ptr_to_node(ptr_null())
 }
 
-fn monoSolveTypeParam(module: ASTNode, template: ASTNode, argPtr: String, paramName: String) -> ASTNode {
+fn monoSolveTypeParam(module: ASTNode, template: ASTNode, argPtr: Ptr, paramName: String) -> ASTNode {
     let mut param = template.child1
     let mut arg = argPtr
     while (nodeExists(param) and nodeExists(arg)) {
@@ -493,7 +493,7 @@ fn monoSolveTypeParam(module: ASTNode, template: ASTNode, argPtr: String, paramN
         param = paramNode.next
         arg = ptr_to_node(arg).next
     }
-    return ptr_to_node("")
+    return ptr_to_node(ptr_null())
 }
 
 // Rewrites a call to a generic function so that it names an instantiation.
@@ -518,7 +518,7 @@ fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode) {
     // again -- the callee's name already records the answer.
     if (nodeExists(callExpr.child3)) {
         let explicit = ptr_to_node(callExpr.child3)
-        callExpr.child3 = ""
+        callExpr.child3 = ptr_null()
         if (monoChainLength(explicit.child1) != monoParamCount(params)) {
             monoArityError(callExpr, template.s1, params)
             return

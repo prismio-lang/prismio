@@ -47,7 +47,7 @@ struct Token {
     col: Int,
     len: Int,
     file: Int,
-    tokNext: String // Pointer to next Token
+    tokNext: Ptr // Pointer to next Token
 }
 
 // How a token kind reads inside a diagnostic. Deliberately coarser than the enum:

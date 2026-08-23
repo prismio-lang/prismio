@@ -202,6 +202,7 @@
   "200": "list_new_cap",
   "201": "2026-08-19 (payload enums) — `Option`/`Result` are in; exhaustiveness is the hole, and REQUIREMENTS 18 now gates two things",
   "202": "Session of 2026-08-22 (finishing `-g`) — four holes closed, and two bugs the tasks walked into",
+  "203": "Appendix — M2's closing state, 2026-08-23",
   "204": "xrealloc",
   "205": "Session of 2026-08-24 (the candidate list) — all five taken in order, and the list is empty",
   "206": "Session of 2026-08-17 (second) — §8's forced candidate lands, and the IR differential turns out to have a concurrency hole",
@@ -213,10 +214,10 @@
   "212": "Prompt 1 is done — what it unblocked",
   "213": "Prompt 2 (residual) — the hot/cold split, and only that",
   "214": "Concepts",
+  "215": "run_workload_test",
   "216": "milestone_bench.py",
   "217": "Session of 2026-08-17 (second) — §8's forced candidate lands, and the IR differential turns out to have a concurrency hole",
   "218": "5 · The accepted tradeoffs, reported anyway",
   "219": "find_binding",
-  "220": "call_edge_push",
   "221": "Session of 2026-08-23 (M2.0) — the accumulator gets an owner, and \"all seven are clean\" was six"
 }

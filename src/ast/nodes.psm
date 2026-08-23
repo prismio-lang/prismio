@@ -103,11 +103,11 @@ struct ASTNode {
     // Its own slot rather than a bit in i2, because i1 and i2 already mean
     // "array" and "list" and a nullable list is both.
     i3: Int,
-    child1: String, // ASTNode
-    child2: String, // ASTNode
-    child3: String, // ASTNode
-    next: String,   // ASTNode (for linked lists)
-    typeInfo: String, // TypeInfo assigned by sema
+    child1: Ptr, // ASTNode
+    child2: Ptr, // ASTNode
+    child3: Ptr, // ASTNode
+    next: Ptr,   // ASTNode (for linked lists)
+    typeInfo: Ptr, // TypeInfo assigned by sema
     line: Int,
     col: Int,
     len: Int,
@@ -120,8 +120,10 @@ struct ASTNode {
 // return of unknown provenance, which means Shared, which A-STORE then spreads
 // to everything stored through the resulting node. That single omission was
 // most of the compiler's own T3 population.
-extern fn ptr_to_node(ptr: String borrow) -> ASTNode alias
-extern fn node_to_ptr(node: ASTNode borrow) -> String alias
+extern fn ptr_null() -> Ptr
+extern fn ptr_is_null(p: Ptr) -> Int
+extern fn ptr_to_node(ptr: Ptr) -> ASTNode alias
+extern fn node_to_ptr(node: ASTNode borrow) -> Ptr alias
 
 // Declared rather than imported from utils: ast.psm is the bottom of the import
 // graph and everything else depends on it.
@@ -155,12 +157,12 @@ extern fn str_equals(s1: String, s2: String) -> Int
 // this. Moving pointer slots from "" to a real null pointer would fix both and
 // is the right eventual answer; it touches every slot assignment in the frontend
 // and is not this change.
-fn nodeExists(ptr: String) -> Bool {
-    return str_equals(ptr, "") == 0
+fn nodeExists(ptr: Ptr) -> Bool {
+    return ptr_is_null(ptr) == 0
 }
 
-fn nodeIsNull(ptr: String) -> Bool {
-    return str_equals(ptr, "") == 1
+fn nodeIsNull(ptr: Ptr) -> Bool {
+    return ptr_is_null(ptr) == 1
 }
 
 // The span is left at zero. Anything the parser builds should come from
@@ -175,11 +177,11 @@ fn createNode(kind: NodeKind) -> ASTNode {
         i1: 0,
         i2: 0,
         i3: 0,
-        child1: "",
-        child2: "",
-        child3: "",
-        next: "",
-        typeInfo: "",
+        child1: ptr_null(),
+        child2: ptr_null(),
+        child3: ptr_null(),
+        next: ptr_null(),
+        typeInfo: ptr_null(),
         line: 0,
         col: 0,
         len: 0,
@@ -207,12 +209,12 @@ fn nodeSpanFrom(target: ASTNode, source: ASTNode) {
 // a silent mistake: link through the wrong tail and the list simply ends early,
 // with no diagnostic and no crash.
 struct NodeList {
-    head: String,
-    tail: String
+    head: Ptr,
+    tail: Ptr
 }
 
 fn nodeList() -> NodeList {
-    return NodeList { head: "", tail: "" }
+    return NodeList { head: ptr_null(), tail: ptr_null() }
 }
 
 // node_to_ptr is the identity on a borrow, so naming it three times costs

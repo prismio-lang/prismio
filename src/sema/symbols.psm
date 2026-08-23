@@ -17,13 +17,13 @@ fn semaMangleType(t: TypeInfo) -> String {
     if (t.kind == TypeKind.STRUCT) { return str_concat("Struct_", t.name) }
     if (t.kind == TypeKind.ENUM) { return str_concat("Enum_", t.name) }
     if (t.kind == TypeKind.ARRAY) {
-        if (str_equals(t.child, "") == 0) {
+        if (nodeExists(t.child)) {
             return str_concat("Array_", semaMangleType(ptr_to_type(t.child)))
         }
         return "Array_Invalid"
     }
     if (t.kind == TypeKind.LIST) {
-        if (str_equals(t.child, "") == 0) {
+        if (nodeExists(t.child)) {
             return str_concat("List_", semaMangleType(ptr_to_type(t.child)))
         }
         return "List_Invalid"
@@ -31,10 +31,10 @@ fn semaMangleType(t: TypeInfo) -> String {
     return "Invalid"
 }
 
-fn semaParamSignature(module: ASTNode, paramPtr: String) -> String {
+fn semaParamSignature(module: ASTNode, paramPtr: Ptr) -> String {
     let mut sig = ""
     let mut curr = paramPtr
-    while (str_equals(curr, "") == 0) {
+    while (nodeExists(curr)) {
         let mut param = ptr_to_node(curr)
         let paramT = semaAnnotationType(module, ptr_to_node(param.child1))
         if (str_equals(sig, "") == 1) {
@@ -62,7 +62,7 @@ fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
 // duplicate-detection passes can compare strings instead of recomputing.
 fn semaCacheFunctionSymbols(module: ASTNode) {
     let mut stmtPtr = module.child1
-    while (str_equals(stmtPtr, "") == 0) {
+    while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
         if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
             stmt.s2 = semaFunctionSymbol(module, stmt)
@@ -112,10 +112,10 @@ fn semaArgMatchesType(module: ASTNode, argNode: ASTNode, expected: TypeInfo) -> 
     return semaTypesMatch(expected, actual)
 }
 
-fn semaSignatureMatchesCall(module: ASTNode, fnNode: ASTNode, argPtr: String) -> Bool {
+fn semaSignatureMatchesCall(module: ASTNode, fnNode: ASTNode, argPtr: Ptr) -> Bool {
     let mut arg = argPtr
     let mut param = fnNode.child1
-    while (str_equals(arg, "") == 0 and str_equals(param, "") == 0) {
+    while (nodeExists(arg) and nodeExists(param)) {
         let argNode = ptr_to_node(arg)
         let paramNode = ptr_to_node(param)
         let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
@@ -125,7 +125,7 @@ fn semaSignatureMatchesCall(module: ASTNode, fnNode: ASTNode, argPtr: String) ->
         arg = argNode.next
         param = paramNode.next
     }
-    return str_equals(arg, "") == 1 and str_equals(param, "") == 1
+    return nodeIsNull(arg) and nodeIsNull(param)
 }
 
 // A bare integer literal has default type Int, but it is also allowed to flow
@@ -134,11 +134,11 @@ fn semaSignatureMatchesCall(module: ASTNode, fnNode: ASTNode, argPtr: String) ->
 // one further rule: prefer the candidate that keeps the literal's default Int
 // type. Casts and typed bindings are not literals here, so they continue to
 // resolve only against their exact declared type.
-fn semaDefaultLiteralScore(module: ASTNode, fnNode: ASTNode, argPtr: String) -> Int {
+fn semaDefaultLiteralScore(module: ASTNode, fnNode: ASTNode, argPtr: Ptr) -> Int {
     let mut score = 0
     let mut arg = argPtr
     let mut param = fnNode.child1
-    while (str_equals(arg, "") == 0 and str_equals(param, "") == 0) {
+    while (nodeExists(arg) and nodeExists(param)) {
         let argNode = ptr_to_node(arg)
         let paramNode = ptr_to_node(param)
         let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
@@ -169,10 +169,10 @@ fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
 
 // `call` is only ever used to place the diagnostic; resolution itself depends
 // on nothing but the name and the argument types.
-fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr: String) -> ASTNode {
+fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> ASTNode {
     // Track the winner as a pointer, not an ASTNode binding: `best = stmt` would
     // move the move-only struct out of `stmt`, and the loop still needs `stmt.next`.
-    let mut bestPtr = ""
+    let mut bestPtr: Ptr = ptr_null()
     let mut matchCount = 0
     let mut bestLiteralScore = -1
     let mut nameSeen = false
@@ -237,10 +237,10 @@ fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr
 }
 
 // Argument count for a builtin, counting the linked list of argument nodes.
-fn semaArgCount(argPtr: String) -> Int {
+fn semaArgCount(argPtr: Ptr) -> Int {
     let mut count = 0
     let mut curr = argPtr
-    while (str_equals(curr, "") == 0) {
+    while (nodeExists(curr)) {
         count = count + 1
         curr = ptr_to_node(curr).next
     }
@@ -252,7 +252,7 @@ fn semaArgCount(argPtr: String) -> Int {
 // nodes that are not there. Every one of these checks used to report and then
 // dereference the missing argument anyway, which only survived because
 // semaError exited the process.
-fn semaCheckArity(call: ASTNode, name: String, argPtr: String, expected: Int) -> Bool {
+fn semaCheckArity(call: ASTNode, name: String, argPtr: Ptr, expected: Int) -> Bool {
     let actual = semaArgCount(argPtr)
     if (actual == expected) { return true }
 

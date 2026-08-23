@@ -12,7 +12,7 @@ fn generateFunction(func: ASTNode) {
     let emittedName = functionSymbolName(func)
     
     let mut retType = "void"
-    if (str_equals(func.child3, "") == 0) {
+    if (nodeExists(func.child3)) {
         let retNode = ptr_to_node(func.child3)
         retType = mapTypeNode(retNode)
     }
@@ -27,7 +27,7 @@ fn generateFunction(func: ASTNode) {
     ir_function_begin(emittedName, retSigType)
     // The declared return, not the storage one: `struct:Point` and `String` are
     // both `ptr` by the time ir_function_begin sees them.
-    debugSignature(retType, debugTypeName(func.child3, ""))
+    debugSignature(retType, debugTypeName(func.child3, ptr_null()))
 
     if (isMain == 1) {
         // Real OS argc/argv only reach the C `main` symbol; stash into globals for cli_arg().
@@ -38,7 +38,7 @@ fn generateFunction(func: ASTNode) {
     }
 
     let mut paramPtr = func.child1
-    while (str_equals(paramPtr, "") == 0) {
+    while (nodeExists(paramPtr)) {
         let paramNode = ptr_to_node(paramPtr)
         let pTypeNode = ptr_to_node(paramNode.child1)
         // SPEC 5.1's `unique`, parsed into i2 by parseParameter. It already
@@ -51,7 +51,7 @@ fn generateFunction(func: ASTNode) {
         } else {
             ir_function_param(pStore, pName)
         }
-        debugSignatureParam(mapTypeNode(pTypeNode), debugTypeName(paramNode.child1, ""))
+        debugSignatureParam(mapTypeNode(pTypeNode), debugTypeName(paramNode.child1, ptr_null()))
         paramPtr = paramNode.next
     }
 
@@ -75,7 +75,7 @@ fn generateFunction(func: ASTNode) {
 
     let mut paramPtr2 = func.child1
     let mut paramIndex = 0
-    while (str_equals(paramPtr2, "") == 0) {
+    while (nodeExists(paramPtr2)) {
         let paramNode = ptr_to_node(paramPtr2)
         let pTypeNode = ptr_to_node(paramNode.child1)
         let pTypeStr = mapTypeNode(pTypeNode)
@@ -92,7 +92,7 @@ fn generateFunction(func: ASTNode) {
         // the program never named and cannot see.
         paramIndex = paramIndex + 1
         debugLocal(paramNode.s1, pSlot, pTypeStr,
-                   debugTypeName(paramNode.child1, ""), paramNode, paramIndex)
+                   debugTypeName(paramNode.child1, ptr_null()), paramNode, paramIndex)
 
         paramPtr2 = paramNode.next
     }
@@ -102,11 +102,11 @@ fn generateFunction(func: ASTNode) {
     // block, so a `let` inside a loop body does not grow the stack per
     // iteration -- and each declaration gets its own slot, which the old
     // name-keyed pre-pass could not express.
-    if (str_equals(func.child2, "") == 0) {
+    if (nodeExists(func.child2)) {
         irFunctionBody = func.child2
 
         generateBlock(ptr_to_node(func.child2))
-        irFunctionBody = ""
+        irFunctionBody = ptr_null()
     }
 
     ir_scope_pop()
@@ -140,21 +140,21 @@ fn collectStringsExpr(expr: ASTNode) {
         }
     }
     if (expr.kind == NodeKind.UNARY_EXPR or expr.kind == NodeKind.CAST_EXPR) {
-        if (str_equals(expr.child1, "") == 0) {
+        if (nodeExists(expr.child1)) {
             collectStringsExpr(ptr_to_node(expr.child1))
         }
     }
     if (expr.kind == NodeKind.BINARY_EXPR) {
-        if (str_equals(expr.child1, "") == 0) {
+        if (nodeExists(expr.child1)) {
             collectStringsExpr(ptr_to_node(expr.child1))
         }
-        if (str_equals(expr.child2, "") == 0) {
+        if (nodeExists(expr.child2)) {
             collectStringsExpr(ptr_to_node(expr.child2))
         }
     }
     if (expr.kind == NodeKind.CALL_EXPR) {
         let mut argPtr = expr.child2
-        while (str_equals(argPtr, "") == 0) {
+        while (nodeExists(argPtr)) {
             let argNode = ptr_to_node(argPtr)
             collectStringsExpr(argNode)
             argPtr = argNode.next
@@ -162,30 +162,30 @@ fn collectStringsExpr(expr: ASTNode) {
     }
     if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
         let mut elemPtr = expr.child1
-        while (str_equals(elemPtr, "") == 0) {
+        while (nodeExists(elemPtr)) {
             let elemNode = ptr_to_node(elemPtr)
             collectStringsExpr(elemNode)
             elemPtr = elemNode.next
         }
     }
     if (expr.kind == NodeKind.INDEX_EXPR) {
-        if (str_equals(expr.child1, "") == 0) {
+        if (nodeExists(expr.child1)) {
             collectStringsExpr(ptr_to_node(expr.child1))
         }
-        if (str_equals(expr.child2, "") == 0) {
+        if (nodeExists(expr.child2)) {
             collectStringsExpr(ptr_to_node(expr.child2))
         }
     }
     if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
-        if (str_equals(expr.child1, "") == 0) {
+        if (nodeExists(expr.child1)) {
             collectStringsExpr(ptr_to_node(expr.child1))
         }
     }
     if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
         let mut fieldPtr = expr.child1
-        while (str_equals(fieldPtr, "") == 0) {
+        while (nodeExists(fieldPtr)) {
             let field = ptr_to_node(fieldPtr)
-            if (str_equals(field.child1, "") == 0) {
+            if (nodeExists(field.child1)) {
                 collectStringsExpr(ptr_to_node(field.child1))
             }
             fieldPtr = field.next
@@ -199,7 +199,7 @@ fn declareExternFunction(ext: ASTNode) {
 
     ir_declare_function_begin(functionSymbolName(ext), storageType(retType))
     let mut paramPtr = ext.child1
-    while (str_equals(paramPtr, "") == 0) {
+    while (nodeExists(paramPtr)) {
         let paramNode = ptr_to_node(paramPtr)
         let pTypeNode = ptr_to_node(paramNode.child1)
         ir_declare_function_param(storageType(mapTypeNode(pTypeNode)))
@@ -259,7 +259,7 @@ fn generateExternStub(ext: ASTNode) {
     ir_function_begin(functionSymbolName(ext), retSig)
     let mut paramPtr = ext.child1
     let mut i = 0
-    while (str_equals(paramPtr, "") == 0) {
+    while (nodeExists(paramPtr)) {
         let paramNode = ptr_to_node(paramPtr)
         let pTypeNode = ptr_to_node(paramNode.child1)
         ir_function_param(storageType(mapTypeNode(pTypeNode)), str_concat("p_s", int_to_str(i)))
@@ -349,7 +349,7 @@ fn generateWorkloadDriver(workload: ASTNode, profilePath: String) {
     ir_br_numbered(headLabel)
 
     ir_label_numbered(doneLabel)
-    irFunctionBody = ""
+    irFunctionBody = ptr_null()
 
     ir_call_begin()
     ir_call_end("void", "rt_profile_end")
@@ -372,7 +372,7 @@ fn findWorkload(module: ASTNode) -> ASTNode {
         if (d.kind == NodeKind.WORKLOAD_DECL) { return d }
         p = d.next
     }
-    return ptr_to_node("")
+    return ptr_to_node(ptr_null())
 }
 
 fn moduleWorkloadCount(module: ASTNode) -> Int {
@@ -406,7 +406,7 @@ fn moduleHasFunction(module: ASTNode, name: String) -> Bool {
 fn registerEnumDecl(enumNode: ASTNode) {
     let mut variantPtr = enumNode.child1
     let mut value = 0
-    while (str_equals(variantPtr, "") == 0) {
+    while (nodeExists(variantPtr)) {
         let variant = ptr_to_node(variantPtr)
         ir_register_enum_variant(enumNode.s1, variant.s1, value)
         value = value + 1
@@ -437,7 +437,7 @@ fn fieldTypeFor(module: ASTNode, typeNode: ASTNode) -> String {
 
 fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
     let firstFieldPtr = structNode.child1
-    if (str_equals(firstFieldPtr, "") == 0) {
+    if (nodeExists(firstFieldPtr)) {
         let firstField = ptr_to_node(firstFieldPtr)
         if (ir_get_struct_field_index(structNode.s1, firstField.s1) >= 0) {
             return
@@ -451,7 +451,7 @@ fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
     // and what keeps it linear; a containment *cycle* is rejected by
     // semaCheckStructContainment before codegen runs, so it cannot arrive here.
     let mut depPtr = structNode.child1
-    while (str_equals(depPtr, "") == 0) {
+    while (nodeExists(depPtr)) {
         let depField = ptr_to_node(depPtr)
         let depType = fieldTypeFor(module, ptr_to_node(depField.child1))
         if (isStructTypeKey(depType)) {
@@ -499,7 +499,7 @@ fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
 
     if (emitted == 0) {
         let mut fieldPtr = structNode.child1
-        while (str_equals(fieldPtr, "") == 0) {
+        while (nodeExists(fieldPtr)) {
             let field = ptr_to_node(fieldPtr)
             let typeNode = ptr_to_node(field.child1)
             let fieldType = fieldTypeFor(module, typeNode)
@@ -668,7 +668,7 @@ fn generateCyclicChildrenFn(structNode: ASTNode) {
 fn nthStructField(structNode: ASTNode, want: Int) -> ASTNode {
     let mut seen = 0
     let mut p = structNode.child1
-    while (str_equals(p, "") == 0) {
+    while (nodeExists(p)) {
         let f = ptr_to_node(p)
         if (f.kind == NodeKind.STRUCT_FIELD) {
             if (seen == want) { return f }
@@ -676,13 +676,13 @@ fn nthStructField(structNode: ASTNode, want: Int) -> ASTNode {
         }
         p = f.next
     }
-    return ptr_to_node("")
+    return ptr_to_node(ptr_null())
 }
 
 fn irFieldCountOf(structNode: ASTNode) -> Int {
     let mut n = 0
     let mut p = structNode.child1
-    while (str_equals(p, "") == 0) {
+    while (nodeExists(p)) {
         let f = ptr_to_node(p)
         if (f.kind == NodeKind.STRUCT_FIELD) { n = n + 1 }
         p = f.next
@@ -692,12 +692,12 @@ fn irFieldCountOf(structNode: ASTNode) -> Int {
 
 fn findStructField(structNode: ASTNode, name: String) -> ASTNode {
     let mut p = structNode.child1
-    while (str_equals(p, "") == 0) {
+    while (nodeExists(p)) {
         let f = ptr_to_node(p)
         if (str_equals(f.s1, name) == 1) { return f }
         p = f.next
     }
-    return ptr_to_node("")
+    return ptr_to_node(ptr_null())
 }
 
 // Walks every child of `stmt` that can contain an expression, so each string
@@ -712,14 +712,14 @@ fn findStructField(structNode: ASTNode, name: String) -> ASTNode {
 //
 // The helpers below take a possibly-empty child pointer so each kind reads as a
 // plain list of the children it owns, rather than repeating the emptiness check.
-fn collectStringsChildExpr(child: String) {
-    if (str_equals(child, "") == 0) {
+fn collectStringsChildExpr(child: Ptr) {
+    if (nodeExists(child)) {
         collectStringsExpr(ptr_to_node(child))
     }
 }
 
-fn collectStringsChildBlock(child: String) {
-    if (str_equals(child, "") == 0) {
+fn collectStringsChildBlock(child: Ptr) {
+    if (nodeExists(child)) {
         collectStringsBlock(ptr_to_node(child))
     }
 }
@@ -743,7 +743,7 @@ fn collectStringsStmt(stmt: ASTNode) {
     if (stmt.kind == NodeKind.IF_STATEMENT) {
         collectStringsChildExpr(stmt.child1)
         collectStringsChildBlock(stmt.child2)
-        if (str_equals(stmt.child3, "") == 0) {
+        if (nodeExists(stmt.child3)) {
             let elseNode = ptr_to_node(stmt.child3)
             if (elseNode.kind == NodeKind.IF_STATEMENT) {
                 collectStringsStmt(elseNode)
@@ -771,7 +771,7 @@ fn collectStringsStmt(stmt: ASTNode) {
     if (stmt.kind == NodeKind.MATCH_STATEMENT) {
         collectStringsChildExpr(stmt.child1)
         let mut armPtr = stmt.child2
-        while (str_equals(armPtr, "") == 0) {
+        while (nodeExists(armPtr)) {
             let arm = ptr_to_node(armPtr)
             // A non-wildcard arm's pattern is an ordinary expression.
             collectStringsChildExpr(arm.child1)
@@ -783,7 +783,7 @@ fn collectStringsStmt(stmt: ASTNode) {
 
 fn collectStringsBlock(block: ASTNode) {
     let mut sPtr = block.child1
-    while (str_equals(sPtr, "") == 0) {
+    while (nodeExists(sPtr)) {
         let s = ptr_to_node(sPtr)
         collectStringsStmt(s)
         sPtr = s.next
@@ -791,7 +791,7 @@ fn collectStringsBlock(block: ASTNode) {
 }
 
 fn collectStringsFunction(func: ASTNode) {
-    if (str_equals(func.child2, "") == 0) {
+    if (nodeExists(func.child2)) {
         collectStringsBlock(ptr_to_node(func.child2))
     }
 }
@@ -823,7 +823,7 @@ fn generateModule(module: ASTNode) {
     debugBeginModule()
 
     let mut typeStmtPtr = module.child1
-    while (str_equals(typeStmtPtr, "") == 0) {
+    while (nodeExists(typeStmtPtr)) {
         let typeStmt = ptr_to_node(typeStmtPtr)
         if (typeStmt.kind == NodeKind.ENUM_DECL) {
             registerEnumDecl(typeStmt)
@@ -835,7 +835,7 @@ fn generateModule(module: ASTNode) {
     }
 
     let mut structStmtPtr = module.child1
-    while (str_equals(structStmtPtr, "") == 0) {
+    while (nodeExists(structStmtPtr)) {
         let structStmt = ptr_to_node(structStmtPtr)
         if (structStmt.kind == NodeKind.STRUCT_DECL) {
             generateStructDecl(structStmt, module)
@@ -848,7 +848,7 @@ fn generateModule(module: ASTNode) {
     // dependencies before dependents, so a type visited early may still be
     // opaque at the point its own declaration is reached.
     let mut debugStructPtr = module.child1
-    while (str_equals(debugStructPtr, "") == 0) {
+    while (nodeExists(debugStructPtr)) {
         let debugStructStmt = ptr_to_node(debugStructPtr)
         if (debugStructStmt.kind == NodeKind.STRUCT_DECL) {
             debugStruct(debugStructStmt)
@@ -887,6 +887,41 @@ fn generateModule(module: ASTNode) {
 
     ir_declare_function_begin("list_set_elem_releaser", "void")
     ir_declare_function_param("ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    // M4.2. The element size a container stores inline, or nothing at all when
+    // it is never called -- a list not stamped with one keeps the boxed layout.
+    ir_declare_function_begin("list_set_elem_inline", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    // M4.2, destination passing: the address of a freshly reserved element, so a
+    // pushed struct literal is built in the list instead of built and copied in.
+    ir_declare_function_begin("list_push_slot", "ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    // M4.2. The inline family: the same four container ops for a list whose
+    // element bodies live in it. Separate entry points rather than a branch in
+    // the boxed ones -- the element type is static at every call site, and the
+    // branch cost 1.159x when it was not.
+    ir_declare_function_begin("list_push_inline", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_get_inline", "ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_set_inline", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
     ir_declare_function_param("ptr")
     ir_declare_function_end()
 
@@ -983,7 +1018,7 @@ fn generateModule(module: ASTNode) {
     // whose field is another owning struct calls that type's release -- and the
     // declaration order of two structs says nothing about which needs the other.
     let mut relDeclPtr = module.child1
-    while (str_equals(relDeclPtr, "") == 0) {
+    while (nodeExists(relDeclPtr)) {
         let relStmt = ptr_to_node(relDeclPtr)
         if (relStmt.kind == NodeKind.STRUCT_DECL) {
             if (aif_type_releases(relStmt.s1) == 1) {
@@ -998,7 +1033,7 @@ fn generateModule(module: ASTNode) {
     ir_blank_line()
 
     let mut relDefPtr = module.child1
-    while (str_equals(relDefPtr, "") == 0) {
+    while (nodeExists(relDefPtr)) {
         let relStmt = ptr_to_node(relDefPtr)
         if (relStmt.kind == NodeKind.STRUCT_DECL) {
             if (aif_type_releases(relStmt.s1) == 1) {
@@ -1013,7 +1048,7 @@ fn generateModule(module: ASTNode) {
     // document's headline result and is checkable from the type declarations
     // alone, before any inference runs.
     let mut cycDefPtr = module.child1
-    while (str_equals(cycDefPtr, "") == 0) {
+    while (nodeExists(cycDefPtr)) {
         let cycStmt = ptr_to_node(cycDefPtr)
         if (cycStmt.kind == NodeKind.STRUCT_DECL) {
             if (aif_type_in_cycle(cycStmt.s1) == 1) {
@@ -1027,7 +1062,7 @@ fn generateModule(module: ASTNode) {
 
     // First pass: global variables + collect string literals
     let mut stmtPtr = module.child1
-    while (str_equals(stmtPtr, "") == 0) {
+    while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
         
         if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
@@ -1057,12 +1092,12 @@ fn generateModule(module: ASTNode) {
         if (stmt.kind == NodeKind.VARIABLE_DECL) {
             let mut initVal = "0"
             let mut varType = "i32"
-            let hasAnnotation = str_equals(stmt.child1, "") == 0
+            let hasAnnotation = nodeExists(stmt.child1)
             if (hasAnnotation) {
                 let typeNode = ptr_to_node(stmt.child1)
                 varType = mapTypeNode(typeNode)
             }
-            if (str_equals(stmt.child2, "") == 0) {
+            if (nodeExists(stmt.child2)) {
                 let initNode = ptr_to_node(stmt.child2)
                 // Only infer from the initializer when there is no annotation.
                 // Taking the initializer's type unconditionally declared
@@ -1121,7 +1156,7 @@ fn generateModule(module: ASTNode) {
     
     // Second pass: functions
     let mut stmtPtr2 = module.child1
-    while (str_equals(stmtPtr2, "") == 0) {
+    while (nodeExists(stmtPtr2)) {
         let stmt2 = ptr_to_node(stmtPtr2)
 
         if (stmt2.kind == NodeKind.FUNCTION) {

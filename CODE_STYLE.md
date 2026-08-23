@@ -55,12 +55,21 @@ the *old* compiler built it. Build the next generation with it before believing 
 
 ## Invariants that are not obvious from the code
 
-- **No type punned through `String` may have a zero-valued first field.** `NodeKind`
-  and `TypeKind` both reserve ordinal 0 for this. An absent slot is the empty
-  string, so a node whose first byte is NUL is indistinguishable from one.
-- Test an absent node slot with `nodeExists` / `nodeIsNull`, never by spelling out
-  `str_equals(ptr, "") == 0`. The named form is where the invariant above is written
-  down.
+- **Handles are `Ptr`, not `String`.** An AST node, a token and a `TypeInfo` are
+  reached through an opaque machine pointer: `struct ASTNode { child1: Ptr }`,
+  `ptr_to_node(p: Ptr)`, and absent is a real `NULL`. `Ptr` is copyable — it is
+  absent from `typeIsMoveOnly` — so naming one twice is a copy, not a move.
+- Test an absent handle with `nodeExists` / `nodeIsNull`. These are now a pointer
+  compare rather than a `strcmp` against `""`.
+- **The old punning invariant is retired.** Handles used to be `String`, which
+  forced a rule that no type punned through `String` may have a zero-valued first
+  field — an absent slot was a pointer to `""`, so a node whose first byte was NUL
+  read as absent. `NodeKind` and `TypeKind` still reserve ordinal 0 as
+  `NEVER_ZERO`; that is now ABI stability (the ordinals are load-bearing, see
+  test_41) rather than a safety requirement. Do not reuse ordinal 0.
+- A global holding a handle takes **no initializer** — `let mut tail: Ptr`.
+  Nothing runs before `main`, so a global cannot be initialized by a call, and a
+  zero-filled pointer is already NULL.
 - Strings and structs are affine. Naming a value twice moves it. When a loop needs a
   pointer in two places, call the `alias` accessor twice rather than binding it.
 

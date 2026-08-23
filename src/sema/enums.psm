@@ -70,7 +70,7 @@ fn enumShadowFind(module: ASTNode, name: String) -> ASTNode {
         if (str_equals(decl.s1, name) == 1) { return decl }
         p = decl.next
     }
-    return ptr_to_node("")
+    return ptr_to_node(ptr_null())
 }
 
 fn enumIsPayloadType(module: ASTNode, t: TypeInfo) -> Bool {
@@ -85,7 +85,7 @@ fn enumVariantNode(enumDecl: ASTNode, variantName: String) -> ASTNode {
         if (str_equals(variant.s1, variantName) == 1) { return variant }
         p = variant.next
     }
-    return ptr_to_node("")
+    return ptr_to_node(ptr_null())
 }
 
 // The value stored in the tag field, or -1 for an unknown variant.
@@ -138,7 +138,7 @@ fn enumFieldNamed(name: String, typeName: String) -> ASTNode {
 // at the end of each loop iteration -- while a node that is *returned* is moved
 // to the caller, and a node built inline as an argument is a temporary with no
 // owner and no free point. Both of those are safe; the named local is not.
-fn enumPayloadSlot(variant: ASTNode, payloadPtr: String, index: Int) -> ASTNode {
+fn enumPayloadSlot(variant: ASTNode, payloadPtr: Ptr, index: Int) -> ASTNode {
     let slot = createNode(NodeKind.STRUCT_FIELD)
     slot.s1 = enumPayloadField(variant.s1, index)
     nodeSpanFrom(slot, variant)
@@ -190,7 +190,7 @@ fn enumDesugarModule(module: ASTNode) {
         // Read `next` before pushing: nodeListPush rewrites the tail's `next`,
         // so the chain being walked is the chain being rebuilt.
         let following = stmt.next
-        stmt.next = ""
+        stmt.next = ptr_null()
         if (stmt.kind == NodeKind.ENUM_DECL and enumHasPayload(stmt)) {
             nodeListPush(kept, enumDesugarToStruct(stmt))
             enumShadowPush(module, stmt)
@@ -214,7 +214,7 @@ fn enumTagLiteral(tag: Int) -> ASTNode {
 }
 
 // A struct-literal field whose initialiser is an existing expression node.
-fn enumLiteralField(name: String, init: String) -> ASTNode {
+fn enumLiteralField(name: String, init: Ptr) -> ASTNode {
     let field = createNode(NodeKind.STRUCT_FIELD)
     field.s1 = name
     field.child1 = init
@@ -224,7 +224,7 @@ fn enumLiteralField(name: String, init: String) -> ASTNode {
 // `Option<Int>` as a type annotation, built from a name and a solved argument
 // chain, so that instantiation can go through the one path that already knows
 // how to do it.
-fn enumTypeUse(name: String, argsPtr: String) -> ASTNode {
+fn enumTypeUse(name: String, argsPtr: Ptr) -> ASTNode {
     let tn = createNode(NodeKind.TYPE_ANNOTATION)
     tn.s1 = name
     if (nodeExists(argsPtr)) {
@@ -240,9 +240,9 @@ fn enumTypeUse(name: String, argsPtr: String) -> ASTNode {
 // Answers an empty chain when a parameter cannot be solved -- `Option.None`
 // carries nothing, so nothing there mentions `T` -- and the caller then requires
 // the arguments to have been written out.
-fn enumSolveArgs(module: ASTNode, template: ASTNode, variantName: String, argPtr: String) -> String {
+fn enumSolveArgs(module: ASTNode, template: ASTNode, variantName: String, argPtr: Ptr) -> Ptr {
     let variant = enumVariantNode(template, variantName)
-    if (nodeIsNull(node_to_ptr(variant))) { return "" }
+    if (nodeIsNull(node_to_ptr(variant))) { return ptr_null() }
 
     let params = template.s2
     let count = monoParamCount(params)
@@ -250,14 +250,14 @@ fn enumSolveArgs(module: ASTNode, template: ASTNode, variantName: String, argPtr
     let mut i = 0
     while (i < count) {
         let found = enumSolveOneArg(module, variant, argPtr, monoParamAt(params, i))
-        if (nodeIsNull(node_to_ptr(found))) { return "" }
+        if (nodeIsNull(node_to_ptr(found))) { return ptr_null() }
         nodeListPush(solved, found)
         i = i + 1
     }
     return solved.head
 }
 
-fn enumSolveOneArg(module: ASTNode, variant: ASTNode, argPtr: String, paramName: String) -> ASTNode {
+fn enumSolveOneArg(module: ASTNode, variant: ASTNode, argPtr: Ptr, paramName: String) -> ASTNode {
     let mut payload = variant.child1
     let mut arg = argPtr
     while (nodeExists(payload) and nodeExists(arg)) {
@@ -267,15 +267,15 @@ fn enumSolveOneArg(module: ASTNode, variant: ASTNode, argPtr: String, paramName:
         payload = ptr_to_node(payload).next
         arg = ptr_to_node(arg).next
     }
-    return ptr_to_node("")
+    return ptr_to_node(ptr_null())
 }
 
 // The concrete tagged-struct name for `EnumName` at a use site, instantiating a
 // generic enum if the arguments can be solved. Answers "" when this is not a
 // payload enum at all, which is how an ordinary `Color.Red` falls through to the
 // integer path untouched.
-fn enumConcreteName(module: ASTNode, enumName: String, variantName: String, argPtr: String,
-                    explicitArgs: String) -> String {
+fn enumConcreteName(module: ASTNode, enumName: String, variantName: String, argPtr: Ptr,
+                    explicitArgs: Ptr) -> String {
     if (nodeExists(node_to_ptr(enumShadowFind(module, enumName)))) { return enumName }
 
     let template = monoFindTypeTemplate(module, enumName)
@@ -305,7 +305,7 @@ fn enumConcreteName(module: ASTNode, enumName: String, variantName: String, argP
 // with a struct literal and knows nothing about enums with payloads. The same
 // trick as monomorphisation: put the feature in the AST, not in five passes.
 fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: String, variantName: String,
-                           argPtr: String, explicitArgs: String) -> Bool {
+                           argPtr: Ptr, explicitArgs: Ptr) -> Bool {
     let concrete = enumConcreteName(module, enumName, variantName, argPtr, explicitArgs)
     if (str_equals(concrete, "") == 1) {
         // Naming the fix rather than letting this fall through as "unknown
@@ -348,7 +348,7 @@ fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: String, var
         // field initialiser that carries a `next` is a second expression hanging
         // off the first for every walk that follows sibling chains.
         let following = ptr_to_node(arg).next
-        ptr_to_node(arg).next = ""
+        ptr_to_node(arg).next = ptr_null()
         nodeListPush(fields, enumLiteralField(enumPayloadField(variantName, index), arg))
         index = index + 1
         payload = ptr_to_node(payload).next
@@ -363,8 +363,8 @@ fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: String, var
     expr.kind = NodeKind.STRUCT_LITERAL_EXPR
     expr.s1 = concrete
     expr.child1 = fields.head
-    expr.child2 = ""
-    expr.child3 = ""
+    expr.child2 = ptr_null()
+    expr.child3 = ptr_null()
     return true
 }
 
@@ -373,9 +373,9 @@ fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: String, var
 // `Option<Int>.None` parses its qualifier as a TYPE_ANNOTATION carrying the
 // arguments; a bare `Option.None` parses it as an identifier and carries none,
 // and then the arguments have to be solved from the payload instead.
-fn enumExplicitArgs(target: ASTNode) -> String {
-    if (target.kind != NodeKind.TYPE_ANNOTATION) { return "" }
-    if (target.i2 != 1) { return "" }
+fn enumExplicitArgs(target: ASTNode) -> Ptr {
+    if (target.kind != NodeKind.TYPE_ANNOTATION) { return ptr_null() }
+    if (target.i2 != 1) { return ptr_null() }
     return target.child1
 }
 
@@ -389,9 +389,9 @@ fn enumArmVariantName(pattern: ASTNode) -> String {
 }
 
 // The identifiers a pattern binds: the argument list of `Shape.Circle(r)`.
-fn enumArmBinders(pattern: ASTNode) -> String {
+fn enumArmBinders(pattern: ASTNode) -> Ptr {
     if (pattern.kind == NodeKind.CALL_EXPR) { return pattern.child2 }
-    return ""
+    return ptr_null()
 }
 
 // Checks one arm of a match over a payload enum, and records on the arm what

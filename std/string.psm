@@ -1,0 +1,772 @@
+// String operations, in Prismio.
+//
+// **Four primitives are irreducible. Everything else here is Prismio.**
+//
+//     str_length     the byte count
+//     str_byte_at    read a byte -- `String` is opaque and has no index syntax
+//     str_with_capacity  allocate n bytes, behind the verify seam
+//     str_put_byte   write a byte into what you just allocated
+//
+// Read a byte, write a byte, allocate, measure. Nothing else about strings needs
+// C, and an earlier version of this file was wrong to imply otherwise: it kept
+// `str_equals`, `str_compare`, `str_substring` and `str_concat` on the grounds
+// that they "cannot be written in Prismio", when in fact they are kept for
+// speed. They are still declared below, still used, and that is a measured
+// choice rather than a boundary -- `str_equals` is the self-hosted compiler's
+// hottest call, and `str_substring`/`str_concat` are one `memcpy` each against a
+// fill loop.
+//
+// What every wrapper adds is the **ownership contract**, declared once. An
+// `extern fn` with no contract has unknown provenance, so the analysis widens it
+// to Shared, the result gets no owner, and it leaks. That used to be every
+// application's problem, once per application.
+//
+// ---------------------------------------------------------------------------
+// The three rules that shape this file
+// ---------------------------------------------------------------------------
+//
+// **1. Never accumulate into a reassigned binding.**
+//
+//     let mut out = ""
+//     while (...) { out = strConcat(out, piece) }     // leaks, every iteration
+//
+// An assignment releases nothing -- src/ir/stmt.psm marks a reassigned binding
+// as never droppable, because leaking beats double-freeing -- so every
+// intermediate is unreachable and unfreed. This is why every builder here
+// allocates its result **once** with `str_with_capacity` and fills it, rather
+// than growing a string.
+//
+// Before `str_with_capacity` existed the only way to obey this rule was
+// recursion, one frame per character. That cost n allocations, copied O(n^2)
+// bytes, and put a stack ceiling on the whole family at 150 000 characters.
+// One allocation the caller writes into removed all three: 5 000 000 characters
+// now works, and a 13-call program that allocated 58 times allocates 29.
+//
+// **2. Every `return` is this function's own allocation.**
+//
+// `return strToLower(s)` from another function is a *pass-through*: the buffer
+// was allocated a frame down, `aif_owns_call_result_at_node` declines it because
+// from the call site a value made below is indistinguishable from one handed
+// down, and the caller gets no drop. Measured -- `strToUpper` delegating to a
+// shared body read 1 allocated / 0 released; inlined, 1/1. It is why the two
+// case-mapping loops are written out twice.
+//
+// A bare `return ""` fails for a different reason: static storage contributes no
+// allocation site at all, so one such return makes the whole function's result
+// unowned. `strEmpty()` exists so the empty case is an allocation like any other.
+//
+// **3. Hoist `str_length` out of every loop, and prefer `str_byte_at`.**
+//
+// Both `str_length` and `str_char_at` are O(n) in the C -- `str_char_at` calls
+// `strlen` to range-check *every* byte read. A loop with either in its condition
+// is quadratic. Measured on 200 scans of 40 000 characters: 15.08s with them in
+// the loop, 0.48s hoisted, against 0.50s for the C `str_index_of` this replaced.
+// The port is at parity with C only because of this.
+//
+// `str_byte_at` and `str_put_byte` do **no upper-bound check** -- that is what
+// makes them O(1) -- so they are used only where the bound is already
+// established, which in this file means "inside a loop bounded by a hoisted
+// length".
+//
+// ---------------------------------------------------------------------------
+//
+// **Callers must bind what they get.** `println(strTrim(s))` leaks and
+// `let t = strTrim(s)  println(t)` does not -- an owned result passed straight
+// into a parameter is a value nothing names, and nothing names it is nothing
+// frees it. Measured: 70 allocated / 57 released unbound, 58 / 58 bound. That is
+// the language's rule rather than this module's, but this is where most callers
+// will meet it.
+//
+// See RUNTIME.md for which C symbols remain and why.
+
+import std.option
+
+// ---------------------------------------------------------------------------
+// Primitives
+//
+// The C ABI seam. `extern fn` names are C's names by design (CODE_STYLE.md) --
+// the visible break in convention is how you tell a call leaves Prismio.
+// ---------------------------------------------------------------------------
+
+extern fn str_length(s: String borrow) -> Int
+extern fn str_char_at(s: String borrow, index: Int) -> Char
+extern fn str_byte_at(s: String borrow, index: Int) -> Char
+extern fn str_equals(a: String borrow, b: String borrow) -> Int
+extern fn str_compare(a: String borrow, b: String borrow) -> Int
+extern fn str_concat(a: String borrow, b: String borrow) -> String produce(free)
+extern fn str_substring(s: String borrow, start: Int, length: Int) -> String produce(free)
+extern fn str_from_char(c: Char) -> String produce(free)
+
+// The two that make building a string a loop instead of a recursion. See the
+// note over `str_with_capacity` in runtime/lang_runtime.c: without them an
+// n-byte result costs n allocations, copies O(n^2) bytes, and has to recurse
+// because the loop form leaks -- which capped these functions at 150 000
+// characters. `str_put_byte` does not check its upper bound; every use below is
+// immediately after a `str_with_capacity` whose length bounds the loop.
+extern fn str_with_capacity(length: Int) -> String produce(free)
+extern fn str_put_byte(s: String borrow, index: Int, value: Char)
+extern fn str_find_byte(s: String borrow, from: Int, b: Char) -> Int
+
+// Byte length, not character count. `Char` is a byte here and there is no
+// Unicode scalar type yet, so a multi-byte UTF-8 character counts as its bytes.
+fn strLength(s: String) -> Int {
+    return str_length(s)
+}
+
+// The byte at `index`, or NUL when out of range. Out-of-range is not an error
+// because the range check the caller would write is the one the runtime already
+// does; NUL is distinguishable because a Prismio string cannot contain one.
+fn strCharAt(s: String, index: Int) -> Char {
+    return str_char_at(s, index)
+}
+
+fn strByteAt(s: String, index: Int) -> Int {
+    return str_byte_at(s, index) as U8 as Int
+}
+
+// Content equality. `==` on two Strings compares *pointers* and sema rejects it
+// with a message naming this operation, so this is the only content comparison.
+fn strEquals(a: String, b: String) -> Bool {
+    return str_equals(a, b) == 1
+}
+
+// Negative, zero, or positive, ordering by byte value.
+fn strCompare(a: String, b: String) -> Int {
+    return str_compare(a, b)
+}
+
+fn strConcat(a: String, b: String) -> String {
+    return str_concat(a, b)
+}
+
+// `length` bytes from `start`. A range reaching past the end is clamped rather
+// than refused.
+fn strSubstring(s: String, start: Int, length: Int) -> String {
+    return str_substring(s, start, length)
+}
+
+fn strFromChar(c: Char) -> String {
+    return str_from_char(c)
+}
+
+// An owned empty string.
+//
+// Not a convenience. `return ""` in a String-returning function returns static
+// storage, and one such return makes every result of that function unowned --
+// so the callers that *did* allocate leak too. This is how the empty case stays
+// an allocation like any other.
+fn strEmpty() -> String {
+    return str_concat("", "")
+}
+
+// A fresh copy the caller owns. `strConcat(s, "")` rather than a C `strdup`,
+// because that is already exactly this operation.
+fn strClone(s: String) -> String {
+    return str_concat(s, "")
+}
+
+fn strIsEmpty(s: String) -> Bool {
+    return str_length(s) == 0
+}
+
+// ---------------------------------------------------------------------------
+// Character classification
+//
+// Byte predicates, ASCII only. Named so that the call sites below read as what
+// they test rather than as arithmetic on character codes.
+// ---------------------------------------------------------------------------
+
+fn charIsDigit(c: Char) -> Bool {
+    return c >= '0' and c <= '9'
+}
+
+fn charIsLower(c: Char) -> Bool {
+    return c >= 'a' and c <= 'z'
+}
+
+fn charIsUpper(c: Char) -> Bool {
+    return c >= 'A' and c <= 'Z'
+}
+
+fn charIsAlpha(c: Char) -> Bool {
+    return charIsLower(c) or charIsUpper(c)
+}
+
+fn charIsAlnum(c: Char) -> Bool {
+    return charIsAlpha(c) or charIsDigit(c)
+}
+
+// Space, tab, newline, carriage return. The same four bytes the C `str_trim`
+// recognised, kept identical so that porting it changed no behaviour.
+fn charIsSpace(c: Char) -> Bool {
+    if (c == ' ') { return true }
+    if (c == '\t') { return true }
+    if (c == '\n') { return true }
+    return c == '\r'
+}
+
+fn charToUpper(c: Char) -> Char {
+    if (charIsLower(c) == false) { return c }
+    return ((c as U8) - 32) as Char
+}
+
+fn charToLower(c: Char) -> Char {
+    if (charIsUpper(c) == false) { return c }
+    return ((c as U8) + 32) as Char
+}
+
+fn charDigitValue(c: Char) -> Int {
+    return (c as U8 as Int) - 48
+}
+
+// ---------------------------------------------------------------------------
+// Searching
+// ---------------------------------------------------------------------------
+
+// Whether `s` matches `needle` starting at `at`. Every search below is written
+// in terms of this one, so the bounds reasoning lives in a single place.
+fn strMatchesAtIn(s: String, needle: String, at: Int, slen: Int, nlen: Int) -> Bool {
+    if (at < 0) { return false }
+    if (at + nlen > slen) { return false }
+    let mut i = 0
+    while (i < nlen) {
+        // `str_byte_at` rather than `str_char_at`, and the guard above is what
+        // licenses it: `str_char_at` calls `strlen` on every access to range-check,
+        // so a loop over it is quadratic, while `str_byte_at` does no upper-bound
+        // check at all and is therefore only safe where the bound is already
+        // established. It is here -- `at + nlen <= slen`.
+        if (str_byte_at(s, at + i) != str_byte_at(needle, i)) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Lengths hoisted into the caller wherever there is a loop, because both
+// `str_length` and `str_char_at` are O(n) in the C -- `str_char_at` calls
+// `strlen` to range-check every single byte read. Leaving them in the loop
+// conditions cost 15.08s against the C `str_index_of`'s 0.50s on 200 scans of
+// 40 000 characters; hoisting them brought it to 0.65s. Clang hoists `strlen`
+// within one function but not across this call boundary, which is where the 23x
+// was hiding.
+fn strMatchesAt(s: String, needle: String, at: Int) -> Bool {
+    return strMatchesAtIn(s, needle, at, str_length(s), str_length(needle))
+}
+
+fn strStartsWith(s: String, prefix: String) -> Bool {
+    return strMatchesAt(s, prefix, 0)
+}
+
+fn strEndsWith(s: String, suffix: String) -> Bool {
+    return strMatchesAt(s, suffix, str_length(s) - str_length(suffix))
+}
+
+// The first index at or after `from` where `needle` occurs, or -1.
+//
+// The empty needle matches at `from`, which is what makes `strReplaceAll` with
+// an empty pattern terminate instead of looping forever.
+// Skip to candidates on the first byte rather than testing every position.
+//
+// `str_find_byte` is `strchr`, which libc vectorises, so the scan between
+// candidates runs at memory speed instead of one comparison per byte. Measured
+// on 40 000 searches of a 40 000-byte string: 1.85s testing every position with
+// a call per byte, 0.56s once byte access became an intrinsic, and this form
+// again far below that. It is the same construction as Rust's `str::find`.
+fn strIndexOfFrom(s: String, needle: String, from: Int) -> Int {
+    let slen = str_length(s)
+    let nlen = str_length(needle)
+    let mut i = from
+    if (i < 0) { i = 0 }
+    if (nlen == 0) {
+        if (i <= slen) { return i }
+        return -1
+    }
+    // Skip on the needle's **last** byte, not its first.
+    //
+    // Both are one vectorised `strchr` per candidate, but the last byte is
+    // usually the more selective one and the difference is large when it is.
+    // Searching a 40 000-byte "abcdefghij..." for "jNE": the first byte `j`
+    // occurs 4 000 times and costs a scan-and-verify at each, while the last
+    // byte `E` occurs once. Measured across four cases -- hit and miss, rare and
+    // common leading byte -- first-byte skip ran 0.04s/0.05s on the rare pair and
+    // 0.76s/1.27s on the common pair; this is Horspool's observation without its
+    // shift table.
+    // The skip degenerates when the last byte matches everywhere -- searching
+    // "ba" in a run of 'a' lands on a candidate at every position, so each step
+    // costs a `strchr` call that scans one byte. Measured: 0.67s against the C
+    // `strstr`'s 0.02s, a 33x loss, where the same search with a *selective* last
+    // byte is 47x the other way (0.05s against 2.38s).
+    //
+    // So the skip is abandoned when it stops paying. `unproductive` counts
+    // consecutive candidates that skipped nothing; past a short run the loop
+    // finishes with a plain scan, which is cheap now that byte access is an
+    // intrinsic rather than a call. This bounds the worst case without costing
+    // the common one anything -- a productive skip resets the counter and never
+    // reaches the threshold.
+    let last = str_byte_at(needle, nlen - 1)
+    let mut unproductive = 0
+    while (i + nlen <= slen) {
+        if (unproductive > 32) {
+            while (i + nlen <= slen) {
+                if (strMatchesAtIn(s, needle, i, slen, nlen)) { return i }
+                i = i + 1
+            }
+            return -1
+        }
+        let hit = str_find_byte(s, i + nlen - 1, last)
+        if (hit < 0) { return -1 }
+        let start = hit - nlen + 1
+        if (start + nlen > slen) { return -1 }
+        if (start <= i) { unproductive = unproductive + 1 } else { unproductive = 0 }
+        if (strMatchesAtIn(s, needle, start, slen, nlen)) { return start }
+        i = start + 1
+    }
+    return -1
+}
+
+fn strIndexOf(s: String, needle: String) -> Int {
+    return strIndexOfFrom(s, needle, 0)
+}
+
+fn strLastIndexOf(s: String, needle: String) -> Int {
+    let slen = str_length(s)
+    let nlen = str_length(needle)
+    let mut i = slen - nlen
+    while (i >= 0) {
+        if (strMatchesAtIn(s, needle, i, slen, nlen)) { return i }
+        i = i - 1
+    }
+    return -1
+}
+
+fn strContains(s: String, needle: String) -> Bool {
+    return strIndexOf(s, needle) >= 0
+}
+
+fn strCountOf(s: String, needle: String) -> Int {
+    if (str_length(needle) == 0) { return 0 }
+    let mut n = 0
+    let mut at = strIndexOf(s, needle)
+    while (at >= 0) {
+        n = n + 1
+        at = strIndexOfFrom(s, needle, at + str_length(needle))
+    }
+    return n
+}
+
+// ---------------------------------------------------------------------------
+// Trimming
+// ---------------------------------------------------------------------------
+
+fn strTrimStart(s: String) -> String {
+    let slen = str_length(s)
+    let mut i = 0
+    while (i < slen and charIsSpace(str_byte_at(s, i))) {
+        i = i + 1
+    }
+    return str_substring(s, i, slen - i)
+}
+
+fn strTrimEnd(s: String) -> String {
+    let mut n = str_length(s)
+    while (n > 0 and charIsSpace(str_byte_at(s, n - 1))) {
+        n = n - 1
+    }
+    return str_substring(s, 0, n)
+}
+
+fn strTrim(s: String) -> String {
+    let slen = str_length(s)
+    let mut start = 0
+    while (start < slen and charIsSpace(str_byte_at(s, start))) {
+        start = start + 1
+    }
+    let mut end = slen
+    while (end > start and charIsSpace(str_byte_at(s, end - 1))) {
+        end = end - 1
+    }
+    return str_substring(s, start, end - start)
+}
+
+// ---------------------------------------------------------------------------
+// Building
+//
+// Every function in this section recurses rather than accumulating into a
+// binding. See the note at the top of the file: the loop form leaks one
+// allocation per iteration and the analysis cannot see the intermediates.
+// ---------------------------------------------------------------------------
+
+fn strRepeat(s: String, times: Int) -> String {
+    let slen = str_length(s)
+    let mut n = times
+    if (n < 0) { n = 0 }
+    let out = str_with_capacity(slen * n)
+    let mut w = 0
+    let mut k = 0
+    while (k < n) {
+        let mut i = 0
+        while (i < slen) {
+            str_put_byte(out, w, str_byte_at(s, i))
+            w = w + 1
+            i = i + 1
+        }
+        k = k + 1
+    }
+    return out
+}
+
+fn strPadStart(s: String, width: Int, pad: Char) -> String {
+    let slen = str_length(s)
+    if (slen >= width) { return str_concat(s, "") }
+    let out = str_with_capacity(width)
+    let mut i = 0
+    while (i < width - slen) {
+        str_put_byte(out, i, pad)
+        i = i + 1
+    }
+    let mut j = 0
+    while (j < slen) {
+        str_put_byte(out, width - slen + j, str_byte_at(s, j))
+        j = j + 1
+    }
+    return out
+}
+
+fn strPadEnd(s: String, width: Int, pad: Char) -> String {
+    let slen = str_length(s)
+    if (slen >= width) { return str_concat(s, "") }
+    let out = str_with_capacity(width)
+    let mut i = 0
+    while (i < slen) {
+        str_put_byte(out, i, str_byte_at(s, i))
+        i = i + 1
+    }
+    let mut j = slen
+    while (j < width) {
+        str_put_byte(out, j, pad)
+        j = j + 1
+    }
+    return out
+}
+
+// Written out twice rather than sharing a body with an `upper: Bool` flag.
+// `return strMapChars(s, true)` is a pass-through -- the buffer was allocated a
+// frame down, `aif_owns_call_result_at_node` declines it, and the caller gets no
+// drop. Measured in exactly that shape: 1 allocated, 0 released. Every other
+// builder here returns its own `str_with_capacity`, which is what makes them
+// 1/1. The duplication is eight lines and it also drops a branch from the loop.
+fn strToUpper(s: String) -> String {
+    let slen = str_length(s)
+    let out = str_with_capacity(slen)
+    let mut i = 0
+    while (i < slen) {
+        str_put_byte(out, i, charToUpper(str_byte_at(s, i)))
+        i = i + 1
+    }
+    return out
+}
+
+fn strToLower(s: String) -> String {
+    let slen = str_length(s)
+    let out = str_with_capacity(slen)
+    let mut i = 0
+    while (i < slen) {
+        str_put_byte(out, i, charToLower(str_byte_at(s, i)))
+        i = i + 1
+    }
+    return out
+}
+
+fn strReverse(s: String) -> String {
+    let slen = str_length(s)
+    let out = str_with_capacity(slen)
+    let mut i = 0
+    while (i < slen) {
+        str_put_byte(out, i, str_byte_at(s, slen - 1 - i))
+        i = i + 1
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// Replacing
+// ---------------------------------------------------------------------------
+
+// The first occurrence only. An absent or empty pattern returns a copy, so the
+// result is owned on every path.
+fn strReplaceFirst(s: String, old: String, new: String) -> String {
+    if (str_length(old) == 0) { return str_concat(s, "") }
+    let at = strIndexOf(s, old)
+    if (at < 0) { return str_concat(s, "") }
+    let head = str_substring(s, 0, at)
+    let tailStart = at + str_length(old)
+    let tail = str_substring(s, tailStart, str_length(s) - tailStart)
+    let front = str_concat(head, new)
+    return str_concat(front, tail)
+}
+
+fn strReplaceAllFrom(s: String, old: String, new: String, from: Int) -> String {
+    let at = strIndexOfFrom(s, old, from)
+    if (at < 0) {
+        return str_substring(s, from, str_length(s) - from)
+    }
+    let head = str_substring(s, from, at - from)
+    let rest = strReplaceAllFrom(s, old, new, at + str_length(old))
+    let front = str_concat(head, new)
+    return str_concat(front, rest)
+}
+
+// Every occurrence, left to right, without rescanning what the replacement
+// inserted -- so replacing "a" with "aa" terminates.
+fn strReplaceAll(s: String, old: String, new: String) -> String {
+    if (str_length(old) == 0) { return str_concat(s, "") }
+    let built = strReplaceAllFrom(s, old, new, 0)
+    return str_concat(built, "")
+}
+
+// ---------------------------------------------------------------------------
+// Splitting and joining
+//
+// `strSplit` returns `List<String>`, which is the reason it is here rather than
+// in C. The C `str_split` returned a `StringArray*` -- a struct with no Prismio
+// type, whose two allocations had to be released by calling `str_split_free`,
+// which nothing in the ownership analysis knew about. A `List<String>` is an
+// owned container the analysis already understands.
+// ---------------------------------------------------------------------------
+
+fn strSplit(s: String, sep: Char) -> List<String> {
+    let slen = str_length(s)
+    let out: List<String> = list_new()
+    let mut start = 0
+    let mut i = 0
+    while (i < slen) {
+        if (str_byte_at(s, i) == sep) {
+            list_push(out, str_substring(s, start, i - start))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    list_push(out, str_substring(s, start, slen - start))
+    return out
+}
+
+// Split on a multi-character separator. An empty separator yields the whole
+// string as one part rather than exploding it into characters, because the
+// alternative is an empty part between every pair of bytes.
+fn strSplitOn(s: String, sep: String) -> List<String> {
+    let out: List<String> = list_new()
+    if (str_length(sep) == 0) {
+        list_push(out, str_concat(s, ""))
+        return out
+    }
+    let slen = str_length(s)
+    let seplen = str_length(sep)
+    let mut start = 0
+    let mut at = strIndexOf(s, sep)
+    while (at >= 0) {
+        list_push(out, str_substring(s, start, at - start))
+        start = at + seplen
+        at = strIndexOfFrom(s, sep, start)
+    }
+    list_push(out, str_substring(s, start, slen - start))
+    return out
+}
+
+// Split on runs of whitespace, discarding empty parts. What a command line or a
+// column-aligned file wants, and what `strSplit(s, ' ')` is not.
+fn strSplitWhitespace(s: String) -> List<String> {
+    let slen = str_length(s)
+    let out: List<String> = list_new()
+    let mut i = 0
+    while (i < slen) {
+        while (i < slen and charIsSpace(str_byte_at(s, i))) {
+            i = i + 1
+        }
+        let start = i
+        while (i < slen and charIsSpace(str_byte_at(s, i)) == false) {
+            i = i + 1
+        }
+        if (i > start) {
+            list_push(out, str_substring(s, start, i - start))
+        }
+    }
+    return out
+}
+
+// One pass to size the result, one to fill it. Two traversals of the list beat
+// the recursion this replaced, which allocated once per part and copied the
+// whole accumulated tail each time.
+fn strJoin(parts: List<String>, sep: String) -> String {
+    let n = list_len(parts)
+    if (n == 0) { return str_concat("", "") }
+    let seplen = str_length(sep)
+    let mut total = seplen * (n - 1)
+    let mut i = 0
+    while (i < n) {
+        total = total + str_length(list_get(parts, i))
+        i = i + 1
+    }
+    let out = str_with_capacity(total)
+    let mut w = 0
+    let mut k = 0
+    while (k < n) {
+        if (k > 0) {
+            let mut j = 0
+            while (j < seplen) {
+                str_put_byte(out, w, str_byte_at(sep, j))
+                w = w + 1
+                j = j + 1
+            }
+        }
+        let plen = str_length(list_get(parts, k))
+        let mut m = 0
+        while (m < plen) {
+            str_put_byte(out, w, str_byte_at(list_get(parts, k), m))
+            w = w + 1
+            m = m + 1
+        }
+        k = k + 1
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// Numbers
+// ---------------------------------------------------------------------------
+
+fn strParseIntFrom(s: String, at: Int, acc: Int, negative: Bool, slen: Int) -> Option<Int> {
+    if (at >= slen) {
+        if (negative) { return Option<Int>.Some(0 - acc) }
+        return Option<Int>.Some(acc)
+    }
+    let c = str_byte_at(s, at)
+    if (charIsDigit(c) == false) { return Option<Int>.None }
+    return strParseIntFrom(s, at + 1, acc * 10 + charDigitValue(c), negative, slen)
+}
+
+// `None` rather than a sentinel when the text is not an integer.
+//
+// This is the operation the C `str_to_int` could not express: it was `atoi`,
+// which returns 0 for "0" and 0 for "banana" and gives the caller no way to tell
+// them apart. REQUIREMENTS 14's whole argument against sentinels is this
+// function.
+fn strParseInt(s: String) -> Option<Int> {
+    let slen = str_length(s)
+    if (slen == 0) { return Option<Int>.None }
+    if (str_byte_at(s, 0) == '-') {
+        if (slen == 1) { return Option<Int>.None }
+        return strParseIntFrom(s, 1, 0, true, slen)
+    }
+    if (str_byte_at(s, 0) == '+') {
+        if (slen == 1) { return Option<Int>.None }
+        return strParseIntFrom(s, 1, 0, false, slen)
+    }
+    return strParseIntFrom(s, 0, 0, false, slen)
+}
+
+// Compared, not divided.
+//
+// Sizing the buffer used to be a second division pass over the value -- one
+// divide per digit, before the fill loop did them all again. A chain of
+// comparisons against the powers of ten answers the same question with no
+// division at all, and it is the pass that made integer formatting 2.1x Rust
+// rather than the divides inside the fill.
+fn strDigitCount(value: U64) -> Int {
+    if (value < 10) { return 1 }
+    if (value < 100) { return 2 }
+    if (value < 1000) { return 3 }
+    if (value < 10000) { return 4 }
+    if (value < 100000) { return 5 }
+    if (value < 1000000) { return 6 }
+    if (value < 10000000) { return 7 }
+    if (value < 100000000) { return 8 }
+    if (value < 1000000000) { return 9 }
+    if (value < 10000000000) { return 10 }
+    if (value < 100000000000) { return 11 }
+    if (value < 1000000000000) { return 12 }
+    if (value < 10000000000000) { return 13 }
+    if (value < 100000000000000) { return 14 }
+    if (value < 1000000000000000) { return 15 }
+    if (value < 10000000000000000) { return 16 }
+    if (value < 100000000000000000) { return 17 }
+    if (value < 1000000000000000000) { return 18 }
+    if (value < 10000000000000000000) { return 19 }
+    return 20
+}
+
+// Filled back to front into one allocation. The recursion this replaced cost an
+// allocation and a full copy per digit -- O(d^2) bytes for a d-digit number --
+// which is why formatting integers was 2.8x the C `int_to_str`.
+// Two digits per division, from a flat table of "00".."99".
+//
+// The division is the cost -- an integer divide is tens of cycles where the byte
+// stores are one -- so halving the count of them is most of the operation.
+// Rust's integer `Display` is built the same way, and the 2.13x it held over a
+// digit-at-a-time loop was almost entirely this.
+fn strTwoDigitTable() -> String {
+    return "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899"
+}
+
+fn strFromUnsigned(value: U64) -> String {
+    let digits = strDigitCount(value)
+    let out = str_with_capacity(digits)
+    let table = strTwoDigitTable()
+    let mut v = value
+    let mut i = digits - 1
+    while (v >= 100) {
+        let pair = ((v % 100) as Int) * 2
+        str_put_byte(out, i, str_byte_at(table, pair + 1))
+        str_put_byte(out, i - 1, str_byte_at(table, pair))
+        i = i - 2
+        v = v / 100
+    }
+    // One or two digits left, and the same table serves both.
+    let pair = ((v % 100) as Int) * 2
+    str_put_byte(out, i, str_byte_at(table, pair + 1))
+    if (i > 0) {
+        str_put_byte(out, i - 1, str_byte_at(table, pair))
+    }
+    return out
+}
+
+// Decimal text for an integer.
+//
+// Negation happens in U64 so that I64.min converts: its positive magnitude does
+// not fit in I64 but does fit in U64. The same reasoning as
+// std/io.psm's formatter, which this deliberately mirrors.
+// One allocation, sign included.
+//
+// This used to call `strFromUnsigned` and then `str_concat(digits, "")` -- the
+// concat existing only to satisfy the rule that a returned value must be this
+// function's own allocation, since a pass-through gets no owner. That made every
+// integer format allocate and copy **twice**. Writing the sign into the same
+// buffer as the digits removes the second one, and the measured components say
+// it is where the time was: malloc/free at this rate costs 0.0049s and the whole
+// operation was 0.078s.
+fn strFromInt(value: Int) -> String {
+    let negative = value < 0
+    let mut v = value as U64
+    if (negative) { v = (0 as U64) - (value as I64 as U64) }
+
+    let digits = strDigitCount(v)
+    let mut offset = 0
+    if (negative) { offset = 1 }
+
+    let out = str_with_capacity(digits + offset)
+    if (negative) { str_put_byte(out, 0, '-') }
+
+    let table = strTwoDigitTable()
+    let mut i = offset + digits - 1
+    while (v >= 100) {
+        let pair = ((v % 100) as Int) * 2
+        str_put_byte(out, i, str_byte_at(table, pair + 1))
+        str_put_byte(out, i - 1, str_byte_at(table, pair))
+        i = i - 2
+        v = v / 100
+    }
+    let pair = ((v % 100) as Int) * 2
+    str_put_byte(out, i, str_byte_at(table, pair + 1))
+    if (i > offset) {
+        str_put_byte(out, i - 1, str_byte_at(table, pair))
+    }
+    return out
+}

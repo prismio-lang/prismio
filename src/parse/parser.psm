@@ -22,7 +22,7 @@ extern fn exit(code: Int)
 // struct literal. It was a module-level global until it became clear it is
 // simply parser state, and parser state belongs on the parser.
 struct Parser {
-    current: String, // Token pointer
+    current: Ptr, // Token pointer
     allowStructLit: Int
 }
 

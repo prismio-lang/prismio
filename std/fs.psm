@@ -1,0 +1,129 @@
+// Files and paths.
+//
+// Everything here is a thin skin over runtime/program_support.c, and unlike
+// std/string.psm none of it could be ported: opening a file, reading a
+// directory and asking the OS for the working directory are the capabilities
+// the language does not have and cannot grow without a syscall layer. What this
+// module adds is the two things the raw `extern fn` could not carry.
+//
+// **The ownership contract, declared once.** `read_file`, `get_directory`,
+// `join_path`, `current_directory`, `executable_directory` and `list_modules`
+// all return `malloc`ed memory the caller must release, and only the first three
+// are in the analysis's fallback table (src/aif/contracts.psm). An application
+// that declared the other three itself and left the contract off got an opaque
+// return -- no owner, and a leak per call. Declaring them here means no
+// application has to know which of the six the table happens to cover.
+//
+// **`cli_arg` is `alias`, and getting that one wrong corrupts memory rather
+// than leaking.** It returns a pointer *into* `argv`, or the static `""` -- it
+// allocates nothing. A `produce(free)` on it hands `argv` to the deallocator.
+// It lives in std/process.psm; the warning is here because this is the module
+// whose other six externs all *are* `produce`, which is exactly the habit that
+// would carry over.
+//
+// **Int returns are normalised to `Bool`, and the raw conventions disagree with
+// each other.** `file_exists` returns 1 for yes; `delete_file` and
+// `execute_command` return **0** for success. Two adjacent functions in one C
+// file where 0 means opposite things is a trap that belongs behind a wrapper,
+// not in a doc comment nobody reads at the call site.
+
+import std.option
+import std.string
+
+extern fn file_exists(path: String borrow) -> Int
+extern fn read_file(path: String borrow) -> String produce(free)
+extern fn delete_file(path: String borrow) -> Int
+extern fn get_directory(path: String borrow) -> String produce(free)
+extern fn join_path(directory: String borrow, filename: String borrow) -> String produce(free)
+extern fn current_directory() -> String produce(free)
+extern fn executable_directory() -> String produce(free)
+extern fn list_modules(directory: String borrow) -> String produce(free)
+
+fn fileExists(path: String) -> Bool {
+    return file_exists(path) == 1
+}
+
+// The whole file as text.
+//
+// An unreadable file and an empty file both come back as the empty string --
+// the C returns a one-byte allocation for both. `tryReadFile` is the one that
+// can tell them apart, and it does it by asking `file_exists` first rather than
+// by inspecting the result, because the result cannot answer.
+fn readFile(path: String) -> String {
+    return read_file(path)
+}
+
+fn tryReadFile(path: String) -> Option<String> {
+    if (file_exists(path) == 0) { return Option<String>.None }
+    return Option<String>.Some(read_file(path))
+}
+
+// True when the file is gone afterwards. Note the inversion against the C,
+// which returns 0 for success.
+fn deleteFile(path: String) -> Bool {
+    return delete_file(path) == 0
+}
+
+// The directory part of a path, without the trailing separator. `"."` when the
+// path has no directory part.
+fn directoryOf(path: String) -> String {
+    return get_directory(path)
+}
+
+fn joinPath(directory: String, filename: String) -> String {
+    return join_path(directory, filename)
+}
+
+fn currentDirectory() -> String {
+    return current_directory()
+}
+
+// The directory holding the running executable, which is what a toolchain uses
+// to find files shipped beside it. `"."` when the platform cannot answer.
+fn executableDirectory() -> String {
+    return executable_directory()
+}
+
+// The `.psm` files in `directory`, sorted by name.
+//
+// The C hands back one newline-separated string because it has no way to build
+// a `List<String>` -- the container is a Prismio type. Splitting it here is the
+// half of `list_modules` that always belonged in Prismio, and it means callers
+// stop writing the same newline scan.
+//
+// An empty directory yields an empty list rather than a list holding one empty
+// string, which is the case a plain `strSplit` gets wrong.
+fn listModules(directory: String) -> List<String> {
+    let listing = list_modules(directory)
+    let out: List<String> = list_new()
+    if (str_length(listing) == 0) { return out }
+    let names = strSplit(listing, '\n')
+    // Explicit, because the inferred drop does not fire here: `listing` is a
+    // binding whose value reaches a call that returns a container, and the
+    // analysis will not free it at scope exit on the chance the container aliases
+    // it. It does not -- `strSplit` builds every part with `str_substring`, which
+    // allocates -- so this is a fact the analysis cannot see and the code can
+    // state. Without it `listModules` leaks exactly one allocation per call, the
+    // newline-joined listing itself.
+    drop(listing)
+    let mut i = 0
+    while (i < list_len(names)) {
+        // `list_get` twice rather than a binding, and this is the rule in
+        // CODE_STYLE.md rather than a preference. Binding the element makes the
+        // analysis treat it as a second owner of a string the list already owns,
+        // and both release it: measured here as three `release of a pointer that
+        // is not live` violations, which is a double free rather than a leak.
+        if (str_length(list_get(names, i)) > 0) {
+            list_push(out, str_concat(list_get(names, i), ""))
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Whether `path` names a `.psm` source file. Spelled out rather than left to
+// each caller because the extension is part of the module-resolution contract
+// in src/main.psm, not a convention.
+fn isSourcePath(path: String) -> Bool {
+    return strEndsWith(path, ".psm")
+}

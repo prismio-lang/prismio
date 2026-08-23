@@ -30,7 +30,7 @@ extern fn exit(code: Int)
 
 fn semaBlockHasBreak(block: ASTNode) -> Bool {
     let mut stmtPtr = block.child1
-    while (str_equals(stmtPtr, "") == 0) {
+    while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
 
         if (stmt.kind == NodeKind.BREAK_STATEMENT) { return true }
@@ -55,7 +55,7 @@ fn semaBlockHasBreak(block: ASTNode) -> Bool {
         }
         if (stmt.kind == NodeKind.MATCH_STATEMENT) {
             let mut armPtr = stmt.child2
-            while (str_equals(armPtr, "") == 0) {
+            while (nodeExists(armPtr)) {
                 let arm = ptr_to_node(armPtr)
                 if (semaBlockHasBreak(ptr_to_node(arm.child2))) { return true }
                 armPtr = arm.next
@@ -89,7 +89,7 @@ fn semaStmtDiverges(stmt: ASTNode) -> Bool {
 
     if (stmt.kind == NodeKind.IF_STATEMENT) {
         // Only when there is an else and *both* sides diverge.
-        if (str_equals(stmt.child3, "") == 1) { return false }
+        if (nodeIsNull(stmt.child3)) { return false }
         let elseNode = ptr_to_node(stmt.child3)
         let mut elseDiverges = false
         if (elseNode.kind == NodeKind.IF_STATEMENT) {
@@ -111,7 +111,7 @@ fn semaStmtDiverges(stmt: ASTNode) -> Bool {
 
 fn semaBlockDiverges(block: ASTNode) -> Bool {
     let mut stmtPtr = block.child1
-    while (str_equals(stmtPtr, "") == 0) {
+    while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
         if (semaStmtDiverges(stmt)) { return true }
         stmtPtr = stmt.next

@@ -353,6 +353,69 @@ char* str_replace(const char* s, const char* old_str, const char* new_str) {
     return result;
 }
 
+// The first occurrence of `b` at or after `from`, or -1.
+//
+// `strchr`, which libc vectorises. This is the primitive that separates a
+// competitive search from a naive one, and the gap is not small: on 40 000
+// searches of a 40 000-byte string, a byte-at-a-time scan costs 0.38s in C at
+// -O2 against 0.02s for the same search skipping to candidate first bytes with
+// `memchr`. Rust's `str::find` is built on exactly this, for exactly this reason.
+//
+// `from` must not exceed the string's length -- the caller has the length in
+// hand at every call site, and re-deriving it here would put a `strlen` back on
+// the path this exists to make fast.
+int str_find_byte(const char* s, int from, char b) {
+    if (!s || from < 0) return -1;
+    const char* hit = strchr(s + from, b);
+    return hit ? (int)(hit - s) : -1;
+}
+
+// A String of `length` bytes the caller fills in, plus its NUL.
+//
+// The primitive the language was missing, and its absence shaped std/string.psm
+// more than anything else in this file. With only `str_concat` and
+// `str_from_char` to build with, producing an n-byte string costs n allocations
+// and copies O(n^2) bytes, and it has to recurse because the loop form leaks --
+// which put a stack ceiling on it at 150 000 characters. One allocation the
+// caller writes into removes all three problems at once, and moves `strToUpper`,
+// `strReverse`, `strRepeat`, `strJoin` and `strPadStart` into plain loops.
+//
+// **The caller must write every byte in [0, length).** Only the terminator is
+// set here.
+//
+// This used to `memset` the whole buffer so that a partially written one was
+// still a valid, shorter string. That safety was worth measuring rather than
+// assuming, and it cost a full extra pass over memory that every caller then
+// immediately overwrote: on 100 000 uppercase transforms of a 40 KB string the
+// zero-fill was 0.0074s against 0.0064s without it, ~15% of the operation, for a
+// guarantee no caller in std/string.psm needs -- each of `strRepeat`,
+// `strPadStart`, `strPadEnd`, `strToUpper`, `strToLower`, `strReverse`,
+// `strJoin` and `strFromUnsigned` fills its buffer completely.
+//
+// A caller that does not fill it gets whatever the allocator handed over, up to
+// the terminator. That is the same contract C gives `malloc`, and it is why this
+// is not a general-purpose allocation function.
+char* str_with_capacity(int length) {
+    if (length < 0) length = 0;
+    char* result = (char*)rt_alloc((size_t)length + 1);
+    result[length] = '\0';
+    return result;
+}
+
+// Write one byte. **The upper bound is not checked**, for the same reason
+// `str_byte_at` does not check it: the check costs a `strlen`, which is O(n), and
+// a loop over an O(n) accessor is how `str_char_at` made every search in
+// std/string.psm quadratic. This is the unchecked pair, to be used only where the
+// caller established the bound -- which in practice means "immediately after
+// str_with_capacity, for i < the length passed to it".
+//
+// Writing a NUL truncates the string, which is the one way a caller can make the
+// result shorter than the capacity it asked for.
+void str_put_byte(char* s, int index, char value) {
+    if (!s || index < 0) return;
+    s[index] = value;
+}
+
 // ============================================
 // String To Integer
 // ============================================
@@ -470,6 +533,17 @@ void str_split_free(StringArray* arr) {
 }
 
 // Helpers for type punning ASTNode pointers in Prismio
+// The absent pointer, and the test for it.
+//
+// Until now "absent" was a pointer to the empty string and the test was
+// `str_equals(p, "")` -- a strcmp on a machine pointer. That is what forces
+// CODE_STYLE.md's rule that no type punned through `String` may have a
+// zero-valued first field: an absent slot and a live node whose first byte
+// happens to be zero are the same bytes. Real NULL makes the two distinguishable
+// by construction, and the test a compare rather than a call.
+void* ptr_null(void) { return 0; }
+int   ptr_is_null(void* p) { return p == 0 ? 1 : 0; }
+
 void* ptr_to_node(void* ptr) { return ptr; }
 void* node_to_ptr(void* ptr) { return ptr; }
 void* ptr_to_token(void* ptr) { return ptr; }
@@ -1209,26 +1283,39 @@ long long cyc_collections_run(void) { return cyc_collections; }
 // Set once, by codegen, from aif_elem_owner_at_node -- which answers NONE unless
 // every element site agrees, so a list that reaches here with a mode is a list
 // whose elements are uniformly reclaimable.
-#define XEFY_ELEM_NONE   0
-#define XEFY_ELEM_OBJECT 1
-#define XEFY_ELEM_LIST   2
-#define XEFY_ELEM_RC     3   // Level 5: a decrement, and the last holder frees
-#define XEFY_ELEM_TYPED  4   // struct-field ownership: the element type's own release
-#define XEFY_ELEM_CYCLE  5   // T4b: a decrement, and a non-zero result is a candidate root
+// **These eight values are one wire protocol with three definitions, and nothing
+// but this comment holds them together.** Codegen emits the mode from
+// `AIF_ELEM_*` in src/ir/context.psm; the analysis answers with `AIF_ELEM_*` in
+// aif_support.c; the runtime compares against these. A variant inserted in one
+// list and not the others does not fail to build -- it releases elements with
+// the wrong deallocator, which is a violation rather than a leak.
+//
+// They were `XEFY_ELEM_*` here until 2026-08-23, named after Xefy, the framework
+// this language is being built to carry (aif/implementation/TARGET.md). That is
+// backwards -- the list belongs to Prismio, not to a consumer of it -- and the
+// odd prefix was also what made the drift invisible: a grep for
+// `AIF_ELEM_CYCLE` found two of the three sites. `run_elem_mode_agreement_test`
+// in tests/test_runner.py now checks all three.
+#define AIF_ELEM_NONE   0
+#define AIF_ELEM_OBJECT 1
+#define AIF_ELEM_LIST   2
+#define AIF_ELEM_RC     3   // Level 5: a decrement, and the last holder frees
+#define AIF_ELEM_TYPED  4   // struct-field ownership: the element type's own release
+#define AIF_ELEM_CYCLE  5   // T4b: a decrement, and a non-zero result is a candidate root
 // REQUIREMENTS 15. The two above, one tier up: T4a is a count two threads can
 // touch, so the same decrement has to be atomic. Two constants rather than one
 // plus a flag, because SPEC 3 requires an implementation to "distinguish the
 // sub-classes" and specifically forbids charging collector participation to a
 // T4a value that is provably acyclic -- which is exactly the difference here.
-#define XEFY_ELEM_RC_ATOMIC    6
-#define XEFY_ELEM_CYCLE_ATOMIC 7
+#define AIF_ELEM_RC_ATOMIC    6
+#define AIF_ELEM_CYCLE_ATOMIC 7
 
 typedef struct {
     void** data;
     int len;
     int cap;
     int elem_own;
-    // Struct-field ownership. Under XEFY_ELEM_TYPED the release differs per
+    // Struct-field ownership. Under AIF_ELEM_TYPED the release differs per
     // element *type*, and an int cannot name a type -- so the container is told
     // the function. Same rule as elem_own, one step less abstract: the container
     // is told what to do because it has no way to ask.
@@ -1243,15 +1330,38 @@ typedef struct {
     // at from the arena depth that happens to be current. Without it, a list
     // whose handle is a bump pointer would hand its old element block to free().
     int arena;
-} XefyList;
+    // M4.2. Bytes per element when the elements are stored **inline** -- `data`
+    // holds the element bodies rather than pointers to them -- and 0 when they
+    // are boxed, which is every list this is not stamped on.
+    //
+    // Stamped from the element type, and only for a type the compiler calls
+    // *flat*: no pointer anywhere inside it, and not split hot/cold. Both halves
+    // are the frontend's to decide (ir_struct_is_flat), because both are
+    // properties of the layout it chose.
+    //
+    // **The three hot ops above do not branch on it.** `list_get`, `list_push`
+    // and `list_set` are byte-for-byte what they were, and the inline mode has
+    // its own entry points that codegen calls instead -- because the element
+    // type is a static fact at every call site, so the branch belongs at compile
+    // time. A first version put the branch in `list_get` and `list_push`
+    // themselves and cost **1.159x on the corpus with no list inline at all**:
+    // one extra load and predictable branch, in the two functions the corpus
+    // spends most of its time in. That measurement is the reason this file has
+    // two families of entry points instead of one.
+    //
+    // It also fits in the padding after `arena`, so the header is the same 40
+    // bytes it was.
+    int elem_size;
+} RtList;
 
 static void* list_new_cap(int cap) {
-    XefyList* l = (XefyList*)rt_alloc(sizeof(XefyList));
+    RtList* l = (RtList*)rt_alloc(sizeof(RtList));
     l->len = 0;
     l->cap = cap;
-    l->elem_own = XEFY_ELEM_NONE;
+    l->elem_own = AIF_ELEM_NONE;
     l->elem_release = 0;
     l->arena = rt_arena_slot();
+    l->elem_size = 0;
     l->data = (void**)rt_alloc(sizeof(void*) * (size_t)cap);
     return l;
 }
@@ -1279,11 +1389,225 @@ void* list_new_with_capacity(int n) {
 }
 
 void list_set_elem_owner(void* lp, int mode) {
-    if (lp) ((XefyList*)lp)->elem_own = mode;
+    if (lp) ((RtList*)lp)->elem_own = mode;
 }
 
 void list_set_elem_releaser(void* lp, void (*fn)(void*)) {
-    if (lp) ((XefyList*)lp)->elem_release = fn;
+    if (lp) ((RtList*)lp)->elem_release = fn;
+}
+
+// ============================================================================
+// M4.2 -- inline element storage
+//
+// A `List<T>` whose T is *flat* (SPEC 8.2's unboxed layout: no pointer anywhere
+// inside the type, and not split hot/cold) stores element **bodies** in the list
+// rather than pointers to separately allocated ones. What that removes is an
+// allocation per element and a pointer chase per access -- the pair
+// ARCHITECTURE-DIRECTION measured, where Prismio's boxed layout mutated in place
+// ran at 0.86x of an inline Vec: indirection was never the cost, the allocations
+// were.
+//
+// **Everything here is a separate entry point.** The element type is a static
+// fact at every call site, so codegen picks the family and the boxed ops keep
+// the code they had. See the note on `elem_size` for the 1.159x that established
+// this shape.
+//
+// Four facts hold the mode together, and each is load-bearing:
+//
+//  1. **A push builds in place where it can.** `list_push(l, T { ... })` lowers
+//     to `list_push_slot` plus the literal's field stores, so the common push
+//     allocates nothing and copies nothing. Five of the six corpus programs push
+//     exactly that shape.
+//  2. **A push that cannot build in place releases its source**, with the
+//     container's own disposition: the bytes are copied out and the producer's
+//     block is reclaimed exactly as `list_release` would have reclaimed it at
+//     teardown. One owner, still the container; only the timing moved. Sound
+//     because `list_push` is a move (semaConsumeOperand), so nothing may read
+//     the source afterwards.
+//  3. **Flat implies nothing to release per element.** No pointer inside T means
+//     no owned field inside T, so an inline element's death is the block's and
+//     teardown has no per-element work at all.
+//  4. **Every entry point falls back to the boxed path when the list is not
+//     inline.** Codegen decides per element *type* and the runtime stamps
+//     lazily, so the two can only disagree by the list having been boxed first
+//     -- and then the fallback keeps it boxed instead of writing a body where a
+//     pointer belongs.
+// ============================================================================
+
+void list_push(void* lp, void* value);
+void list_set(void* lp, int index, void* value);
+void list_release(void* lp);
+void rc_release(void* p);
+void cyc_release(void* p);
+void rc_release_atomic(void* p);
+
+// Opt-out, kept while the mode is measured, exactly as PRISMIO_INLINE_RUNTIME is
+// for M1.1: with it off the same binary runs every list boxed, so a result is a
+// variable away rather than a revert.
+static int list_inline_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("PRISMIO_INLINE_ELEMS");
+        cached = (v && v[0] == '0' && v[1] == 0) ? 0 : 1;
+    }
+    return cached;
+}
+
+// An element body is a handful of words, and its size is a constant at every
+// site that matters -- but it reaches the runtime as a variable, so `memcpy`
+// here would be a libc call with a dynamic length. This is what a constant-size
+// memcpy would have become.
+static void list_copy_elem(void* dst, const void* src, size_t size) {
+    if ((size & 7) == 0) {
+        unsigned long long* d = (unsigned long long*)dst;
+        const unsigned long long* s = (const unsigned long long*)src;
+        for (size_t i = 0, n = size >> 3; i < n; i++) d[i] = s[i];
+        return;
+    }
+    if ((size & 3) == 0) {
+        unsigned int* d = (unsigned int*)dst;
+        const unsigned int* s = (const unsigned int*)src;
+        for (size_t i = 0, n = size >> 2; i < n; i++) d[i] = s[i];
+        return;
+    }
+    memcpy(dst, src, size);
+}
+
+// Switch an empty list to inline storage. Stamped by codegen at construction
+// when the element type is known there, and lazily by the push entry points when
+// it is not -- `list_new()` types as `List<Invalid>` on its own, so an
+// unannotated binding has no element type until something is pushed into it.
+//
+// Refused once anything is in the list, which is fact 4: a half-converted list
+// would read a pointer block as a body block.
+void list_set_elem_inline(void* lp, int elem_size) {
+    if (!lp || elem_size <= 0) return;
+    if (!list_inline_enabled()) return;
+    RtList* l = (RtList*)lp;
+    if (l->elem_size || l->len) return;
+    // **A counted element cannot be inline.** A reference count lives in a
+    // header in front of the object, and an inline body has no header and no
+    // identity of its own -- so `rc_retain` on a push and `rc_release` on a
+    // teardown would both be operating on the middle of the element block. The
+    // container is told its disposition before its first push
+    // (`list_set_elem_owner`), which is what makes this the one place both the
+    // stamp codegen emits and the lazy stamp below can be gated.
+    //
+    // test_48 is the fixture: an `Item` shared between two containers is T3, and
+    // pushing `list_get(a, 0)` into `b` released an interior pointer.
+    if (l->elem_own == AIF_ELEM_RC || l->elem_own == AIF_ELEM_CYCLE
+        || l->elem_own == AIF_ELEM_RC_ATOMIC || l->elem_own == AIF_ELEM_CYCLE_ATOMIC) {
+        return;
+    }
+    l->elem_size = elem_size;
+    // The pointer block `list_new` made is the wrong width for bodies. Replaced
+    // rather than reused, once, at a point where the list is empty.
+    if (!l->arena) rt_free(l->data);
+    size_t bytes = (size_t)l->cap * (size_t)elem_size;
+    l->data = (void**)(l->arena ? arena_alloc_at(l->arena, bytes) : rt_alloc(bytes));
+}
+
+// Storage is one contiguous block that **doubles like the boxed one does**, so a
+// sequential walk is a sequential walk and LLVM sees a constant stride.
+//
+// The consequence is the one SPEC 8.4 is about: growth moves the block, so the
+// address of an element is not stable across a push. Nothing in the language
+// hands that address out today -- `list_get` on an inline list is resolved at
+// each access from the list handle, which is exactly the (handle, index) view
+// SPEC 8.4 requires and not an interior pointer the program may keep. A chunked
+// layout that *did* keep addresses stable was measured first, and cost 1.14x
+// against this one on the corpus: two dependent loads and a count-leading-zeros
+// per access, against a load and a multiply-add.
+static void list_inline_grow(RtList* l) {
+    int nc = l->cap * 2;
+    size_t bytes = (size_t)nc * (size_t)l->elem_size;
+    unsigned char* nd = l->arena ? (unsigned char*)arena_alloc_at(l->arena, bytes)
+                                 : (unsigned char*)rt_alloc(bytes);
+    list_copy_elem(nd, l->data, (size_t)l->len * (size_t)l->elem_size);
+    if (!l->arena) rt_free(l->data);
+    l->data = (void**)nd;
+    l->cap = nc;
+}
+
+// Fact 2. The disposition `list_release` would have applied to this element at
+// teardown, applied now that its bytes have been copied out of it.
+//
+// The arena guard is `list_release`'s, for its reason: a region reclaims in bulk
+// and every pointer inside one is interior to a chunk.
+static void list_release_source(RtList* l, void* e) {
+    if (!e || l->arena) return;
+    if (l->elem_own == AIF_ELEM_NONE) return;
+    if (l->elem_own == AIF_ELEM_LIST)              list_release(e);
+    else if (l->elem_own == AIF_ELEM_RC)           rc_release(e);
+    else if (l->elem_own == AIF_ELEM_CYCLE)        cyc_release(e);
+    else if (l->elem_own == AIF_ELEM_RC_ATOMIC)    rc_release_atomic(e);
+    else if (l->elem_own == AIF_ELEM_CYCLE_ATOMIC) { rc_release_atomic(e); cyc_release(e); }
+    else if (l->elem_own == AIF_ELEM_TYPED) { if (l->elem_release) l->elem_release(e); }
+    else                                            rt_free(e);
+}
+
+// Fact 1. The address of a freshly reserved element, so a pushed struct literal
+// is built in the list instead of built somewhere and copied in. Codegen emits
+// the literal's field stores against what this returns.
+//
+// The size is a parameter so an unstamped-but-empty list can stamp itself here:
+// this is the one entry point that has the element type and the list together
+// with nothing pushed yet.
+void* list_push_slot(void* lp, int elem_size) {
+    RtList* l = (RtList*)lp;
+    if (!l->elem_size) {
+        if (l->len == 0) list_set_elem_inline(lp, elem_size);
+        // Fact 4: still boxed, either because the knob is off or because this
+        // list was pushed into through the boxed path first. A body written into
+        // a pointer slot would be silent corruption, so allocate one.
+        if (!l->elem_size) {
+            void* box = rt_alloc((size_t)(elem_size > 0 ? elem_size : 1));
+            list_push(lp, box);
+            return box;
+        }
+    }
+    if (l->len >= l->cap) list_inline_grow(l);
+    void* slot = (unsigned char*)l->data + (size_t)l->len * (size_t)l->elem_size;
+    l->len = l->len + 1;
+    return slot;
+}
+
+// The push a value that already exists takes: g1's `list_push(ps,
+// spawn_particle(f))` is the shape, where the producer is a call and there is no
+// literal to redirect.
+void list_push_inline(void* lp, void* value, int elem_size) {
+    RtList* l = (RtList*)lp;
+    if (!l->elem_size) {
+        if (l->len == 0) list_set_elem_inline(lp, elem_size);
+        if (!l->elem_size) { list_push(lp, value); return; }
+    }
+    if (l->len >= l->cap) list_inline_grow(l);
+    list_copy_elem((unsigned char*)l->data + (size_t)l->len * (size_t)l->elem_size,
+                   value, (size_t)l->elem_size);
+    l->len = l->len + 1;
+    list_release_source(l, value);
+}
+
+// SPEC 8.4's element view, resolved. The address is computed from the list
+// handle and the index at every access rather than kept, which is what makes a
+// moving block safe.
+void* list_get_inline(void* lp, int index) {
+    RtList* l = (RtList*)lp;
+    if (index < 0 || index >= l->len) return 0;
+    if (!l->elem_size) return l->data[index];
+    return (unsigned char*)l->data + (size_t)index * (size_t)l->elem_size;
+}
+
+// Overwriting an inline element overwrites bytes, so the leak `list_set`'s own
+// note describes cannot arise here: a flat element owns nothing, and what
+// occupied the slot was never separately allocated.
+void list_set_inline(void* lp, int index, void* value) {
+    RtList* l = (RtList*)lp;
+    if (!l->elem_size) { list_set(lp, index, value); return; }
+    if (index < 0 || index >= l->len) return;
+    list_copy_elem((unsigned char*)l->data + (size_t)index * (size_t)l->elem_size,
+                   value, (size_t)l->elem_size);
+    list_release_source(l, value);
 }
 
 // REQUIREMENTS 4. The checked unwrap behind `expect(x)`.
@@ -1311,7 +1635,7 @@ void* prismio_expect(void* p) {
 // disappears, and g5 -- fifteen push sites -- runs **1.87x** faster than with
 // the seven-op curated set.
 //
-// It takes `void*` rather than `XefyList*` so the exported surface stays the
+// It takes `void*` rather than `RtList*` so the exported surface stays the
 // same shape as every other op here and the struct stays private to this file.
 //
 // **It has to be exported.** A curated body may only reference symbols the
@@ -1322,7 +1646,7 @@ void* prismio_expect(void* p) {
 // arena_alloc_slot, all reached through rt_alloc -- stay on this side of the
 // split and out of the inlined half.
 void list_push_grow(void* lp) {
-    XefyList* l = (XefyList*)lp;
+    RtList* l = (RtList*)lp;
     int nc = l->cap * 2;
     // Back into the arena that owns this list, not into whatever the hint
     // says right now: the push is usually outside the bracket that created
@@ -1337,14 +1661,14 @@ void list_push_grow(void* lp) {
 }
 
 void list_push(void* lp, void* value) {
-    XefyList* l = (XefyList*)lp;
+    RtList* l = (RtList*)lp;
     // AIF Level 5. The retain and the release are the same container's, driven by
     // the same stamped mode, so they cannot disagree about whether an element is
     // counted -- which is the failure a per-element answer would invite.
-    if (l->elem_own == XEFY_ELEM_RC) rc_retain(value);
-    if (l->elem_own == XEFY_ELEM_CYCLE) cyc_retain(value);
-    if (l->elem_own == XEFY_ELEM_RC_ATOMIC) rc_retain_atomic(value);
-    if (l->elem_own == XEFY_ELEM_CYCLE_ATOMIC) { rc_retain_atomic(value); cyc_retain(value); }
+    if (l->elem_own == AIF_ELEM_RC) rc_retain(value);
+    if (l->elem_own == AIF_ELEM_CYCLE) cyc_retain(value);
+    if (l->elem_own == AIF_ELEM_RC_ATOMIC) rc_retain_atomic(value);
+    if (l->elem_own == AIF_ELEM_CYCLE_ATOMIC) { rc_retain_atomic(value); cyc_retain(value); }
     if (l->len >= l->cap) list_push_grow(lp);
     l->data[l->len] = value;
     l->len = l->len + 1;
@@ -1367,7 +1691,7 @@ void list_push(void* lp, void* value) {
 // reference to one pushed before it, never after.
 void list_release(void* lp) {
     if (!lp) return;
-    XefyList* l = (XefyList*)lp;
+    RtList* l = (RtList*)lp;
     // SPEC 5.2.1.1. An arena reclaims in bulk when its region exits, so there is
     // nothing here to do and every free below would be a pointer into the middle
     // of a chunk. Codegen should not emit this call at all for such a list --
@@ -1376,19 +1700,23 @@ void list_release(void* lp) {
     // mechanism. It is here because the failure it guards is heap corruption and
     // the cost of the guard is one predictable branch.
     if (l->arena) return;
-    if (l->elem_own != XEFY_ELEM_NONE) {
+    // M4.2, fact 3: a flat element owns nothing and was never separately
+    // allocated, so the whole of an inline list's teardown is its block. Once
+    // per list, unlike the three hot ops, so the branch is affordable here.
+    if (l->elem_size) { rt_free(l->data); rt_free(l); return; }
+    if (l->elem_own != AIF_ELEM_NONE) {
         for (int i = l->len - 1; i >= 0; i--) {
             void* e = l->data[i];
             if (!e) continue;
-            if (l->elem_own == XEFY_ELEM_LIST)    list_release(e);
-            else if (l->elem_own == XEFY_ELEM_RC) rc_release(e);
-            else if (l->elem_own == XEFY_ELEM_CYCLE) cyc_release(e);
-            else if (l->elem_own == XEFY_ELEM_RC_ATOMIC) rc_release_atomic(e);
+            if (l->elem_own == AIF_ELEM_LIST)    list_release(e);
+            else if (l->elem_own == AIF_ELEM_RC) rc_release(e);
+            else if (l->elem_own == AIF_ELEM_CYCLE) cyc_release(e);
+            else if (l->elem_own == AIF_ELEM_RC_ATOMIC) rc_release_atomic(e);
             // SPEC 3's "a value meeting both conditions pays both", and the
             // order is forced: cyc_release is what buffers a candidate root, so
             // it has to see the count *after* this thread's decrement.
-            else if (l->elem_own == XEFY_ELEM_CYCLE_ATOMIC) { rc_release_atomic(e); cyc_release(e); }
-            else if (l->elem_own == XEFY_ELEM_TYPED) {
+            else if (l->elem_own == AIF_ELEM_CYCLE_ATOMIC) { rc_release_atomic(e); cyc_release(e); }
+            else if (l->elem_own == AIF_ELEM_TYPED) {
                 // Struct-field ownership. The element owns fields of its own, so
                 // rt_free(e) here would reclaim the object and leak everything
                 // hanging off it -- which is exactly what g3_scene_graph did with
@@ -1403,7 +1731,7 @@ void list_release(void* lp) {
 }
 
 void* list_get(void* lp, int index) {
-    XefyList* l = (XefyList*)lp;
+    RtList* l = (RtList*)lp;
     if (index < 0 || index >= l->len) return 0;
     return l->data[index];
 }
@@ -1413,13 +1741,13 @@ void* list_get(void* lp, int index) {
 // container owns it, but so might the binding the value came from, and a free
 // here would be the double free the whole ownership rule exists to prevent.
 void list_set(void* lp, int index, void* value) {
-    XefyList* l = (XefyList*)lp;
+    RtList* l = (RtList*)lp;
     if (index < 0 || index >= l->len) return;
-    if (l->elem_own == XEFY_ELEM_RC) {
+    if (l->elem_own == AIF_ELEM_RC) {
         rc_retain(value);
         rc_release(l->data[index]);
-    } else if (l->elem_own == XEFY_ELEM_RC_ATOMIC
-               || l->elem_own == XEFY_ELEM_CYCLE_ATOMIC) {
+    } else if (l->elem_own == AIF_ELEM_RC_ATOMIC
+               || l->elem_own == AIF_ELEM_CYCLE_ATOMIC) {
         // Retain before release, as above: if the incoming value is the one
         // already in the slot, releasing first can take the count to zero and
         // free what is about to be stored.
@@ -1430,7 +1758,7 @@ void list_set(void* lp, int index, void* value) {
 }
 
 int list_len(void* lp) {
-    XefyList* l = (XefyList*)lp;
+    RtList* l = (RtList*)lp;
     return l->len;
 }
 

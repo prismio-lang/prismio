@@ -574,6 +574,87 @@ def run_aif_concurrency_test():
     return True
 
 
+def run_elem_mode_agreement_test():
+    """The element-ownership mode is one wire protocol with three definitions.
+
+    Codegen emits the mode from `AIF_ELEM_*` in src/ir/context.psm, the analysis
+    answers with `AIF_ELEM_*` in runtime/aif_support.c, and the runtime compares
+    against `AIF_ELEM_*` in runtime/lang_runtime.c. The int crosses two seams and
+    is never re-derived, so all three have to agree on every name *and* every
+    value, forever.
+
+    Nothing checked that until now, and the failure is silent in the worst way: a
+    variant inserted in one list and not the others still builds, and releases
+    elements with the wrong deallocator -- a violation rather than a leak, and
+    therefore memory corruption rather than lost bytes.
+
+    The runtime's copy was spelled `XEFY_ELEM_*` until 2026-08-23, after Xefy, the
+    framework this language is built to carry. Besides being backwards -- the list
+    is Prismio's, not a consumer's -- the odd prefix is what made the drift
+    invisible: a grep for `AIF_ELEM_CYCLE` found two of the three sites and gave
+    no sign the third existed.
+    """
+    print(f"\n{BLUE}--- Running elem_mode_agreement ---{RESET}")
+
+    sources = {
+        "src/ir/context.psm":        r"let\s+AIF_ELEM_([A-Z_]+)\s*=\s*(\d+)",
+        "runtime/aif_support.c":     r"#define\s+AIF_ELEM_([A-Z_]+)\s+(\d+)",
+        "runtime/lang_runtime.c":    r"#define\s+AIF_ELEM_([A-Z_]+)\s+(\d+)",
+    }
+
+    tables = {}
+    for path, pattern in sources.items():
+        text = (PROJECT_ROOT / path).read_text(encoding="utf-8")
+        found = dict(re.findall(pattern, text))
+        if not found:
+            print(f"{RED}[FAIL] no AIF_ELEM_* definitions found in {path} -- this "
+                  f"check has gone blind, which is the thing it exists to "
+                  f"prevent{RESET}")
+            return False
+        tables[path] = found
+
+    # Compared pairwise against the frontend's copy, because that is the one that
+    # decides what the emitted int means.
+    reference_path = "src/ir/context.psm"
+    reference = tables[reference_path]
+    problems = []
+    for path, table in tables.items():
+        if path == reference_path:
+            continue
+        for name in sorted(set(reference) | set(table)):
+            if name not in table:
+                problems.append(f"{path} is missing AIF_ELEM_{name}, which "
+                                f"{reference_path} defines as {reference[name]}")
+            elif name not in reference:
+                problems.append(f"{path} defines AIF_ELEM_{name}={table[name]}, "
+                                f"which {reference_path} does not know")
+            elif table[name] != reference[name]:
+                problems.append(f"AIF_ELEM_{name} is {reference[name]} in "
+                                f"{reference_path} and {table[name]} in {path}")
+
+    # Code only. The comment above the defines explains what they used to be
+    # called, and a bare substring search over the file trips on that -- which it
+    # did, the first time this check ran.
+    for path in ("runtime/lang_runtime.c",):
+        text = (PROJECT_ROOT / path).read_text(encoding="utf-8")
+        code = "\n".join(line.split("//")[0] for line in text.split("\n"))
+        if "XEFY_ELEM_" in code:
+            problems.append(f"{path} still spells these XEFY_ELEM_* in code, "
+                            f"which puts the third definition back out of grep "
+                            f"range of the other two")
+
+    if problems:
+        print(f"{RED}[FAIL] the three element-mode tables disagree -- elements "
+              f"will be released with the wrong deallocator{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+
+    print(f"{GREEN}[PASS] all {len(reference)} element modes agree across "
+          f"src/ir/context.psm, aif_support.c and lang_runtime.c{RESET}")
+    return True
+
+
 def run_oracle_vocabulary_test():
     """The compiler and `aif/prototype/aif.py` must know the same builtins.
 
@@ -4831,6 +4912,11 @@ def main():
         failed += 1
 
     if run_oracle_vocabulary_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_elem_mode_agreement_test():
         passed += 1
     else:
         failed += 1

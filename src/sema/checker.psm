@@ -87,13 +87,13 @@ fn semaTypeErrorAt(node: ASTNode, context: String, expected: TypeInfo, actual: T
 fn semaCheckUniqueArgs(expr: ASTNode, fnNode: ASTNode, name: String) {
     let mut outerArg = expr.child2
     let mut outerParam = fnNode.child1
-    while (str_equals(outerArg, "") == 0 and str_equals(outerParam, "") == 0) {
+    while (nodeExists(outerArg) and nodeExists(outerParam)) {
         let a = ptr_to_node(outerArg)
         let pa = ptr_to_node(outerParam)
         if (pa.i2 == 1 and a.kind == NodeKind.IDENTIFIER_EXPR) {
             let mut innerArg = a.next
             let mut innerParam = pa.next
-            while (str_equals(innerArg, "") == 0 and str_equals(innerParam, "") == 0) {
+            while (nodeExists(innerArg) and nodeExists(innerParam)) {
                 let b = ptr_to_node(innerArg)
                 let pb = ptr_to_node(innerParam)
                 if (pb.i2 == 1 and b.kind == NodeKind.IDENTIFIER_EXPR) {
@@ -382,7 +382,7 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
         let mut argPtr = expr.child2
         let mut paramPtr = fnNode.child1
-        while (str_equals(argPtr, "") == 0 and str_equals(paramPtr, "") == 0) {
+        while (nodeExists(argPtr) and nodeExists(paramPtr)) {
             let argNode = ptr_to_node(argPtr)
             let paramNode = ptr_to_node(paramPtr)
             let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
@@ -449,7 +449,7 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
         let mut argPtr = call.child2
         let mut argc = 0
-        while (str_equals(argPtr, "") == 0) {
+        while (nodeExists(argPtr)) {
             let argNode = ptr_to_node(argPtr)
             let argT = nodeGetType(argNode)
             // Pointer-lowered types only. A task's arguments cross a thread
@@ -506,7 +506,7 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         // It is still the tagged struct, not an integer, because the enum it
         // belongs to has payloads elsewhere and one value has one representation.
         if (objectNode.kind == NodeKind.IDENTIFIER_EXPR or objectNode.kind == NodeKind.TYPE_ANNOTATION) {
-            if (enumResolveConstruction(module, expr, objectNode.s1, expr.s1, "",
+            if (enumResolveConstruction(module, expr, objectNode.s1, expr.s1, ptr_null(),
                                         enumExplicitArgs(objectNode))) {
                 return semaExpr(module, expr)
             }
@@ -530,7 +530,7 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
     if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
         let mut elemPtr = expr.child1
-        if (str_equals(elemPtr, "") == 1) {
+        if (nodeIsNull(elemPtr)) {
             let arrT = typeArray(typeInvalid())
             nodeSetType(expr, arrT)
             return arrT
@@ -538,7 +538,7 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
         let firstT = semaExpr(module, ptr_to_node(elemPtr))
         elemPtr = ptr_to_node(elemPtr).next
-        while (str_equals(elemPtr, "") == 0) {
+        while (nodeExists(elemPtr)) {
             let elem = ptr_to_node(elemPtr)
             let elemT = semaExpr(module, elem)
             semaExpectAssignable(elem, "array literal element", firstT, elemT)
@@ -576,7 +576,7 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         // an annotation still hanging here would be resolved again each time.
         if (nodeExists(expr.child2)) {
             let instantiated = monoInstantiateStruct(module, ptr_to_node(expr.child2))
-            expr.child2 = ""
+            expr.child2 = ptr_null()
             if (str_equals(instantiated, "") == 1) {
                 semaErrorAt(expr, str_concat("unknown generic struct ", diagQuote(expr.s1)))
                 nodeSetType(expr, typeInvalid())
@@ -590,7 +590,7 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             return typeInvalid()
         }
         let mut fieldPtr = expr.child1
-        while (str_equals(fieldPtr, "") == 0) {
+        while (nodeExists(fieldPtr)) {
             let field = ptr_to_node(fieldPtr)
             let mut expected = semaFindStructFieldType(module, field, expr.s1, field.s1)
             semaCheckValue(module, ptr_to_node(field.child1), expected, str_concat("struct field ", diagQuote(field.s1)))
@@ -611,8 +611,8 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
     if (stmt.kind == NodeKind.VARIABLE_DECL) {
         let mut varT = typeInvalid()
-        let hasAnnotation = str_equals(stmt.child1, "") == 0
-        let hasInit = str_equals(stmt.child2, "") == 0
+        let hasAnnotation = nodeExists(stmt.child1)
+        let hasInit = nodeExists(stmt.child2)
 
         if (hasAnnotation) {
             varT = semaAnnotationType(module, ptr_to_node(stmt.child1))
@@ -711,7 +711,7 @@ fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
     }
 
     if (stmt.kind == NodeKind.RETURN_STATEMENT) {
-        if (str_equals(stmt.child1, "") == 0) {
+        if (nodeExists(stmt.child1)) {
             // Deliberately no semaMoveOperand() here. Ownership does leave the
             // function, but move state is tracked per name for the whole function
             // body rather than per control-flow path, so marking the returned name
@@ -749,7 +749,7 @@ fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
     }
 
     if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
-        if (str_equals(stmt.child1, "") == 0) {
+        if (nodeExists(stmt.child1)) {
             semaExpr(module, ptr_to_node(stmt.child1))
         }
     }
@@ -758,7 +758,7 @@ fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
         let condT = semaExpr(module, ptr_to_node(stmt.child1))
         semaExpectAssignable(ptr_to_node(stmt.child1), "if condition", typeBool(), condT)
         semaBlock(module, ptr_to_node(stmt.child2), expectedReturn)
-        if (str_equals(stmt.child3, "") == 0) {
+        if (nodeExists(stmt.child3)) {
             let elseNode = ptr_to_node(stmt.child3)
             if (elseNode.kind == NodeKind.IF_STATEMENT) {
                 semaStatement(module, elseNode, expectedReturn)
@@ -820,7 +820,7 @@ fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
         let mut patExpected = typeCopy(scrutT)
         if (scrutT.kind == TypeKind.ENUM) { patExpected = typeInt() }
         let mut armPtr = stmt.child2
-        while (str_equals(armPtr, "") == 0) {
+        while (nodeExists(armPtr)) {
             let arm = ptr_to_node(armPtr)
             if (str_equals(arm.s1, "_") == 0) {
                 semaCheckValue(module, ptr_to_node(arm.child1), patExpected, "match pattern")
@@ -838,7 +838,7 @@ fn semaBlock(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
     ir_scope_push()
 
     let mut stmtPtr = block.child1
-    while (str_equals(stmtPtr, "") == 0) {
+    while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
         semaStatement(module, stmt, expectedReturn)
 
@@ -846,7 +846,7 @@ fn semaBlock(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
         // used to be emitted anyway, producing instructions after a terminator
         // -- invalid IR that surfaced as a confusing backend error rather than
         // as the source-level mistake it is.
-        if (semaStmtDiverges(stmt) and str_equals(stmt.next, "") == 0) {
+        if (semaStmtDiverges(stmt) and nodeExists(stmt.next)) {
             semaErrorAt(ptr_to_node(stmt.next), "unreachable code: control cannot continue past the previous statement")
         }
 
@@ -890,10 +890,10 @@ fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
 
 fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
     let mut varT = typeInvalid()
-    if (str_equals(varNode.child1, "") == 0) {
+    if (nodeExists(varNode.child1)) {
         varT = semaAnnotationType(module, ptr_to_node(varNode.child1))
     }
-    if (str_equals(varNode.child2, "") == 0) {
+    if (nodeExists(varNode.child2)) {
         if (typeIsValid(varT)) {
             semaCheckValue(module, ptr_to_node(varNode.child2), varT, str_concat("initializer for global ", diagQuote(varNode.s1)))
         } else {
@@ -915,7 +915,7 @@ fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
         }
     }
     if (typeIsValid(varT) == false) {
-        if (str_equals(varNode.child1, "") == 1 and str_equals(varNode.child2, "") == 1) {
+        if (nodeIsNull(varNode.child1) and nodeIsNull(varNode.child2)) {
             semaErrorAt(varNode, str_concat(str_concat("cannot infer a type for global ", diagQuote(varNode.s1)),
                                                "; add a type annotation or an initializer"))
         }
@@ -941,7 +941,7 @@ fn semaFunction(module: ASTNode, fnNode: ASTNode) {
     if (str_equals(fnNode.s1, "main") == 1) { expectedReturn = typeInt() }
 
     let mut paramPtr = fnNode.child1
-    while (str_equals(paramPtr, "") == 0) {
+    while (nodeExists(paramPtr)) {
         let mut param = ptr_to_node(paramPtr)
         let paramT = semaAnnotationType(module, ptr_to_node(param.child1))
         if (str_equals(param.s2, "inout") == 1 and typeIsMoveOnly(paramT) == false) {
@@ -956,7 +956,7 @@ fn semaFunction(module: ASTNode, fnNode: ASTNode) {
         paramPtr = param.next
     }
 
-    if (str_equals(fnNode.child2, "") == 0) {
+    if (nodeExists(fnNode.child2)) {
         let mut body = ptr_to_node(fnNode.child2)
         semaBlock(module, body, expectedReturn)
 
@@ -992,7 +992,7 @@ fn analyzeModule(module: ASTNode) {
     indexModuleDeclarations(module)
 
     let mut fnPtr = module.child1
-    while (str_equals(fnPtr, "") == 0) {
+    while (nodeExists(fnPtr)) {
         let stmt = ptr_to_node(fnPtr)
         if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
             semaPredeclareFunction(module, stmt)
@@ -1004,7 +1004,7 @@ fn analyzeModule(module: ASTNode) {
     }
 
     let mut globalPtr = module.child1
-    while (str_equals(globalPtr, "") == 0) {
+    while (nodeExists(globalPtr)) {
         let stmt2 = ptr_to_node(globalPtr)
         if (stmt2.kind == NodeKind.VARIABLE_DECL) {
             semaPredeclareGlobal(module, stmt2)
@@ -1013,7 +1013,7 @@ fn analyzeModule(module: ASTNode) {
     }
 
     let mut stmtPtr = module.child1
-    while (str_equals(stmtPtr, "") == 0) {
+    while (nodeExists(stmtPtr)) {
         let stmt3 = ptr_to_node(stmtPtr)
         if (stmt3.kind == NodeKind.FUNCTION) {
             semaFunction(module, stmt3)
@@ -1072,10 +1072,10 @@ fn semaWorkload(module: ASTNode, node: ASTNode) {
 
 fn semaWorkloadStatements(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
     let mut stmtPtr = block.child1
-    while (str_equals(stmtPtr, "") == 0) {
+    while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
         semaStatement(module, stmt, expectedReturn)
-        if (semaStmtDiverges(stmt) and str_equals(stmt.next, "") == 0) {
+        if (semaStmtDiverges(stmt) and nodeExists(stmt.next)) {
             semaErrorAt(ptr_to_node(stmt.next),
                         "unreachable code: control cannot continue past the previous statement")
         }

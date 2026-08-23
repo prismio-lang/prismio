@@ -10,7 +10,7 @@ import common.diagnostics
 // settles it.
 fn matchBindsPayload(stmt: ASTNode) -> Bool {
     let mut armPtr = stmt.child2
-    while (str_equals(armPtr, "") == 0) {
+    while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
         if (str_equals(arm.s2, "") == 0) { return true }
         armPtr = arm.next
@@ -26,7 +26,7 @@ fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: String) {
 
     let mut binder = pattern.child2
     let mut index = 0
-    while (str_equals(binder, "") == 0) {
+    while (nodeExists(binder)) {
         let name = ptr_to_node(binder)
         // enumPayloadField is sema's, and is called rather than copied because
         // the two ends have to agree on the spelling exactly -- a second copy of
@@ -65,11 +65,11 @@ fn generateStatement(stmt: ASTNode) {
     if (stmt.kind == NodeKind.VARIABLE_DECL) {
         let varName = stmt.s1
         let mut varType = "i32"
-        if (str_equals(stmt.child1, "") == 0) {
+        if (nodeExists(stmt.child1)) {
             let typeNode = ptr_to_node(stmt.child1)
             varType = mapTypeNode(typeNode)
         } else {
-            if (str_equals(stmt.child2, "") == 0) {
+            if (nodeExists(stmt.child2)) {
                 varType = getExprType(ptr_to_node(stmt.child2))
             }
         }
@@ -77,7 +77,7 @@ fn generateStatement(stmt: ASTNode) {
         // The initializer is generated before the binding is declared, so that
         // `let x = x + 1` reads the *outer* x rather than the one being defined.
         let mut initVal = ""
-        let hasInit = str_equals(stmt.child2, "") == 0
+        let hasInit = nodeExists(stmt.child2)
         if (hasInit) {
             initVal = generateExpression(ptr_to_node(stmt.child2))
         }
@@ -236,7 +236,7 @@ fn generateStatement(stmt: ASTNode) {
         // Every scope in the function unwinds at once, so the floor is 0. The
         // returned value is never among them: returning it puts its escape at
         // Caller, and nothing with that escape is droppable here.
-        if (str_equals(stmt.child1, "") == 0) {
+        if (nodeExists(stmt.child1)) {
             let retVal = generateExpression(ptr_to_node(stmt.child1))
             let retType = storageType(getExprType(ptr_to_node(stmt.child1)))
             generateScopeDrops(0)
@@ -251,7 +251,7 @@ fn generateStatement(stmt: ASTNode) {
     }
     
     if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
-        if (str_equals(stmt.child1, "") == 0) {
+        if (nodeExists(stmt.child1)) {
             generateExpression(ptr_to_node(stmt.child1))
         }
     }
@@ -263,7 +263,7 @@ fn generateStatement(stmt: ASTNode) {
         let elseLabel = ir_get_label()
         let endLabel = ir_get_label()
         
-        if (str_equals(stmt.child3, "") == 0) {
+        if (nodeExists(stmt.child3)) {
             ir_cond_br_numbered(condVal, thenLabel, elseLabel)
         } else {
             ir_cond_br_numbered(condVal, thenLabel, endLabel)
@@ -274,7 +274,7 @@ fn generateStatement(stmt: ASTNode) {
         if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
         ir_clear_returned()
         
-        if (str_equals(stmt.child3, "") == 0) {
+        if (nodeExists(stmt.child3)) {
             ir_label_numbered(elseLabel)
             
             let elseNode = ptr_to_node(stmt.child3)
@@ -435,7 +435,7 @@ fn generateStatement(stmt: ASTNode) {
         }
 
         let mut armPtr = stmt.child2
-        while (str_equals(armPtr, "") == 0) {
+        while (nodeExists(armPtr)) {
             let arm = ptr_to_node(armPtr)
             if (payloadMatch and str_equals(arm.s1, "_") == 0) {
                 let cmp = ir_icmp_eq("i32", stmt.s2, int_to_str(arm.i1))
@@ -599,7 +599,7 @@ fn generateBlock(block: ASTNode) {
     // the wrong statement.
     let mut stmtIndex = 0
     let mut stmtPtr = block.child1
-    while (str_equals(stmtPtr, "") == 0) {
+    while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
         if (rangeFirst == stmtIndex) {
             ir_region_begin()

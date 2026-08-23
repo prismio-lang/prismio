@@ -36,22 +36,22 @@ struct TypeInfo {
     kind: TypeKind,
     name: String,
     llvm: String,
-    child: String,
-    next: String
+    child: Ptr,
+    next: Ptr
 }
 
 // The identity on a pointer, like ptr_to_node -- see ast.psm for why declaring
 // it matters.
-extern fn ptr_to_type(ptr: String borrow) -> TypeInfo alias
-extern fn type_to_ptr(t: TypeInfo borrow) -> String alias
+extern fn ptr_to_type(ptr: Ptr) -> TypeInfo alias
+extern fn type_to_ptr(t: TypeInfo borrow) -> Ptr alias
 
 fn typeMake(kind: TypeKind, name: String, llvm: String) -> TypeInfo {
     return TypeInfo {
         kind: kind,
         name: name,
         llvm: llvm,
-        child: "",
-        next: ""
+        child: ptr_null(),
+        next: ptr_null()
     }
 }
 
@@ -127,7 +127,7 @@ fn typeIsMoveOnly(t: TypeInfo) -> Bool {
     // REQUIREMENTS 4. `T?` owns whatever `T` owns; being absent is a state of
     // the slot, not a different kind of ownership.
     if (t.kind == TypeKind.OPTIONAL) {
-        if (str_equals(t.child, "") == 0) { return typeIsMoveOnly(ptr_to_type(t.child)) }
+        if (nodeExists(t.child)) { return typeIsMoveOnly(ptr_to_type(t.child)) }
         return false
     }
     return t.kind == TypeKind.LIST
@@ -189,12 +189,12 @@ fn typeIsTask(t: TypeInfo) -> Bool {
 }
 
 fn typeTaskResult(t: TypeInfo) -> TypeInfo {
-    if (typeIsTask(t) and str_equals(t.child, "") == 0) { return ptr_to_type(t.child) }
+    if (typeIsTask(t) and nodeExists(t.child)) { return ptr_to_type(t.child) }
     return typeInvalid()
 }
 
 fn typeOptionalInner(t: TypeInfo) -> TypeInfo {
-    if (t.kind == TypeKind.OPTIONAL and str_equals(t.child, "") == 0) {
+    if (t.kind == TypeKind.OPTIONAL and nodeExists(t.child)) {
         return ptr_to_type(t.child)
     }
     return typeInvalid()
@@ -234,19 +234,19 @@ fn typeDisplay(t: TypeInfo) -> String {
     if (t.kind == TypeKind.STRUCT) { return t.name }
     if (t.kind == TypeKind.ENUM) { return t.name }
     if (t.kind == TypeKind.ARRAY) {
-        if (str_equals(t.child, "") == 0) {
+        if (nodeExists(t.child)) {
             return str_concat(str_concat("[", typeDisplay(ptr_to_type(t.child))), "]")
         }
         return "[Invalid]"
     }
     if (t.kind == TypeKind.LIST) {
-        if (str_equals(t.child, "") == 0) {
+        if (nodeExists(t.child)) {
             return str_concat(str_concat("List<", typeDisplay(ptr_to_type(t.child))), ">")
         }
         return "List"
     }
     if (t.kind == TypeKind.OPTIONAL) {
-        if (str_equals(t.child, "") == 0) {
+        if (nodeExists(t.child)) {
             return str_concat(typeDisplay(ptr_to_type(t.child)), "?")
         }
         return "none"
@@ -263,14 +263,16 @@ fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
         return str_equals(a.name, b.name) == 1
     }
     if (a.kind == TypeKind.ARRAY) {
-        if (str_equals(a.child, "") == 1 or str_equals(b.child, "") == 1) {
-            return str_equals(a.child, b.child) == 1
+        if (nodeIsNull(a.child) or nodeIsNull(b.child)) {
+            // Element types agree only when *both* are absent. Compared as
+            // strings this was a strcmp of two machine pointers.
+            return nodeIsNull(a.child) and nodeIsNull(b.child)
         }
         return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
     }
     if (a.kind == TypeKind.LIST) {
         // A list with an unknown element type (from list_new()) matches any list.
-        if (str_equals(a.child, "") == 1 or str_equals(b.child, "") == 1) { return true }
+        if (nodeIsNull(a.child) or nodeIsNull(b.child)) { return true }
         let ac = ptr_to_type(a.child)
         let bc = ptr_to_type(b.child)
         if (typeIsValid(ac) == false or typeIsValid(bc) == false) { return true }
@@ -281,14 +283,14 @@ fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
     // `let t: Task<Int> = spawn make_report(j)` would typecheck.
     if (typeIsTask(a) or typeIsTask(b)) {
         if (typeIsTask(a) == false or typeIsTask(b) == false) { return false }
-        if (str_equals(a.child, "") == 1 or str_equals(b.child, "") == 1) { return true }
+        if (nodeIsNull(a.child) or nodeIsNull(b.child)) { return true }
         return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
     }
     if (a.kind == TypeKind.OPTIONAL) {
         // A bare `none` carries no inner type, so it matches any optional. That
         // is what lets `none` be written wherever a `T?` is wanted without an
         // inference pass to give it one.
-        if (str_equals(a.child, "") == 1 or str_equals(b.child, "") == 1) { return true }
+        if (nodeIsNull(a.child) or nodeIsNull(b.child)) { return true }
         return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
     }
     return true
@@ -316,7 +318,7 @@ fn typeIrKey(t: TypeInfo) -> String {
     // than a null dereference.
     if (t.kind == TypeKind.OPTIONAL) { return "ptr" }
     if (t.kind == TypeKind.ARRAY) {
-        if (str_equals(t.child, "") == 0) {
+        if (nodeExists(t.child)) {
             let elem = ptr_to_type(t.child)
             if (elem.kind == TypeKind.ARRAY) { return "ptrptr" }
         }
@@ -337,7 +339,7 @@ fn typeSemKey(t: TypeInfo) -> String {
     // back as a bare handle -- the same round-trip hole REQUIREMENTS 4's
     // optionals fell into, which is why this case was written with its decoder.
     if (t.kind == TypeKind.PTR) {
-        if (typeIsTask(t) and str_equals(t.child, "") == 0) {
+        if (typeIsTask(t) and nodeExists(t.child)) {
             return str_concat("task:", typeSemKey(ptr_to_type(t.child)))
         }
         return "Ptr"
@@ -345,19 +347,19 @@ fn typeSemKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.STRUCT) { return str_concat("struct:", t.name) }
     if (t.kind == TypeKind.ENUM) { return str_concat("enum:", t.name) }
     if (t.kind == TypeKind.ARRAY) {
-        if (str_equals(t.child, "") == 0) {
+        if (nodeExists(t.child)) {
             return str_concat("array:", typeSemKey(ptr_to_type(t.child)))
         }
         return "array:Invalid"
     }
     if (t.kind == TypeKind.LIST) {
-        if (str_equals(t.child, "") == 0) {
+        if (nodeExists(t.child)) {
             return str_concat("list:", typeSemKey(ptr_to_type(t.child)))
         }
         return "list:Invalid"
     }
     if (t.kind == TypeKind.OPTIONAL) {
-        if (str_equals(t.child, "") == 0) {
+        if (nodeExists(t.child)) {
             return str_concat("opt:", typeSemKey(ptr_to_type(t.child)))
         }
         return "opt:Invalid"
@@ -374,7 +376,7 @@ fn typeStorageKey(t: TypeInfo) -> String {
 
 fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
     if (tn.i1 == 1) {
-        if (str_equals(tn.child1, "") == 0) {
+        if (nodeExists(tn.child1)) {
             return typeArray(typeFromAnnotation(ptr_to_node(tn.child1)))
         }
         return typeArray(typeInvalid())
@@ -384,6 +386,19 @@ fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
     if (str_equals(tn.s1, "Float") == 1) { return typeFloat() }
     if (str_equals(tn.s1, "Bool") == 1) { return typeBool() }
     if (str_equals(tn.s1, "String") == 1) { return typeString() }
+    // An opaque, copyable machine pointer. `typeFromSemKey` has resolved this
+    // name since `Task<R>` needed it; the *annotation* path never did, so `Ptr`
+    // was a type the compiler could produce and nobody could write.
+    //
+    // Writing it is the point. This compiler passes AST node, token and TypeInfo
+    // handles as `String` -- `struct ASTNode { child1: String }` is an ASTNode
+    // pointer -- which is why CODE_STYLE.md has to forbid a zero-valued first
+    // field on anything punned through `String`. Those handles become `Ptr`, and
+    // two things follow: a node pointer stops being affine (PTR is absent from
+    // `typeIsMoveOnly`, so naming one twice is a copy, not a move), and `String`
+    // stops having to be a machine word -- which is what a fat `{ptr, len}`
+    // String needs.
+    if (str_equals(tn.s1, "Ptr") == 1) { return typePtr() }
     if (str_equals(tn.s1, "Char") == 1) { return typeChar() }
     if (str_equals(tn.s1, "I8") == 1) { return typeI8() }
     if (str_equals(tn.s1, "I16") == 1) { return typeI16() }
@@ -521,7 +536,7 @@ extern fn ir_is_struct_type_name(name: String) -> Int
 // is here once, in indexModuleDeclarations(), instead of once per pass that
 // wanted an answer from it.
 extern fn ir_reset_decl_index()
-extern fn ir_index_decl(name: String, node: String)
+extern fn ir_index_decl(name: String, node: Ptr)
 extern fn ir_decl_count(name: String) -> Int
 extern fn ir_decl_at(name: String, index: Int) -> String alias
 
@@ -556,7 +571,7 @@ fn indexTopLevel(stmt: ASTNode) {
 fn indexModuleDeclarations(module: ASTNode) {
     ir_reset_decl_index()
     let mut p = module.child1
-    while (str_equals(p, "") == 0) {
+    while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
         indexTopLevel(stmt)
         p = stmt.next
@@ -572,7 +587,7 @@ fn findStructDeclNamed(module: ASTNode, name: String) -> ASTNode {
         if (stmt.kind == NodeKind.STRUCT_DECL) { return stmt }
         i = i + 1
     }
-    return ptr_to_node("")
+    return ptr_to_node(ptr_null())
 }
 
 fn typeAnnIsPod(module: ASTNode, ann: ASTNode, depth: Int) -> Bool {
@@ -622,7 +637,7 @@ fn structDeclIsPodIn(module: ASTNode, name: String, depth: Int, byDecl: Bool) ->
     let decl = findStructDeclNamed(module, name)
     if (nodeExists(node_to_ptr(decl)) == false) { return false }
     let mut p = decl.child1
-    while (str_equals(p, "") == 0) {
+    while (nodeExists(p)) {
         let f = ptr_to_node(p)
         if (f.kind == NodeKind.STRUCT_FIELD) {
             if (nodeExists(f.child1) == false) { return false }

@@ -10,6 +10,12 @@ fn mapType(t: String) -> String {
     if (str_equals(t, "Float") == 1) { return "double" }
     if (str_equals(t, "Bool") == 1) { return "i1" }
     if (str_equals(t, "String") == 1) { return "ptr" }
+    // The fourth and last of the type-name tables (the others are
+    // typeFromAnnotation, semaAnnotationType and typeFromSemKey). Missing here,
+    // `Ptr` fell through to this function's default and every extern taking one
+    // was declared `i32` while its call site passed `ptr` -- which LLVM's
+    // verifier catches, but only at the point of emission.
+    if (str_equals(t, "Ptr") == 1) { return "ptr" }
     if (str_equals(t, "Char") == 1) { return "i8" }
     if (str_equals(t, "I8") == 1) { return "i8" }
     if (str_equals(t, "I16") == 1) { return "i16" }
@@ -55,7 +61,7 @@ fn mapTypeNode(tn: ASTNode) -> String {
         return "ptr"            // List<T>
     }
     if (tn.i1 == 1) {
-        if (str_equals(tn.child1, "") == 0) {
+        if (nodeExists(tn.child1)) {
             let elem = ptr_to_node(tn.child1)
             if (elem.i1 == 1) {
                 return "ptrptr"
@@ -96,10 +102,10 @@ fn fieldStorageType(t: String) -> String {
     return t
 }
 
-fn countListNodes(firstPtr: String) -> Int {
+fn countListNodes(firstPtr: Ptr) -> Int {
     let mut count = 0
     let mut curr = firstPtr
-    while (str_equals(curr, "") == 0) {
+    while (nodeExists(curr)) {
         let node = ptr_to_node(curr)
         count = count + 1
         curr = node.next
@@ -114,8 +120,8 @@ fn functionSymbolName(func: ASTNode) -> String {
     return func.s1
 }
 
-fn getDeclaredReturnType(node: ASTNode, retChild: String) -> String {
-    if (str_equals(retChild, "") == 0) {
+fn getDeclaredReturnType(node: ASTNode, retChild: Ptr) -> String {
+    if (nodeExists(retChild)) {
         let retNode = ptr_to_node(retChild)
         return mapTypeNode(retNode)
     }

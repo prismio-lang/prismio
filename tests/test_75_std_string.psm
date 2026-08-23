@@ -1,0 +1,181 @@
+// std.string, against the C functions it replaced.
+//
+// The ports have to agree with the runtime they were lifted out of, so most of
+// this is a differential rather than a table of hand-written expectations: the
+// C `str_trim`, `str_replace`, `str_index_of`, `str_contains`, `str_starts_with`,
+// `str_ends_with`, `str_to_int` and `int_to_str` are still linked, so both
+// implementations can be asked the same question and compared. The cases that
+// matter are the boundaries -- empty input, no match, whole-string match,
+// overlapping needles -- because those are where a reimplementation drifts.
+//
+// The hand-written half covers what has no C counterpart: `strSplit` returning a
+// `List<String>`, `strParseInt` distinguishing "not a number" from zero, and the
+// pad/repeat/reverse family that never existed in the runtime.
+
+import std.io
+import std.string
+
+extern fn str_trim(s: String) -> String
+extern fn str_replace(s: String, old: String, new: String) -> String
+extern fn str_contains(haystack: String, needle: String) -> Int
+extern fn str_starts_with(s: String, prefix: String) -> Int
+extern fn str_ends_with(s: String, suffix: String) -> Int
+extern fn str_index_of(haystack: String, needle: String) -> Int
+extern fn str_to_int(s: String) -> Int
+extern fn int_to_str(n: Int) -> String
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn sameText(got: String, want: String) -> Bool {
+    return strEquals(got, want)
+}
+
+fn main() -> Int {
+    // --- differential against the C originals -------------------------------
+
+    if (sameText(strTrim("  x  "), str_trim("  x  ")) == false) {
+        return fail("strTrim disagrees with str_trim on padded input")
+    }
+    if (sameText(strTrim(""), str_trim("")) == false) {
+        return fail("strTrim disagrees with str_trim on empty input")
+    }
+    if (sameText(strTrim("   "), str_trim("   ")) == false) {
+        return fail("strTrim disagrees with str_trim on all-whitespace input")
+    }
+    if (sameText(strTrim("none"), str_trim("none")) == false) {
+        return fail("strTrim disagrees with str_trim when there is nothing to trim")
+    }
+
+    if (sameText(strReplaceFirst("a-b-c", "-", "+"), str_replace("a-b-c", "-", "+")) == false) {
+        return fail("strReplaceFirst disagrees with str_replace")
+    }
+    if (sameText(strReplaceFirst("hello", "z", "Z"), str_replace("hello", "z", "Z")) == false) {
+        return fail("strReplaceFirst disagrees with str_replace when the pattern is absent")
+    }
+
+    if (strIndexOf("hello world", "world") != str_index_of("hello world", "world")) {
+        return fail("strIndexOf disagrees with str_index_of")
+    }
+    if (strIndexOf("hello", "xyz") != str_index_of("hello", "xyz")) {
+        return fail("strIndexOf disagrees with str_index_of on a miss")
+    }
+    if (strIndexOf("aaa", "aa") != str_index_of("aaa", "aa")) {
+        return fail("strIndexOf disagrees with str_index_of on an overlapping needle")
+    }
+
+    if ((strContains("hello", "ell") as Int) != str_contains("hello", "ell")) {
+        return fail("strContains disagrees with str_contains")
+    }
+    if ((strStartsWith("hello", "he") as Int) != str_starts_with("hello", "he")) {
+        return fail("strStartsWith disagrees with str_starts_with")
+    }
+    if ((strEndsWith("hello", "lo") as Int) != str_ends_with("hello", "lo")) {
+        return fail("strEndsWith disagrees with str_ends_with")
+    }
+    if ((strStartsWith("he", "hello") as Int) != str_starts_with("he", "hello")) {
+        return fail("strStartsWith disagrees when the prefix is longer than the string")
+    }
+
+    if (sameText(strFromInt(0), int_to_str(0)) == false) {
+        return fail("strFromInt disagrees with int_to_str on zero")
+    }
+    if (sameText(strFromInt(-4321), int_to_str(-4321)) == false) {
+        return fail("strFromInt disagrees with int_to_str on a negative number")
+    }
+    if (sameText(strFromInt(2147483647), int_to_str(2147483647)) == false) {
+        return fail("strFromInt disagrees with int_to_str at the 32-bit maximum")
+    }
+
+    // --- operations with no C counterpart -----------------------------------
+
+    let parts = strSplit("a,bb,ccc", ',')
+    if (list_len(parts) != 3) {
+        return fail("strSplit should produce one part per separator, plus one")
+    }
+    if (strEquals(list_get(parts, 2), "ccc") == false) {
+        return fail("strSplit should keep the final part")
+    }
+    let rejoined = strJoin(parts, ",")
+    if (strEquals(rejoined, "a,bb,ccc") == false) {
+        return fail("strJoin should invert strSplit on the same separator")
+    }
+
+    let words = strSplitWhitespace("  a  b  c ")
+    if (list_len(words) != 3) {
+        return fail("strSplitWhitespace should discard empty parts")
+    }
+
+    let onSep = strSplitOn("a::b::c", "::")
+    if (list_len(onSep) != 3) {
+        return fail("strSplitOn should split on a multi-character separator")
+    }
+
+    // Every occurrence, and without rescanning what the replacement inserted --
+    // `a` -> `aa` terminates rather than looping.
+    if (strEquals(strReplaceAll("a-b-c", "-", "+"), "a+b+c") == false) {
+        return fail("strReplaceAll should replace every occurrence")
+    }
+    if (strEquals(strReplaceAll("aa", "a", "aa"), "aaaa") == false) {
+        return fail("strReplaceAll should not rescan its own replacement")
+    }
+
+    match (strParseInt("123")) {
+        Option<Int>.Some(v) => {
+            if (v != 123) { return fail("strParseInt should parse a positive integer") }
+        }
+        Option<Int>.None => { return fail("strParseInt should accept \"123\"") }
+    }
+    match (strParseInt("-7")) {
+        Option<Int>.Some(v) => {
+            if (v != 0 - 7) { return fail("strParseInt should parse a negative integer") }
+        }
+        Option<Int>.None => { return fail("strParseInt should accept \"-7\"") }
+    }
+    // The case str_to_int cannot express: atoi returns 0 for this and for "0".
+    match (strParseInt("12x")) {
+        Option<Int>.Some(v) => { return fail("strParseInt should reject trailing garbage") }
+        Option<Int>.None => { }
+    }
+    match (strParseInt("")) {
+        Option<Int>.Some(v) => { return fail("strParseInt should reject the empty string") }
+        Option<Int>.None => { }
+    }
+
+    if (strEquals(strRepeat("ab", 3), "ababab") == false) {
+        return fail("strRepeat should concatenate n copies")
+    }
+    if (strEquals(strRepeat("ab", 0), "") == false) {
+        return fail("strRepeat should produce an empty string for a count of zero")
+    }
+    if (strEquals(strReverse("abcd"), "dcba") == false) {
+        return fail("strReverse should reverse the bytes")
+    }
+    if (strEquals(strToUpper("aBc1"), "ABC1") == false) {
+        return fail("strToUpper should upcase letters and leave other bytes alone")
+    }
+    if (strEquals(strToLower("AbC1"), "abc1") == false) {
+        return fail("strToLower should downcase letters and leave other bytes alone")
+    }
+    if (strEquals(strPadStart("7", 3, '0'), "007") == false) {
+        return fail("strPadStart should pad on the left to the requested width")
+    }
+    if (strEquals(strPadEnd("7", 3, '.'), "7..") == false) {
+        return fail("strPadEnd should pad on the right to the requested width")
+    }
+    if (strEquals(strPadStart("long", 2, '0'), "long") == false) {
+        return fail("strPadStart should not truncate a string wider than the target")
+    }
+    if (strCountOf("abcabc", "abc") != 2) {
+        return fail("strCountOf should count non-overlapping occurrences")
+    }
+    if (strLastIndexOf("abcabc", "abc") != 3) {
+        return fail("strLastIndexOf should find the rightmost occurrence")
+    }
+
+    println("std.string tests passed")
+    return 0
+}

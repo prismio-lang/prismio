@@ -6497,6 +6497,38 @@ const char* aif_elem_type_at_node(const void* node) {
     return agreed < 0 ? "" : aif_str(agreed);
 }
 
+// M4.2. Whether any site of this type carries a reference count or is collected.
+//
+// **A type question, not a site question, and it has to be.** Inline element
+// storage is decided per element *type* at every call site -- the stamp, the
+// push, the get and the set all read `ir_struct_is_flat` and have to reach the
+// same answer, because a list one site thinks is inline and another does not is
+// a body written where a pointer belongs. A container's disposition
+// (`aif_elem_owner_at_node`) is visible only at its construction, so it cannot
+// be that shared answer; this can.
+//
+// A counted value keeps its count in a header in front of the object. An inline
+// body has no header and no identity of its own, so `rc_retain` on a push and
+// `rc_release` on a teardown would both be operating on the middle of an element
+// block. test_48 is the fixture: an `Item` shared between two containers is T3,
+// and pushing `list_get(a, 0)` into `b` released an interior pointer.
+//
+// Unknown answers 1 -- refuse inline -- because boxing is always correct and
+// inlining a counted type is not.
+int aif_type_is_counted(const char* type) {
+    if (type == NULL || *type == 0) return 1;
+    for (int s = 0; s < site_count; s++) {
+        if (sites[s].type < 0) continue;
+        const char* name = aif_str(sites[s].type);
+        if (name == NULL || strcmp(name, type) != 0) continue;
+        int tier = aif_tier_of(s);
+        if (tier == AIF_T4A) return 1;
+        if (site_is_rc(&sites[s], tier)) return 1;
+        if (site_is_cyclic(&sites[s], tier)) return 1;
+    }
+    return 0;
+}
+
 int aif_site_in_container(int id) {
     if (id < 0 || id >= site_count) return 0;
     return sites[id].in_container;

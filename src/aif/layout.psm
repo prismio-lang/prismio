@@ -112,7 +112,7 @@ fn aifTypeAlign(module: ASTNode, ann: ASTNode) -> Int {
             let mut best = 1
             if (nodeExists(node_to_ptr(decl))) {
                 let mut p = decl.child1
-                while (str_equals(p, "") == 0) {
+                while (nodeExists(p)) {
                     let f = ptr_to_node(p)
                     if (f.kind == NodeKind.STRUCT_FIELD) {
                         if (nodeExists(f.child1)) {
@@ -222,7 +222,7 @@ fn aifRegisterTypeEdges(decl: ASTNode) {
 fn aifComputeSizesOf(module: ASTNode, d: ASTNode) {
     if (aif_struct_size(d.s1) > 0) { return }
     let mut dp = d.child1
-    while (str_equals(dp, "") == 0) {
+    while (nodeExists(dp)) {
         let f = ptr_to_node(dp)
         if (f.kind == NodeKind.STRUCT_FIELD) {
             if (nodeExists(f.child1)) {
@@ -315,7 +315,7 @@ fn aifLayoutVetoInline(module: ASTNode) {
         let d = ptr_to_node(p)
         if (d.kind == NodeKind.STRUCT_DECL) {
             let mut fp = d.child1
-            while (str_equals(fp, "") == 0) {
+            while (nodeExists(fp)) {
                 let f = ptr_to_node(fp)
                 if (f.kind == NodeKind.STRUCT_FIELD) {
                     if (nodeExists(f.child1)) {

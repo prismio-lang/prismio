@@ -37,7 +37,7 @@ int file_exists(const char* path) {
 char* read_file(const char* path) {
     FILE* file = fopen(path, "rb");
     if (!file) {
-        char* empty = (char*)malloc(1);
+        char* empty = (char*)rt_base_alloc(1);
         empty[0] = '\0';
         return empty;
     }
@@ -46,10 +46,10 @@ char* read_file(const char* path) {
     long size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    char* buffer = (char*)malloc(size + 1);
+    char* buffer = (char*)rt_base_alloc(size + 1);
     if (!buffer) {
         fclose(file);
-        char* empty = (char*)malloc(1);
+        char* empty = (char*)rt_base_alloc(1);
         empty[0] = '\0';
         return empty;
     }
@@ -77,13 +77,13 @@ char* get_directory(const char* path) {
     const char* separator = last_slash > last_backslash ? last_slash : last_backslash;
 
     if (!separator) {
-        char* result = (char*)malloc(2);
+        char* result = (char*)rt_base_alloc(2);
         strcpy(result, ".");
         return result;
     }
 
     int len = separator - path;
-    char* result = (char*)malloc(len + 1);
+    char* result = (char*)rt_base_alloc(len + 1);
     strncpy(result, path, len);
     result[len] = '\0';
 
@@ -98,7 +98,7 @@ char* get_directory(const char* path) {
 // so this is about how the path reads, not whether it resolves.
 char* join_path(const char* directory, const char* filename) {
     int len = (int)strlen(directory) + 1 + (int)strlen(filename) + 1;
-    char* result = (char*)malloc(len);
+    char* result = (char*)rt_base_alloc(len);
     sprintf(result, "%s%c%s", directory, PRISMIO_PATH_SEP, filename);
 
     for (char* c = result; *c; c++) {
@@ -116,9 +116,19 @@ char* current_directory(void) {
 #else
     char* path = getcwd(NULL, 0);
 #endif
-    if (path) return path;
+    // Copied out of the C library's allocation rather than returned directly.
+    // getcwd(NULL, 0) allocates with the system malloc, which the verify ledger
+    // does not track, so handing that pointer to Prismio meant the release
+    // codegen emits for it reported as a pointer that was never live. The copy
+    // costs one small allocation on a path that runs once.
+    if (path) {
+        char* owned = (char*)rt_base_alloc(strlen(path) + 1);
+        strcpy(owned, path);
+        free(path);
+        return owned;
+    }
 
-    char* fallback = (char*)malloc(2);
+    char* fallback = (char*)rt_base_alloc(2);
     strcpy(fallback, ".");
     return fallback;
 }
@@ -199,7 +209,7 @@ char* list_modules(const char* directory) {
     size_t total = 1;
     for (int i = 0; i < count; i++) total += strlen(names[i]) + 1;
 
-    char* result = (char*)malloc(total);
+    char* result = (char*)rt_base_alloc(total);
     result[0] = '\0';
     for (int i = 0; i < count; i++) {
         if (i > 0) strcat(result, "\n");
@@ -253,7 +263,7 @@ char* executable_directory(void) {
         return directory;
     }
 
-    char* fallback = (char*)malloc(2);
+    char* fallback = (char*)rt_base_alloc(2);
     strcpy(fallback, ".");
     return fallback;
 }
@@ -264,7 +274,7 @@ char* executable_directory(void) {
 
 char* command_quote_arg(const char* arg) {
     int len = strlen(arg);
-    char* result = (char*)malloc((len * 2) + 3);
+    char* result = (char*)rt_base_alloc((len * 2) + 3);
     int out = 0;
     result[out++] = '"';
     for (int i = 0; i < len; i++) {

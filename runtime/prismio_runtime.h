@@ -1,6 +1,47 @@
 #ifndef PRISMIO_RUNTIME_H
 #define PRISMIO_RUNTIME_H
 
+// The verify allocator seam.
+//
+// See the note at the top of lang_runtime.c: strings are affine, so codegen
+// emits a release for every owned String, and the allocation at the other end of
+// that pairing has to come from the allocator the verify ledger tracks. **Both
+// ends have to swap together** -- otherwise a *correct* release reports as "a
+// pointer that was never live", which is a violation rather than a leak and
+// therefore reads as unsoundness where there is none.
+//
+// That invariant was stated in lang_runtime.c and applied only there.
+// program_support.c returns owned strings too -- read_file, get_directory,
+// join_path, current_directory, executable_directory, list_modules,
+// command_quote_arg, seven of them -- and allocated every one with a bare
+// malloc, so `--verify` could not see a single filesystem allocation and
+// reported every release of one as a violation. Measured before the fix: a
+// program calling `currentDirectory()` and `listModules()` read 11 allocated,
+// 11 released, 1 violation, and the violated pointer was the getcwd result.
+//
+// It lives in this header rather than in each .c so the next file to return an
+// owned String cannot repeat the omission. lang_runtime.c defines the same two
+// macros before its own includes; the guard lets that stand rather than fighting
+// over which one wins.
+//
+// Only allocations **returned to Prismio** go through it. An internal temporary
+// that this runtime frees itself must stay on plain malloc/free: routing one
+// through the ledger would record an allocation that no generated release ever
+// pairs with, which reads as a leak.
+#ifndef rt_base_alloc
+#include <stdlib.h>
+#ifdef PRISMIO_AIF_VERIFY
+#include <stddef.h>
+void* aif_verify_alloc(size_t size);
+void  aif_verify_release(void* p);
+#define rt_base_alloc(n) aif_verify_alloc(n)
+#define rt_free(p)       aif_verify_release(p)
+#else
+#define rt_base_alloc(n) malloc(n)
+#define rt_free(p)       free(p)
+#endif
+#endif
+
 // Program support: the half of the old driver.c that a *compiled Prismio program*
 // can legitimately call at its own runtime. Implemented in program_support.c and
 // destined for runtime.lib / runtime.a.

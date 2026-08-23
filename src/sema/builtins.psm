@@ -6,7 +6,7 @@ import ast.types
 import ir.bridge
 import common.diagnostics
 
-fn semaBuiltinCallType(name: String, argPtr: String) -> TypeInfo {
+fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (str_equals(name, "drop") == 1) { return typeVoid() }
 
     // REQUIREMENTS 4. The narrowing half. `T?` cannot be used as a `T` -- that
@@ -19,7 +19,7 @@ fn semaBuiltinCallType(name: String, argPtr: String) -> TypeInfo {
     // idiom the compiler already writes by hand -- `if (nodeExists(p)) { let n =
     // ptr_to_node(p) }` is exactly this shape.
     if (str_equals(name, "expect") == 1) {
-        if (str_equals(argPtr, "") == 0) {
+        if (nodeExists(argPtr)) {
             let ot = nodeGetType(ptr_to_node(argPtr))
             if (ot.kind == TypeKind.OPTIONAL) { return typeOptionalInner(ot) }
         }
@@ -32,9 +32,9 @@ fn semaBuiltinCallType(name: String, argPtr: String) -> TypeInfo {
     if (str_equals(name, "list_push") == 1) { return typeVoid() }
     if (str_equals(name, "list_set") == 1) { return typeVoid() }
     if (str_equals(name, "list_get") == 1) {
-        if (str_equals(argPtr, "") == 0) {
+        if (nodeExists(argPtr)) {
             let lt = nodeGetType(ptr_to_node(argPtr))
-            if (lt.kind == TypeKind.LIST and str_equals(lt.child, "") == 0) {
+            if (lt.kind == TypeKind.LIST and nodeExists(lt.child)) {
                 return ptr_to_type(lt.child)
             }
         }
@@ -43,7 +43,7 @@ fn semaBuiltinCallType(name: String, argPtr: String) -> TypeInfo {
     return typeInvalid()
 }
 
-fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: String) -> Bool {
+fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     // drop(x): deterministic, safe free. Consumes (moves) an owned value, so
     // use-after-drop and double-drop are caught by move tracking.
     if (str_equals(name, "drop") == 1) {
@@ -72,7 +72,7 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: St
                                          typeDisplay(ot)))
             return true
         }
-        if (str_equals(ot.child, "") == 1) {
+        if (nodeIsNull(ot.child)) {
             semaErrorAt(a0, "expect needs to know what it is unwrapping; `none` on its own has no type")
         }
         return true

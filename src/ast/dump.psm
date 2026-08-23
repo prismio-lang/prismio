@@ -136,7 +136,7 @@ fn nodeKindName(k: NodeKind) -> String {
     return "UNKNOWN"
 }
 
-fn dumpChain(head: String) {
+fn dumpChain(head: Ptr) {
     print("[")
     let mut p = head
     let mut first = true
@@ -150,7 +150,7 @@ fn dumpChain(head: String) {
     print("]")
 }
 
-fn dumpNode(ptr: String) {
+fn dumpNode(ptr: Ptr) {
     let n = ptr_to_node(ptr)
 
     print("{")

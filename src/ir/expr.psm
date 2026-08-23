@@ -65,12 +65,12 @@ fn generateShortCircuit(expr: ASTNode) -> String {
 // droppable even when every value it receives is owned -- that case leaks today
 // regardless, since there is no drop on reassignment, so the strictness costs
 // nothing that is not already lost.
-fn nodeAssignsName(nodePtr: String, name: String) -> Bool {
-    if (str_equals(nodePtr, "") == 1) { return false }
+fn nodeAssignsName(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
 
     if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
-        if (str_equals(n.child1, "") == 0) {
+        if (nodeExists(n.child1)) {
             let target = ptr_to_node(n.child1)
             if (target.kind == NodeKind.IDENTIFIER_EXPR and str_equals(target.s1, name) == 1) {
                 return true
@@ -83,9 +83,9 @@ fn nodeAssignsName(nodePtr: String, name: String) -> Bool {
     return chainAssignsName(n.child3, name)
 }
 
-fn chainAssignsName(head: String, name: String) -> Bool {
+fn chainAssignsName(head: Ptr, name: String) -> Bool {
     let mut p = head
-    while (str_equals(p, "") == 0) {
+    while (nodeExists(p)) {
         let n = ptr_to_node(p)
         if (nodeAssignsName(p, name)) { return true }
         p = n.next
@@ -105,7 +105,7 @@ fn chainAssignsName(head: String, name: String) -> Bool {
 // A string literal counts because the declaration clones it -- see
 // generateStatement. Without that clause the accumulator idiom `let mut s = ""`
 // is disqualified by its own first line, which is every one of them.
-fn nodeProducesOwnedValue(exprPtr: String) -> Bool {
+fn nodeProducesOwnedValue(exprPtr: Ptr) -> Bool {
     if (nodeIsNull(exprPtr)) { return false }
     if (aif_releases_on_overwrite_node(exprPtr) == 1) { return true }
     // M2.0b. A value a *callee* allocated and handed over, which the escape
@@ -124,7 +124,7 @@ fn nodeProducesOwnedValue(exprPtr: String) -> Bool {
         or nodeIsStringLiteralExpr(exprPtr)
 }
 
-fn nodeIsStringLiteralExpr(exprPtr: String) -> Bool {
+fn nodeIsStringLiteralExpr(exprPtr: Ptr) -> Bool {
     if (nodeIsNull(exprPtr)) { return false }
     let n = ptr_to_node(exprPtr)
     if (n.kind != NodeKind.LITERAL_EXPR) { return false }
@@ -139,7 +139,7 @@ fn nodeIsStringLiteralExpr(exprPtr: String) -> Bool {
 // A binding reassigned only with owned values can be dropped and can release what
 // it displaces; one that ever receives a borrow -- `s = node.name` -- cannot do
 // either, and the difference is a free of a value the AST still holds.
-fn nodeAssignsUnowned(nodePtr: String, name: String) -> Bool {
+fn nodeAssignsUnowned(nodePtr: Ptr, name: String) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
 
@@ -157,9 +157,9 @@ fn nodeAssignsUnowned(nodePtr: String, name: String) -> Bool {
     return chainAssignsUnowned(n.child3, name)
 }
 
-fn chainAssignsUnowned(head: String, name: String) -> Bool {
+fn chainAssignsUnowned(head: Ptr, name: String) -> Bool {
     let mut p = head
-    while (str_equals(p, "") == 0) {
+    while (nodeExists(p)) {
         let n = ptr_to_node(p)
         if (nodeAssignsUnowned(p, name)) { return true }
         p = n.next
@@ -198,12 +198,12 @@ fn irOwningAccumulator(name: String) -> Bool {
 // Syntactic and blunt for the same reason nodeAssignsName is -- codegen is a
 // forward walk, and a `return` written above the binding's last use still runs
 // after it.
-fn nodeReturnsName(nodePtr: String, name: String) -> Bool {
-    if (str_equals(nodePtr, "") == 1) { return false }
+fn nodeReturnsName(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
 
     if (n.kind == NodeKind.RETURN_STATEMENT) {
-        if (str_equals(n.child1, "") == 0) {
+        if (nodeExists(n.child1)) {
             let value = ptr_to_node(n.child1)
             if (value.kind == NodeKind.IDENTIFIER_EXPR and str_equals(value.s1, name) == 1) {
                 return true
@@ -216,9 +216,9 @@ fn nodeReturnsName(nodePtr: String, name: String) -> Bool {
     return chainReturnsName(n.child3, name)
 }
 
-fn chainReturnsName(head: String, name: String) -> Bool {
+fn chainReturnsName(head: Ptr, name: String) -> Bool {
     let mut p = head
-    while (str_equals(p, "") == 0) {
+    while (nodeExists(p)) {
         let n = ptr_to_node(p)
         if (nodeReturnsName(p, name)) { return true }
         p = n.next
@@ -311,9 +311,134 @@ fn irTypeIsProfilableInt(t: String) -> Bool {
     return false
 }
 
+// M4.2. Tell a freshly constructed list to store its elements inline, when the
+// element type's layout allows it.
+//
+// The element type is the constructing expression's own, which is the annotated
+// binding's when there is one and `List<Invalid>` when there is not. A list the
+// stamp misses is not lost: the push entry points stamp lazily while the list is
+// still empty, and they read the same static type this does -- so the two can
+// only agree.
+// The element size a container stores inline for this type, or 0 when the
+// type's layout forbids it. One place, so the stamp, the push slot and every
+// access cannot disagree about which types are inline -- a disagreement would
+// read a body as a pointer.
+fn inlineElemSize(typeName: String) -> Int {
+    if (str_equals(typeName, "") == 1) { return 0 }
+    if (ir_struct_is_flat(typeName) == 0) { return 0 }
+    // A counted element cannot be inline: the count lives in a header in front
+    // of the object and an inline body has neither header nor identity. See
+    // aif_type_is_counted in runtime/aif_support.c, and test_48.
+    if (aif_type_is_counted(typeName) == 1) { return 0 }
+    return ir_struct_size(typeName)
+}
+
+// The inline element size of the list this expression denotes, or 0.
+//
+// **The list's own static type, at every site, and nothing else.** The stamp and
+// the accesses have to agree, and the one fact both can read is the type sema
+// gave the list expression: a `List<T>` reached through an identifier, a field
+// or a call all carry it, and a `list_new()` with no annotation carries
+// `List<Invalid>` at *every* site rather than at some of them. Deciding from the
+// pushed value's type instead would be a list that one site thinks is inline and
+// another does not, which is the one way this can corrupt memory rather than
+// merely lose the optimisation.
+fn inlineElemSizeOfList(listExpr: ASTNode) -> Int {
+    if (nodeHasType(listExpr) == false) { return 0 }
+    let lt = nodeGetType(listExpr)
+    if (lt.kind != TypeKind.LIST) { return 0 }
+    if (nodeIsNull(lt.child)) { return 0 }
+    let ekey = typeIrKey(ptr_to_type(lt.child))
+    if (isStructTypeKey(ekey) == false) { return 0 }
+    return inlineElemSize(structTypeName(ekey))
+}
+
+// The same question asked of a container call's first argument, which is the
+// list for all four of `list_get`, `list_set`, `list_push` and `list_len`.
+// Does this call cross into C?
+//
+// The answer decides marshalling: a `String` is `{ptr, i64}` inside Prismio and a
+// bare `const char*` to C, so an argument crossing out is an `extractvalue` and a
+// result crossing in has to be given a length. Both sides of that are wrong if
+// this is wrong -- a fat value handed to a C function reads its length as the
+// pointer.
+//
+// Read from the declaration index rather than a separate registry, because the
+// index is already built (indexModuleDeclarations) and a second table is a second
+// thing to keep in step.
+fn callIsExtern(funcName: String) -> Bool {
+    let n = ir_decl_count(funcName)
+    let mut i = 0
+    while (i < n) {
+        let decl = ptr_to_node(ir_decl_at(funcName, i))
+        if (decl.kind == NodeKind.EXTERN_FUNCTION) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+fn inlineElemSizeOfCall(expr: ASTNode) -> Int {
+    if (nodeIsNull(expr.child2)) { return 0 }
+    return inlineElemSizeOfList(ptr_to_node(expr.child2))
+}
+
+// M4.2's destination-passing push: `list_push(l, T { ... })` builds the element
+// **in the list**, so the push allocates nothing and copies nothing. Five of the
+// six corpus programs push exactly this shape, and it is what turned inline
+// storage from 1.19x slower than boxing on the frame-loop programs into faster.
+//
+// True when it emitted the call itself.
+fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
+    if (str_equals(funcName, "list_push") == 0) { return false }
+    if (nodeIsNull(expr.child2)) { return false }
+    let listNode = ptr_to_node(expr.child2)
+    if (nodeIsNull(listNode.next)) { return false }
+    let valueNode = ptr_to_node(listNode.next)
+    if (valueNode.kind != NodeKind.STRUCT_LITERAL_EXPR) { return false }
+
+    let esize = inlineElemSizeOfList(listNode)
+    if (esize <= 0) { return false }
+
+    let listVal = generateExpression(listNode)
+    ir_call_begin()
+    ir_call_arg("ptr", listVal)
+    ir_call_arg("i32", int_to_str(esize))
+    let slot = ir_get_temp_name(ir_call_end("ptr", "list_push_slot"))
+    generateStructLiteralFields(valueNode, valueNode.s1, slot)
+    return true
+}
+
+// Which runtime op serves this container call. The inline family is a separate
+// set of entry points rather than a branch inside the boxed ones: the element
+// type is static at every site, so the branch belongs here -- and a version that
+// put it in `list_get` and `list_push` instead measured **1.159x on the corpus
+// with no list inline at all**. See the note on `elem_size` in
+// runtime/lang_runtime.c.
+fn inlineOpName(funcName: String) -> String {
+    if (str_equals(funcName, "list_get") == 1) { return "list_get_inline" }
+    if (str_equals(funcName, "list_set") == 1) { return "list_set_inline" }
+    if (str_equals(funcName, "list_push") == 1) { return "list_push_inline" }
+    return ""
+}
+
+fn generateElemInlineStamp(expr: ASTNode, funcName: String, result: String) {
+    if (str_equals(funcName, "list_new") == 0
+        and str_equals(funcName, "list_new_with_capacity") == 0) {
+        return
+    }
+
+    let esize = inlineElemSizeOfList(expr)
+    if (esize <= 0) { return }
+
+    ir_call_begin()
+    ir_call_arg("ptr", result)
+    ir_call_arg("i32", int_to_str(esize))
+    ir_call_end("void", "list_set_elem_inline")
+}
+
 fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: String) {
     let mut fieldPtr = expr.child1
-    while (str_equals(fieldPtr, "") == 0) {
+    while (nodeExists(fieldPtr)) {
         let field = ptr_to_node(fieldPtr)
         let fieldType = fieldStorageType(ir_get_struct_field_type(structName, field.s1))
         let fieldIndex = ir_get_struct_field_index(structName, field.s1)
@@ -504,7 +629,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // them -- and [1.5, 2.5] stored doubles into i32 slots.
         let arrT = nodeGetType(expr)
         let mut elemType = "i32"
-        if (str_equals(arrT.child, "") == 0) {
+        if (nodeExists(arrT.child)) {
             elemType = storageType(typeIrKey(ptr_to_type(arrT.child)))
         } else if (firstElem.kind == NodeKind.ARRAY_LITERAL_EXPR) {
             elemType = "ptr"
@@ -514,7 +639,7 @@ fn generateExpression(expr: ASTNode) -> String {
 
         let mut elemPtr = expr.child1
         let mut elemIndex = 0
-        while (str_equals(elemPtr, "") == 0) {
+        while (nodeExists(elemPtr)) {
             let elemNode = ptr_to_node(elemPtr)
             let elemVal = generateExpression(elemNode)
             let slot = ir_elem_ptr(elemType, base, int_to_str(elemIndex))
@@ -665,7 +790,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // ir_call_arg wants them in order and the count comes first.
         let mut countPtr = call.child2
         let mut argc = 0
-        while (str_equals(countPtr, "") == 0) {
+        while (nodeExists(countPtr)) {
             argc = argc + 1
             countPtr = ptr_to_node(countPtr).next
         }
@@ -673,7 +798,7 @@ fn generateExpression(expr: ASTNode) -> String {
 
         let mut argPtr = call.child2
         let mut emitted = 0
-        while (str_equals(argPtr, "") == 0) {
+        while (nodeExists(argPtr)) {
             let argNode = ptr_to_node(argPtr)
             ir_call_arg("ptr", generateExpression(argNode))
             emitted = emitted + 1
@@ -790,7 +915,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // invisible to both.
         if (str_equals(funcName, "drop") == 1) {
             let dropArg = expr.child2
-            if (str_equals(dropArg, "") == 0) {
+            if (nodeExists(dropArg)) {
                 let argNode = ptr_to_node(dropArg)
                 let value = generateExpression(argNode)
                 let kind = dropKindOf(argNode)
@@ -805,7 +930,65 @@ fn generateExpression(expr: ASTNode) -> String {
             return ""
         }
 
+        // M4.2, destination passing. `list_push(l, Thing { ... })` where the
+        // element type is stored inline builds the element **in the list**: the
+        // runtime reserves the slot and the literal's field stores are emitted
+        // against that address, so the push allocates nothing and copies
+        // nothing.
+        //
+        // The whole of inline storage's cost on the frame-loop programs was
+        // here -- a temporary object per push, memcpy'd in and freed -- and this
+        // is the shape five of the six corpus programs push in.
+        if (generatePushInPlace(expr, funcName)) { return "" }
+
+        // Byte access, emitted rather than called.
+        //
+        // `str_byte_at` and `str_put_byte` are the two operations a string loop
+        // runs once per byte, and as ordinary externs each one costs a call that
+        // LLVM cannot inline -- they live in lang_runtime.c, a separate
+        // translation unit, and user programs do not link with LTO. Measured on
+        // 40 000 searches of a 40 000-byte string: 1.85s calling out per byte
+        // against 0.38s for the identical loop in C at -O2, so **4.9x of that
+        // gap was call overhead alone**.
+        //
+        // The lowering is the same GEP-plus-load the array index above emits;
+        // `String` is a machine pointer and a byte is an `i8`, so there is
+        // nothing string-specific about it beyond the element type.
+        //
+        // **No bounds check, deliberately.** The C `str_byte_at` tests only for a
+        // negative index -- it never checked the upper bound, because doing so
+        // costs a `strlen` and that is what made `str_char_at` quadratic. The
+        // intrinsic drops the negative test too, so the contract is now "the
+        // index is in [0, len)" and std/string.psm establishes that bound before
+        // every use. `strCharAt` remains the checked accessor for callers who
+        // want one.
+        if (str_equals(funcName, "str_byte_at") == 1 and nodeExists(expr.child2)) {
+            let a0 = ptr_to_node(expr.child2)
+            if (nodeExists(a0.next)) {
+                let base = generateExpression(a0)
+                let idx = generateExpression(ptr_to_node(a0.next))
+                let slot = ir_elem_ptr("i8", base, idx)
+                return ir_get_temp_name(ir_load_ptr("i8", ir_get_temp_name(slot)))
+            }
+        }
+
+        if (str_equals(funcName, "str_put_byte") == 1 and nodeExists(expr.child2)) {
+            let a0 = ptr_to_node(expr.child2)
+            if (nodeExists(a0.next)) {
+                let a1 = ptr_to_node(a0.next)
+                if (nodeExists(a1.next)) {
+                    let base = generateExpression(a0)
+                    let idx = generateExpression(a1)
+                    let value = generateExpression(ptr_to_node(a1.next))
+                    let slot = ir_elem_ptr("i8", base, idx)
+                    ir_store_ptr("i8", value, ir_get_temp_name(slot))
+                    return ""
+                }
+            }
+        }
+
         // Regular function call
+        let inlineSize = inlineElemSizeOfCall(expr)
         ir_call_begin()
         // REQUIREMENTS 20. `list_push` and `list_set` take the element as `ptr`,
         // so a scalar has to reach the slot as one -- without this the call
@@ -813,7 +996,7 @@ fn generateExpression(expr: ASTNode) -> String {
         let elemArg = listElementArgIndex(funcName)
         let mut argPtr = expr.child2
         let mut argIndex = 0
-        while (str_equals(argPtr, "") == 0) {
+        while (nodeExists(argPtr)) {
             let argNode = ptr_to_node(argPtr)
             let argVal = generateExpression(argNode)
             let argStore = storageType(getExprType(argNode))
@@ -829,6 +1012,20 @@ fn generateExpression(expr: ASTNode) -> String {
         let mut callName = funcName
         if (str_equals(expr.s2, "") == 0) {
             callName = expr.s2
+        }
+        // M4.2. The inline family, chosen from the list's static element type.
+        // `list_push_inline` takes the size as well, so an unstamped-but-empty
+        // list can stamp itself: a `let mut xs = list_new()` with no annotation
+        // reaches the push with `List<Invalid>` and is boxed, and one with an
+        // annotation reaches it already stamped.
+        if (inlineSize > 0) {
+            let inlineName = inlineOpName(funcName)
+            if (str_equals(inlineName, "") == 0) {
+                callName = inlineName
+                if (str_equals(funcName, "list_push") == 1) {
+                    ir_call_arg("i32", int_to_str(inlineSize))
+                }
+            }
         }
         // REQUIREMENTS 4. The checked unwrap is an ordinary call that returns
         // its argument, which is why it needs no new control flow here: the
@@ -897,6 +1094,19 @@ fn generateExpression(expr: ASTNode) -> String {
                 }
             }
         }
+
+        // M4.2. Inline element storage, stamped at the same place and for the
+        // same reason the disposition above is: construction is the only point
+        // that names the element type, and the container has to be told before
+        // its first push.
+        //
+        // The decision is a function of the **type**, not of the list, and that
+        // is deliberate. `list_get` on an inline list hands back the address of
+        // an element body; pushing that address into a second list of the same
+        // type must copy bytes rather than store a pointer, and it does exactly
+        // that as long as both lists agree. Keying on the type is what makes
+        // them agree.
+        generateElemInlineStamp(expr, funcName, result)
         return result
     }
     

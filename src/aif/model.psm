@@ -178,7 +178,7 @@ extern fn aif_alias_name(value: Int) -> String alias
 // LAYOUT 7.1. The scope carries the block it came from, so codegen can ask a
 // block whether an arena was placed there, and its loop depth, which is what
 // weights a site's contribution to the benefit.
-extern fn aif_scope_note_node(scope: Int, node: String borrow)
+extern fn aif_scope_note_node(scope: Int, node: Ptr)
 extern fn aif_scope_set_loop_depth(scope: Int, depth: Int)
 extern fn aif_place_arenas()
 
@@ -417,8 +417,8 @@ extern fn aif_tier_of(site: Int) -> Int
 extern fn aif_theta_stack() -> Int
 extern fn aif_set_theta_mode(mode: Int)
 extern fn aif_theta_mode() -> Int
-extern fn aif_site_note_node(site: Int, node: String borrow)
-extern fn aif_note_call_result(node: String borrow, vs: Int, fnId: Int)
+extern fn aif_site_note_node(site: Int, node: Ptr)
+extern fn aif_note_call_result(node: Ptr, vs: Int, fnId: Int)
 extern fn aif_site_is_rc(site: Int) -> Int
 
 extern fn aif_order_add(symbol: String, site: Int)
@@ -623,7 +623,7 @@ fn aifVsOfKey(key: Int) -> Int {
 // The node pointer is what codegen later looks the tier up by, so it is
 // registered here rather than derived: the two passes walk the same tree in the
 // same process, and one node names one site exactly.
-fn aifNewSite(ty: String, fnId: Int, scope: Int, nodePtr: String) -> Int {
+fn aifNewSite(ty: String, fnId: Int, scope: Int, nodePtr: Ptr) -> Int {
     let node = ptr_to_node(nodePtr)
     let sid = aif_site_new(ty, aifKindOf(ty), fnId, scope,
                            node.file, node.line, node.col, aif_struct_nfields(ty))

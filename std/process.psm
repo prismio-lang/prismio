@@ -1,0 +1,91 @@
+// Command-line arguments and subprocesses.
+//
+// Two externs, and the interesting one is `cli_arg`.
+//
+// **`cli_arg` allocates nothing.** It returns `prismio_argv[index]` -- a pointer
+// into the block the C runtime was handed at startup -- or the static `""` when
+// the index is out of range. Its contract is `alias`, which in FFI 5.2's
+// vocabulary means the return is an existing value rather than a fresh
+// allocation, and with no argument to alias it resolves to "static, not
+// allocated". src/main.psm has always declared it correctly; every other
+// declaration of it in the tree (tests/aif_tiers.psm, tests/aif_concurrency.psm)
+// leaves the contract off and gets the right answer by luck, because the
+// undeclared default is `borrow` and nothing frees the result either way.
+//
+// A `produce(free)` on it would not leak. It would hand `argv` to the
+// deallocator, which is a different and much worse category of wrong, and it is
+// the mistake the six `produce(free)` externs one module over invite. That is
+// why `arg` below returns a **copy**: the borrowed form is available as
+// `argBorrowed` for a caller that has measured and cares, but the obvious call
+// should be the safe one.
+
+import std.option
+import std.string
+
+extern fn cli_arg_count() -> Int
+extern fn cli_arg(index: Int) -> String alias
+extern fn execute_command(command: String borrow) -> Int
+extern fn command_quote_arg(arg: String borrow) -> String produce(free)
+
+// How many arguments the program was given, including the program name at 0.
+fn argCount() -> Int {
+    return cli_arg_count()
+}
+
+// The argument at `index`, as a string the caller owns.
+//
+// A copy rather than the pointer, so that the result obeys the same rule as
+// every other owned String and a caller cannot accidentally free `argv`. One
+// small allocation per call, on a path that runs once per program.
+fn arg(index: Int) -> String {
+    return str_concat(cli_arg(index), "")
+}
+
+// The argument at `index` without copying.
+//
+// Borrowed from `argv`, which outlives the program, so this is safe to read for
+// as long as the process runs -- and unsafe to `drop` or store in an owning
+// container. Use `arg` unless the copy is measurably in the way.
+//
+// No contract is written here because `alias` is `extern fn` vocabulary and a
+// Prismio signature has no place to put it. It is not needed: the analysis
+// derives the same fact from the body. `cli_arg` is declared `alias` with
+// nothing to alias, so it contributes no allocation site, so this function has a
+// `return` with no site behind it, so `fn_returns_partial` marks it partial and
+// its result is never owned by a caller. The unannotated form is the correct
+// one, not a gap.
+fn argBorrowed(index: Int) -> String {
+    return cli_arg(index)
+}
+
+// `None` when `index` is out of range, which the raw call cannot express -- it
+// returns `""` both for a missing argument and for an argument that is the
+// empty string.
+fn argAt(index: Int) -> Option<String> {
+    if (index < 0) { return Option<String>.None }
+    if (index >= cli_arg_count()) { return Option<String>.None }
+    return Option<String>.Some(str_concat(cli_arg(index), ""))
+}
+
+// Every argument after the program name.
+fn args() -> List<String> {
+    let out: List<String> = list_new()
+    let mut i = 1
+    while (i < cli_arg_count()) {
+        list_push(out, str_concat(cli_arg(i), ""))
+        i = i + 1
+    }
+    return out
+}
+
+// True when the command ran and exited successfully. Note the inversion against
+// the C, which returns 0 for success.
+fn runCommand(command: String) -> Bool {
+    return execute_command(command) == 0
+}
+
+// One argument, quoted for the platform's shell. Use this on anything built
+// from a path or from user input before it goes into `runCommand`.
+fn quoteArg(argument: String) -> String {
+    return command_quote_arg(argument)
+}

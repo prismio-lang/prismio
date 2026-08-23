@@ -1,6 +1,32 @@
 ## Code style
 
-Read [CODE_STYLE.md](CODE_STYLE.md) before writing code in this repository, and follow it.
+Read [CODE_STYLE.md](CODE_STYLE.md) before writing `.psm`, and
+[C_CODE_STYLE.md](C_CODE_STYLE.md) before writing `runtime/*.c` or `runtime/*.h`.
+Follow them.
+
+Two C-side invariants are worth repeating here, because both fail as a *violation*
+rather than a leak — corruption, not lost bytes:
+
+- **An allocation returned to Prismio goes through `rt_base_alloc`**, and an
+  internal temporary this runtime frees itself does not. The seam is in
+  `runtime/prismio_runtime.h`.
+- **`produce(free)` versus `alias` is not a guess.** `cli_arg` returns a pointer
+  into `argv`; declaring it `produce` hands `argv` to the deallocator.
+
+## Runtime surface
+
+[RUNTIME.md](RUNTIME.md) is the map of what a program can call. Applications use
+`std.*`; `extern fn` is for foreign code an application brings itself, not for
+reaching into the Prismio runtime. When you add or change a runtime symbol, the
+wrapper and its contract in `std/` are part of the change.
+
+The user-facing documentation site is a **sibling repository** at `../docs`, not
+in this tree. Its examples are compiler-checked — after a language or library
+change, run:
+
+```bash
+cd ../docs && PRISMIO=<compiler> node scripts/verify-doc-examples.mjs
+```
 
 Two rules from it are load-bearing enough to repeat here, because breaking either one
 fails a generation later with nothing pointing at the cause:

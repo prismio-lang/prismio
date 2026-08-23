@@ -348,7 +348,7 @@ fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
 }
 
 // The shared `( a: A, b: B )` shape. Returns the head of the parameter chain.
-fn parseParameterList(p: Parser, isExtern: Bool) -> String {
+fn parseParameterList(p: Parser, isExtern: Bool) -> Ptr {
     parserExpectVal(p, TokenType.SEPARATOR, "(", "params")
 
     let params = nodeList()

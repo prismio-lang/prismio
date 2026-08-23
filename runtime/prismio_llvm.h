@@ -228,6 +228,22 @@ LLVMValueRef LLVMBuildArrayAlloca(LLVMBuilderRef, LLVMTypeRef Ty, LLVMValueRef V
 LLVMValueRef LLVMBuildLoad2(LLVMBuilderRef, LLVMTypeRef Ty, LLVMValueRef PointerVal,
                             const char *Name);
 LLVMValueRef LLVMBuildStore(LLVMBuilderRef, LLVMValueRef Val, LLVMValueRef Ptr);
+
+// First-class aggregates, for the fat `String` -- see the note over `ir_undef`
+// in llvm-api-backend.c. Declared here as well as used there because this header
+// is the LLVM C API as the *packaging* build sees it: `tools/package.sh` compiles
+// the backend without -DPRISMIO_LLVM_REAL_HEADERS, so anything missing from this
+// shim is an implicit declaration and a hard error there while the bootstrap,
+// which does use the real headers, builds cleanly. That asymmetry is why the
+// test suite packages a toolchain rather than trusting a successful bootstrap.
+LLVMValueRef LLVMGetUndef(LLVMTypeRef Ty);
+LLVMValueRef LLVMBuildInsertValue(LLVMBuilderRef, LLVMValueRef AggVal,
+                                  LLVMValueRef EltVal, unsigned Index,
+                                  const char *Name);
+LLVMValueRef LLVMBuildExtractValue(LLVMBuilderRef, LLVMValueRef AggVal,
+                                   unsigned Index, const char *Name);
+LLVMValueRef LLVMConstNamedStruct(LLVMTypeRef StructTy,
+                                  LLVMValueRef *ConstantVals, unsigned Count);
 // Writing an inline struct field copies bytes rather than storing an address.
 //
 // The alignment has to be the one LLVM actually placed the field at, not a
@@ -245,6 +261,10 @@ void LLVMAddAttributeAtIndex(LLVMValueRef F, unsigned Idx, LLVMAttributeRef A);
 typedef struct LLVMOpaqueTargetData *LLVMTargetDataRef;
 LLVMTargetDataRef LLVMGetModuleDataLayout(LLVMModuleRef M);
 unsigned LLVMABIAlignmentOfType(LLVMTargetDataRef, LLVMTypeRef Ty);
+// M4.2. The bytes one element of an inline container occupies, which is the
+// number the container is stamped with at construction. Read from the module's
+// data layout, so a --target build sizes for the target.
+unsigned long long LLVMABISizeOfType(LLVMTargetDataRef, LLVMTypeRef Ty);
 // LAYOUT 6's hot/cold split. A T3 object's cold block is reached from the
 // *runtime*, which has only a pointer and a byte offset -- so rc_alloc's spare
 // header word is told where in the hot record the link sits, and that number is

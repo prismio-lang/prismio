@@ -90,10 +90,10 @@ fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo, context
     // coerced happily on its own had it been written `let y: I64 = 1`.
     if (typeIsValid(expected) and expected.kind == TypeKind.ARRAY
         and valNode.kind == NodeKind.ARRAY_LITERAL_EXPR
-        and str_equals(expected.child, "") == 0) {
+        and nodeExists(expected.child)) {
         let elemExpected = ptr_to_type(expected.child)
         let mut elemPtr = valNode.child1
-        while (str_equals(elemPtr, "") == 0) {
+        while (nodeExists(elemPtr)) {
             let elem = ptr_to_node(elemPtr)
             semaCheckValue(module, elem, elemExpected, context)
             elemPtr = elem.next
@@ -103,6 +103,23 @@ fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo, context
     }
     let actual = semaExpr(module, valNode)
     semaExpectAssignable(valNode, context, expected, actual)
+
+    // M4.2. A fresh empty list takes its element type from the annotation, for
+    // the same reason the two literals above take theirs: `list_new()` types as
+    // `List<Invalid>` on its own and the annotation is the only place the
+    // element type is written.
+    //
+    // Nothing about *checking* needed this -- `List<Invalid>` is assignable to
+    // any list, which is how these programs compiled before. What needs it is
+    // codegen: a container's element storage is chosen from the element type at
+    // the construction site, and without this that site sees `Invalid` and every
+    // list is told what it holds only once something has been pushed into it.
+    if (typeIsValid(expected) and expected.kind == TypeKind.LIST
+        and actual.kind == TypeKind.LIST
+        and typeIsValid(semaListElementType(actual)) == false) {
+        nodeSetType(valNode, expected)
+        return expected
+    }
     return actual
 }
 
@@ -145,7 +162,7 @@ fn semaCheckExternContracts(extNode: ASTNode) {
     // arity has to be known before any of them can be checked.
     let mut arity = 0
     let mut countPtr = extNode.child1
-    while (str_equals(countPtr, "") == 0) {
+    while (nodeExists(countPtr)) {
         let param = ptr_to_node(countPtr)
         if (param.kind == NodeKind.FUNCTION_PARAMETER) {
             arity = arity + 1
@@ -155,9 +172,9 @@ fn semaCheckExternContracts(extNode: ASTNode) {
 
     let mut index = 0
     let mut paramPtr = extNode.child1
-    while (str_equals(paramPtr, "") == 0) {
+    while (nodeExists(paramPtr)) {
         let param = ptr_to_node(paramPtr)
-        if (param.kind == NodeKind.FUNCTION_PARAMETER and str_equals(param.child1, "") == 0) {
+        if (param.kind == NodeKind.FUNCTION_PARAMETER and nodeExists(param.child1)) {
             let annotation = ptr_to_node(param.child1)
             let encoded = annotation.s2
 
@@ -191,7 +208,7 @@ fn semaCheckExternContracts(extNode: ASTNode) {
         paramPtr = param.next
     }
 
-    if (str_equals(extNode.child2, "") == 0) {
+    if (nodeExists(extNode.child2)) {
         let ret = ptr_to_node(extNode.child2)
         if (str_equals(ret.s2, "") == 0) {
             let name = semaContractName(ret.s2)

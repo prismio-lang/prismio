@@ -60,7 +60,7 @@ fn lexerToken(lex: Lexer, t: TokenType, value: String, startLine: Int, startCol:
         col: startCol,
         len: lex.pos - startPos,
         file: lex.file,
-        tokNext: ""
+        tokNext: ptr_null()
     }
 }
 
@@ -410,8 +410,8 @@ fn lexerNextToken(lex: Lexer) -> Token {
 
 // Both are `void* f(void* p) { return p; }` in lang_runtime.c, so the result is
 // the argument; without the contracts every Token reads as an opaque extern.
-extern fn ptr_to_token(ptr: String borrow) -> Token alias
-extern fn token_to_ptr(tok: Token borrow) -> String alias
+extern fn ptr_to_token(ptr: Ptr) -> Token alias
+extern fn token_to_ptr(tok: Token borrow) -> Ptr alias
 
 // Token is a struct and therefore move-only, so walking the list with a second
 // Token binding (`let current = head`) would move `head` and make the final

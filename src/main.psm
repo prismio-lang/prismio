@@ -82,7 +82,9 @@ let PRISMIO_VERSION = "0.1.0"
 // The last statement appended to the module being merged. Reset with the module
 // in resolveImports(); see appendStatement() for why it is a cache rather than
 // the list's only tail.
-let mut mergeTailPtr = ""
+// Zero-initialized rather than assigned: a global cannot be initialized by a
+// call, and a zero-filled pointer is NULL, which is the empty cache this wants.
+let mut mergeTailPtr: Ptr
 
 // Two same-named top-level declarations of the same kind are duplicates, with one
 // exception: FUNCTION. Overloading means several `fn` nodes legitimately share a
@@ -324,7 +326,7 @@ fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited
     while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
         let nextStmt = stmt.next
-        stmt.next = ""
+        stmt.next = ptr_null()
 
         if (stmt.kind == NodeKind.IMPORT_STATEMENT) {
             if (stmt.i1 == 1) {
@@ -402,7 +404,7 @@ fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNod
     // it. analyzeModule and generateModule rebuild the index from the finished
     // module; this fill is the merge's own, and it is the same one walk.
     ir_reset_decl_index()
-    mergeTailPtr = ""
+    mergeTailPtr = ptr_null()
     // No prelude. `std.io` is an ordinary import, so a program that names no I/O
     // carries none -- which is what lets a target with no stdout link at all.
     mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))

@@ -244,6 +244,16 @@ extern fn ir_string_ptr(globalName: String) -> Int
 // ir_string_ptr, which resolves a global the collect_strings pre-pass named:
 // these names are not source literals, so that pre-pass has nothing to find.
 extern fn ir_const_cstring(text: String) -> Int
+// First-class aggregates. Until the fat `String` there was nothing in this
+// language whose *representation* was an aggregate held in a register -- a
+// struct, a list and an optional are all memory reached through a pointer -- so
+// the backend had no way to build one. See the note over `ir_undef` in
+// runtime/llvm-api-backend.c.
+extern fn ir_undef(type: String) -> Int
+extern fn ir_insert_value(aggType: String, agg: String, value: String, valueType: String, index: Int) -> Int
+extern fn ir_extract_value(aggType: String, agg: String, index: Int) -> Int
+extern fn ir_const_str(globalName: String, length: Int) -> Int
+
 extern fn ir_load_ptr(type: String, ptrValue: String) -> Int
 extern fn ir_store_ptr(type: String, value: String, ptrValue: String)
 extern fn ir_copy_struct(structName: String, dest: String, src: String)
@@ -268,9 +278,9 @@ extern fn ir_reset_named_types()
 // `ir_decl_at` returns the AST pointer that was indexed -- our own memory, not a
 // fresh allocation.
 extern fn ir_reset_decl_index()
-extern fn ir_index_decl(name: String, node: String)
+extern fn ir_index_decl(name: String, node: Ptr)
 extern fn ir_decl_count(name: String) -> Int
-extern fn ir_decl_at(name: String, index: Int) -> String alias
+extern fn ir_decl_at(name: String, index: Int) -> Ptr
 
 // A function's return type, keyed by its mangled symbol. Its own table rather
 // than a "$fn$" binding: those were permanent, so every identifier lookup in
@@ -283,6 +293,14 @@ extern fn ir_register_struct(name: String)
 extern fn ir_register_struct_field(structName: String, fieldName: String, fieldType: String)
 extern fn ir_is_struct_type_name(name: String) -> Int
 extern fn ir_get_struct_field_index(structName: String, fieldName: String) -> Int
+// M4.2. Whether a container may store elements of this type **inline** -- the
+// element bodies in the list rather than pointers to separately allocated ones
+// -- and how many bytes one of them takes. Both are questions about the layout
+// the backend built, which is why neither is answerable from the AST: `flat`
+// means no pointer anywhere inside the type and no hot/cold split, and the size
+// is the module data layout's, so a --target build sizes for the target.
+extern fn ir_struct_is_flat(name: String) -> Int
+extern fn ir_struct_size(name: String) -> Int
 // Both return an *interned* type name -- ir_add_struct_field and add_binding
 // each store ir_intern(type), and the fallbacks ("i32", "i64") are literals. No
 // branch allocates, so neither is a value the caller could release.

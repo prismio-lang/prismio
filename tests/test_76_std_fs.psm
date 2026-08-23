@@ -1,0 +1,108 @@
+// std.fs and std.process.
+//
+// Deliberately limited to what does not depend on where the runner was invoked
+// from. Path manipulation is pure string work with a platform separator, and
+// argument access is whatever the harness passed, so both can be asserted;
+// reading a directory cannot, because the answer depends on the working
+// directory and this suite runs from more than one.
+//
+// The property worth pinning is the one the wrappers exist for: the raw C
+// disagrees with itself about what an `Int` return means. `file_exists` returns
+// 1 for yes, while `delete_file` and `execute_command` return **0** for success.
+// Every predicate here is a `Bool`, and a regression that let the raw convention
+// leak back through would invert one of them.
+
+import std.io
+import std.string
+import std.fs
+import std.process
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // --- paths --------------------------------------------------------------
+
+    let joined = joinPath("/a/b", "c.psm")
+    if (strContains(joined, "c.psm") == false) {
+        return fail("joinPath should end with the file name")
+    }
+    if (strStartsWith(joined, "/a/b") == false) {
+        return fail("joinPath should begin with the directory")
+    }
+
+    let parent = directoryOf("/a/b/c.psm")
+    if (strEquals(parent, "/a/b") == false) {
+        return fail("directoryOf should drop the final component and the separator")
+    }
+
+    if (isSourcePath("x.psm") == false) {
+        return fail("isSourcePath should accept a .psm file")
+    }
+    if (isSourcePath("x.txt")) {
+        return fail("isSourcePath should reject a non-.psm file")
+    }
+
+    // --- predicates are Bool, and the C conventions disagree ----------------
+
+    if (fileExists("/definitely/not/here/at/all.psm")) {
+        return fail("fileExists should be false for a path that does not exist")
+    }
+
+    let cwd = currentDirectory()
+    if (strLength(cwd) == 0) {
+        return fail("currentDirectory should never be empty -- it falls back to \".\"")
+    }
+
+    let exeDir = executableDirectory()
+    if (strLength(exeDir) == 0) {
+        return fail("executableDirectory should never be empty -- it falls back to \".\"")
+    }
+
+    // --- arguments ----------------------------------------------------------
+
+    if (argCount() < 1) {
+        return fail("argCount should count the program name")
+    }
+
+    let program = arg(0)
+    if (strLength(program) == 0) {
+        return fail("arg(0) should be the program name")
+    }
+
+    // The distinction the raw call cannot make: out of range and "the argument
+    // is the empty string" are both "" from cli_arg.
+    match (argAt(0 - 1)) {
+        Option<String>.Some(v) => { return fail("argAt should reject a negative index") }
+        Option<String>.None => { }
+    }
+    match (argAt(9999)) {
+        Option<String>.Some(v) => { return fail("argAt should reject an index past the end") }
+        Option<String>.None => { }
+    }
+    match (argAt(0)) {
+        Option<String>.Some(v) => {
+            if (strLength(v) == 0) { return fail("argAt(0) should be the program name") }
+        }
+        Option<String>.None => { return fail("argAt(0) should be present") }
+    }
+
+    // Borrowed from argv rather than copied. Reading it is safe for the life of
+    // the process; the analysis derives that it is not owned, so nothing here
+    // releases it.
+    let borrowed = argBorrowed(0)
+    if (strLength(borrowed) == 0) {
+        return fail("argBorrowed(0) should be the program name")
+    }
+
+    let quoted = quoteArg("a b")
+    if (strContains(quoted, "a b") == false) {
+        return fail("quoteArg should preserve the argument it quotes")
+    }
+
+    println("std.fs and std.process tests passed")
+    return 0
+}

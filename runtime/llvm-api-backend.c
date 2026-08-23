@@ -583,6 +583,18 @@ void ir_module_start(const char *module_name) {
     reset_state();
     g_module = LLVMModuleCreateWithNameInContext(module_name, g_ctx);
     LLVMSetSourceFileName(g_module, "prismio_generated", strlen("prismio_generated"));
+
+    // The fat String, registered once per module so `struct:prismio.str` resolves
+    // anywhere a type key is read. `named_struct` creates opaque on demand, so
+    // without this the body would never be set and every use would be a
+    // zero-sized aggregate rather than a link error -- silent, and exactly the
+    // failure mode worth spending four lines to prevent.
+    {
+        LLVMTypeRef fields[2];
+        fields[0] = LLVMPointerTypeInContext(g_ctx, 0);
+        fields[1] = LLVMInt64TypeInContext(g_ctx);
+        LLVMStructSetBody(named_struct("prismio.str"), fields, 2, 0);
+    }
 #ifdef _WIN32
     // Pinned only on Windows, where msvc and mingw are a real fork and msvc is
     // the configuration that is actually verified. Elsewhere LLVM's own host
@@ -1257,6 +1269,75 @@ int ir_struct_field_ptr(const char *struct_name, const char *object, int field_i
         LLVMBuildStructGEP2(g_builder, s->type, obj, (unsigned)field_index, ""));
 }
 
+// ---------------------------------------------------------------------------
+// M4.2 -- is this type's layout flat enough to store inline in a container?
+//
+// Two conditions, and each rules out a different failure:
+//
+//  1. **No pointer anywhere inside it.** A pointer field is a field something
+//     owns, and an inline element is copied with `memcpy` and reclaimed with the
+//     chunk -- so an owned field inside one would be copied to two places and
+//     released from neither. This is `typeAnnIsPod`'s question asked of the
+//     layout that was actually built rather than of the annotation, which is
+//     what makes it exact: the registry spells an inline struct field
+//     `struct:T` and a boxed one `ptr`, and that distinction is the whole
+//     answer.
+//  2. **Not split hot/cold.** A split record is two allocations joined by a link
+//     word; copying its bytes copies the *link*, so two elements would share one
+//     cold block and the second teardown would double-free it. That is the
+//     hazard `ir_copy_struct` asserts on for an inline struct *field*, one
+//     container further out.
+//
+// The scalar keys are listed rather than defaulted, so a type key this file has
+// not seen answers "not flat" and the element stays boxed. Unknown means boxed
+// is the only safe direction here: a wrong "flat" is a memcpy of something that
+// owns memory.
+// ---------------------------------------------------------------------------
+int ir_get_struct_field_count(const char *struct_name);
+const char *ir_get_struct_field_type_at(const char *struct_name, int index);
+int ir_is_struct_type_name(const char *name);
+
+static int struct_is_flat_by_name(const char *name, int depth);
+
+static int type_key_is_flat(const char *key, int depth) {
+    if (!key || !*key || depth > 16) return 0;
+    if (strncmp(key, "struct:", 7) == 0) return struct_is_flat_by_name(key + 7, depth + 1);
+    if (key[0] == '%') return struct_is_flat_by_name(key + 1, depth + 1);
+    return strcmp(key, "i1") == 0 || strcmp(key, "i8") == 0 || strcmp(key, "i16") == 0
+        || strcmp(key, "i32") == 0 || strcmp(key, "i64") == 0
+        || strcmp(key, "float") == 0 || strcmp(key, "double") == 0;
+}
+
+static int struct_is_flat_by_name(const char *name, int depth) {
+    if (depth > 16) return 0;
+    if (!ir_is_struct_type_name(name)) return 0;
+    StructType *s = struct_entry(name);
+    if (!s || !s->type || s->hot_count > 0) return 0;
+    int n = ir_get_struct_field_count(name);
+    if (n <= 0) return 0;
+    for (int i = 0; i < n; i++) {
+        if (!type_key_is_flat(ir_get_struct_field_type_at(name, i), depth)) return 0;
+    }
+    return 1;
+}
+
+int ir_struct_is_flat(const char *struct_name) {
+    if (!struct_name || !*struct_name) return 0;
+    return struct_is_flat_by_name(struct_name, 0);
+}
+
+// The type's ABI size in bytes, read from the **module's** data layout so a
+// `--target` build sizes for the target rather than for this host. A constant
+// here rather than an emitted `LLVMSizeOf`, because the container is told the
+// size once at construction and a constant is what makes the chunk arithmetic
+// fold.
+int ir_struct_size(const char *struct_name) {
+    if (!ir_is_struct_type_name(struct_name)) return 0;
+    StructType *s = struct_entry(struct_name);
+    if (!s || !s->type) return 0;
+    return (int)LLVMABISizeOfType(LLVMGetModuleDataLayout(g_module), s->type);
+}
+
 // Address of element `index` in a flat array of `elem_type`.
 int ir_elem_ptr(const char *elem_type, const char *base, const char *index) {
     LLVMTypeRef ety = type_from_key(elem_type);
@@ -1525,6 +1606,49 @@ int ir_const_cstring(const char *text) {
 }
 
 // Pointer to the first byte of a previously created string global.
+// ---------------------------------------------------------------------------
+// First-class aggregates
+//
+// Every aggregate in this compiler has been `ptr` until now -- a struct, a list
+// and an optional are all memory addressed by a pointer, and there was no way to
+// hold one in an SSA value. That is fine while an aggregate is something the
+// program allocates, and wrong for one the *representation* needs: a fat
+// `String` is `{ptr, i64}` passed in registers, and lowering it as a pointer to
+// a two-word struct would add an indirection to every access and hand C the
+// struct's address instead of the char* that FFI 7.1 exists to make free.
+//
+// So: undef to start an aggregate, insertvalue to fill it, extractvalue to read
+// a field back. The same three LLVM gives any frontend building a fat pointer.
+// ---------------------------------------------------------------------------
+
+int ir_undef(const char *type) {
+    return intern_value(LLVMGetUndef(type_from_key(type)));
+}
+
+int ir_insert_value(const char *agg_type, const char *agg,
+                    const char *value, const char *value_type, int index) {
+    LLVMValueRef a = resolve_value(agg, agg_type);
+    LLVMValueRef v = resolve_value(value, value_type);
+    return intern_value(LLVMBuildInsertValue(g_builder, a, v, (unsigned)index, ""));
+}
+
+int ir_extract_value(const char *agg_type, const char *agg, int index) {
+    LLVMValueRef a = resolve_value(agg, agg_type);
+    return intern_value(LLVMBuildExtractValue(g_builder, a, (unsigned)index, ""));
+}
+
+// A constant aggregate, for a value known at compile time -- a string literal is
+// `{ @.strN, <len> }` and needs no instructions at all, which is why literals do
+// not go through insertvalue.
+int ir_const_str(const char *global_name, int length) {
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, global_name);
+    if (!g) backend_fail("unknown string global", global_name);
+    LLVMValueRef fields[2];
+    fields[0] = g;
+    fields[1] = LLVMConstInt(LLVMInt64TypeInContext(g_ctx), (unsigned long long)length, 0);
+    return intern_value(LLVMConstNamedStruct(named_struct("prismio.str"), fields, 2));
+}
+
 int ir_string_ptr(const char *global_name) {
     LLVMValueRef g = LLVMGetNamedGlobal(g_module, global_name);
     if (!g) backend_fail("unknown string global", global_name);
