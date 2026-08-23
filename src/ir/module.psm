@@ -104,6 +104,7 @@ fn generateFunction(func: ASTNode) {
     // name-keyed pre-pass could not express.
     if (str_equals(func.child2, "") == 0) {
         irFunctionBody = func.child2
+
         generateBlock(ptr_to_node(func.child2))
         irFunctionBody = ""
     }
@@ -578,7 +579,19 @@ fn generateReleaseFn(structNode: ASTNode) {
                 let value = ir_get_temp_name(loaded)
                 if (disp == AIF_ELEM_LIST) {
                     ir_free_list(value)
-                } else if (disp == AIF_ELEM_RC) {
+                } else if (disp == AIF_ELEM_RC or disp == AIF_ELEM_CYCLE) {
+                    // AIF_ELEM_CYCLE pairs with AIF_ELEM_RC exactly as
+                    // CYCLE_ATOMIC pairs with RC_ATOMIC below: a field on a cyclic
+                    // edge gets the *count* decremented and nothing else, because
+                    // collector registration is the container's business.
+                    //
+                    // **Unreachable until M2.1a, and it fell into the plain
+                    // ir_free_object below.** A CYCLE disposition can only arise
+                    // on a field that re-enters its owner's type, and
+                    // field_closes_cycle vetoed every one of those -- so removing
+                    // that veto turned this missing branch into a double free of
+                    // a collected object. test_52 reported 8 violations, which is
+                    // the whole reason its counts are asserted.
                     ir_free_rc(value)
                 } else if (disp == AIF_ELEM_RC_ATOMIC or disp == AIF_ELEM_CYCLE_ATOMIC) {
                     // AIF T4a. The same decrement through the atomic entry

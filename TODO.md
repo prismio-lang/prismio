@@ -27,10 +27,16 @@ python3 tools/milestone_bench.py --old build/<lastgood> --new build/<next2> \
 ```
 
 ```bash
-# 3. the standing against Rust and Swift, full matrix
+# 3. the standing against Rust
 python3 aif/evidence/xlang/bench.py --compiler build/<next2> --runs 25 \
     --json aif/evidence/xlang/results-m<n>.json
 ```
+
+**Swift is off by default as of 2026-08-23** — the development loop compares against Rust, and a
+`swiftc -O -wmo` build of every program was the slowest part of a run. `--with-swift` on either
+harness puts it back, which is what reproduces the Swift columns in the older `RESULTS-*` files. A
+Rust-only run records `"swiftc": null` in its JSON, so it cannot be mistaken for one where Swift
+was measured.
 
 ### What the gate asserts
 
@@ -191,6 +197,9 @@ measurement** — §9.3's table is hand-built with `clang -O2` invoked directly.
 
 ## M2 · Reuse analysis
 
+> **M2.0 is done, 2026-08-23** — see below. The gate is restated and the premise it rested on was
+> wrong; read that before the entry.
+>
 > **Reordered behind M3.1, 2026-08-27, and the exit gate below is not reachable as written.**
 > Reuse tokens pair a dead value with a same-size constructor *in the same branch*, which needs a
 > destructure-then-rebuild shape. **g1–g6 contain none**: `match` appears only in `g7.psm` and
@@ -221,17 +230,107 @@ Reference Counting with Frame-Limited Reuse (MSR-TR 2021).
 - [ ] **M2.1 — Reuse tokens.** Pair a dead value with a constructor of the same size in the same
       branch; reuse the block instead of free-then-malloc.
 - [ ] **M2.2 — Reuse specialisation.** In-place field update when the reused block *is* the
-      matched one, which is what turns g2's per-frame `DrawCmd` churn into a write.
-- [ ] **M2.3 — Bound the tokens.** Frame-limited reuse, so a held token cannot leak. This is the
-      answer to the space-safety objection; do not skip it.
-- [ ] **M2.4 — Borrow inference: decide explicitly, do not drift into it.** Ullrich & de Moura's
-      automatic version was judged **not safe for space** and Koka deliberately does not do it.
-      Either bound it or make it opt-in, and write down which.
+      matched one. **Blocked on M2.1, which is blocked on the per-site field disposition** — there
+      is no token to specialise until one exists. Note also that the g2 motivation in the original
+      line was already superseded: M3 took g2's allocation count from 10 285 886 to 82 052 with an
+      arena, so the prize this would add on g2 is whatever is left after that, and nobody has
+      measured it.
+- [ ] **M2.3 — Bound the tokens.** Frame-limited reuse, so a held token cannot leak. **Blocked on
+      M2.1 for the same reason as M2.2**, and it stays on the list rather than being folded into it:
+      the bound is the answer to the space-safety objection that M2.4 has now declined to take on
+      inference, and a token implementation that arrives without it inherits the objection.
+- [x] **M2.4 — Borrow inference: decided 2026-08-23. Opt-in, through the annotations the language
+      already has, and no automatic inference.** Written down as the entry asked, with the reason.
+      **Prismio is not in the position the paper is in.** Ullrich & de Moura infer borrowing on top
+      of a model where everything is owned; Koka judged the automatic version not safe for space and
+      declined it. Prismio's default is the *other* one — `let` and `inout` parameters borrow and
+      only `sink` takes ownership (`src/sema/checker.psm`, "let/inout params are non-owning
+      borrows"). So the thing borrow inference would buy is already the default, and what would be
+      inferred is the narrower question of where a `sink` could be weakened to a borrow.
+      **The measured reason not to.** This session found the call boundary already has **three**
+      owners that can each claim a value — the caller's drop list, the parent's field release, and
+      the caller's temporary cleanup — and a fourth, implicit one is what an inferred borrow would
+      be. That was not a design worry: a callee-side free that ignored one of them read
+      `3 allocated, 3 released, 0 leaked` on the suite and **5 violations** on a four-line probe.
+      Inference here would make the boundary less predictable at exactly the point the compiler is
+      already having trouble agreeing with itself.
+      **If it is ever revisited**, the space-safety bound is the thing to build first, not the
+      inference — Koka's objection is about a held borrow keeping a large value alive, and nothing
+      in AIF currently bounds that.
 
 **Exit gate — restate before starting.** The standing text was *"allocation count on g2 and g6
 must drop by ≥ 10×"*, and the note above is why that cannot be met by reuse tokens: neither program
 contains the pattern they fire on. Either re-target the gate at `g7`, which does, or fold the g2/g6
 allocation count into M3 where the mechanism that moves it already lives.
+
+---
+
+## M2 — closing state, 2026-08-23
+
+**Five items done and gated; four blocked on one named thing.** Every item is either finished or
+closed with a reason, which is what "finished" can mean for this milestone today.
+
+| | |
+|---|---|
+| M2.0 · release on reassignment | **done** — g7 3599 leaks → 0 |
+| M2.0b · callee-returned accumulators | **done** — probe 7 leaked → 1 |
+| M2.1a · recursive releases for self-referential types | **done** — `test_73` 100 leaked → 0 |
+| M2.1c · assignment re-initialises a moved binding | **done** — `acc = f(acc)` now compiles |
+| M2.4 · borrow inference | **decided** — opt-in through existing annotations, no inference |
+| M2.1a-ii · shallow free of a destructured block | **blocked** |
+| M2.1a-iii · ownership transfer past one hop | **blocked** |
+| M2.1 / M2.2 / M2.3 · tokens, specialisation, bounds | **blocked** |
+
+**All four blocked items are blocked on the same thing: `field_release_of` answers per
+`(type, field)` and needs to answer per site.** Three independent confirmations, all measured:
+
+1. **M2.1a blocks M2.1a-ii.** Making `Tree`'s payload fields released — correct, and what M2.1a is
+   — makes *every* `Tree` site `site_in_released_field`, so a `sink` parameter holding one is never
+   reclaimable and the shallow free can never fire. `g8` did not move by one allocation.
+2. **`type_is_reclaimed` is "has a disposition", not "is actually reclaimed".** It is true for
+   essentially every T2 struct type, so the released-field set is far wider than the values anything
+   really frees. Its own comment says it exists for the T0 case, and for T2 it never says no.
+3. **The call boundary has three owners, not one** — caller drop list, parent field release, caller
+   temporary cleanup. A callee-side free that ignored the third read `3 allocated, 3 released,
+   0 leaked` across 142 tests and **5 violations** on a four-line probe.
+
+### Is the per-site disposition worth building? Not yet, and the check is one command
+
+**It is a build, not a fix.** The per-`(type, field)` answer is *conservative* — it says "a parent
+might free this", which prevents double frees. All seven corpus programs are `allocated ==
+released`, 0 leaked, 0 violations today. Per-site would let the compiler reclaim *more*, not stop it
+doing something wrong.
+
+**And nothing measured has the shape.** Checked 2026-08-23:
+
+```bash
+grep -l "sink " aif/evidence/xlang/prismio/g[1-7]*.psm        # none
+grep -l "^enum \|match (" aif/evidence/xlang/prismio/g[1-7]*.psm  # none
+```
+
+Zero corpus programs use `sink`; zero use payload enums or `match`; the only `sink` in `src/` is the
+string literal in `checker.psm` implementing the convention. The one program with the shape is
+`g8_tree_rebuild.psm`, **written in the same session that found the blocker** because the corpus had
+nothing. Building this would make an author-supplied benchmark faster and move no standing number —
+which is the trap M2 started in, where the gate promised 10× on two programs that do not contain the
+pattern.
+
+**Revisit when something real has the shape.** The honest trigger is the app framework: immutable
+state updates over UI or AST trees are exactly the Perceus pattern, and M2.1c made that idiom
+writable. Until a program that is measured does it, M4 is the better spend — measured projected
+prize, and unblocked.
+
+**What the next attempt must not do:** start at the match-binder keys. They were built, they work,
+and they are not the blocker — see M2.1a-ii's notes. Start at the disposition, expect to touch
+`field_release_of`, `type_is_reclaimed`, `compute_released_fields` and every reader of
+`site_in_released_field`, and expect it to be the largest single change in the milestone.
+
+**What M2 delivered against its original claim.** The standing text wanted an allocation-count drop
+on g2 and g6 from reuse. M3 took both by a different mechanism and the note above says so. What M2
+actually removed is **leaks, not allocations** — three classes of them, each a *missing owner*
+rather than a missing free — plus one language capability (`acc = f(acc)`). No corpus program
+allocates less because of M2, and none of its five gates moved the timing band: corpus medians
+1.006×, 1.006×, 1.001×, all within noise.
 
 **M3 took both halves, 2026-08-28: g2 10 285 886 → 82 052 (125×) and g6 50 470 → 3265 (15×).** So
 the standing text is met by a different mechanism, which is exactly the reason a gate has to name
@@ -239,6 +338,233 @@ the mechanism as well as the number. **The note that g6 was blocked on obligatio
 `br_param` is `recruit`'s, and its `Member`s genuinely outlive the tick; the transient allocator
 cleared every allocation obligation and was refused on its call-site count. An M2 restated against
 g7 is what is left.
+
+---
+
+### The restatement, 2026-08-23 — and "re-target the gate at g7" was a bad grep
+
+**`g7` does not contain the pattern either. Nothing in the corpus does.** The note above says
+`match` appears in `g7.psm` and `g7_substring.psm`; both hits are the word *match* in a comment —
+"a port which tokenized differently could not match." `grep -n match aif/evidence/xlang/prismio/*.psm`
+returns those two lines and nothing else. **There are zero `match` expressions in the whole
+corpus**, so there is no program to re-target the reuse-token gate at, and M2.1–M2.3 cannot be
+gated on a measured prize until one is written.
+
+That is worth stating plainly rather than working around: **M2.1's exit gate is not "≥ 10× on some
+program", it is "a program with the shape exists, and reuse tokens move it."** Writing that program
+is the first task of M2.1, not a preliminary to it, and it should go in `aif/evidence/xlang/` with
+Rust and Swift ports like every other `g`.
+
+**What was in the way, and is now gone.** M2 is about a value that becomes dead and is reused
+instead of freed. The compiler could not identify a value that became dead **at an assignment** at
+all — it did not even free one. That is M2.0.
+
+- [x] **M2.0 — Release on reassignment.** **Done 2026-08-23.** `g7` leaked **3599 of 5021
+      allocations** — the `let mut out = ""` + `str_concat` accumulator, which is `buildSource` —
+      while `HANDOFF.md` recorded a clean ledger for "all seven benchmark programs". Six of seven.
+      The hole was **documented and deliberate**, in `src/ir/expr.psm` above `nodeAssignsName`: a
+      reassigned binding was not droppable even when every value it received was owned, "since
+      there is no drop on reassignment, so the strictness costs nothing that is not already lost."
+      Both halves were true and held each other up, and the value ended up with **no owner at
+      all** — a missing owner rather than a missing free, for the third time in four sessions.
+      - **`aif_releases_on_overwrite_node`** is `aif_frees_at_scope_node` with the confinement
+        clause relaxed and `AIF_E_GLOBAL` added back. An accumulator is never confined to the scope
+        that allocates it, and `return out` puts E at `Caller` — for a value **no return ever
+        carried**, because a return exits the function. Every other clause is untouched, and those
+        are the soundness argument: aliasing, containers, released fields, arenas.
+      - **`owns_slot` is a second flag, not `is_droppable`.** A returned accumulator must not be
+        dropped at the scope exit and must still release what its assignments displace. Conflating
+        them made `return out` silently disable the release.
+      - **String literals are cloned**, at the declaration *and* at the assignment. Missing the
+        second one shipped a compiler that built every program correctly and then aborted in libc
+        at exit on `--verify` builds — `pointer being freed was not allocated`, on `.rodata`.
+      **Result: all seven programs now report `allocated == released`, 0 leaked, 0 violations.**
+      Suite 141/141, fixpoint `a31.ll == b31.ll`, differential 17/17, corpus median 1.002×
+      (0.934–1.036×), RSS 0.992–1.010×. **GATE PASSED.**
+      Evidence: [`RESULTS-M2-reassignment.md`](aif/evidence/RESULTS-M2-reassignment.md).
+### M2.1's ground, surveyed 2026-08-23 — the shape is expressible and there is nothing to reuse yet
+
+The first task was "write a program with the destructure-then-rebuild shape". It was written and it
+**runs correctly**; what it found is that the *token* half of M2.1 has a prerequisite nobody had
+named. Prototype (`build` a balanced `Tree`, `mapAdd` destructures and rebuilds every node,
+checksum): depth 10, five passes, computes 528891 — arithmetically correct.
+
+**What the language does support**, all verified against `build/S31b`:
+
+- **Recursive payload enums compile and run.** `enum Tree { Leaf, Node(Tree, Int, Tree) }`.
+- **`sink` gives the consuming destructure**, which is what reuse needs — the modifier goes before
+  the name, `fn mapAdd(sink t: Tree, ...)`, not before the type.
+- **A `sink` parameter of a flat struct, a `String`, or a one-level payload enum is released
+  correctly** — 4 allocated, 4 released, 0 leaked on each.
+
+**What it does not, and these are the constraints on the program:**
+
+- **Patterns bind names only.** `Tree.Node(Tree.Node(a, x, b), y, c)` is "a variant pattern binds
+  names, not expressions", so an Okasaki `balance` has to be written as nested `match` statements.
+  The map/rebuild shape needs no nesting and is the token's home ground anyway.
+- **`acc = f(acc)` in a loop is rejected** — "`acc` is moved inside a loop". Sema tracks move state
+  per name in source order and **an assignment does not re-initialise a moved binding**, so the
+  functional-update loop cannot be written. The workload uses recursion instead
+  (`passes(mapAdd(t, 1), n - 1)`), which works. `ir_unmark_moved` already exists and is called for
+  a `let`; not calling it for an assignment is the whole of the gap, and it is also why M2.0's
+  rebinding guard turned out unreachable.
+
+**The blocker: there is no drop for a reuse token to convert.** Perceus is drop-guided — `drop` +
+`alloc` in one branch becomes `drop-reuse`. On a depth-3 tree, a `sink` consume reads **33
+allocated, 3 released, 30 leaked**, and `__aif_release_Tree` **is never generated at all**. Two
+independent clauses of `type_releases_of` (`runtime/aif_support.c`) each produce that on their own,
+and both are deliberate, with reasons written next to them:
+
+1. `if (nominals[nominal].is_enum) return 0;` — enums never own their payload.
+2. A self-referential type hits the in-progress marker and reads as "does not release", because
+   *"`struct Node { child: Node }` would otherwise have to know whether Node releases in order to
+   decide whether Node releases"* — deferred to the cycle collector as C-MAYBE.
+
+But the collector is not reclaiming it either: the summary says *"collector needed: 1 of 1 struct
+types lie in or reach a non-trivial SCC"* while every site stays **T2/owned**, so neither path runs.
+A tree has no cycles, so T4b is the wrong answer for it anyway — **the right answer is a recursive
+generated release, which clause 2 declines by design.**
+
+**So M2.1 is a fork, and it is an ARCHITECTURE-DIRECTION decision rather than a task:**
+
+- **(a) Generated recursive releases for self-referential types.** Revisits clause 2's recorded
+  reasoning — the in-progress marker can answer "yes" for a type whose recursion is through an
+  *owning* field, since the recursion is structural rather than a value cycle. Gives M2.1 its drop,
+  and closes a leak class that is currently unbounded for every tree-shaped program.
+- **(b) Drive reuse off the RC/T4b path**, where recursive types are already supposed to live.
+  Closer to Perceus, which *is* a reference-counting discipline, and it is the path CYCLES.md
+  already argues for. Costs a count on every node.
+
+**Do not pick this from the code.** Both clauses were written with their reasons attached, which is
+the signal that changing one is a design decision and not a repair.
+
+**Fork (a) was chosen, 2026-08-23, and half of it is built.** See M2.1a below. The remaining halves
+are M2.1a-ii and M2.1a-iii, and the first of them is the same design as M2.1b.
+
+- [x] **M2.1a — the drop, fork (a), half of it. Done 2026-08-23.** A self-referential type now has
+      a generated recursive release: `field_closes_cycle`'s veto is replaced by a disposition test,
+      so a re-entering field is released when every site it can hold answers `AIF_ELEM_TYPED` or
+      `AIF_ELEM_OBJECT`, and a counted or collected one still declines because those edges are the
+      collector's. `test_73_recursive_release` goes **100 leaked → 0**, with the allocation count
+      identical at 106 — the feature reclaims, it does not allocate less. Suite 142/142, fixpoint
+      `a35.ll == b35.ll`, differential 17/17, corpus median 1.006×, all seven corpus programs still
+      `allocated == released`. Evidence:
+      [`RESULTS-M2-recursive-release.md`](aif/evidence/RESULTS-M2-recursive-release.md).
+      **Two failures on the way, and the second is the rule.** Removing the veto wholesale gave
+      `test_52` 8 violations; the first repair — giving `AIF_ELEM_CYCLE` the release branch it had
+      never had, since it was unreachable while the veto stood — turned that into a crash. The rule
+      is not "recursion is safe", it is **"recursion is safe for the edges the collector does not
+      own"**.
+- [ ] **M2.1a-ii — the shallow free of a destructured block. Attempted 2026-08-23, reverted, and
+      the attempt is the useful part.** Built and measured: freeing the scrutinee block after the
+      arm's binders took `g8` from **24570 leaked to 14335**, checksum unchanged. Then it was
+      reverted, because it is unsound for a reason that reframes both this item and M2.1b.
+      **`sink` is a sema-level move check, not a codegen ownership transfer.** Two things follow,
+      both measured rather than reasoned:
+      - **A `sink` parameter's tier is decided at the *caller's* site and may be T0.** In
+        `sink2.psm` every `Tree` in `main` is `alloca %Tree` — stack — so the callee's free was
+        `free()` on a stack pointer: **2 violations**, "released without being allocated". The
+        callee sees only a pointer and cannot tell. *(The 4 allocated / 4 released this fixture
+        reported before were `std/io`'s digit strings, not the tree — a vacuous reading that an
+        earlier note took at face value.)*
+      - **The caller still drops a binding it moved into a `sink`.** Move state belongs to sema and
+        is cleared before codegen, so `let t = makeTree(); eat(t)` frees `t` in the caller. A
+        callee-side free is then a double free even when the argument *is* heap.
+      **So the callee cannot free — or reuse — its `sink` block without both halves:** a per-call
+      fact that every value reaching the parameter is a heap block it may reclaim, and the caller
+      dropping its claim. The first has a home already: `AIF_KEY_PARAM` (`aif_key_param(fn, index)`)
+      keys the points-to set of a parameter, so the fact is the same shape as `field_release_of`'s
+      agreement over a field's sites — require every one to be T2, move-only, not `in_container`,
+      not `no_stack`, not in a released field. The second is a syntactic pass over the caller: a
+      binding passed at a `sink` position leaves the drop list.
+      **This is M2.1b's problem too, not only this item's.** A reuse token writes into the
+      incoming block, so it needs exactly the same guarantee — which is why they are one design.
+      **The prerequisite chain, established 2026-08-23 by inspection and measurement.** Three
+      things, and they have to go in this order:
+      1. **AIF must model match payload binders.** `src/aif/walk.psm` binds a VAR key for a
+         `VARIABLE_DECL` (line 601), an assignment (621) and a parameter (1028) — and **nothing for
+         a match binder**; `enumPayloadField`, `arm.child1` and "binder" appear nowhere in the walk.
+         So `l` and `r` in `Tree.Node(l, v, r)` have no key, no sites, and no escape. **This is what
+         decides shallow versus deep**: a block whose payloads were moved on needs its own block
+         freed and nothing else, and one whose payloads were not needs the full release. Without the
+         binder key the compiler cannot tell those apart, and picking either unconditionally is a
+         leak in one direction and a double free in the other.
+      2. **A reclaimability fact on the parameter**, consulted by *both* sides so they cannot
+         disagree: `aif_key_param(fn, index)` keys the points-to set and `aif_fn_lookup(symbol)`
+         resolves the function — codegen spells the symbol identically (`functionSymbolName` and the
+         walk both use `s2` falling back to `s1`). Require every site to be T2, move-only, not
+         `in_container`, not `no_stack`, not in a released field. A T0 site is what made the first
+         attempt free a stack pointer.
+      3. **The caller stops dropping.** Verified by measurement, not assumed: with
+         `let t = makeTree(i)` passed to `eat(sink t: Tree)`, `main` still emits
+         `__aif_release_Tree` for `t`. The caller half needs a callee-parameter lookup that codegen
+         does not have today — there is no module global and no `findFunctionNamed`.
+      **Second attempt, 2026-08-23: all three were built, and all three were reverted.** The tree is
+      byte-identical to `S36b` again. What it established, in order of how much it changes the plan:
+      - **(1) is done-able and is *not* inert.** Binding each payload name to its
+        `aif_key_field(type, Variant$index)` value set — the same shape `let l = t.Node$0` gets —
+        works. But it changes the compiler's own IR, so it does not clear the bar M3.2a set for
+        landing a staged prerequisite (byte-identical output). **And it must not call
+        `aif_con_live_in`**: claiming the payload is live in the matching scope said every payload
+        outlives the arm, which pushed `sink2.psm`'s trees off the frame onto the heap — 4
+        allocations became 10. The `MEMBER_ACCESS_EXPR` case does not claim it either, and a binder
+        is a field read.
+      - **(2) and (3) work and are still not enough, because M2.1a and M2.1b now fight.** With both
+        halves in, `g8` did not move at all, and the trace says why in one line:
+        `site_in_released_field` declines every `Tree` site. M2.1a made `Tree.Node$0`/`Node$2`
+        released fields, so a payload is already spoken for by its parent's release, so a `sink`
+        parameter holding one is never "reclaimable", so the shallow free can never fire. **The
+        milestone's own previous step is what blocks it.** Resolving that needs the field
+        disposition to be per-site rather than per-`(type, field)`, which `field_release_of` is not.
+      - **A callee-side free collides with *three* existing owners, not one.** The caller's drop
+        list (known), the parent's field release (above), and — found by measurement —
+        **the caller's temporary cleanup**: `consumeStr(str_concat("ab", "cd"))` reads
+        `3 allocated, 3 released, 0 leaked` today and **5 violations** with the transfer in, because
+        something already reclaims a temporary passed to a call. `sink` transferring ownership is
+        not a local change to the callee.
+      **So the order in the list above is wrong.** Doing (1) first does not unblock (2) and (3); the
+      thing that blocks them is the per-`(type, field)` disposition, and that is where the next
+      attempt should start. Expect to touch `field_release_of` and everything that reads it.
+- [ ] **M2.1a-iii — ownership transfer past one hop.** The second reason `g8` does not move: a
+      recursively-built tree returns sites belonging to its own recursive calls, so the caller owns
+      nothing and no drop runs at all. INFERENCE 6's contexts, the same gap
+      `test_47_aif_containers` records as its 6. **It also blocks measuring the recursive release's
+      stack-depth limit**, since a deep structure has to be built recursively to exist.
+- [ ] **M2.1b — the token.** Only then: `drop` + same-size `alloc` in one branch becomes reuse.
+      Gate: allocations on the rebuild workload fall to ~the tree's node count, once, instead of
+      once per pass.
+- [x] **M2.1c — assignment re-initialises a moved binding. Done 2026-08-23.** `acc = f(acc)` — the
+      functional-update idiom, and the one M2.1b exists to optimise — could not be written at all.
+      Two separate errors, and the second is the one that made it look like a loop problem when it
+      is not:
+      - **the move was reported as one that repeats.** `ir_binding_predates_loop` fires on any move
+        of an outer binding inside a loop, which is right for `drop(b)` and wrong for an assignment
+        whose target *is* the binding it moved from: the store puts a fresh value in the slot before
+        the next iteration reads it. `ir_set_reinit_target` names the target while the right-hand
+        side is checked, and the loop rule makes that one exception.
+      - **the name stayed moved-from afterwards**, so the *straight-line* form failed too —
+        `consume(s)` then `s = f("x")` reported "use of moved value" **on the assignment's target**.
+        An assignment is the one place a moved-from name is legal. Cleared before the target is read
+        as well as after the right-hand side's own move.
+      `neg_10_move_in_loop` still fails, which is the other direction: `drop(b)` in a loop is still
+      a move that repeats. Guard: `test_74_reinit_assignment`, **discriminating by construction** —
+      it does not compile on the previous generation, so a regression is a build failure rather than
+      a number. Suite 143/143, fixpoint `a44.ll == b44.ll`, corpus clean.
+
+- [x] **M2.0b — the same for a callee-returned value. Done 2026-08-23.** `nodeProducesOwnedValue`
+      now also accepts `aif_owns_call_result_at_node`, so an accumulator fed by a Prismio callee
+      releases what it displaces: the probe goes `9 allocated, 2 released, 7 leaked` →
+      **9 / 8 / 1**, and the remaining 1 is a two-hop return, not this.
+      **The two guards were re-derived rather than assumed stale, and they are different.**
+      `chainAssignsName == false` was there because an assignment could put a *borrow* in the slot
+      and because nothing released what an assignment displaced — `irOwningAccumulator` rules out
+      the first and M2.0 fixed the second, so it no longer applies to an accumulator.
+      `chainReturnsName == false` is about the **last** value only, so it still guards the
+      scope-exit drop and the declaration still applies it; it was never about a displaced value.
+      Suite 142/142, fixpoint `a36.ll == b36.ll`, differential 17/17, corpus median 1.006×
+      (0.944–1.042×), all seven corpus programs still `allocated == released`, seed path clean.
+      `test_72_reassigned_ownership` now discriminates across three generations —
+      18 → 8 → **2** leaked — so it guards M2.0 and M2.0b separately.
 
 ---
 

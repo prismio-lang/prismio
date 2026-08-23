@@ -4,7 +4,7 @@
     python3 tools/milestone_bench.py --old build/E2 --new build/S11 --runs 25
     python3 tools/milestone_bench.py --old build/E2 --new build/S11 --only g2 --label seam
 
-`bench.py` answers "where does this compiler stand against Rust and Swift". This
+`bench.py` answers "where does this compiler stand against Rust". This
 answers the other question, the one every milestone has to pass: **did the change
 help, did it break anything, and did it move us against Rust.** Three things, one
 command, because a milestone that only measures the first is how a regression
@@ -20,7 +20,7 @@ WHAT THIS DOES THAT bench.py DOES NOT
                      second agent was building on the host throughout.
 
   checksums across   Every variant of a program -- old, new, and every Rust and
-  the whole set      Swift baseline -- must print identical checksums before
+  the whole set      Rust baselines -- must print identical checksums before
                      anything is timed. A compiler change that is 2x faster and
                      computes something else is the failure this catches, and it
                      is the one a speed harness is most likely to miss.
@@ -60,12 +60,17 @@ sys.path.insert(0, XLANG)
 import bench  # noqa: E402  -- the harness this one wraps; same measurement code.
 
 OUT = bench.OUT
-# Rust/Swift arms worth carrying at a milestone. rust_boxed is a diagnostic for
+# Rust arms worth carrying at a milestone. rust_boxed is a diagnostic for
 # splitting representation from compiler and is not a standing baseline, so it
 # is not here; bench.py still reports it.
+#
+# **Swift is off by default since 2026-08-23** -- the development loop compares
+# against Rust. `--with-swift` adds it back, and it is the same flag bench.py
+# takes, because two spellings of "include Swift" is how the two harnesses would
+# come to disagree about what a milestone was measured against.
 BASELINES = [("rust_idiomatic", "Rust idiomatic"),
-             ("rust_tuned", "Rust hand-tuned"),
-             ("swift", "Swift idiomatic")]
+             ("rust_tuned", "Rust hand-tuned")]
+SWIFT_BASELINE = ("swift", "Swift idiomatic")
 
 
 def build_prismio(compiler, prog, tag):
@@ -148,7 +153,10 @@ def main():
                     help="A/A: run --old against itself to measure this host's "
                          "floor. Do this once before trusting a per-program number.")
     ap.add_argument("--skip-baselines", action="store_true",
-                    help="skip Rust/Swift arms; A/B only, much faster")
+                    help="skip the Rust arms; A/B only, much faster")
+    ap.add_argument("--with-swift", action="store_true",
+                    help="also measure the Swift ports (off by default; the dev "
+                         "loop compares against Rust)")
     ap.add_argument("--json", default=os.path.join(XLANG, "milestone.json"))
     args = ap.parse_args()
 
@@ -157,11 +165,14 @@ def main():
             sys.exit(f"no compiler at {p}")
 
     progs = args.only or bench.PROGRAMS
+    if args.with_swift:
+        BASELINES.append(SWIFT_BASELINE)
+        bench.ACTIVE_VARIANTS = list(bench.VARIANTS)
     os.makedirs(OUT, exist_ok=True)
     tmp = os.path.join(OUT, "_ms_stdout.txt")
 
     if not args.skip_baselines:
-        print("Building Rust/Swift baselines (once)...", flush=True)
+        print("Building baselines (once)...", flush=True)
         for prog, key, label, lang, exe, cmds in bench.targets(args.new):
             if prog not in progs or lang == "prismio":
                 continue

@@ -43,7 +43,13 @@ fn semaMoveOperand(node: ASTNode) {
             // iteration. If the binding was created outside the loop, that is a
             // use-after-move -- and for drop(), a double free that crashes at
             // run time with nothing reported at compile time.
-            if (ir_binding_predates_loop(node.s1) == 1) {
+            // M2.1c. `acc = f(acc)` is the exception the rule has to make: the
+            // move is an operand of the assignment that rebinds the same name, so
+            // the slot holds a fresh value before the next iteration reads it and
+            // the move does *not* repeat. Anything else moved out of a binding
+            // that predates the loop still does.
+            if (ir_binding_predates_loop(node.s1) == 1
+                and ir_is_reinit_target(node.s1) == 0) {
                 semaErrorAt(node, str_concat(diagQuote(node.s1), " is moved inside a loop, so the move would repeat on the next iteration"))
             }
             ir_mark_moved(node.s1)

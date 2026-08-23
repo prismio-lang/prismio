@@ -4158,18 +4158,21 @@ def run_aif_verify_test():
         "test_42_aif_stack_promotion": 0,   # escapes() -> Point
         "test_43_aif_scope_drop": 0,        # escapes() -> Wide
         # Every other allocation in test_44 is served by an arena and released in
-        # bulk, so verify never sees it. Two are not.
+        # bulk, so verify never sees it. One is not.
         #
         # The inner assignment in escapes_inner, whose escape is the *enclosing*
         # region's scope: too long-lived for the inner arena, and not its own
         # scope, so the scope drop declines it too. Correct but imprecise -- it is
         # the case a threaded arena handle would place in the outer arena.
         #
-        # And string_escapes' str_concat, for the same reason on the Level 4 side:
-        # it outlives the region so the arena declines it, and it reaches its
-        # binding through an assignment rather than a `let`, so it never enters a
-        # drop list. Droppability is a property of a binding's initialiser.
-        "test_44_aif_region": 2,
+        # **This was 2 until the reassignment half of AIF Level 4 landed.** The
+        # other was string_escapes' str_concat, and the reason recorded here was
+        # "droppability is a property of a binding's initialiser" -- which was true
+        # and was the defect rather than the explanation. An assignment now
+        # releases what it displaces, so a binding reassigned only with owned
+        # values owns its slot at every point instead of only at its `let`. If this
+        # goes back to 2, that release stopped firing.
+        "test_44_aif_region": 1,
         # AIF Level 4, and the first fixture where strings and lists are in the
         # accounting at all -- the runtime allocates them, so a verify build
         # compiles the runtime with PRISMIO_AIF_VERIFY to put both ends of every
@@ -4280,6 +4283,52 @@ def run_aif_verify_test():
         # under a live reference again, and only test_53's own exit code says so.
         # These 7 go to zero when a T2 return gains a free point, and not before.
         "test_53_aif_views": 7,
+        # AIF Level 4's reassignment half. One, and it is the *negative* direction
+        # of the feature: borrow_reassign's initialiser, which the guard has to
+        # decline because the slot ends up holding `h.name`. Declining it leaks 6
+        # bytes; not declining it frees a value the struct still owns, so this
+        # entry going to 0 is a regression and not an improvement -- it would show
+        # up as a violation here and a wrong length in the fixture's own exit code.
+        #
+        # The other end of the discrimination is the allocation count rather than
+        # this number. It scales with the loop bounds because every case whose
+        # point is the release *returns* its accumulator -- a confined one is
+        # served by an arena and tests nothing.
+        #
+        # **Three generations, three numbers, and all three still matter**, which
+        # is what makes this fixture a guard for M2.0 and M2.0b separately:
+        #   S27b (before the release)       21 allocated,  3 released, 18 leaked
+        #   S35b (M2.0, extern-allocated)   27 allocated, 19 released,  8 leaked
+        #   S36b (M2.0b, callee-returned)   27 allocated, 25 released,  2 leaked
+        #
+        # The 2 are both deliberate: borrow_reassign's initialiser, which the
+        # guard must decline because the slot ends up holding `h.name`, and
+        # `piece` in main -- callee_accumulator returns a value makePiece
+        # allocated, so main owns it only two hops from its site and ownership
+        # transfer survives one. A drop to 1 means the two-hop case landed; a rise
+        # to 8 means M2.0b's predicate stopped firing.
+        "test_72_reassigned_ownership": 2,
+        # M2.1a, and the first entry in this table for a *self-referential* type.
+        # Zero, against 100 on the generation before it with the same 106
+        # allocations -- the feature reclaims, it does not allocate less, so a
+        # change that moved the first number is not this one working.
+        #
+        # A rise here means `__aif_release_Tree` stopped recursing, or stopped
+        # being generated at all: `field_closes_cycle` vetoed every field that
+        # re-enters its owner's type, which left a consumed tree reclaimed by
+        # nothing -- not by the release, and not by the collector either, which
+        # wants `in_container`. Violations rather than leaks would mean the
+        # opposite: the veto's own case, an edge the collector owns being freed
+        # here as well. test_52 is what asserts that half.
+        "test_73_recursive_release": 0,
+        # M2.1c. The number here is **not** what this fixture is for -- it does
+        # not compile at all on the generation before M2.1c, so a regression in
+        # the feature is a build failure, and `neg_10_move_in_loop` guards the
+        # other direction. What the count tracks is M2.1a-ii's residue: the trees
+        # this fixture rebuilds are consumed through a `sink` and nothing reclaims
+        # a destructured block yet. **It should fall when M2.1a-ii lands**, and a
+        # rise means something stopped being reclaimed that was.
+        "test_74_reinit_assignment": 504,
     }
 
     exe = TEST_DIR / "aif_verify_probe.exe"

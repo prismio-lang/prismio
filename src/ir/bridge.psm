@@ -305,6 +305,11 @@ extern fn ir_scope_pop()
 extern fn ir_loop_barrier_push()
 extern fn ir_loop_barrier_pop()
 extern fn ir_binding_predates_loop(name: String) -> Int
+// M2.1c. The binding an assignment is re-initialising, while its right-hand side
+// is checked. `acc = f(acc)` moves and immediately rebinds, so the move does not
+// repeat on the next iteration and the loop rule has to make that exception.
+extern fn ir_set_reinit_target(name: String borrow)
+extern fn ir_is_reinit_target(name: String borrow) -> Int
 
 // Scope drop lists (AIF Level 2). A floor is a binding-table watermark: the
 // current scope's for a block exit, the loop's for break/continue, 0 for a
@@ -312,6 +317,11 @@ extern fn ir_binding_predates_loop(name: String) -> Int
 // `kind` is which deallocator reclaims the binding (IR_DROP_* in ir.psm). The
 // storage type cannot answer it: a String and a List are both `ptr`.
 extern fn ir_mark_droppable(name: String borrow, kind: Int)
+// The reassignment half, and deliberately not is_droppable: a returned
+// accumulator must not be dropped at the scope exit and must still release every
+// value its assignments displace.
+extern fn ir_mark_owns_slot(name: String borrow)
+extern fn ir_binding_owns_slot(name: String borrow) -> Int
 extern fn ir_scope_drop_floor() -> Int
 extern fn ir_drop_barrier_push()
 extern fn ir_drop_barrier_pop()

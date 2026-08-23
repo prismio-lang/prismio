@@ -673,10 +673,31 @@ fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
             }
         }
 
+        // M2.1c. Cleared *before* the target is read, not only after the move.
+        // `s = f("x")` after `consume(s)` reads `s` as the assignment's target,
+        // and that read is what reported "use of moved value" -- an assignment is
+        // the one place a moved-from name is legal, because the store is what
+        // replaces what was moved out.
+        if (target.kind == NodeKind.IDENTIFIER_EXPR) {
+            ir_unmark_moved(target.s1)
+        }
         let targetT = semaExpr(module, target)
+        // Named while the right-hand side is checked, so a move of the target
+        // *into* its own replacement is not read as a move that repeats.
+        if (target.kind == NodeKind.IDENTIFIER_EXPR) {
+            ir_set_reinit_target(target.s1)
+        }
         let valueT = semaExpr(module, ptr_to_node(stmt.child2))
         semaExpectAssignable(ptr_to_node(stmt.child2), "assignment", targetT, valueT)
         semaMoveOperand(ptr_to_node(stmt.child2))
+        ir_set_reinit_target("")
+
+        // And again after the right-hand side's own move, which may have marked
+        // the target: `acc = f(acc)` moves `acc` into `f` and the store puts a
+        // fresh value back, so the name is live for every later use.
+        if (target.kind == NodeKind.IDENTIFIER_EXPR) {
+            ir_unmark_moved(target.s1)
+        }
 
         // Reborrowing through an assignment. Marked but never unmarked: an
         // assignment in one branch says nothing about the other, and a binding

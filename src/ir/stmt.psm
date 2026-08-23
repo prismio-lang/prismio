@@ -48,6 +48,7 @@ fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: String) {
         ir_alloca(storageType(fieldType), ir_get_var_slot(name.s1))
         ir_store(storageType(fieldType), payloadVal, ir_get_var_slot(name.s1))
 
+
         index = index + 1
         binder = name.next
     }
@@ -97,7 +98,24 @@ fn generateStatement(stmt: ASTNode) {
         debugLocal(varName, slot, varType, debugTypeName(stmt.child1, stmt.child2), stmt, 0)
 
         if (hasInit) {
+            // AIF Level 4, the reassignment half. An owning accumulator's slot
+            // holds memory the binding owns at *every* point, not only at the
+            // scope exit, and that is what licenses the release in the assignment
+            // below. A literal initialiser is the one thing that would break the
+            // invariant on the binding's first line -- `let mut s = ""` puts a
+            // .rodata pointer in the slot and the first assignment would free it
+            // -- so it is cloned. One allocation per binding, not per iteration.
+            let accumulates = irOwningAccumulator(varName)
+                and nodeProducesOwnedValue(stmt.child2)
+            if (accumulates and nodeIsStringLiteralExpr(stmt.child2)) {
+                initVal = generateStringClone(initVal)
+            }
+
             ir_store(storeType, initVal, slot)
+
+            // Every accumulator owns what its slot holds. Whether the *last*
+            // value is this scope's to drop is the separate question below.
+            if (accumulates) { ir_mark_owns_slot(varName) }
 
             // AIF Level 2. Only a binding whose initialiser *is* the allocation
             // is droppable: `let b = a` has an identifier for an initialiser,
@@ -107,6 +125,13 @@ fn generateStatement(stmt: ASTNode) {
             if (aif_frees_at_scope_node(stmt.child2) == 1
                 and chainAssignsName(irFunctionBody, varName) == false) {
                 ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
+            } else if (accumulates and chainReturnsName(irFunctionBody, varName) == false) {
+                // The last value an accumulator holds needs an owner too, and the
+                // assignments only ever release what they displace. A returned
+                // binding hands that one to the caller -- the same reason the
+                // branch above declines a returned value -- so this is every
+                // other case.
+                ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
             } else {
                 // AIF item 3. The initialiser is not an allocation here -- it is a
                 // call to a function that made one and handed it over. That is the
@@ -115,7 +140,7 @@ fn generateStatement(stmt: ASTNode) {
                 // it returned) plus the two syntactic guards the facts leave open.
                 let owned = aif_owns_call_result_at_node(stmt.child2)
                 if (owned != AIF_ELEM_NONE
-                    and chainAssignsName(irFunctionBody, varName) == false
+                        and chainAssignsName(irFunctionBody, varName) == false
                     and chainReturnsName(irFunctionBody, varName) == false) {
                     if (owned == AIF_ELEM_LIST) {
                         ir_mark_droppable(varName, IR_DROP_LIST)
@@ -135,10 +160,39 @@ fn generateStatement(stmt: ASTNode) {
             let varName = targetNode.s1
             let mut varType = ir_get_var_type(varName)
             let storeType = storageType(varType)
-            let val = generateExpression(ptr_to_node(stmt.child2))
+
+            // AIF Level 4, the reassignment half. Droppable means the slot owns
+            // its contents, so a store into it displaces a value with no other
+            // owner -- and until this existed, that value had none at all. It is
+            // the same fact the scope exit reads, asked through the binding rather
+            // than recomputed from the declaration's reasoning, because two
+            // answers to "does this binding own what it holds" is exactly how a
+            // value ends up unowned.
+            //
+            // The old pointer is read before the right-hand side is generated,
+            // and freed after: `out = str_concat(out, x)` passes the displaced
+            // value *into* the call that replaces it, so releasing it any earlier
+            // frees the argument being read.
+            let releasesOld = ir_var_is_global(varName) == 0
+                and ir_binding_owns_slot(varName) == 1
+            let mut old = ""
+            if (releasesOld) {
+                old = ir_get_temp_name(ir_load(storeType, ir_get_var_slot(varName)))
+            }
+
+            let mut val = generateExpression(ptr_to_node(stmt.child2))
+            // The same clone the declaration makes, for the same reason and it
+            // was not obvious that both needed it: a literal stored here leaves
+            // .rodata in a slot the *next* assignment frees. That is what aborted
+            // the compiler's own --verify build, one generation after the
+            // declaration alone looked sufficient.
+            if (releasesOld and nodeIsStringLiteralExpr(stmt.child2)) {
+                val = generateStringClone(val)
+            }
             if (ir_var_is_global(varName) == 1) {
                 ir_store_global(storeType, val, varName)
             } else {
+                if (releasesOld) { generateDisplacedRelease(old, val, dropKindOf(ptr_to_node(stmt.child2)), varType) }
                 ir_store(storeType, val, ir_get_var_slot(varName))
             }
         }
@@ -447,6 +501,41 @@ fn generateRegionExits(count: Int) {
         ir_region_end()
         i = i + 1
     }
+}
+
+// A heap copy of a string literal, so a slot that owns its contents never holds
+// a .rodata pointer. The runtime already reached this conclusion once, in
+// str_substring's out-of-range answer, and for the same reason.
+fn generateStringClone(value: String) -> String {
+    ir_call_begin()
+    ir_call_arg("ptr", value)
+    return ir_get_temp_name(ir_call_end("ptr", "str_clone"))
+}
+
+// The release an assignment owes the value it overwrites.
+//
+// Guarded by a pointer compare rather than emitted straight, for the reason the
+// counted-field store one screen up gives: a store of a value into the slot it
+// already occupies would free it between the load and the store, and an extern
+// that returns its own argument is not a shape this compiler can rule out. The
+// branch costs an icmp the optimiser folds away wherever both sides are known.
+fn generateDisplacedRelease(old: String, val: String, kind: Int, declType: String) {
+    let differs = ir_get_temp_name(ir_icmp_ne("ptr", old, val))
+    let freeLabel = ir_get_label()
+    let doneLabel = ir_get_label()
+    ir_cond_br_numbered(differs, freeLabel, doneLabel)
+
+    ir_label_numbered(freeLabel)
+    if (kind == IR_DROP_LIST) {
+        ir_free_list(old)
+    } else if (kind == IR_DROP_TYPED) {
+        ir_free_typed(old, releaseFnName(structTypeName(declType)))
+    } else {
+        ir_free_object(old)
+    }
+    ir_br_numbered(doneLabel)
+
+    ir_label_numbered(doneLabel)
 }
 
 fn generateScopeDrops(floor: Int) {

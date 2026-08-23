@@ -1,0 +1,112 @@
+// A self-referential type reclaiming the structure it owns.
+//
+// `enum Tree { Leaf, Node(Tree, Int, Tree) }` lowers to a tagged struct whose
+// payload fields hold `Tree`, so releasing one has to release the two beneath it
+// and so on to the leaves. Before M2.1a **nothing reclaimed it at all**:
+// `field_closes_cycle` vetoed every field that re-enters its owner's type, so
+// `aif_type_releases` said Tree owns nothing and `__aif_release_Tree` was never
+// generated -- while the collector, the other half the veto deferred to, wants
+// `in_container` and a tree node is not in one. A consumed tree leaked entirely.
+//
+// **What makes the failure loud.** Leaks are invisible to a program that exits,
+// so the count is asserted by the runner out of `--verify`. What this file
+// asserts is the other direction, the one that crashes rather than grows: every
+// function checks a sum it can only produce by reading nodes that are still
+// intact, so a release that ran one level too far -- or twice around an edge --
+// reads freed memory and the sums stop matching.
+//
+// **The measured discrimination, by compiler:** on the generation before M2.1a
+// this fixture reads 63 allocated / 7 released / 56 leaked; after, 63/63/0. The
+// allocation count is identical because the feature reclaims, it does not
+// allocate less -- so a change that "fixed" this by allocating fewer nodes would
+// show up as a different first number and not as a pass.
+//
+// **A tree inside an owning struct is deliberately absent, and it is the sharpest
+// thing this fixture has to say.** `Holder { label: String, tree: Tree }` was
+// written and removed twice. With the tree from a call it leaks 15 -- a field
+// initialised from a call is a hop the model does not follow. With the tree built
+// inline it is worse: the whole file goes to 100 leaked **on both compilers**,
+// because `field_release_of` requires every site in a field's points-to set to
+// agree on one disposition, and the struct-owned nodes disagree with the
+// binding-owned ones. One case can take the feature's coverage down to nothing
+// without failing, which is the same trap `test_72` fell into with arenas.
+//
+// **Why every tree here is built inline rather than recursively.** Ownership
+// transfer survives exactly one hop: it requires the returned site to belong to
+// the callee. A recursive `build` returns sites belonging to its own recursive
+// calls, so the caller owns nothing and the drop never happens -- INFERENCE 6's
+// contexts, the same gap `test_47_aif_containers` records as its 6. A fixture
+// written that way would leak for a reason that has nothing to do with this
+// feature and would look like a regression in it.
+
+import std.io
+
+enum Tree {
+    Leaf,
+    Node(Tree, Int, Tree)
+}
+
+fn sum(t: Tree) -> Int {
+    match (t) {
+        Tree.Leaf => { return 0 }
+        Tree.Node(l, v, r) => { return sum(l) + v + sum(r) }
+    }
+    return 0
+}
+
+fn depth(t: Tree) -> Int {
+    match (t) {
+        Tree.Leaf => { return 0 }
+        Tree.Node(l, v, r) => {
+            let dl = depth(l)
+            let dr = depth(r)
+            if (dl > dr) { return dl + 1 }
+            return dr + 1
+        }
+    }
+    return 0
+}
+
+// One hop, so the caller owns every node and the drop reaches all of them.
+fn makeTree(k: Int) -> Tree {
+    return Tree.Node(Tree.Node(Tree.Leaf, k, Tree.Leaf), k + 1, Tree.Node(Tree.Leaf, k + 2, Tree.Leaf))
+}
+
+// Three levels, so the release has to recurse more than once. A release that
+// went one level deep would leave the grandchildren and the count would say so.
+fn makeDeep(k: Int) -> Tree {
+    return Tree.Node(
+        Tree.Node(Tree.Node(Tree.Leaf, k, Tree.Leaf), k + 1, Tree.Leaf),
+        k + 2,
+        Tree.Node(Tree.Leaf, k + 3, Tree.Node(Tree.Leaf, k + 4, Tree.Leaf)))
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut failures = 0
+
+    // Dropped once per iteration, so a release that missed a level compounds.
+    let mut acc = 0
+    let mut i = 0
+    while (i < 4) {
+        let t = makeTree(i)
+        acc = acc + sum(t)
+        i = i + 1
+    }
+    // per iteration: i + (i+1) + (i+2) = 3i + 3, for i in 0..3 -> 3+6+9+12
+    if (acc != 30) { failures = failures + fail("makeTree sums") }
+
+    let d = makeDeep(10)
+    if (sum(d) != 60) { failures = failures + fail("makeDeep sum") }
+
+    let d2 = makeDeep(0)
+    if (depth(d2) != 3) { failures = failures + fail("makeDeep depth") }
+
+    if (failures == 0) { println("recursive release ok") }
+    return failures
+}

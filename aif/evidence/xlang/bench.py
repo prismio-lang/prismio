@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Cross-language measurement for the AIF corpus: Prismio vs Rust vs Swift.
+"""Cross-language measurement for the AIF corpus: Prismio vs Rust (and Swift on request).
+
+Swift is off by default -- pass `--with-swift` for the full matrix. See ACTIVE_VARIANTS.
 
     python3 aif/evidence/xlang/bench.py --compiler build/gen2
     python3 aif/evidence/xlang/bench.py --compiler build/gen2 --only g2 --runs 40
@@ -108,6 +110,16 @@ VARIANTS = [
     ("swift",         "Swift idiomatic", "swift"),
 ]
 
+# Swift is **off by default since 2026-08-23**: the development loop compares
+# against Rust, and a `swiftc -O -wmo` build of every program is the slowest part
+# of a run that is otherwise waiting on Prismio.
+#
+# Kept rather than deleted, and behind a flag rather than a comment, because the
+# Swift columns in the RESULTS-* files are recorded evidence -- `--with-swift`
+# reproduces them. A run without it writes no Swift rows at all, so a JSON from
+# each is distinguishable by content and not only by the flag that made it.
+ACTIVE_VARIANTS = [v for v in VARIANTS if v[2] != "swift"]
+
 
 def sh(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
@@ -136,7 +148,7 @@ def targets(compiler):
     out = []
     rust = rust_sources()
     for prog in PROGRAMS:
-        for key, label, lang in VARIANTS:
+        for key, label, lang in ACTIVE_VARIANTS:
             exe = os.path.join(OUT, f"{prog}_{key}")
             if lang == "prismio":
                 src = os.path.join(HERE, "prismio", f"{prog}.psm")
@@ -366,8 +378,15 @@ def main():
                     help="timing runs per binary (the brief asks for >= 20)")
     ap.add_argument("--only", choices=PROGRAMS, action="append")
     ap.add_argument("--skip-build", action="store_true")
+    ap.add_argument("--with-swift", action="store_true",
+                    help="include the Swift ports (off by default; the dev loop "
+                         "compares against Rust, and swiftc dominates a run)")
     ap.add_argument("--json", default=os.path.join(HERE, "results.json"))
     args = ap.parse_args()
+
+    global ACTIVE_VARIANTS
+    if args.with_swift:
+        ACTIVE_VARIANTS = list(VARIANTS)
 
     compiler = os.path.abspath(args.compiler)
     if not args.skip_build and not os.path.exists(compiler):
@@ -474,7 +493,10 @@ def main():
         "runs": args.runs,
         "compiler": compiler,
         "rustc": sh(["rustc", "--version"]).stdout.strip(),
-        "swiftc": sh(["swiftc", "--version"]).stdout.strip().splitlines()[0],
+        # Recorded only when Swift actually ran, so a reader cannot mistake a
+        # Rust-only run for one where Swift was measured and tied.
+        "swiftc": (sh(["swiftc", "--version"]).stdout.strip().splitlines()[0]
+                   if args.with_swift else None),
         "clang": sh(["clang", "--version"]).stdout.strip().splitlines()[0],
         "when": time.strftime("%Y-%m-%d %H:%M:%S"),
     }

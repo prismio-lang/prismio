@@ -70,9 +70,11 @@ let AIF_ELEM_TYPED = 4
 // REQUIREMENTS 15. AIF_ELEM_RC and its cyclic sibling one tier up, where the
 // count is one two threads can touch and the decrement has to be atomic.
 //
-// 5 is AIF_ELEM_CYCLE, which this file never named because nothing in Prismio
-// switched on it -- the runtime does. It is written out here so the two new
-// ordinals cannot silently land on the wrong constant, which they would have.
+// 5 is AIF_ELEM_CYCLE. This file named it without switching on it, because the
+// only field that can carry a cyclic disposition is one that re-enters its
+// owner's type and field_closes_cycle vetoed every one of them. **M2.1a removed
+// that veto and generateReleaseFn switches on it now** -- it had been falling
+// into the plain-object branch, which frees a collected object a second time.
 let AIF_ELEM_CYCLE = 5
 let AIF_ELEM_RC_ATOMIC = 6
 let AIF_ELEM_CYCLE_ATOMIC = 7
@@ -87,6 +89,13 @@ extern fn aif_tier_at_node(node: String borrow) -> Int
 // which is what licenses a free at that scope's exits. Not derivable from the
 // tier: T1 is "some region", and it may be an enclosing one.
 extern fn aif_frees_at_scope_node(node: String borrow) -> Int
+
+// The same question at an assignment rather than at a scope exit: may the store
+// release what it overwrites? Every clause of the one above holds except
+// confinement, because an accumulator allocates in a loop body and binds outside
+// it -- and `return out` puts E at Caller for a value no return ever carried.
+extern fn aif_releases_on_overwrite_node(node: String borrow) -> Int
+
 
 // Whether it may come from the enclosing `region`'s arena instead of the heap.
 // Stricter than "is inside a region block": the value must also be unable to

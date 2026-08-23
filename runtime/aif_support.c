@@ -5813,6 +5813,47 @@ int aif_frees_at_scope_node(const void* node) {
     return 0;
 }
 
+// AIF Level 4, the reassignment half: may an assignment release what it displaces?
+//
+// Every clause of aif_frees_at_scope_node above applies unchanged -- an arena
+// object is still not individually freeable, a container still owns its elements,
+// a released field is still the release point -- except the one that asks whether
+// the value is confined to the scope that allocated it. An accumulator is not:
+// `let mut out = ""` binds in the caller's scope and allocates in a loop body, so
+// E is the binding's scope, and `return out` lifts it to Caller.
+//
+// Relaxing that clause is sound because the question is different. The scope-exit
+// drop asks where a value dies; this asks whether *this* value is still reachable
+// once the slot stops naming it. A return does not make it reachable: a return
+// exits the function, so the value an assignment displaces is one no return ever
+// carried. What would make it reachable is another owner, and the surviving
+// clauses are exactly the model's answers to that -- aliasing (site_is_move_only),
+// a container (in_container), a struct field (site_in_released_field). Only
+// AIF_E_GLOBAL has to be added back: a value stored into a global outlives every
+// scope, and nothing above declines it once the confinement test is gone.
+//
+// This is what 3599 of g7's 5021 allocations were waiting on. The drop list
+// refused every reassigned binding -- correctly, since the slot could hold a
+// borrow -- and the assignment released nothing, so an accumulator's intermediate
+// values had no owner at all. The syntactic half of the condition is in
+// src/ir/expr.psm; this is the half only the model can answer.
+int aif_releases_on_overwrite_node(const void* node) {
+    if (node == NULL) return 0;
+    if (aif_arena_at_node(node)) return 0;
+    for (NodeSite* n = node_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node != node) continue;
+        Site* s = &sites[n->site];
+        if (s->E == AIF_E_GLOBAL) return 0;
+        if (!site_is_move_only(s)) return 0;
+        if (s->kind == AIF_K_ARRAY) return 0;
+        if (s->no_stack) return 0;
+        if (s->in_container) return 0;
+        if (site_in_released_field(n->site)) return 0;
+        return aif_tier_of(n->site) == AIF_T0 ? 0 : 1;
+    }
+    return 0;
+}
+
 // ============================================================================
 // Ownership inside containers
 //
@@ -6059,7 +6100,37 @@ static int field_closes_cycle(int owner, int declared_type) {
 static int field_release_of(int type_name, int field_name, int declared_type) {
     int key = key_find(AIF_KEY_FIELD, type_name, field_name);
     if (key < 0 || key >= pt_len) return AIF_ELEM_NONE;
-    if (field_closes_cycle(nominal_find_id(type_name), declared_type)) return AIF_ELEM_NONE;
+    // M2.1a. A field that re-enters its owner's type used to decline here, on the
+    // grounds that releasing it could run around a cycle and back to a block
+    // already freed. **The type graph cannot tell a cycle from a tree** -- `Tree`
+    // reaches `Tree` exactly as `Node { parent: Node? }` does, and
+    // aif_compute_type_acyclic calls both cyclic -- so declining on it declined
+    // every recursive type, and a consumed tree was reclaimed by nothing at all:
+    // not by this, and not by the collector either, which wants `in_container`.
+    //
+    // **The values answer what the type graph cannot, and the language already
+    // decided it.** Storing into a field is a *move*: `Node { id: 2, parent: root }`
+    // transfers `root`, so a field store leaves exactly one owner. Two references
+    // to one value therefore require a container, which is precisely what
+    // site_is_cyclic tests -- and such a site's disposition comes back
+    // AIF_ELEM_CYCLE or AIF_ELEM_RC from elem_disposition_of below, routing it to
+    // the collector rather than to the recursive free.
+    //
+    // So the disposition loop is the gate: a re-entering field is released only
+    // when every site it can hold answers with a *plain ownership* disposition,
+    // AIF_ELEM_TYPED or AIF_ELEM_OBJECT. Those are the tree-shaped ones, and
+    // releasing them recursively frees each block exactly once.
+    //
+    // **A counted or collected site still declines, and that is not belt-and-
+    // braces.** Cyclic edges belong to the collector -- CYCLES 4 gives them their
+    // own traversal, `__aif_cyclic_children_T` -- so a release that also
+    // decremented them would be reclaiming an edge twice. Removing this
+    // restriction wholesale is what broke `test_52_aif_cycle_collector`: first 8
+    // violations, then, once codegen decremented the count instead of free()ing,
+    // a crash. The rule is not "recursion is safe", it is "recursion is safe for
+    // the edges the collector does not own".
+    int closes = field_closes_cycle(nominal_find_id(type_name), declared_type);
+
     // **An inline field owns nothing.** Its storage is the object's own and the
     // value was copied in, so there is no pointer to release and the address is
     // interior -- handing it to a deallocator would free the middle of this
@@ -6084,8 +6155,12 @@ static int field_release_of(int type_name, int field_name, int declared_type) {
         if (declared_type >= 0 && base_type_id(sites[s].type) != declared_type) {
             return AIF_ELEM_NONE;
         }
+        // See `closes` above: recursion into the owner's own type is allowed only
+        // for values nothing else can reach.
         int d = elem_disposition_of(s, aif_tier_of(s));
         if (d == AIF_ELEM_NONE) return AIF_ELEM_NONE;
+        // See `closes` above: only the edges the collector does not own.
+        if (closes && d != AIF_ELEM_TYPED && d != AIF_ELEM_OBJECT) return AIF_ELEM_NONE;
         if (agreed == AIF_ELEM_NONE) agreed = d;
         else if (agreed != d) return AIF_ELEM_NONE;
     }
@@ -6101,9 +6176,38 @@ static int field_declared_type(const Nominal* t, int i) {
 //
 // The in-progress marker is what a self-referential type needs. `struct Node {
 // child: Node }` would otherwise have to know whether Node releases in order to
-// decide whether Node releases. Read as "does not", which leaks rather than
-// double-frees -- and a type that reaches itself is C-MAYBE anyway, so it is the
-// cycle collector's problem and not this one's.
+// decide whether Node releases.
+//
+// **It reads as "does" since M2.1a, and that is the whole of fork (a).** It read
+// as "does not" before, with the reasoning that a type reaching itself is
+// C-MAYBE and therefore the collector's problem. That was true of the *type* and
+// false of most values: a tree reaches itself in the type graph and contains no
+// cycle, and the collector never ran on one either, because site_is_cyclic wants
+// `in_container` and a tree node is not in one. Neither path reclaimed it, so a
+// consumed tree leaked entirely -- 24569 of 24585 allocations on
+// `g8_tree_rebuild.psm`.
+//
+// Answering "does" is what makes the recursive field's disposition AIF_ELEM_TYPED
+// rather than AIF_ELEM_OBJECT, and that difference is the whole feature: OBJECT
+// frees the child block alone and leaks its subtree, TYPED calls
+// `__aif_release_T` on it and the recursion reaches the leaves.
+//
+// The optimism is bounded by field_release_of, not by this marker: the only way
+// to reach it is through a field that re-enters the owner's type, and that field
+// contributes a disposition only when every site it can hold is AIF_A_UNIQUE. A
+// `parent` back-reference is not, so the answer for that shape is still 0 --
+// reached through an empty `agreed` rather than through this marker.
+//
+// **Known limit, and it is unmeasured on purpose:** the generated release
+// recurses once per level, so reclaiming a structure of depth d costs d stack
+// frames. A balanced tree is fine (d is logarithmic); a list-shaped recursive
+// type is not, and deep enough it would trade a leak for a stack overflow.
+// There is no measured threshold here because the shape that would hit it cannot
+// be reached yet: a deep structure has to be *built* recursively, and ownership
+// transfer survives only one hop, so its caller owns nothing and no release runs
+// at all. Whichever change lifts that hop makes this reachable and should bring
+// its own measurement -- and the fix is to loop on the last self-referential
+// field rather than recurse into it.
 static int* type_releases;
 static int type_releases_cap;
 
@@ -6139,7 +6243,7 @@ static int type_releases_of(int nominal) {
         for (int i = type_releases_cap; i < grow; i++) type_releases[i] = -1;
         type_releases_cap = grow;
     }
-    if (type_releases[nominal] == -2) return 0;
+    if (type_releases[nominal] == -2) return 1;   // see the note above the cache
     if (type_releases[nominal] >= 0) return type_releases[nominal];
 
     type_releases[nominal] = -2;

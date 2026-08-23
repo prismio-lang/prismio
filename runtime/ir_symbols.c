@@ -616,6 +616,12 @@ typedef struct {
     // its element array -- so a plain free on the handle leaks that block, and
     // the storage type cannot tell you: a list and a string are both `ptr`.
     int drop_kind;
+    // AIF Level 4, the reassignment half. Distinct from is_droppable and it has
+    // to be: a returned accumulator hands its *last* value to the caller, so the
+    // scope must not drop it -- but every value an assignment displaced before
+    // that one is still this scope's to release. One flag answering both
+    // questions is what made `return out` silently disable the release.
+    int owns_slot;
 } VarBinding;
 
 static VarBinding* var_bindings = NULL;
@@ -698,6 +704,24 @@ void ir_mark_droppable(const char* name, int kind) {
         var_bindings[i].is_droppable = 1;
         var_bindings[i].drop_kind = kind;
     }
+}
+
+// AIF Level 4, the reassignment half.
+//
+// The slot holds memory this binding owns at every point, so an assignment that
+// overwrites it has to release what it displaces. Codegen asks this at the
+// assignment rather than recomputing the declaration's reasoning, because two
+// answers to "does this binding own its contents" is exactly how a value ends up
+// with no owner at all -- which is what leaked 3599 of g7's 5021 allocations
+// while the drop list and the assignment disagreed silently.
+int ir_binding_owns_slot(const char* name) {
+    int i = find_binding(name);
+    return i >= 0 && var_bindings[i].owns_slot ? 1 : 0;
+}
+
+void ir_mark_owns_slot(const char* name) {
+    int i = find_binding(name);
+    if (i >= 0) var_bindings[i].owns_slot = 1;
 }
 
 int ir_scope_drop_floor(void) {
@@ -799,6 +823,7 @@ static void add_binding(const char* name, const char* type, int is_global) {
     b->is_mutable = 0;
     b->is_droppable = 0;
     b->drop_kind = 0;
+    b->owns_slot = 0;
 
     if (is_global) {
         // Globals are addressed by their own name (@name), so no renaming.
@@ -895,6 +920,24 @@ void ir_clear_moved(void) {
 
 int ir_is_moved(const char* name) {
     return namelist_contains(&moved_names, name);
+}
+
+// M2.1c. The binding an assignment is re-initialising, while its right-hand side
+// is being checked.
+//
+// `acc = f(acc)` moves `acc` and immediately rebinds it, so the move does not
+// repeat on the next iteration the way `f(acc)` alone would -- but move state is
+// tracked per name in source order, which cannot see that the store puts a fresh
+// value back. One slot rather than a set: an assignment's right-hand side cannot
+// contain another assignment, so the target never nests.
+static const char* reinit_target;
+
+void ir_set_reinit_target(const char* name) {
+    reinit_target = (name && *name) ? ir_intern(name) : NULL;
+}
+
+int ir_is_reinit_target(const char* name) {
+    return (reinit_target && ir_intern(name) == reinit_target) ? 1 : 0;
 }
 
 void ir_mark_moved(const char* name) {

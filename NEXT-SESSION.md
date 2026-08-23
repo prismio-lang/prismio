@@ -1,5 +1,146 @@
 # Prompts for the next sessions
 
+## 2026-08-23 (M2.1c + close-out) — M2 finished: five done, four closed as blocked
+
+**M2.1c landed** and is the one item whose value is obvious from the outside: `acc = f(acc)` — the
+functional-update idiom — could not be written in this language at all. Two errors, and the second
+is the lesson: the *straight-line* form failed too, because the assignment's own **target read**
+counted as a use of a moved value. An assignment is the one place a moved-from name is legal, and
+the fix had to clear the state before the target is evaluated, not only after the right-hand side's
+move.
+
+**M2 is closed rather than complete, and the distinction is the point.** Five items done and gated;
+four closed as blocked on one named thing — `field_release_of` answers per `(type, field)` and needs
+to answer per site. That was confirmed three separate ways over two attempts, each measured, and
+both attempts reverted byte-clean.
+
+**The most useful thing to carry forward:** what M2 actually delivered was **leaks, not
+allocations** — three classes of them, each a *missing owner* rather than a missing free — and one
+language capability. Its original headline ("10× on g2 and g6") had already been taken by M3 through
+an arena. A milestone that names a number without naming the mechanism can be "met" by something
+that has nothing to do with it, and then the real work looks finished when it has not started.
+
+Also worth keeping: **finishing a milestone can mean closing items, not doing them.** Every blocked
+item has a reason, a measurement, and a named starting point for whoever picks it up. That is a
+better end state than a half-built token that passes the suite and violates on a four-line probe --
+which is exactly what the second attempt produced before it was reverted.
+
+
+## 2026-08-23 (M2.1a-ii, second attempt) — built all three prerequisites, reverted all three
+
+The previous entry named three prerequisites and ranked them; this one built all three and found
+the ranking wrong. **M2.1a blocks M2.1a-ii.** `field_release_of` answers per `(type, field)`, so
+making `Tree`'s payload fields released — which is what M2.1a did, correctly — makes every `Tree`
+site `site_in_released_field`, and a `sink` parameter holding one is therefore never reclaimable.
+`g8` did not move by a single allocation. The next attempt starts at the per-site disposition, not
+at the binder keys.
+
+**The thing worth carrying beyond this project:** "the suite is green and the corpus is clean" did
+not mean the change was safe. A four-line probe — a `sink` handed a temporary — turned up **5
+violations** that 142 tests and seven benchmark programs missed, because a temporary passed to a
+call already has an owner nobody had enumerated. When a change touches an ownership boundary,
+enumerate who *already* owns the value and write a probe per owner; there were three here and only
+one was in the plan.
+
+Also: a prerequisite that changes the compiler's own IR is not a prerequisite you can land quietly.
+M3.2a set the bar at byte-identical output and it is the right bar.
+
+
+## 2026-08-23 (M2.0b + M2.1a-ii attempt) — one landed, one reverted, and the revert taught more
+
+**M2.0b landed**: an accumulator fed by a Prismio callee now releases what it displaces (probe
+9/2/7 → 9/8/1). The part worth carrying: the two guards on `aif_owns_call_result_at_node` sat in one
+`and` chain with one comment between them and are **not the same guard** — `chainAssignsName` no
+longer applies to an accumulator, `chainReturnsName` still guards the last value. Re-derive guards
+individually; a shared comment hides that one of them is still load-bearing.
+
+**M2.1a-ii was built, measured (`g8` 24570 → 14335 leaked, checksum unchanged) and reverted.**
+`sink` is a **sema-level move check, not a codegen ownership transfer**: the parameter's tier is
+decided at the caller's site and may be T0 (`alloca`, so the callee's free was `free()` on a stack
+pointer — 2 violations), and the caller still drops a binding it moved into a sink. The callee
+cannot free *or reuse* that block without both halves, which is why M2.1a-ii and M2.1b are one
+design and not two.
+
+**The lesson that keeps recurring, now in a third disguise.** `sink2.psm` reported 4 allocated / 4
+released and an earlier note read that as "a one-level recursive enum sink is released correctly".
+Those four were `std/io`'s digit strings; the tree was T0 and never entered the ledger. A balanced
+ledger is not evidence that the thing you care about was *in* it. Check what the allocations are.
+
+**Reverting cleanly is worth the two minutes**: `S38a`'s IR is byte-identical to `S36b`'s, which is
+how you know the revert removed exactly what it added.
+
+
+## 2026-08-23 (M2.1a) — fork (a) taken; the rule had to be found by breaking the collector twice
+
+Ran after the M2.0 entry below, on the fork that session's survey opened. The instruction was one
+word — option (a) — and the work was finding what (a) actually means.
+
+**What (a) turned out to mean.** Not "let recursive types release themselves", which is what it
+looks like from the outside and is what broke `test_52_aif_cycle_collector` twice: first 8
+violations, then a crash. The rule that survives is **"recursion is safe for the edges the
+collector does not own"**, decided by the field's disposition rather than by the type graph — the
+type graph cannot tell `Tree` from `Node { parent: Node? }`, and a veto keyed on it declines every
+recursive type there is.
+
+**The bug the first repair uncovered is worth its own line.** `AIF_ELEM_CYCLE` had **no branch** in
+`generateReleaseFn` and fell into the plain `ir_free_object`. It had been unreachable for as long as
+the veto stood, because the only field that can carry a cyclic disposition is one the veto blocked.
+Removing a guard can make a *different*, long-dead branch reachable — and that one was wrong.
+
+**The fixture trap, third session running and in a new disguise.** A tree inside an owning struct
+took the whole fixture to 100 leaked **on both compilers**, because `field_release_of` needs every
+site in a field's points-to set to agree on one disposition. One added case can take a fixture's
+coverage to nothing *without failing*. Check that the fixture still discriminates after every case
+you add to it, not just after the last one.
+
+**What was deliberately not claimed.** `g8_tree_rebuild.psm` is unchanged at 24570 leaked, and the
+entry says so: `mapAdd` moves its payloads out (needs a shallow free — which is M2.1b's token), and
+ownership transfer survives one hop. The stack-depth limit of the new recursive release is
+**unmeasured on purpose**, because the shape that would hit it cannot be built yet; the code comment
+says that instead of quoting a number nobody took.
+
+Suite 142/142, corpus median 1.006×, standing 1.09×–3.21× idiomatic Rust. See HANDOFF's 2026-08-23
+(M2.1a) entry and [`RESULTS-M2-recursive-release.md`](aif/evidence/RESULTS-M2-recursive-release.md).
+
+
+## 2026-08-23 (M2.0) — "start the next milestone", and restating its gate is what found the bug
+
+The prompt was to read `TODO.md` and start the next task. M3 was closed, so it was M2 — and M2's
+own entry said to restate its exit gate before starting. **The restatement was the work.** Two
+recorded facts were false, both in the direction of claiming something was clean:
+
+- `match` appears nowhere in the corpus. The note that pointed the reuse gate at `g7` had matched
+  the word in a comment. There is no program to gate M2.1 on until one is written.
+- `g7` leaked **3599 of 5021 allocations** under a Current-state bullet reading "all seven
+  benchmark programs have a completely clean `--verify` ledger". Six of seven.
+
+**The general lesson, and it is the same one three sessions running:** the thing to check first is
+not what a number says but whether it was ever measured on the case in front of you. "All seven"
+had been measured on six. The fixture written to guard the new feature exercised none of it. The
+`match` claim was a substring.
+
+**Three facts about this compiler that cost the most to find:**
+
+- **`is_droppable` cannot answer two questions.** A returned accumulator must not be dropped at the
+  scope exit and must still release what its assignments displace. One flag for both made `return
+  out` disable the release silently, and the symptom read as "the feature did not fire".
+- **A confined accumulator is served by an arena, so it tests nothing.** Three of the guard
+  fixture's five cases were written that way and passed while touching no part of the path. Every
+  case whose point is the release has to *return* its accumulator to stay on the heap.
+- **A "successful" build can abort.** One generation cloned string literals at the declaration and
+  not at the assignment, so `.rodata` reached a slot the next assignment freed. Every corpus
+  program compiled correctly and the compiler then aborted in libc at exit, `--verify` only. It
+  hid for two rounds because a `grep` in the pipeline was returning its own exit status.
+
+**Left open with a measurement rather than a guess**: the callee-returned case, `9 allocated, 2
+released, 7 leaked`. It needs the weaker ownership fact, whose guards nobody has re-derived — and
+"read `--why` before believing a blocker an earlier session wrote down" is now three sessions
+running.
+
+See HANDOFF's 2026-08-23 entry and
+[`RESULTS-M2-reassignment.md`](aif/evidence/RESULTS-M2-reassignment.md).
+
+
 ## 2026-08-28 (M3.2c-ii + M3.2d) — landed together, as the prompt insisted; worked
 
 The prompt asked for the candidate range and range-aware codegen **in one change**, and was right

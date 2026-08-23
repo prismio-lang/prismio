@@ -93,6 +93,100 @@ fn chainAssignsName(head: String, name: String) -> Bool {
     return false
 }
 
+// Whether this expression hands the enclosing scope a value it owns.
+//
+// The same question the declaration asks of an initialiser, asked of an
+// assignment's right-hand side. `aif_frees_at_scope_node` is the fact and it
+// already accounts for escape: a value pushed into a container or returned has
+// its E raised, so the answer is false and the binding never qualifies as an
+// accumulator. That is what keeps the release below from double-freeing a value
+// ownership left through a side door.
+//
+// A string literal counts because the declaration clones it -- see
+// generateStatement. Without that clause the accumulator idiom `let mut s = ""`
+// is disqualified by its own first line, which is every one of them.
+fn nodeProducesOwnedValue(exprPtr: String) -> Bool {
+    if (nodeIsNull(exprPtr)) { return false }
+    if (aif_releases_on_overwrite_node(exprPtr) == 1) { return true }
+    // M2.0b. A value a *callee* allocated and handed over, which the escape
+    // lattice cannot express -- a returned value is Caller and stays Caller.
+    //
+    // The declaration guards this fact with `chainAssignsName == false` and
+    // `chainReturnsName == false`, and both were re-derived before it was used
+    // here rather than assumed stale. The first was there because an assignment
+    // could put a *borrow* in the slot and because nothing released what an
+    // assignment displaced; irOwningAccumulator rules out the borrow and M2.0
+    // added the release. The second is about the *last* value only -- a returned
+    // binding hands that one to the caller -- so it still guards the scope-exit
+    // drop, and the branch below still applies it. Neither is about a value an
+    // assignment displaced, which is what this predicate answers.
+    return aif_owns_call_result_at_node(exprPtr) != AIF_ELEM_NONE
+        or nodeIsStringLiteralExpr(exprPtr)
+}
+
+fn nodeIsStringLiteralExpr(exprPtr: String) -> Bool {
+    if (nodeIsNull(exprPtr)) { return false }
+    let n = ptr_to_node(exprPtr)
+    if (n.kind != NodeKind.LITERAL_EXPR) { return false }
+    return n.i1 == TokenType.STRING_LITERAL
+}
+
+// Whether any assignment to `name` stores something this scope does not own.
+//
+// The complement of nodeAssignsName rather than a refinement of it: that one
+// answers "is this binding ever reassigned", which disqualifies it, and this one
+// answers "is any of those reassignments the reason it had to be disqualified".
+// A binding reassigned only with owned values can be dropped and can release what
+// it displaces; one that ever receives a borrow -- `s = node.name` -- cannot do
+// either, and the difference is a free of a value the AST still holds.
+fn nodeAssignsUnowned(nodePtr: String, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        if (nodeExists(n.child1)) {
+            let target = ptr_to_node(n.child1)
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and str_equals(target.s1, name) == 1) {
+                if (nodeProducesOwnedValue(n.child2) == false) { return true }
+            }
+        }
+    }
+
+    if (chainAssignsUnowned(n.child1, name)) { return true }
+    if (chainAssignsUnowned(n.child2, name)) { return true }
+    return chainAssignsUnowned(n.child3, name)
+}
+
+fn chainAssignsUnowned(head: String, name: String) -> Bool {
+    let mut p = head
+    while (str_equals(p, "") == 0) {
+        let n = ptr_to_node(p)
+        if (nodeAssignsUnowned(p, name)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+// Whether `name` is a binding whose slot holds memory it owns at every point.
+//
+// Two questions: it is reassigned at all -- otherwise nothing here changes -- and
+// every value it receives is one this scope owns, because a release that displaces
+// a borrow frees a value someone else still holds. The declaration's own
+// initialiser is the caller's to ask, because only the caller has it.
+//
+// **There was a third, and the language had already answered it.** A value moved
+// into a second binding -- `let t = s` -- has an owner the model cannot see, since
+// an identifier initialiser registers no site, so releasing at the next `s = ...`
+// would free what `t` names. That guard was written and then deleted: sema rejects
+// assigning to a moved binding at all ("use of moved value"), in the loop form and
+// the straight-line form both, so the shape never reaches codegen. Deleting it is
+// worth more than keeping it, because a guard that cannot fire reads like a
+// hazard that has been handled.
+fn irOwningAccumulator(name: String) -> Bool {
+    if (chainAssignsName(irFunctionBody, name) == false) { return false }
+    return chainAssignsUnowned(irFunctionBody, name) == false
+}
+
 // Whether `name` is ever returned from the function being generated.
 //
 // Only asked of a binding made droppable by aif_owns_call_result_at_node, and it

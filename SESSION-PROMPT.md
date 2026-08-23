@@ -12,10 +12,49 @@ The rule that decides which side anything falls on:
 > **If getting it wrong produces a miscompile, it belongs to the compiler.**
 > **If getting it wrong produces a link error or a missing feature, it does not.**
 
-**Last-good: `build/S27b`.** Suite **140/140**, fixpoint `a27.ll == b27.ll`, differential 17/17,
-and a fresh seed build matches it. Bootstrapped `S10b → … → S25b → S26b → S27b`; `S26b`, `S25b`,
+**Last-good: `build/S44b`.** Suite **143/143**, fixpoint `a44.ll == b44.ll`, differential 17/17,
+and a fresh seed build matches it.
+Bootstrapped `S10b → … → S35b → S36b → S44b`; `S36b`, `S35b`, `S31b`, `S27b`, `S26b`, `S25b`,
 `S24b`, `S22b`, `S20b`, `S19b`, `S18b`, `S15b`, `S10b` and `E2` remain good behind it. S16/S17 are
 the M3.1 session's intermediate generations and are **not** last-good — each leaked on a fixture.
+S28–S30 are M2.0's and are not either: **S29b built every program correctly and then aborted in
+libc at exit** on `--verify` builds, freeing a `.rodata` pointer.
+
+---
+
+## Start here — M2 is closed; M4 is next unless you want its blocked half
+
+**M2 finished 2026-08-23 with five items done and four closed as blocked.** Read
+[`TODO.md`](TODO.md) § "M2 — closing state" first; it is one table and three numbered facts.
+
+Done and gated: **M2.0** (release on reassignment), **M2.0b** (callee-returned accumulators),
+**M2.1a** (recursive releases for self-referential types), **M2.1c** (`acc = f(acc)` compiles), and
+**M2.4** decided in writing — opt-in through the annotations the language already has, **no**
+automatic borrow inference.
+
+**What M2 removed is leaks, not allocations.** Three classes, each a *missing owner* rather than a
+missing free. No corpus program allocates less because of M2 and none of its gates moved the band
+(medians 1.006×, 1.006×, 1.001×). The "10× on g2 and g6" the milestone originally claimed was taken
+by M3 through an arena — which is why a gate has to name the mechanism as well as the number.
+
+**The four blocked items — M2.1a-ii, M2.1a-iii, M2.1/2/3 — are blocked on one thing:
+`field_release_of` answers per `(type, field)` and needs to answer per site.** Confirmed three ways,
+all measured, all in the TODO entry. **Do not start at the match-binder keys**: they were built,
+they work, and they are not the blocker.
+
+**The ranked list from here:**
+
+1. **M4 · Views and slices**, if you want the next measured prize. It is the expensive one and needs
+   real language design, but nothing in it is blocked.
+2. **The per-site field disposition**, if you want M2's blocked half. Expect it to touch
+   `field_release_of`, `type_is_reclaimed`, `compute_released_fields` and every reader of
+   `site_in_released_field` — the largest single change M2 would have contained.
+3. **M2.1a-iii — ownership transfer past one hop** (INFERENCE 6's contexts, same gap `test_47`
+   records as its 6). Independent of the disposition work and smaller than it.
+
+**Before anything else, read TODO § M2.1a-ii's two attempt notes.** Two working implementations
+were built and reverted there, and both reverts were byte-clean. The cheapest thing in this file is
+the reason each one failed.
 
 **M3 is finished, its exit gate is green, and the corpus is clean.** The 2026-08-28 session ran in
 three passes and everything it opened it also closed. What matters going in:

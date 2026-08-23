@@ -1,0 +1,189 @@
+// The accumulator shape, which had no owner at all until AIF Level 4's
+// reassignment half.
+//
+// `let mut out = ""` then `out = str_concat(out, ...)` in a loop is the most
+// common string idiom there is -- `buildSource` in the g7 benchmark is exactly
+// it -- and every value but the last leaked. Not for want of a free: the drop
+// list refused any reassigned binding, correctly, because the slot could hold a
+// borrow, and the assignment released nothing. Analysis and codegen each had a
+// defensible answer and together lost the value.
+//
+// **What makes each failure loud here, because none of them is by default.**
+// A leak is invisible to a program that then exits, so the counts are asserted
+// by the runner out of `--verify` rather than by this file. What this file makes
+// loud is the other direction -- freeing something it does not own:
+//
+//   * **literal_mid_loop** stores a string *literal* into an accumulator and then
+//     overwrites it. The literal is a .rodata pointer, so a release that does not
+//     clone it first aborts the process in libc rather than failing a count. This
+//     is not hypothetical: it is what the compiler's own `--verify` build did one
+//     generation after the declaration was cloned and the assignment was not.
+//   * **borrow_reassign** puts a borrowed field into a `let mut` that was
+//     initialised with an allocation. Releasing it frees a value the struct still
+//     owns, and the reads after it come back wrong.
+// The fourth case this fixture was going to have is absent on purpose. Moving the
+// accumulator into a second binding first -- `let t = s` then `s = ...` -- would
+// free what `t` names, because an identifier initialiser registers no site and the
+// model still believes there is one owner. It is not here because sema refuses it:
+// assigning to a moved binding is "use of moved value" in both the loop and the
+// straight-line form, so the shape cannot reach codegen and a fixture for it would
+// only ever test the move checker.
+//
+// Every function returns a checksum this file compares against a constant, so a
+// use-after-free that happens to read plausible memory still has to read the
+// *right* memory.
+
+import std.io
+
+extern fn str_concat(s1: String, s2: String) -> String
+extern fn str_length(s: String) -> Int
+
+struct Holder {
+    name: String
+}
+
+// g7's buildSource, reduced. The binding is returned, so the last value belongs
+// to the caller and every earlier one belongs to this scope -- which is the
+// distinction a single "is this droppable" flag could not carry.
+fn returned_accumulator(n: Int) -> String {
+    let mut out = ""
+    let mut i = 0
+    while (i < n) {
+        out = str_concat(out, "ab")
+        i = i + 1
+    }
+    return out
+}
+
+// The same shape with no return, so the *last* value is this scope's too and the
+// scope-exit drop has to cover it. Confined like this the site is usually served
+// by an arena and never reaches the release path at all -- which is the trap this
+// whole fixture nearly fell into, see the note above main.
+fn local_accumulator(n: Int) -> Int {
+    let mut out = ""
+    let mut i = 0
+    while (i < n) {
+        out = str_concat(out, "xyz")
+        i = i + 1
+    }
+    return str_length(out)
+}
+
+// A literal assigned into an owning slot, then displaced. Aborts in libc if the
+// literal is not cloned before it is stored.
+//
+// Returned, and that is not decoration: a confined accumulator is served by an
+// arena, `aif_releases_on_overwrite_node` declines every arena object, and this
+// function would exercise nothing. Returning it puts E at Caller, which keeps the
+// site on the heap and on the path under test.
+fn literal_mid_loop(n: Int) -> String {
+    let mut s = str_concat("seed", "ed")
+    let mut i = 0
+    while (i < n) {
+        s = "reset"
+        s = str_concat(s, "tail")
+        i = i + 1
+    }
+    return s
+}
+
+// The negative direction. `h.name` is borrowed, so this binding must not be
+// treated as owning its slot -- and the struct has to still hold its field
+// afterwards.
+fn borrow_reassign(h: Holder) -> Int {
+    let mut s = str_concat("own", "ed")
+    let first = str_length(s)
+    s = h.name
+    return first + str_length(s) + str_length(h.name)
+}
+
+// Two accumulators in one scope, overwritten in the same iteration, and returned
+// for the reason literal_mid_loop is. A release that read the wrong slot shows up
+// as a length that is no longer 4.
+fn two_accumulators(n: Int) -> String {
+    let mut a = str_concat("aa", "bb")
+    let mut b = str_concat("cc", "dd")
+    let mut i = 0
+    while (i < n) {
+        a = str_concat("ee", "ff")
+        b = str_concat(b, "")
+        i = i + 1
+    }
+    return str_concat(a, b)
+}
+
+// M2.0b. The value comes from a *callee* rather than from an allocation in this
+// function, which the escape lattice cannot express -- a returned value is Caller
+// and stays Caller, however briefly the caller keeps it. Answered by
+// `aif_owns_call_result_at_node` instead, and the values this loop displaces are
+// this scope's exactly as the extern-allocated ones above are.
+fn makePiece(i: Int) -> String {
+    return str_concat("pie", "ce")
+}
+
+fn callee_accumulator(n: Int) -> String {
+    let mut s = makePiece(0)
+    let mut i = 0
+    while (i < n) {
+        s = makePiece(i)
+        i = i + 1
+    }
+    return s
+}
+
+// **Read this before adding a case.** A confined accumulator is served by an
+// arena, and an arena object is released in bulk rather than individually -- so
+// `aif_releases_on_overwrite_node` declines it and the function under test
+// exercises none of this. Three of the five cases below were written that way
+// first and passed while touching nothing. Every case whose point is the *release*
+// returns its accumulator, which puts E at Caller and keeps it on the heap; the
+// allocation count in the runner is what proves it, because it scales with the
+// loop bounds and would not if an arena had swallowed them.
+fn main() -> Int {
+    let mut failures = 0
+
+    // 6 iterations of "ab"
+    let built = returned_accumulator(6)
+    if (str_length(built) != 12) {
+        println("FAIL returned_accumulator")
+        failures = failures + 1
+    }
+
+    // 7 iterations of "xyz"
+    if (local_accumulator(7) != 21) {
+        println("FAIL local_accumulator")
+        failures = failures + 1
+    }
+
+    // whatever the loop did, the survivor is "resettail". Bound rather than passed
+    // straight to str_length, so the caller owns it and it is not a leak of its own.
+    let lit = literal_mid_loop(5)
+    if (str_length(lit) != 9) {
+        println("FAIL literal_mid_loop")
+        failures = failures + 1
+    }
+
+    let h = Holder { name: str_concat("fie", "ld") }
+    // 5 for "owned", then 5 twice for "field"
+    if (borrow_reassign(h) != 15) {
+        println("FAIL borrow_reassign")
+        failures = failures + 1
+    }
+
+    // "eeff" plus "ccdd" with four empty concats appended
+    let pair = two_accumulators(4)
+    if (str_length(pair) != 8) {
+        println("FAIL two_accumulators")
+        failures = failures + 1
+    }
+
+    // 6 displaced "piece" values released, one survivor returned to main
+    let piece = callee_accumulator(6)
+    if (str_length(piece) != 5) {
+        println("FAIL callee_accumulator")
+        failures = failures + 1
+    }
+
+    if (failures == 0) { println("reassigned ownership ok") }
+    return failures
+}

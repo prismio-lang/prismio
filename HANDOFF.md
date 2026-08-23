@@ -11,10 +11,17 @@ Don't re-derive what's in them.
 Everything below is verified, not asserted — the commands that verify it are in the next section.
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
-  IR for `src/main.psm` is byte-identical to the warm build's. Last-good is **`build/S27b`**
-  (`S10b → … → S25b → S26b → S27b`, `a27.ll == b27.ll`, and a fresh seed build matches
-  it); `build/S26b`, `build/S25b`, `build/S24b`, `build/S22b`, `build/S20b`, `build/S19b`,
-  `build/S18b`, `build/S15b`, `build/S10b` and `build/E2` remain good behind it. S16/S17 were the M3.1 session's intermediate generations
+  IR for `src/main.psm` is byte-identical to the warm build's. Last-good is **`build/S44b`**
+  (`S10b → … → S35b → S36b → S44b`, `a44.ll == b44.ll`, and a fresh seed build matches it);
+  `build/S36b`, `build/S35b`, `build/S31b`, `build/S27b`, `build/S26b`,
+  `build/S25b`, `build/S24b`, `build/S22b`, `build/S20b`, `build/S19b`,
+  `build/S18b`, `build/S15b`, `build/S10b` and `build/E2` remain good behind it.
+  **S32–S34 are M2.1a's intermediate generations and are not last-good**: S32b double-freed on
+  `test_52_aif_cycle_collector` (8 violations) and S33b crashed there.
+  **S28–S30 are the M2.0 session's intermediate generations and are not last-good.** S29b built
+  every program correctly and then aborted in libc at exit on `--verify` builds, freeing a
+  `.rodata` pointer: a string literal assigned into an owning slot was cloned at the declaration
+  and not at the assignment. S30b is that fixed but predates `test_72`. S16/S17 were the M3.1 session's intermediate generations
   and are not last-good: S16b leaked on `test_48` and S17b leaked on `test_49`. S18b closed M3.1;
   **S19b adds the corrected zero-serving-region note and is the one that holds.** The paired generations exist because regenerating `embedded_sources.h`
   for a change to `build_driver.c` changes what the *next* compiler compiles, so each edit costs
@@ -33,14 +40,28 @@ Everything below is verified, not asserted — the commands that verify it are i
   the standing "peak RSS reversed" candidate wanted. The ×-against-Rust figure needs
   RESULTS-final's own harness to restate and has **not** been re-run.
 - **All seven benchmark programs have a completely clean `--verify` ledger** —
-  `allocated == released`, 0 leaked, 0 violations — as of 2026-08-28. g3 was the last, at 4095, and
-  the recorded cause for it was wrong: the container teardown was fine, and what leaked was the
-  value copied *into* each inline struct field.
+  `allocated == released`, 0 leaked, 0 violations — as of **2026-08-23**. This line said the same
+  thing on 2026-08-28 and it was **false for g7**, which leaked **3599 of its 5021 allocations**:
+  six of seven had been measured and the newest program in the corpus was not among them. Fixed by
+  M2.0 (release on reassignment) — see the 2026-08-23 entry. g3 was the last of the other six, at
+  4095, and the recorded cause for it was wrong too: the container teardown was fine, and what
+  leaked was the value copied *into* each inline struct field.
+  **Re-measure before repeating this claim.** `for g in g1..g7` takes two minutes and it has now
+  been wrong once.
 - **The noise band on this corpus is about ±5%**, which is `milestone_bench`'s own default
   tolerance. Two programs read 1.02–1.05× on the last run with **byte-identical loop code** — the
   only functions that differ in either are in `std/io`. Attribute before believing a number in that
   band: `define .*@name` diffing the two `.ll` files takes a minute and settles it.
-- **140/140 tests** as of 2026-08-28 (139 before the `nonlexical_extent` runner check, which reads
+- **143/143 tests** as of 2026-08-23 (142 before `test_74_reinit_assignment.psm`, the M2.1c guard —
+  **discriminating by construction**, since it does not compile on the previous generation, so a
+  regression there is a build failure rather than a number; 141 before
+  `test_73_recursive_release.psm`, the M2.1a guard —
+  100 leaked on S31b against 0 on S35b with the allocation count identical at 106, so a change that
+  reclaimed less *or* allocated less would both show; 140 before `test_72_reassigned_ownership.psm`, the M2.0
+  guard — discriminating by compiler, 14 allocated / 3 released / 11 leaked on S27b against
+  20 / 19 / 1 on S31b, and three of its five cases were written *confined* first and passed while
+  exercising nothing, because a confined accumulator is served by an arena; 139 before the
+  `nonlexical_extent` runner check, which reads
   the extents out of `AIF_STMT_TRACE` before it believes a value — `test_71_nonlexical_extent.psm`
   had been passing *vacuously*, placing no arena at all, and that is what the check exists to catch;
   138 before `test_71_nonlexical_extent.psm`, the M3.2d guard
@@ -462,6 +483,294 @@ LAYOUT §3.2's W3 sandbox obligations. Shipping the syntax without the runner is
 this item was ordered around, pointed the other way: a producer that produces nothing. The
 instrumentation point already exists when someone wants it — `ir_struct_field_ptr` is the single
 choke point for field access, the way `ir_alloc_object` is for allocation.
+
+---
+
+## Session of 2026-08-23 (M2.1c + M2 close-out) — the functional-update idiom, and M2's honest end
+
+**M2.1c: `acc = f(acc)` could not be written at all**, which matters because it is precisely the
+idiom M2.1b exists to optimise. Two separate errors, and the second is why it looked like a loop
+problem when it is not:
+
+- **the move read as one that repeats.** `ir_binding_predates_loop` fires on any move of an outer
+  binding inside a loop — right for `drop(b)`, wrong for an assignment whose target *is* the binding
+  it moved from, because the store puts a fresh value in the slot before the next iteration reads
+  it. `ir_set_reinit_target` names the target while the right-hand side is checked and the loop rule
+  makes that one exception.
+- **the name stayed moved-from afterwards**, so the *straight-line* form failed too:
+  `consume(s)` then `s = f("x")` reported "use of moved value" **on the assignment's target**. An
+  assignment is the one place a moved-from name is legal.
+
+`neg_10_move_in_loop` still fails, which is the guard for the other direction. Suite **143/143**,
+fixpoint `a44.ll == b44.ll`, differential 17/17, corpus median **1.001×** (0.943–1.031×), RSS flat,
+all seven corpus programs `allocated == released`, fresh seed build byte-identical. **GATE PASSED.**
+
+### M2 is closed, and four of its items are closed as blocked
+
+Five done and gated — M2.0, M2.0b, M2.1a, M2.1c, and M2.4 as a written decision (opt-in through the
+annotations the language already has; **no** automatic borrow inference, because Prismio's default
+is already the borrow and the call boundary has three owners disagreeing without adding a fourth
+implicit one).
+
+**The four blocked items are all blocked on one thing and it is now confirmed three ways:
+`field_release_of` answers per `(type, field)` and needs to answer per site.**
+
+1. M2.1a blocks M2.1a-ii — releasing `Tree`'s payload fields makes *every* `Tree` site
+   `site_in_released_field`, so a `sink` parameter holding one is never reclaimable.
+2. `type_is_reclaimed` means "has a disposition", not "is actually reclaimed" — true for
+   essentially every T2 struct, so the released-field set is far wider than reality.
+3. The call boundary has three owners; ignoring one read clean across 142 tests and gave 5
+   violations on a four-line probe.
+
+**What M2 actually delivered is leaks, not allocations** — three classes, each a *missing owner*
+rather than a missing free — plus one language capability. No corpus program allocates less because
+of M2, and none of its five gates moved the timing band. The original "10× on g2 and g6" was taken
+by M3 through a different mechanism, which is why a gate has to name the mechanism as well as the
+number.
+
+---
+
+## Session of 2026-08-23 (M2.0b) — the accumulator stops caring where its value came from
+
+Third pass of the day, on the item its own ranked list put first.
+
+An accumulator fed by a **Prismio callee** still leaked every value it displaced, because
+`nodeProducesOwnedValue` accepted only `aif_releases_on_overwrite_node` (an allocation in *this*
+function) and string literals. `aif_owns_call_result_at_node` is the fact for the other case — a
+returned value is Caller and stays Caller, which the escape lattice cannot express — and it is now
+accepted too. The probe goes **9 allocated / 2 released / 7 leaked → 9 / 8 / 1**.
+
+**The interesting part is that the two guards on that fact are not the same guard**, and the
+previous entry deliberately refused to touch it until they were re-derived:
+
+- `chainAssignsName == false` existed because an assignment could put a **borrow** in the slot, and
+  because nothing released what an assignment displaced. `irOwningAccumulator` rules out the first;
+  M2.0 fixed the second. It does not apply to an accumulator any more.
+- `chainReturnsName == false` is about the **last** value only — a returned binding hands that one
+  to the caller — so it still guards the scope-exit drop, and the declaration still applies it. It
+  was never about a displaced value.
+
+Two guards sitting in one `and` chain, with one reason between them in the comment, is how the
+second nearly went out with the first.
+
+**The fixture now guards three generations, and the check that it still did was the point.** Adding
+a case to `test_72_reassigned_ownership` could have collapsed its coverage the way one did to
+`test_73` last pass, so it was rebuilt with S27b, S35b and S36b: **18 → 8 → 2 leaked**, with the
+earlier cases' discrimination intact. The residual 2 are both deliberate — `borrow_reassign`'s
+initialiser, which the guard must decline, and a two-hop return that ownership transfer does not
+reach.
+
+Suite **142/142**, fixpoint `a36.ll == b36.ll`, differential 17/17, corpus median **1.006×**
+(0.944–1.042×), RSS ≤1.010×, all seven corpus programs `allocated == released`, fresh seed build
+byte-identical. **GATE PASSED.**
+
+### M2.1a-ii, second attempt: all three prerequisites built, all three reverted
+
+The first attempt named three prerequisites and ranked them. The second built all of them —
+match-binder VAR keys, a `sink` reclaimability fact over `AIF_KEY_PARAM`, and the caller dropping
+its claim — and the ranking turned out to be wrong.
+
+- **`g8` did not move at all**, and one trace line says why: `site_in_released_field` declines every
+  `Tree` site. **M2.1a made `Tree.Node$0`/`Node$2` released fields**, so a payload is already spoken
+  for by its parent's release, so a `sink` parameter holding one is never reclaimable. The
+  milestone's previous step blocks its next one, and the fix is to make the field disposition
+  per-site rather than per-`(type, field)` — which `field_release_of` is not.
+- **A callee-side free collides with three existing owners, not one.** The caller's drop list was
+  known; the parent's field release is the above; the third only appeared under measurement —
+  `consumeStr(str_concat("ab", "cd"))` reads `3 allocated, 3 released, 0 leaked` today and **5
+  violations** with the transfer in, because something already reclaims a temporary passed to a
+  call. The suite was 142/142 and the corpus clean at that point; a four-line probe found it.
+- **Binder keys work and are not inert.** They change the compiler's own IR, so they do not clear
+  the bar M3.2a set for landing a staged prerequisite. And they must not call `aif_con_live_in`:
+  claiming a payload is live in the matching scope said every payload outlives its arm and pushed
+  `sink2.psm` from 4 allocations to 10.
+
+Everything is reverted; `S43a`'s IR for `src/main.psm` is byte-identical to `S36b`'s and the suite
+is 142/142 on last-good. Nothing about M2.0, M2.0b or M2.1a changed.
+
+### Then M2.1a-ii was built, measured, and reverted — and that is the session's real finding
+
+Freeing the scrutinee block after a match arm's binders took `g8` from **24570 leaked to 14335**
+with the checksum unchanged. It is still wrong, and the reason reframes M2.1b as well:
+**`sink` is a sema-level move check, not a codegen ownership transfer.**
+
+- **A `sink` parameter's tier is decided at the caller's site and may be T0.** In `sink2.psm` every
+  `Tree` in `main` is `alloca %Tree`, so the callee's free was `free()` on a stack pointer — **2
+  violations**. The callee sees a pointer and cannot tell.
+- **The caller still drops a binding it moved into a `sink`**, because move state is sema's and is
+  cleared before codegen. So even a genuinely heap argument would be freed twice.
+
+**A fixture told me it was fine and it was not.** `sink2.psm` reported 4 allocated / 4 released,
+which an earlier note read as "a one-level recursive enum sink is released correctly". Those four
+were `std/io`'s digit strings; the tree was T0 and never in the ledger at all. Same vacuity trap as
+`test_71` and `test_73`, now three shapes deep — **check what the allocations *are*, not just that
+the counts balance.**
+
+The revert is byte-clean: `S38a`'s IR for `src/main.psm` is identical to `S36b`'s, so last-good is
+unchanged. What the next attempt needs is written up in TODO § M2.1a-ii — `AIF_KEY_PARAM` already
+keys a parameter's points-to set, which is where the missing fact lives.
+
+---
+
+## Session of 2026-08-23 (M2.1a) — a self-referential type finally reclaims what it owns
+
+Same day as the M2.0 entry below; this ran after it, on the fork that entry's survey opened.
+
+**The choice was fork (a): generated recursive releases for self-referential types.** The other was
+driving reuse off the RC/T4b path.
+
+**What was wrong.** `enum Tree { Leaf, Node(Tree, Int, Tree) }` was reclaimed by nothing at all.
+`field_closes_cycle` vetoed every field that re-enters its owner's type, so `aif_type_releases`
+answered 0 and `__aif_release_Tree` was never generated; the collector, which that veto defers to,
+wants `in_container`, and a tree node is not in one. **Both halves declined and the value fell
+between them** — 100 of 106 allocations on the new fixture.
+
+**The type graph cannot tell a tree from a cycle** — `Tree` reaches `Tree` exactly as
+`Node { parent: Node? }` does — so the veto declined every recursive type there is. The replacement
+asks the *values*: a re-entering field is released when every site it can hold answers
+`AIF_ELEM_TYPED` or `AIF_ELEM_OBJECT`. Field stores are moves (`test_51` says so itself), so single
+ownership is structural, and those are the tree-shaped edges.
+
+### The rule, stated the way the two failures forced it
+
+Removing the veto wholesale gave `test_52_aif_cycle_collector` **8 violations**. The first repair
+made it worse: `AIF_ELEM_CYCLE` turned out to have **no branch in `generateReleaseFn`** and was
+falling into the plain `ir_free_object` — unreachable until now, because a cyclic disposition can
+only arise on a field the veto used to block. Giving it the branch it needed turned 8 violations
+into a **crash**, because the release should not touch those edges at all.
+
+**So the rule is not "recursion is safe". It is "recursion is safe for the edges the collector does
+not own",** and the disposition test says which. `test_52` guards that half, `test_73` this one.
+
+### The fixture nearly measured nothing, again, in a new disguise
+
+A tree inside an owning struct was written in and removed **twice**. From a call it leaks 15 — a
+field initialised from a call is a hop the model does not follow. Built inline it is worse: the
+whole fixture goes to **100 leaked on both compilers**, because `field_release_of` needs every site
+in a field's points-to set to agree on one disposition and struct-owned nodes disagree with
+binding-owned ones. **One case can take a fixture's coverage to nothing without failing** — the same
+trap `test_72` hit with arenas, wearing different clothes. Third session running.
+
+### What it does not do, and `g8` is the honest measure
+
+`g8_tree_rebuild.psm` is **unchanged at 24570 leaked**, for two reasons that are not this one:
+
+- **`mapAdd` moves its payloads out**, so a deep release of the consumed node would free subtrees
+  that were moved away, and the compiler correctly declines. That shape needs a **shallow** free of
+  the destructured block — which is exactly what M2.1b's token replaces, so they are one design.
+- **Ownership transfer survives one hop.** A recursively-built tree returns sites belonging to its
+  own recursive calls, so nobody owns it and no drop runs. Same gap as `test_47`'s 6.
+
+This also means the recursive release's **stack-depth limit is unmeasurable today** — a deep
+structure has to be built recursively to exist. The comment in `aif_support.c` says so rather than
+quoting a number nobody took.
+
+### Benchmarks are Rust-only from here
+
+Asked for in this session and applied to both harnesses: `bench.py` and `milestone_bench.py` now
+skip the Swift ports unless `--with-swift` is passed. Swift was the slowest part of a run and the
+dev loop compares against Rust. **Not deleted** — the Swift columns in the older `RESULTS-*` files
+are recorded evidence and the flag reproduces them. A Rust-only run writes `"swiftc": null` into its
+JSON so the two kinds of run are distinguishable by content, not by remembering which flag was used.
+
+### Numbers
+
+Suite **142/142**, fixpoint `a35.ll == b35.ll`, differential 17/17, corpus median **1.006×**
+(0.939–1.031×), RSS flat, all seven corpus programs still `allocated == released`,
+0 violations. Standing re-measured: **1.09×–3.21× idiomatic Rust**, 1.62×–17.94× hand-tuned
+(`results-m2.json`). **GATE PASSED.**
+[`RESULTS-M2-recursive-release.md`](aif/evidence/RESULTS-M2-recursive-release.md).
+
+---
+
+## Session of 2026-08-23 (M2.0) — the accumulator gets an owner, and "all seven are clean" was six
+
+**On the date label, because it looks out of order and is not.** Entries in this file are
+newest-first. The three entries below are labelled 2026-08-27 and 2026-08-28; this session ran on
+**2026-08-23** by the host clock, so the labels above it are ahead of the calendar rather than this
+one being behind. Read the order, not the dates.
+
+**The task was "start the next milestone", the next one was M2, and M2's own entry said to restate
+its exit gate before starting. Doing that is what found the defect.**
+
+**Two recorded facts were wrong, in the same direction: something was claimed clean that was not.**
+
+- **`match` does not appear in the corpus.** M2's note said reuse tokens have no program to fire on
+  in g1–g6 but that `g7.psm` and `g7_substring.psm` contain `match`. Both hits are the word in a
+  comment — "a port which tokenized differently could not match." **There are zero `match`
+  expressions in the whole corpus**, so "re-target the gate at g7" was never available, and M2.1's
+  gate is now "write a program with the shape" rather than a number.
+- **`g7` leaked 3599 of its 5021 allocations** while "all seven benchmark programs have a
+  completely clean `--verify` ledger" sat in Current state. Six of seven had been measured. g7 is
+  the newest program in the corpus and was not among them.
+
+### What M2.0 is
+
+The leak is the `let mut out = ""` + `str_concat` accumulator — `buildSource` in `g7.psm`, and the
+most common string idiom there is. **The hole was documented and deliberate**, in `src/ir/expr.psm`
+above `nodeAssignsName`: a reassigned binding was not droppable even when every value it received
+was owned, "since there is no drop on reassignment, so the strictness costs nothing that is not
+already lost." Both halves were true and each justified the other, and the intermediate values
+ended up with **no owner at all**.
+
+**That is the third session in four where the leak was a missing owner rather than a missing free,
+and the second where analysis and codegen each had a defensible answer and together lost the
+value.** The pattern is holding; look for the disagreement, not the gap.
+
+`aif_releases_on_overwrite_node` is `aif_frees_at_scope_node` with the confinement clause relaxed
+and `AIF_E_GLOBAL` added back. An accumulator is never confined to the scope that allocates it — it
+binds outside the loop and allocates inside it — and `return out` lifts E to `Caller` for a value
+**no return ever carried**, because a return exits the function. Every other clause is untouched,
+and those clauses are the entire soundness argument: `site_is_move_only`, `in_container`,
+`site_in_released_field`, `aif_arena_at_node`.
+
+### Three things worth knowing before touching this
+
+- **`owns_slot` is a second flag and must stay one.** A returned accumulator must not be dropped at
+  the scope exit and must still release what its assignments displace. Reusing `is_droppable` for
+  both made `return out` silently disable the release — the reproducer read 11 allocated / 1
+  released and looked like the feature had not fired at all.
+- **String literals need cloning at the assignment as well as the declaration**, and one generation
+  shipped without it. `s = "literal"` leaves `.rodata` in a slot the *next* assignment frees. The
+  symptom was not a failing test: the compiler built every corpus program **correctly** and then
+  aborted in libc at exit, on `--verify` builds only. It was invisible for two rounds because a
+  `grep` in the pipeline was swallowing `$?`. **When a build "succeeds", check the exit status of
+  the build, not of the pipeline.**
+- **A guard was written for `let t = s` and then deleted.** Moving the accumulator into a second
+  binding would leave the release freeing what `t` names. Sema already refuses it — "use of moved
+  value", in the loop form and the straight-line form both — so the shape cannot reach codegen. A
+  guard that cannot fire reads like a hazard someone handled.
+
+### The fixture nearly measured nothing, for a new reason
+
+`tests/test_72_reassigned_ownership.psm`. **Three of its five cases were written *confined*, and a
+confined accumulator is served by an arena** — `aif_releases_on_overwrite_node` declines every
+arena object, so those functions passed while touching none of the path under test. Every case
+whose point is the release now **returns** its accumulator, which puts E at `Caller` and keeps it
+on the heap. The allocation count is the proof: 14 → 20 as the cases moved onto the heap, and it
+scales with the loop bounds.
+
+This is the same lesson as M3.2d's guard and the third time in three sessions: **check that the
+fixture exercises the feature before checking what it reports.** The new wrinkle is that the arena
+is now good enough to swallow a test case whole.
+
+`test_44_aif_region` moved 2 → 1, and the runner's own note had predicted it — it described the
+leak as "droppability is a property of a binding's initialiser", which was the defect written down
+as an explanation.
+
+### Numbers
+
+All seven programs: `allocated == released`, **0 leaked, 0 violations**. g7 5021/1422/3599 →
+5022/5022/0. Suite **141/141**, fixpoint `a31.ll == b31.ll`, differential 17/17, corpus median
+**1.002×** (0.934–1.036×), RSS 0.992–1.010×, checksums identical. g7 is not in `milestone_bench`'s
+corpus; timed separately it reads 0.921× with identical checksums, which is allocator state — its
+accumulator is in `buildSource`, outside the measured region. **GATE PASSED.**
+[`RESULTS-M2-reassignment.md`](aif/evidence/RESULTS-M2-reassignment.md).
+
+**Left open deliberately, with a measurement**: a value returned by a *Prismio callee* and
+reassigned in a loop still leaks — `9 allocated, 2 released, 7 leaked` on the four-line program in
+§7 of the evidence. That needs `aif_owns_call_result_at_node`, the weaker fact, whose declaration
+guards exist for reasons this session did not re-derive. Re-derive them first.
 
 ---
 
