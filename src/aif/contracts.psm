@@ -34,7 +34,7 @@ fn aifDeclaredContract(name: String, index: Int) -> Int {
     if (str_equals(text, "out") == 1) { return AIF_FFI_OUT }
 
     if (str_starts_with(text, "retain_in:") == 1) {
-        let k = str_to_int(str_substring(text, 10, str_length(text) - 10))
+        let k = str_to_int(str_substring(text, 10, __builtin_string_len(text) - 10))
         return AIF_FFI_RETAIN_IN_BASE + k
     }
 
@@ -42,6 +42,17 @@ fn aifDeclaredContract(name: String, index: Int) -> Int {
     // them on a parameter, so reaching here means the declaration was malformed
     // and never got past the checker. Default rather than guess.
     return 0 - 1
+}
+
+// Compiler builtins are visible to AIF as call-shaped AST nodes but disappear
+// before LLVM. Their effects therefore belong here, separately from the foreign
+// runtime table below: all three inspect or modify storage only for the duration
+// of the operation and retain nothing.
+fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
+    if (str_equals(name, "__builtin_string_len") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "__builtin_string_byte_at") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "__builtin_string_put_byte") == 1) { return AIF_FFI_BORROW }
+    return AIF_FFI_UNKNOWN
 }
 
 // The ownership semantics of the Prismio runtime's own surface.
@@ -78,7 +89,6 @@ fn aifRuntimeContract(name: String, index: Int) -> Int {
     if (str_equals(name, "list_len") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_concat") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_equals") == 1) { return AIF_FFI_BORROW }
-    if (str_equals(name, "str_length") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_substring") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_slice") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_index_of") == 1) { return AIF_FFI_BORROW }
@@ -86,7 +96,6 @@ fn aifRuntimeContract(name: String, index: Int) -> Int {
     if (str_equals(name, "str_starts_with") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_ends_with") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "str_char_at") == 1) { return AIF_FFI_BORROW }
-    if (str_equals(name, "str_byte_at") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "print") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "println") == 1) { return AIF_FFI_BORROW }
     // AIF_FFI_UNKNOWN rather than the default, and the distinction is the whole
@@ -97,11 +106,15 @@ fn aifRuntimeContract(name: String, index: Int) -> Int {
     return AIF_FFI_UNKNOWN
 }
 
-// Declared contract, then the runtime table, then FFI 5.1's default.
+// Declared contract, compiler builtin, runtime table, then FFI 5.1's default.
 fn aifFfiContract(name: String, index: Int) -> Int {
     let declared = aifDeclaredContract(name, index)
     if (declared >= 0) {
         return declared
+    }
+    let builtin = aifCompilerBuiltinContract(name, index)
+    if (builtin != AIF_FFI_UNKNOWN) {
+        return builtin
     }
     let table = aifRuntimeContract(name, index)
     if (table == AIF_FFI_UNKNOWN) {
@@ -124,6 +137,7 @@ fn aifFfiContract(name: String, index: Int) -> Int {
 // return. A partial one leaves undescribed exactly the argument nobody thought
 // about, which is the one that retains.
 fn aifCallIsSummarised(name: String, argc: Int) -> Bool {
+    if (aifCompilerBuiltinContract(name, 0) != AIF_FFI_UNKNOWN) { return true }
     if (aifRuntimeContract(name, 0) != AIF_FFI_UNKNOWN) { return true }
     if (aifFfiProduces(name)) { return true }
     if (str_equals(aif_extern_contract(name, 0 - 1), "") == 1) { return false }

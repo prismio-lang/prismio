@@ -12,7 +12,7 @@ fn mapType(t: String) -> String {
     // A String is a pointer *and* a length. The buffer stays NUL-terminated
     // (FFI 7.1), so crossing to C is still `.ptr` and still zero-copy -- see
     // ffiType below, which is what an `extern` declaration uses.
-    if (str_equals(t, "String") == 1) { return "ptr" }
+    if (str_equals(t, "String") == 1) { return "struct:prismio.str" }
     // The fourth and last of the type-name tables (the others are
     // typeFromAnnotation, semaAnnotationType and typeFromSemKey). Missing here,
     // `Ptr` fell through to this function's default and every extern taking one
@@ -41,8 +41,19 @@ fn isStructTypeKey(t: String) -> Bool {
     return str_starts_with(t, "struct:") == 1
 }
 
+// The fat String is the one key that answers `isStructTypeKey` while *not* being
+// storage reached by GEP: it is a pair in a register, and a field of one holds
+// the pair itself. Every site that branches on `isStructTypeKey` to choose
+// between a byte copy and a store has to ask this first. Skipping it memcpy's 16
+// bytes out of the literal's character data -- `@.str.sN` is `[2 x i8]`, not a
+// pair -- so the field receives whatever follows it in .rodata as its pointer.
+// That reads as a plain segfault at the first use, a long way from here.
+fn isFatStringKey(t: String) -> Bool {
+    return str_equals(t, "struct:prismio.str") == 1
+}
+
 fn structTypeName(t: String) -> String {
-    return str_substring(t, 7, str_length(t) - 7)
+    return str_substring(t, 7, __builtin_string_len(t) - 7)
 }
 
 fn llvmTypeName(t: String) -> String {

@@ -256,7 +256,7 @@ fn parseStatement(p: Parser) -> ASTNode {
     }
 
     let operatorToken = parserCurrent(p)
-    if (operatorToken.type == TokenType.ASSIGNMENT_OPERATOR and str_length(operatorToken.value) == 2) {
+    if (operatorToken.type == TokenType.ASSIGNMENT_OPERATOR and __builtin_string_len(operatorToken.value) == 2) {
         return parseCompoundAssignment(p, expr, operatorToken, first)
     }
 

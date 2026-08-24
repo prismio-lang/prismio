@@ -11,12 +11,11 @@ import common.diagnostics
 
 extern fn exit(code: Int)
 extern fn str_from_char(c: Char) -> String
-extern fn str_byte_at(s: String, index: Int) -> Char
 
 // `length` is the input's size, measured once. Every character read used to go
 // through str_char_at, which calls strlen -- so scanning a file cost O(n) per
 // character and O(n^2) overall. Holding the length here lets the reads below
-// bound-check in constant time and use str_byte_at instead.
+// bound-check in constant time and use the unchecked byte builtin instead.
 struct Lexer {
     input: String,
     pos: Int,
@@ -44,7 +43,7 @@ fn createLexer(input: String, file: Int) -> Lexer {
         line: 1,
         col: 1,
         file: file,
-        length: str_length(input)
+        length: __builtin_string_len(input)
     }
 }
 
@@ -77,12 +76,12 @@ fn lexerFatal(lex: Lexer, line: Int, col: Int, message: String) {
 fn lexerPeek(lex: Lexer, offset: Int) -> Char {
     let at = lex.pos + offset
     if (at < 0 or at > lex.length) { return '\0' }
-    return str_byte_at(lex.input, at)
+    return __builtin_string_byte_at(lex.input, at)
 }
 
 fn lexerCurrent(lex: Lexer) -> Char {
     if (lex.pos < 0 or lex.pos > lex.length) { return '\0' }
-    return str_byte_at(lex.input, lex.pos)
+    return __builtin_string_byte_at(lex.input, lex.pos)
 }
 
 fn lexerAdvance(lex: Lexer) {
@@ -127,7 +126,7 @@ fn lexerSkipWhitespace(lex: Lexer) {
 fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) -> String {
     let mut out = ""
     let mut i = 0
-    let n = str_length(raw)
+    let n = __builtin_string_len(raw)
 
     while (i < n) {
         let ch = str_char_at(raw, i)

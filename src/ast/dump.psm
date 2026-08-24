@@ -18,8 +18,6 @@ import ast.types
 import common.text
 import common.diagnostics
 
-extern fn str_length(s: String) -> Int
-extern fn str_byte_at(s: String, index: Int) -> Char
 extern fn str_from_char(c: Char) -> String
 extern fn str_equals(s1: String, s2: String) -> Int
 extern fn int_to_str(value: Int) -> String
@@ -48,10 +46,10 @@ fn hexDigit(v: Int) -> String {
 // survives without needing to be decoded first.
 fn jsonString(s: String) {
     print("\"")
-    let n = str_length(s)
+    let n = __builtin_string_len(s)
     let mut i = 0
     while (i < n) {
-        let b = str_byte_at(s, i)
+        let b = __builtin_string_byte_at(s, i)
         let c = charCode(b)
         if (c == 34) { print("\\\"") }
         else if (c == 92) { print("\\\\") }

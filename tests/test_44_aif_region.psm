@@ -12,7 +12,6 @@
 
 import std.io
 extern fn int_to_str(n: Int) -> String
-extern fn str_length(s: String) -> Int
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn arena_objects() -> Int
 extern fn arena_regions() -> Int
@@ -37,7 +36,7 @@ fn inside() -> Int {
             f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
             f33: ""
         }
-        n = str_length(w.f01)
+        n = __builtin_string_len(w.f01)
     }
     return n
 }
@@ -56,7 +55,7 @@ fn many() -> Int {
                 f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
                 f33: ""
             }
-            total = total + str_length(w.f01)
+            total = total + __builtin_string_len(w.f01)
             i = i + 1
         }
     }
@@ -86,7 +85,7 @@ fn escapes_inner() -> Int {
                 f33: ""
             }
         }
-        n = str_length(held.f01)
+        n = __builtin_string_len(held.f01)
     }
     return n
 }
@@ -103,7 +102,7 @@ fn returns_out(flag: Bool) -> Int {
             f33: ""
         }
         if (flag) {
-            return str_length(w.f01)
+            return __builtin_string_len(w.f01)
         }
     }
     return 0
@@ -123,7 +122,7 @@ fn breaks_out() -> Int {
                 f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
                 f33: ""
             }
-            total = total + str_length(w.f01)
+            total = total + __builtin_string_len(w.f01)
             if (i == 3) {
                 break
             }
@@ -141,7 +140,7 @@ fn strings_inside() -> Int {
     region text {
         let s = str_concat("ab", "cde")
         let t = str_concat(s, "fg")
-        n = str_length(t)
+        n = __builtin_string_len(t)
     }
     return n
 }
@@ -154,7 +153,7 @@ fn string_escapes() -> Int {
     region tmp {
         held = str_concat("xy", "z")
     }
-    return str_length(held)
+    return __builtin_string_len(held)
 }
 
 fn check(label: String, got: Int, want: Int) -> Int {

@@ -15,7 +15,6 @@
 // checked the moment its syntax drifts.
 
 import std.io
-extern fn str_length(s: String) -> Int
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn int_to_str(n: Int) -> String
 
@@ -40,7 +39,7 @@ fn direct() -> String {
 // nothing to repair.
 fn local() -> Int {
     let s = str_concat("no", "hops")
-    return str_length(s)
+    return __builtin_string_len(s)
 }
 
 fn check(label: String, got: Int, want: Int) -> Int {
@@ -60,8 +59,8 @@ fn main() -> Int {
     let mut bad = 0
 
     let b = boxed()
-    bad = bad + check("boxed", str_length(b.item), 7)
-    bad = bad + check("direct", str_length(direct()), 6)
+    bad = bad + check("boxed", __builtin_string_len(b.item), 7)
+    bad = bad + check("direct", __builtin_string_len(direct()), 6)
     bad = bad + check("local", local(), 6)
 
     if (bad == 0) {

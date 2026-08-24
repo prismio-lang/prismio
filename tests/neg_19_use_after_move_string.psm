@@ -3,10 +3,9 @@
 // ownership -- and the scope exit frees it exactly once, through the new name.
 import std.io
 extern fn str_concat(s1: String, s2: String) -> String
-extern fn str_length(s: String) -> Int
 
 fn main() -> Int {
     let a = str_concat("ab", "cd")
     let b = a
-    return str_length(a)
+    return __builtin_string_len(a)
 }

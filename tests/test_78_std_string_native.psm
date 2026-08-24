@@ -1,0 +1,57 @@
+// Ownership and boundary regression for the pure-Prismio std.string producers.
+// Every allocation is bound so `--verify` must finish with a clean ledger.
+
+import std.string
+
+fn main() -> Int {
+    if (strCharAt("abc", 1) != 'b') { return 1 }
+    if (strCharAt("abc", 9) != '\0') { return 2 }
+    if (strEquals("same", "same") == false) { return 3 }
+    if (strEquals("same", "some")) { return 4 }
+    if (strCompare("abc", "abd") >= 0) { return 5 }
+    if (strCompare("abc", "ab") <= 0) { return 6 }
+
+    let empty = strEmpty()
+    if (strLength(empty) != 0) { return 7 }
+    let cloned = strClone("copy")
+    if (strEquals(cloned, "copy") == false) { return 8 }
+    let one = strFromChar('Q')
+    if (strEquals(one, "Q") == false) { return 9 }
+    let nul = strFromChar('\0')
+    if (strLength(nul) != 0) { return 25 }
+    let joined = strConcat("left", "right")
+    if (strEquals(joined, "leftright") == false) { return 10 }
+
+    let slice = strSubstring("abcdef", 2, 3)
+    if (strEquals(slice, "cde") == false) { return 11 }
+    let clamped = strSubstring("abcdef", 4, 99)
+    if (strEquals(clamped, "ef") == false) { return 12 }
+    let missing = strSubstring("abcdef", 99, 2)
+    if (strLength(missing) != 0) { return 13 }
+    let negative = strSubstring("abcdef", 2, 0 - 1)
+    if (strLength(negative) != 0) { return 14 }
+
+    let trimmed = strTrim("  text  ")
+    if (strEquals(trimmed, "text") == false) { return 15 }
+    let padded = strPadStart("7", 3, '0')
+    if (strEquals(padded, "007") == false) { return 16 }
+    let unchanged = strPadEnd("wide", 2, '.')
+    if (strEquals(unchanged, "wide") == false) { return 17 }
+    let first = strReplaceFirst("a-b-c", "-", "+")
+    if (strEquals(first, "a+b-c") == false) { return 18 }
+    let all = strReplaceAll("a-b-c", "-", "++")
+    if (strEquals(all, "a++b++c") == false) { return 19 }
+
+    let parts = strSplit("a,bb,ccc", ',')
+    if (list_len(parts) != 3) { return 20 }
+    if (strEquals(list_get(parts, 1), "bb") == false) { return 21 }
+    let rejoined = strJoin(parts, ",")
+    if (strEquals(rejoined, "a,bb,ccc") == false) { return 22 }
+
+    let onSep = strSplitOn("a::b::c", "::")
+    if (list_len(onSep) != 3) { return 23 }
+    let words = strSplitWhitespace("  one  two ")
+    if (list_len(words) != 2) { return 24 }
+
+    return 0
+}

@@ -228,7 +228,7 @@ fn generateStatement(stmt: ASTNode) {
             // an address, so it copies. A counted field is never inline: the
             // count sits in a header in front of an allocation, and an inline
             // field has no allocation of its own to put one in front of.
-            if (isStructTypeKey(fieldType)) {
+            if (isStructTypeKey(fieldType) and isFatStringKey(fieldType) == false) {
                 ir_copy_struct(structTypeName(fieldType), ir_get_temp_name(slot), val)
             } else {
                 ir_store_ptr(fieldType, val, ir_get_temp_name(slot))
@@ -513,7 +513,11 @@ fn generateRegionExits(count: Int) {
 fn generateStringClone(value: String) -> String {
     ir_call_begin()
     ir_call_arg("ptr", value)
-    return ir_get_temp_name(ir_call_end("ptr", "str_clone"))
+    // This handwritten call bypasses CALL_EXPR's general foreign-return path,
+    // so it must rebuild the pair itself. Returning the raw pointer stores one
+    // word into a two-word String slot; opaque pointers let that IR verify, and
+    // the old length is whatever stack data happened to occupy the second word.
+    return fatFromPtr(ir_get_temp_name(ir_call_end("ptr", "str_clone")))
 }
 
 // The release an assignment owes the value it overwrites.

@@ -1,0 +1,7 @@
+[package]
+name = "prismio-string-bench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+memchr = "=2.8.3"

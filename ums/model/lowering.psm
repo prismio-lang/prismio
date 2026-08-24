@@ -4,7 +4,6 @@ import ums.model.diagnostic
 import ums.parser.ast
 
 extern fn str_equals(left: String, right: String) -> Int
-extern fn str_length(value: String) -> Int
 extern fn str_char_at(value: String, index: Int) -> Char
 extern fn str_concat(left: String, right: String) -> String
 extern fn str_clone(value: String borrow) -> String produce(free)
@@ -34,7 +33,7 @@ fn umsLowerMetadata(project: UmsProjectModel, document: UmsAstDocument,
                           "project metadata contains properties, not nested DSL calls")
         } else if (str_equals(property.name, "name") == 1) {
             if (umsLowerString(project, diagnostics, property, "project.name")) {
-                if (str_length(project.metadata.name) > 0) {
+                if (__builtin_string_len(project.metadata.name) > 0) {
                     umsLowerError(project, diagnostics, property, "UMS2002",
                                   "project.name is declared more than once")
                 } else {
@@ -43,7 +42,7 @@ fn umsLowerMetadata(project: UmsProjectModel, document: UmsAstDocument,
             }
         } else if (str_equals(property.name, "version") == 1) {
             if (umsLowerString(project, diagnostics, property, "project.version")) {
-                if (str_length(project.metadata.version) > 0) {
+                if (__builtin_string_len(project.metadata.version) > 0) {
                     umsLowerError(project, diagnostics, property, "UMS2002",
                                   "project.version is declared more than once")
                 } else {
@@ -52,7 +51,7 @@ fn umsLowerMetadata(project: UmsProjectModel, document: UmsAstDocument,
             }
         } else if (str_equals(property.name, "prismio") == 1) {
             if (umsLowerString(project, diagnostics, property, "project.prismio")) {
-                if (str_length(project.metadata.prismioVersion) > 0) {
+                if (__builtin_string_len(project.metadata.prismioVersion) > 0) {
                     umsLowerError(project, diagnostics, property, "UMS2002",
                                   "project.prismio is declared more than once")
                 } else {
@@ -80,7 +79,7 @@ fn umsLowerTargetEntry(project: UmsProjectModel, document: UmsAstDocument,
                 str_concat(str_concat("unknown target property '", property.name),
                            "'; expected 'entry'"))
         } else if (umsLowerString(project, diagnostics, property, "target entry")) {
-            if (str_length(entry) > 0) {
+            if (__builtin_string_len(entry) > 0) {
                 umsLowerError(project, diagnostics, property, "UMS2102",
                               "target entry is declared more than once")
             } else {

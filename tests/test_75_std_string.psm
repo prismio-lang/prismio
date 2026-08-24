@@ -23,6 +23,12 @@ extern fn str_ends_with(s: String, suffix: String) -> Int
 extern fn str_index_of(haystack: String, needle: String) -> Int
 extern fn str_to_int(s: String) -> Int
 extern fn int_to_str(n: Int) -> String
+extern fn str_char_at(s: String, index: Int) -> Char
+extern fn str_equals(a: String, b: String) -> Int
+extern fn str_compare(a: String, b: String) -> Int
+extern fn str_concat(a: String, b: String) -> String produce(free)
+extern fn str_substring(s: String, start: Int, length: Int) -> String produce(free)
+extern fn str_from_char(c: Char) -> String produce(free)
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -34,8 +40,92 @@ fn sameText(got: String, want: String) -> Bool {
     return strEquals(got, want)
 }
 
+fn sign(value: Int) -> Int {
+    if (value < 0) { return 0 - 1 }
+    if (value > 0) { return 1 }
+    return 0
+}
+
+fn searchFixture(seed: Int, length: Int) -> String {
+    let out = str_with_capacity(length)
+    let mut i = 0
+    while (i < length) {
+        // A deterministic non-periodic lowercase fixture. Keeping the alphabet
+        // small still gives the candidate filters enough collisions to test.
+        let code = (seed * 13 + i * 17 + i * i * 3) % 23
+        __builtin_string_put_byte(out, i, (97 + code) as Char)
+        i = i + 1
+    }
+    return out
+}
+
 fn main() -> Int {
     // --- differential against the C originals -------------------------------
+
+    let nativeConcat = strConcat("left", "right")
+    let runtimeConcat = str_concat("left", "right")
+    if (sameText(nativeConcat, runtimeConcat) == false) {
+        return fail("strConcat disagrees with str_concat")
+    }
+    let nativeEmptyConcat = strConcat("", "")
+    let runtimeEmptyConcat = str_concat("", "")
+    if (sameText(nativeEmptyConcat, runtimeEmptyConcat) == false) {
+        return fail("strConcat disagrees with str_concat on empty inputs")
+    }
+
+    if (strCharAt("abc", 1) != str_char_at("abc", 1)) {
+        return fail("strCharAt disagrees with str_char_at")
+    }
+    if (strCharAt("abc", 3) != str_char_at("abc", 3)) {
+        return fail("strCharAt disagrees with str_char_at out of range")
+    }
+    if ((strEquals("same", "same") as Int) != str_equals("same", "same")) {
+        return fail("strEquals disagrees with str_equals on equal input")
+    }
+    if ((strEquals("same", "some") as Int) != str_equals("same", "some")) {
+        return fail("strEquals disagrees with str_equals on unequal input")
+    }
+    if (sign(strCompare("abc", "abd")) != sign(str_compare("abc", "abd"))) {
+        return fail("strCompare disagrees with str_compare on differing bytes")
+    }
+    if (sign(strCompare("abc", "abcd")) != sign(str_compare("abc", "abcd"))) {
+        return fail("strCompare disagrees with str_compare on a prefix")
+    }
+
+    let nativeSlice = strSubstring("abcdef", 2, 3)
+    let runtimeSlice = str_substring("abcdef", 2, 3)
+    if (sameText(nativeSlice, runtimeSlice) == false) {
+        return fail("strSubstring disagrees with str_substring")
+    }
+    let nativeClampedSlice = strSubstring("abcdef", 4, 99)
+    let runtimeClampedSlice = str_substring("abcdef", 4, 99)
+    if (sameText(nativeClampedSlice, runtimeClampedSlice) == false) {
+        return fail("strSubstring disagrees with str_substring when clamped")
+    }
+    let nativeMissingSlice = strSubstring("abcdef", 99, 2)
+    let runtimeMissingSlice = str_substring("abcdef", 99, 2)
+    if (sameText(nativeMissingSlice, runtimeMissingSlice) == false) {
+        return fail("strSubstring disagrees with str_substring out of range")
+    }
+
+    let nativeChar = strFromChar('Q')
+    let runtimeChar = str_from_char('Q')
+    if (sameText(nativeChar, runtimeChar) == false) {
+        return fail("strFromChar disagrees with str_from_char")
+    }
+    let nativeNulChar = strFromChar('\0')
+    let runtimeNulChar = str_from_char('\0')
+    if (sameText(nativeNulChar, runtimeNulChar) == false) {
+        return fail("strFromChar disagrees with str_from_char on NUL")
+    }
+    let nativeClone = strClone("copy")
+    if (sameText(nativeClone, "copy") == false) {
+        return fail("strClone should return an equal fresh string")
+    }
+    let nativeEmpty = strEmpty()
+    if (sameText(nativeEmpty, "") == false) {
+        return fail("strEmpty should return an owned empty string")
+    }
 
     if (sameText(strTrim("  x  "), str_trim("  x  ")) == false) {
         return fail("strTrim disagrees with str_trim on padded input")
@@ -65,6 +155,51 @@ fn main() -> Int {
     }
     if (strIndexOf("aaa", "aa") != str_index_of("aaa", "aa")) {
         return fail("strIndexOf disagrees with str_index_of on an overlapping needle")
+    }
+    // Both predictive bytes occur at every four-byte candidate, but the third
+    // byte rejects each one. This drives the packed-pair effectiveness check
+    // into its Two-Way fallback instead of only testing the fast no-candidate
+    // path.
+    let denseCandidates = strRepeat("jzxe", 80)
+    if (strIndexOf(denseCandidates, "jzde") != str_index_of(denseCandidates, "jzde")) {
+        return fail("strIndexOf disagrees after dense packed-pair candidates")
+    }
+    // Needles above the packed-pair cutoff always use Two-Way. Cover aperiodic
+    // and short-period needles, both hit and miss.
+    let longHaystack = "prefix-0123456789abcdefghijklmnopqrstuv-WXYZ-suffix"
+    let longNeedle = "0123456789abcdefghijklmnopqrstuv-WXYZ"
+    if (strIndexOf(longHaystack, longNeedle) != str_index_of(longHaystack, longNeedle)) {
+        return fail("strIndexOf disagrees on a long aperiodic needle")
+    }
+    let periodicHaystack = strRepeat("ab", 96)
+    let periodicNeedle = "abababababababababababababababababababab"
+    if (strIndexOf(periodicHaystack, periodicNeedle) !=
+        str_index_of(periodicHaystack, periodicNeedle)) {
+        return fail("strIndexOf disagrees on a long periodic needle")
+    }
+    let longMiss = "abababababababababababababababababababac"
+    if (strIndexOf(periodicHaystack, longMiss) !=
+        str_index_of(periodicHaystack, longMiss)) {
+        return fail("strIndexOf disagrees on a long periodic miss")
+    }
+    // Sweep both sides of the 32-byte cutoff. Even cases slice a guaranteed
+    // match from the haystack; odd cases use independently generated needles.
+    let mut searchCase = 1
+    while (searchCase <= 256) {
+        let hayLength = 40 + searchCase % 97
+        let mut needleLength = 2 + searchCase % 65
+        if (needleLength > hayLength) { needleLength = hayLength }
+        let generatedHaystack = searchFixture(searchCase, hayLength)
+        let mut generatedNeedle = searchFixture(searchCase + 333, needleLength)
+        if (searchCase % 2 == 0) {
+            let start = (searchCase * 7) % (hayLength - needleLength + 1)
+            generatedNeedle = strSubstring(generatedHaystack, start, needleLength)
+        }
+        if (strIndexOf(generatedHaystack, generatedNeedle) !=
+            str_index_of(generatedHaystack, generatedNeedle)) {
+            return fail("strIndexOf disagrees in the generated search sweep")
+        }
+        searchCase = searchCase + 1
     }
 
     if ((strContains("hello", "ell") as Int) != str_contains("hello", "ell")) {

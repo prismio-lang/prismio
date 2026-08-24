@@ -1,0 +1,8 @@
+// Compiler builtin identities are not an FFI namespace. Source may invoke the
+// supported builtins, but it cannot redeclare or replace one with an extern.
+
+extern fn __builtin_string_len(value: String) -> Int
+
+fn main() -> Int {
+    return __builtin_string_len("abc")
+}

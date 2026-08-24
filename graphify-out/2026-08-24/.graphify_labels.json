@@ -211,11 +211,14 @@
   "209": "HANDOFF.md",
   "210": "Session of 2026-08-25 (final benchmark) — the corpus standing has not moved in seven sessions, and `region` is fixed",
   "211": "M2.1a — recursive releases for self-referential types (fork (a))",
-  "212": "Prompt 1 is done — what it unblocked",
+  "212": "g5.swift",
+  "213": "NEXT_SESSION.md",
   "214": "Concepts",
+  "215": "arena_chunk_new",
   "216": "milestone_bench.py",
   "217": "Session of 2026-08-17 (second) — §8's forced candidate lands, and the IR differential turns out to have a concurrency hole",
   "218": "5 · The accepted tradeoffs, reported anyway",
   "219": "find_binding",
+  "220": "struct_entry",
   "221": "Session of 2026-08-23 (M2.0) — the accumulator gets an owner, and \"all seven are clean\" was six"
 }

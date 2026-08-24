@@ -1,6 +1,5 @@
 import std.io
 extern fn str_equals(s1: String, s2: String) -> Int
-extern fn str_length(s: String) -> Int
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn str_substring(s: String, start: Int, length: Int) -> String
 extern fn str_char_at(s: String, index: Int) -> Char
@@ -19,8 +18,8 @@ fn fail(message: String) -> Int {
 fn main() -> Int {
     let text = "Hello, World!"
 
-    if (str_length(text) != 13) {
-        return fail("str_length should count runtime string length")
+    if (__builtin_string_len(text) != 13) {
+        return fail("string length builtin should read the native length")
     }
 
     if (str_equals(str_substring(text, 0, 5), "Hello") != 1) {

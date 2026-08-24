@@ -9,7 +9,6 @@ import ums.builder.build_plan
 
 extern fn read_file(path: String borrow) -> String produce(free)
 extern fn get_directory(path: String borrow) -> String produce(free)
-extern fn str_length(value: String) -> Int
 extern fn str_clone(value: String borrow) -> String produce(free)
 
 struct UmsWorkspace {
@@ -51,7 +50,7 @@ fn umsLoadText(source: String, manifestPath: String, root: String,
 fn umsLoadProject(startDirectory: String, profile: String) -> UmsWorkspace {
     let diagnostics = umsDiagnostics()
     let manifestPath = umsDiscoverManifest(startDirectory, diagnostics)
-    if (str_length(manifestPath) == 0) { return umsEmptyWorkspace(diagnostics) }
+    if (__builtin_string_len(manifestPath) == 0) { return umsEmptyWorkspace(diagnostics) }
     let root = get_directory(manifestPath)
     return umsLoadText(read_file(manifestPath), manifestPath, root, profile)
 }

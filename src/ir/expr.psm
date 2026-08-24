@@ -379,12 +379,22 @@ fn inlineElemSizeOfList(listExpr: ASTNode) -> Int {
 // return, a container slot, a struct field. One `strlen` at the boundary, where
 // the thin representation paid one per access.
 //
-// `prismio_cstr_len` rather than `str_length`, which now takes a fat String and
-// would regress infinitely.
+// `prismio_cstr_len` rather than `__builtin_string_len`, which requires a fat
+// String while this boundary has only the raw pointer.
 fn fatFromPtr(raw: String) -> String {
     ir_call_begin()
     ir_call_arg("ptr", raw)
     let len = ir_get_temp_name(ir_call_end("i32", "prismio_cstr_len"))
+    return fatWithLength(raw, len)
+}
+
+// The pair, from a pointer and a length the caller already knows -- no `strlen`.
+//
+// Separate from fatFromPtr because measuring is exactly what the caller with a
+// length must not do: `str_with_capacity` returns a buffer whose interior is
+// uninitialised, so a `prismio_cstr_len` on it reads a length out of whatever
+// the allocator last left there.
+fn fatWithLength(raw: String, len: String) -> String {
     let wide = ir_get_temp_name(ir_sext("i32", len, "i64"))
     let u = ir_get_temp_name(ir_undef("struct:prismio.str"))
     let withPtr = ir_get_temp_name(ir_insert_value("struct:prismio.str", u, raw, "ptr", 0))
@@ -479,7 +489,7 @@ fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: Strin
         let fieldType = fieldStorageType(ir_get_struct_field_type(structName, field.s1))
         let fieldIndex = ir_get_struct_field_index(structName, field.s1)
 
-        if (isStructTypeKey(fieldType)) {
+        if (isStructTypeKey(fieldType) and isFatStringKey(fieldType) == false) {
             let slot = ir_struct_field_ptr(structName, destPtr, fieldIndex)
             let init = ptr_to_node(field.child1)
             let innerName = structTypeName(fieldType)
@@ -559,10 +569,13 @@ fn generateExpression(expr: ASTNode) -> String {
             if (str_equals(expr.s2, "") == 1) {
                 collectStringsExpr(expr)
             }
-            // `ir_const_str(expr.s2, str_length(expr.s1))` is the fat form: a
-            // constant pair, costing no instructions. Held back with the
-            // representation; see the note in src/ir/types.psm.
-            return ir_get_temp_name(ir_string_ptr(expr.s2))
+            // A constant pair -- `{ @.strN, <len> }` -- so a literal costs no
+            // instructions at all, which is why literals do not go through the
+            // insertvalue pair that `fatFromPtr` builds for an FFI return.
+            //
+            // `__builtin_string_len` here runs in the *compiler*, on the literal's own
+            // text, so it is a compile-time count and not a call in the program.
+            return ir_get_temp_name(ir_const_str(expr.s2, __builtin_string_len(expr.s1)))
         }
     }
 
@@ -668,7 +681,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // and are not built -- see the note in HANDOFF.md.
         // A String field is a value, not storage reached by GEP, so it loads
         // like a scalar even though its key names a struct.
-        if (str_equals(fieldType, "struct:prismio.str") == 1) {
+        if (isFatStringKey(fieldType)) {
             return ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
         }
         if (isStructTypeKey(fieldType)) {
@@ -830,6 +843,11 @@ fn generateExpression(expr: ASTNode) -> String {
         let callee = ptr_to_node(call.child1)
         let mut target = callee.s1
         if (str_equals(call.s2, "") == 0) { target = call.s2 }
+        let taskFunc = taskFunctionForCall(call)
+        if (nodeExists(taskFunc)) {
+            let func = ptr_to_node(taskFunc)
+            if (functionHasStringParam(func)) { target = taskThunkName(func) }
+        }
 
         // Which of prismio_task_invoke's three families the runtime must call
         // through. Decided from the callee's declared return type, which is
@@ -1005,28 +1023,70 @@ fn generateExpression(expr: ASTNode) -> String {
         // is the shape five of the six corpus programs push in.
         if (generatePushInPlace(expr, funcName)) { return "" }
 
+        // Byte length is the pair's second field. This is a reserved compiler
+        // builtin, not an extern: its source spelling carries no declaration,
+        // LLVM symbol or link requirement.
+        if (str_equals(funcName, "__builtin_string_len") == 1
+            and nodeExists(expr.child2)) {
+            let a0 = ptr_to_node(expr.child2)
+            if (nodeExists(a0.next) == false) {
+                let value = generateExpression(a0)
+                let wide = ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 1))
+                return ir_get_temp_name(ir_trunc("i64", wide, "i32"))
+            }
+        }
+
+        // The one allocation whose length the caller states rather than the
+        // buffer carrying it.
+        //
+        // Intercepted here because the general path would build the pair with
+        // `fatFromPtr`, and measuring this buffer is meaningless: the C writes
+        // only the terminator and leaves the interior uninitialised. Every other
+        // String arriving from C is already filled, which is what makes
+        // `fatFromPtr` right for those and wrong for this one.
+        //
+        // This is also what makes the length builtin above sound. The pair is
+        // only worth reading if every producer puts a true length in it, and
+        // this is the one producer that could not.
+        //
+        // The arena bracket is repeated rather than shared: this returns before
+        // the general path's copy of it, and this call allocates.
+        if (str_equals(funcName, "str_with_capacity") == 1 and nodeExists(expr.child2)) {
+            let a0 = ptr_to_node(expr.child2)
+            if (nodeExists(a0.next) == false) {
+                let n = generateExpression(a0)
+                let placed = aif_arena_at_node(node_to_ptr(expr)) == 1
+                if (placed) { ir_arena_hint_begin() }
+                ir_call_begin()
+                ir_call_arg("i32", n)
+                let raw = ir_get_temp_name(ir_call_end("ptr", "str_with_capacity"))
+                if (placed) { ir_arena_hint_end() }
+                return fatWithLength(raw, n)
+            }
+        }
+
         // Byte access, emitted rather than called.
         //
-        // `str_byte_at` and `str_put_byte` are the two operations a string loop
-        // runs once per byte, and as ordinary externs each one costs a call that
-        // LLVM cannot inline -- they live in lang_runtime.c, a separate
-        // translation unit, and user programs do not link with LTO. Measured on
-        // 40 000 searches of a 40 000-byte string: 1.85s calling out per byte
-        // against 0.38s for the identical loop in C at -O2, so **4.9x of that
-        // gap was call overhead alone**.
+        // A string loop runs each byte operation once per byte. When the old
+        // spellings were ordinary externs, each iteration paid a call LLVM could
+        // not inline -- lang_runtime.c is a separate translation unit and user
+        // programs do not link with LTO. Measured on 40 000 searches of a
+        // 40 000-byte string: 1.85s calling out per byte against 0.38s for the
+        // identical loop in C at -O2, so **4.9x of that gap was call overhead
+        // alone**.
         //
         // The lowering is the same GEP-plus-load the array index above emits;
-        // `String` is a machine pointer and a byte is an `i8`, so there is
-        // nothing string-specific about it beyond the element type.
+        // String's data field is a machine pointer and a byte is an `i8`, so
+        // there is nothing string-specific about it beyond the element type.
         //
-        // **No bounds check, deliberately.** The C `str_byte_at` tests only for a
-        // negative index -- it never checked the upper bound, because doing so
-        // costs a `strlen` and that is what made `str_char_at` quadratic. The
-        // intrinsic drops the negative test too, so the contract is now "the
+        // **No bounds check, deliberately.** Checking the upper bound by calling
+        // `strlen` on every access is what made `str_char_at` loops quadratic.
+        // The builtin's contract is "the
         // index is in [0, len)" and std/string.psm establishes that bound before
         // every use. `strCharAt` remains the checked accessor for callers who
         // want one.
-        if (str_equals(funcName, "str_byte_at") == 1 and nodeExists(expr.child2)) {
+        if (str_equals(funcName, "__builtin_string_byte_at") == 1
+            and nodeExists(expr.child2)) {
             let a0 = ptr_to_node(expr.child2)
             if (nodeExists(a0.next)) {
                 let base = generateExpression(a0)
@@ -1036,7 +1096,8 @@ fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
-        if (str_equals(funcName, "str_put_byte") == 1 and nodeExists(expr.child2)) {
+        if (str_equals(funcName, "__builtin_string_put_byte") == 1
+            and nodeExists(expr.child2)) {
             let a0 = ptr_to_node(expr.child2)
             if (nodeExists(a0.next)) {
                 let a1 = ptr_to_node(a0.next)
@@ -1129,14 +1190,39 @@ fn generateExpression(expr: ASTNode) -> String {
             return ""
         }
 
+        // AIF Level 4. The value this call produces may belong to an enclosing
+        // `region`, and it is allocated inside the runtime rather than through
+        // ir_alloc_region -- so the arena is chosen here, around the call, and
+        // the runtime bumps instead of calling malloc.
+        //
+        // aif_arena_at_node is the whole gate, and it is sufficient rather than
+        // merely convenient. A site exists on a call node only when the callee is
+        // opaque to this compilation; the analysis raised it to T1 with an escape
+        // at or below the region, which an `alias` return or an undeclared one
+        // never gets. So this fires exactly on FFI `produce` calls inside a region
+        // whose result cannot outlive it.
+        //
+        // Bound here rather than at its second use below, because the String
+        // return just underneath is an *early* one and needs the same bracket.
+        let arenaPlaced = aif_arena_at_node(node_to_ptr(expr)) == 1
+
         // Crossing back in from C. The callee is declared to return `ptr`, so the
         // length has to be supplied here -- one `strlen` at the boundary, where
         // the thin representation used to pay one per access.
         //
-        // `prismio_cstr_len` rather than `str_length`, which now takes a fat
-        // String and would regress infinitely.
+        // `prismio_cstr_len` rather than `__builtin_string_len`, which requires a
+        // fat String while this boundary has only the raw pointer.
+        //
+        // The bracket goes around the *call*, not around the pair built from its
+        // result: the hint steers an allocation, and `prismio_cstr_len` makes
+        // none. Returning above the gate is what made every `str_concat` inside a
+        // `region` come from malloc -- the arena served nothing, silently, and
+        // the program still printed the right answer.
         if (isForeign and str_equals(retType, "struct:prismio.str") == 1) {
-            return fatFromPtr(ir_get_temp_name(ir_call_end("ptr", callName)))
+            if (arenaPlaced) { ir_arena_hint_begin() }
+            let raw = ir_get_temp_name(ir_call_end("ptr", callName))
+            if (arenaPlaced) { ir_arena_hint_end() }
+            return fatFromPtr(raw)
         }
 
         // REQUIREMENTS 20, the other end. `list_get` is declared to return `ptr`
@@ -1151,18 +1237,6 @@ fn generateExpression(expr: ASTNode) -> String {
             return slotToScalar(retType, slot)
         }
 
-        // AIF Level 4. The value this call produces may belong to an enclosing
-        // `region`, and it is allocated inside the runtime rather than through
-        // ir_alloc_region -- so the arena is chosen here, around the call, and
-        // the runtime bumps instead of calling malloc.
-        //
-        // aif_arena_at_node is the whole gate, and it is sufficient rather than
-        // merely convenient. A site exists on a call node only when the callee is
-        // opaque to this compilation; the analysis raised it to T1 with an escape
-        // at or below the region, which an `alias` return or an undeclared one
-        // never gets. So this fires exactly on FFI `produce` calls inside a region
-        // whose result cannot outlive it.
-        let arenaPlaced = aif_arena_at_node(node_to_ptr(expr)) == 1
         if (arenaPlaced) { ir_arena_hint_begin() }
         let mut tempId = ir_call_end(retType, callName)
         if (arenaPlaced) { ir_arena_hint_end() }

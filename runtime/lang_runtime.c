@@ -23,6 +23,12 @@ void  aif_verify_arm(void);
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#elif defined(__SSE2__)
+#include <emmintrin.h>
+#endif
+
 // AIF Level 4, second half: `region` absorbs collections too.
 //
 // COMPILER-AUDIT scheduled Level 4 after Level 3 so that regions would already
@@ -144,17 +150,23 @@ int str_compare(const char* s1, const char* s2) {
     return strcmp(s1, s2);
 }
 
-int str_length(const char* s) {
-    return strlen(s);
-}
-
+// `strcat` here was a third and a fourth pass over the data: it walks `result`
+// from the start to find the end it was just told, then copies. With both
+// lengths already in hand, two `memcpy`s are the whole operation -- the second
+// takes len2 + 1 so it carries the terminator rather than needing a separate
+// store. Measured on 400 000 concatenations of two 20 KB strings: 1080ms before,
+// against 117ms for the same work in C with the lengths passed in.
+//
+// The two `strlen`s that remain are the caller's own lengths, recomputed. They
+// are visible to native Prismio -- `String` is `{ptr, i64}` -- but this C ABI
+// deliberately accepts plain pointers. A future length-aware ABI can avoid them.
 char* str_concat(const char* s1, const char* s2) {
-    int len1 = strlen(s1);
-    int len2 = strlen(s2);
+    size_t len1 = strlen(s1);
+    size_t len2 = strlen(s2);
     char* result = (char*)rt_alloc(len1 + len2 + 1);
 
-    strcpy(result, s1);
-    strcat(result, s2);
+    memcpy(result, s1, len1);
+    memcpy(result + len1, s2, len2 + 1);
 
     return result;
 }
@@ -237,12 +249,6 @@ char str_char_at(const char* s, int index) {
     return s[index];
 }
 
-// See the native definition for why this exists.
-char str_byte_at(const char* s, int index) {
-    if (index < 0) return '\0';
-    return s[index];
-}
-
 int str_contains(const char* haystack, const char* needle) {
     return strstr(haystack, needle) != NULL ? 1 : 0;
 }
@@ -308,9 +314,9 @@ char* str_replace(const char* s, const char* old_str, const char* new_str) {
 // The length of a C string, for codegen's use only.
 //
 // A `String` is `{ptr, i64}` inside Prismio and a bare `const char*` across the
-// FFI, so a result coming *back* from an extern has to be given a length. It
-// cannot go through `str_length`, which now takes a fat String -- that is a
-// regress. This takes the raw pointer.
+// FFI, so a result coming *back* from an extern has to be given a length. The
+// native length builtin requires that fat value, which does not exist yet at
+// this point. This dedicated boundary helper takes the raw pointer.
 int prismio_cstr_len(const char* s) { return s ? (int)strlen(s) : 0; }
 
 // The first occurrence of `b` at or after `from`, or -1.
@@ -328,6 +334,86 @@ int str_find_byte(const char* s, int from, char b) {
     if (!s || from < 0) return -1;
     const char* hit = strchr(s + from, b);
     return hit ? (int)(hit - s) : -1;
+}
+
+// Find a candidate start where two bytes of a needle occur at their respective
+// offsets. Checking a pair rather than one byte is what keeps common individual
+// bytes in the vector loop: only the much rarer conjunction returns to scalar
+// Prismio for full verification. This is the "packed pair" form of generic SIMD
+// substring search used by memchr::memmem directly for needles up to 32 bytes
+// and as a Two-Way prefilter for longer needles.
+//
+// `last` is the final legal candidate start. Both offsets must be within the
+// needle, which makes the two unaligned vector loads stay within the String when
+// the caller supplies `last = string_length - needle_length`.
+int str_find_byte_pair(const char* s, int from, int last,
+                       int offset1, char byte1, int offset2, char byte2) {
+    if (!s || from < 0 || last < from || offset1 < 0 || offset2 < 0) return -1;
+
+    int i = from;
+#if defined(__aarch64__) || defined(_M_ARM64)
+    uint8x16_t want1 = vdupq_n_u8((uint8_t)byte1);
+    uint8x16_t want2 = vdupq_n_u8((uint8_t)byte2);
+    // A two-vector unroll gives the core two independent load/compare chains;
+    // on AArch64 this hides their latency without the instruction-cache cost
+    // of the four-vector form.
+    for (; i <= last - 31; i += 32) {
+        uint8x16_t match0 = vandq_u8(
+            vceqq_u8(vld1q_u8((const uint8_t*)s + i + offset1), want1),
+            vceqq_u8(vld1q_u8((const uint8_t*)s + i + offset2), want2));
+        uint8x16_t match1 = vandq_u8(
+            vceqq_u8(vld1q_u8((const uint8_t*)s + i + 16 + offset1), want1),
+            vceqq_u8(vld1q_u8((const uint8_t*)s + i + 16 + offset2), want2));
+        uint8x8_t packed0 = vshrn_n_u16(vreinterpretq_u16_u8(match0), 4);
+        uint8x8_t packed1 = vshrn_n_u16(vreinterpretq_u16_u8(match1), 4);
+        uint64_t mask0 = vget_lane_u64(vreinterpret_u64_u8(packed0), 0)
+                       & UINT64_C(0x8888888888888888);
+        uint64_t mask1 = vget_lane_u64(vreinterpret_u64_u8(packed1), 0)
+                       & UINT64_C(0x8888888888888888);
+        if (mask0 != 0) return i + (__builtin_ctzll(mask0) >> 2);
+        if (mask1 != 0) return i + 16 + (__builtin_ctzll(mask1) >> 2);
+    }
+    for (; i <= last - 15; i += 16) {
+        uint8x16_t got1 = vld1q_u8((const uint8_t*)s + i + offset1);
+        uint8x16_t got2 = vld1q_u8((const uint8_t*)s + i + offset2);
+        uint8x16_t match = vandq_u8(vceqq_u8(got1, want1),
+                                    vceqq_u8(got2, want2));
+        // Each matching lane is 0xFF. Narrow adjacent byte pairs after a
+        // four-bit shift so one scalar bit at positions 3,7,... represents
+        // each lane; this is NEON's three-instruction equivalent of movemask.
+        uint8x8_t packed = vshrn_n_u16(vreinterpretq_u16_u8(match), 4);
+        uint64_t mask = vget_lane_u64(vreinterpret_u64_u8(packed), 0)
+                      & UINT64_C(0x8888888888888888);
+        if (mask != 0) return i + (__builtin_ctzll(mask) >> 2);
+    }
+#elif defined(__SSE2__)
+    __m128i want1 = _mm_set1_epi8(byte1);
+    __m128i want2 = _mm_set1_epi8(byte2);
+    for (; i <= last - 31; i += 32) {
+        __m128i match0 = _mm_and_si128(
+            _mm_cmpeq_epi8(_mm_loadu_si128((const __m128i*)(s + i + offset1)), want1),
+            _mm_cmpeq_epi8(_mm_loadu_si128((const __m128i*)(s + i + offset2)), want2));
+        __m128i match1 = _mm_and_si128(
+            _mm_cmpeq_epi8(_mm_loadu_si128((const __m128i*)(s + i + 16 + offset1)), want1),
+            _mm_cmpeq_epi8(_mm_loadu_si128((const __m128i*)(s + i + 16 + offset2)), want2));
+        unsigned mask0 = (unsigned)_mm_movemask_epi8(match0);
+        unsigned mask1 = (unsigned)_mm_movemask_epi8(match1);
+        if (mask0 != 0) return i + __builtin_ctz(mask0);
+        if (mask1 != 0) return i + 16 + __builtin_ctz(mask1);
+    }
+    for (; i <= last - 15; i += 16) {
+        __m128i got1 = _mm_loadu_si128((const __m128i*)(s + i + offset1));
+        __m128i got2 = _mm_loadu_si128((const __m128i*)(s + i + offset2));
+        __m128i match = _mm_and_si128(_mm_cmpeq_epi8(got1, want1),
+                                      _mm_cmpeq_epi8(got2, want2));
+        unsigned mask = (unsigned)_mm_movemask_epi8(match);
+        if (mask != 0) return i + __builtin_ctz(mask);
+    }
+#endif
+    for (; i <= last; i++) {
+        if (s[i + offset1] == byte1 && s[i + offset2] == byte2) return i;
+    }
+    return -1;
 }
 
 // A String of `length` bytes the caller fills in, plus its NUL.
@@ -355,25 +441,22 @@ int str_find_byte(const char* s, int from, char b) {
 // A caller that does not fill it gets whatever the allocator handed over, up to
 // the terminator. That is the same contract C gives `malloc`, and it is why this
 // is not a general-purpose allocation function.
+//
+// **`length` is the result's length, not merely its capacity.** Since `String`
+// became `{ptr, i64}` the frontend builds this call's pair from the argument
+// rather than measuring the buffer -- it has to, because measuring uninitialised
+// bytes is what the paragraph above describes. The consequence is that the
+// length is fixed here and a later write cannot change it: a NUL written into
+// the middle no longer shortens the string, it just puts a NUL in it. Nothing in
+// std/string.psm ever did that -- every builder listed above fills its buffer
+// completely -- but a caller wanting a shorter result must now ask for a shorter
+// one rather than terminating early. See the `str_with_capacity` intrinsic in
+// src/ir/expr.psm.
 char* str_with_capacity(int length) {
     if (length < 0) length = 0;
     char* result = (char*)rt_alloc((size_t)length + 1);
     result[length] = '\0';
     return result;
-}
-
-// Write one byte. **The upper bound is not checked**, for the same reason
-// `str_byte_at` does not check it: the check costs a `strlen`, which is O(n), and
-// a loop over an O(n) accessor is how `str_char_at` made every search in
-// std/string.psm quadratic. This is the unchecked pair, to be used only where the
-// caller established the bound -- which in practice means "immediately after
-// str_with_capacity, for i < the length passed to it".
-//
-// Writing a NUL truncates the string, which is the one way a caller can make the
-// result shorter than the capacity it asked for.
-void str_put_byte(char* s, int index, char value) {
-    if (!s || index < 0) return;
-    s[index] = value;
 }
 
 int str_to_int(const char* s) {

@@ -33,7 +33,7 @@ fn umsDiagnosticAdd(diagnostics: List<UmsDiagnostic>, code: String, path: String
 }
 
 fn umsDiagnosticPrint(diagnostic: UmsDiagnostic) {
-    if (str_length(diagnostic.path) > 0) {
+    if (__builtin_string_len(diagnostic.path) > 0) {
         print(diagnostic.path)
         if (diagnostic.line > 0) {
             print(":")

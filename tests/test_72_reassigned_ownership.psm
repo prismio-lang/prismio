@@ -36,7 +36,6 @@
 import std.io
 
 extern fn str_concat(s1: String, s2: String) -> String
-extern fn str_length(s: String) -> Int
 
 struct Holder {
     name: String
@@ -66,7 +65,7 @@ fn local_accumulator(n: Int) -> Int {
         out = str_concat(out, "xyz")
         i = i + 1
     }
-    return str_length(out)
+    return __builtin_string_len(out)
 }
 
 // A literal assigned into an owning slot, then displaced. Aborts in libc if the
@@ -92,9 +91,9 @@ fn literal_mid_loop(n: Int) -> String {
 // afterwards.
 fn borrow_reassign(h: Holder) -> Int {
     let mut s = str_concat("own", "ed")
-    let first = str_length(s)
+    let first = __builtin_string_len(s)
     s = h.name
-    return first + str_length(s) + str_length(h.name)
+    return first + __builtin_string_len(s) + __builtin_string_len(h.name)
 }
 
 // Two accumulators in one scope, overwritten in the same iteration, and returned
@@ -131,6 +130,19 @@ fn callee_accumulator(n: Int) -> String {
     return s
 }
 
+// A literal in an owning accumulator is cloned before the first assignment so
+// that the displaced value can be freed. The clone is a handwritten codegen
+// call rather than a CALL_EXPR; when it returned only the pointer half, this
+// read saw whatever old stack word followed it as the length. Reading before the
+// assignment is the discriminator -- afterwards the replacement carries a good
+// pair and the bug disappears.
+fn cloned_literal_keeps_length() -> String {
+    let mut s = "inferred"
+    if (__builtin_string_len(s) != 8) { return str_concat("bad", "") }
+    s = str_concat(s, "")
+    return s
+}
+
 // **Read this before adding a case.** A confined accumulator is served by an
 // arena, and an arena object is released in bulk rather than individually -- so
 // `aif_releases_on_overwrite_node` declines it and the function under test
@@ -144,7 +156,7 @@ fn main() -> Int {
 
     // 6 iterations of "ab"
     let built = returned_accumulator(6)
-    if (str_length(built) != 12) {
+    if (__builtin_string_len(built) != 12) {
         println("FAIL returned_accumulator")
         failures = failures + 1
     }
@@ -156,9 +168,9 @@ fn main() -> Int {
     }
 
     // whatever the loop did, the survivor is "resettail". Bound rather than passed
-    // straight to str_length, so the caller owns it and it is not a leak of its own.
+    // straight to the length builtin, so the caller owns it and it is not a leak of its own.
     let lit = literal_mid_loop(5)
-    if (str_length(lit) != 9) {
+    if (__builtin_string_len(lit) != 9) {
         println("FAIL literal_mid_loop")
         failures = failures + 1
     }
@@ -172,15 +184,21 @@ fn main() -> Int {
 
     // "eeff" plus "ccdd" with four empty concats appended
     let pair = two_accumulators(4)
-    if (str_length(pair) != 8) {
+    if (__builtin_string_len(pair) != 8) {
         println("FAIL two_accumulators")
         failures = failures + 1
     }
 
     // 6 displaced "piece" values released, one survivor returned to main
     let piece = callee_accumulator(6)
-    if (str_length(piece) != 5) {
+    if (__builtin_string_len(piece) != 5) {
         println("FAIL callee_accumulator")
+        failures = failures + 1
+    }
+
+    let cloned = cloned_literal_keeps_length()
+    if (__builtin_string_len(cloned) != 8) {
+        println("FAIL cloned literal length")
         failures = failures + 1
     }
 

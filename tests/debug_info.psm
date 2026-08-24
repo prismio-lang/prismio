@@ -66,7 +66,7 @@ struct Probe {
 // is -- the expected line and type come from this file, so moving a declaration
 // moves the assertion with it.
 let mut tally = 0                         // GLOBAL tally i32
-let unit = "reading"                      // GLOBAL unit ptr
+let unit = "reading"                      // GLOBAL unit str
 let epoch: I64 = 1700000000               // GLOBAL epoch i64
 let tolerance = 0.125                     // GLOBAL tolerance double
 let enabled = true                        // GLOBAL enabled i1

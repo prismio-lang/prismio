@@ -11,7 +11,6 @@
 
 import std.io
 extern fn str_equals(s1: String, s2: String) -> Int
-extern fn str_length(s: String) -> Int
 extern fn str_char_at(s: String, index: Int) -> Char
 
 fn fail(message: String) -> Int {
@@ -23,7 +22,7 @@ fn fail(message: String) -> Int {
 fn main() -> Int {
     // \n decodes to one character, not two
     let nl = "a\nb"
-    if (str_length(nl) != 3) {
+    if (__builtin_string_len(nl) != 3) {
         return fail("\\n should decode to a single character")
     }
     if (str_char_at(nl, 1) != '\n') {
@@ -32,7 +31,7 @@ fn main() -> Int {
 
     // \t
     let tab = "a\tb"
-    if (str_length(tab) != 3) {
+    if (__builtin_string_len(tab) != 3) {
         return fail("\\t should decode to a single character")
     }
     if (str_char_at(tab, 1) != '\t') {
@@ -41,7 +40,7 @@ fn main() -> Int {
 
     // \\ collapses to one backslash
     let back = "a\\b"
-    if (str_length(back) != 3) {
+    if (__builtin_string_len(back) != 3) {
         return fail("\\\\ should decode to a single backslash")
     }
     if (str_char_at(back, 1) != '\\') {
@@ -50,7 +49,7 @@ fn main() -> Int {
 
     // \" does not terminate the literal
     let quoted = "say \"hi\""
-    if (str_length(quoted) != 8) {
+    if (__builtin_string_len(quoted) != 8) {
         return fail("escaped quotes should not end the literal")
     }
     if (str_char_at(quoted, 4) != '"') {
@@ -70,18 +69,18 @@ fn main() -> Int {
     if (str_equals(path, "C:\\dir\\file.txt") == 0) {
         return fail("path with escaped backslashes did not round-trip")
     }
-    if (str_length(path) != 15) {
+    if (__builtin_string_len(path) != 15) {
         return fail("path length after decoding is wrong")
     }
 
     // strings with no escapes still work (the fast path)
     let plain = "no escapes here"
-    if (str_length(plain) != 15) {
+    if (__builtin_string_len(plain) != 15) {
         return fail("plain string length changed")
     }
 
     // an empty string is still empty
-    if (str_length("") != 0) {
+    if (__builtin_string_len("") != 0) {
         return fail("empty string should stay empty")
     }
 

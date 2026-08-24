@@ -5,8 +5,14 @@
 //     `value as U64` that is a no-op on a 64-bit target and a real widening on
 //     wasm32. If sema and codegen disagree about how wide Usize is, that cast
 //     compiles to nothing and the module fails verification.
-//   - a struct with a String between two scalars, so a member offset moves when
-//     the pointer width does.
+//   - a struct with a pointer-width `Usize` between two scalars, so a member
+//     offset moves when the pointer width does. It used to be the `String` that
+//     carried this, back when a String *was* one pointer. The fat `{ptr, i64}`
+//     is 16 bytes and 8-aligned on both targets, so host and wasm32 agreed on
+//     its offset and the assertion quietly stopped being able to fail. A
+//     `Usize` is 8 bytes here and 4 on wasm32, so every member after it moves --
+//     and it moves for the same reason the rest of this fixture exists, since
+//     `Usize` is exactly what sema and codegen have to agree about.
 //   - I/O, so std.io's bodies are in the module and there is something for the
 //     linker to resolve on a real cross build.
 
@@ -14,14 +20,28 @@ import std.io
 
 struct Mixed {
     tag: Int,
+    span: Usize,
     name: String,
     count: I64
 }
 
+// Two fields, and that is the point. The layout search may reorder everything
+// after field 0, and on `Mixed` it does exactly what hides this: it sorts the
+// members by size, so the one member whose size follows the pointer width ends
+// up last on wasm32 and every offset before it matches the host's. With one
+// field left to place there is no order to choose, so `width` sits at bit 64
+// here and bit 32 on wasm32 and no reordering can make those agree.
+struct Span {
+    tag: Int,
+    width: Usize
+}
+
 fn main() -> Int {
-    let m = Mixed { tag: 1, name: "cross", count: 7 }
+    let m = Mixed { tag: 1, span: 4, name: "cross", count: 7 }
+    let s = Span { tag: 2, width: 6 }
     let width: Usize = 8
     println(m.name)
     println(width)
+    println(s.width)
     return m.tag - 1
 }

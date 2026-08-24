@@ -3,7 +3,6 @@ import ums.parser.token
 import ums.model.diagnostic
 
 extern fn str_equals(left: String, right: String) -> Int
-extern fn str_length(value: String) -> Int
 extern fn str_char_at(value: String, index: Int) -> Char
 extern fn str_from_char(value: Char) -> String
 extern fn str_concat(left: String, right: String) -> String
@@ -160,7 +159,7 @@ fn umsLex(source: String, path: String,
         pos: 0,
         line: 1,
         col: 1,
-        length: str_length(source),
+        length: __builtin_string_len(source),
         tokens: list_new(),
         diagnostics: diagnostics
     }

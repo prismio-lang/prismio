@@ -142,7 +142,7 @@ fn aifCountKindTier(kind: Int, tier: Int) -> Int {
 // Every caller prints something after this on the same line, so the guaranteed
 // space never becomes trailing whitespace at end of line.
 fn aifPad(s: String, width: Int) -> String {
-    let mut n = str_length(s)
+    let mut n = __builtin_string_len(s)
     // Already at or past the column: one space, so the fields stay separable.
     // Tested before the loop, because after it `n >= width` always holds and
     // padding every field by one more character would shift the whole table.

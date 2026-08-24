@@ -5,12 +5,11 @@ extern fn get_directory(path: String borrow) -> String produce(free)
 extern fn join_path(directory: String borrow, child: String borrow) -> String produce(free)
 extern fn file_exists(path: String borrow) -> Int
 extern fn str_equals(left: String, right: String) -> Int
-extern fn str_length(value: String) -> Int
 
 fn umsDiscoverManifest(startDirectory: String,
                        diagnostics: List<UmsDiagnostic>) -> String {
     let mut directory = startDirectory
-    if (str_length(directory) == 0 or str_equals(directory, ".") == 1) {
+    if (__builtin_string_len(directory) == 0 or str_equals(directory, ".") == 1) {
         directory = current_directory()
     }
 

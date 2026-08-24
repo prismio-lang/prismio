@@ -21,15 +21,13 @@
 import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> Int
 
-extern fn str_length(s: String) -> Int
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn str_substring(s: String, start: Int, length: Int) -> String
-// str_byte_at, not str_char_at: the latter calls strlen on every read, which
+// The byte builtin, not str_char_at: the latter calls strlen on every read, which
 // makes any scan quadratic. src/lexer/scanner.psm holds the length in the
 // Lexer struct and bound-checks against it for exactly this reason, and a
 // benchmark that used str_char_at would be measuring strlen -- 22.8 ms per
 // pass over 21 KB, against 0.6 ms once the length is carried.
-extern fn str_byte_at(s: String, index: Int) -> Char
 extern fn str_equals(s1: String, s2: String) -> Int
 
 // Token kinds, as small integers -- the checksum mixes them in, so a port that
@@ -122,7 +120,7 @@ fn tokenize(src: String, srcLen: Int) -> Int {
     let mut count = 0
 
     while (pos < srcLen) {
-        let c = str_byte_at(src, pos)
+        let c = __builtin_string_byte_at(src, pos)
 
         if (isSpace(c)) {
             pos = pos + 1
@@ -132,13 +130,13 @@ fn tokenize(src: String, srcLen: Int) -> Int {
 
             if (isAlpha(c)) {
                 kind = TK_IDENT
-                while (pos < srcLen and isAlnum(str_byte_at(src, pos))) {
+                while (pos < srcLen and isAlnum(__builtin_string_byte_at(src, pos))) {
                     pos = pos + 1
                 }
             } else {
                 if (isDigit(c)) {
                     kind = TK_NUMBER
-                    while (pos < srcLen and isDigit(str_byte_at(src, pos))) {
+                    while (pos < srcLen and isDigit(__builtin_string_byte_at(src, pos))) {
                         pos = pos + 1
                     }
                 } else {
@@ -165,7 +163,7 @@ fn tokenize(src: String, srcLen: Int) -> Int {
 fn main() -> Int {
     let iterations = 200
     let src = buildSource(400)
-    let srcLen = str_length(src)
+    let srcLen = __builtin_string_len(src)
 
     let mut samples: List<Int> = list_new()
     let mut g = 0

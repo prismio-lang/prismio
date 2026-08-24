@@ -2571,24 +2571,43 @@ def _di_composite(nodes, name):
 # these seven types. Written out here rather than asked of the compiler on
 # purpose: a test that computed offsets the same way the thing under test does
 # would agree with it while both were wrong.
-_LLVM_WIDTH_BITS = {"i1": 8, "i8": 8, "i16": 16, "i32": 32, "i64": 64,
-                    "double": 64, "ptr": 64}
+# (size, alignment) in bits, which the fat String is the first element to make
+# two different numbers: `%prismio.str` is {ptr, i64}, so it is two words wide
+# and still only word-aligned. A model that aligned every element to its own
+# width -- which is what this was, when width was all it knew -- puts a String
+# field 64 bits further along than LLVM does, and then reports the *compiler* as
+# having described the wrong offsets.
+_LLVM_LAYOUT_BITS = {"i1": (8, 8), "i8": (8, 8), "i16": (16, 16),
+                     "i32": (32, 32), "i64": (64, 64), "double": (64, 64),
+                     "%prismio.str": (128, 64)}
 
 
-def _expected_layout(elements):
-    """(offsets, total_size), in bits, for a C-style struct of these elements."""
+def _expected_layout(elements, ptr_bits=64):
+    """(offsets, total_size), in bits, for a C-style struct of these elements.
+
+    `ptr_bits` is the target's pointer width. It is a parameter rather than a
+    constant because a cross build is exactly the case where assuming the host's
+    64 produces offsets that look right on this machine and describe the wrong
+    bytes on the one the DWARF is for.
+
+    `%prismio.str` is {ptr, i64} and comes out 128 bits wide, 64-bit aligned, on
+    both widths -- the i64 half carries the alignment either way -- so it needs
+    no parameter of its own.
+    """
+    table = dict(_LLVM_LAYOUT_BITS, ptr=(ptr_bits, ptr_bits))
     offset = 0
     worst = 8
     offsets = []
     for e in elements:
-        width = _LLVM_WIDTH_BITS.get(e)
-        if width is None:
+        entry = table.get(e)
+        if entry is None:
             return None, 0
-        worst = max(worst, width)
-        if offset % width:
-            offset += width - (offset % width)
+        size, align = entry
+        worst = max(worst, align)
+        if offset % align:
+            offset += align - (offset % align)
         offsets.append(offset)
-        offset += width
+        offset += size
     if offset % worst:
         offset += worst - (offset % worst)
     return offsets, offset
@@ -2635,11 +2654,19 @@ def run_target_test():
       3. *Pointer width follows the target, in sema as well as codegen.* On
          wasm32 the allocator takes an i32 and the widening cast in std.io is
          real, so it appears in the IR. Either half alone is a miscompile.
-      4. *`-g` reads member offsets from the target, not the host.* A String
-         between an Int and an I64 sits at bit 64 on a 64-bit target and at bit
-         32 on wasm32. Getting this from the host is the exact bug the DWARF
+      4. *`-g` reads member offsets from the target, not the host.* A
+         pointer-width `Usize` after an `Int` sits at bit 64 on a 64-bit target
+         and at bit 32 on wasm32, and the `String` behind it follows at bit 128
+         or bit 64. Getting this from the host is the exact bug the DWARF
          layer's data-layout pin was built to prevent, and cross-compilation is
          the case that can reintroduce it.
+
+         Both members are checked because each can go stale in the way the
+         String already did: when a String was one pointer it carried this
+         assertion alone, and the fat `{ptr, i64}` -- 16 bytes and 8-aligned
+         everywhere -- made host and wasm32 agree on its offset, so the check
+         passed without being able to fail. Whatever a member's own width does,
+         the two targets have to disagree about where it sits.
 
     Plus the object cache, where sharing one object between two targets is
     silent: the same source and the same -D flags, a different triple.
@@ -2705,17 +2732,53 @@ def run_target_test():
                         "exactly how --target wasm32 used to build nothing at all")
 
     # 4. -g offsets come from the target.
-    for ir, label, want in ((host_g_ir, "host", 64), (wasm_g_ir, "wasm32", 32)):
-        got = _target_di_member_bit(ir, "Mixed", "name")
-        if got is None:
-            problems.append(f"no DWARF member for `Mixed.name` in the {label} "
-                            "-g build, so the offset half of this test did not run")
-        elif got != want:
-            problems.append(f"`Mixed.name` is described at bit {got} in the "
-                            f"{label} -g build and belongs at {want} -- the "
-                            "member offsets came from the wrong data layout, "
-                            "which is a debugger confidently reading the wrong "
-                            "bytes")
+    #
+    # Recomputed from the struct each build actually emitted rather than compared
+    # against fixed numbers. The layout search is free to order `Mixed`'s fields
+    # however it likes -- and it orders the two targets *differently*, because
+    # `Usize` is a different size on each -- so a hardcoded offset is a statement
+    # about the search, which this test is not for. What it is for is that the
+    # DWARF offsets agree with the target's own data layout applied to the type
+    # in that module.
+    seen = {}
+    for ir, label, ptr_bits in ((host_g_ir, "host", 64), (wasm_g_ir, "wasm32", 32)):
+        seen[label] = {}
+        for sname in ("Mixed", "Span"):
+            members, total = _di_composite(_di_nodes(ir), sname)
+            elements = _emitted_struct(ir, sname)
+            if members is None or not elements:
+                problems.append(f"no DWARF composite or no emitted `%{sname}` in "
+                                f"the {label} -g build, so the offset half of "
+                                "this test did not run")
+                continue
+            want_offsets, want_total = _expected_layout(elements, ptr_bits)
+            if want_offsets is None or len(want_offsets) != len(members):
+                problems.append(f"could not recompute `{sname}`'s layout from the "
+                                f"emitted `{elements}` in the {label} build -- "
+                                "this half of the test stopped checking offsets")
+                continue
+            seen[label][sname] = [off for _, off, _ in members]
+            for (fname, got, _), want in zip(members, want_offsets):
+                if got != want:
+                    problems.append(f"`{sname}.{fname}` is described at bit {got} "
+                                    f"in the {label} -g build and belongs at "
+                                    f"{want} -- the member offsets came from the "
+                                    "wrong data layout, which is a debugger "
+                                    "confidently reading the wrong bytes")
+            if total != want_total:
+                problems.append(f"`{sname}` is described as {total} bits in the "
+                                f"{label} -g build and computes to {want_total}")
+
+    # And that comparison has to be one that could have failed. Reading the host
+    # layout for both targets is the bug being guarded against, so if the two
+    # agree everywhere the check passes without touching it. That is not
+    # hypothetical: it is what happened when `String` went from one pointer to a
+    # pair, which is 16 bytes and 8-aligned on both targets.
+    if seen.get("host") and seen["host"] == seen.get("wasm32"):
+        problems.append(f"every member sits at {seen['host']} on both targets, so "
+                        "these offsets cannot distinguish the target's data "
+                        "layout from the host's -- the fixture needs a member "
+                        "whose offset moves with pointer width")
 
     # 5. An unknown triple is refused rather than silently ignored.
     bad = run_command([str(PRISMIO_EXE), "build", str(source),
@@ -3707,8 +3770,30 @@ def run_debug_info_test():
                 problems.append(f"`{name}` is declared `{key}` and is described "
                                 f"as `{ty}` -- a global's type is not coming "
                                 "from its own declaration")
+        elif key == "str":
+            # A String is the {ptr, i64} pair, so it is a composite and not a
+            # pointer -- and the half a debugger prints has to still be reachable
+            # through it. Checking only "is a composite" would pass on a struct
+            # whose pointer half had been described as an opaque address, which
+            # is precisely what this layer did before it learned the pair.
+            member_ty = ""
+            if 'name: "String"' in ty:
+                elems = re.search(r"elements: !(\d+)", ty)
+                for ref in _di_tuple(nodes, int(elems.group(1))) if elems else []:
+                    body = nodes.get(ref, "")
+                    if 'name: "ptr"' not in body:
+                        continue
+                    base = re.search(r"baseType: !(\d+)", body)
+                    member_ty = nodes.get(int(base.group(1)), "") if base else ""
+            if 'name: "String"' not in ty:
+                problems.append(f"`{name}` is a String and is described as "
+                                f"`{ty}` -- not the pair it is stored as")
+            elif "DW_TAG_pointer_type" not in member_ty:
+                problems.append(f"`{name}` is a String whose `ptr` half is "
+                                f"described as `{member_ty}` -- a debugger "
+                                "cannot reach the characters through it")
         elif key == "ptr" and "DW_TAG_pointer_type" not in ty:
-            problems.append(f"`{name}` is a String and is described as `{ty}`")
+            problems.append(f"`{name}` is a pointer and is described as `{ty}`")
 
     # The compile unit has to list them, or the debug info is unreachable from
     # the top of the module even with the attachments in place.
@@ -3894,7 +3979,11 @@ def run_aif_layout_test():
 
     lowered = {"Int": "i32", "Float": "double", "Bool": "i1", "Char": "i8",
                "I8": "i8", "I16": "i16", "I64": "i64", "U8": "i8", "U16": "i16",
-               "U32": "i32", "U64": "i64", "Isize": "i64", "Usize": "i64"}
+               "U32": "i32", "U64": "i64", "Isize": "i64", "Usize": "i64",
+               # Named rather than left to the `ptr` default: a String field is
+               # the {ptr, i64} pair, and the default would report every struct
+               # whose field 0 is a String as one the layout search had moved.
+               "String": "%prismio.str"}
     emitted = {m.group(1): [f.strip() for f in m.group(2).split(",")]
                for m in re.finditer(r"^%(\w+) = type \{(.*)\}", ir, re.M)}
 

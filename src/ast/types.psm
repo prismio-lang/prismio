@@ -310,7 +310,7 @@ fn typeIrKey(t: TypeInfo) -> String {
     // the same mapping reached from a type *name* rather than a TypeInfo -- two
     // functions answering one question, and a String that is a struct in one and
     // a pointer in the other is a call that disagrees with its own declaration.
-    if (t.kind == TypeKind.STRING) { return "ptr" }
+    if (t.kind == TypeKind.STRING) { return "struct:prismio.str" }
     if (t.kind == TypeKind.PTR) { return "ptr" }
     if (t.kind == TypeKind.ENUM) { return "i32" }
     if (t.kind == TypeKind.STRUCT) { return str_concat("struct:", t.name) }
@@ -425,7 +425,7 @@ fn typeFromIrKey(key: String) -> TypeInfo {
     if (str_equals(key, "ptr") == 1) { return typePtr() }
     if (str_equals(key, "void") == 1) { return typeVoid() }
     if (str_starts_with(key, "struct:") == 1) {
-        return typeStruct(str_substring(key, 7, str_length(key) - 7))
+        return typeStruct(str_substring(key, 7, __builtin_string_len(key) - 7))
     }
     return typeInvalid()
 }
@@ -448,16 +448,16 @@ fn typeFromSemKey(key: String) -> TypeInfo {
     if (str_equals(key, "U64") == 1) { return typeU64() }
     if (str_equals(key, "Usize") == 1) { return typeUsize() }
     if (str_starts_with(key, "struct:") == 1) {
-        return typeStruct(str_substring(key, 7, str_length(key) - 7))
+        return typeStruct(str_substring(key, 7, __builtin_string_len(key) - 7))
     }
     if (str_starts_with(key, "enum:") == 1) {
-        return typeEnum(str_substring(key, 5, str_length(key) - 5))
+        return typeEnum(str_substring(key, 5, __builtin_string_len(key) - 5))
     }
     if (str_starts_with(key, "array:") == 1) {
-        return typeArray(typeFromSemKey(str_substring(key, 6, str_length(key) - 6)))
+        return typeArray(typeFromSemKey(str_substring(key, 6, __builtin_string_len(key) - 6)))
     }
     if (str_starts_with(key, "list:") == 1) {
-        return typeList(typeFromSemKey(str_substring(key, 5, str_length(key) - 5)))
+        return typeList(typeFromSemKey(str_substring(key, 5, __builtin_string_len(key) - 5)))
     }
     // REQUIREMENTS 4. The inverse of typeSemKey's `opt:` case, which was written
     // without one -- so every optional round-tripping through a binding decoded
@@ -477,10 +477,10 @@ fn typeFromSemKey(key: String) -> TypeInfo {
     // typeOptional(Invalid) would hand back a child that matches nothing, so
     // `let x = none` would stop being assignable to anything at all.
     if (str_starts_with(key, "task:") == 1) {
-        return typeTask(typeFromSemKey(str_substring(key, 5, str_length(key) - 5)))
+        return typeTask(typeFromSemKey(str_substring(key, 5, __builtin_string_len(key) - 5)))
     }
     if (str_starts_with(key, "opt:") == 1) {
-        let inner = typeFromSemKey(str_substring(key, 4, str_length(key) - 4))
+        let inner = typeFromSemKey(str_substring(key, 4, __builtin_string_len(key) - 4))
         if (typeIsValid(inner) == false) { return typeNone() }
         return typeOptional(inner)
     }

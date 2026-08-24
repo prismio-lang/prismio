@@ -9,6 +9,13 @@ import common.diagnostics
 fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (str_equals(name, "drop") == 1) { return typeVoid() }
 
+    // String's irreducible representation operations. These are compiler
+    // builtins, not foreign functions: sema owns their signatures and codegen
+    // replaces their call-shaped syntax with field/GEP operations.
+    if (str_equals(name, "__builtin_string_len") == 1) { return typeInt() }
+    if (str_equals(name, "__builtin_string_byte_at") == 1) { return typeChar() }
+    if (str_equals(name, "__builtin_string_put_byte") == 1) { return typeVoid() }
+
     // REQUIREMENTS 4. The narrowing half. `T?` cannot be used as a `T` -- that
     // is what the type buys -- so there has to be one way across, and this is it.
     //
@@ -75,6 +82,30 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
         if (nodeIsNull(ot.child)) {
             semaErrorAt(a0, "expect needs to know what it is unwrapping; `none` on its own has no type")
         }
+        return true
+    }
+
+    if (str_equals(name, "__builtin_string_len") == 1) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        semaCheckValue(module, ptr_to_node(argPtr), typeString(), "string length operand")
+        return true
+    }
+
+    if (str_equals(name, "__builtin_string_byte_at") == 1) {
+        if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        semaCheckValue(module, a0, typeString(), "string byte operand")
+        semaCheckValue(module, ptr_to_node(a0.next), typeInt(), "string byte index")
+        return true
+    }
+
+    if (str_equals(name, "__builtin_string_put_byte") == 1) {
+        if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let a1 = ptr_to_node(a0.next)
+        semaCheckValue(module, a0, typeString(), "string write operand")
+        semaCheckValue(module, a1, typeInt(), "string write index")
+        semaCheckValue(module, ptr_to_node(a1.next), typeChar(), "string write value")
         return true
     }
 

@@ -10,7 +10,6 @@
 // fewer sites stay T1 -- so a budget could pass for want of analysis and fail on
 // the next build. Silence is the honest answer there.
 
-extern fn str_length(s: String) -> Int
 
 struct Wide {
     f01: String, f02: String, f03: String, f04: String, f05: String, f06: String,
@@ -21,7 +20,7 @@ struct Wide {
     f31: String, f32: String, f33: String
 }
 
-fn use_it(w: Wide) -> Int { return str_length(w.f01) }
+fn use_it(w: Wide) -> Int { return __builtin_string_len(w.f01) }
 
 fn main() -> Int {
     let mut total = 0

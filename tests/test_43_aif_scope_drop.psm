@@ -19,7 +19,6 @@
 
 import std.io
 extern fn int_to_str(n: Int) -> String
-extern fn str_length(s: String) -> Int
 
 struct Wide {
     f01: String, f02: String, f03: String, f04: String, f05: String, f06: String,
@@ -39,7 +38,7 @@ fn plain() -> Int {
         f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
         f33: ""
     }
-    return str_length(w.f01)
+    return __builtin_string_len(w.f01)
 }
 
 // A nested block ends before the function does, so its drop belongs at the inner
@@ -61,9 +60,9 @@ fn nested() -> Int {
             f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
             f33: ""
         }
-        total = total + str_length(inner.f01)
+        total = total + __builtin_string_len(inner.f01)
     }
-    return total + str_length(outer.f01)
+    return total + __builtin_string_len(outer.f01)
 }
 
 // Every iteration allocates and releases its own. Skipping the drop grows the
@@ -79,7 +78,7 @@ fn per_iteration() -> Int {
             f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
             f33: ""
         }
-        total = total + str_length(w.f01)
+        total = total + __builtin_string_len(w.f01)
         i = i + 1
     }
     return total
@@ -112,9 +111,9 @@ fn early_exits() -> Int {
         if (i == 6) {
             break
         }
-        total = total + str_length(w.f01)
+        total = total + __builtin_string_len(w.f01)
     }
-    return total + str_length(kept.f01)
+    return total + __builtin_string_len(kept.f01)
 }
 
 // An early return unwinds every scope at once, so the outer binding is released
@@ -135,9 +134,9 @@ fn early_return(flag: Bool) -> Int {
             f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
             f33: ""
         }
-        return str_length(inner.f01) + str_length(outer.f01)
+        return __builtin_string_len(inner.f01) + __builtin_string_len(outer.f01)
     }
-    return str_length(outer.f01)
+    return __builtin_string_len(outer.f01)
 }
 
 // An explicit `drop` already freed it, and the scope exit must not free it
@@ -150,7 +149,7 @@ fn explicit() -> Int {
         f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
         f33: ""
     }
-    let n = str_length(w.f01)
+    let n = __builtin_string_len(w.f01)
     drop(w)
     return n
 }
@@ -194,7 +193,7 @@ fn main() -> Int {
     bad = bad + check("explicit", explicit(), 4)
 
     let e = escapes()
-    bad = bad + check("escapes", str_length(e.f01), 2)
+    bad = bad + check("escapes", __builtin_string_len(e.f01), 2)
 
     if (bad == 0) {
         println("PASS")

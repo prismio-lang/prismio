@@ -39,7 +39,6 @@ struct Tree {
 }
 
 extern fn str_concat(s1: String, s2: String) -> String
-extern fn str_length(s: String) -> Int
 extern fn cli_arg(index: Int) -> String
 extern fn tree_root() -> Tree
 
@@ -54,7 +53,7 @@ fn tier_zero() -> Int {
 // concat is.
 fn tier_one_string() -> Int {
     let joined = str_concat("a", "b")
-    return str_length(joined)
+    return __builtin_string_len(joined)
 }
 
 // T1 -- a struct, region-bound, but wider than Theta_stack.
@@ -67,7 +66,7 @@ fn tier_one_wide() -> Int {
         f25: "", f26: "", f27: "", f28: "", f29: "", f30: "",
         f31: "", f32: "", f33: ""
     }
-    return str_length(w.f01)
+    return __builtin_string_len(w.f01)
 }
 
 // T1 -- local, small and unaliased, so every fact says T0. It is not T0 because
@@ -92,7 +91,7 @@ fn tier_two() -> Small {
 // A is driven to Shared, which is what T3 tests.
 fn tier_three() -> Int {
     let arg = cli_arg(1)
-    return str_length(arg)
+    return __builtin_string_len(arg)
 }
 
 // T4b -- unknown provenance like tier_three, so A is Shared, but the type lies
@@ -106,7 +105,7 @@ fn tier_four_cyclic() -> Int {
 // descends into the elements; the array itself is a site either way.
 fn tier_array_elements() -> Int {
     let parts = [str_concat("a", "b"), str_concat("c", "d")]
-    return str_length(parts[0])
+    return __builtin_string_len(parts[0])
 }
 
 fn main() -> Int {

@@ -478,7 +478,7 @@ fn aifApplyAnnotations(decl: ASTNode, vs: Int) {
 
     let at = str_index_of(decl.s2, "pin:")
     if (at >= 0) {
-        let mut name = str_substring(decl.s2, at + 4, str_length(decl.s2) - at - 4)
+        let mut name = str_substring(decl.s2, at + 4, __builtin_string_len(decl.s2) - at - 4)
         let space = str_index_of(name, " ")
         if (space >= 0) { name = str_substring(name, 0, space) }
         let tier = aifTierFromName(name)

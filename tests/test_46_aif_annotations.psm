@@ -15,7 +15,6 @@
 // both show up in the origin column.
 
 import std.io
-extern fn str_length(s: String) -> Int
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn int_to_str(n: Int) -> String
 
@@ -33,12 +32,12 @@ struct Wide {
 // whether a callee retained it.
 fn annotated_unique() -> Int {
     let unique s = str_concat("uni", "que")
-    return str_length(s)
+    return __builtin_string_len(s)
 }
 
 fn plain_unique() -> Int {
     let s = str_concat("uni", "que")
-    return str_length(s)
+    return __builtin_string_len(s)
 }
 
 // A pin at or above the derived tier is honoured exactly. This one derives T1 --
@@ -47,12 +46,12 @@ fn plain_unique() -> Int {
 // and freezing in the expensive direction is what makes a manifest stable.
 fn annotated_pin() -> Int {
     let pin(T2) s = str_concat("pin", "ned")
-    return str_length(s)
+    return __builtin_string_len(s)
 }
 
 fn plain_pin() -> Int {
     let s = str_concat("pin", "ned")
-    return str_length(s)
+    return __builtin_string_len(s)
 }
 
 // Both on one binding, and on a struct rather than a string -- the annotations
@@ -65,13 +64,13 @@ fn annotated_both() -> Int {
         f25: "", f26: "", f27: "", f28: "", f29: "", f30: "", f31: "", f32: "",
         f33: ""
     }
-    return str_length(w.f01)
+    return __builtin_string_len(w.f01)
 }
 
 // `unique` on a parameter. The axiom belongs to what the caller passed, so it is
 // keyed on the parameter rather than on the binding inside the body.
 fn takes_unique(unique s: String) -> Int {
-    return str_length(s)
+    return __builtin_string_len(s)
 }
 
 // Neither is a keyword, so a program may still use both as ordinary names. This

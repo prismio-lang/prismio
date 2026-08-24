@@ -17,7 +17,6 @@
 // 264 bytes it clears Theta_stack, so it is T1 and an arena serves it.
 
 import std.io
-extern fn str_length(s: String) -> Int
 
 struct Wide {
     f01: String, f02: String, f03: String, f04: String, f05: String, f06: String,
@@ -28,7 +27,7 @@ struct Wide {
     f31: String, f32: String, f33: String
 }
 
-fn use_it(w: Wide) -> Int { return str_length(w.f01) }
+fn use_it(w: Wide) -> Int { return __builtin_string_len(w.f01) }
 
 // Generous enough that the converged estimate fits. The refuted direction is
 // neg_24, because a build that fails cannot also assert a value.

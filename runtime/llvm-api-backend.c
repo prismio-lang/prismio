@@ -1989,6 +1989,53 @@ static LLVMMetadataRef di_pointer_to(const char *pointee_key, LLVMMetadataRef po
     return di_cache(key, LLVMDIBuilderCreatePointerType(g_di, pointee, 64, 0, 0, "", 0));
 }
 
+// The fat String, described as the pair it is rather than as an address.
+//
+// This has to exist as its own case. `struct:prismio.str` answers the generic
+// `struct:` test below, which looks the name up among the *frontend's* structs,
+// finds nothing -- `prismio.str` is codegen's own type and was never registered
+// -- and falls back to an opaque pointer. A debugger then reads eight bytes of a
+// sixteen-byte value and calls it an address, which is worse than saying nothing.
+//
+// The pointer half keeps the lowercase `char` pointee, for the reason spelled
+// out under `ptr` below: lldb picks its summary from the base type's *name*, so
+// this is what still makes the characters print. It moved from the String itself
+// to the String's first member when the representation changed, and it is the
+// same statement of fact -- the buffer is NUL-terminated (FFI 7.1).
+//
+// Sizes and offsets come from the pinned layout, not from constants, so a
+// cross build describes the target's pair and not the host's.
+static LLVMMetadataRef di_string_type(void) {
+    LLVMMetadataRef hit = di_cached("$str");
+    if (hit) return hit;
+    if (!g_di_layout) return NULL;
+
+    LLVMTypeRef ty = named_struct("prismio.str");
+    LLVMTypeRef half[2] = { LLVMStructGetTypeAtIndex(ty, 0),
+                            LLVMStructGetTypeAtIndex(ty, 1) };
+    LLVMMetadataRef fty[2] = {
+        di_pointer_to("$char", di_basic("char", 8, PRISMIO_DW_ATE_signed_char)),
+        di_basic("I64", 64, PRISMIO_DW_ATE_signed)
+    };
+    const char *fname[2] = { "ptr", "len" };
+
+    LLVMMetadataRef members[2];
+    for (unsigned i = 0; i < 2; i++) {
+        members[i] = LLVMDIBuilderCreateMemberType(
+            g_di, g_di_cu, fname[i], strlen(fname[i]), NULL, 0,
+            LLVMABISizeOfType(g_di_layout, half[i]) * 8,
+            LLVMABIAlignmentOfType(g_di_layout, half[i]) * 8,
+            LLVMOffsetOfElement(g_di_layout, ty, i) * 8,
+            LLVMDIFlagZero, fty[i]);
+    }
+
+    return di_cache("$str", LLVMDIBuilderCreateStructType(
+        g_di, g_di_cu, "String", 6, NULL, 0,
+        LLVMABISizeOfType(g_di_layout, ty) * 8,
+        LLVMABIAlignmentOfType(g_di_layout, ty) * 8,
+        LLVMDIFlagZero, NULL, members, 2, 0, NULL, "", 0));
+}
+
 // The storage key alone. `name` refines only the pointer case, and only towards
 // something this layer can show to be true.
 static LLVMMetadataRef di_type_for(const char *key, const char *name) {
@@ -2012,6 +2059,8 @@ static LLVMMetadataRef di_type_for(const char *key, const char *name) {
     if (strcmp(key, "i64") == 0) return di_basic("I64", 64, PRISMIO_DW_ATE_signed);
     if (strcmp(key, "double") == 0) return di_basic("Float", 64, PRISMIO_DW_ATE_float);
 
+    // Before the generic struct case: a String is a value, not an address of one.
+    if (strcmp(key, "struct:prismio.str") == 0) return di_string_type();
     if (strncmp(key, "struct:", 7) == 0) {
         return di_pointer_to(key + 7, di_struct_type(key + 7));
     }

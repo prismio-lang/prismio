@@ -36,10 +36,12 @@ lldb hello
 | `DW_TAG_enumeration_type` | per declared enum, with every variant, so `p kind` prints `STRUCT_DECL` and not `12` |
 | `DW_TAG_variable` (global) | per module-level `let`, so `target variable counter` works outside any frame |
 
-`String` is described as `char *`, which is what it is — a NUL-terminated buffer — so a
-debugger prints the characters rather than the address. The lower case is load-bearing:
-lldb auto-summarises a `char *` and prints a `signed char *` as a bare address, and it
-tells them apart by the base type's name.
+`String` is described as the pair it is stored as — a `DW_TAG_structure_type` named
+`String`, with a `ptr` member and a `len` member. The `ptr` member is described as
+`char *`, which is what it is — a NUL-terminated buffer (FFI 7.1) — so a debugger prints
+the characters rather than the address. The lower case is load-bearing: lldb
+auto-summarises a `char *` and prints a `signed char *` as a bare address, and it tells
+them apart by the base type's name.
 
 ```
 (lldb) breakpoint set --file hello.psm --line 21

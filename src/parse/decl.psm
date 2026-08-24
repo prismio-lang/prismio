@@ -272,7 +272,7 @@ fn parseFfiContract(p: Parser, annotation: ASTNode) {
     }
 
     if (parserCheckVal(p, TokenType.SEPARATOR, "(")) {
-        diag_error_at(current.file, current.line, current.col, str_length(name),
+        diag_error_at(current.file, current.line, current.col, __builtin_string_len(name),
             str_concat(str_concat("the ", diagQuote(name)), " contract takes no argument"))
         diag_note("only `retain_in(k)` and `produce(free_fn)` are parameterised")
     }

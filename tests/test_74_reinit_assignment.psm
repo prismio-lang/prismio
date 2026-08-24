@@ -19,7 +19,6 @@
 
 import std.io
 extern fn str_concat(s1: String, s2: String) -> String
-extern fn str_length(s: String) -> Int
 
 enum Tree { Leaf, Node(Tree, Int, Tree) }
 
@@ -52,7 +51,7 @@ fn passes(sink t: Tree, n: Int) -> Tree {
 }
 
 fn consumeStr(sink s: String) -> Int {
-    return str_length(s)
+    return __builtin_string_len(s)
 }
 
 fn fail(message: String) -> Int {
@@ -95,7 +94,7 @@ fn main() -> Int {
         acc2 = str_concat(acc2, "z")
         j = j + 1
     }
-    if (str_length(acc2) != 6) { failures = failures + fail("string accumulator after loop") }
+    if (__builtin_string_len(acc2) != 6) { failures = failures + fail("string accumulator after loop") }
 
     if (failures == 0) { println("reinit assignment ok") }
     return failures

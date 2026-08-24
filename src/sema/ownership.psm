@@ -145,7 +145,7 @@ fn semaContractArgument(encoded: String) -> String {
     if (at < 0) {
         return ""
     }
-    return str_substring(encoded, at + 1, str_length(encoded) - at - 1)
+    return str_substring(encoded, at + 1, __builtin_string_len(encoded) - at - 1)
 }
 
 fn semaIsParameterContract(name: String) -> Bool {
@@ -182,7 +182,7 @@ fn semaCheckExternContracts(extNode: ASTNode) {
                 let name = semaContractName(encoded)
 
                 if (semaIsParameterContract(name) == false) {
-                    diag_error_at(param.file, param.line, param.col, str_length(param.s1),
+                    diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
                         str_concat(str_concat(diagQuote(name),
                                    " is a return contract and cannot appear on parameter "),
                                    diagQuote(param.s1)))
@@ -190,13 +190,13 @@ fn semaCheckExternContracts(extNode: ASTNode) {
                 } else if (str_equals(name, "retain_in") == 1) {
                     let target = str_to_int(semaContractArgument(encoded))
                     if (target < 0 or target >= arity) {
-                        diag_error_at(param.file, param.line, param.col, str_length(param.s1),
+                        diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
                             str_concat(str_concat("`retain_in` names argument ",
                                        semaContractArgument(encoded)),
                                        str_concat(", but this function takes ", int_to_str(arity))))
                         diag_note("the index is zero-based and names the container this argument is stored into")
                     } else if (target == index) {
-                        diag_error_at(param.file, param.line, param.col, str_length(param.s1),
+                        diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
                             str_concat(str_concat("`retain_in` on ", diagQuote(param.s1)),
                                        " names itself"))
                         diag_note("it names the *other* argument this one is stored into; a value cannot contain itself")
@@ -213,13 +213,13 @@ fn semaCheckExternContracts(extNode: ASTNode) {
         if (str_equals(ret.s2, "") == 0) {
             let name = semaContractName(ret.s2)
             if (str_equals(name, "alias") == 0 and str_equals(name, "produce") == 0) {
-                diag_error_at(extNode.file, extNode.line, extNode.col, str_length(extNode.s1),
+                diag_error_at(extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
                     str_concat(diagQuote(name),
                                " is a parameter contract and cannot appear on a return type"))
                 diag_note("returns take `alias` or `produce(free_fn)`")
             } else if (str_equals(name, "produce") == 1) {
                 if (str_equals(semaContractArgument(ret.s2), "") == 1) {
-                    diag_error_at(extNode.file, extNode.line, extNode.col, str_length(extNode.s1),
+                    diag_error_at(extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
                         "`produce` requires the name of the function that releases the value")
                     diag_note("FFI 5.2: calling `free` on something from a custom allocator is the bug this prevents")
                 }

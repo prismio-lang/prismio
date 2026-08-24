@@ -1,6 +1,5 @@
 import std.io
 extern fn str_equals(s1: String, s2: String) -> Int
-extern fn str_length(s: String) -> Int
 extern fn str_concat(s1: String, s2: String) -> String
 
 fn fail(message: String) -> Int {
@@ -14,7 +13,7 @@ fn main() -> Int {
     let world = "World"
     let phrase = str_concat(str_concat(hello, ", "), world)
 
-    if (str_length(hello) != 5) {
+    if (__builtin_string_len(hello) != 5) {
         return fail("string length should count characters")
     }
 

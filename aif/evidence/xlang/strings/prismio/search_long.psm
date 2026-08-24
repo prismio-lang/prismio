@@ -1,0 +1,29 @@
+import std.io
+import std.string
+
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
+
+fn run(hay: String, needle: String, reps: Int) -> Int {
+    let mut sum = 0
+    let mut k = 0
+    while (k < reps) {
+        __builtin_string_put_byte(needle, 33, (120 + (k % 2)) as Char)
+        sum = sum + strIndexOf(hay, needle)
+        k = k + 1
+    }
+    return sum
+}
+
+fn main() -> Int {
+    let hay = strRepeat("abcdefghij", 4000)
+    let needle = strRepeat("abcdefghij", 4)
+    if (run(hay, needle, 100) != -100) { return 1 }
+    let t0 = clock_gettime_nsec_np(4)
+    let sum = run(hay, needle, 100000)
+    let t1 = clock_gettime_nsec_np(4)
+    print("checksum=")
+    println(strFromInt(sum))
+    print("elapsed_ns=")
+    println(t1 - t0)
+    return 0
+}

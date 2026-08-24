@@ -97,7 +97,6 @@ FFI_CONTRACTS = {
     'list_new_with_capacity': {},
     'str_concat':     {0: 'borrow', 1: 'borrow'},
     'str_equals':     {0: 'borrow', 1: 'borrow'},
-    'str_length':     {0: 'borrow'},
     'str_substring':  {0: 'borrow'},
     'str_slice':      {0: 'borrow'},
     'str_index_of':   {0: 'borrow', 1: 'borrow'},
@@ -105,7 +104,11 @@ FFI_CONTRACTS = {
     'str_starts_with': {0: 'borrow', 1: 'borrow'},
     'str_ends_with':  {0: 'borrow', 1: 'borrow'},
     'str_char_at':    {0: 'borrow'},
-    'str_byte_at':    {0: 'borrow'},
+    # Compiler builtins remain call-shaped in the AST even though codegen emits
+    # no call. They borrow for the duration of the operation and retain nothing.
+    '__builtin_string_len': {0: 'borrow'},
+    '__builtin_string_byte_at': {0: 'borrow'},
+    '__builtin_string_put_byte': {0: 'borrow'},
     'print':          {0: 'borrow'},
     'println':        {0: 'borrow'},
 }

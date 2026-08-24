@@ -857,6 +857,16 @@ fn semaBlock(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
 }
 
 fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
+    // Builtins have compiler-owned identity and signatures. Allowing source to
+    // declare one would bring back the exact ambiguity the reserved spelling is
+    // meant to remove: a name that looks foreign or user-defined but whose call
+    // is silently replaced by codegen.
+    if (str_starts_with(fnNode.s1, "__builtin_") == 1) {
+        semaErrorAt(fnNode, str_concat(diagQuote(fnNode.s1),
+                    " is reserved for a compiler builtin and cannot be declared"))
+        return
+    }
+
     let mut retT = typeVoid()
     if (fnNode.kind == NodeKind.FUNCTION) {
         retT = semaDeclaredReturnType(module, fnNode.child3)

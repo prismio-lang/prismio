@@ -129,6 +129,85 @@ fn generateFunction(func: ASTNode) {
     ir_function_end()
 }
 
+fn functionHasStringParam(func: ASTNode) -> Bool {
+    let mut paramPtr = func.child1
+    while (nodeExists(paramPtr)) {
+        let param = ptr_to_node(paramPtr)
+        if (isFatStringKey(storageType(mapTypeNode(ptr_to_node(param.child1))))) {
+            return true
+        }
+        paramPtr = param.next
+    }
+    return false
+}
+
+fn taskFunctionForCall(call: ASTNode) -> Ptr {
+    let callee = ptr_to_node(call.child1)
+    let mut symbol = callee.s1
+    if (str_equals(call.s2, "") == 0) { symbol = call.s2 }
+
+    let count = ir_decl_count(callee.s1)
+    let mut i = 0
+    while (i < count) {
+        let decl = ptr_to_node(ir_decl_at(callee.s1, i))
+        if (decl.kind == NodeKind.FUNCTION) {
+            if (str_equals(functionSymbolName(decl), symbol) == 1) {
+                return node_to_ptr(decl)
+            }
+        }
+        i = i + 1
+    }
+    return ptr_null()
+}
+
+fn taskThunkName(func: ASTNode) -> String {
+    return str_concat(functionSymbolName(func), "__task")
+}
+
+// A task crosses the C runtime through up to three `void*` slots. A String does
+// not: its native Prismio signature is `{ptr, i64}`, and passing only its pointer
+// half happened to work until code read the length. The thunk has the runtime's
+// pointer-only signature and makes an ordinary, honestly typed call to the real
+// function, leaving LLVM to implement both ABIs on every target.
+fn generateTaskThunk(func: ASTNode) {
+    let retType = storageType(getDeclaredReturnType(func, func.child3))
+    ir_function_begin(taskThunkName(func), retType)
+
+    let mut paramPtr = func.child1
+    let mut i = 0
+    while (nodeExists(paramPtr)) {
+        ir_function_param("ptr", str_concat("p_task", int_to_str(i)))
+        paramPtr = ptr_to_node(paramPtr).next
+        i = i + 1
+    }
+
+    ir_function_body_start()
+    ir_call_begin()
+    let mut argPtr = func.child1
+    let mut j = 0
+    while (nodeExists(argPtr)) {
+        let param = ptr_to_node(argPtr)
+        let paramType = storageType(mapTypeNode(ptr_to_node(param.child1)))
+        let raw = str_concat("%p_task", int_to_str(j))
+        if (isFatStringKey(paramType)) {
+            ir_call_arg(paramType, fatFromPtr(raw))
+        } else {
+            ir_call_arg(paramType, raw)
+        }
+        argPtr = param.next
+        j = j + 1
+    }
+
+    if (str_equals(retType, "void") == 1) {
+        ir_call_end("void", functionSymbolName(func))
+        ir_ret_void()
+    } else {
+        let result = ir_get_temp_name(ir_call_end(retType, functionSymbolName(func)))
+        ir_ret(retType, result)
+    }
+    ir_function_end()
+}
+
 // Pre-pass: collect string literals
 fn collectStringsExpr(expr: ASTNode) {
     if (expr.kind == NodeKind.LITERAL_EXPR) {
@@ -158,6 +237,19 @@ fn collectStringsExpr(expr: ASTNode) {
             let argNode = ptr_to_node(argPtr)
             collectStringsExpr(argNode)
             argPtr = argNode.next
+        }
+    }
+    if (expr.kind == NodeKind.SPAWN_EXPR) {
+        if (nodeExists(expr.child1)) {
+            let call = ptr_to_node(expr.child1)
+            let target = taskFunctionForCall(call)
+            if (nodeExists(target)) {
+                let func = ptr_to_node(target)
+                if (functionHasStringParam(func)) { func.i3 = 1 }
+            }
+            // The call owns the complete argument subtree, including literals.
+            // Missing this case made `spawn f("text")` reach codegen unnamed.
+            collectStringsExpr(call)
         }
     }
     if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
@@ -804,6 +896,15 @@ fn generateModule(module: ASTNode) {
     // Rebuilt here rather than inherited from analyzeModule, so codegen does not
     // depend on which passes ran before it. It is one walk of the top level.
     indexModuleDeclarations(module)
+    // `i3` is otherwise unused on FUNCTION nodes. Clear the per-emission thunk
+    // mark because this AST may be compiled once as a workload and again as the
+    // real program in the same process.
+    let mut resetPtr = module.child1
+    while (nodeExists(resetPtr)) {
+        let resetStmt = ptr_to_node(resetPtr)
+        if (resetStmt.kind == NodeKind.FUNCTION) { resetStmt.i3 = 0 }
+        resetPtr = resetStmt.next
+    }
     // Tell the backend the target's pointer width -- it sizes the allocator's
     // size argument and array GEP indices.
     ir_set_pointer_int_type(irPtrIntType())
@@ -1123,7 +1224,7 @@ fn generateModule(module: ASTNode) {
                         // `@g =  global ptr hello world`, which llc rejects.
                         collectStringsExpr(initNode)
                         globalStrName = initNode.s2
-                        globalStrLen = str_length(initNode.s1)
+                        globalStrLen = __builtin_string_len(initNode.s1)
                         initVal = str_concat("@", initNode.s2)
                     } else {
                         initVal = initNode.s1
@@ -1138,9 +1239,9 @@ fn generateModule(module: ASTNode) {
                     exit(1)
                 }
             }
-            // When `String` is `{ptr, i64}` this takes the ir_global_str_var
-            // branch instead: a String global is a constant *pair*, which cannot
-            // be spelled in the text initialiser every other type uses.
+            // A String global is a constant *pair*, which cannot be spelled in
+            // the text initialiser every other type uses -- so it goes to
+            // ir_global_str_var, which builds the constant instead.
             if (str_equals(storageType(varType), "struct:prismio.str") == 1) {
                 ir_global_str_var(stmt.s1, globalStrName, globalStrLen)
             } else {
@@ -1186,6 +1287,7 @@ fn generateModule(module: ASTNode) {
                 // replaced by generateWorkloadDriver
             } else {
                 generateFunction(stmt2)
+                if (stmt2.i3 == 1) { generateTaskThunk(stmt2) }
             }
         }
 

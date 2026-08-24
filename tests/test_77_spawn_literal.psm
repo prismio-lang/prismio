@@ -10,10 +10,9 @@
 // Nothing in the suite spawned with a literal, which is why it survived. The
 // tasks tests all pass a struct.
 //
-// The fix is in the literal's *codegen* rather than in the pre-pass: an unnamed
-// literal names itself on the spot. That makes the pre-pass an optimisation --
-// it batches the globals into one walk -- instead of a correctness requirement,
-// so the next node kind nobody adds a case for cannot bring this back.
+// The walker now descends through SPAWN_EXPR itself. Literal codegen still names
+// an unnamed literal defensively, so missing the next subtree kind fails near
+// that construct rather than producing malformed IR.
 
 import std.io
 
@@ -24,10 +23,13 @@ fn fail(message: String) -> Int {
 }
 
 fn measure(s: String) -> Int {
-    return str_length(s)
+    return __builtin_string_len(s)
 }
 
-extern fn str_length(s: String) -> Int
+fn measureBoth(a: String, b: String) -> Int {
+    return __builtin_string_len(a) + __builtin_string_len(b)
+}
+
 
 fn main() -> Int {
     // The literal is the spawned argument, which is the shape that broke.
@@ -40,6 +42,15 @@ fn main() -> Int {
     let u = spawn measure(str_concat("six", "six"))
     if (join u != 6) {
         return fail("a literal under a call in a spawn argument should be named too")
+    }
+
+    // Two fat values occupy four native argument words. Passing the runtime's
+    // two pointer slots straight to this signature made the second pointer look
+    // like the first length even on ABIs where the one-argument case appeared to
+    // work by accident.
+    let v = spawn measureBoth("four", "seven77")
+    if (join v != 11) {
+        return fail("each spawned String argument should be rebuilt independently")
     }
 
     println("spawn literal tests passed")

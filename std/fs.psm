@@ -96,7 +96,7 @@ fn executableDirectory() -> String {
 fn listModules(directory: String) -> List<String> {
     let listing = list_modules(directory)
     let out: List<String> = list_new()
-    if (str_length(listing) == 0) { return out }
+    if (strLength(listing) == 0) { return out }
     let names = strSplit(listing, '\n')
     // Explicit, because the inferred drop does not fire here: `listing` is a
     // binding whose value reaches a call that returns a container, and the
@@ -113,7 +113,7 @@ fn listModules(directory: String) -> List<String> {
         // analysis treat it as a second owner of a string the list already owns,
         // and both release it: measured here as three `release of a pointer that
         // is not live` violations, which is a double free rather than a leak.
-        if (str_length(list_get(names, i)) > 0) {
+        if (strLength(list_get(names, i)) > 0) {
             list_push(out, str_concat(list_get(names, i), ""))
         }
         i = i + 1

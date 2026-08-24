@@ -2,16 +2,15 @@ import std.io
 import ums.model.project
 import ums.model.diagnostic
 
-extern fn str_length(value: String) -> Int
 extern fn str_char_at(value: String, index: Int) -> Char
 extern fn str_concat(left: String, right: String) -> String
 extern fn file_exists(path: String borrow) -> Int
 extern fn join_path(directory: String borrow, child: String borrow) -> String produce(free)
 
 fn umsValidName(value: String) -> Bool {
-    if (str_length(value) == 0) { return false }
+    if (__builtin_string_len(value) == 0) { return false }
     let mut i = 0
-    while (i < str_length(value)) {
+    while (i < __builtin_string_len(value)) {
         let current = str_char_at(value, i)
         if (umsIsAlnum(current) == false and current != '-' and current != '_' and current != '.') {
             return false
@@ -25,7 +24,7 @@ fn umsValidVersion(value: String, minimumComponents: Int) -> Bool {
     let mut components = 1
     let mut componentDigits = 0
     let mut i = 0
-    while (i < str_length(value)) {
+    while (i < __builtin_string_len(value)) {
         let current = str_char_at(value, i)
         if (umsIsDigit(current)) {
             componentDigits = componentDigits + 1
@@ -46,21 +45,21 @@ fn umsValidationError(project: UmsProjectModel, diagnostics: List<UmsDiagnostic>
 }
 
 fn umsProjectValidate(project: UmsProjectModel, diagnostics: List<UmsDiagnostic>) {
-    if (str_length(project.metadata.name) == 0) {
+    if (__builtin_string_len(project.metadata.name) == 0) {
         umsValidationError(project, diagnostics, "UMS2301", "project.name is required")
     } else if (umsValidName(project.metadata.name) == false) {
         umsValidationError(project, diagnostics, "UMS2302",
                            "project.name may contain only letters, digits, '.', '_' and '-'")
     }
 
-    if (str_length(project.metadata.version) == 0) {
+    if (__builtin_string_len(project.metadata.version) == 0) {
         umsValidationError(project, diagnostics, "UMS2303", "project.version is required")
     } else if (umsValidVersion(project.metadata.version, 3) == false) {
         umsValidationError(project, diagnostics, "UMS2304",
                            "project.version must use semantic version form")
     }
 
-    if (str_length(project.metadata.prismioVersion) == 0) {
+    if (__builtin_string_len(project.metadata.prismioVersion) == 0) {
         umsValidationError(project, diagnostics, "UMS2305", "project.prismio is required")
     } else if (umsValidVersion(project.metadata.prismioVersion, 2) == false) {
         umsValidationError(project, diagnostics, "UMS2306",
@@ -80,7 +79,7 @@ fn umsProjectValidate(project: UmsProjectModel, diagnostics: List<UmsDiagnostic>
                 target.line, target.col, target.len,
                 str_concat(str_concat("invalid target name '", target.name), "'"))
         }
-        if (str_length(target.entry) == 0) {
+        if (__builtin_string_len(target.entry) == 0) {
             umsDiagnosticAdd(diagnostics, "UMS2309", project.manifestPath,
                 target.line, target.col, target.len,
                 str_concat(str_concat("target '", target.name), "' requires an entry source"))
@@ -109,7 +108,7 @@ fn umsProjectValidate(project: UmsProjectModel, diagnostics: List<UmsDiagnostic>
                 dependency.line, dependency.col, dependency.len,
                 str_concat(str_concat("invalid dependency name '", dependency.name), "'"))
         }
-        if (str_length(dependency.constraint) == 0) {
+        if (__builtin_string_len(dependency.constraint) == 0) {
             umsDiagnosticAdd(diagnostics, "UMS2312", project.manifestPath,
                 dependency.line, dependency.col, dependency.len,
                 str_concat(str_concat("dependency '", dependency.name),

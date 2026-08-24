@@ -40,7 +40,6 @@ struct Report {
 }
 
 extern fn str_concat(s1: String, s2: String) -> String
-extern fn str_length(s: String) -> Int
 extern fn cli_arg(index: Int) -> String
 
 // A static root, in the only form this language has one: an FFI callee that
@@ -55,7 +54,7 @@ fn work(j: Job) -> Int {
 }
 
 fn summarise(r: Report) -> Int {
-    return r.total + str_length(r.label)
+    return r.total + __builtin_string_len(r.label)
 }
 
 fn tally_reports(rs: List<Report>) -> Int {
@@ -123,7 +122,7 @@ fn static_root_is_cross_thread() -> Int {
 fn unjoined_is_cross_thread() -> Int {
     let r = Report { label: "detached", total: 3 }
     let t = spawn summarise(r)
-    if (str_length(cli_arg(1)) > 0) {
+    if (__builtin_string_len(cli_arg(1)) > 0) {
         return 0
     }
     return join t
@@ -183,7 +182,7 @@ fn break_is_absorbed_by_its_loop() -> Int {
 fn join_on_both_paths() -> Int {
     let j = Job { lo: 0, hi: 10 }
     let t = spawn work(j)
-    if (str_length(cli_arg(1)) > 0) {
+    if (__builtin_string_len(cli_arg(1)) > 0) {
         return join t
     }
     return join t
@@ -197,7 +196,7 @@ fn join_on_both_paths() -> Int {
 fn one_path_escapes_unjoined() -> Int {
     let j = Job { lo: 0, hi: 10 }
     let t = spawn work(j)
-    if (str_length(cli_arg(1)) > 0) {
+    if (__builtin_string_len(cli_arg(1)) > 0) {
         return 0
     }
     return join t

@@ -2,7 +2,7 @@ import diamond_shared
 
 // Declared here as well as in diamond_shared and diamond_right: modules each declare
 // the externs they use, so the merge has to keep exactly one copy.
-extern fn str_length(s: String) -> Int
+extern fn str_equals(a: String borrow, b: String borrow) -> Int
 
 fn left_value(x: Int) -> Int {
     return shared_double(x) + 1

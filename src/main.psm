@@ -182,7 +182,7 @@ fn appendStatement(module: ASTNode, stmt: ASTNode) {
 fn moduleRelativePath(moduleName: String) -> String {
     let mut relative = ""
     let mut i = 0
-    let length = str_length(moduleName)
+    let length = __builtin_string_len(moduleName)
     while (i < length) {
         let c = str_char_at(moduleName, i)
         if (c == '.') {
@@ -297,7 +297,7 @@ fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
     let mut seen = visited
     let mut name = ""
     let mut i = 0
-    let length = str_length(listing)
+    let length = __builtin_string_len(listing)
 
     while (i < length) {
         let c = str_char_at(listing, i)
@@ -388,11 +388,11 @@ fn resolveImportPath(baseDir: String, moduleName: String) -> String {
     if (str_starts_with(moduleName, "std.") == 0) {
         return joinImportPath(baseDir, moduleName)
     }
-    let leaf = str_concat(str_substring(moduleName, 4, str_length(moduleName) - 4), ".psm")
+    let leaf = str_concat(str_substring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm")
     if (str_equals(standardModulePath(baseDir, leaf), "") == 1) {
         return joinImportPath(baseDir, moduleName)
     }
-    return standardModulePath(baseDir, str_concat(str_substring(moduleName, 4, str_length(moduleName) - 4), ".psm"))
+    return standardModulePath(baseDir, str_concat(str_substring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm"))
 }
 
 // The entry file is marked resolved before the walk begins, so that a package
@@ -472,11 +472,11 @@ fn printUsage() {
 // rather than a warning: a mistyped force that carried on would measure the argmin
 // twice and report it as two candidates.
 fn parseForceLayout(flag: String) -> Bool {
-    let value = str_substring(flag, 15, str_length(flag) - 15)
+    let value = str_substring(flag, 15, __builtin_string_len(flag) - 15)
     let colon = str_index_of(value, ":")
     if (colon < 1) { return false }
     let typeName = str_substring(value, 0, colon)
-    let hotText = str_substring(value, colon + 1, str_length(value) - colon - 1)
+    let hotText = str_substring(value, colon + 1, __builtin_string_len(value) - colon - 1)
     if (str_equals(hotText, "") == 1) { return false }
     // str_to_int answers 0 for a non-numeric string, which is also the value a
     // hot count can never legally take -- field 0 is pinned hot, so every real
@@ -1180,13 +1180,13 @@ fn main() -> Int {
                 // SPEC 6.3's minimal cause for one record. The symbol is the one
                 // the manifest prints, so it can be copied straight out of a
                 // diff -- which is where a reader will have found it.
-                aifWhy = str_substring(flag, 6, str_length(flag) - 6)
+                aifWhy = str_substring(flag, 6, __builtin_string_len(flag) - 6)
             } else if (str_starts_with(flag, "--budget=") == 1) {
                 // INFERENCE 5.3's truncation path is unreachable at the default
                 // of 200 rounds, and an unreachable path is where a bug lives
                 // undisturbed. This makes it reachable, which is what
                 // tests/test_43 uses to check that widening only ever raises.
-                aifBudgetArg = str_to_int(str_substring(flag, 9, str_length(flag) - 9))
+                aifBudgetArg = str_to_int(str_substring(flag, 9, __builtin_string_len(flag) - 9))
                 if (aifBudgetArg < 1) {
                     diag_error("--budget= must be at least 1 round")
                     return 1
@@ -1340,7 +1340,7 @@ fn main() -> Int {
             }
             outputFile = cli_arg(argIndex + 1)
             argIndex = argIndex + 2
-        } else if (str_starts_with(arg, "-O") == 1 and str_length(arg) == 3) {
+        } else if (str_starts_with(arg, "-O") == 1 and __builtin_string_len(arg) == 3) {
             // -O0..-O3. Runs LLVM's standard pipeline over the module before it
             // is written; without it the output keeps a load/store per binding.
             let level = str_to_int(str_substring(arg, 2, 1))
