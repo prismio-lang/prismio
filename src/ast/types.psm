@@ -29,7 +29,23 @@ enum TypeKind {
     // REQUIREMENTS 4. A reference that may be absent. Appended rather than
     // inserted: TypeKind's ordinals are load-bearing (see NEVER_ZERO above and
     // test_41), so adding in the middle would renumber every kind after it.
-    OPTIONAL
+    OPTIONAL,
+
+    // M4.1. Appended so the established ordinals above remain stable. A slice
+    // is a copyable `(List handle, offset, length)` value and owns none of the
+    // list storage it names; E-VIEW keeps that storage alive.
+    SLICE,
+
+    // M4.3. Appended for the same ordinal-stability reason as Slice. A
+    // DataView owns a columnar allocation produced at an explicit `soa`
+    // boundary and is consumed by `aos` (or released at scope exit).
+    DATAVIEW,
+
+    // M4.3b. The transient `(DataView handle, index)` produced by indexing a
+    // DataView. It is intentionally not a source-spellable type: the descriptor
+    // is useful only for projecting fields while the borrowed view is alive.
+    // Appended because the ordinals above are load-bearing.
+    DATAELEMENT
 }
 
 struct TypeInfo {
@@ -130,7 +146,7 @@ fn typeIsMoveOnly(t: TypeInfo) -> Bool {
         if (nodeExists(t.child)) { return typeIsMoveOnly(ptr_to_type(t.child)) }
         return false
     }
-    return t.kind == TypeKind.LIST
+    return t.kind == TypeKind.LIST or t.kind == TypeKind.DATAVIEW
 }
 
 fn typeStruct(name: String) -> TypeInfo {
@@ -226,6 +242,24 @@ fn typeList(elem: TypeInfo) -> TypeInfo {
     return t
 }
 
+fn typeSlice(elem: TypeInfo) -> TypeInfo {
+    let mut t = typeMake(TypeKind.SLICE, "Slice", "struct:prismio.slice")
+    t.child = type_to_ptr(elem)
+    return t
+}
+
+fn typeDataView(elem: TypeInfo) -> TypeInfo {
+    let mut t = typeMake(TypeKind.DATAVIEW, "DataView", "ptr")
+    t.child = type_to_ptr(elem)
+    return t
+}
+
+fn typeDataElement(elem: TypeInfo) -> TypeInfo {
+    let mut t = typeMake(TypeKind.DATAELEMENT, "DataElement", "struct:prismio.data_element")
+    t.child = type_to_ptr(elem)
+    return t
+}
+
 fn typeIsValid(t: TypeInfo) -> Bool {
     return t.kind != TypeKind.INVALID
 }
@@ -244,6 +278,24 @@ fn typeDisplay(t: TypeInfo) -> String {
             return str_concat(str_concat("List<", typeDisplay(ptr_to_type(t.child))), ">")
         }
         return "List"
+    }
+    if (t.kind == TypeKind.SLICE) {
+        if (nodeExists(t.child)) {
+            return str_concat(str_concat("Slice<", typeDisplay(ptr_to_type(t.child))), ">")
+        }
+        return "Slice"
+    }
+    if (t.kind == TypeKind.DATAVIEW) {
+        if (nodeExists(t.child)) {
+            return str_concat(str_concat("DataView<", typeDisplay(ptr_to_type(t.child))), ">")
+        }
+        return "DataView"
+    }
+    if (t.kind == TypeKind.DATAELEMENT) {
+        if (nodeExists(t.child)) {
+            return str_concat(str_concat("DataElement<", typeDisplay(ptr_to_type(t.child))), ">")
+        }
+        return "DataElement"
     }
     if (t.kind == TypeKind.OPTIONAL) {
         if (nodeExists(t.child)) {
@@ -277,6 +329,18 @@ fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
         let bc = ptr_to_type(b.child)
         if (typeIsValid(ac) == false or typeIsValid(bc) == false) { return true }
         return typeEquals(ac, bc)
+    }
+    if (a.kind == TypeKind.SLICE) {
+        if (nodeIsNull(a.child) or nodeIsNull(b.child)) { return false }
+        return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
+    }
+    if (a.kind == TypeKind.DATAVIEW) {
+        if (nodeIsNull(a.child) or nodeIsNull(b.child)) { return false }
+        return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
+    }
+    if (a.kind == TypeKind.DATAELEMENT) {
+        if (nodeIsNull(a.child) or nodeIsNull(b.child)) { return false }
+        return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
     }
     // Two task handles are the same type only when they yield the same thing.
     // Without this they would fall through to PTR's unconditional `true` and
@@ -315,6 +379,9 @@ fn typeIrKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.ENUM) { return "i32" }
     if (t.kind == TypeKind.STRUCT) { return str_concat("struct:", t.name) }
     if (t.kind == TypeKind.LIST) { return "ptr" }
+    if (t.kind == TypeKind.SLICE) { return "struct:prismio.slice" }
+    if (t.kind == TypeKind.DATAVIEW) { return "ptr" }
+    if (t.kind == TypeKind.DATAELEMENT) { return "struct:prismio.data_element" }
     // REQUIREMENTS 4. A `T?` is one pointer, absent or not. Deliberately *not*
     // `struct:T` even when the inner is a struct: the storage is the same, but
     // an lvalue of this type must never reach ir_struct_field_ptr without an
@@ -362,6 +429,24 @@ fn typeSemKey(t: TypeInfo) -> String {
         }
         return "list:Invalid"
     }
+    if (t.kind == TypeKind.SLICE) {
+        if (nodeExists(t.child)) {
+            return str_concat("slice:", typeSemKey(ptr_to_type(t.child)))
+        }
+        return "slice:Invalid"
+    }
+    if (t.kind == TypeKind.DATAVIEW) {
+        if (nodeExists(t.child)) {
+            return str_concat("view:", typeSemKey(ptr_to_type(t.child)))
+        }
+        return "view:Invalid"
+    }
+    if (t.kind == TypeKind.DATAELEMENT) {
+        if (nodeExists(t.child)) {
+            return str_concat("dataelem:", typeSemKey(ptr_to_type(t.child)))
+        }
+        return "dataelem:Invalid"
+    }
     if (t.kind == TypeKind.OPTIONAL) {
         if (nodeExists(t.child)) {
             return str_concat("opt:", typeSemKey(ptr_to_type(t.child)))
@@ -384,6 +469,25 @@ fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
             return typeArray(typeFromAnnotation(ptr_to_node(tn.child1)))
         }
         return typeArray(typeInvalid())
+    }
+
+    if (tn.i2 == 1 and str_equals(tn.s1, "Slice") == 1) {
+        if (nodeExists(tn.child1)) {
+            return typeSlice(typeFromAnnotation(ptr_to_node(tn.child1)))
+        }
+        return typeSlice(typeInvalid())
+    }
+    if (tn.i2 == 1 and str_equals(tn.s1, "DataView") == 1) {
+        if (nodeExists(tn.child1)) {
+            return typeDataView(typeFromAnnotation(ptr_to_node(tn.child1)))
+        }
+        return typeDataView(typeInvalid())
+    }
+    if (tn.i2 == 1 and str_equals(tn.s1, "List") == 1) {
+        if (nodeExists(tn.child1)) {
+            return typeList(typeFromAnnotation(ptr_to_node(tn.child1)))
+        }
+        return typeList(typeInvalid())
     }
 
     if (str_equals(tn.s1, "Int") == 1) { return typeInt() }
@@ -424,6 +528,10 @@ fn typeFromIrKey(key: String) -> TypeInfo {
     if (str_equals(key, "i8") == 1) { return typeChar() }
     if (str_equals(key, "ptr") == 1) { return typePtr() }
     if (str_equals(key, "void") == 1) { return typeVoid() }
+    if (str_equals(key, "struct:prismio.slice") == 1) { return typeSlice(typeInvalid()) }
+    if (str_equals(key, "struct:prismio.data_element") == 1) {
+        return typeDataElement(typeInvalid())
+    }
     if (str_starts_with(key, "struct:") == 1) {
         return typeStruct(str_substring(key, 7, __builtin_string_len(key) - 7))
     }
@@ -458,6 +566,15 @@ fn typeFromSemKey(key: String) -> TypeInfo {
     }
     if (str_starts_with(key, "list:") == 1) {
         return typeList(typeFromSemKey(str_substring(key, 5, __builtin_string_len(key) - 5)))
+    }
+    if (str_starts_with(key, "slice:") == 1) {
+        return typeSlice(typeFromSemKey(str_substring(key, 6, __builtin_string_len(key) - 6)))
+    }
+    if (str_starts_with(key, "view:") == 1) {
+        return typeDataView(typeFromSemKey(str_substring(key, 5, __builtin_string_len(key) - 5)))
+    }
+    if (str_starts_with(key, "dataelem:") == 1) {
+        return typeDataElement(typeFromSemKey(str_substring(key, 9, __builtin_string_len(key) - 9)))
     }
     // REQUIREMENTS 4. The inverse of typeSemKey's `opt:` case, which was written
     // without one -- so every optional round-tripping through a binding decoded

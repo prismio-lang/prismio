@@ -1,0 +1,183 @@
+{
+  "meta": {
+    "label": "M4.3b DataView element reads",
+    "old": "build/m4-dataview-a-6",
+    "new": "build/m4-dataview-b-6",
+    "runs": 25,
+    "tolerance_pct": 12.0,
+    "when": "2026-08-25 17:15:55",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "results": {
+    "g1": {
+      "old_loop_ms": [
+        24.79367,
+        21.888651,
+        25.752679
+      ],
+      "new_loop_ms": [
+        24.519137,
+        21.951376,
+        25.663176
+      ],
+      "ratio": 0.9889272947490227,
+      "old_rss_mb": 1.765625,
+      "new_rss_mb": 1.765625,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 80488,
+      "new_exe_bytes": 80248,
+      "baselines": {
+        "rust_idiomatic": 18.492636,
+        "rust_tuned": 4.71832
+      },
+      "checksums": [
+        "checksum alive 2000",
+        "checksum beyond 1095"
+      ],
+      "runs": 25
+    },
+    "g2": {
+      "old_loop_ms": [
+        32.042417,
+        31.795057,
+        32.281792
+      ],
+      "new_loop_ms": [
+        32.364821,
+        32.047166,
+        32.76782
+      ],
+      "ratio": 1.0100617877858589,
+      "old_rss_mb": 1.921875,
+      "new_rss_mb": 1.9375,
+      "rss_ratio": 1.008130081300813,
+      "old_exe_bytes": 80200,
+      "new_exe_bytes": 79960,
+      "baselines": {
+        "rust_idiomatic": 18.417926,
+        "rust_tuned": 10.37774
+      },
+      "checksums": [
+        "checksum submitted 10020000",
+        "checksum culled 9980000"
+      ],
+      "runs": 25
+    },
+    "g3": {
+      "old_loop_ms": [
+        50.135313,
+        49.828546,
+        53.333186
+      ],
+      "new_loop_ms": [
+        49.98084,
+        49.754562,
+        50.223587
+      ],
+      "ratio": 0.9969188783163676,
+      "old_rss_mb": 2.03125,
+      "new_rss_mb": 2.03125,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 80488,
+      "new_exe_bytes": 80248,
+      "baselines": {
+        "rust_idiomatic": 45.745498,
+        "rust_tuned": 30.959474
+      },
+      "checksums": [
+        "checksum nodes 1365",
+        "checksum visited 1365",
+        "checksum visible 1365"
+      ],
+      "runs": 25
+    },
+    "g4": {
+      "old_loop_ms": [
+        68.406137,
+        67.550755,
+        71.270762
+      ],
+      "new_loop_ms": [
+        68.913972,
+        67.794017,
+        69.94503
+      ],
+      "ratio": 1.0074238222222665,
+      "old_rss_mb": 2.078125,
+      "new_rss_mb": 2.0625,
+      "rss_ratio": 0.9924812030075187,
+      "old_exe_bytes": 80488,
+      "new_exe_bytes": 80232,
+      "baselines": {
+        "rust_idiomatic": 21.887844,
+        "rust_tuned": 17.875717
+      },
+      "checksums": [
+        "checksum entities 1500",
+        "checksum draws 1215783"
+      ],
+      "runs": 25
+    },
+    "g5": {
+      "old_loop_ms": [
+        49.225883,
+        49.075412,
+        62.653926
+      ],
+      "new_loop_ms": [
+        50.205854,
+        49.074319,
+        64.694971
+      ],
+      "ratio": 1.0199076368015583,
+      "old_rss_mb": 1.609375,
+      "new_rss_mb": 1.609375,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 81096,
+      "new_exe_bytes": 80856,
+      "baselines": {
+        "rust_idiomatic": 29.458371,
+        "rust_tuned": 4.386585
+      },
+      "checksums": [
+        "checksum entities 2000",
+        "checksum submitted 8000000",
+        "checksum batches 12",
+        "checksum evicted 0"
+      ],
+      "runs": 25
+    },
+    "g6": {
+      "old_loop_ms": [
+        150.731498,
+        150.346649,
+        151.668054
+      ],
+      "new_loop_ms": [
+        150.961198,
+        150.297027,
+        151.925935
+      ],
+      "ratio": 1.001523901792577,
+      "old_rss_mb": 2.328125,
+      "new_rss_mb": 2.34375,
+      "rss_ratio": 1.0067114093959733,
+      "old_exe_bytes": 81272,
+      "new_exe_bytes": 81032,
+      "baselines": {
+        "rust_idiomatic": 56.199309,
+        "rust_tuned": 39.871285
+      },
+      "checksums": [
+        "checksum alive 120000",
+        "checksum orders 13800000",
+        "checksum kills 120000"
+      ],
+      "runs": 25
+    }
+  },
+  "gate": {
+    "passed": true,
+    "failures": []
+  }
+}

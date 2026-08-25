@@ -7,75 +7,63 @@ extern fn prismio_rt_print(text: String borrow)
 extern fn prismio_rt_println(text: String borrow)
 extern fn prismio_rt_print_float(value: Float)
 extern fn prismio_rt_println_float(value: Float)
+extern fn str_with_capacity(length: Int) -> String produce(free)
 
-extern fn str_concat(left: String borrow, right: String borrow) -> String produce(free)
-extern fn str_from_char(value: Char) -> String produce(free)
-
-fn prismio_std_io_decimal_digit(value: U8) -> String {
-    if (value == 0) { return "0" }
-    if (value == 1) { return "1" }
-    if (value == 2) { return "2" }
-    if (value == 3) { return "3" }
-    if (value == 4) { return "4" }
-    if (value == 5) { return "5" }
-    if (value == 6) { return "6" }
-    if (value == 7) { return "7" }
-    if (value == 8) { return "8" }
-    return "9"
+// Formatting stays native and local so importing std.io does not pull the much
+// larger std.string module into every console program. Each formatter allocates
+// in its own frame; delegating through a String-returning wrapper would be an
+// unowned pass-through under the current ownership analysis.
+fn prismioStdIoDigitCount(value: U64) -> Int {
+    let mut digits = 1
+    let mut remaining = value
+    while (remaining >= 10) {
+        remaining = remaining / 10
+        digits = digits + 1
+    }
+    return digits
 }
 
-// Recursion rather than a loop, and every return an allocation rather than a
-// literal. Both are the same requirement: **whatever this returns, the caller
-// has to be able to free.**
-//
-// The loop this replaced overwrote one `text` binding once per digit, and an
-// assignment releases nothing (see the note over `ir_mark_droppable` in
-// src/ir/stmt.psm -- a reassigned binding is deliberately never droppable,
-// because leaking beats double-freeing). So every intermediate leaked, and so
-// did the result, because a `String` returned across a call had no owner at all
-// until `aif_owns_call_result_at_node` learned to ask whether the returns are
-// accounted for. Five allocations and five leaks for a five-digit number, in
-// every program that printed one.
-//
-// Recursion gives each intermediate its own `let`, which is a binding the drop
-// analysis can see. `str_concat(digit, "")` in the base case rather than the
-// digit itself is the other half: a literal is static storage, one `return` of
-// one makes the whole function unowned, and `str_substring` has carried the same
-// rule in the C runtime since values became affine -- *anything declared to
-// return String hands back something a release can take.*
-fn prismio_std_io_unsigned_integer(value: U64) -> String {
-    if (value < 10) {
-        return str_concat(prismio_std_io_decimal_digit(value as U8), "")
+fn prismioStdIoUnsignedInteger(value: U64) -> String {
+    let digits = prismioStdIoDigitCount(value)
+    let out = str_with_capacity(digits)
+    let mut remaining = value
+    let mut at = digits - 1
+    loop {
+        __builtin_string_put_byte(out, at, (48 + (remaining % 10) as Int) as Char)
+        if (at == 0) { break }
+        remaining = remaining / 10
+        at = at - 1
     }
-    let head = prismio_std_io_unsigned_integer(value / 10)
-    return str_concat(head, prismio_std_io_decimal_digit((value % 10) as U8))
+    return out
 }
 
-// Both paths bind the digits and return a concat, and the symmetry is the point
-// rather than an accident of the minus sign.
-//
-// `return prismio_std_io_unsigned_integer(...)` would be a **pass-through**: the
-// string it hands back was allocated a frame further down, and
-// `aif_owns_call_result_at_node` declines those, because from the call site a
-// value made below is indistinguishable from one handed *down* — and freeing the
-// second is a double free through whichever binding owns it there. One concat
-// makes the returned string this function's own allocation, which is what lets
-// the caller free it. It costs one small allocation per formatted number and
-// removes every leak on the path.
-fn prismio_std_io_signed_integer(value: I64) -> String {
-    if (value >= 0) {
-        let digits = prismio_std_io_unsigned_integer(value as U64)
-        return str_concat(digits, "")
-    }
+fn prismioStdIoSignedInteger(value: I64) -> String {
+    let negative = value < 0
+    let mut magnitude = value as U64
+    if (negative) { magnitude = (0 as U64) - (value as U64) }
 
-    // Negate after converting to unsigned. This also handles I64.min: its
-    // positive magnitude does not fit in I64, but it does fit in U64.
-    let magnitude = (0 as U64) - (value as U64)
-    // Bound rather than nested in the call: an owned result passed straight into
-    // a parameter is a value nothing names, and nothing names it is nothing
-    // frees it.
-    let digits = prismio_std_io_unsigned_integer(magnitude)
-    return str_concat("-", digits)
+    let digits = prismioStdIoDigitCount(magnitude)
+    let mut offset = 0
+    if (negative) { offset = 1 }
+    let out = str_with_capacity(digits + offset)
+    if (negative) { __builtin_string_put_byte(out, 0, '-') }
+
+    let mut remaining = magnitude
+    let mut at = digits + offset - 1
+    loop {
+        __builtin_string_put_byte(out, at, (48 + (remaining % 10) as Int) as Char)
+        if (at == offset) { break }
+        remaining = remaining / 10
+        at = at - 1
+    }
+    return out
+}
+
+fn prismioStdIoChar(value: Char) -> String {
+    if (value == '\0') { return str_with_capacity(0) }
+    let out = str_with_capacity(1)
+    __builtin_string_put_byte(out, 0, value)
+    return out
 }
 
 fn print(value: String) {
@@ -83,52 +71,52 @@ fn print(value: String) {
 }
 
 fn print(value: Int) {
-    let text = prismio_std_io_signed_integer(value as I64)
+    let text = prismioStdIoSignedInteger(value as I64)
     prismio_rt_print(text)
 }
 
 fn print(value: I8) {
-    let text = prismio_std_io_signed_integer(value as I64)
+    let text = prismioStdIoSignedInteger(value as I64)
     prismio_rt_print(text)
 }
 
 fn print(value: I16) {
-    let text = prismio_std_io_signed_integer(value as I64)
+    let text = prismioStdIoSignedInteger(value as I64)
     prismio_rt_print(text)
 }
 
 fn print(value: I64) {
-    let text = prismio_std_io_signed_integer(value)
+    let text = prismioStdIoSignedInteger(value)
     prismio_rt_print(text)
 }
 
 fn print(value: Isize) {
-    let text = prismio_std_io_signed_integer(value as I64)
+    let text = prismioStdIoSignedInteger(value as I64)
     prismio_rt_print(text)
 }
 
 fn print(value: U8) {
-    let text = prismio_std_io_unsigned_integer(value as U64)
+    let text = prismioStdIoUnsignedInteger(value as U64)
     prismio_rt_print(text)
 }
 
 fn print(value: U16) {
-    let text = prismio_std_io_unsigned_integer(value as U64)
+    let text = prismioStdIoUnsignedInteger(value as U64)
     prismio_rt_print(text)
 }
 
 fn print(value: U32) {
-    let text = prismio_std_io_unsigned_integer(value as U64)
+    let text = prismioStdIoUnsignedInteger(value as U64)
     prismio_rt_print(text)
 }
 
 fn print(value: U64) {
-    let text = prismio_std_io_unsigned_integer(value)
+    let text = prismioStdIoUnsignedInteger(value)
     prismio_rt_print(text)
 }
 
 fn print(value: Usize) {
-    let text = prismio_std_io_unsigned_integer(value as U64)
+    let text = prismioStdIoUnsignedInteger(value as U64)
     prismio_rt_print(text)
 }
 
@@ -145,7 +133,8 @@ fn print(value: Bool) {
 }
 
 fn print(value: Char) {
-    prismio_rt_print(str_from_char(value))
+    let text = prismioStdIoChar(value)
+    prismio_rt_print(text)
 }
 
 fn println(value: String) {
@@ -153,52 +142,52 @@ fn println(value: String) {
 }
 
 fn println(value: Int) {
-    let text = prismio_std_io_signed_integer(value as I64)
+    let text = prismioStdIoSignedInteger(value as I64)
     prismio_rt_println(text)
 }
 
 fn println(value: I8) {
-    let text = prismio_std_io_signed_integer(value as I64)
+    let text = prismioStdIoSignedInteger(value as I64)
     prismio_rt_println(text)
 }
 
 fn println(value: I16) {
-    let text = prismio_std_io_signed_integer(value as I64)
+    let text = prismioStdIoSignedInteger(value as I64)
     prismio_rt_println(text)
 }
 
 fn println(value: I64) {
-    let text = prismio_std_io_signed_integer(value)
+    let text = prismioStdIoSignedInteger(value)
     prismio_rt_println(text)
 }
 
 fn println(value: Isize) {
-    let text = prismio_std_io_signed_integer(value as I64)
+    let text = prismioStdIoSignedInteger(value as I64)
     prismio_rt_println(text)
 }
 
 fn println(value: U8) {
-    let text = prismio_std_io_unsigned_integer(value as U64)
+    let text = prismioStdIoUnsignedInteger(value as U64)
     prismio_rt_println(text)
 }
 
 fn println(value: U16) {
-    let text = prismio_std_io_unsigned_integer(value as U64)
+    let text = prismioStdIoUnsignedInteger(value as U64)
     prismio_rt_println(text)
 }
 
 fn println(value: U32) {
-    let text = prismio_std_io_unsigned_integer(value as U64)
+    let text = prismioStdIoUnsignedInteger(value as U64)
     prismio_rt_println(text)
 }
 
 fn println(value: U64) {
-    let text = prismio_std_io_unsigned_integer(value)
+    let text = prismioStdIoUnsignedInteger(value)
     prismio_rt_println(text)
 }
 
 fn println(value: Usize) {
-    let text = prismio_std_io_unsigned_integer(value as U64)
+    let text = prismioStdIoUnsignedInteger(value as U64)
     prismio_rt_println(text)
 }
 
@@ -215,5 +204,6 @@ fn println(value: Bool) {
 }
 
 fn println(value: Char) {
-    prismio_rt_println(str_from_char(value))
+    let text = prismioStdIoChar(value)
+    prismio_rt_println(text)
 }

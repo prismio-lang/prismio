@@ -109,7 +109,8 @@ fn per_iteration() -> Int {
 // `build`. Ownership transfer requires the returned site to belong to the callee,
 // so it survives exactly one hop. Two hops needs INFERENCE 6's contexts, which
 // would instantiate `build` per call site and put the site where the value
-// actually dies. Six allocations here -- one list, its element block, four Items.
+// actually dies. With flat elements stored inline this is two allocations -- one
+// list handle and its element block. The four Items occupy that block directly.
 fn forwards(n: Int) -> List<Item> {
     let items = build(n)
     return items

@@ -1,0 +1,183 @@
+{
+  "meta": {
+    "label": "M4.3a",
+    "old": "build/m4-slice-9",
+    "new": "build/m4-dataview-a-6",
+    "runs": 25,
+    "tolerance_pct": 10.0,
+    "when": "2026-08-25 13:03:53",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "results": {
+    "g1": {
+      "old_loop_ms": [
+        24.285933,
+        21.353851,
+        25.475258
+      ],
+      "new_loop_ms": [
+        22.519572,
+        21.511164,
+        25.011464
+      ],
+      "ratio": 0.9272681432498393,
+      "old_rss_mb": 1.765625,
+      "new_rss_mb": 1.765625,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 79640,
+      "new_exe_bytes": 80488,
+      "baselines": {
+        "rust_idiomatic": 18.505683,
+        "rust_tuned": 4.71347
+      },
+      "checksums": [
+        "checksum alive 2000",
+        "checksum beyond 1095"
+      ],
+      "runs": 25
+    },
+    "g2": {
+      "old_loop_ms": [
+        32.13591,
+        31.833384,
+        32.322603
+      ],
+      "new_loop_ms": [
+        32.217667,
+        31.768718,
+        33.063691
+      ],
+      "ratio": 1.0025441009761353,
+      "old_rss_mb": 1.953125,
+      "new_rss_mb": 1.921875,
+      "rss_ratio": 0.984,
+      "old_exe_bytes": 79352,
+      "new_exe_bytes": 80200,
+      "baselines": {
+        "rust_idiomatic": 18.357722,
+        "rust_tuned": 10.608486
+      },
+      "checksums": [
+        "checksum submitted 10020000",
+        "checksum culled 9980000"
+      ],
+      "runs": 25
+    },
+    "g3": {
+      "old_loop_ms": [
+        49.839335,
+        49.611723,
+        50.10029
+      ],
+      "new_loop_ms": [
+        49.821606,
+        49.474132,
+        50.072986
+      ],
+      "ratio": 0.99964427695514,
+      "old_rss_mb": 2.03125,
+      "new_rss_mb": 2.03125,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 79640,
+      "new_exe_bytes": 80488,
+      "baselines": {
+        "rust_idiomatic": 45.439937,
+        "rust_tuned": 30.831114
+      },
+      "checksums": [
+        "checksum nodes 1365",
+        "checksum visited 1365",
+        "checksum visible 1365"
+      ],
+      "runs": 25
+    },
+    "g4": {
+      "old_loop_ms": [
+        67.736148,
+        67.254562,
+        68.551568
+      ],
+      "new_loop_ms": [
+        67.917166,
+        67.390702,
+        68.829558
+      ],
+      "ratio": 1.0026723987906723,
+      "old_rss_mb": 2.078125,
+      "new_rss_mb": 2.078125,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 79640,
+      "new_exe_bytes": 80488,
+      "baselines": {
+        "rust_idiomatic": 21.752125,
+        "rust_tuned": 17.83596
+      },
+      "checksums": [
+        "checksum entities 1500",
+        "checksum draws 1215783"
+      ],
+      "runs": 25
+    },
+    "g5": {
+      "old_loop_ms": [
+        50.101147,
+        48.965513,
+        63.611041
+      ],
+      "new_loop_ms": [
+        49.990545,
+        48.876105,
+        50.434783
+      ],
+      "ratio": 0.997792425790172,
+      "old_rss_mb": 1.609375,
+      "new_rss_mb": 1.609375,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 80248,
+      "new_exe_bytes": 81096,
+      "baselines": {
+        "rust_idiomatic": 28.864531,
+        "rust_tuned": 4.377575
+      },
+      "checksums": [
+        "checksum entities 2000",
+        "checksum submitted 8000000",
+        "checksum batches 12",
+        "checksum evicted 0"
+      ],
+      "runs": 25
+    },
+    "g6": {
+      "old_loop_ms": [
+        150.628491,
+        150.057498,
+        151.406715
+      ],
+      "new_loop_ms": [
+        150.744735,
+        150.25301,
+        151.290924
+      ],
+      "ratio": 1.0007717265122174,
+      "old_rss_mb": 2.34375,
+      "new_rss_mb": 2.34375,
+      "rss_ratio": 1.0,
+      "old_exe_bytes": 80424,
+      "new_exe_bytes": 81272,
+      "baselines": {
+        "rust_idiomatic": 55.998917,
+        "rust_tuned": 39.515129
+      },
+      "checksums": [
+        "checksum alive 120000",
+        "checksum orders 13800000",
+        "checksum kills 120000"
+      ],
+      "runs": 25
+    }
+  },
+  "gate": {
+    "passed": true,
+    "failures": []
+  }
+}

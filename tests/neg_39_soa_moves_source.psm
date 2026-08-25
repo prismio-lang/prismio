@@ -1,0 +1,11 @@
+// expect-error: use of moved value
+struct Row {
+    value: Int
+}
+
+fn main() -> Int {
+    let mut rows: List<Row> = list_new()
+    list_push(rows, Row { value: 1 })
+    let view = soa(rows)
+    return list_len(rows)
+}

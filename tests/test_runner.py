@@ -1753,8 +1753,11 @@ def run_forced_layout_test():
          arithmetic over the cold fields -- with 0 violations and both halves
          released. This is the assertion that says the release path is right for
          cuts *the model never chose*, which is precisely what §8 will compile.
-         Forced unsplit releases 4096 fewer objects than a forced split, and that
-         gap is what proves the force reached codegen rather than only the report.
+         Forced split releases 4095 more objects than forced unsplit. The 4096
+         cold blocks are offset by one allocation in the other direction:
+         switching an empty boxed list to inline storage replaces its initial
+         pointer block with a body block. That gap is what proves the force
+         reached codegen rather than only the report.
       3. **A force that does not apply changes nothing.** This is the one that
          caught a real defect on the day it was written. `Body:5` is not a
          candidate; the first version left `hot_count` at 0 for it, so a mistyped
@@ -1841,15 +1844,20 @@ def run_forced_layout_test():
                     f"compile, not only for the argmin.")
 
     if 4 in released_by_cut and 12 in released_by_cut:
-        # A split allocates the cold block per object; unsplit does not. The gap is
-        # the object count, and it is the check that separates "the force reached
-        # codegen" from "the report agreed with itself".
+        # A split allocates one cold block per object and cannot use inline list
+        # storage. The unsplit flat Body can: list_new first makes a pointer block,
+        # then list_set_elem_inline replaces it with a body block. That one extra
+        # allocation on the unsplit path offsets one of the 4096 cold blocks, so
+        # the net gap is bodies - 1. It is still the dynamic check that separates
+        # "the force reached codegen" from "the report agreed with itself".
         gap = released_by_cut[4] - released_by_cut[12]
-        if gap != bodies:
+        expected_gap = bodies - 1
+        if gap != expected_gap:
             problems.append(
                 f"forced split released {gap} more objects than forced unsplit, "
-                f"expected exactly {bodies} -- one cold block per body. A force "
-                f"that only moved the manifest would read 0 here.")
+                f"expected exactly {expected_gap} -- one cold block per body, "
+                f"minus the inline list's replacement block. A force that only "
+                f"moved the manifest would read 0 here.")
 
     if problems:
         for p in problems:
@@ -2292,6 +2300,233 @@ def run_aif_view_test():
 
     print(f"{GREEN}[PASS] a collection outlives every view of it, and only "
           f"then{RESET}")
+    return True
+
+
+def run_slice_gate_test():
+    """M4.1's discriminating representation, lifetime, and bounds gate."""
+    print(f"\n{BLUE}--- Running slice_gate ---{RESET}")
+    problems = []
+
+    fixture = TEST_DIR / "test_79_slices.psm"
+    out = TEST_DIR / "t79_slices.ll"
+    result = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(out)])
+    if result.returncode != 0:
+        problems.append(f"test_79 IR build exited {result.returncode}: "
+                        f"{result.stdout or result.stderr}")
+    else:
+        ir = out.read_text(encoding="utf-8", errors="replace")
+        if not re.search(r"%prismio\.slice(?:\.\d+)? = type \{ ptr, i32, i32 \}", ir):
+            problems.append("Slice is not emitted as { handle, offset, length }")
+        for symbol in ("prismio_slice_check", "list_slice_get_inline",
+                       "list_slice_set_inline", "list_slice_get"):
+            if not re.search(rf"call [^\n]*@{symbol}\b", ir):
+                problems.append(f"test_79 does not exercise @{symbol}")
+    cleanup_files(out)
+
+    escape = TEST_DIR / "fixture_slice_escape.psm"
+    escape_ir = TEST_DIR / "t79_slice_escape.ll"
+    escape_exe = TEST_DIR / "fixture_slice_escape.exe"
+    result = run_command([str(PRISMIO_EXE), "build", str(escape), "-o", str(escape_ir)])
+    if result.returncode != 0:
+        problems.append(f"slice escape IR build exited {result.returncode}: "
+                        f"{result.stdout or result.stderr}")
+    else:
+        ir = escape_ir.read_text(encoding="utf-8", errors="replace")
+        match = re.search(r"^define[^\n]*@escaping_slice__Int\b.*?^\}",
+                          ir, re.MULTILINE | re.DOTALL)
+        if not match:
+            problems.append("could not find escaping_slice__Int in emitted IR")
+        elif re.search(r"call void @list_release\b", match.group(0)):
+            problems.append("escaping_slice releases the List whose handle it returns")
+
+        result = run_command([str(PRISMIO_EXE), "build", str(escape),
+                              "-o", str(escape_exe)])
+        if result.returncode != 0:
+            problems.append(f"slice escape executable build exited {result.returncode}")
+        else:
+            ran = run_command([str(escape_exe)])
+            if ran.returncode != 0 or "PASS: slice escape" not in ran.stdout:
+                problems.append("an escaping Slice read freed or incorrect storage")
+    cleanup_files(escape_ir, escape_exe)
+
+    bounds = TEST_DIR / "fixture_slice_bounds.psm"
+    bounds_exe = TEST_DIR / "fixture_slice_bounds.exe"
+    result = run_command([str(PRISMIO_EXE), "build", str(bounds), "-o", str(bounds_exe)])
+    if result.returncode != 0:
+        problems.append(f"slice bounds fixture build exited {result.returncode}")
+    else:
+        ran = run_command([str(bounds_exe)])
+        if ran.returncode == 0:
+            problems.append("an out-of-range Slice was accepted")
+        if "slice range [0..2] is outside collection length 1" not in ran.stderr:
+            problems.append("the Slice bounds failure did not name the range and length")
+    cleanup_files(bounds_exe)
+
+    if problems:
+        print(f"{RED}[FAIL] first-class Slice invariants are not all enforced{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+
+    print(f"{GREEN}[PASS] Slice is handle-based, growth-safe, range-checked, "
+          f"and covered by E-VIEW{RESET}")
+    return True
+
+
+def run_data_view_gate_test():
+    """M4.3's real-column, mutable round-trip, alias, and release gate."""
+    print(f"\n{BLUE}--- Running data_view_gate ---{RESET}")
+    problems = []
+    fixture = TEST_DIR / "test_80_data_view_conversion.psm"
+    out = TEST_DIR / "t80_data_view.ll"
+    exe = TEST_DIR / "test_80_data_view_verify.exe"
+    drop_fixture = TEST_DIR / "test_81_data_view_drop.psm"
+    drop_exe = TEST_DIR / "test_81_data_view_drop_verify.exe"
+
+    result = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(out)])
+    if result.returncode != 0:
+        problems.append(f"DataView IR build exited {result.returncode}: "
+                        f"{result.stdout or result.stderr}")
+    else:
+        ir = out.read_text(encoding="utf-8", errors="replace")
+        for symbol in ("data_view_begin", "data_view_add_column",
+                       "data_view_finish", "data_view_check_index",
+                       "data_view_column", "data_view_to_list"):
+            if not re.search(rf"call [^\n]*@{symbol}\b", ir):
+                problems.append(f"conversion does not exercise @{symbol}")
+        # Sample has four source fields. One projection or one row-copy helper
+        # could pass the runtime fixture; four emitted column builds cannot.
+        if len(re.findall(r"call void @data_view_add_column\b", ir)) != 4:
+            problems.append("the compiler did not emit one physical column per Sample field")
+        if not re.search(r"%prismio\.data_element\s*=\s*type\s*\{\s*ptr,\s*i32\s*\}", ir):
+            problems.append("DataView indexing is not represented as a (handle, index) descriptor")
+        if not re.search(r"load (?:i8|i16|i32|i64|double), ptr [^\n]*!tbaa", ir):
+            problems.append("DataView column reads carry no field-disjoint alias metadata")
+        if not re.search(r"store (?:i8|i16|i32|i64|double) [^\n]*!tbaa", ir):
+            problems.append("DataView column writes carry no field-disjoint alias metadata")
+
+    result = run_command([str(PRISMIO_EXE), "build", str(fixture), "--verify",
+                          "-o", str(exe)])
+    if result.returncode != 0:
+        problems.append(f"DataView --verify build exited {result.returncode}: "
+                        f"{result.stdout or result.stderr}")
+    else:
+        ran = run_command([str(exe)])
+        if ran.returncode != 0 or "PASS: data view conversion" not in ran.stdout:
+            problems.append("AoS -> SoA -> AoS did not preserve every tested field")
+        report = re.search(r"aif-verify: (\d+) allocated, (\d+) released, "
+                           r"(\d+) leaked", ran.stderr)
+        if not report:
+            problems.append("DataView --verify run emitted no allocator ledger")
+        elif report.group(3) != "0":
+            problems.append(f"DataView round-trip leaked {report.group(3)} allocation(s)")
+
+    result = run_command([str(PRISMIO_EXE), "build", str(drop_fixture), "--verify",
+                          "-o", str(drop_exe)])
+    if result.returncode != 0:
+        problems.append(f"DataView scope-drop build exited {result.returncode}: "
+                        f"{result.stdout or result.stderr}")
+    else:
+        ran = run_command([str(drop_exe)])
+        report = re.search(r"aif-verify: (\d+) allocated, (\d+) released, "
+                           r"(\d+) leaked", ran.stderr)
+        if ran.returncode != 0:
+            problems.append("a DataView left in scope did not execute cleanly")
+        if not report:
+            problems.append("DataView scope-drop emitted no allocator ledger")
+        elif report.group(3) != "0":
+            problems.append(f"DataView scope-drop leaked {report.group(3)} allocation(s)")
+
+    cleanup_files(out, exe, drop_exe)
+    if problems:
+        print(f"{RED}[FAIL] DataView conversion invariants are not all enforced{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+
+    print(f"{GREEN}[PASS] DataView emits disjoint columns, round-trips mutations "
+          f"through padding-aware rows, and releases cleanly{RESET}")
+    return True
+
+
+def run_generic_layout_specialization_test():
+    """M4.4: generic clones choose storage only after T is concrete."""
+    print(f"\n{BLUE}--- Running generic_layout_specialization_gate ---{RESET}")
+    problems = []
+    fixture = TEST_DIR / "test_82_generic_layout.psm"
+    out = TEST_DIR / "t82_generic_layout.ll"
+    exe = TEST_DIR / "test_82_generic_layout_verify.exe"
+
+    result = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(out)])
+    if result.returncode != 0:
+        problems.append(f"generic-layout IR build exited {result.returncode}: "
+                        f"{result.stdout or result.stderr}")
+    else:
+        ir = out.read_text(encoding="utf-8", errors="replace")
+
+        def body(symbol):
+            # Generic clone symbols contain '$', so LLVM quotes them.
+            match = re.search(r"^define[^\n]*" + re.escape(f'@"{symbol}"') +
+                              r"\(.*?^}", ir, re.MULTILINE | re.DOTALL)
+            return match.group(0) if match else ""
+
+        symbols = {
+            "flat singleton": "singleton$Struct_Flat__Struct_Flat",
+            "flat get": "genericGet$Struct_Flat__List_Struct_Flat_Int",
+            "flat set": "genericSet$Struct_Flat__List_Struct_Flat_Int_Struct_Flat",
+            "boxed singleton": "singleton$Struct_Named__Struct_Named",
+            "boxed get": "genericGet$Struct_Named__List_Struct_Named_Int",
+            "boxed set": "genericSet$Struct_Named__List_Struct_Named_Int_Struct_Named",
+        }
+        bodies = {label: body(symbol) for label, symbol in symbols.items()}
+        for label, clone_body in bodies.items():
+            if not clone_body:
+                problems.append(f"could not find the {label} generic clone in IR")
+
+        expected = {
+            "flat singleton": "list_push_inline",
+            "flat get": "list_get_inline",
+            "flat set": "list_set_inline",
+            "boxed singleton": "list_push",
+            "boxed get": "list_get",
+            "boxed set": "list_set",
+        }
+        for label, operation in expected.items():
+            clone_body = bodies[label]
+            if clone_body and not re.search(rf"call [^\n]*@{operation}\b", clone_body):
+                problems.append(f"the {label} clone does not call @{operation}")
+
+        for label in ("boxed singleton", "boxed get", "boxed set"):
+            if "_inline" in bodies[label]:
+                problems.append(f"the {label} clone incorrectly selected inline storage")
+
+    result = run_command([str(PRISMIO_EXE), "build", str(fixture), "--verify",
+                          "-o", str(exe)])
+    if result.returncode != 0:
+        problems.append(f"generic-layout --verify build exited {result.returncode}: "
+                        f"{result.stdout or result.stderr}")
+    else:
+        ran = run_command([str(exe)])
+        if ran.returncode != 0 or "PASS: generic layout specialization" not in ran.stdout:
+            problems.append("the two concrete generic instantiations did not execute correctly")
+        report = re.search(r"aif-verify: (\d+) allocated, (\d+) released, "
+                           r"(\d+) leaked, (\d+) violation", ran.stderr)
+        if not report:
+            problems.append("generic-layout --verify run emitted no allocator ledger")
+        elif report.group(3) != "0" or report.group(4) != "0":
+            problems.append(f"generic-layout run leaked {report.group(3)} allocation(s) "
+                            f"with {report.group(4)} violation(s)")
+
+    cleanup_files(out, exe)
+    if problems:
+        print(f"{RED}[FAIL] generic layout specialization is not discriminating{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+
+    print(f"{GREEN}[PASS] generic clones select inline storage only after "
+          f"concrete layout substitution{RESET}")
     return True
 
 
@@ -3193,12 +3428,12 @@ def run_runtime_library_test():
       2. *The negative control.* With the archive moved aside, the same build
          must fall back and say so.
       3. *A foreign target does not get the host's archive.* `runtime.a` here was
-         built for the host; linking it into a wasm32 or x86_64 binary is a
-         miscompile the linker will not always catch. `find_runtime_library` must
-         look for `runtime-<triple>.a` and fall back when it is absent. The wasm
-         build then fails for its own reasons -- no libc for that target, and
-         deliberately no runtime -- but the trace is printed before the link, so
-         what it reached for is settled either way.
+         built for the host; linking it into a foreign binary is a miscompile the
+         linker will not always catch. `find_runtime_library` must look for
+         `runtime-<triple>.a` and fall back when it is absent. The runner tries
+         foreign triples until this host's clang can codegen one: Apple clang, for
+         example, cannot codegen wasm32 and would otherwise fail before runtime
+         selection was exercised at all.
       4. *A shipped `runtime-<triple>.a` is found and linked*, and the
          cross-built binary runs. Checked where this host can run the result --
          arm64 macOS, where x86_64 runs under Rosetta -- and reported as skipped
@@ -3321,27 +3556,54 @@ def run_runtime_library_test():
                             "this test reads is not reporting and assertion 1 "
                             "would pass however the lookup behaved")
 
-        # 3. A foreign target must not be handed the host's archive.
-        wasm = build(["--target", "wasm32-unknown-unknown",
-                      "-o", str(wd / "probe_wasm")])
-        if not from_source(wasm):
-            problems.append("a wasm32 build compiled no runtime of its own and "
-                            "reported no cache miss, which leaves the host's "
-                            f"{archive.name} as the only thing it can have "
-                            "linked into a wasm32 binary")
+        # 3. A foreign target must not be handed the host's archive. Do not pin
+        # this to wasm32: the clang shipped with Xcode has no wasm code generator,
+        # so it fails while compiling the *program object*, before the compiler has
+        # chosen any runtime. Such a failure says nothing about this seam.
+        if sys.platform == "darwin":
+            foreign_targets = ["x86_64-unknown-linux-gnu",
+                               "x86_64-pc-windows-msvc",
+                               "wasm32-unknown-unknown"]
+        elif os.name == "nt":
+            foreign_targets = ["x86_64-unknown-linux-gnu",
+                               "aarch64-unknown-linux-gnu",
+                               "wasm32-unknown-unknown"]
+        else:
+            foreign_targets = ["x86_64-pc-windows-msvc",
+                               "aarch64-apple-macos",
+                               "wasm32-unknown-unknown"]
 
-        # 3b. And when that fallback fails -- which it does on any target with no
-        # C library of its own -- the note has to be about the target. It used to
-        # recommend `prismio bootstrap`, which builds a compiler for the *host*
-        # and cannot help a cross build at all. This is skipped rather than forced
-        # if some host does have a wasm32 sysroot and the build succeeds.
-        if wasm.returncode != 0:
-            told = (wasm.stdout or "") + (wasm.stderr or "")
-            if "runtime-wasm32-unknown-unknown.a" not in told:
-                problems.append("a cross build failed without naming the archive "
-                                "it looked for, so the one thing a framework has "
-                                "to know -- the exact filename to ship -- is not "
-                                "in the diagnostic")
+        foreign = None
+        foreign_target = None
+        early_failures = []
+        for triple in foreign_targets:
+            attempted = build(["--target", triple,
+                               "-o", str(wd / f"probe_{triple}")])
+            if from_source(attempted):
+                foreign, foreign_target = attempted, triple
+                break
+            said = ((attempted.stderr or attempted.stdout or "").strip()
+                    .splitlines())
+            early_failures.append(f"{triple}: {said[-1] if said else 'no output'}")
+
+        if foreign is None:
+            problems.append("no candidate foreign target reached runtime "
+                            "selection; each failed before the source fallback "
+                            "could report a cache event (" +
+                            "; ".join(early_failures) + ")")
+
+        # 3b. When the fallback fails, the note has to name the target archive.
+        # It used to recommend `prismio bootstrap`, which builds a compiler for
+        # the host and cannot help a cross build. A host with a suitable foreign
+        # C library may succeed, in which case there is no diagnostic to inspect.
+        if foreign is not None and foreign.returncode != 0:
+            told = (foreign.stdout or "") + (foreign.stderr or "")
+            expected_archive = f"runtime-{foreign_target}.a"
+            if expected_archive not in told:
+                problems.append("a cross build failed without naming "
+                                f"{expected_archive}, so the one thing a "
+                                "framework has to know -- the exact filename to "
+                                "ship -- is not in the diagnostic")
             if "prismio bootstrap" in told:
                 problems.append("a failed cross build told the user to run "
                                 "`prismio bootstrap`, which builds a compiler for "
@@ -3991,13 +4253,19 @@ def run_aif_layout_test():
     # Read the declarations rather than guessing from the name -- `TokenType` is
     # an enum and does not look like one.
     sources = {p: p.read_text(encoding="utf-8") for p in sorted(src_dir.rglob("*.psm"))}
+    # Declarations are top-level and begin a source line. Anchoring here matters:
+    # src/ast/types.psm contains a comment with the example
+    # `struct ASTNode { child1: String }`. The old unanchored regex treated that
+    # prose as a second ASTNode declaration and reported a layout violation even
+    # though the emitted type correctly began with the real `kind: NodeKind`.
     enums = {m.group(1) for text in sources.values()
-             for m in re.finditer(r"enum\s+(\w+)\s*\{", text)}
+             for m in re.finditer(r"(?m)^[ \t]*enum\s+(\w+)\s*\{", text)}
 
     problems = []
     checked = 0
     for path, text in sources.items():
-        for m in re.finditer(r"struct\s+(\w+)\s*\{(.*?)\}", text, re.S):
+        for m in re.finditer(r"^[ \t]*struct\s+(\w+)\s*\{(.*?)\}", text,
+                             re.M | re.S):
             name, body = m.group(1), re.sub(r"//[^\n]*", "", m.group(2))
             fields = [f.strip() for f in body.split(",") if f.strip()]
             if name not in emitted or not fields:
@@ -4376,15 +4644,16 @@ def run_aif_verify_test():
         # container -- so the ordinary cases are zero and what is left is one
         # shape:
         #
-        #   6  the result of forwards(), which is `build`'s list and its four
-        #      Items. Ownership transfer survives one hop, because it requires the
+        #   2  the result of forwards(): `build`'s list handle and its inline
+        #      element block. The four flat Items no longer allocate separately.
+        #      Ownership transfer survives one hop, because it requires the
         #      returned site to belong to the callee, and `forwards` returns
         #      `build`'s. Two hops needs INFERENCE 6's contexts.
         #
         # A doubled release here is a violation rather than a missing leak, unlike
         # test_45: these are struct allocations the seam handed out, so releasing
         # one twice is something the accounting can see.
-        "test_47_aif_containers": 6,
+        "test_47_aif_containers": 2,
         # AIF Level 5. The element shared between two containers is released by
         # the second teardown to reach it, so this is zero -- and it was 2 before
         # the count existed, which is the level's whole measurement on this
@@ -4438,8 +4707,9 @@ def run_aif_verify_test():
         # SPEC 8.4 views, and the only entry in this table where a *rise* is the
         # correct answer. The two functions that return a reference into a list
         # they own make that list escape to the caller (E-VIEW), so the scope
-        # drop declines it -- 7 leaked, which is the two lists, their four Items
-        # and one Int.
+        # drop declines it -- 4 leaked, the two list handles and their two inline
+        # element blocks. Flat Items are built in those blocks and do not have
+        # separate allocations.
         #
         # It was 0 before, and the 0 was wrong: the lists were freed with their
         # elements and the pointers handed back anyway. **`--verify` cannot see
@@ -4451,8 +4721,8 @@ def run_aif_verify_test():
         #
         # So a drop here is not progress. It means the container is being freed
         # under a live reference again, and only test_53's own exit code says so.
-        # These 7 go to zero when a T2 return gains a free point, and not before.
-        "test_53_aif_views": 7,
+        # These 4 go to zero when a T2 return gains a free point, and not before.
+        "test_53_aif_views": 4,
         # AIF Level 4's reassignment half. One, and it is the *negative* direction
         # of the feature: borrow_reassign's initialiser, which the guard has to
         # decline because the slot ends up holding `h.name`. Declining it leaks 6
@@ -4765,6 +5035,74 @@ def run_aif_widening_test():
     return True
 
 
+def run_inline_runtime_default_test():
+    """The curated runtime merge is the default and really runs on this host.
+
+    The merge is deliberately fail-open: if its runtime-IR compile, curation, or
+    C-API link fails, the compiler builds the ordinary separate-runtime program.
+    That is the safe product behavior, but it means a value test alone can pass
+    while the optimization did nothing. `PRISMIO_OBJ_CACHE_TRACE` exposes a
+    marker only after a successful merge; requiring it makes the existing
+    Windows/Linux/macOS suite the portability gate the default was waiting for.
+
+    The second build pins `PRISMIO_INLINE_RUNTIME=0` as a rollback and
+    measurement control. It must still build the same program, but it must not
+    report a merge.
+    """
+    print(f"\n{BLUE}--- Running inline_runtime_default ---{RESET}")
+
+    fixture = TEST_DIR / "test_28_list.psm"
+    marker = "[inline runtime] merged curated module"
+
+    with tempfile.TemporaryDirectory(prefix="prismio-inline-runtime-") as td:
+        root = Path(td)
+        cache = root / "cache"
+
+        def build_and_run(label, setting, expect_merge):
+            exe = root / f"{label}.exe"
+            env = os.environ.copy()
+            env["PRISMIO_OBJ_CACHE_DIR"] = str(cache)
+            env["PRISMIO_OBJ_CACHE_TRACE"] = "1"
+            if setting is None:
+                env.pop("PRISMIO_INLINE_RUNTIME", None)
+            else:
+                env["PRISMIO_INLINE_RUNTIME"] = setting
+
+            built = subprocess.run(
+                [str(PRISMIO_EXE), "build", str(fixture), "-o", str(exe)],
+                capture_output=True, text=True, env=env)
+            output = f"{built.stdout}\n{built.stderr}"
+            if built.returncode != 0 or not exe.is_file():
+                print(f"{RED}[FAIL] inline runtime {label}: build failed{RESET}")
+                print(output[:1200])
+                return False
+
+            merged = marker in output
+            if merged != expect_merge:
+                wanted = "a real curated-module merge" if expect_merge else "the opt-out path"
+                print(f"{RED}[FAIL] inline runtime {label}: expected {wanted}{RESET}")
+                print(output[:1200])
+                return False
+
+            ran = subprocess.run([str(exe)], capture_output=True, text=True)
+            if ran.returncode != 0 or "PASS: list" not in ran.stdout:
+                print(f"{RED}[FAIL] inline runtime {label}: compiled program failed{RESET}")
+                print(f"{ran.stdout}\n{ran.stderr}"[:1200])
+                return False
+            return True
+
+        if not build_and_run("default", None, True):
+            return False
+        if not list(cache.glob("curated-*.ll")):
+            print(f"{RED}[FAIL] inline runtime default: no curated cache entry was produced{RESET}")
+            return False
+        if not build_and_run("disabled", "0", False):
+            return False
+
+    print(f"{GREEN}[PASS] inline runtime merged by default; `=0` retained the old path{RESET}")
+    return True
+
+
 def run_curated_closure_test():
     """M1.1's curated inlinable module: the set must be closed over exported symbols.
 
@@ -4858,7 +5196,11 @@ def run_curated_closure_test():
             print(f"{RED}[FAIL] curated closure: '{name}' is curated but has no body in the runtime IR{RESET}")
             ok = False
             continue
-        leaked = sorted(set(re.findall(r'@"?([A-Za-z0-9_.$]+)"?', body)) & internal)
+        leaked = sorted(
+            symbol for symbol in
+            (set(re.findall(r'@"?([A-Za-z0-9_.$]+)"?', body)) & internal)
+            if not symbol.startswith(name + ".cold.")
+        )
         if leaked:
             print(f"{RED}[FAIL] curated closure: '{name}' references non-exported "
                   f"symbol(s): {', '.join(leaked)}{RESET}")
@@ -5025,6 +5367,21 @@ def main():
     else:
         failed += 1
 
+    if run_slice_gate_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_data_view_gate_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_generic_layout_specialization_test():
+        passed += 1
+    else:
+        failed += 1
+
     if run_aif_layout_test():
         passed += 1
     else:
@@ -5066,6 +5423,11 @@ def main():
         failed += 1
 
     if run_debug_info_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_inline_runtime_default_test():
         passed += 1
     else:
         failed += 1

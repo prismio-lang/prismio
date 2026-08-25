@@ -351,3 +351,27 @@ fn aifLayoutVetoInline(module: ASTNode) {
         p = d.next
     }
 }
+
+// M4.3's column offsets are read from the unsplit LLVM struct. A hot/cold split
+// would turn one source field into a separate allocation behind a link, which
+// is neither a flat row nor safe to byte-copy. Veto exactly the struct named by
+// an explicit `soa` boundary before the layout selector runs.
+fn aifLayoutVetoDataViews(nodePtr: Ptr) {
+    if (nodeIsNull(nodePtr)) { return }
+    let node = ptr_to_node(nodePtr)
+    if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)
+        and nodeExists(node.child2)) {
+        let callee = ptr_to_node(node.child1)
+        if (str_equals(callee.s1, "soa") == 1) {
+            let sourceT = nodeGetType(ptr_to_node(node.child2))
+            if (sourceT.kind == TypeKind.LIST and nodeExists(sourceT.child)) {
+                let elemT = ptr_to_type(sourceT.child)
+                if (elemT.kind == TypeKind.STRUCT) { aif_layout_no_split(elemT.name) }
+            }
+        }
+    }
+    aifLayoutVetoDataViews(node.child1)
+    aifLayoutVetoDataViews(node.child2)
+    aifLayoutVetoDataViews(node.child3)
+    aifLayoutVetoDataViews(node.next)
+}

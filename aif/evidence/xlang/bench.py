@@ -103,6 +103,8 @@ PROGRAMS = ["g1", "g2", "g3", "g4", "g5", "g6"]
 # for g1 and g2, the two programs where that split carries the argument.
 VARIANTS = [
     ("prismio",       "Prismio",         "prismio"),
+    ("prismio_dataview", "Prismio DataView", "prismio"),
+    ("prismio_dataview_tuned", "Prismio DV tuned", "prismio"),
     ("rust_idiomatic", "Rust idiomatic",  "rust"),
     ("rust_arena",    "Rust arena",      "rust"),
     ("rust_tuned",    "Rust hand-tuned", "rust"),
@@ -151,7 +153,16 @@ def targets(compiler):
         for key, label, lang in ACTIVE_VARIANTS:
             exe = os.path.join(OUT, f"{prog}_{key}")
             if lang == "prismio":
-                src = os.path.join(HERE, "prismio", f"{prog}.psm")
+                suffix = {
+                    "prismio": "",
+                    "prismio_dataview": "_dataview",
+                    "prismio_dataview_tuned": "_dataview_tuned",
+                }[key]
+                src = os.path.join(HERE, "prismio", f"{prog}{suffix}.psm")
+                # DataView is currently a discriminating g1 representation arm,
+                # not a claim that every corpus program has been ported.
+                if not os.path.exists(src):
+                    continue
                 cmd = [compiler, "build", src, "-o", exe]
             elif lang == "rust":
                 src = rust.get((prog, key))

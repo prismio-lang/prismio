@@ -817,15 +817,23 @@ static const char* const PRISMIO_CURATED_OPS[] = {
     "list_get", "list_set", "list_len",
     "list_set_elem_owner", "list_set_elem_releaser",
     "rc_retain", "rc_release", "list_push",
+    "data_view_check_index", "data_view_column", "data_view_len",
 };
 #define PRISMIO_CURATED_OP_COUNT \
     ((int)(sizeof(PRISMIO_CURATED_OPS) / sizeof(PRISMIO_CURATED_OPS[0])))
+// The cache also depends on transformations performed by ir_curate_module,
+// which are not bytes in lang_runtime.c. Bump this whenever that curation
+// policy changes; M4.3c added invariant ready-view loads and exposed that the
+// old key could otherwise reuse a semantically older curated module forever.
+#define PRISMIO_CURATED_SCHEMA "curated-v2-invariant-dataview"
 
-// Opt-in while it is measured. Default-off means the gate can run old against
-// new on one tree, and a bad result is a variable away rather than a revert.
+// On by default after the curated-module path became part of the ordinary
+// Windows/Linux/macOS suite. `0` remains the measurement and emergency opt-out:
+// the same compiler can still produce the old separate-runtime build without a
+// revert, which is useful both for attribution and for diagnosing a toolchain.
 static int inline_runtime_enabled(void) {
     const char* v = getenv("PRISMIO_INLINE_RUNTIME");
-    return v && v[0] && !(v[0] == '0' && v[1] == '\0');
+    return !(v && v[0] == '0' && v[1] == '\0');
 }
 
 // Produce the curated module, or NULL if it cannot be produced for any reason.
@@ -851,7 +859,7 @@ static char* build_curated_module(const char* target_flags) {
     const char* verify = g_verify_mode ? "-DPRISMIO_AIF_VERIFY " : "";
 
     unsigned long long hash = PRISMIO_FNV_OFFSET;
-    hash = fnv1a_bytes(hash, (const unsigned char*)"curated");
+    hash = fnv1a_bytes(hash, (const unsigned char*)PRISMIO_CURATED_SCHEMA);
     hash = fnv1a_bytes(hash, (const unsigned char*)target_flags);
     hash = fnv1a_bytes(hash, (const unsigned char*)verify);
     hash = fnv1a_bytes(hash, (const unsigned char*)text);
@@ -1005,6 +1013,14 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     char* merged = NULL;
     if (inline_runtime_enabled() && !g_debug_info) {
         merged = merge_curated_into_program(ir_file, target);
+        // A successful build alone is not evidence that this optimisation ran:
+        // every failure deliberately falls back to the unmerged module. The
+        // three-platform test enables the existing cache trace and requires
+        // this marker, so a missing source, unsupported clang invocation or
+        // failed C-API link cannot pass CI by silently taking that fallback.
+        if (merged && object_cache_trace()) {
+            fprintf(stderr, "[inline runtime] merged curated module\n");
+        }
     }
 
     char* q_ir = command_quote_arg(merged ? merged : ir_file);

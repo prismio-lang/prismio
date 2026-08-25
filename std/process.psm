@@ -27,6 +27,14 @@ extern fn cli_arg(index: Int) -> String alias
 extern fn execute_command(command: String borrow) -> Int
 extern fn command_quote_arg(arg: String borrow) -> String produce(free)
 
+fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
+    let mut i = 0
+    while (i < length) {
+        __builtin_string_put_byte(out, i, __builtin_string_byte_at(source, i))
+        i = i + 1
+    }
+}
+
 // How many arguments the program was given, including the program name at 0.
 fn argCount() -> Int {
     return cli_arg_count()
@@ -38,7 +46,11 @@ fn argCount() -> Int {
 // every other owned String and a caller cannot accidentally free `argv`. One
 // small allocation per call, on a path that runs once per program.
 fn arg(index: Int) -> String {
-    return str_concat(cli_arg(index), "")
+    let source = cli_arg(index)
+    let length = strLength(source)
+    let out = str_with_capacity(length)
+    prismioStdProcessCopyInto(out, source, length)
+    return out
 }
 
 // The argument at `index` without copying.
@@ -64,7 +76,11 @@ fn argBorrowed(index: Int) -> String {
 fn argAt(index: Int) -> Option<String> {
     if (index < 0) { return Option<String>.None }
     if (index >= cli_arg_count()) { return Option<String>.None }
-    return Option<String>.Some(str_concat(cli_arg(index), ""))
+    let source = cli_arg(index)
+    let length = strLength(source)
+    let out = str_with_capacity(length)
+    prismioStdProcessCopyInto(out, source, length)
+    return Option<String>.Some(out)
 }
 
 // Every argument after the program name.
@@ -72,7 +88,11 @@ fn args() -> List<String> {
     let out: List<String> = list_new()
     let mut i = 1
     while (i < cli_arg_count()) {
-        list_push(out, str_concat(cli_arg(i), ""))
+        let source = cli_arg(i)
+        let length = strLength(source)
+        let owned = str_with_capacity(length)
+        prismioStdProcessCopyInto(owned, source, length)
+        list_push(out, owned)
         i = i + 1
     }
     return out

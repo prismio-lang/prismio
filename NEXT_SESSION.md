@@ -1,3 +1,32 @@
+# M4.4 generic/container layout handoff (2026-08-25)
+
+Current compiler remains `build/m4-dataview-c-12`; suite **166/166**. M4.4 changes no compiler or
+runtime source, so M4.3c's fixed point, AIF differential 17/17, source lists, curated closure and
+packaged-runtime gates remain the last generated-code baseline.
+
+M4 is complete. Prismio removes generic templates before sema, substitutes concrete types into
+demand-created AST clones, and only then selects a container representation from the clone's static
+element type. `test_82_generic_layout.psm` plus `generic_layout_specialization_gate` proves the same
+`singleton/get/set` templates use inline operations for a flat struct and boxed operations for a
+pointer-bearing struct. Focused verifier: **8 allocated / 8 released / 0 leaked / 0 violations**.
+Evidence is in `aif/evidence/RESULTS-M4-generic-layout.md`.
+
+M4.4 deliberately changes no generated code. Its 25-run same-compiler A/A control is **0.997×**
+corpus median, range **0.978–1.099×**; that range is the host floor, not an optimization effect.
+The prior DataView result still holds: natural source is **0.221× Prismio AoS**, **0.273× idiomatic
+Rust**, and **1.076× hand-tuned Rust SoA**, while the separately labelled tuned Prismio source is at
+hot-loop parity.
+
+Next sequential work is **M5.1: evaluate mimalloc** behind the allocator seam on g1/g3/g4/g5,
+reporting each workload rather than hiding them in a corpus median. M4.4 also exposed a separate
+backlog item: boxed `OBJECT` replacement cannot reclaim the overwritten value until the compiler
+tracks the end of derived element borrows. It is recorded in TODO and must not be “fixed” by an
+unconditional runtime free.
+
+Everything below is the preceding native-string handoff, retained as history.
+
+---
+
 # Fat String / native std.string handoff
 
 Continue the native-string work in Prismio. Verify the working tree before
@@ -11,17 +40,30 @@ bash tools/bootstrap.sh --compiler build/v0 --out build/v1
 PRISMIO=$PWD/build/v1 python3 tests/test_runner.py
 ```
 
-The clean comparison baseline in this tree was **143/147**. These four runner
-checks failed before the work below and fail with the same messages afterward:
+The suite is now **150/150**. Test 150 makes the curated runtime merge's default
+discriminating: it requires a successful merge marker on the normal path and
+proves `PRISMIO_INLINE_RUNTIME=0` takes the old path. Four checks that previously failed were test-harness
+drift rather than compiler regressions and were repaired after the work below:
 
-- `forced_layout`: exact size 4095 versus 4096
-- `aif_layout`: `ASTNode` first-field layout mismatch
-- `aif_verify`: the existing `test_47_aif_containers` and
-  `test_53_aif_views` ledger-count mismatches
-- `runtime_library`: existing wasm/cross-runtime archive assertions
+- `forced_layout` now accounts for the inline list's one replacement allocation;
+- `aif_layout` anchors declaration matching, so a struct example in a comment is
+  not parsed as a second declaration;
+- `aif_verify` expects the allocations that remain after flat `Item`s became
+  inline list elements;
+- `runtime_library` selects a foreign target the host clang can actually codegen,
+  so runtime selection is reached even when Apple clang has no wasm backend.
 
 Do not run benchmarks beside the suite. Its AIF subprocess timeout can turn CPU
 contention into misleading `aif exited -9` cascades.
+
+The first standing item in `TODO.md` is complete and has been refreshed after
+the next item made the curated runtime merge the working-tree default. Two
+isolated 25-run passes against `build/inline-default-2`, with matching
+cross-variant checksums, put the current compiler at **1.10x-3.11x idiomatic
+Rust** and **0.89x-1.00x its peak RSS**. g4 is the widest runtime gap; g2 is
+1.76x and g6 is 2.71x. The current
+table is at the top of `aif/evidence/RESULTS-final.md`, with raw evidence in
+`results-current.json` and `results-current-pass2.json`.
 
 ## Current state
 
@@ -75,11 +117,11 @@ is emitted. The obsolete C compatibility exports were removed in v0.1.
 
 Public `strConcat` in `std/string.psm` is now native Prismio. It reads both
 carried lengths, allocates once with `str_with_capacity`, and fills the buffer in
-two byte loops. Legacy C `str_concat` remains linked for compatibility and for
-the differential test.
+two byte loops. The older C `str_concat` remains a compiler-internal runtime
+dependency; neither standard module declares or calls it.
 
-`tests/test_75_std_string.psm` compares native and C concatenation for normal and
-empty inputs.
+`tests/test_75_std_string.psm` checks native concatenation against explicit
+normal and empty-input expectations.
 
 ### Remaining `std.string` C calls removed
 
@@ -96,11 +138,13 @@ The only declarations left in `std/string.psm` are real runtime boundaries:
   accelerators. Pair selection, verification, Two-Way, and fallback policy are
   native Prismio; the pair primitive supplies NEON/SSE2 operations only.
 
-`tests/test_75_std_string.psm` now differentially checks all six removed C
-operations. `tests/test_78_std_string_native.psm` covers their boundaries and
-ownership; under `--verify` it reports 29 allocated, 29 released, zero leaks,
-and zero violations. Emitted IR for that test contains no call or declaration
-for any of the six compatibility symbols.
+`tests/test_75_std_string.psm` now has no foreign string declarations. It checks
+the native boundaries directly and compares optimized substring search with an
+independent O(n*m) Prismio reference. `tests/test_78_std_string_native.psm`
+covers focused producer ownership. Under `--verify`, test 75 reports 562
+allocated and 562 released, while test 78 reports 29 and 29; both have zero
+leaks and zero violations. Emitted IR for both tests contains no call or
+declaration for the older C string implementations.
 
 ### String-clone correctness fix
 
@@ -118,9 +162,9 @@ sites in `src/ir` were audited for similar String-producing paths.
 ## Verification completed
 
 - Two-generation self-host fixpoint: `build/v28` and `build/v29` IR is identical.
-- The refreshed committed seed built `build/seedcheck-clean` successfully.
-- Full suite with `build/v29`: **145/149**, exactly the four baseline failures
-  listed above and no new failures.
+- The committed seed rebuilt the default-on candidate and its compiler IR agrees
+  with `build/inline-default-2`.
+- Full suite with `build/inline-default-2`: **150/150**.
 - `python3 tools/check_source_lists.py`: passed.
 - `python3 tools/aif_differential.py --compiler build/v29`: all 17 sources agree
   in both as-is and owned modes.
@@ -168,9 +212,16 @@ C nor Rust can delete the second copy.
 
 ## Sensible next work
 
+- Finish the `PRISMIO_INLINE_RUNTIME` default gate by committing/pushing the
+  candidate and observing its new discriminating test on the existing
+  Windows/Linux/macOS matrix. Local gates are green; the parent TODO is
+  intentionally still unchecked until the remote jobs pass.
+- For the next language milestone, design M4.1 views/slices and M4.3 data views.
+  M4.2 inline flat `List<T>` storage is already implemented and checked off.
 - Split `runtime/aif_support.c`, hoist the `rt_base_alloc` seam, complete the
   missing foreign ownership contracts, harden `tools/package.sh` for new LLVM
-  API dependencies, and add supported channel wrappers.
+  API dependencies, and add supported channel wrappers when framework needs
+  outrank the benchmark roadmap.
 
 ## Recurring traps
 

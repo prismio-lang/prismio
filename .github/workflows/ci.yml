@@ -78,6 +78,9 @@ jobs:
           set -e
           EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
           cd tests
+          # `inline_runtime_default` requires the curated-module merge marker,
+          # then proves PRISMIO_INLINE_RUNTIME=0 avoids it. Keep it in this
+          # matrix: a successful fail-open build is not portability evidence.
           PRISMIO="../build/gen2$EXT" python test_runner.py
 
       # The AIF engine exists twice on purpose: once in the compiler and once as

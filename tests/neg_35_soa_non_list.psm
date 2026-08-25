@@ -1,0 +1,5 @@
+// expect-error: soa expects a List, found Int
+fn main() -> Int {
+    let view = soa(42)
+    return 0
+}

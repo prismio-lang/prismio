@@ -232,5 +232,11 @@
   "230": "run",
   "231": "run",
   "232": "format.rs",
-  "233": "README.md"
+  "233": "README.md",
+  "234": "M4.1 — first-class `Slice<T>`",
+  "235": "Prompt 2 (residual) — the hot/cold split, and only that",
+  "236": "arena_emit_range",
+  "237": "Prompt 1 is done — what it unblocked",
+  "238": "aif_verify_alloc",
+  "239": "M4.4 — generic/container layout specialization"
 }

@@ -7,6 +7,7 @@
 // above one of the markers moves it; the marker comments say which.
 
 import std.io
+import std.string
 extern fn int_to_str(n: Int) -> String produce(free)
 
 struct Reading {
@@ -77,7 +78,7 @@ fn scaled(r: Reading) -> Float {
 
 fn describe(r: Reading, prefix: String) -> String {
     let body = r.label
-    return str_concat(prefix, body)       // MARK describe-return
+    return strConcat(prefix, body)        // MARK describe-return
 }
 
 fn checkpointTotal(c: Checkpoint) -> I64 {
@@ -109,7 +110,7 @@ fn channelOf(pr: Probe) -> Int {
 fn scopeExit(prefix: String, flag: Bool) -> Int {
     let mut n = 0
     if (flag) {
-        let inner = str_concat(prefix, "!")
+        let inner = strConcat(prefix, "!")
         n = 1
     }                                     // CLOSE scope-inner
     println(prefix)                       // MARK scope-call

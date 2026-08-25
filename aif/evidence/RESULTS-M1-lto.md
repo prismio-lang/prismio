@@ -1,5 +1,28 @@
 # M1.0 — why `-flto` declines the inline
 
+## Default decision update — 2026-08-25
+
+The working tree now enables the curated runtime merge by default and retains
+`PRISMIO_INLINE_RUNTIME=0` as the opt-out. This is not based only on the older PATH test: the suite
+now compiles and runs a container program, requires the trace marker emitted only after the
+in-process curated merge succeeds, then rebuilds with `=0` and requires that marker to be absent.
+The ordinary suite is the repository's Windows/Linux/macOS matrix, so a platform where the
+fail-open optimization silently declines can no longer look green.
+
+Local gates with `build/inline-default-2`: fixed point, fresh-seed agreement, AIF differential
+17/17, suite **150/150**. The 25-run default-off/default-on comparison is corpus median **0.948×**,
+range 0.635×–1.000×, RSS 0.993×–1.008×, equal checksums, and unchanged executable sizes. The
+refreshed standing is **1.10×–3.11× idiomatic Rust**. Raw evidence:
+
+- `aif/evidence/xlang/results-inline-runtime-default.json`
+- `aif/evidence/xlang/results-current-inline-runtime.json`
+- `aif/evidence/xlang/results-current-inline-runtime-pass2.json`
+
+The TODO parent remains unchecked until this new test is observed green on the remote
+three-platform matrix; these working-tree changes have not been pushed.
+
+---
+
 The one cheap experiment TODO.md M1.0 asks for, run before anything else in M1 on the grounds that
 it might reduce the whole milestone to a flag. It does not, and the reason it does not is the
 useful part.
@@ -327,7 +350,7 @@ is a result, not a bad draw.
   `'list_push' references non-exported symbol(s): arena_alloc_slot, arena_depth, rt_arena_hint`.
 - Suite **137/137** with the feature off and 137/137 with it on. Fixpoint holds.
 
-### 8.3 · Why it is still opt-in
+### 8.3 · Why it stayed opt-in during M1.1
 
 Three things are unfinished, and each is a reason not to flip the default yet:
 

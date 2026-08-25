@@ -1,0 +1,8 @@
+// expect-error: a DataView cannot be stored in a struct field yet
+struct BadStorage {
+    rows: DataView<Int>
+}
+
+fn main() -> Int {
+    return 0
+}

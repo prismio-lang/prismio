@@ -83,7 +83,14 @@ enum NodeKind {
     // Placeholder for a declaration the parser could not make sense of. It is
     // dropped by parseModule rather than appended, so nothing downstream ever
     // sees one -- it exists only so recovery has something to return.
-    ERROR_NODE
+    ERROR_NODE,
+
+    // M4.1. `a[start..end]`, kept at the end so adding it does not renumber the
+    // NodeKind ordinals the self-hosted seed and test_41 exercise.
+    // child1 is the List/Slice base, child2 the inclusive start, and child3 the
+    // exclusive end. Codegen lowers it to `(handle, offset, length)` -- never an
+    // interior pointer -- as SPEC 8.4 requires.
+    SLICE_EXPR
 }
 
 // Flat AST Node using String for pointers (type punning)

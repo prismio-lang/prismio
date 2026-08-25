@@ -114,7 +114,7 @@ fn listModules(directory: String) -> List<String> {
         // and both release it: measured here as three `release of a pointer that
         // is not live` violations, which is a double free rather than a leak.
         if (strLength(list_get(names, i)) > 0) {
-            list_push(out, str_concat(list_get(names, i), ""))
+            list_push(out, strConcat(list_get(names, i), ""))
         }
         i = i + 1
     }

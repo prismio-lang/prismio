@@ -40,9 +40,9 @@ fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: String) {
         // its storage, so the GEP already is the value, and loading it would read
         // the struct rather than address it.
         let mut payloadVal = ir_get_temp_name(slot)
-        if (str_equals(fieldType, "struct:prismio.str") == 1) {
-            // A String payload is a value like any scalar, despite its key
-            // naming a struct -- see the same test in expr.psm's field read.
+        if (isValueStructKey(fieldType)) {
+            // Built-in aggregates are values like scalars, despite their keys
+            // naming structs -- see the same test in expr.psm's field read.
             payloadVal = ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
         } else if (isStructTypeKey(fieldType) == false) {
             payloadVal = ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
@@ -146,7 +146,9 @@ fn generateStatement(stmt: ASTNode) {
                 if (owned != AIF_ELEM_NONE
                         and chainAssignsName(irFunctionBody, varName) == false
                     and chainReturnsName(irFunctionBody, varName) == false) {
-                    if (owned == AIF_ELEM_LIST) {
+                    if (nodeGetType(ptr_to_node(stmt.child2)).kind == TypeKind.DATAVIEW) {
+                        ir_mark_droppable(varName, IR_DROP_DATAVIEW)
+                    } else if (owned == AIF_ELEM_LIST) {
                         ir_mark_droppable(varName, IR_DROP_LIST)
                     } else if (owned == AIF_ELEM_TYPED) {
                         ir_mark_droppable(varName, IR_DROP_TYPED)
@@ -202,6 +204,44 @@ fn generateStatement(stmt: ASTNode) {
         }
         if (targetNode.kind == NodeKind.MEMBER_ACCESS_EXPR) {
             let objectNode = ptr_to_node(targetNode.child1)
+
+            // M4.3c. A DataElement assignment follows the same late column
+            // resolution as a read. The descriptor remains `(view, index)`;
+            // only this store obtains an interior pointer, and it is consumed
+            // immediately. Nested writes such as `row.pair.low = value` use
+            // the ordinary struct-field path below after the `row.pair` read
+            // returns that column element's inline storage.
+            if (nodeHasType(objectNode) and nodeGetType(objectNode).kind == TypeKind.DATAELEMENT) {
+                let elemT = nodeGetType(objectNode)
+                let rowT = ptr_to_type(elemT.child)
+                let structName = rowT.name
+                let fieldIndex = ir_get_struct_field_index(structName, targetNode.s1)
+                let fieldType = fieldStorageType(ir_get_struct_field_type(structName, targetNode.s1))
+                let descriptor = generateExpression(objectNode)
+                let view = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
+                                                             descriptor, 0))
+                let index = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
+                                                              descriptor, 1))
+                ir_call_begin()
+                ir_call_arg("ptr", view)
+                ir_call_arg("i32", int_to_str(fieldIndex))
+                let column = ir_get_temp_name(ir_call_end("ptr", "data_view_column"))
+                let slot = ir_get_temp_name(ir_elem_ptr(fieldType, column, index))
+                let val = generateExpression(ptr_to_node(stmt.child2))
+
+                irProfileField(structName, targetNode.s1, true)
+                irProfileRange(structName, targetNode.s1, fieldType, val)
+                // DataView eligibility rejects counted fields, so there is no
+                // retain/release path here. Flat nested structs occupy the
+                // column element itself and therefore need a value copy.
+                if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
+                    ir_copy_struct(structTypeName(fieldType), slot, val)
+                } else {
+                    ir_data_store_ptr(fieldType, val, slot, structName, fieldIndex)
+                }
+                return
+            }
+
             let objectVal = generateExpression(objectNode)
             let objectType = getExprType(objectNode)
             let structName = structTypeName(objectType)
@@ -228,7 +268,7 @@ fn generateStatement(stmt: ASTNode) {
             // an address, so it copies. A counted field is never inline: the
             // count sits in a header in front of an allocation, and an inline
             // field has no allocation of its own to put one in front of.
-            if (isStructTypeKey(fieldType) and isFatStringKey(fieldType) == false) {
+            if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
                 ir_copy_struct(structTypeName(fieldType), ir_get_temp_name(slot), val)
             } else {
                 ir_store_ptr(fieldType, val, ir_get_temp_name(slot))
@@ -536,6 +576,8 @@ fn generateDisplacedRelease(old: String, val: String, kind: Int, declType: Strin
     ir_label_numbered(freeLabel)
     if (kind == IR_DROP_LIST) {
         ir_free_list(old)
+    } else if (kind == IR_DROP_DATAVIEW) {
+        ir_free_data_view(old)
     } else if (kind == IR_DROP_TYPED) {
         ir_free_typed(old, releaseFnName(structTypeName(declType)))
     } else {
@@ -557,6 +599,8 @@ fn generateScopeDrops(floor: Int) {
         let kind = ir_drop_kind(floor, i)
         if (kind == IR_DROP_LIST) {
             ir_free_list(value)
+        } else if (kind == IR_DROP_DATAVIEW) {
+            ir_free_data_view(value)
         } else if (kind == IR_DROP_TYPED) {
             // The drop list keeps the declared type, so the generated release is
             // named from it rather than stored a second time.

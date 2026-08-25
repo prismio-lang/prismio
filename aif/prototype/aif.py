@@ -95,6 +95,9 @@ FFI_CONTRACTS = {
     # made the oracle call five fresh containers `opaque-ret` and sink eight sites
     # to T3. See FFI_RETURNS_PRODUCE below; these two tables have to move together.
     'list_new_with_capacity': {},
+    'soa':            {0: 'consume'},
+    'aos':            {0: 'consume'},
+    'data_len':       {0: 'borrow'},
     'str_concat':     {0: 'borrow', 1: 'borrow'},
     'str_equals':     {0: 'borrow', 1: 'borrow'},
     'str_substring':  {0: 'borrow'},
@@ -148,6 +151,7 @@ def elem_key(container_type):
 # conservatively -- it may already be shared and may already outlive us.
 FFI_RETURNS_PRODUCE = {
     'list_new', 'list_new_with_capacity',
+    'soa', 'aos',
     'str_concat', 'str_substring', 'str_slice', 'str_from_char',
     'int_to_str',
     'read_file', 'get_directory', 'join_path',
@@ -318,6 +322,7 @@ class Model:
             return True
         if self.owned_collections:
             return (ty == 'String' or ty.startswith('List')
+                    or ty.startswith('DataView')
                     or ty.startswith('[') or ty.startswith('Array'))
         return False
 
@@ -327,6 +332,8 @@ class Model:
         if ty == 'String':
             return 'string'
         if ty.startswith('List'):
+            return 'list'
+        if ty.startswith('DataView'):
             return 'list'
         if ty.startswith('[') or ty.startswith('Array'):
             return 'array'

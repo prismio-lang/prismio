@@ -102,6 +102,35 @@ fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
         return aifVsEmpty()
     }
 
+    // M4.1 / SPEC 8.4. A slice allocates nothing: it is three words describing
+    // a view. Its value set exists only to carry provenance to E-VIEW, which
+    // raises the List's escape whenever the slice is bound, returned, stored or
+    // passed on. A nested slice points at the previous view; resolve_views
+    // follows that chain back to the original List sites.
+    if (e.kind == NodeKind.SLICE_EXPR) {
+        let collection = aifSitesOf(e.child1, fnId, scope)
+        aifSitesOf(e.child2, fnId, scope)
+        aifSitesOf(e.child3, fnId, scope)
+        let view = aif_vs_new()
+        aif_vs_view_of(view, collection)
+        return view
+    }
+
+    // `List[i]` and `Slice[i]` both read the List element field. References are
+    // views and scalars are copies, matching the list_get rule below.
+    if (e.kind == NodeKind.INDEX_EXPR and nodeExists(e.child1)) {
+        let baseNode = ptr_to_node(e.child1)
+        let baseTy = aifNodeType(baseNode)
+        let baseKind = aifBaseType(baseTy)
+        if (str_equals(baseKind, "List") == 1 or str_equals(baseKind, "Slice") == 1) {
+            let collection = aifSitesOf(e.child1, fnId, scope)
+            aifSitesOf(e.child2, fnId, scope)
+            let element = aifVsOfKey(aifElemKey(aifElementContainerType(baseTy)))
+            if (aifIsRef(ty)) { aif_vs_view_of(element, collection) }
+            return element
+        }
+    }
+
     if (e.kind == NodeKind.MEMBER_ACCESS_EXPR) {
         if (nodeExists(e.child1)) {
             let obj = ptr_to_node(e.child1)
@@ -275,7 +304,7 @@ fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
                 aif_note_owner_use(fnId, aif_argv_get(base, holderIndex))
                 // ...and the container's element field now points at it, so a
                 // later read gets the element back rather than the container.
-                aif_con_bind(aifElemKey(aifArgTypeAt(e, holderIndex)), av)
+                aif_con_bind(aifElemKey(aifElementContainerType(aifArgTypeAt(e, holderIndex))), av)
             } else if (contract == AIF_FFI_RETAIN) {
                 aif_con_escape_global(av)
             } else if (contract == AIF_FFI_CONSUME) {
@@ -306,7 +335,7 @@ fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     let mut element = aifVsEmpty()
     let mut readsElement = false
     if (elemReadOf >= 0 and elemReadOf < argc) {
-        element = aifVsOfKey(aifElemKey(aifArgTypeAt(e, elemReadOf)))
+        element = aifVsOfKey(aifElemKey(aifElementContainerType(aifArgTypeAt(e, elemReadOf))))
         readsElement = true
 
         // SPEC 8.4: an element reference IS a view, so this read produces one.
@@ -656,7 +685,7 @@ fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
         if (nodeExists(n.child1)) {
             let v = aifSitesOf(n.child1, fnId, scope)
             aif_con_bind(aif_key_ret(fnId), v)
-            aif_con_escape_caller(v)
+            aif_con_return(v, fnId)
         }
         return
     }

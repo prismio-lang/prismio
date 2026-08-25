@@ -101,10 +101,12 @@ they are the argument for the port:
 - **They were outside the docs**, for the same reason: there was no Prismio
   declaration to document.
 
-The ports are checked against the C they replaced. `tests/test_75_std_string.psm`
-asks both implementations the same questions — the C originals are still linked —
-and compares answers, at the boundaries where a reimplementation drifts: empty
-input, no match, whole-string match, overlapping needles.
+`tests/test_75_std_string.psm` is a native conformance test. It writes boundary
+expectations directly and compares optimized substring search with a small,
+independent O(n*m) Prismio reference. It has no foreign string declarations, so
+the test cannot pass by silently falling back to an older C implementation. Its
+success path is also ledger-clean: 562 allocations, 562 releases, no leaks or
+violations.
 
 ---
 

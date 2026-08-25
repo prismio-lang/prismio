@@ -403,6 +403,11 @@ extern fn aif_con_opaque(vs: Int)
 extern fn aif_con_retain_in(vs: Int, holder: Int)
 extern fn aif_con_borrow(vs: Int)
 extern fn aif_con_escape_caller(vs: Int)
+// E-RETURN with the function that owns the return statement. Ordinary sites
+// still rise to Caller; view provenance uses the function id to distinguish a
+// locally-created collection from one merely borrowed from this function's
+// caller.
+extern fn aif_con_return(vs: Int, fnId: Int)
 extern fn aif_con_escape_global(vs: Int)
 extern fn aif_con_no_stack(vs: Int)
 extern fn aif_con_count() -> Int
@@ -573,6 +578,11 @@ fn aifKindOf(ty: String) -> Int {
     if (aif_is_struct(ty) == 1) { return AIF_KIND_STRUCT }
     if (str_equals(ty, "String") == 1) { return AIF_KIND_STRING }
     if (str_equals(aifBaseType(ty), "List") == 1) { return AIF_KIND_LIST }
+    // A DataView has the same analysis-relevant resource shape as a List: it is
+    // affine, dynamically sized, owns subordinate storage, cannot become T0,
+    // and is not arena-placed. Codegen still selects its distinct release from
+    // the semantic TypeKind.
+    if (str_equals(aifBaseType(ty), "DataView") == 1) { return AIF_KIND_LIST }
     if (str_starts_with(ty, "[") == 1) { return AIF_KIND_ARRAY }
     if (str_equals(ty, "Array") == 1) { return AIF_KIND_ARRAY }
     return AIF_KIND_OPAQUE
@@ -602,6 +612,16 @@ fn aifKindName(kind: Int) -> String {
 // the base-keyed answer where a spelling is not resolved.
 fn aifElemKey(containerType: String) -> Int {
     return aif_elem_key(containerType)
+}
+
+// A Slice<T> resolves through the List<T> handle it carries. Element points-to
+// facts therefore belong to the List key, not to a parallel Slice key that no
+// store ever populates.
+fn aifElementContainerType(ty: String) -> String {
+    if (str_starts_with(ty, "Slice<") == 1) {
+        return str_concat("List", str_substring(ty, 5, __builtin_string_len(ty) - 5))
+    }
+    return ty
 }
 
 // ---------------------------------------------------------------------------

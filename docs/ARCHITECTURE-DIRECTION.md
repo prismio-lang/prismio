@@ -7,6 +7,13 @@ comes from. The scope test in [`aif/implementation/ROADMAP.md`](../aif/implement
 still applies — most of §1 below is **not** AIF's work, and is filed here rather than there for
 that reason.
 
+**Current measurement, 2026-08-25:** after making the curated runtime merge the working-tree
+default, two fresh 25-run passes put Prismio at **1.10×–3.11× idiomatic Rust** and
+**0.89×–1.00× its peak RSS**. g4 is still the widest runtime gap; g2 is 1.76× and g6 is 2.71×.
+The local gate is green at 150/150 plus fixpoint, seed agreement, and AIF differential 17/17. The
+default's remaining gate is the remote Windows/Linux/macOS matrix, which now contains a
+discriminating suite test for the real merge path.
+
 ---
 
 ## 0 · The diagnosis, and the one thing everybody had backwards
@@ -15,20 +22,19 @@ Seven sessions of memory-model work did not move the corpus standing (1.12–5.5
 idiomatic Rust). The final benchmark decomposed the gap, and the decomposition is not what the
 roadmap assumed.
 
-> **The eighth moved it, 2026-08-28** — automatic arena placement finally reaching the two programs
-> shaped for it. g2 goes **5.77× → ~2.6×** and g6 **4.31× → 2.58×**; the other four are flat, so the
-> band is roughly **1.09×–3.23×** on the driver's own numbers. The decomposition below is still the
-> right one and the ranking below still holds — what changed is that the *arena* row is now spent.
-> `RESULTS-final.md`'s matrix has not been re-run and is stale for g2, g6 and every RSS figure;
-> TODO's first standing item is that run.
+> **The current compiler moved it.** Automatic arenas, inline flat list elements, and the curated
+> runtime merge take g2 to **1.76×** and leave g6 at **2.71×**; the freshly measured band is
+> **1.10×–3.11×**, with g4 still widest.
+> Peak RSS is again a win or tie on all six. The arena and inline-storage rows are spent; the
+> runtime merge's default and the remaining view/layout work are not.
 
 | component | measured | what it means |
 |---|---:|---|
-| Compiler codegen (residual vs `rust_boxed`) | **1.24–1.27×** | Fine. Normal compiler territory. Not the problem. |
-| **Runtime call seam** | **1.07–1.87×** | Largest single lever. No language change needed. |
-| Allocation volume | **20.2–63.7×** Rust | The real memory-model gap. |
+| Compiler codegen (old residual vs `rust_boxed`) | **no current band** | Arenas and inline elements mean the diagnostic no longer holds representation constant. |
+| **Runtime call seam** | **0.948×** marginal default flip; **0.812×** over all M1 work | Default-on candidate; remote three-platform gate pending. |
+| Allocation volume | **0.26–21.3×** Rust | Fewer than Rust on g2/g6; still 10.7–21.3× on the other four. |
 | Boxed representation, *allocation removed* | **0.86×** | **Free.** See below. |
-| Boxed representation, *as shipped* | 9.23× (g2), 2.51× (g4) | Almost entirely the allocations it forces. |
+| Inline flat `List<T>` elements | **shipped** | Removes the per-element boxes where ownership/layout permits it. |
 
 **The thing that was backwards.** The project has treated `List<T>`-is-a-vector-of-pointers as an
 *indirection* problem — pointer chasing, cache misses — and ranked inline storage as the fix.
@@ -40,19 +46,22 @@ So the representation is expensive **because of the allocations it forces, not t
 adds.** That single correction re-ranks the roadmap, because there are two ways to remove
 allocations and the project has only been pursuing the expensive one:
 
-- **(a) Change the representation** — inline storage, which needs views, slices and a language
-  change. Ranked #2 since session 3. Still unbuilt.
+- **(a) Change the representation** — inline storage is built for safe flat element types. Views
+  and slices remain necessary for programmer-visible layout conversion.
 - **(b) Stop allocating** — reuse in place, non-lexical regions, a better allocator. Cheaper to
   build, and *industrialised in two production languages already* (Lean 4, Koka).
 
-Everything below is ordered by measured prize over cost, with (b) ahead of (a).
+The current ordering is restated in §6; the historical sections below explain how each mechanism
+was evaluated.
 
 ---
 
-## 1 · Close the runtime seam — the compilation architecture
+## 1 · Close the runtime seam — built, with one deployment decision left
 
-**Measured prize: 1.07×–1.87×.** Takes g3 to **0.94× of idiomatic Rust** — the first Prismio
-program ever to beat it. No language change. This is the first thing to build.
+**Built and default-on in the working tree; corpus median 0.948× for the flip and 0.812× over all
+M1 work.** The suite now fails unless the curated module actually merges, and separately checks the
+`PRISMIO_INLINE_RUNTIME=0` control. The remaining task is to observe that check on all three remote
+CI platforms. No language design remains in this item.
 
 ### The problem
 
@@ -110,7 +119,7 @@ the merge.
 
 ---
 
-## 2 · Reuse analysis — the answer to 20–63× allocation
+## 2 · Reuse analysis — useful only where the program has its trigger shape
 
 **Projected prize: large, on the two programs where allocation dominates (g2, g6).**
 Directly attacks the one axis that has never moved.
@@ -177,14 +186,37 @@ so a caller's region cannot reach a callee's allocations.
 
 ---
 
-## 4 · Views and slices — one feature, two unlocks
+## 4 · Views and slices — bounded views and mutable data views shipped
 
-Still ranked #2 since session 3, still unbuilt — but the justification changes given §0.
+M4.2 is built: flat, non-counted, non-split struct elements live directly in a `List<T>` block by
+default, with destination-passing construction and boxed fallbacks. M4.1 is now built too:
+`Slice<T>` is the specified handle/offset/length value, with nested ranges, checked access,
+explicit mutation, generic functions, and E-VIEW lifetime propagation. M4.3 now performs real,
+programmer-directed AoS↔SoA conversion for eligible flat structs, projects fields from checked
+`(DataView handle, index)` descriptors, mutates those fields, and proves they survive consuming
+reconstruction to AoS.
 
-Inline `List<T>` storage is worth having, **not** because it removes indirection (measured free)
-but because it removes allocations. If §2 removes those allocations another way, the urgency drops.
-What does *not* drop is that **views/slices are the prerequisite for the layout work**, which is
-the only measured path to a large win (`g1_tuned.rs` pure SoA = **0.26×** of idiomatic Rust).
+Inline `List<T>` storage was worth having, **not** because it removes indirection (measured free)
+but because it removes allocations, and that implementation has shipped. The view prerequisite
+has now shipped as well. Physical AoS↔SoA conversion and mutable column projection have shipped.
+The isolated single-column scan is **0.903×** its AoS control; the full mutable g1 DataView loop is
+**0.221× Prismio AoS**, **0.273× idiomatic Rust**, and **1.076×** tuned Rust SoA. That natural arm
+is layout-directed rather than source-hand-tuned; a separately labelled per-stream helper form
+reaches **4.631 ms versus 4.666 ms** tuned Rust in paired timing, establishing hot-loop parity.
+
+The implementation deliberately keeps Slice and DataView separate. Slice resolves ordinary AoS or
+inline-AoS list storage; `soa` produces real target-layout-aware columns and DataView indexing
+produces a checked handle/index descriptor rather than a raw interior pointer. Flat structs come
+first because they cover g1 and avoid pretending polymorphic/pointer-bearing fields can be flattened
+safely. Ready-view metadata is immutable and distinct physical columns carry field-specific alias
+metadata, allowing stable lookup work to leave the hot loop. Extern DataView boundaries remain
+rejected until explicit marshalling exists. M4.4 now proves the generic edge: Prismio removes
+templates before sema, substitutes concrete types into demand-created AST clones, and only then
+asks the clone's static `List<T>` element type whether inline storage is legal. A six-clone gate
+requires one flat instantiation to use `list_*_inline` while a pointer-bearing instantiation of the
+same templates remains boxed. This is specialization before flattening, so no runtime-polymorphic
+container body has to guess its representation. Suite **166/166**; the no-code-change A/A control
+is **0.997×** corpus median.
 
 - **[Compiler Support for Semi-manual AoS-to-SoA Conversions with Data Views](https://link.springer.com/chapter/10.1007/978-3-031-85697-6_20)**
   (PPAM 2024) and its extended version
@@ -209,7 +241,7 @@ the only measured path to a large win (`g1_tuned.rs` pure SoA = **0.26×** of id
 
 ---
 
-## 5 · The allocator — cheap, mechanical, and it also touches the RSS regression
+## 5 · The allocator — cheap, mechanical, and now only about allocation cost
 
 If the allocations cannot all be removed, make each one cheaper.
 
@@ -218,14 +250,17 @@ If the allocations cannot all be removed, make each one cheaper.
   **it was built specifically as the backend for reference-counted runtimes** — Koka and Lean. That
   is the same workload shape Prismio has: high allocation count, small objects, predictable sizes.
 
-One reason this is well-timed: Prismio allocates 20–63× more than Rust, so allocator cost is
-weighted 20–63× more heavily here than in the baseline.
+The current standing changes where this matters: automatic arenas give Prismio fewer loop
+allocations than Rust on g2 and g6, while g1/g3/g4/g5 still allocate **10.7×–21.3×** more. An
+allocator experiment should therefore report those four separately instead of hiding them in a
+corpus median.
 
 **The second reason is gone, and the correction is worth more than the entry was.** This section
 used to cite the peak RSS regression — 0.84–1.00× → 1.09–1.60× of idiomatic Rust — as "an
 allocator-adjacent symptom that is still unexplained". It was **leaks**. Removing two of them on
 2026-08-28 dropped peak RSS to **0.49×–0.82×** of the previous compiler across the whole corpus,
-and both were a *missing owner* rather than a missing free. The entry described the signature
+and both were a *missing owner* rather than a missing free. Two cross-language passes now put the
+current compiler at **0.89×–1.00× Rust RSS**, closing the investigation. The entry described the signature
 correctly for eight sessions — "scales with live set rather than churn" — and nobody read that
 sentence as the definition of a leak. mimalloc is still worth evaluating on allocation *cost*; it
 was never going to fix the footprint.
@@ -236,15 +271,16 @@ was never going to fix the footprint.
 
 | # | Item | Prize | Cost | Language change? | Source |
 |---|---|---|---|---|---|
-| 1 | **Close the runtime seam** | **1.07–1.87×** measured | low | **no** | ThinLTO / Swift `@inlinable` / MLton |
-| 2 | **Reuse analysis** | attacks 20–63× alloc | medium | no | Perceus / Immutable Beans |
-| 3 | **Non-lexical + polymorphic regions** | 2.16× measured on g2 | medium | no (annotation exists) | Spegion / Tofte–Talpin |
-| 4 | **Views & slices** → inline storage + data views | 0.26× projected (SoA) | high | **yes** | PPAM 2024 / OCaml / Valhalla |
-| 5 | **mimalloc** | alloc cost + RSS | low | no | APLAS 2019 |
+| 1 | **Finish the inline-runtime remote CI gate** | default flip **0.948×** measured | low | **no** | existing three-OS matrix |
+| 2 | **mimalloc** on g1/g3/g4/g5 | attacks 10.7×–21.3× alloc counts | low | no | APLAS 2019 |
+| 3 | **Boxed replacement borrow-liveness** | reclaim overwritten objects without invalidating element borrows | medium/high | likely | M4.4 verifier finding |
+| 4 | **Reuse analysis — retired until a measured trigger exists** | no corpus trigger today | dormant | no | Perceus / Immutable Beans |
+| 5 | **Genuinely-cold compile regression** | 19–28% first-build cost | medium | no | local measurement |
 
-**Take 1 first.** It is the only item that is measured, large, and free of language design.
-**Take 2 before 4** — it attacks the same allocation cost for less than a language change, and
-§0 shows the representation's indirection cost is zero.
+**Take 1 first when remote CI state is available.** The implementation is already built and
+measured; only its portability/default gate is open. M4 is measured and green, so M5.1 is the next
+local experiment. Do not reopen Slice, DataView, or generic representation design without a new
+failing gate: their current correctness and performance evidence is recorded.
 
 ---
 
@@ -260,8 +296,9 @@ was never going to fix the footprint.
   module — at 1.21× compile time against 1.18×, with a per-target CPU string to get exactly right
   and a linker-plugin dependency. Strictly dominated. It survives only as the explanation above.
 - **Merging the *whole* runtime.** 1.88× compile time for less speed than curating 8 functions.
-- **Chasing the residual.** 1.24–1.27× is ordinary codegen distance from rustc and has been stable
-  for seven sessions. There is no single lever behind it.
+- **Quoting the old residual as current.** The 1.24–1.27× band held only while `rust_boxed` matched
+  Prismio's representation. Automatic arenas and inline elements invalidate that control; current
+  g1/g2/g4 diagnostic ratios are 1.24×, 0.22×, and 1.41×.
 - **Assuming boxed layout costs indirection.** Measured **0.86×** — free. It costs *allocations*.
 - **Fully automatic layout search before views exist.** The cost model already ranked two layouts
   the measurement rejected, and the vetoes that removed them were written from measured regressions

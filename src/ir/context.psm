@@ -58,6 +58,9 @@ let IR_DROP_LIST = 1
 // the drop list already carries the declared type -- so this needs no extra
 // storage, only a third case at every site that reads the kind.
 let IR_DROP_TYPED = 2
+// M4.3. A DataView is a header plus one allocation per column, so neither the
+// object seam nor List's release is sufficient.
+let IR_DROP_DATAVIEW = 3
 
 // AIF item 3. What a container does with its elements when it is released, and
 // what a known callee's return leaves the caller owning. One encoding for both,

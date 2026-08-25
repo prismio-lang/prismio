@@ -11,17 +11,16 @@
 // AIF owns their non-retaining effects, and codegen lowers them directly to an
 // `extractvalue`, GEP/load, or GEP/store. Their reserved names are only the
 // call-shaped spelling by which the standard library asks the compiler for an
-// operation. The C compatibility functions remain real foreign symbols and are
-// no longer confused with these builtins.
+// operation. Older C string routines used by compiler-internal code remain
+// ordinary foreign symbols and are no longer confused with these builtins.
 //
 // `str_with_capacity` is the one real runtime call: memory allocation remains a
 // runtime capability, and the frontend builds its String pair from the requested
 // length.
 //
 // Equality, comparison, checked character access, concatenation, slicing and
-// Char conversion are all ordinary Prismio below. Their old C symbols remain in
-// `lang_runtime.c` only as compatibility ABI for foreign callers and differential
-// tests; importing this module no longer calls them.
+// Char conversion are all ordinary Prismio below. Importing this module neither
+// declares nor calls their older C implementations.
 //
 // What every wrapper adds is the **ownership contract**, declared once. An
 // `extern fn` with no contract has unknown provenance, so the analysis widens it
@@ -199,8 +198,7 @@ fn strSubstring(s: String, start: Int, length: Int) -> String {
 }
 
 fn strFromChar(c: Char) -> String {
-    // Prismio Strings cannot contain NUL. Match the compatibility C function:
-    // its one-byte NUL payload measures as an empty string at the ABI boundary.
+    // Prismio Strings cannot contain NUL, so a NUL Char maps to empty text.
     if (c == '\0') { return str_with_capacity(0) }
     let out = str_with_capacity(1)
     __builtin_string_put_byte(out, 0, c)
@@ -1142,8 +1140,10 @@ fn strParseInt(s: String) -> Option<Int> {
 // Sizing the buffer used to be a second division pass over the value -- one
 // divide per digit, before the fill loop did them all again. A chain of
 // comparisons against the powers of ten answers the same question with no
-// division at all, and it is the pass that made integer formatting 2.1x Rust
-// rather than the divides inside the fill.
+// division through 18 digits, and it is the pass that made integer formatting
+// 2.1x Rust rather than the divides inside the fill. The last boundary uses one
+// division because 10^19 is outside signed I64 and cannot be an exact literal
+// until integer-literal typing grows a U64 case.
 fn strDigitCount(value: U64) -> Int {
     if (value < 10) { return 1 }
     if (value < 100) { return 2 }
@@ -1163,7 +1163,7 @@ fn strDigitCount(value: U64) -> Int {
     if (value < 10000000000000000) { return 16 }
     if (value < 100000000000000000) { return 17 }
     if (value < 1000000000000000000) { return 18 }
-    if (value < 10000000000000000000) { return 19 }
+    if (value / 10 < 1000000000000000000) { return 19 }
     return 20
 }
 

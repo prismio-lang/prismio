@@ -28,6 +28,18 @@ fn semaMangleType(t: TypeInfo) -> String {
         }
         return "List_Invalid"
     }
+    if (t.kind == TypeKind.SLICE) {
+        if (nodeExists(t.child)) {
+            return str_concat("Slice_", semaMangleType(ptr_to_type(t.child)))
+        }
+        return "Slice_Invalid"
+    }
+    if (t.kind == TypeKind.DATAVIEW) {
+        if (nodeExists(t.child)) {
+            return str_concat("DataView_", semaMangleType(ptr_to_type(t.child)))
+        }
+        return "DataView_Invalid"
+    }
     return "Invalid"
 }
 

@@ -796,6 +796,7 @@ fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
     // budget of zero rounds and its row also says "layout search: none".
     if (budget > 0) {
         aifLayoutVetoInline(module)
+        aifLayoutVetoDataViews(module.child1)
         aif_layout_split_select()
     }
 

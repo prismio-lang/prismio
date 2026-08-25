@@ -1,7 +1,7 @@
 # Handoff — continuing the Prismio work
 
 Read `COMPILER_AUDIT.md` (defects, all closed) and `V1_GAP_ANALYSIS.md` (capability inventory
-against the v1 bar, with a status box at the top) before starting. Current as of **2026-08-07**.
+against the v1 bar, with a status box at the top) before starting. Current as of **2026-08-25**.
 Don't re-derive what's in them.
 
 ---
@@ -11,7 +11,12 @@ Don't re-derive what's in them.
 Everything below is verified, not asserted — the commands that verify it are in the next section.
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
-  IR for `src/main.psm` is byte-identical to the warm build's. Last-good is **`build/S44b`**
+  IR for `src/main.psm` is byte-identical to the warm build's. Current verified compiler is
+  **`build/m4-dataview-c-12`**, with `build/m4c-final-a.ll` /
+  `build/m4c-final-b.ll` at a fixed point. M4 is complete. M4.3 supplies real consuming AoS↔SoA conversion,
+  checked handle/index element descriptors, direct column reads and mutable round trip. The last good before
+  M4.3 is `build/m4-slice-9`; `build/inline-default-2` is the last good before M4.1;
+  historical last-good before the native-string work was **`build/S44b`**
   (`S10b → … → S35b → S36b → S44b`, `a44.ll == b44.ll`, and a fresh seed build matches it);
   `build/S36b`, `build/S35b`, `build/S31b`, `build/S27b`, `build/S26b`,
   `build/S25b`, `build/S24b`, `build/S22b`, `build/S20b`, `build/S19b`,
@@ -26,19 +31,17 @@ Everything below is verified, not asserted — the commands that verify it are i
   **S19b adds the corrected zero-serving-region note and is the one that holds.** The paired generations exist because regenerating `embedded_sources.h`
   for a change to `build_driver.c` changes what the *next* compiler compiles, so each edit costs
   two.
-- **Cross-language standing, re-measured 2026-08-25** against session 3's harness unchanged:
-  **1.13×–5.89× idiomatic Rust, 1.70×–16.4× hand-tuned Rust**, residual **1.24×–1.27×**.
-  Full matrix and the four open items in
+- **Cross-language standing, re-measured with the current compiler on 2026-08-25:** the explicit
+  g1 DataView layout runs at **0.221× Prismio AoS**, **0.273× idiomatic Rust**, and **1.076×
+  hand-tuned Rust SoA** over 25 runs. The boxed-representation residual moves from 1.145× to
+  0.253×. Before the explicit layout arm, two isolated
+  25-run passes with matching checksums put Prismio at **1.10×–3.11× idiomatic Rust**. g2 is
+  **1.76×**, g6 is **2.71×**, and g4 is still the widest gap at **3.11×**. The old 1.24×–1.27×
+  `rust_boxed` residual is no longer representation-matched after automatic arenas and inline flat
+  elements. Full current table and both JSON files are linked from
   [`aif/evidence/RESULTS-final.md`](aif/evidence/RESULTS-final.md).
-  **The band moved on 2026-08-28, for the first time in eight sessions, and on two programs:** g2
-  goes 5.77× → **2.59×** of idiomatic Rust once M3.2 places its frame arena automatically, and g6
-  goes 4.31× → **2.58×** once regime (a) stops counting call sites. The rest are flat (corpus
-  median 0.994×), so the *band* is now roughly **1.09×–3.23×** on the driver's own numbers and the
-  RESULTS-final matrix is stale for g2 and g6 — re-measure before quoting it.
-- **Peak RSS fell 0.49×–0.82× across the corpus** on 2026-08-28, from removing the integer-print
-  leak: 2.25→1.78, 3.47→1.94, 2.84→2.08, 2.84→2.05, 1.98→1.63, 4.55→2.23 MB. That is the direction
-  the standing "peak RSS reversed" candidate wanted. The ×-against-Rust figure needs
-  RESULTS-final's own harness to restate and has **not** been re-run.
+- **Peak RSS is 0.89×–1.00× idiomatic Rust** across all six in the same run. The previous
+  1.09×–1.60× regression is gone, confirming that the removed leaks were its cause; M5.2 is closed.
 - **All seven benchmark programs have a completely clean `--verify` ledger** —
   `allocated == released`, 0 leaked, 0 violations — as of **2026-08-23**. This line said the same
   thing on 2026-08-28 and it was **false for g7**, which leaked **3599 of its 5021 allocations**:
@@ -52,7 +55,17 @@ Everything below is verified, not asserted — the commands that verify it are i
   tolerance. Two programs read 1.02–1.05× on the last run with **byte-identical loop code** — the
   only functions that differ in either are in `std/io`. Attribute before believing a number in that
   band: `define .*@name` diffing the two `.ll` files takes a minute and settles it.
-- **143/143 tests** as of 2026-08-23 (142 before `test_74_reinit_assignment.psm`, the M2.1c guard —
+- **166/166 tests** as of 2026-08-25. The newest positive fixture and integration gate prove the
+  same generic `singleton/get/set` templates select inline storage for a concrete flat struct and
+  boxed storage for a concrete pointer-bearing struct only after monomorphisation. The additions
+  since the Slice milestone cover real DataView
+  conversion, drop/move behavior, field projection, generic borrowing, invalid layouts and
+  boundaries, and owned-element escape rejection. The five earlier additions are Slice language/runtime coverage,
+  three negative cases, and the discriminating Slice integration gate. Test 150 is the
+  default-runtime portability discriminator:
+  it requires a successful curated merge and proves `PRISMIO_INLINE_RUNTIME=0` avoids it. The
+  detailed growth history here ended at 143/143
+  (142 before `test_74_reinit_assignment.psm`, the M2.1c guard —
   **discriminating by construction**, since it does not compile on the previous generation, so a
   regression there is a build failure rather than a number; 141 before
   `test_73_recursive_release.psm`, the M2.1a guard —
@@ -75,7 +88,7 @@ Everything below is verified, not asserted — the commands that verify it are i
   `target_cross` runner test and its fixture; 131 before the DWARF session, which added the
   `debug_info` runner test and its fixture; 128 before the concurrency session, which added the
   `aif_concurrency` runner test, `test_68_optional_returns.psm` and `test_69_task_results.psm`), of which
-  **31** are negative and each asserts *which* diagnostic it
+  **35** are negative and each asserts *which* diagnostic it
   expects. The runner globs `neg_*.psm`, so the count is `ls tests/neg_*.psm | wc -l` and nothing
   else; this line said 26 while the tree held 27, which is the same rot the note below describes. (This line read "76/76" for six sessions after it
   stopped being true. If you change the count, change it here.)
@@ -483,6 +496,152 @@ LAYOUT §3.2's W3 sandbox obligations. Shipping the syntax without the runner is
 this item was ordered around, pointed the other way: a producer that produces nothing. The
 instrumentation point already exists when someone wants it — `ir_struct_field_ptr` is the single
 choke point for field access, the way `ir_alloc_object` is for allocation.
+
+---
+
+## Session of 2026-08-25 (M4.4 generic/container layout specialization) — green
+
+M4.4 is a proof milestone, not a generated-code change. Prismio's generic strategy already has the
+safe ordering the Valhalla warning demands: `monoCollectTemplates` removes templates before sema;
+demand-created clones receive concrete type substitution; sema and codegen see only those clones;
+and `inlineElemSizeOfList` chooses inline storage solely from the clone's static element type.
+
+`test_82_generic_layout.psm` instantiates `singleton<T>`, `genericGet<T>` and `genericSet<T>` for a
+16-byte flat struct and a pointer-bearing struct. The permanent runner gate extracts all six mangled
+clone bodies: the flat three must call `list_*_inline`, while the pointer-bearing three must call
+the boxed `list_*` family and contain no inline call. The runtime half passes with **8 allocated / 8
+released / 0 leaked / 0 violations**. Full suite: **166/166**.
+
+The standard performance check is a same-compiler 25-run A/A control because no compiler/runtime
+source changed: **0.997×** corpus median, range **0.978–1.099×**, checksums and executable sizes
+identical. The g1 endpoint is the host's demonstrated layout/timing noise, not an effect. Evidence:
+`aif/evidence/RESULTS-M4-generic-layout.md` and `results-m4-generic-layout.json`.
+
+The first fixture also exposed a separate known limitation. Boxed `OBJECT` `list_set` replacement
+does not free the overwritten object because Prismio cannot yet prove an earlier `list_get` element
+borrow is dead. The safe follow-up is borrow-liveness or an exclusive replacement operation, not an
+unconditional runtime free. It is now a standing TODO. M5.1 is next.
+
+## Session of 2026-08-25 (M4.3c mutable DataView round trip) — green
+
+M4.3 is complete. DataElement field assignment resolves the selected real column at the store;
+scalar and nested-flat mutations survive consuming `aos`. Extern boundaries remain rejected. The
+initial correct loop regressed because LLVM could not separate view metadata from column stores.
+The retained lowering marks ready-view metadata invariant and uses field-specific TBAA for distinct
+physical columns; an in-loop `llvm.assume` and source loop fission were measured and rejected.
+
+Verification: `m4c-final-a.ll == m4c-final-b.ll`, SHA-256
+`062fbdb295711e2fe1b08ff3f31baa0f1ecf8e978152027bd88255ccdb19f8c5`, **164/164**, AIF
+differential **17/17**, source lists, packaged runtime and focused verifier **12 / 12 / 0 / 0**.
+The standard corpus is **0.999×** median. The 25-run g1 gate reads AoS 23.065 ms, DataView 5.092
+ms, idiomatic Rust 18.659 ms and tuned Rust SoA 4.732 ms with identical checksums. See
+[`aif/evidence/RESULTS-M4-dataview-c.md`](aif/evidence/RESULTS-M4-dataview-c.md).
+
+M4.4 is next: turn the Valhalla/polymorphic-layout warning into a discriminating generic-container
+gate without disabling safe concrete flattening after monomorphisation.
+
+Follow-up hand-tuning separates representation from source scheduling. Natural DataView uses a
+two-wide integration loop and runs in 5.135 ms. Three small per-stream borrowing helpers inline as
+eight-value NEON loops and run in 4.631 ms paired against tuned Rust's 4.666 ms: parity inside
+noise. The earlier single three-loop helper crossed the inline threshold and regressed to 10.2 ms.
+Whole-process Prismio time remains higher only in the post-timing 6,002-line unbuffered report.
+
+## Session of 2026-08-25 (M4.3a–b DataView conversion and reads) — green
+
+M4.3 now has a real programmer-directed layout boundary. `soa(List<T>)` consumes eligible flat
+rows into target-layout-aware columns, `aos(DataView<T>)` reconstructs and consumes the view, and
+`data_len` borrows it. M4.3b adds bounds-checked `(DataView handle, i32 index)` element descriptors
+whose fields resolve the physical columns at each read. Nested flat fields work, no raw interior
+pointer is retained, and saving an element descriptor from an owned local view is rejected so a
+later `aos(view)` cannot strand it.
+
+Verification: `m4-dataview-b-5 == m4-dataview-b-6` with SHA-256
+`22aaa1d47bfa5c6955c4b1086800f2da860a69e5fbfce6eeeb62d984280b8da1`, **164/164**, AIF
+differential **17/17**, source lists, curated runtime closure, packaged runtime and target/JIT gates
+green. The focused verifier ledger is **12 allocated / 12 released / 0 leaked / 0 violations**.
+
+The standard corpus remains flat at **1.004×** median new/old. A paired 200,000-row, 12-field
+single-column scan is **0.903×** AoS time (**9.7% faster**), with per-scan p50 105.6 → 95.9 µs and
+p99 153.1 → 119.0 µs. Peak RSS is 24.5 → 38.2 MiB because conversion transiently holds the AoS
+source and destination columns together. M4.3c is next: field mutation, `aos` survival and the full
+g1 layout residual. See [`aif/evidence/RESULTS-M4-dataview-b.md`](aif/evidence/RESULTS-M4-dataview-b.md).
+
+## Session of 2026-08-25 (M2 retirement + M4.1 Slice) — green
+
+M2's remaining reuse-token work is retired as dormant research. The trigger is now explicit: a
+real maintained immutable-rebuild workload, a paired baseline showing a material allocation prize,
+equal output, a clean verifier, bounded token lifetime, and allocation-count improvement against a
+no-reuse control. The current corpus has no such shape, and M3 already delivered M2's old g2/g6
+numbers by arenas, so leaving unchecked implementation boxes was misleading rather than prudent.
+
+M4.1 is implemented. `Slice<T>` is the SPEC 8.4 value `{ List handle, i32 offset, i32 length }`.
+`a[start..end]` works on Lists and Slices, nested ranges compose, `slice_len` and indexing read
+through the handle, and `slice_set` is the explicit mutable operation. Bounds are checked at
+construction and access. Overlapping views work, list growth cannot strand them, generic
+parameters/returns/inference work, and the backend/debug layers know the aggregate. Direct
+`List<Slice<T>>` is rejected because one boxed slot cannot hold three words; a struct wrapper works.
+Extern Slice boundaries are rejected until marshalling exists.
+
+The AIF view edge creates no site and raises the collection to the view's escape. Implementing
+returned Slices found a precision bug: the ordinary caller-escape constraint raised a borrowed
+parameter collection to T2. The solver now distinguishes return provenance, raising collections
+owned by the returning function while preserving the caller's actual bound for parameters.
+`test_79 --verify` is 9/9/0/0.
+
+Verification: `m4-slice-8 == m4-slice-9`, refreshed committed seed and cold-start agreement,
+**155/155**, differential 17/17, source lists and diff check green. The IR snapshot has 107
+pre-existing programs byte-identical and two differing only in LLVM identified-type suffixes;
+Slice helpers are declared conditionally, so unused language support changes no existing program.
+The 25-run milestone gate passed at corpus median 1.001×; the cross-language refresh is
+`aif/evidence/xlang/results-m4-slices.json`. Full record:
+[`RESULTS-M4-slices.md`](aif/evidence/RESULTS-M4-slices.md).
+
+M4.3 is next only if continuing M4: explicit programmer-named conversion, real SoA columns for
+flat structs, `(collection handle, index)` element views, mutation round-trip, and an FFI
+copy/rejection rule. A field projection alone is not the milestone.
+
+---
+
+## Session of 2026-08-25 (inline-runtime default candidate) — local green, remote matrix pending
+
+The next standing item is implemented locally. `inline_runtime_enabled()` now defaults on and
+accepts only `PRISMIO_INLINE_RUNTIME=0` as the opt-out. The existing merge remains fail-open for
+product correctness, so the new `inline_runtime_default` runner check does not trust a successful
+build: with object-cache tracing enabled it requires the marker emitted only after
+`ir_link_modules` succeeds, runs the resulting list program, then rebuilds with `=0` and requires
+the marker to be absent. Because the ordinary suite already runs on Windows, Linux, and macOS,
+this makes that matrix the portability gate without adding a second expensive workflow.
+
+Local verification is green: fixed point `inline-default-1 == inline-default-2`, fresh-seed
+agreement, AIF differential 17/17, and **150/150** tests. The 25-run milestone gate reports corpus
+median **0.948×**, range 0.635×–1.000×, RSS 0.993×–1.008×, equal checksums, and unchanged executable
+sizes. The refreshed Rust standing is **1.10×–3.11×**, with g2 1.76×, g4 3.11×, g5 1.71×, and
+peak RSS 0.89×–1.00× Rust.
+
+The parent TODO remains unchecked for one reason: these working-tree changes have not been pushed,
+so the new test has not yet been observed green on the remote three-platform matrix. Do not call
+the portability gate complete until those jobs pass.
+
+---
+
+## Session of 2026-08-25 (standing benchmark refresh) — g4 is now the widest gap, and RSS is closed
+
+Completed the first standing item in `TODO.md` before ranking more compiler work. The unchanged
+cross-language harness ran twice in isolation against `build/seedcheck-clean`: a build pass and a
+quiet `--skip-build` control, 25 runs each. All variants matched checksums before timing; all 24
+binary medians agree within 3.8% between passes.
+
+The current band is **1.09×–3.41× idiomatic Rust**: g1 1.35×, g2 1.97×, g3 1.09×, g4 3.41×,
+g5 2.59×, g6 2.71×. Peak RSS is **0.88×–1.00× Rust**. That closes M5.2 and confirms the leaks were
+the old RSS regression. Prismio compiles these programs in 63–72 ms versus rustc's 106–135 ms and
+emits 77–78 KiB executables. `aif/evidence/RESULTS-final.md` now leads with the current table;
+`results-current.json` and `results-current-pass2.json` preserve the raw evidence.
+
+The rerun also exposed roadmap drift: M4.2 inline flat `List<T>` storage is already implemented and
+on by default, so its checkbox is now closed. The old 1.24×–1.27× `rust_boxed` residual cannot be
+carried forward because that diagnostic is boxed while current Prismio combines inline elements
+and automatic arenas. The next small task is the `PRISMIO_INLINE_RUNTIME` three-platform/default
+decision; the next large language task is M4.1/M4.3 views and data views.
 
 ---
 

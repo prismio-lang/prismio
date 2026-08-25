@@ -1,0 +1,17 @@
+// expect-error: a DataView element may only be saved from a borrowed DataView
+
+struct Cell {
+    x: Int,
+    y: Float
+}
+
+fn main() -> Int {
+    let mut rows: List<Cell> = list_new()
+    list_push(rows, Cell { x: 1, y: 2.0 })
+    let view: DataView<Cell> = soa(rows)
+    // Saving this descriptor would let a later aos(view) invalidate it. A
+    // function parameter is already borrowed and may save descriptors locally.
+    let dangling = view[0]
+    if (dangling.x != 1) { return 1 }
+    return 0
+}

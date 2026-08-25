@@ -38,6 +38,27 @@ fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (str_equals(name, "list_len") == 1) { return typeInt() }
     if (str_equals(name, "list_push") == 1) { return typeVoid() }
     if (str_equals(name, "list_set") == 1) { return typeVoid() }
+    if (str_equals(name, "slice_len") == 1) { return typeInt() }
+    if (str_equals(name, "slice_set") == 1) { return typeVoid() }
+    if (str_equals(name, "data_len") == 1) { return typeInt() }
+    if (str_equals(name, "soa") == 1) {
+        if (nodeExists(argPtr)) {
+            let lt = nodeGetType(ptr_to_node(argPtr))
+            if (lt.kind == TypeKind.LIST and nodeExists(lt.child)) {
+                return typeDataView(ptr_to_type(lt.child))
+            }
+        }
+        return typeInvalid()
+    }
+    if (str_equals(name, "aos") == 1) {
+        if (nodeExists(argPtr)) {
+            let vt = nodeGetType(ptr_to_node(argPtr))
+            if (vt.kind == TypeKind.DATAVIEW and nodeExists(vt.child)) {
+                return typeList(ptr_to_type(vt.child))
+            }
+        }
+        return typeInvalid()
+    }
     if (str_equals(name, "list_get") == 1) {
         if (nodeExists(argPtr)) {
             let lt = nodeGetType(ptr_to_node(argPtr))
@@ -130,6 +151,55 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
         }
         return true
     }
+
+    // M4.3a. The conversion is deliberately explicit and consuming: after
+    // `soa(rows)`, the rows live in columns and the old List handle is gone;
+    // after `aos(view)`, the reverse is true. Restrict the first boundary to
+    // flat structs so a byte copy never duplicates an owned pointer.
+    if (str_equals(name, "soa") == 1) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let rows = ptr_to_node(argPtr)
+        let lt = semaExpr(module, rows)
+        if (lt.kind != TypeKind.LIST) {
+            semaErrorAt(rows, str_concat("soa expects a List, found ", typeDisplay(lt)))
+            return true
+        }
+        let elemT = semaListElementType(lt)
+        if (elemT.kind != TypeKind.STRUCT) {
+            semaErrorAt(rows, str_concat("soa requires a List of flat structs, found ", typeDisplay(lt)))
+            return true
+        }
+        if (structDeclIsPodIn(module, elemT.name, 0, true) == false) {
+            semaErrorAt(rows, str_concat(str_concat("soa requires a flat struct with no owned fields; ",
+                                                     elemT.name),
+                                          " contains non-flat storage"))
+            return true
+        }
+        semaConsumeOperand(rows)
+        return true
+    }
+
+    if (str_equals(name, "aos") == 1) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let view = ptr_to_node(argPtr)
+        let vt = semaExpr(module, view)
+        if (vt.kind != TypeKind.DATAVIEW) {
+            semaErrorAt(view, str_concat("aos expects a DataView, found ", typeDisplay(vt)))
+            return true
+        }
+        semaConsumeOperand(view)
+        return true
+    }
+
+    if (str_equals(name, "data_len") == 1) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let view = ptr_to_node(argPtr)
+        let vt = semaExpr(module, view)
+        if (vt.kind != TypeKind.DATAVIEW) {
+            semaErrorAt(view, str_concat("data_len expects a DataView, found ", typeDisplay(vt)))
+        }
+        return true
+    }
     if (str_equals(name, "list_get") == 1) {
         if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
         let a0 = ptr_to_node(argPtr)
@@ -149,7 +219,20 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
             semaErrorAt(a0, str_concat("list_push expects a List, found ", typeDisplay(lt)))
             return true
         }
-        semaCheckValue(module, ptr_to_node(a0.next), semaListElementType(lt), "list_push value")
+        let valueNode = ptr_to_node(a0.next)
+        let elemT = semaListElementType(lt)
+        semaCheckValue(module, valueNode, elemT, "list_push value")
+        // A Slice is three words and List's non-flat fallback is one pointer per
+        // element. Silently truncating the descriptor to its handle would lose
+        // the range and turn a view into the whole list. Wrap it in a struct if
+        // it must be stored; that representation has an address and preserves
+        // E-VIEW through the field store.
+        if (elemT.kind == TypeKind.SLICE) {
+            semaErrorAt(valueNode, "a Slice cannot be stored directly in a List; wrap it in a struct")
+        }
+        if (elemT.kind == TypeKind.DATAVIEW) {
+            semaErrorAt(valueNode, "a DataView cannot be stored directly in a List")
+        }
         // AIF item 3. The list owns what is pushed into it and releases it at
         // teardown, so a push is an ownership transfer and has to be move-checked
         // as one. Two pushes of the same name would otherwise put one value under
@@ -172,12 +255,53 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
         }
         let a1 = ptr_to_node(a0.next)
         semaCheckValue(module, a1, typeInt(), "list_set index")
-        semaCheckValue(module, ptr_to_node(a1.next), semaListElementType(lt), "list_set value")
+        let valueNode = ptr_to_node(a1.next)
+        let elemT = semaListElementType(lt)
+        semaCheckValue(module, valueNode, elemT, "list_set value")
+        if (elemT.kind == TypeKind.SLICE) {
+            semaErrorAt(valueNode, "a Slice cannot be stored directly in a List; wrap it in a struct")
+        }
+        if (elemT.kind == TypeKind.DATAVIEW) {
+            semaErrorAt(valueNode, "a DataView cannot be stored directly in a List")
+        }
         // Same transfer as list_push. What it does *not* do is release whatever
         // occupied the slot: an overwritten element leaks, and closing that needs
         // a release the container can only make if it owns the old value, which
         // is the question this level answers for teardown and not for overwrite.
         semaConsumeOperand(ptr_to_node(a1.next))
+        return true
+    }
+
+    if (str_equals(name, "slice_len") == 1) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let slice = ptr_to_node(argPtr)
+        let st = semaExpr(module, slice)
+        if (st.kind != TypeKind.SLICE) {
+            semaErrorAt(slice, str_concat("slice_len expects a Slice, found ", typeDisplay(st)))
+        }
+        return true
+    }
+
+    // Mutable views use an explicit operation in v0.1. Two overlapping slices
+    // may both call it; the handle is resolved at each access, so list growth
+    // cannot strand either one and no aliasing promise is made.
+    if (str_equals(name, "slice_set") == 1) {
+        if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
+        let slice = ptr_to_node(argPtr)
+        let st = semaExpr(module, slice)
+        if (st.kind != TypeKind.SLICE) {
+            semaErrorAt(slice, str_concat("slice_set expects a Slice, found ", typeDisplay(st)))
+            return true
+        }
+        let index = ptr_to_node(slice.next)
+        semaCheckValue(module, index, typeInt(), "slice_set index")
+        let value = ptr_to_node(index.next)
+        let elemT = semaSliceElementType(st)
+        semaCheckValue(module, value, elemT, "slice_set value")
+        if (elemT.kind == TypeKind.SLICE) {
+            semaErrorAt(value, "a Slice cannot be stored directly through another Slice; wrap it in a struct")
+        }
+        semaConsumeOperand(value)
         return true
     }
 

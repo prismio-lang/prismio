@@ -1,0 +1,6 @@
+// expect-error: DataView cannot cross an extern boundary
+extern fn inspect_rows(rows: DataView<Int> borrow)
+
+fn main() -> Int {
+    return 0
+}

@@ -7,6 +7,44 @@ import ast.types
 import common.text
 import common.diagnostics
 
+// Keep the language addition inert for programs that do not use it. Runtime
+// declarations are ordinary IR and therefore part of the reproducibility
+// snapshot even when no call reaches them; emitting the Slice family
+// unconditionally changed every program in the corpus. A written Slice type or
+// a range expression is enough to select the family. Walking `next` here makes
+// one call on the module's first declaration cover every child chain as well.
+fn moduleTreeUsesSlice(nodePtr: Ptr) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let node = ptr_to_node(nodePtr)
+    if (node.kind == NodeKind.SLICE_EXPR) { return true }
+    if (node.kind == NodeKind.TYPE_ANNOTATION and str_equals(node.s1, "Slice") == 1) {
+        return true
+    }
+    if (moduleTreeUsesSlice(node.child1)) { return true }
+    if (moduleTreeUsesSlice(node.child2)) { return true }
+    if (moduleTreeUsesSlice(node.child3)) { return true }
+    return moduleTreeUsesSlice(node.next)
+}
+
+fn moduleTreeUsesDataView(nodePtr: Ptr) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let node = ptr_to_node(nodePtr)
+    if (node.kind == NodeKind.TYPE_ANNOTATION and str_equals(node.s1, "DataView") == 1) {
+        return true
+    }
+    if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)) {
+        let callee = ptr_to_node(node.child1)
+        if (str_equals(callee.s1, "soa") == 1 or str_equals(callee.s1, "aos") == 1
+            or str_equals(callee.s1, "data_len") == 1) {
+            return true
+        }
+    }
+    if (moduleTreeUsesDataView(node.child1)) { return true }
+    if (moduleTreeUsesDataView(node.child2)) { return true }
+    if (moduleTreeUsesDataView(node.child3)) { return true }
+    return moduleTreeUsesDataView(node.next)
+}
+
 fn generateFunction(func: ASTNode) {
     let funcName = func.s1
     let emittedName = functionSymbolName(func)
@@ -267,6 +305,11 @@ fn collectStringsExpr(expr: ASTNode) {
         if (nodeExists(expr.child2)) {
             collectStringsExpr(ptr_to_node(expr.child2))
         }
+    }
+    if (expr.kind == NodeKind.SLICE_EXPR) {
+        if (nodeExists(expr.child1)) { collectStringsExpr(ptr_to_node(expr.child1)) }
+        if (nodeExists(expr.child2)) { collectStringsExpr(ptr_to_node(expr.child2)) }
+        if (nodeExists(expr.child3)) { collectStringsExpr(ptr_to_node(expr.child3)) }
     }
     if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
         if (nodeExists(expr.child1)) {
@@ -1025,6 +1068,89 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_param("i32")
     ir_declare_function_param("ptr")
     ir_declare_function_end()
+
+    if (moduleTreeUsesSlice(module.child1)) {
+        // M4.1. A Slice is a value aggregate; these helpers only validate or
+        // resolve its handle at an access. The descriptor itself never crosses
+        // the C boundary, which keeps its three-word representation in
+        // Prismio's ABI.
+        ir_declare_function_begin("prismio_slice_check", "void")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("list_slice_get", "ptr")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("list_slice_get_inline", "ptr")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("list_slice_set", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("ptr")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("list_slice_set_inline", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("ptr")
+        ir_declare_function_end()
+    }
+
+    if (moduleTreeUsesDataView(module.child1)) {
+        ir_declare_function_begin("data_view_begin", "ptr")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("data_view_add_column", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("data_view_finish", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("data_view_to_list", "ptr")
+        ir_declare_function_param("ptr")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("data_view_len", "i32")
+        ir_declare_function_param("ptr")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("data_view_check_index", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("data_view_column", "ptr")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("data_view_release", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_end()
+    }
 
     ir_declare_function_begin("rc_release", "void")
     ir_declare_function_param("ptr")

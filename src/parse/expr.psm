@@ -249,11 +249,27 @@ fn parseSuffixes(p: Parser, base: ASTNode) -> ASTNode {
         if (parserMatchVal(p, TokenType.SEPARATOR, "(")) {
             expr = parseCall(p, expr)
         } else if (parserMatchVal(p, TokenType.SEPARATOR, "[")) {
-            let index = parserNode(p, NodeKind.INDEX_EXPR)
-            index.child1 = node_to_ptr(expr)
-            index.child2 = node_to_ptr(parseExpression(p, 0))
-            parserExpectVal(p, TokenType.SEPARATOR, "]", "array index")
-            expr = index
+            // The RANGE token is not a binary operator, so parsing the first
+            // bound stops immediately before `..`. That makes one production
+            // cover both `a[i]` and SPEC 8.4's `a[start..end]` without making
+            // range a general expression operator.
+            let first = parseExpression(p, 0)
+            if (parserMatch(p, TokenType.RANGE)) {
+                let slice = parserNode(p, NodeKind.SLICE_EXPR)
+                nodeSpanFrom(slice, expr)
+                slice.child1 = node_to_ptr(expr)
+                slice.child2 = node_to_ptr(first)
+                slice.child3 = node_to_ptr(parseExpression(p, 0))
+                parserExpectVal(p, TokenType.SEPARATOR, "]", "slice range")
+                expr = slice
+            } else {
+                let index = parserNode(p, NodeKind.INDEX_EXPR)
+                nodeSpanFrom(index, expr)
+                index.child1 = node_to_ptr(expr)
+                index.child2 = node_to_ptr(first)
+                parserExpectVal(p, TokenType.SEPARATOR, "]", "array index")
+                expr = index
+            }
         } else if (parserMatchVal(p, TokenType.SEPARATOR, ".")) {
             let member = parserNode(p, NodeKind.MEMBER_ACCESS_EXPR)
             member.child1 = node_to_ptr(expr)

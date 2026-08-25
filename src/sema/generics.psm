@@ -310,6 +310,18 @@ fn monoAnnotationFromType(t: TypeInfo) -> ASTNode {
         tn.child1 = node_to_ptr(monoAnnotationFromType(ptr_to_type(t.child)))
         return tn
     }
+    if (t.kind == TypeKind.SLICE) {
+        tn.i2 = 1
+        tn.s1 = "Slice"
+        tn.child1 = node_to_ptr(monoAnnotationFromType(ptr_to_type(t.child)))
+        return tn
+    }
+    if (t.kind == TypeKind.DATAVIEW) {
+        tn.i2 = 1
+        tn.s1 = "DataView"
+        if (nodeExists(t.child)) { tn.child1 = node_to_ptr(monoAnnotationFromType(ptr_to_type(t.child))) }
+        return tn
+    }
     tn.s1 = t.name
     return tn
 }
@@ -460,6 +472,12 @@ fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, paramName: Str
     }
     if (tn.i2 == 1 and actual.kind == TypeKind.LIST and nodeExists(tn.child1)) {
         return monoMatchParam(module, ptr_to_node(tn.child1), semaListElementType(actual), paramName)
+    }
+    if (tn.i2 == 1 and actual.kind == TypeKind.SLICE and nodeExists(tn.child1)) {
+        return monoMatchParam(module, ptr_to_node(tn.child1), semaSliceElementType(actual), paramName)
+    }
+    if (tn.i2 == 1 and actual.kind == TypeKind.DATAVIEW and nodeExists(tn.child1)) {
+        return monoMatchParam(module, ptr_to_node(tn.child1), semaDataViewElementType(actual), paramName)
     }
 
     // `Map<K, V>` against an argument of type `Map$Int$Int`. The instantiation

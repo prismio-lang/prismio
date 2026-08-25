@@ -1,0 +1,6 @@
+fn main() -> Int {
+    let mut values: List<Int> = list_new()
+    list_push(values, 1)
+    let invalid = values[0..2]
+    return slice_len(invalid)
+}

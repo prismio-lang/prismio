@@ -1,0 +1,91 @@
+// M4.3a -- an explicit, consuming AoS <-> SoA conversion boundary.
+
+import std.io
+
+struct Pair {
+    low: Int,
+    mark: Char
+}
+
+struct Sample {
+    id: Int,
+    weight: Float,
+    tag: Char,
+    pair: Pair
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn columnCount<T>(view: DataView<T>) -> Int {
+    return data_len(view)
+}
+
+// M4.3b. Indexing does not materialise a row. `first` and `second` are two-word
+// `(view, index)` borrows and each projection resolves the named column.
+fn columnsAreReadable(view: DataView<Sample>) -> Bool {
+    let first = view[0]
+    let second = view[1]
+    if (first.id != 7 or first.weight != 1.5 or first.tag != 'a') { return false }
+    if (first.pair.low != 70 or first.pair.mark != 'x') { return false }
+    if (second.id != 9 or second.weight != 2.75 or second.tag != 'b') { return false }
+    if (second.pair.low != 90 or second.pair.mark != 'y') { return false }
+    return true
+}
+
+// M4.3c. Writes resolve the same columns as reads, and fields inside nested-flat
+// values must survive materialisation back to AoS.
+fn mutateColumns(view: DataView<Sample>) {
+    let first = view[0]
+    let second = view[1]
+    first.id = 17
+    first.weight = 3.5
+    first.pair.low = 71
+    first.pair.mark = 'm'
+    second.tag = 'z'
+    second.pair.low = 91
+}
+
+fn main() -> Int {
+    let mut rows: List<Sample> = list_new()
+    list_push(rows, Sample {
+        id: 7,
+        weight: 1.5,
+        tag: 'a',
+        pair: Pair { low: 70, mark: 'x' }
+    })
+    list_push(rows, Sample {
+        id: 9,
+        weight: 2.75,
+        tag: 'b',
+        pair: Pair { low: 90, mark: 'y' }
+    })
+
+    let columns: DataView<Sample> = soa(rows)
+    if (columnCount(columns) != 2) { return fail("generic column length") }
+    if (columnsAreReadable(columns) == false) { return fail("direct column reads") }
+    mutateColumns(columns)
+
+    let restored: List<Sample> = aos(columns)
+    if (list_len(restored) != 2) { return fail("row length") }
+    let first = restored[0]
+    let second = restored[1]
+    if (first.id != 17 or first.weight != 3.5 or first.tag != 'a') {
+        return fail("first row scalars")
+    }
+    if (first.pair.low != 71 or first.pair.mark != 'm') {
+        return fail("first row nested flat field")
+    }
+    if (second.id != 9 or second.weight != 2.75 or second.tag != 'z') {
+        return fail("second row scalars")
+    }
+    if (second.pair.low != 91 or second.pair.mark != 'y') {
+        return fail("second row nested flat field")
+    }
+
+    println("PASS: data view conversion")
+    return 0
+}

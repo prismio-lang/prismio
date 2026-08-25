@@ -126,6 +126,18 @@ fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
             }
             return typeList(typeInvalid())
         }
+        if (str_equals(tn.s1, "Slice") == 1) {
+            if (nodeExists(tn.child1)) {
+                return typeSlice(semaAnnotationType(module, ptr_to_node(tn.child1)))
+            }
+            return typeSlice(typeInvalid())
+        }
+        if (str_equals(tn.s1, "DataView") == 1) {
+            if (nodeExists(tn.child1)) {
+                return typeDataView(semaAnnotationType(module, ptr_to_node(tn.child1)))
+            }
+            return typeDataView(typeInvalid())
+        }
         let instantiated = monoInstantiateStruct(module, tn)
         if (str_equals(instantiated, "") == 0) { return typeStruct(instantiated) }
         return typeInvalid()
@@ -262,6 +274,20 @@ fn semaEnumHasVariant(module: ASTNode, enumName: String, variantName: String) ->
 fn semaListElementType(lt: TypeInfo) -> TypeInfo {
     if (lt.kind == TypeKind.LIST and nodeExists(lt.child)) {
         return ptr_to_type(lt.child)
+    }
+    return typeInvalid()
+}
+
+fn semaSliceElementType(st: TypeInfo) -> TypeInfo {
+    if (st.kind == TypeKind.SLICE and nodeExists(st.child)) {
+        return ptr_to_type(st.child)
+    }
+    return typeInvalid()
+}
+
+fn semaDataViewElementType(vt: TypeInfo) -> TypeInfo {
+    if (vt.kind == TypeKind.DATAVIEW and nodeExists(vt.child)) {
+        return ptr_to_type(vt.child)
     }
     return typeInvalid()
 }

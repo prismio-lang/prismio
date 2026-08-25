@@ -1,0 +1,15 @@
+// A DataView that is not materialised back to rows is still owned and must
+// release every column when its scope exits.
+
+struct Cell {
+    x: Int,
+    y: Float
+}
+
+fn main() -> Int {
+    let mut rows: List<Cell> = list_new()
+    list_push(rows, Cell { x: 1, y: 2.0 })
+    let view: DataView<Cell> = soa(rows)
+    if (data_len(view) != 1) { return 1 }
+    return 0
+}

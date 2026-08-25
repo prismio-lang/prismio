@@ -16,6 +16,19 @@
 extern int prismio_argc;
 extern char** prismio_argv;
 
+// M4.3's common conversion/access failure path. Defined outside
+// lang_runtime.c so its curated bounds-check body does not grow private Clang
+// `.cold` dependencies that cannot be linked from the extracted module.
+__attribute__((noreturn)) void data_view_fail(const char* message) {
+    fprintf(stderr, "runtime error: invalid DataView conversion: %s\n", message);
+    exit(1);
+}
+
+__attribute__((noreturn)) void data_view_access_fail(int reason) {
+    if (reason == 1) data_view_fail("view is not ready for access");
+    data_view_fail("element index out of range");
+}
+
 int file_exists(const char* path) {
     FILE* file = fopen(path, "r");
     if (file) {

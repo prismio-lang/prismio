@@ -1,0 +1,11 @@
+// expect-error: soa requires a flat struct with no owned fields; OwnedRow contains non-flat storage
+struct OwnedRow {
+    name: String
+}
+
+fn main() -> Int {
+    let mut rows: List<OwnedRow> = list_new()
+    list_push(rows, OwnedRow { name: "owned" })
+    let view = soa(rows)
+    return 0
+}

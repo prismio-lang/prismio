@@ -1,0 +1,79 @@
+// M4.4 -- generic code may select a container representation only after the
+// type parameter has become a concrete monomorphised type.
+//
+// The same three templates are instantiated for two incompatible layouts:
+// Flat is eligible for inline List storage, while Named owns a String and must
+// remain boxed. Runtime values catch a mismatched representation; the runner's
+// IR gate proves the intended fast and fallback operations were selected.
+
+import std.io
+extern fn str_equals(a: String, b: String) -> Int
+
+struct Flat {
+    x: Int,
+    weight: Float
+}
+
+struct Named {
+    label: String,
+    value: Int
+}
+
+fn singleton<T>(sink value: T) -> List<T> {
+    let mut items: List<T> = list_new()
+    list_push(items, value)
+    return items
+}
+
+fn genericGet<T>(items: List<T>, index: Int) -> T {
+    return list_get(items, index)
+}
+
+fn genericSet<T>(items: List<T>, index: Int, sink value: T) {
+    list_set(items, index, value)
+}
+
+// Demand the boxed set clone so the IR gate can inspect its representation.
+// Do not execute it here: replacing an OBJECT element while an untracked
+// element borrow may exist is intentionally conservative today, and is a
+// separate lifetime problem from this test's generic-layout discriminator.
+fn instantiateNamedSet(items: List<Named>, sink value: Named) {
+    genericSet(items, 0, value)
+}
+
+// Keep each element borrow inside this helper. Holding the borrowed pointer in
+// main across genericSet would deliberately extend the old element's lifetime
+// past replacement and turn the verifier into a borrow-lifetime test instead.
+fn flatMatches(items: List<Flat>, x: Int, weight: Float) -> Bool {
+    let item = genericGet(items, 0)
+    return item.x == x and item.weight == weight
+}
+
+fn namedMatches(items: List<Named>, label: String, value: Int) -> Bool {
+    let item = genericGet(items, 0)
+    return str_equals(item.label, label) == 1 and item.value == value
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let flatItems = singleton(Flat { x: 7, weight: 2.5 })
+    if (flatMatches(flatItems, 7, 2.5) == false) {
+        return fail("flat generic read")
+    }
+    genericSet(flatItems, 0, Flat { x: 11, weight: 4.5 })
+    if (flatMatches(flatItems, 11, 4.5) == false) {
+        return fail("flat generic write")
+    }
+
+    let namedItems = singleton(Named { label: "first", value: 3 })
+    if (namedMatches(namedItems, "first", 3) == false) {
+        return fail("boxed generic read")
+    }
+    println("PASS: generic layout specialization")
+    return 0
+}

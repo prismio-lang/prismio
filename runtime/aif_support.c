@@ -2322,6 +2322,7 @@ void aif_con_opaque(int vs)                     { con_add(AIF_CON_OPAQUE, vs, 0,
 void aif_con_retain_in(int vs, int holder)      { con_add(AIF_CON_RETAIN_IN, vs, holder, 0); }
 void aif_con_borrow(int vs)                     { con_add(AIF_CON_BORROW, vs, 0, 0); }
 void aif_con_escape_caller(int vs)              { con_add(AIF_CON_ESCAPE_CALLER, vs, 0, 0); }
+void aif_con_return(int vs, int fn)              { con_add(AIF_CON_ESCAPE_CALLER, vs, fn, 1); }
 void aif_con_escape_global(int vs)              { con_add(AIF_CON_ESCAPE_GLOBAL, vs, 0, 0); }
 void aif_con_unique(int vs)                     { con_add(AIF_CON_UNIQUE, vs, 0, 0); }
 void aif_con_pin(int vs, int tier)              { con_add(AIF_CON_PIN, vs, tier, 0); }
@@ -2614,7 +2615,8 @@ static int raise_view_owners(int vs, int target, int in_fn) {
         // return, a store or a push, and those arrive here with a Caller,
         // Global or holder-derived target, which is function-independent and
         // passes straight through.
-        if (target >= 0 && in_fn >= 0 && sites[c].fn != in_fn) continue;
+        if (in_fn >= 0 && sites[c].fn != in_fn
+            && (target >= 0 || target == AIF_E_CALLER)) continue;
         if (raise_escape(c, target, -1)) { any = 1; moved(c); }
     }
     force_rule = -1;
@@ -2991,7 +2993,13 @@ int aif_solve(int max_rounds) {
                 // E-VIEW, and the case the safety gap was actually about:
                 // `return list_get(l, i)` hands the caller a reference into a
                 // collection this frame owns. The collection follows it out.
-                if (raise_view_owners(k->a, AIF_E_CALLER, -1)) changed = 1;
+                // A returned view of a collection allocated here must carry it
+                // out. A view of a parameter does not extend the caller's
+                // collection to *its* caller: it was already live across this
+                // activation, and the caller's binding supplies the real bound.
+                // `c` distinguishes a source-level return from other
+                // escape-to-caller constraints such as FFI consume.
+                if (raise_view_owners(k->a, AIF_E_CALLER, k->c ? k->b : -1)) changed = 1;
 
             } else if (k->kind == AIF_CON_NO_STACK) {
                 resolve(k->a, &scratch_val);

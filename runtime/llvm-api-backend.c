@@ -597,6 +597,24 @@ void ir_module_start(const char *module_name) {
         fields[1] = LLVMInt64TypeInContext(g_ctx);
         LLVMStructSetBody(named_struct("prismio.str"), fields, 2, 0);
     }
+    // M4.1. The handle-based Slice<T> representation from SPEC 8.4. The type
+    // argument affects sema and element lowering, not these three machine words.
+    {
+        LLVMTypeRef fields[3];
+        fields[0] = LLVMPointerTypeInContext(g_ctx, 0);
+        fields[1] = LLVMInt32TypeInContext(g_ctx);
+        fields[2] = LLVMInt32TypeInContext(g_ctx);
+        LLVMStructSetBody(named_struct("prismio.slice"), fields, 3, 0);
+    }
+    // M4.3b. A DataView element is a borrow descriptor, never an interior
+    // pointer. The type argument exists only in sema; every descriptor is these
+    // two machine values.
+    {
+        LLVMTypeRef fields[2];
+        fields[0] = LLVMPointerTypeInContext(g_ctx, 0);
+        fields[1] = LLVMInt32TypeInContext(g_ctx);
+        LLVMStructSetBody(named_struct("prismio.data_element"), fields, 2, 0);
+    }
 #ifdef _WIN32
     // Pinned only on Windows, where msvc and mingw are a real fork and msvc is
     // the configuration that is actually verified. Elsewhere LLVM's own host
@@ -831,6 +849,48 @@ int ir_load_ptr(const char *type, const char *ptr_value) {
 void ir_store_ptr(const char *type, const char *value, const char *ptr_value) {
     if (block_done()) return;
     LLVMBuildStore(g_builder, resolve_value(value, type), resolve_value(ptr_value, "ptr"));
+}
+
+// M4.3c. Different top-level DataView fields occupy different allocations.
+// Give each physical column its own TBAA leaf so LLVM can prove that, for
+// example, writing `px` does not alias reading `vx`. The ready-view metadata
+// loads are separately marked invariant in ir_curate_module; together those
+// facts expose stable, disjoint streams to the loop vectorizer.
+static LLVMValueRef data_view_tbaa_tag(const char *struct_name, int field_index) {
+    LLVMMetadataRef root_name = LLVMMDStringInContext2(
+        g_ctx, "Prismio DataView columns", strlen("Prismio DataView columns"));
+    LLVMMetadataRef root_ops[1] = { root_name };
+    LLVMMetadataRef root = LLVMMDNodeInContext2(g_ctx, root_ops, 1);
+
+    char leaf_name[NAME_LEN + 32];
+    snprintf(leaf_name, sizeof(leaf_name), "Prismio DataView %s.%d",
+             struct_name, field_index);
+    LLVMMetadataRef leaf_text = LLVMMDStringInContext2(
+        g_ctx, leaf_name, strlen(leaf_name));
+    LLVMMetadataRef zero = LLVMValueAsMetadata(
+        LLVMConstInt(LLVMInt64TypeInContext(g_ctx), 0, 0));
+    LLVMMetadataRef leaf_ops[3] = { leaf_text, root, zero };
+    LLVMMetadataRef leaf = LLVMMDNodeInContext2(g_ctx, leaf_ops, 3);
+    LLVMMetadataRef tag_ops[3] = { leaf, leaf, zero };
+    return LLVMMetadataAsValue(g_ctx, LLVMMDNodeInContext2(g_ctx, tag_ops, 3));
+}
+
+int ir_data_load_ptr(const char *type, const char *ptr_value,
+                     const char *struct_name, int field_index) {
+    LLVMValueRef load = LLVMBuildLoad2(g_builder, type_from_key(type),
+                                       resolve_value(ptr_value, "ptr"), "");
+    unsigned kind = LLVMGetMDKindIDInContext(g_ctx, "tbaa", strlen("tbaa"));
+    LLVMSetMetadata(load, kind, data_view_tbaa_tag(struct_name, field_index));
+    return intern_value(load);
+}
+
+void ir_data_store_ptr(const char *type, const char *value, const char *ptr_value,
+                       const char *struct_name, int field_index) {
+    if (block_done()) return;
+    LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
+                                        resolve_value(ptr_value, "ptr"));
+    unsigned kind = LLVMGetMDKindIDInContext(g_ctx, "tbaa", strlen("tbaa"));
+    LLVMSetMetadata(store, kind, data_view_tbaa_tag(struct_name, field_index));
 }
 
 // An inline struct field is storage, not a slot holding an address, so writing
@@ -1160,6 +1220,7 @@ void ir_free_cold(const char *struct_name, const char *value) {
 // own -- it frees both through the same allocator the list came from, which is
 // what keeps a verify build's accounting balanced.
 void ir_free_list(const char *value) { ir_release_call(value, "list_release"); }
+void ir_free_data_view(const char *value) { ir_release_call(value, "data_view_release"); }
 
 // Struct-field ownership. A struct that owns its fields is reclaimed by a
 // function generated for its type, so the callee is named by the caller rather
@@ -1327,6 +1388,33 @@ int ir_struct_size(const char *struct_name) {
     StructType *s = struct_entry(struct_name);
     if (!s || !s->type) return 0;
     return (int)LLVMABISizeOfType(LLVMGetModuleDataLayout(g_module), s->type);
+}
+
+// Physical field layout for M4.3's column conversion. The DataView gate vetoes
+// hot/cold splitting for its element type, so a source field index is also an
+// LLVM element index and its offset/size describe the complete AoS row.
+int ir_struct_field_offset(const char *struct_name, int index) {
+    if (!ir_is_struct_type_name(struct_name)) return -1;
+    StructType *s = struct_entry(struct_name);
+    if (!s || !s->type || s->hot_count > 0) return -1;
+    int count = ir_get_struct_field_count(struct_name);
+    if (index < 0 || index >= count) return -1;
+    return (int)LLVMOffsetOfElement(LLVMGetModuleDataLayout(g_module), s->type,
+                                    (unsigned)index);
+}
+
+int ir_struct_field_size(const char *struct_name, int index) {
+    if (!ir_is_struct_type_name(struct_name)) return 0;
+    StructType *s = struct_entry(struct_name);
+    if (!s || !s->type || s->hot_count > 0) return 0;
+    int count = ir_get_struct_field_count(struct_name);
+    if (index < 0 || index >= count) return 0;
+    // The registry is populated in the physical order chosen by the layout
+    // pass, so its type at index is the same element LLVM laid out here. Using
+    // the key also stays within the older C-API surface packaged toolchains
+    // expose; LLVMStructGetTypeAtIndex is not available in all of them.
+    LLVMTypeRef field = type_from_key(ir_get_struct_field_type_at(struct_name, index));
+    return (int)LLVMABISizeOfType(LLVMGetModuleDataLayout(g_module), field);
 }
 
 // Address of element `index` in a flat array of `elem_type`.
@@ -2036,6 +2124,73 @@ static LLVMMetadataRef di_string_type(void) {
         LLVMDIFlagZero, NULL, members, 2, 0, NULL, "", 0));
 }
 
+// M4.1's value aggregate. Like String, Slice<T> is a compiler-owned named type
+// rather than a source struct and must be described before the generic
+// `struct:` path mistakes it for a pointer to an unknown declaration.
+static LLVMMetadataRef di_slice_type(void) {
+    LLVMMetadataRef hit = di_cached("$slice");
+    if (hit) return hit;
+    if (!g_di_layout) return NULL;
+
+    LLVMTypeRef ty = named_struct("prismio.slice");
+    LLVMTypeRef half[3] = { LLVMStructGetTypeAtIndex(ty, 0),
+                            LLVMStructGetTypeAtIndex(ty, 1),
+                            LLVMStructGetTypeAtIndex(ty, 2) };
+    LLVMMetadataRef fty[3] = {
+        di_opaque_ptr(),
+        di_basic("Int", 32, PRISMIO_DW_ATE_signed),
+        di_basic("Int", 32, PRISMIO_DW_ATE_signed)
+    };
+    const char *fname[3] = { "handle", "offset", "length" };
+
+    LLVMMetadataRef members[3];
+    for (unsigned i = 0; i < 3; i++) {
+        members[i] = LLVMDIBuilderCreateMemberType(
+            g_di, g_di_cu, fname[i], strlen(fname[i]), NULL, 0,
+            LLVMABISizeOfType(g_di_layout, half[i]) * 8,
+            LLVMABIAlignmentOfType(g_di_layout, half[i]) * 8,
+            LLVMOffsetOfElement(g_di_layout, ty, i) * 8,
+            LLVMDIFlagZero, fty[i]);
+    }
+
+    return di_cache("$slice", LLVMDIBuilderCreateStructType(
+        g_di, g_di_cu, "Slice", 5, NULL, 0,
+        LLVMABISizeOfType(g_di_layout, ty) * 8,
+        LLVMABIAlignmentOfType(g_di_layout, ty) * 8,
+        LLVMDIFlagZero, NULL, members, 3, 0, NULL, "", 0));
+}
+
+static LLVMMetadataRef di_data_element_type(void) {
+    LLVMMetadataRef hit = di_cached("$data_element");
+    if (hit) return hit;
+    if (!g_di_layout) return NULL;
+
+    LLVMTypeRef ty = named_struct("prismio.data_element");
+    LLVMTypeRef half[2] = { LLVMStructGetTypeAtIndex(ty, 0),
+                            LLVMStructGetTypeAtIndex(ty, 1) };
+    LLVMMetadataRef fty[2] = {
+        di_opaque_ptr(),
+        di_basic("Int", 32, PRISMIO_DW_ATE_signed)
+    };
+    const char *fname[2] = { "view", "index" };
+
+    LLVMMetadataRef members[2];
+    for (unsigned i = 0; i < 2; i++) {
+        members[i] = LLVMDIBuilderCreateMemberType(
+            g_di, g_di_cu, fname[i], strlen(fname[i]), NULL, 0,
+            LLVMABISizeOfType(g_di_layout, half[i]) * 8,
+            LLVMABIAlignmentOfType(g_di_layout, half[i]) * 8,
+            LLVMOffsetOfElement(g_di_layout, ty, i) * 8,
+            LLVMDIFlagZero, fty[i]);
+    }
+
+    return di_cache("$data_element", LLVMDIBuilderCreateStructType(
+        g_di, g_di_cu, "DataElement", 11, NULL, 0,
+        LLVMABISizeOfType(g_di_layout, ty) * 8,
+        LLVMABIAlignmentOfType(g_di_layout, ty) * 8,
+        LLVMDIFlagZero, NULL, members, 2, 0, NULL, "", 0));
+}
+
 // The storage key alone. `name` refines only the pointer case, and only towards
 // something this layer can show to be true.
 static LLVMMetadataRef di_type_for(const char *key, const char *name) {
@@ -2061,6 +2216,8 @@ static LLVMMetadataRef di_type_for(const char *key, const char *name) {
 
     // Before the generic struct case: a String is a value, not an address of one.
     if (strcmp(key, "struct:prismio.str") == 0) return di_string_type();
+    if (strcmp(key, "struct:prismio.slice") == 0) return di_slice_type();
+    if (strcmp(key, "struct:prismio.data_element") == 0) return di_data_element_type();
     if (strncmp(key, "struct:", 7) == 0) {
         return di_pointer_to(key + 7, di_struct_type(key + 7));
     }
@@ -2821,9 +2978,47 @@ static void ir_delete_function_body(LLVMValueRef fn) {
     }
 }
 
-// Read `runtime_ir`, keep the named functions as `available_externally` bodies,
-// reduce everything else to a declaration, drop what nothing refers to, and
-// write the result to `out_path`. Returns 0 on success.
+// 1 for a named root, 2 for a private cold block Clang outlined from that root.
+// The latter must keep its internal body: the root calls it after -O2, but no
+// runtime object exports it. Treating it as an external declaration is the same
+// undefined-symbol bug the curated closure rule exists to prevent.
+static int ir_curated_function_kind(const char *name,
+                                    const char *const *names, int count) {
+    for (int i = 0; i < count; i++) {
+        if (strcmp(name, names[i]) == 0) return 1;
+        size_t n = strlen(names[i]);
+        if (strncmp(name, names[i], n) == 0 && strncmp(name + n, ".cold.", 6) == 0) {
+            return 2;
+        }
+    }
+    return 0;
+}
+
+// Ready DataView metadata does not change before the view is consumed. Marking
+// the lookup loads invariant gives LICM that language/runtime fact without an
+// `llvm.assume` instruction inside every source loop. The latter did hoist the
+// bases, but the loop vectorizer then rejected the assumption call itself.
+static void ir_mark_data_view_lookup_loads_invariant(LLVMContextRef ctx,
+                                                     LLVMValueRef fn) {
+    unsigned kind = LLVMGetMDKindIDInContext(ctx, "invariant.load",
+                                             strlen("invariant.load"));
+    LLVMMetadataRef empty = LLVMMDNodeInContext2(ctx, NULL, 0);
+    LLVMValueRef metadata = LLVMMetadataAsValue(ctx, empty);
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(fn); block;
+         block = LLVMGetNextBasicBlock(block)) {
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst;
+             inst = LLVMGetNextInstruction(inst)) {
+            if (LLVMGetInstructionOpcode(inst) == LLVMLoad) {
+                LLVMSetMetadata(inst, kind, metadata);
+            }
+        }
+    }
+}
+
+// Read `runtime_ir`, keep the named functions as `available_externally` bodies
+// plus their compiler-generated private cold blocks, reduce everything else to
+// a declaration, drop what nothing refers to, and write the result to
+// `out_path`. Returns 0 on success.
 //
 // `available_externally` is the whole point: the body is there for the inliner
 // and emits no code, so a call the inliner declines still resolves to the
@@ -2853,12 +3048,18 @@ int ir_curate_module(const char *runtime_ir, const char *const *names, int count
         if (!LLVMGetFirstBasicBlock(fn)) continue;  // already a declaration
         size_t len = 0;
         const char *name = LLVMGetValueName2(fn, &len);
-        int curated = 0;
-        for (int i = 0; i < count; i++) {
-            if (strcmp(name, names[i]) == 0) { curated = 1; break; }
-        }
-        if (curated) {
+        int curated = ir_curated_function_kind(name, names, count);
+        if (curated == 1) {
+            if (strcmp(name, "data_view_check_index") == 0
+                    || strcmp(name, "data_view_column") == 0
+                    || strcmp(name, "data_view_len") == 0) {
+                ir_mark_data_view_lookup_loads_invariant(ctx, fn);
+            }
             LLVMSetLinkage(fn, LLVMAvailableExternallyLinkage);
+        } else if (curated == 2) {
+            // Keep the internal definition and linkage. If the root inlines,
+            // this helper is emitted only in that program and cannot collide
+            // with any runtime symbol.
         } else {
             ir_delete_function_body(fn);
             LLVMSetLinkage(fn, LLVMExternalLinkage);
@@ -2889,10 +3090,7 @@ int ir_curate_module(const char *runtime_ir, const char *const *names, int count
             if (!LLVMGetFirstBasicBlock(fn) && !LLVMGetFirstUse(fn)) {
                 size_t len = 0;
                 const char *name = LLVMGetValueName2(fn, &len);
-                int curated = 0;
-                for (int i = 0; i < count; i++) {
-                    if (strcmp(name, names[i]) == 0) { curated = 1; break; }
-                }
+                int curated = ir_curated_function_kind(name, names, count);
                 if (!curated) { LLVMDeleteFunction(fn); removed = 1; }
             }
             fn = next;

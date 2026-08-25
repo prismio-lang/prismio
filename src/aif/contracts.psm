@@ -52,6 +52,14 @@ fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     if (str_equals(name, "__builtin_string_len") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "__builtin_string_byte_at") == 1) { return AIF_FFI_BORROW }
     if (str_equals(name, "__builtin_string_put_byte") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "slice_len") == 1) { return AIF_FFI_BORROW }
+    if (str_equals(name, "slice_set") == 1) {
+        if (index == 2) { return AIF_FFI_RETAIN_IN_BASE + 0 }
+        return AIF_FFI_BORROW
+    }
+    if (str_equals(name, "soa") == 1) { return AIF_FFI_CONSUME }
+    if (str_equals(name, "aos") == 1) { return AIF_FFI_CONSUME }
+    if (str_equals(name, "data_len") == 1) { return AIF_FFI_BORROW }
     return AIF_FFI_UNKNOWN
 }
 
@@ -211,6 +219,8 @@ fn aifDeclaredReturnIsAlias(name: String) -> Bool {
 fn aifFfiProduces(name: String) -> Bool {
     if (str_equals(name, "list_new") == 1) { return true }
     if (str_equals(name, "list_new_with_capacity") == 1) { return true }
+    if (str_equals(name, "soa") == 1) { return true }
+    if (str_equals(name, "aos") == 1) { return true }
     if (str_equals(name, "str_concat") == 1) { return true }
     if (str_equals(name, "str_substring") == 1) { return true }
     // Same contract as str_substring, and for the same reason: **every**

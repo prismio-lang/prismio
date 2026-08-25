@@ -106,6 +106,7 @@ typedef struct LLVMOpaqueType *LLVMTypeRef;
 typedef struct LLVMOpaqueValue *LLVMValueRef;
 typedef struct LLVMOpaqueBasicBlock *LLVMBasicBlockRef;
 typedef struct LLVMOpaqueBuilder *LLVMBuilderRef;
+typedef struct LLVMOpaqueMetadata *LLVMMetadataRef;
 
 typedef int LLVMBool;
 
@@ -187,6 +188,19 @@ void LLVMSetInitializer(LLVMValueRef GlobalVar, LLVMValueRef ConstantVal);
 void LLVMSetGlobalConstant(LLVMValueRef GlobalVar, LLVMBool IsConstant);
 void LLVMSetLinkage(LLVMValueRef Global, int Linkage);
 void LLVMSetUnnamedAddr(LLVMValueRef Global, LLVMBool HasUnnamedAddr);
+
+// Metadata used by DataView's physical-column alias contract. These are part
+// of LLVM-C 22 just like the builder calls below; the fallback declarations
+// keep packaged Windows toolchains equivalent to builds using real headers.
+LLVMMetadataRef LLVMMDStringInContext2(LLVMContextRef C, const char *Str,
+                                       size_t SLen);
+LLVMMetadataRef LLVMMDNodeInContext2(LLVMContextRef C, LLVMMetadataRef *MDs,
+                                     size_t Count);
+LLVMValueRef LLVMMetadataAsValue(LLVMContextRef C, LLVMMetadataRef MD);
+LLVMMetadataRef LLVMValueAsMetadata(LLVMValueRef Val);
+unsigned LLVMGetMDKindIDInContext(LLVMContextRef C, const char *Name,
+                                  unsigned SLen);
+void LLVMSetMetadata(LLVMValueRef Val, unsigned KindID, LLVMValueRef Node);
 
 // --- basic blocks -----------------------------------------------------------
 LLVMBasicBlockRef LLVMAppendBasicBlockInContext(LLVMContextRef C, LLVMValueRef Fn,

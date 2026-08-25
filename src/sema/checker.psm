@@ -518,6 +518,23 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         }
 
         let objectT = semaExpr(module, objectNode)
+        if (objectT.kind == TypeKind.DATAELEMENT) {
+            if (nodeIsNull(objectT.child)) {
+                semaErrorAt(objectNode, "DataView element has no row type")
+                nodeSetType(expr, typeInvalid())
+                return typeInvalid()
+            }
+            let rowT = ptr_to_type(objectT.child)
+            if (rowT.kind != TypeKind.STRUCT) {
+                semaErrorAt(objectNode, str_concat("DataView element must name a struct, found ",
+                                                   typeDisplay(rowT)))
+                nodeSetType(expr, typeInvalid())
+                return typeInvalid()
+            }
+            let dataFieldT = semaFindStructFieldType(module, expr, rowT.name, expr.s1)
+            nodeSetType(expr, dataFieldT)
+            return dataFieldT
+        }
         if (objectT.kind != TypeKind.STRUCT) {
             semaErrorAt(objectNode, str_concat("member access requires a struct value, found ", typeDisplay(objectT)))
             nodeSetType(expr, typeInvalid())
@@ -551,17 +568,42 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     if (expr.kind == NodeKind.INDEX_EXPR) {
-        let arrayT = semaExpr(module, ptr_to_node(expr.child1))
+        let collectionT = semaExpr(module, ptr_to_node(expr.child1))
         let indexT = semaExpr(module, ptr_to_node(expr.child2))
-        semaExpectAssignable(ptr_to_node(expr.child2), "array index", typeInt(), indexT)
-        if (arrayT.kind != TypeKind.ARRAY) {
-            semaErrorAt(expr, str_concat("indexing requires an array, found ", typeDisplay(arrayT)))
+        semaExpectAssignable(ptr_to_node(expr.child2), "collection index", typeInt(), indexT)
+        if (collectionT.kind != TypeKind.ARRAY and collectionT.kind != TypeKind.LIST
+            and collectionT.kind != TypeKind.SLICE and collectionT.kind != TypeKind.DATAVIEW) {
+            semaErrorAt(expr, str_concat("indexing requires an array, List, Slice, or DataView, found ",
+                                         typeDisplay(collectionT)))
             nodeSetType(expr, typeInvalid())
             return typeInvalid()
         }
-        let elemT = ptr_to_type(arrayT.child)
+        let elemT = ptr_to_type(collectionT.child)
+        if (collectionT.kind == TypeKind.DATAVIEW) {
+            let refT = typeDataElement(elemT)
+            nodeSetType(expr, refT)
+            return refT
+        }
         nodeSetType(expr, elemT)
         return elemT
+    }
+
+    if (expr.kind == NodeKind.SLICE_EXPR) {
+        let baseT = semaExpr(module, ptr_to_node(expr.child1))
+        let startT = semaExpr(module, ptr_to_node(expr.child2))
+        let endT = semaExpr(module, ptr_to_node(expr.child3))
+        semaExpectAssignable(ptr_to_node(expr.child2), "slice start", typeInt(), startT)
+        semaExpectAssignable(ptr_to_node(expr.child3), "slice end", typeInt(), endT)
+
+        if (baseT.kind != TypeKind.LIST and baseT.kind != TypeKind.SLICE) {
+            semaErrorAt(expr, str_concat("slicing requires a List or Slice, found ",
+                                         typeDisplay(baseT)))
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+        let sliceT = typeSlice(ptr_to_type(baseT.child))
+        nodeSetType(expr, sliceT)
+        return sliceT
     }
 
     if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
@@ -624,6 +666,28 @@ fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
                 varT = semaExpr(module, ptr_to_node(stmt.child2))
             }
             semaMoveOperand(ptr_to_node(stmt.child2))
+        }
+        // M4.3b. A saved element descriptor borrows its DataView. The compiler
+        // does not yet carry a named lifetime in the type, so only save one when
+        // its source is already a borrow (normally a function parameter). An
+        // immediate `owned[i].field` is safe, but allowing `let p = owned[i]`
+        // would let `aos(owned)` free the handle while `p` still names it.
+        if (varT.kind == TypeKind.DATAELEMENT and hasInit) {
+            let init = ptr_to_node(stmt.child2)
+            let mut safeBorrow = false
+            if (init.kind == NodeKind.INDEX_EXPR and nodeExists(init.child1)) {
+                let base = ptr_to_node(init.child1)
+                if (base.kind == NodeKind.IDENTIFIER_EXPR) {
+                    safeBorrow = ir_is_borrowed(base.s1) == 1
+                }
+            } else if (init.kind == NodeKind.IDENTIFIER_EXPR) {
+                safeBorrow = ir_is_borrowed(init.s1) == 1
+            }
+            if (safeBorrow == false) {
+                semaErrorAt(init, "a DataView element may only be saved from a borrowed DataView")
+                diag_note("project the field immediately, or pass the DataView to a borrowing function")
+                varT = typeInvalid()
+            }
         }
         // Only genuinely uninferrable declarations are reported. If there *was*
         // an annotation or an initializer, its own error has already been
@@ -1000,6 +1064,28 @@ fn analyzeModule(module: ASTNode) {
     semaRegisterNamedTypes(module)
     semaCacheFunctionSymbols(module)
     indexModuleDeclarations(module)
+
+    // A DataView owns several column allocations, while struct fields are
+    // released through the struct layout table. Until that table can name this
+    // custom release, storing a view in a field would reclaim only its header.
+    let mut dataDeclPtr = module.child1
+    while (nodeExists(dataDeclPtr)) {
+        let dataDecl = ptr_to_node(dataDeclPtr)
+        if (dataDecl.kind == NodeKind.STRUCT_DECL) {
+            let mut dataFieldPtr = dataDecl.child1
+            while (nodeExists(dataFieldPtr)) {
+                let dataField = ptr_to_node(dataFieldPtr)
+                if (dataField.kind == NodeKind.STRUCT_FIELD and nodeExists(dataField.child1)) {
+                    let dataFieldT = semaAnnotationType(module, ptr_to_node(dataField.child1))
+                    if (dataFieldT.kind == TypeKind.DATAVIEW) {
+                        semaErrorAt(dataField, "a DataView cannot be stored in a struct field yet")
+                    }
+                }
+                dataFieldPtr = dataField.next
+            }
+        }
+        dataDeclPtr = dataDecl.next
+    }
 
     let mut fnPtr = module.child1
     while (nodeExists(fnPtr)) {

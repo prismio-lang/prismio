@@ -1,0 +1,160 @@
+// G1 particles -- Prismio DataView, hand-tuned source arm.
+//
+// This intentionally mirrors rust/g1_tuned.rs: each independent position/
+// velocity pair gets its own streaming loop. The ordinary g1_dataview.psm is
+// the language-design result and retains the natural row loop; this file asks
+// what manual loop fission is worth after selecting the same SoA layout.
+
+import std.io
+extern fn clock_gettime_nsec_np(clk: Int) -> Int
+
+struct Particle {
+    px: Float,
+    py: Float,
+    pz: Float,
+    vx: Float,
+    vy: Float,
+    vz: Float,
+    r: Float,
+    g: Float,
+    b: Float,
+    a: Float,
+    life: Float,
+    size: Float
+}
+
+fn spawn_particle(f: Float) -> Particle {
+    return Particle {
+        px: f,
+        py: f,
+        pz: 0.0,
+        vx: 1.0,
+        vy: 2.0,
+        vz: 0.0,
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+        life: 100.0,
+        size: 1.0
+    }
+}
+
+fn build_system(count: Int) -> List<Particle> {
+    let mut ps: List<Particle> = list_new()
+    let mut i = 0
+    let mut f = 0.0
+    while (i < count) {
+        list_push(ps, spawn_particle(f))
+        f = f + 1.0
+        i = i + 1
+    }
+    return ps
+}
+
+fn integrate_x(ps: DataView<Particle>, dt: Float) {
+    let n = data_len(ps)
+    let mut i = 0
+    while (i < n) {
+        let p = ps[i]
+        p.px = p.px + p.vx * dt
+        i = i + 1
+    }
+}
+
+fn integrate_y(ps: DataView<Particle>, dt: Float) {
+    let n = data_len(ps)
+    let mut i = 0
+    while (i < n) {
+        let p = ps[i]
+        p.py = p.py + p.vy * dt
+        i = i + 1
+    }
+}
+
+fn integrate_z(ps: DataView<Particle>, dt: Float) {
+    let n = data_len(ps)
+    let mut i = 0
+    while (i < n) {
+        let p = ps[i]
+        p.pz = p.pz + p.vz * dt
+        i = i + 1
+    }
+}
+
+fn fade(ps: DataView<Particle>, dt: Float) {
+    let n = data_len(ps)
+    let mut i = 0
+    while (i < n) {
+        let p = ps[i]
+        p.life = p.life - dt
+        p.a = p.life * 0.01
+        i = i + 1
+    }
+}
+
+fn count_alive(ps: List<Particle>) -> Int {
+    let n = list_len(ps)
+    let mut alive = 0
+    let mut i = 0
+    while (i < n) {
+        let p = list_get(ps, i)
+        if (p.life > 0.0) { alive = alive + 1 }
+        i = i + 1
+    }
+    return alive
+}
+
+fn count_beyond(ps: List<Particle>, limit: Float) -> Int {
+    let n = list_len(ps)
+    let mut beyond = 0
+    let mut i = 0
+    while (i < n) {
+        let p = list_get(ps, i)
+        if (p.px > limit) { beyond = beyond + 1 }
+        i = i + 1
+    }
+    return beyond
+}
+
+fn main() -> Int {
+    let frames = 6000
+    let rows = build_system(2000)
+    let ps: DataView<Particle> = soa(rows)
+    let dt = 0.016
+
+    let mut samples: List<Int> = list_new()
+    let mut g = 0
+    while (g < frames) {
+        list_push(samples, 0)
+        g = g + 1
+    }
+
+    let mut frame = 0
+    while (frame < frames) {
+        let t0 = clock_gettime_nsec_np(4)
+        // Function fission keeps every borrowing helper below LLVM's inline
+        // threshold while preserving the DataView ownership boundary.
+        integrate_x(ps, dt)
+        integrate_y(ps, dt)
+        integrate_z(ps, dt)
+        fade(ps, dt)
+        let t1 = clock_gettime_nsec_np(4)
+        list_set(samples, frame, t1 - t0)
+        frame = frame + 1
+    }
+
+    let restored: List<Particle> = aos(ps)
+    print("checksum alive ")
+    println(count_alive(restored))
+    print("checksum beyond ")
+    println(count_beyond(restored, 1000.5))
+
+    let mut j = 0
+    while (j < frames) {
+        print("frame_ns ")
+        println(list_get(samples, j))
+        j = j + 1
+    }
+    return 0
+}

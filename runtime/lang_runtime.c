@@ -1750,6 +1750,192 @@ int list_len(void* lp) {
     return l->len;
 }
 
+// M4.3 -- explicit AoS <-> SoA data views. `soa` consumes one ordinary
+// List<T> at one program point and builds one allocation per physical field;
+// `aos` consumes that view and materialises rows again.
+typedef struct {
+    unsigned char* data;
+    int offset;
+    int size;
+} RtDataColumn;
+
+typedef struct {
+    RtList* source;
+    RtDataColumn* columns;
+    int len;
+    int field_count;
+    int built_fields;
+    int elem_size;
+    int arena;
+} RtDataView;
+
+// Kept in program_support.c so the curated -O2 compile of this translation unit
+// sees an opaque exported call. If the noreturn body is visible here, Clang
+// outlines each failure edge into a private `.cold` helper; extracting only the
+// inlinable check then leaves those private helpers undefined.
+__attribute__((noreturn)) void data_view_fail(const char* message);
+__attribute__((noreturn)) void data_view_access_fail(int reason);
+
+void* data_view_begin(void* list, int field_count, int elem_size) {
+    if (!list) data_view_fail("null source list");
+    if (field_count <= 0 || elem_size <= 0) data_view_fail("invalid struct layout");
+
+    RtList* source = (RtList*)list;
+    RtDataView* view = (RtDataView*)rt_alloc(sizeof(RtDataView));
+    view->source = source;
+    view->columns = (RtDataColumn*)rt_alloc(sizeof(RtDataColumn) * (size_t)field_count);
+    view->len = source->len;
+    view->field_count = field_count;
+    view->built_fields = 0;
+    view->elem_size = elem_size;
+    view->arena = rt_arena_slot();
+    for (int i = 0; i < field_count; i++) {
+        view->columns[i].data = 0;
+        view->columns[i].offset = 0;
+        view->columns[i].size = 0;
+    }
+    return view;
+}
+
+void data_view_add_column(void* vp, int field_index, int offset, int size) {
+    RtDataView* view = (RtDataView*)vp;
+    if (!view || !view->source) data_view_fail("column added outside construction");
+    if (field_index < 0 || field_index >= view->field_count) data_view_fail("field index out of range");
+    if (offset < 0 || size <= 0 || offset + size > view->elem_size) {
+        data_view_fail("field layout outside element");
+    }
+    RtDataColumn* column = &view->columns[field_index];
+    if (column->data) data_view_fail("field column added twice");
+
+    column->offset = offset;
+    column->size = size;
+    if (view->len > 0) {
+        column->data = (unsigned char*)rt_alloc((size_t)view->len * (size_t)size);
+        for (int i = 0; i < view->len; i++) {
+            unsigned char* row = view->source->elem_size
+                ? (unsigned char*)view->source->data + (size_t)i * (size_t)view->source->elem_size
+                : (unsigned char*)view->source->data[i];
+            if (!row) data_view_fail("null row in source list");
+            memcpy(column->data + (size_t)i * (size_t)size,
+                   row + (size_t)offset,
+                   (size_t)size);
+        }
+    }
+    view->built_fields = view->built_fields + 1;
+}
+
+void data_view_finish(void* vp) {
+    RtDataView* view = (RtDataView*)vp;
+    if (!view || !view->source) data_view_fail("conversion already finished");
+    if (view->built_fields != view->field_count) data_view_fail("not all field columns were built");
+    list_release(view->source);
+    view->source = 0;
+}
+
+int data_view_len(void* vp) {
+    RtDataView* view = (RtDataView*)vp;
+    return view ? view->len : 0;
+}
+
+// M4.3b. Validate the index once when the compiler forms the two-word element
+// descriptor. Every field projection can then be a branch-free column lookup;
+// the descriptor keeps the owning handle rather than an interior pointer.
+void data_view_check_index(void* vp, int index) {
+    RtDataView* view = (RtDataView*)vp;
+    if (!view || view->source) data_view_access_fail(1);
+    if (index < 0 || index >= view->len) data_view_access_fail(2);
+}
+
+// Ready-view metadata is immutable until the consuming release/materialisation.
+// `const` exposes that language rule to non-curated builds too. The curated
+// module additionally marks the two metadata loads invariant before this body
+// is inlined, allowing LICM and vectorisation without executable assumptions.
+__attribute__((const)) void* data_view_column(void* vp, int field_index) {
+    RtDataView* view = (RtDataView*)vp;
+    return view->columns[field_index].data;
+}
+
+void data_view_release(void* vp) {
+    if (!vp) return;
+    RtDataView* view = (RtDataView*)vp;
+    if (view->source) list_release(view->source);
+    if (view->arena) return;
+    for (int i = view->field_count - 1; i >= 0; i--) {
+        if (view->columns[i].data) rt_free(view->columns[i].data);
+    }
+    rt_free(view->columns);
+    rt_free(view);
+}
+
+void* data_view_to_list(void* vp) {
+    RtDataView* view = (RtDataView*)vp;
+    if (!view || view->source) data_view_fail("view is not ready for materialisation");
+
+    RtList* rows = (RtList*)list_new_with_capacity(view->len);
+    list_set_elem_inline(rows, view->elem_size);
+    for (int i = 0; i < view->len; i++) {
+        unsigned char* row = (unsigned char*)list_push_slot(rows, view->elem_size);
+        memset(row, 0, (size_t)view->elem_size);
+        for (int field = 0; field < view->field_count; field++) {
+            RtDataColumn* column = &view->columns[field];
+            memcpy(row + (size_t)column->offset,
+                   column->data + (size_t)i * (size_t)column->size,
+                   (size_t)column->size);
+        }
+    }
+    data_view_release(view);
+    return rows;
+}
+
+// M4.1 -- handle-based List slices (SPEC 8.4)
+//
+// A Slice<T> is emitted as `{ RtList*, offset, length }` in Prismio code. The C
+// runtime never owns or stores that aggregate; it receives its fields at the
+// point of construction/access. Keeping the handle rather than `data + offset`
+// is what makes a view survive list growth: every operation resolves the list's
+// current data block after any reallocations have happened.
+void prismio_slice_check(int available, int start, int end) {
+    if (available < 0 || start < 0 || end < start || end > available) {
+        fprintf(stderr,
+                "runtime error: slice range [%d..%d] is outside collection length %d\n",
+                start, end, available);
+        exit(1);
+    }
+}
+
+static int list_slice_index(void* lp, int offset, int length, int index) {
+    if (!lp) {
+        fprintf(stderr, "runtime error: slice refers to a null List handle\n");
+        exit(1);
+    }
+    RtList* l = (RtList*)lp;
+    long long actual = (long long)offset + (long long)index;
+    if (offset < 0 || length < 0 || index < 0 || index >= length
+        || actual < 0 || actual >= l->len) {
+        fprintf(stderr,
+                "runtime error: slice index %d is outside view [%d..%d] of collection length %d\n",
+                index, offset, offset + length, l->len);
+        exit(1);
+    }
+    return (int)actual;
+}
+
+void* list_slice_get(void* lp, int offset, int length, int index) {
+    return list_get(lp, list_slice_index(lp, offset, length, index));
+}
+
+void* list_slice_get_inline(void* lp, int offset, int length, int index) {
+    return list_get_inline(lp, list_slice_index(lp, offset, length, index));
+}
+
+void list_slice_set(void* lp, int offset, int length, int index, void* value) {
+    list_set(lp, list_slice_index(lp, offset, length, index), value);
+}
+
+void list_slice_set_inline(void* lp, int offset, int length, int index, void* value) {
+    list_set_inline(lp, list_slice_index(lp, offset, length, index), value);
+}
+
 // LAYOUT 2 -- the measured access profile
 // These counters exist only in a workload driver: an instrumented build the
 // compiler produces, runs and throws away (LAYOUT 3.2). A shipped program never

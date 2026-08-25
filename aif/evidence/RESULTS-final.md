@@ -1,4 +1,97 @@
-# The final cross-language benchmark — session 3's harness re-run against everything since
+# The cross-language benchmark — current standing and historical session-3 report
+
+## Current update — inline runtime default candidate, 2026-08-25
+
+M1's curated runtime module is now on by default in `build/inline-default-2`, with
+`PRISMIO_INLINE_RUNTIME=0` retained as an opt-out and measurement control. The default change first
+passed the old-vs-new milestone gate over 25 interleaved runs:
+
+| program | new / old loop | RSS new / old | standing vs idiomatic Rust, old → new |
+|---|---:|---:|---:|
+| g1 | 0.983× | 1.000× | 1.37× → 1.34× |
+| g2 | **0.897×** | 1.000× | 1.96× → **1.76×** |
+| g3 | 0.999× | 1.008× | 1.10× → 1.09× |
+| g4 | **0.913×** | 1.000× | 3.40× → **3.10×** |
+| g5 | **0.635×** | 1.000× | 2.57× → **1.63×** |
+| g6 | 1.000× | 0.993× | 2.71× → 2.71× |
+| **corpus median** | **0.948×** | — | — |
+
+Checksums matched, no program regressed, RSS stayed within 0.8%, and executable sizes were
+unchanged. Raw result: `aif/evidence/xlang/results-inline-runtime-default.json`.
+
+The standing harness then ran twice:
+
+```bash
+python3 aif/evidence/xlang/bench.py --compiler build/inline-default-2 --runs 25 \
+    --json aif/evidence/xlang/results-current-inline-runtime.json
+python3 aif/evidence/xlang/bench.py --compiler build/inline-default-2 --runs 25 --skip-build \
+    --json aif/evidence/xlang/results-current-inline-runtime-pass2.json
+```
+
+| program | Prismio loop ms | pass 2 | Rust loop ms | pass 2 | Prismio / Rust | RSS MB, Prismio / Rust | RSS ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| g1 particles | 22.6 | 24.4 | 18.6 | 18.7 | **1.22×** | 1.77 / 1.94 | **0.91×** |
+| g2 frame loop | 32.0 | 32.1 | 18.2 | 18.2 | **1.76×** | 1.94 / 2.19 | **0.89×** |
+| g3 scene graph | 49.8 | 49.7 | 45.4 | 45.4 | **1.10×** | 2.03 / 2.03 | **1.00×** |
+| g4 ECS | 67.5 | 67.3 | 21.7 | 21.7 | **3.11×** | 2.11 / 2.23 | **0.94×** |
+| g5 asset cache | 51.8 | 51.1 | 30.3 | 28.8 | **1.71×** | 1.59 / 1.77 | **0.90×** |
+| g6 engine + game | 150.5 | 150.4 | 55.5 | 55.5 | **2.71×** | 2.31 / 2.58 | **0.90×** |
+
+The current pass-1 band is therefore **1.10×–3.11× idiomatic Rust**; the quiet pass reads
+**1.10×–3.10×**. g1 moved 7.8% between passes, consistent with its recorded layout sensitivity;
+g2–g6 Prismio medians agree within 1.5%. Peak RSS remains a win or tie at **0.89×–1.00× Rust**.
+Compile time is 67–85 ms against rustc's 107–137 ms, and executable size remains 77–78 KiB.
+
+Local release gates are green: fixed point, fresh-seed agreement, AIF differential 17/17, and
+suite **150/150**. The new suite check requires the successful post-curation merge marker and also
+tests the `=0` opt-out, so the existing Windows/Linux/macOS CI matrix now exercises the real path
+instead of allowing its fail-open fallback to pass invisibly. The remote three-platform result is
+still pending because these working-tree changes have not been pushed.
+
+## Previous default-off measurement — `build/seedcheck-clean`, 2026-08-25
+
+The standing item in [`TODO.md`](../../TODO.md) has been re-measured with the current self-hosted
+compiler. The two commands were:
+
+```bash
+python3 aif/evidence/xlang/bench.py --compiler build/seedcheck-clean --runs 25 \
+    --json aif/evidence/xlang/results-current.json
+python3 aif/evidence/xlang/bench.py --compiler build/seedcheck-clean --runs 25 --skip-build \
+    --json aif/evidence/xlang/results-current-pass2.json
+```
+
+The harness verified matching checksums before timing every variant. This is the current default
+configuration: `PRISMIO_INLINE_ELEMS` is on, `PRISMIO_INLINE_RUNTIME` remains off, and Swift is
+omitted by the Rust-only development-loop policy. The host reported Prismio 0.1.0 with LLVM
+22.1.8, rustc 1.97.1, and Apple clang 21.0.0.
+
+| program | Prismio loop ms | pass 2 | Rust loop ms | pass 2 | Prismio / Rust | RSS MB, Prismio / Rust | RSS ratio | loop allocations, Prismio / Rust |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| g1 particles | 24.7 | 25.6 | 18.3 | 18.6 | **1.35×** | 1.77 / 1.94 | **0.91×** | 4,279 / 270 |
+| g2 frame loop | 35.5 | 35.6 | 18.1 | 18.2 | **1.97×** | 1.92 / 2.19 | **0.88×** | 42,284 / 160,269 |
+| g3 scene graph | 49.6 | 49.7 | 45.3 | 45.3 | **1.09×** | 2.03 / 2.03 | **1.00×** | 5,741 / 270 |
+| g4 ECS | 74.6 | 73.9 | 21.9 | 21.7 | **3.41×** | 2.11 / 2.23 | **0.94×** | 3,329 / 310 |
+| g5 asset cache | 77.3 | 76.9 | 29.9 | 30.9 | **2.59×** | 1.61 / 1.77 | **0.91×** | 4,348 / 279 |
+| g6 engine + game | 150.8 | 150.6 | 55.6 | 55.4 | **2.71×** | 2.36 / 2.58 | **0.92×** | 86,078 / 289,160 |
+
+The 24 binary medians in the control pass agree within 3.8%; the only movement that large is g1
+Prismio, the program this repository already records as layout-sensitive. The current answer is
+therefore **1.09×–3.41× idiomatic Rust**, with g4 now the widest gap. The two deliberately stale
+figures moved as expected: g2 is **5.89× → 1.97×**, and g6 is **4.07× → 2.71×** relative to the
+idiomatic variants in this harness. Peak RSS is again a win or tie on every program,
+**0.88×–1.00× Rust**, so M5.2's regression investigation is closed: the leaks were the cause.
+
+Compile time is **63-72 ms** for Prismio versus **106-135 ms** for rustc (0.52x-0.62x); Prismio
+executables are **77–78 KiB** versus **458–474 KiB**. The old `rust_boxed` residual is no longer a
+single representation-held-constant band: current Prismio combines automatic arenas and inline
+flat list elements, while that diagnostic intentionally retains boxed elements. It is still useful
+per program (g1 1.24×, g2 0.22×, g4 1.41× in pass 1), but **1.24×–1.27× must not be quoted as the
+current compiler-wide residual**.
+
+Everything below this line is the preserved `build/S10b` report from the earlier 2026-08-25 run.
+Its tables and conclusions are historical evidence, not the current standing.
+
+---
 
 `aif/evidence/xlang/bench.py`, unchanged: the same six programs, the same three-way Rust split
 (idiomatic / bumpalo arena / hand-tuned), the same Swift baseline, the same `rust_boxed`

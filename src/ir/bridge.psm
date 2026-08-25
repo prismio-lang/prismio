@@ -199,6 +199,7 @@ extern fn ir_free_object(value: String)
 // the seam's fn(ptr) -> void cannot reclaim it; this routes to the runtime's own
 // list_release, which frees both through the allocator the list came from.
 extern fn ir_free_list(value: String)
+extern fn ir_free_data_view(value: String)
 
 // Struct-field ownership. A struct that owns its fields is reclaimed by a
 // function generated for its type, so the deallocator is named rather than
@@ -257,6 +258,8 @@ extern fn ir_global_str_var(name: String, strGlobal: String, length: Int)
 
 extern fn ir_load_ptr(type: String, ptrValue: String) -> Int
 extern fn ir_store_ptr(type: String, value: String, ptrValue: String)
+extern fn ir_data_load_ptr(type: String, ptrValue: String, structName: String, fieldIndex: Int) -> Int
+extern fn ir_data_store_ptr(type: String, value: String, ptrValue: String, structName: String, fieldIndex: Int)
 extern fn ir_copy_struct(structName: String, dest: String, src: String)
 
 // Helpers
@@ -302,6 +305,9 @@ extern fn ir_get_struct_field_index(structName: String, fieldName: String) -> In
 // is the module data layout's, so a --target build sizes for the target.
 extern fn ir_struct_is_flat(name: String) -> Int
 extern fn ir_struct_size(name: String) -> Int
+extern fn ir_get_struct_field_count(name: String) -> Int
+extern fn ir_struct_field_offset(name: String, index: Int) -> Int
+extern fn ir_struct_field_size(name: String, index: Int) -> Int
 // Both return an *interned* type name -- ir_add_struct_field and add_binding
 // each store ir_intern(type), and the fallbacks ("i32", "i64") are literals. No
 // branch allocates, so neither is a value the caller could release.

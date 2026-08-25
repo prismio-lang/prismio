@@ -114,6 +114,7 @@ fn nodeKindName(k: NodeKind) -> String {
     else if (k == NodeKind.CALL_EXPR) { return "CALL_EXPR" }
     else if (k == NodeKind.MEMBER_ACCESS_EXPR) { return "MEMBER_ACCESS_EXPR" }
     else if (k == NodeKind.INDEX_EXPR) { return "INDEX_EXPR" }
+    else if (k == NodeKind.SLICE_EXPR) { return "SLICE_EXPR" }
     else if (k == NodeKind.ARRAY_LITERAL_EXPR) { return "ARRAY_LITERAL_EXPR" }
     else if (k == NodeKind.STRUCT_LITERAL_EXPR) { return "STRUCT_LITERAL_EXPR" }
     else if (k == NodeKind.CAST_EXPR) { return "CAST_EXPR" }

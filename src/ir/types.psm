@@ -52,6 +52,21 @@ fn isFatStringKey(t: String) -> Bool {
     return str_equals(t, "struct:prismio.str") == 1
 }
 
+// Built-in aggregates live in registers and fields by value. User structs use
+// the same `struct:` key for their pointee type, so every storage decision must
+// distinguish these two before treating a struct key as an address.
+fn isSliceKey(t: String) -> Bool {
+    return str_equals(t, "struct:prismio.slice") == 1
+}
+
+fn isDataElementKey(t: String) -> Bool {
+    return str_equals(t, "struct:prismio.data_element") == 1
+}
+
+fn isValueStructKey(t: String) -> Bool {
+    return isFatStringKey(t) or isSliceKey(t) or isDataElementKey(t)
+}
+
 fn structTypeName(t: String) -> String {
     return str_substring(t, 7, __builtin_string_len(t) - 7)
 }
@@ -70,6 +85,9 @@ fn mapTypeNode(tn: ASTNode) -> String {
     // null dereference at run time.
     if (tn.i3 == 1) {
         return "ptr"
+    }
+    if (tn.i2 == 1 and str_equals(tn.s1, "Slice") == 1) {
+        return "struct:prismio.slice"
     }
     if (tn.i2 == 1) {
         return "ptr"            // List<T>
@@ -93,7 +111,7 @@ fn storageType(t: String) -> String {
     if (str_equals(t, "ptrptr") == 1) { return "ptr" }
     // The fat String is a value, not a heap object reached by pointer, so it is
     // the one struct key that must survive this collapse.
-    if (str_equals(t, "struct:prismio.str") == 1) { return t }
+    if (isValueStructKey(t)) { return t }
     if (isStructTypeKey(t)) { return "ptr" }
     return t
 }
@@ -315,6 +333,7 @@ fn listElementArgIndex(funcName: String) -> Int {
 
 fn dropKindOf(expr: ASTNode) -> Int {
     if (nodeGetType(expr).kind == TypeKind.LIST) { return IR_DROP_LIST }
+    if (nodeGetType(expr).kind == TypeKind.DATAVIEW) { return IR_DROP_DATAVIEW }
     // Struct-field ownership. Freeing the object alone would leak every field it
     // owns, so a type the model generated a release for is reclaimed by that.
     let ty = getExprType(expr)

@@ -12,19 +12,18 @@ The rule that decides which side anything falls on:
 > **If getting it wrong produces a miscompile, it belongs to the compiler.**
 > **If getting it wrong produces a link error or a missing feature, it does not.**
 
-**Last-good: `build/S44b`.** Suite **143/143**, fixpoint `a44.ll == b44.ll`, differential 17/17,
-and a fresh seed build matches it.
-Bootstrapped `S10b → … → S35b → S36b → S44b`; `S36b`, `S35b`, `S31b`, `S27b`, `S26b`, `S25b`,
-`S24b`, `S22b`, `S20b`, `S19b`, `S18b`, `S15b`, `S10b` and `E2` remain good behind it. S16/S17 are
-the M3.1 session's intermediate generations and are **not** last-good — each leaked on a fixture.
-S28–S30 are M2.0's and are not either: **S29b built every program correctly and then aborted in
-libc at exit** on `--verify` builds, freeing a `.rodata` pointer.
+**Current verified compiler: `build/m4-dataview-c-12`.** Suite **166/166**. It reaches a fixed point
+and passes the 17-source AIF differential. M4 is complete: M4.4 proves concrete generic clones choose
+inline or boxed container operations only after substitution. Start with M5.1's allocator
+experiment, using `aif/evidence/RESULTS-M4-generic-layout.md` and the existing cross-language
+corpus as the baseline. Do not run
+the suite concurrently with benchmarks: several runner checks and the object cache use fixed paths.
 
 ---
 
-## Start here — M2 is closed; M4 is next unless you want its blocked half
+## Start here — the standing benchmark is current; decide the runtime default next
 
-**M2 finished 2026-08-23 with five items done and four closed as blocked.** Read
+**M2's implemented work finished 2026-08-23; its remaining research was retired 2026-08-25.** Read
 [`TODO.md`](TODO.md) § "M2 — closing state" first; it is one table and three numbered facts.
 
 Done and gated: **M2.0** (release on reassignment), **M2.0b** (callee-returned accumulators),
@@ -37,20 +36,19 @@ missing free. No corpus program allocates less because of M2 and none of its gat
 (medians 1.006×, 1.006×, 1.001×). The "10× on g2 and g6" the milestone originally claimed was taken
 by M3 through an arena — which is why a gate has to name the mechanism as well as the number.
 
-**The four blocked items — M2.1a-ii, M2.1a-iii, M2.1/2/3 — are blocked on one thing:
-`field_release_of` answers per `(type, field)` and needs to answer per site.** Confirmed three ways,
-all measured, all in the TODO entry. **Do not start at the match-binder keys**: they were built,
-they work, and they are not the blocker.
+The four old blocked items share one prerequisite—`field_release_of` would have to answer per site
+rather than per `(type, field)`—but they are no longer active work. Do not restart them without the
+measured-workload trigger in TODO.
 
 **The ranked list from here:**
 
-1. **M4 · Views and slices**, if you want the next measured prize. It is the expensive one and needs
-   real language design, but nothing in it is blocked.
-2. **The per-site field disposition**, if you want M2's blocked half. Expect it to touch
-   `field_release_of`, `type_is_reclaimed`, `compute_released_fields` and every reader of
-   `site_in_released_field` — the largest single change M2 would have contained.
-3. **M2.1a-iii — ownership transfer past one hop** (INFERENCE 6's contexts, same gap `test_47`
-   records as its 6). Independent of the disposition work and smaller than it.
+1. **Finish the `PRISMIO_INLINE_RUNTIME` default gate.** Default-on and its discriminating test are
+   implemented and locally green; observe the new check on the remote Windows/Linux/macOS matrix.
+2. **M5.1 — evaluate mimalloc** on g1/g3/g4/g5, which still allocate 10.7×–21.3× more than Rust.
+3. **Boxed `OBJECT` replacement borrow-liveness.** Recorded, but do not replace the conservative
+   leak with an unconditional free; prove derived `list_get` borrows dead or add an exclusive API.
+4. **M2 is retired until measured evidence reactivates it.** Investigate the genuinely-cold
+   19–28% compile regression if first-build latency matters more.
 
 **Before anything else, read TODO § M2.1a-ii's two attempt notes.** Two working implementations
 were built and reverted there, and both reverts were byte-clean. The cheapest thing in this file is
@@ -71,9 +69,9 @@ three passes and everything it opened it also closed. What matters going in:
   `allocated == released`, 0 leaked, 0 violations. Two leaks did it, and **both were a missing
   *owner*, not a missing free**: a `String` returned across a call had none, and an inline struct
   field was reported as owning a value it only holds a copy of.
-- **Peak RSS fell 0.49×–0.82× across the corpus** as a consequence — g1 1.78, g2 1.94, g3 2.08,
-  g4 2.05, g5 1.63, g6 2.23 MB. That is the standing "peak RSS reversed" candidate, and **the cause
-  was the leaks**; see M5.2 in TODO for the one measurement still owed.
+- **Peak RSS fell with the leaks and the cross-language check is now complete.** Two isolated
+  25-run passes put the current compiler at **0.89×–1.00× idiomatic Rust RSS** across all six.
+  M5.2 is closed; no bisect remains.
 
 Corpus median 1.003× on the final gate, **GATE PASSED**.
 
@@ -104,10 +102,10 @@ same date) then produced five items, ranked here by measured prize:
    - **M1.1b is done.** The merge is in process (`LLVMLinkModules2` + a three-pass body delete),
      byte-identical to `llvm-extract`'s output, builds with only `clang` on PATH, and the warm
      compile-time cost fell to ~5%. `--verify`, `--target` and the object cache are exercised.
-     **The default is still off**, because the portability claim is a macOS PATH test rather than
-     a green CI on three platforms — that run is what should gate flipping it.
-   - **M1.3 is untouched** — the hot container ops written in Prismio itself, which is what would
-     close the remaining 0.05× on g3.
+     **The working-tree candidate is default-on.** A new suite check requires a successful merge
+     marker and separately exercises `=0`; the remote three-platform result is still pending.
+   - **M1.3 is done.** Outlining `list_push`'s growth path removed every remaining hot-path call and
+     moved the measured corpus median to **0.812×**. The default decision is the sole remainder.
    Evidence: [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md).
 
 2. ~~**Automatic arena placement does not fire on the corpus.**~~ **DONE, 2026-08-28.** M3.1 made
@@ -126,7 +124,8 @@ same date) then produced five items, ranked here by measured prize:
      prior g2 number was measured on, and `milestone_bench` checks its checksums before it times
      anything.
    - **Nothing in the corpus is a plausible-and-absent arena any more**, and every ledger is
-     clean. Placement is done as an item; the next allocation work is representation (item 3).
+     clean. Placement and inline flat elements are done; the remaining allocation experiment is
+     M5.1 on the four programs that still allocate more than Rust.
 
 2b. **M2 (reuse analysis) is not the next item, and its premise is wrong as written.** Reuse
    tokens pair a dead value with a same-size constructor *in the same branch*; `match` appears in
@@ -137,18 +136,17 @@ same date) then produced five items, ranked here by measured prize:
    well as the number. **Both halves of M2's gate are now met by something that is not M2.**
    Restate it against g7 before starting, or drop the milestone. Detail in
    [`TODO.md`](TODO.md) § M2.
-3. **Inline element storage for `List<T>`** — ranked second at session 3, still unbuilt, still the
-   only change projected to move the corpus band (~1.2–1.3× across the board). The representation
-   is 9.23× of the g2 gap and 2.51× of the g4 gap against a **1.24–1.27×** compiler. Needs
-   views/slices to be expressible, which is why item 1 outranks it despite a similar prize.
-4. ~~**Peak RSS reversed.**~~ **Cause found, 2026-08-28, and it was the leaks.** The entry read
+3. ~~**Inline element storage for `List<T>`.**~~ **DONE.** Flat, non-counted, non-split structs
+   now live in the list block by default, with destination-passing literal pushes and safe boxed
+   fallbacks. The 149-test suite covers the layout, allocation, and verifier consequences. Views
+   and slices remain open for data-layout conversion, not as a prerequisite for M4.2.
+4. ~~**Peak RSS reversed.**~~ **Closed by measurement; the cause was the leaks.** The entry read
    0.84–1.00× → 1.09–1.60× of idiomatic Rust with Rust unmoved, and had already excluded the fixed
    runtime footprint and the hot/cold split. It never said "leak", and it should have: a leak
    scales with **live set rather than churn**, which is the signature this entry recorded verbatim.
    Removing the two of them dropped peak RSS to **0.49×–0.82×** of the previous compiler across the
-   whole corpus. **What is left is one measurement**: re-run `RESULTS-final.md`'s own harness so the
-   ×-against-Rust figure can be restated. `milestone_bench` is old-vs-new and cannot answer it.
-   No bisect is needed and no session-3-era compiler has to be built.
+   whole corpus. The latest harness run puts Prismio at **0.89×–1.00× idiomatic Rust RSS**. No
+   bisect is needed and M5.2 is checked off.
 5. **Genuinely-cold compile regressed 19–28%** — 183 → 235 ms (g1), 203 → 241 ms (g6) with
    `PRISMIO_OBJ_CACHE=0`. Hidden in the default path, where the object cache reaches 0.71–0.85× of
    rustc. Affects first builds and uncached CI only.
@@ -163,9 +161,9 @@ both this repo and the public site at `../docs/content`.**
 these items against what Perceus, Spegion, ThinLTO, Tofte–Talpin, MLton and the PPAM data-views
 work already settled, and records the measured dead ends (`-flto`, chasing the residual, and the
 assumption that boxed layout costs indirection — it costs **allocations**, measured 0.86× free).
-**One correction in it re-ranks this list:** inline `List<T>` storage is worth having because it
-removes *allocations*, not indirection, so reuse analysis (Perceus-style) attacks the same cost
-without a language change and should be weighed ahead of it.
+**One correction in it re-ranked this list:** inline `List<T>` storage was worth having because it
+removes *allocations*, not indirection. That part has shipped; views/data views are now the open
+language-design half, and reuse analysis still has no trigger in the corpus.
 
 ---
 
@@ -175,46 +173,36 @@ without a language change and should be weighed ahead of it.
 the links say which — and nothing is here that is not. When you finish one, tick it *there* and
 re-rank *here*.
 
-Items 2 and 4 are done, and 1, 3 and 5 are what remain. Three of the four things below are cheap and
-one is the big one; the order is by *what makes the next number trustworthy*, not by prize.
+The measurement, inline elements, arenas, and RSS investigation are done. The order below is the
+current ranking, not the historical five-item list above it.
 
-**A. Re-measure, before building anything.** — [`TODO.md`](TODO.md) § Standing items, first entry.
-Three separate figures in this repo are now stale in the same direction and nobody can quote the
-compiler's standing honestly until they are refreshed:
+**A. Re-measure before building anything — DONE and refreshed after the default change.** Two
+25-run passes with `build/inline-default-2`, matching cross-variant checksums, establish the
+working-tree band as **1.10×–3.11× idiomatic Rust**. g2 is 1.76×, g6 is 2.71×, g4 is the widest
+gap at 3.11×, and RSS is **0.89×–1.00× Rust**. See the update at the top of
+[`RESULTS-final.md`](aif/evidence/RESULTS-final.md) and `results-current*.json`.
 
-- `RESULTS-final.md`'s cross-language matrix is stale for **g2 and g6** (both moved this session)
-  and for **peak RSS everywhere** (item 4's cause turned out to be the leaks). Its harness is the
-  only thing that produces the ×-against-Rust RSS figure — `milestone_bench` is old-vs-new and
-  cannot.
-- The **band** quoted throughout as 1.13×–5.89× is roughly **1.09×–3.23×** on the driver's own
-  numbers now. Do not propagate either until the harness has run.
-- **This is half a session at most**, it needs no design, and every ranking below depends on it.
+**B. Finish the `PRISMIO_INLINE_RUNTIME` default gate** — [`TODO.md`](TODO.md) § Standing items,
+second entry. The flip and discriminating suite coverage are implemented. Local gates are green:
+150/150, fixpoint, seed agreement, differential 17/17, and milestone median **0.948×** with no
+regression. The remaining action is to commit/push and observe the existing three-platform matrix;
+do not check off the parent before those jobs pass.
 
-**B. Flip `PRISMIO_INLINE_RUNTIME` on, or decide not to** — [`TODO.md`](TODO.md) § Standing items,
-second entry; item 1's remainder here. M1.1b works,
-byte-identical to `llvm-extract`, ~5% warm compile cost, corpus median **0.864×** measured. It is
-off for one reason: the portability claim rests on a macOS PATH test rather than a green CI on
-three platforms. **That run is the whole task.** Largest measured prize on the list per unit of
-work, and it needs no language change.
+**C. M2 is retired** — [`TODO.md`](TODO.md) § M2. Reactivate it only when a maintained workload
+contains the immutable-rebuild shape and a paired baseline shows a material allocation prize. A
+synthetic fixture can guard correctness but cannot reopen the milestone by itself.
 
-**C. Restate or retire M2** — [`TODO.md`](TODO.md) § M2 and its exit gate; item 2b here. That
-gate — a ≥10× allocation drop on g2 and g6 — is
-**met on both, by M3**, and reuse tokens still have nothing to fire on: `match` appears in no
-corpus program at all. Either re-target the milestone at g7 with a gate it can actually move, or
-close it and say why. Half an hour of honesty that stops a future session building the wrong thing.
-
-**D. Then item 3 — inline element storage for `List<T>`** — [`TODO.md`](TODO.md) § M4, checkbox
-M4.2 (and M4.1 before it). The only remaining
-change projected to move the whole band, and the expensive one. Read the correction in
-`ARCHITECTURE-DIRECTION.md` first: boxed layout costs **allocations**, not indirection (measured
-0.86× free), so the prize is the allocations M3's arenas did *not* remove. Needs views/slices to be
-expressible, which is the language design this milestone actually is.
+**D. Continue M4.3 with data views.** M4.1 and M4.2 are complete. The next surface must name an
+explicit conversion point, emit real SoA storage for flat structs, represent an element as
+`(collection handle, index)`, round-trip mutations, and define the FFI copy/rejection rule. A
+field-projection helper without column storage does not satisfy the gate.
 
 **What not to spend a session on:**
 
-- **`test_47`'s 6 and `test_45`'s 2.** Understood, deferred, reasons recorded above. Six
+- **`test_47`'s 2 and `test_45`'s 2.** Understood, deferred, reasons recorded above. Two
   allocations in a fixture against a use-after-free in the compiler is not a trade worth taking.
-- **A bisect for the RSS regression.** There is nothing left to bisect; see item 4.
+- **A bisect for the RSS regression.** The cross-language rerun confirms the leak fix; M5.2 is
+  closed.
 - **More timing runs on a program in the ±5% band.** Attribute instead — diff the two `.ll` files
   by function. It took a minute to prove g1 and g4 had byte-identical loop code, after two
   benchmark runs had failed to settle it.
@@ -228,25 +216,19 @@ are in [`RESULTS-M3-leaks-and-regime.md`](aif/evidence/RESULTS-M3-leaks-and-regi
 
 **What is genuinely open, and it is small:**
 
-- **`test_47` leaks 6**: a value returned **two** hops. Deferred, and the reason is now the useful
+- **`test_47` leaks 2**: a value returned **two** hops. Deferred, and the reason is now the useful
   part: the obvious relaxation leans on `site_in_released_field`, which has a **known hole** this
   compiler exercises — `src/` puns an `ASTNode` pointer as `String`, so those fields are not
   reported as released, and a widened rule would hand AST nodes to the deallocator. It needs
   INFERENCE 6's contexts, not another clause.
 - **`test_45` leaks 2**, both documented in `run_aif_verify_test`: a binding reborrowed into a
   callee's local name, and a field a reassignment guard deliberately protects.
-- **M5.2 owes one measurement**, not an investigation — re-run `RESULTS-final.md`'s harness so the
-  RSS figure against Rust can be restated.
+- **M5.2 is closed** — the current RSS figure is 0.89×–1.00× idiomatic Rust.
 
-**The standing caveat, and what 2026-08-28 did to it:** the corpus band had not moved in seven
-sessions (1.12–5.57× → 1.13–5.89×) across ten landed features, because *the features that landed
-were not the features this corpus measures.* This session was the first that was — g2 goes
-**5.77× → 2.6×** and g6 **4.31× → 2.58×** of idiomatic Rust, and peak RSS fell everywhere — so the
-band is roughly **1.09×–3.23×** on the driver's own numbers and
-[`RESULTS-final.md`](aif/evidence/RESULTS-final.md)'s matrix is stale for g2, g6 and all six RSS
-figures. **Task A above is what makes it quotable again.** The caveat itself still stands for the
-rest: four of six programs are flat, and if the next thing is chosen for reasons other than this
-corpus — which is legitimate — say so rather than expecting the numbers to move.
+**The standing caveat, now measured:** the band is **1.10×–3.11× idiomatic Rust**. Automatic arenas,
+inline elements, and the runtime merge moved g2/g4/g5 substantially; g4 is still the widest gap. The remaining
+programs did not move uniformly, so any next task chosen for a capability reason rather than this
+corpus should say so instead of promising a benchmark movement it has not measured.
 
 **Nothing *after* that list is a queue.** The two sections below it are (1) what is genuinely
 blocked and on whom, and (2) what was considered and deliberately declined, with the reasoning, so

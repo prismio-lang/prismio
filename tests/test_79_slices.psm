@@ -1,0 +1,102 @@
+// M4.1 -- first-class, handle-based List slices.
+//
+// This fixture deliberately crosses every representation boundary the feature
+// has: scalar, String, inline struct, a Slice field, a generic function, a
+// returned view, a nested view, overlapping mutation, and List growth after the
+// view was formed. Keeping the final case correct is the reason a Slice stores
+// the List handle instead of an interior pointer.
+
+import std.io
+extern fn str_equals(a: String, b: String) -> Int
+
+struct Point {
+    x: Int,
+    y: Int
+}
+
+struct Window {
+    view: Slice<Point>
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn middle(points: List<Point>) -> Slice<Point> {
+    return points[1..4]
+}
+
+fn first<T>(items: Slice<T>) -> T {
+    return items[0]
+}
+
+fn pointSum(items: Slice<Point>) -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < slice_len(items)) {
+        let point = items[i]
+        total = total + point.x + point.y
+        i = i + 1
+    }
+    return total
+}
+
+fn main() -> Int {
+    let mut points: List<Point> = list_new()
+    list_push(points, Point { x: 0, y: 10 })
+    list_push(points, Point { x: 1, y: 11 })
+    list_push(points, Point { x: 2, y: 12 })
+    list_push(points, Point { x: 3, y: 13 })
+
+    let view = middle(points)
+    let nested = view[1..3]
+    let window = Window { view: nested }
+    if (slice_len(view) != 3 or slice_len(window.view) != 2) {
+        return fail("slice lengths")
+    }
+    if (first(window.view).x != 2) {
+        return fail("generic Slice<T> parameter")
+    }
+
+    // The next push grows the inline element block from capacity 4 to 8. A raw
+    // interior pointer would now be dangling; resolving through the handle must
+    // still find points[1..4].
+    list_push(points, Point { x: 4, y: 14 })
+    list_push(points, Point { x: 5, y: 15 })
+    if (pointSum(view) != 42) {
+        return fail("view did not survive List growth")
+    }
+
+    // Overlapping mutable views are legal. Both writes resolve the current List
+    // block, and the second sees the first's update through the overlap.
+    let left = points[1..4]
+    let right = points[2..5]
+    slice_set(left, 1, Point { x: 20, y: 2 })
+    if (right[0].x != 20 or points[2].y != 2) {
+        return fail("overlapping mutable views")
+    }
+
+    let mut nums: List<Int> = list_new()
+    list_push(nums, 7)
+    list_push(nums, 8)
+    list_push(nums, 9)
+    let numView = nums[1..3]
+    slice_set(numView, 0, 80)
+    if (numView[0] != 80 or nums[1] != 80) {
+        return fail("scalar slice read/write")
+    }
+
+    let mut words: List<String> = list_new()
+    list_push(words, "zero")
+    list_push(words, "one")
+    list_push(words, "two")
+    let wordView = words[1..3]
+    if (str_equals(wordView[1], "two") == 0) {
+        return fail("String slice read")
+    }
+
+    println("PASS: slices")
+    return 0
+}

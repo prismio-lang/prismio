@@ -353,6 +353,15 @@ fn inlineElemSizeOfList(listExpr: ASTNode) -> Int {
     return inlineElemSize(structTypeName(ekey))
 }
 
+fn inlineElemSizeOfSlice(sliceExpr: ASTNode) -> Int {
+    if (nodeHasType(sliceExpr) == false) { return 0 }
+    let st = nodeGetType(sliceExpr)
+    if (st.kind != TypeKind.SLICE or nodeIsNull(st.child)) { return 0 }
+    let ekey = typeIrKey(ptr_to_type(st.child))
+    if (isStructTypeKey(ekey) == false or isValueStructKey(ekey)) { return 0 }
+    return inlineElemSize(structTypeName(ekey))
+}
+
 // The same question asked of a container call's first argument, which is the
 // list for all four of `list_get`, `list_set`, `list_push` and `list_len`.
 // Does this call cross into C?
@@ -489,7 +498,7 @@ fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: Strin
         let fieldType = fieldStorageType(ir_get_struct_field_type(structName, field.s1))
         let fieldIndex = ir_get_struct_field_index(structName, field.s1)
 
-        if (isStructTypeKey(fieldType) and isFatStringKey(fieldType) == false) {
+        if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
             let slot = ir_struct_field_ptr(structName, destPtr, fieldIndex)
             let init = ptr_to_node(field.child1)
             let innerName = structTypeName(fieldType)
@@ -665,6 +674,37 @@ fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
+        // M4.3b. A DataElement is the stable `(view handle, index)` pair. Resolve
+        // the requested column only at the field access; no interior pointer is
+        // stored in the descriptor, so copying it cannot be stranded by layout
+        // conversion or column allocation details.
+        if (nodeHasType(objectNode) and nodeGetType(objectNode).kind == TypeKind.DATAELEMENT) {
+            let elemT = nodeGetType(objectNode)
+            let rowT = ptr_to_type(elemT.child)
+            let structName = rowT.name
+            let fieldIndex = ir_get_struct_field_index(structName, expr.s1)
+            let fieldType = fieldStorageType(ir_get_struct_field_type(structName, expr.s1))
+            let descriptor = generateExpression(objectNode)
+            let view = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
+                                                         descriptor, 0))
+            let index = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
+                                                          descriptor, 1))
+            ir_call_begin()
+            ir_call_arg("ptr", view)
+            ir_call_arg("i32", int_to_str(fieldIndex))
+            let column = ir_get_temp_name(ir_call_end("ptr", "data_view_column"))
+            // The row type makes the stride a compile-time LLVM type rather
+            // than the runtime column's dynamic byte size. That is what lets a
+            // column scan vectorise instead of remaining a scalar multiply.
+            let slot = ir_get_temp_name(ir_elem_ptr(fieldType, column, index))
+            irProfileField(structName, expr.s1, false)
+            if (isValueStructKey(fieldType)) {
+                return ir_get_temp_name(ir_data_load_ptr(fieldType, slot, structName, fieldIndex))
+            }
+            if (isStructTypeKey(fieldType)) { return slot }
+            return ir_get_temp_name(ir_data_load_ptr(fieldType, slot, structName, fieldIndex))
+        }
+
         let objectVal = generateExpression(objectNode)
         let objectType = getExprType(objectNode)
         let structName = structTypeName(objectType)
@@ -681,7 +721,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // and are not built -- see the note in HANDOFF.md.
         // A String field is a value, not storage reached by GEP, so it loads
         // like a scalar even though its key names a struct.
-        if (isFatStringKey(fieldType)) {
+        if (isValueStructKey(fieldType)) {
             return ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
         }
         if (isStructTypeKey(fieldType)) {
@@ -722,8 +762,100 @@ fn generateExpression(expr: ASTNode) -> String {
         return base
     }
 
+    if (expr.kind == NodeKind.SLICE_EXPR) {
+        let baseNode = ptr_to_node(expr.child1)
+        let baseType = nodeGetType(baseNode)
+        // A temp name is a String and therefore affine. Park it on the AST node
+        // so extracting three fields reborrows one generated value instead of
+        // looking like three moves from a local binding.
+        expr.s1 = generateExpression(baseNode)
+
+        let mut handle = expr.s1
+        let mut origin = "0"
+        let mut available = "0"
+        if (baseType.kind == TypeKind.SLICE) {
+            handle = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 0))
+            origin = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 1))
+            available = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 2))
+        } else {
+            ir_call_begin()
+            ir_call_arg("ptr", handle)
+            available = ir_get_temp_name(ir_call_end("i32", "list_len"))
+        }
+
+        let start = generateExpression(ptr_to_node(expr.child2))
+        let end = generateExpression(ptr_to_node(expr.child3))
+        ir_call_begin()
+        ir_call_arg("i32", available)
+        ir_call_arg("i32", start)
+        ir_call_arg("i32", end)
+        ir_call_end("void", "prismio_slice_check")
+
+        let offset = ir_get_temp_name(ir_add("i32", origin, start))
+        let length = ir_get_temp_name(ir_sub("i32", end, start))
+        let empty = ir_get_temp_name(ir_undef("struct:prismio.slice"))
+        let withHandle = ir_get_temp_name(ir_insert_value("struct:prismio.slice", empty,
+                                                           handle, "ptr", 0))
+        let withOffset = ir_get_temp_name(ir_insert_value("struct:prismio.slice", withHandle,
+                                                           offset, "i32", 1))
+        return ir_get_temp_name(ir_insert_value("struct:prismio.slice", withOffset,
+                                                 length, "i32", 2))
+    }
+
     if (expr.kind == NodeKind.INDEX_EXPR) {
-        let arrayVal = generateExpression(ptr_to_node(expr.child1))
+        let baseNode = ptr_to_node(expr.child1)
+        let baseType = nodeGetType(baseNode)
+
+        if (baseType.kind == TypeKind.LIST) {
+            let arrayVal = generateExpression(baseNode)
+            let indexVal = generateExpression(ptr_to_node(expr.child2))
+            ir_call_begin()
+            ir_call_arg("ptr", arrayVal)
+            ir_call_arg("i32", indexVal)
+            let mut getName = "list_get"
+            if (inlineElemSizeOfList(baseNode) > 0) { getName = "list_get_inline" }
+            let raw = ir_get_temp_name(ir_call_end("ptr", getName))
+            let retType = storageType(getExprType(expr))
+            if (isFatStringKey(retType)) { return fatFromPtr(raw) }
+            if (str_equals(retType, "ptr") == 0) { return slotToScalar(retType, raw) }
+            return raw
+        }
+
+        if (baseType.kind == TypeKind.SLICE) {
+            expr.s1 = generateExpression(baseNode)
+            let indexVal = generateExpression(ptr_to_node(expr.child2))
+            let handle = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 0))
+            let offset = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 1))
+            let length = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 2))
+            ir_call_begin()
+            ir_call_arg("ptr", handle)
+            ir_call_arg("i32", offset)
+            ir_call_arg("i32", length)
+            ir_call_arg("i32", indexVal)
+            let mut getName = "list_slice_get"
+            if (inlineElemSizeOfSlice(baseNode) > 0) { getName = "list_slice_get_inline" }
+            let raw = ir_get_temp_name(ir_call_end("ptr", getName))
+            let retType = storageType(getExprType(expr))
+            if (isFatStringKey(retType)) { return fatFromPtr(raw) }
+            if (str_equals(retType, "ptr") == 0) { return slotToScalar(retType, raw) }
+            return raw
+        }
+
+        if (baseType.kind == TypeKind.DATAVIEW) {
+            let view = generateExpression(baseNode)
+            let index = generateExpression(ptr_to_node(expr.child2))
+            ir_call_begin()
+            ir_call_arg("ptr", view)
+            ir_call_arg("i32", index)
+            ir_call_end("void", "data_view_check_index")
+            let empty = ir_get_temp_name(ir_undef("struct:prismio.data_element"))
+            let withView = ir_get_temp_name(ir_insert_value("struct:prismio.data_element",
+                                                            empty, view, "ptr", 0))
+            return ir_get_temp_name(ir_insert_value("struct:prismio.data_element",
+                                                    withView, index, "i32", 1))
+        }
+
+        let arrayVal = generateExpression(baseNode)
         let indexVal = generateExpression(ptr_to_node(expr.child2))
 
         // sema types the index expression as the array's element type, so this
@@ -1003,6 +1135,8 @@ fn generateExpression(expr: ASTNode) -> String {
                 let kind = dropKindOf(argNode)
                 if (kind == IR_DROP_LIST) {
                     ir_free_list(value)
+                } else if (kind == IR_DROP_DATAVIEW) {
+                    ir_free_data_view(value)
                 } else if (kind == IR_DROP_TYPED) {
                     ir_free_typed(value, releaseFnName(structTypeName(getExprType(argNode))))
                 } else {
@@ -1010,6 +1144,109 @@ fn generateExpression(expr: ASTNode) -> String {
                 }
             }
             return ""
+        }
+
+        // M4.3a. Build real per-field storage from an ordinary AoS list. The
+        // layout queries are target-aware constants, so padding and nested flat
+        // fields are copied exactly as LLVM laid the row out.
+        if (str_equals(funcName, "soa") == 1 and nodeExists(expr.child2)) {
+            let sourceNode = ptr_to_node(expr.child2)
+            if (nodeIsNull(sourceNode.next)) {
+                let sourceT = nodeGetType(sourceNode)
+                let elemT = ptr_to_type(sourceT.child)
+                let structName = elemT.name
+                let fieldCount = ir_get_struct_field_count(structName)
+                let elemSize = ir_struct_size(structName)
+                let source = generateExpression(sourceNode)
+
+                ir_call_begin()
+                ir_call_arg("ptr", source)
+                ir_call_arg("i32", int_to_str(fieldCount))
+                ir_call_arg("i32", int_to_str(elemSize))
+                expr.s1 = ir_get_temp_name(ir_call_end("ptr", "data_view_begin"))
+
+                let mut field = 0
+                while (field < fieldCount) {
+                    ir_call_begin()
+                    ir_call_arg("ptr", expr.s1)
+                    ir_call_arg("i32", int_to_str(field))
+                    ir_call_arg("i32", int_to_str(ir_struct_field_offset(structName, field)))
+                    ir_call_arg("i32", int_to_str(ir_struct_field_size(structName, field)))
+                    ir_call_end("void", "data_view_add_column")
+                    field = field + 1
+                }
+                ir_call_begin()
+                ir_call_arg("ptr", expr.s1)
+                ir_call_end("void", "data_view_finish")
+                return expr.s1
+            }
+        }
+
+        if (str_equals(funcName, "aos") == 1 and nodeExists(expr.child2)) {
+            let viewNode = ptr_to_node(expr.child2)
+            if (nodeIsNull(viewNode.next)) {
+                let view = generateExpression(viewNode)
+                ir_call_begin()
+                ir_call_arg("ptr", view)
+                return ir_get_temp_name(ir_call_end("ptr", "data_view_to_list"))
+            }
+        }
+
+        if (str_equals(funcName, "data_len") == 1 and nodeExists(expr.child2)) {
+            let viewNode = ptr_to_node(expr.child2)
+            if (nodeIsNull(viewNode.next)) {
+                let view = generateExpression(viewNode)
+                ir_call_begin()
+                ir_call_arg("ptr", view)
+                return ir_get_temp_name(ir_call_end("i32", "data_view_len"))
+            }
+        }
+
+        if (str_equals(funcName, "slice_len") == 1 and nodeExists(expr.child2)) {
+            let sliceNode = ptr_to_node(expr.child2)
+            if (nodeIsNull(sliceNode.next)) {
+                let slice = generateExpression(sliceNode)
+                return ir_get_temp_name(ir_extract_value("struct:prismio.slice", slice, 2))
+            }
+        }
+
+        if (str_equals(funcName, "slice_set") == 1 and nodeExists(expr.child2)) {
+            let sliceNode = ptr_to_node(expr.child2)
+            if (nodeExists(sliceNode.next)) {
+                let indexNode = ptr_to_node(sliceNode.next)
+                if (nodeExists(indexNode.next)) {
+                    let valueNode = ptr_to_node(indexNode.next)
+                    expr.s1 = generateExpression(sliceNode)
+                    let handle = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 0))
+                    let offset = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 1))
+                    let length = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 2))
+                    let index = generateExpression(indexNode)
+                    let valueType = storageType(getExprType(valueNode))
+                    let mut passed = ""
+                    if (isFatStringKey(valueType)) {
+                        let value = generateExpression(valueNode)
+                        passed = ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 0))
+                    } else if (str_equals(valueType, "ptr") == 0) {
+                        let value = generateExpression(valueNode)
+                        passed = scalarToSlot(valueType, value)
+                    } else {
+                        passed = generateExpression(valueNode)
+                    }
+
+                    ir_call_begin()
+                    ir_call_arg("ptr", handle)
+                    ir_call_arg("i32", offset)
+                    ir_call_arg("i32", length)
+                    ir_call_arg("i32", index)
+                    ir_call_arg("ptr", passed)
+                    let mut setName = "list_slice_set"
+                    if (inlineElemSizeOfSlice(sliceNode) > 0) {
+                        setName = "list_slice_set_inline"
+                    }
+                    ir_call_end("void", setName)
+                    return ""
+                }
+            }
         }
 
         // M4.2, destination passing. `list_push(l, Thing { ... })` where the

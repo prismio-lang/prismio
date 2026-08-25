@@ -1,0 +1,6 @@
+// expect-error: Slice cannot cross an extern boundary without explicit marshalling
+extern fn consume_slice(values: Slice<Int> borrow)
+
+fn main() -> Int {
+    return 0
+}

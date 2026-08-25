@@ -224,5 +224,18 @@
   "222": "allocount.c",
   "223": "find_struct",
   "224": "Prompt 1 is done — what it unblocked",
-  "225": "Prompt 2 (residual) — the hot/cold split, and only that"
+  "225": "Prompt 2 (residual) — the hot/cold split, and only that",
+  "226": "run",
+  "227": "run",
+  "228": "run",
+  "229": "run",
+  "230": "run",
+  "231": "run",
+  "232": "format.rs",
+  "233": "README.md",
+  "234": "M4.1 — first-class `Slice<T>`",
+  "235": "Prompt 2 (residual) — the hot/cold split, and only that",
+  "236": "arena_emit_range",
+  "237": "Prompt 1 is done — what it unblocked",
+  "238": "aif_verify_alloc"
 }

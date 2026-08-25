@@ -88,8 +88,10 @@ touched, in the same session:
 > **The exit gate is not met and M1 cannot meet it** — g3 reads 1.04×, not < 1.00×, and the seam on
 > g3 is already fully closed. The 0.94× that set the target was hand-built and did not survive
 > re-measurement. See the exit gate below.
-> **Still opt-in** behind `PRISMIO_INLINE_RUNTIME=1`: the portability claim is a macOS PATH test,
-> and a green CI on three platforms is what should gate flipping the default.
+> **Default-on candidate is built and locally green.** The suite now requires a successful curated
+> merge and exercises `PRISMIO_INLINE_RUNTIME=0` as the rollback path, so the existing
+> Windows/Linux/macOS matrix is finally a real portability gate. Remote CI is the one unchecked
+> sub-step because these working-tree changes have not been pushed.
 
 **The problem.** Every container access (`list_get`, `list_set`, `list_len`, `list_push`) is a
 `bl` into the separately-compiled C runtime. `cull_into` compiles to 53 instructions containing two
@@ -126,10 +128,10 @@ compilation](#whole-program-compilation), [summary-based LTO](#summary-based-lto
       size, so `run_curated_closure_test` asserts the property rather than trusting it — verified
       to fail when `list_push` is added back.
 - [x] **M1.1b — What kept it opt-in.** All three done; see
-      [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md) §9 and §10. **The default is still
-      off, on purpose:** the portability claim is a PATH test on macOS showing the compiler no
-      longer *invokes* `llvm-extract`/`llvm-link`, which is not the same as a green CI on three
-      platforms. That run is what should gate flipping it, not another local measurement.
+      [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md) §9 and §10. The working tree now makes
+      the merge the default and adds a discriminating suite check: a successful build is not
+      enough, because the optimization fails open; the check requires the post-curation merge
+      marker. Local macOS is green, and the existing three-OS CI matrix will run the same check.
       - [x] **Merge ported off the `llvm-extract`/`llvm-link` binaries.** `ir_curate_module` and
             `ir_link_modules` in `llvm-api-backend.c`; `LLVMLinkModules2` added to
             `prismio_llvm.h` on both paths. Output is **byte-identical** to what `llvm-extract`
@@ -197,6 +199,19 @@ measurement** — §9.3's table is hand-built with `clang -O2` invoked directly.
 
 ## M2 · Reuse analysis
 
+> **Retired as an active milestone, 2026-08-25.** M2's original gate named g2 and g6, neither
+> program contains the destructure/dead-block/same-size-constructor shape a reuse token needs, and
+> M3 has already exceeded that allocation-count gate on both through automatic arenas. The
+> remaining token path is also blocked on per-site field disposition and ownership transfer across
+> calls; two implementations that ignored those facts were measured and reverted below.
+>
+> This is a scope decision, not a claim that reuse was implemented. M2.1-M2.3 and their ownership
+> prerequisites are closed as dormant research. **Reactivate them only when a real, maintained
+> workload contains the immutable rebuild shape and a paired baseline shows a material allocation
+> prize.** The reactivated gate must name that workload, require equal output and a clean verifier
+> ledger, bound token lifetime, and measure allocation count against the no-reuse control. An
+> author-only synthetic fixture may guard correctness, but may not by itself reopen the milestone.
+
 > **M2.0 is done, 2026-08-23** — see below. The gate is restated and the premise it rested on was
 > wrong; read that before the entry.
 >
@@ -227,15 +242,16 @@ doing that automatically.
 **Papers:** Perceus (PLDI 2021) — **read first**; Counting Immutable Beans (IFL 2019);
 Reference Counting with Frame-Limited Reuse (MSR-TR 2021).
 
-- [ ] **M2.1 — Reuse tokens.** Pair a dead value with a constructor of the same size in the same
-      branch; reuse the block instead of free-then-malloc.
-- [ ] **M2.2 — Reuse specialisation.** In-place field update when the reused block *is* the
+- [x] **M2.1 — Reuse tokens: retired as dormant research, 2026-08-25.** Pair a dead value with a
+      constructor of the same size in the same branch; reuse the block instead of
+      free-then-malloc. Reactivation is governed by the measured-workload trigger above.
+- [x] **M2.2 — Reuse specialisation: retired with M2.1.** In-place field update when the reused block *is* the
       matched one. **Blocked on M2.1, which is blocked on the per-site field disposition** — there
       is no token to specialise until one exists. Note also that the g2 motivation in the original
       line was already superseded: M3 took g2's allocation count from 10 285 886 to 82 052 with an
       arena, so the prize this would add on g2 is whatever is left after that, and nobody has
       measured it.
-- [ ] **M2.3 — Bound the tokens.** Frame-limited reuse, so a held token cannot leak. **Blocked on
+- [x] **M2.3 — Bound the tokens: retired with M2.1, mandatory if it is reactivated.** Frame-limited reuse, so a held token cannot leak. **Blocked on
       M2.1 for the same reason as M2.2**, and it stays on the list rather than being folded into it:
       the bound is the answer to the space-safety objection that M2.4 has now declined to take on
       inference, and a token implementation that arrives without it inherits the objection.
@@ -267,8 +283,9 @@ allocation count into M3 where the mechanism that moves it already lives.
 
 ## M2 — closing state, 2026-08-23
 
-**Five items done and gated; four blocked on one named thing.** Every item is either finished or
-closed with a reason, which is what "finished" can mean for this milestone today.
+**Five items done and gated; four retired after one named prerequisite and no workload trigger.**
+Every item is either finished or closed with a reason, which is what "finished" means for this
+milestone today.
 
 | | |
 |---|---|
@@ -277,12 +294,12 @@ closed with a reason, which is what "finished" can mean for this milestone today
 | M2.1a · recursive releases for self-referential types | **done** — `test_73` 100 leaked → 0 |
 | M2.1c · assignment re-initialises a moved binding | **done** — `acc = f(acc)` now compiles |
 | M2.4 · borrow inference | **decided** — opt-in through existing annotations, no inference |
-| M2.1a-ii · shallow free of a destructured block | **blocked** |
-| M2.1a-iii · ownership transfer past one hop | **blocked** |
-| M2.1 / M2.2 / M2.3 · tokens, specialisation, bounds | **blocked** |
+| M2.1a-ii · shallow free of a destructured block | **retired** — blocked prerequisite, no maintained trigger |
+| M2.1a-iii · ownership transfer past one hop | **retired** — blocked prerequisite, no maintained trigger |
+| M2.1 / M2.2 / M2.3 · tokens, specialisation, bounds | **retired** — reactivate only on the measured-workload trigger |
 
-**All four blocked items are blocked on the same thing: `field_release_of` answers per
-`(type, field)` and needs to answer per site.** Three independent confirmations, all measured:
+**All four retired items share the same prerequisite: `field_release_of` answers per
+`(type, field)` and would need to answer per site.** Three independent confirmations, all measured:
 
 1. **M2.1a blocks M2.1a-ii.** Making `Tree`'s payload fields released — correct, and what M2.1a is
    — makes *every* `Tree` site `site_in_released_field`, so a `sink` parameter holding one is never
@@ -455,7 +472,7 @@ are M2.1a-ii and M2.1a-iii, and the first of them is the same design as M2.1b.
       never had, since it was unreachable while the veto stood — turned that into a crash. The rule
       is not "recursion is safe", it is **"recursion is safe for the edges the collector does not
       own"**.
-- [ ] **M2.1a-ii — the shallow free of a destructured block. Attempted 2026-08-23, reverted, and
+- [x] **M2.1a-ii — retired 2026-08-25; the shallow free of a destructured block. Attempted 2026-08-23, reverted, and
       the attempt is the useful part.** Built and measured: freeing the scrutinee block after the
       arm's binders took `g8` from **24570 leaked to 14335**, checksum unchanged. Then it was
       reverted, because it is unsound for a reason that reframes both this item and M2.1b.
@@ -525,12 +542,13 @@ are M2.1a-ii and M2.1a-iii, and the first of them is the same design as M2.1b.
       **So the order in the list above is wrong.** Doing (1) first does not unblock (2) and (3); the
       thing that blocks them is the per-`(type, field)` disposition, and that is where the next
       attempt should start. Expect to touch `field_release_of` and everything that reads it.
-- [ ] **M2.1a-iii — ownership transfer past one hop.** The second reason `g8` does not move: a
+- [x] **M2.1a-iii — retired 2026-08-25; ownership transfer past one hop.** The second reason `g8` does not move: a
       recursively-built tree returns sites belonging to its own recursive calls, so the caller owns
       nothing and no drop runs at all. INFERENCE 6's contexts, the same gap
-      `test_47_aif_containers` records as its 6. **It also blocks measuring the recursive release's
+      `test_47_aif_containers` records as its 2 after inline list storage removed four element
+      boxes. **It also blocks measuring the recursive release's
       stack-depth limit**, since a deep structure has to be built recursively to exist.
-- [ ] **M2.1b — the token.** Only then: `drop` + same-size `alloc` in one branch becomes reuse.
+- [x] **M2.1b — retired 2026-08-25; the token.** Only then: `drop` + same-size `alloc` in one branch becomes reuse.
       Gate: allocations on the rebuild workload fall to ~the tree's node count, once, instead of
       once per pass.
 - [x] **M2.1c — assignment re-initialises a moved binding. Done 2026-08-23.** `acc = f(acc)` — the
@@ -767,53 +785,127 @@ median 0.991× with g2 at 0.469×, **GATE PASSED**.
 
 ## M4 · Views and slices
 
-> **Projected prize: 0.26×** where layout dominates (`g1_tuned.rs`, pure SoA). One language feature,
-> two unlocks. **The expensive one — needs real language design.**
+> **M4 is complete.** Mutable DataView reaches 0.25× of the boxed-layout diagnostic and 1.08×
+> hand-tuned Rust SoA on g1, with a separately labelled hand-tuned Prismio arm at hot-loop parity.
+> The generic-layout gate proves representation selection happens only after concrete
+> monomorphisation.
 
-**Read the correction before ranking this.** Inline `List<T>` storage is worth having because it
-removes **allocations**, not indirection: Prismio's exact boxed layout in Rust, mutated in place,
-runs at **0.86× of inline `Vec<T>`**. If M2 removes those allocations another way, the urgency
-drops. What does *not* drop is that **views are the prerequisite for the layout work**.
+**Read the correction before ranking what remains.** Inline `List<T>` storage was worth having
+because it removes **allocations**, not indirection: Prismio's exact boxed layout in Rust, mutated
+in place, runs at **0.86× of inline `Vec<T>`**. M4.2 now implements the safe flat subset. What
+remains is that **views are the prerequisite for the layout work**.
 
 **Concepts:** [data views](#data-views), [unboxed/flat layout](#unboxed-flat-layout),
 [monomorphisation and flattening](#monomorphisation-and-flattening).
 **Papers:** PPAM 2024 / arXiv 2502.16517 data views — **semi-manual AoS↔SoA**; OCaml unboxed types;
 Java Valhalla JEP 401; MLton *Unboxing using Specialisation*.
 
-- [ ] **M4.1 — Views/slices in the language**, with the ownership story worked out first.
-- [ ] **M4.2 — Inline element storage for `List<T>`.**
-- [ ] **M4.3 — Data views for layout**, the semi-manual AoS↔SoA framing: the programmer names the
+- [x] **M4.1 — Views/slices in the language. Done 2026-08-25.** `Slice<T>` is a copyable
+      `{ List handle, i32 offset, i32 length }` value; `a[start..end]` works on Lists and Slices,
+      nested slices compose offsets, and indexing plus explicit `slice_set` resolve the handle on
+      every access. Construction and access are bounds checked, overlapping mutable views are
+      permitted, and list growth cannot strand an interior pointer because no interior pointer is
+      stored. Generic parameters/returns/inference and debug info are covered. E-VIEW raises the
+      underlying collection to the view's escape; the return-specific solver rule preserves a
+      borrowed caller collection instead of spuriously making it T2. Direct `List<Slice<T>>` is
+      rejected because the list's boxed slot is one word; wrapping in a struct preserves all three.
+      Extern Slice parameters/returns are rejected until explicit marshalling exists.
+      [`RESULTS-M4-slices.md`](aif/evidence/RESULTS-M4-slices.md).
+- [x] **M4.2 — Inline element storage for `List<T>`.** Flat, non-counted, non-split struct
+      elements are stored directly in the list block by default; pointer-bearing, counted, split,
+      and unknown layouts stay boxed. Construction stamps the element mode from the list's static
+      type, literal pushes use destination passing, every inline operation has a boxed fallback,
+      and `PRISMIO_INLINE_ELEMS=0` retains the measurement control. The 149-test suite covers the
+      allocation/layout and verifier consequences. The 2026-08-25 standing remeasurement below
+      confirms that the old `rust_boxed` 1.24×–1.27× band is no longer representation-matched:
+      after the inline-runtime default, g1/g2/g4 read roughly 1.13×, 0.20×, and 1.22×.
+- [x] **M4.3 — Data views for layout**, the semi-manual AoS↔SoA framing: the programmer names the
       layout, the compiler converts. **More defensible than LAYOUT.md's automatic search** — the
       cost model already ranked two layouts the measurement rejected.
-- [ ] **M4.4 — Watch for the Valhalla collision:** polymorphic variables cannot be flattened. This
-      is where generics and the container representation will fight.
+      - [x] **M4.3a — Name the conversion boundary, not a global type promise. Done 2026-08-25.**
+            `soa(List<T>) -> DataView<T>` consumes a flat-struct row list into one real allocation
+            per physical field; `aos(DataView<T>) -> List<T>` consumes it back, and `data_len`
+            borrows it. Ordinary structs remain AoS everywhere else. `DataView<T>` is move-only,
+            generic-aware, scope-released, excluded from T0/arenas and hot/cold splitting, and
+            rejected at extern and unsupported aggregate-storage boundaries. Column offsets and
+            sizes come from LLVM's target data layout, so padding and reordered/nested flat fields
+            round-trip exactly. Suite **163/163**, fixed point, fresh-seed agreement, AIF
+            differential **17/17**, source lists, packaged runtime and `--verify` are green.
+            Existing-corpus median is **1.000×** new/old (25 runs); the isolated 2,000-row ×
+            12-field round-trip costs **76.1 µs median / 91.3 µs p99** (**38.0 ns/row**). This is
+            conversion cost only; M4.3b is where column-local work must earn it back.
+            [`RESULTS-M4-dataview-a.md`](aif/evidence/RESULTS-M4-dataview-a.md).
+      - [x] **M4.3b — Flat structs first, with `(collection handle, index)` element views. Done
+            2026-08-25.** `DataView<T>` indexing produces a checked, non-escaping
+            `(DataView handle, i32 index)` descriptor; field reads resolve the selected column at
+            each access, including nested flat fields, without storing raw interior pointers.
+            Saving a descriptor from an owned local view is rejected, while a descriptor borrowed
+            from a `DataView` parameter is valid for that borrow. The suite is **164/164**, the
+            compiler is at a fixed point, the AIF differential is **17/17**, and `--verify` reports
+            **12 allocated / 12 released / 0 leaked / 0 violations** for the focused case. The
+            standard corpus is flat at **1.004×** median new/old. A 200,000-row, 12-field,
+            single-column scan is **0.903× AoS time** (**9.7% faster**, 25 paired runs), with p50
+            falling from **105.6 µs to 95.9 µs** per scan. Peak RSS rises from **24.5 MiB to
+            38.2 MiB** during conversion because the source rows and destination columns overlap
+            transiently. [`RESULTS-M4-dataview-b.md`](aif/evidence/RESULTS-M4-dataview-b.md).
+      - [x] **M4.3c — Round-trip and boundary gates. Done 2026-08-25.** Scalar and nested-flat
+            field mutation lowers through the checked handle/index descriptor and survives the
+            consuming SoA→AoS conversion; extern DataView boundaries remain explicitly rejected.
+            Ready-view metadata is invariant and physical columns carry field-specific TBAA, so
+            LLVM hoists stable lookup work without an unsafe language-visible interior pointer.
+            Suite **164/164**, fixed point, differential **17/17**, packaged runtime and focused
+            verifier **12 / 12 / 0 / 0** are green. The ordinary corpus is flat at **0.999×**
+            median. On the 25-run g1 gate, DataView is **0.221× Prismio AoS**, **0.273× idiomatic
+            Rust**, and **1.076× hand-tuned Rust SoA**; the boxed residual moves from **1.145×** to
+            **0.253×**. A separately labelled hand-tuned Prismio arm fissions the three integration
+            streams into small inlinable borrowing helpers and reaches **4.631 ms versus 4.666 ms**
+            tuned Rust in a paired run: parity inside noise. The natural source remains the
+            language result. [`RESULTS-M4-dataview-c.md`](aif/evidence/RESULTS-M4-dataview-c.md).
+- [x] **M4.4 — Watch for the Valhalla collision. Done 2026-08-25.** Prismio's AST-to-AST,
+      demand-driven monomorphisation structurally avoids an erased polymorphic container body:
+      templates leave the module before sema, concrete types are substituted into clones, and only
+      then does codegen ask the static `List<T>` element layout whether inline storage is legal.
+      `test_82_generic_layout.psm` instantiates the same `singleton/get/set` templates for a flat
+      16-byte struct and a pointer-bearing struct; the permanent gate extracts all six clone bodies
+      and requires inline operations only in the first three. Focused verifier **8 / 8 / 0 / 0**;
+      suite **166/166**. Because this milestone adds a discriminator rather than generated code,
+      its 25-run A/A control is **0.997×** median (0.978–1.099×), explicitly no performance change.
+      [`RESULTS-M4-generic-layout.md`](aif/evidence/RESULTS-M4-generic-layout.md).
 
 **Exit gate:** the standard gate, plus a re-run of the `rust_boxed` residual — it should move for
 the first time in eight sessions.
+
+**M4.1's own gate is green:** suite **155/155**, fixed point, fresh-seed agreement, AIF
+differential 17/17, source lists, and the milestone corpus gate. Existing non-Slice programs emit
+the same IR after unused helper declarations were made conditional. The `rust_boxed` residual is
+therefore deliberately unchanged; it is M4.3's exit signal, not a Slice-only signal.
 
 ---
 
 ## M5 · Allocator
 
-> Cheap, mechanical, and it also touches the unexplained RSS regression.
+> Cheap and mechanical. The RSS regression is explained and closed; this item is now about
+> allocation cost only.
 
 **Concepts:** [free-list sharding](#free-list-sharding).
 **Paper:** Mimalloc (APLAS 2019) — built specifically as the backend for reference-counted
 runtimes (Koka, Lean), which is Prismio's workload shape.
 
-- [ ] **M5.1 — Evaluate mimalloc** behind the existing allocator seam. Weighted 20–63× more heavily
-      here than in the Rust baseline, because that is how much more we allocate.
-- [ ] **M5.2 — Bisect the RSS regression. Largely answered, 2026-08-28, and by accident.**
+- [ ] **M5.1 — Evaluate mimalloc** behind the existing allocator seam. After automatic arenas and
+      inline flat elements, Prismio allocates fewer times than Rust on g2/g6 but still 10.7×–21.3×
+      more on g1/g3/g4/g5. Measure the four programs where allocator choice can still matter.
+- [x] **M5.2 — Bisect the RSS regression. Closed by measurement, 2026-08-25.**
       The standing text was 0.84–1.00× → **1.09–1.60×** of idiomatic Rust, +27% (g5) to +86% (g6),
       Rust unmoved, with the fixed runtime footprint and the hot/cold split already excluded.
       **The cause was the leaks.** Removing the integer-print leak and the inline-field leak dropped
       peak RSS to **0.49×–0.82×** of the previous compiler across the whole corpus, in the same two
       changes that took the ledgers to zero — a leak scales with live set rather than churn, which
       is exactly the signature this entry recorded and nobody read as a leak.
-      **What is left is one measurement, not an investigation:** re-run
-      `RESULTS-final.md`'s own harness and restate the ×-against-Rust figure. The
-      `milestone_bench` numbers above are old-vs-new and cannot answer it.
-      Absolute peaks now: g1 1.78, g2 1.94, g3 2.08, g4 2.05, g5 1.63, g6 2.23 MB.
+      The owed cross-language measurement is now complete: the latest two isolated 25-run passes
+      put Prismio at **0.89×–1.00× idiomatic Rust RSS**, with absolute pass-1 peaks g1 1.77, g2 1.94,
+      g3 2.03, g4 2.11, g5 1.59, g6 2.31 MB. The original regression is gone, confirming the leak diagnosis.
+      See [`RESULTS-final.md`](aif/evidence/RESULTS-final.md) and the two `results-current*.json`
+      files beside the harness.
 
 ---
 
@@ -823,23 +915,33 @@ runtimes (Koka, Lean), which is Prismio's workload shape.
 prompt and this one is the plan — anything it tells the next session to do has to exist here as a
 checkbox, or the two drift and only one of them gets read.)*
 
-- [ ] **Re-measure `RESULTS-final.md`, before ranking anything. Do this first.** Three figures in
-      that matrix are stale in the same direction after 2026-08-28 and nothing in this file can be
-      ranked honestly until they are refreshed: **g2** (5.77× → ~2.6× of idiomatic Rust), **g6**
-      (4.31× → 2.58×), and **peak RSS on all six** (0.49×–0.82× of the previous compiler).
-      Its harness is the only thing that produces the ×-against-Rust RSS figure —
-      `tools/milestone_bench.py` is old-vs-new and cannot answer it. The band quoted throughout
-      this repo as **1.13×–5.89×** is roughly **1.09×–3.23×** on the driver's own numbers; do not
-      propagate either until the harness has run. Half a session, no design.
-- [ ] **Decide `PRISMIO_INLINE_RUNTIME`'s default.** M1's remainder, and the only part of it that
-      is not "M1 cannot close this". M1.1b is built, byte-identical to `llvm-extract`'s output,
-      ~5% warm compile cost, corpus median **0.812×** measured, and off by default for exactly one
-      reason: the portability claim is a macOS PATH test rather than **a green CI on three
-      platforms**. That run is the task; the flip follows from it, or the entry says why not.
-      Largest measured prize on this list per unit of work.
+- [x] **Re-measure `RESULTS-final.md`, before ranking anything. Completed and refreshed
+      2026-08-25.** The default-off run first established 1.09×–3.41×. After making the curated
+      runtime merge the default, two more 25-run passes with matching cross-variant checksums put
+      the working-tree candidate at **1.10×–3.11× idiomatic Rust**. g2 is **1.76×**, g6 is
+      **2.71×**, and g4 remains widest at **3.11×**. Peak RSS is **0.89×–1.00× Rust**; compile time
+      is 67–85 ms against rustc's 107–137 ms, and executables remain 77–78 KiB.
+      Evidence: [`RESULTS-final.md`](aif/evidence/RESULTS-final.md),
+      `aif/evidence/xlang/results-current-inline-runtime.json`, and its pass-2 companion.
+- [ ] **Decide `PRISMIO_INLINE_RUNTIME`'s default — candidate implemented; remote CI pending.**
+      - [x] Make the merge default-on while retaining `PRISMIO_INLINE_RUNTIME=0` as an opt-out.
+      - [x] Add a discriminating suite check that requires the successful merge marker and proves
+            the opt-out avoids it. Because the normal suite runs on Windows, Linux, and macOS,
+            this closes the old “silent fallback can look green” hole without a separate workflow.
+      - [x] Local gate: fixpoint, fresh-seed agreement, AIF differential 17/17, suite **150/150**,
+            and milestone corpus median **0.948×** (range 0.635×–1.000×), RSS flat, checksums equal.
+      - [ ] Observe that new check green on the remote three-platform CI matrix. This requires the
+            working-tree change to be committed/pushed; do not mark the parent complete before it.
 - [ ] **Genuinely-cold compile regressed 19–28%** — g1 183 → 235 ms, g6 203 → 241 ms with
       `PRISMIO_OBJ_CACHE=0`. Hidden by the object cache in the default path (103–110 ms, 0.71–0.85×
       rustc). Affects first builds and uncached CI.
+- [ ] **Reclaim overwritten boxed `OBJECT` list elements after element-borrow liveness exists.**
+      M4.4's first verifier fixture exposed the deliberate fallback in `list_set`: it cannot free
+      the old object while a `list_get` borrow may still name it, so replacement currently leaks
+      that overwritten object rather than risking use-after-free. Do not change the runtime alone;
+      the prerequisite is a compiler proof that derived element borrows are dead (or an explicit
+      exclusive replacement operation). This is separate from generic layout specialization,
+      whose boxed/inline choice is already green.
 - [ ] **Keep the corpus honest.** It is six single-threaded programs; concurrency is unmeasured and
       it is the axis where Rust's claim is strongest. Any concurrency ranking needs a concurrent
       program in the corpus first.
@@ -892,7 +994,8 @@ that matter. The answer to "won't merging wreck compile time".
 #### Reuse analysis
 Pairing a value that is about to die with a constructor of the same size in the same branch, and
 **reusing the block** rather than freeing and re-allocating. Origin: *Counting Immutable Beans*
-(Lean 4). This is the mechanism that attacks the 20–63× allocation ratio.
+(Lean 4). This is the mechanism that attacks high allocation ratios where a workload contains its
+dead-value/same-size-constructor shape; the current corpus does not.
 
 #### Reuse specialisation
 The stronger form: when the reused block *is* the matched one, the constructor becomes an in-place

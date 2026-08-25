@@ -1,0 +1,25 @@
+import std.io
+
+struct Item {
+    value: Int
+}
+
+// Discriminates E-VIEW for a first-class Slice. Releasing `items` at this brace
+// would leave the returned handle dangling; the analysis must raise the List to
+// Caller instead, just as test_53 already requires for an element view.
+fn escaping_slice(n: Int) -> Slice<Item> {
+    let items: List<Item> = list_new()
+    list_push(items, Item { value: n })
+    list_push(items, Item { value: n + 1 })
+    return items[0..1]
+}
+
+fn main() -> Int {
+    let view = escaping_slice(41)
+    if (view[0].value != 41) {
+        println("FAIL: Slice outlived its List")
+        return 1
+    }
+    println("PASS: slice escape")
+    return 0
+}
