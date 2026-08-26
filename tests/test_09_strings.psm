@@ -1,6 +1,5 @@
 import std.io
-extern fn str_equals(s1: String, s2: String) -> Int
-extern fn str_concat(s1: String, s2: String) -> String
+import std.string
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -11,21 +10,21 @@ fn fail(message: String) -> Int {
 fn main() -> Int {
     let hello = "Hello"
     let world = "World"
-    let phrase = str_concat(str_concat(hello, ", "), world)
+    let phrase = strConcat(strConcat(hello, ", "), world)
 
     if (__builtin_string_len(hello) != 5) {
         return fail("string length should count characters")
     }
 
-    if (str_equals(hello, "Hello") != 1) {
+    if (strEquals(hello, "Hello") == false) {
         return fail("identical string literals should compare equal")
     }
 
-    if (str_equals(hello, world) != 0) {
+    if (strEquals(hello, world)) {
         return fail("different string literals should not compare equal")
     }
 
-    if (str_equals(phrase, "Hello, World") != 1) {
+    if (strEquals(phrase, "Hello, World") == false) {
         return fail("string concatenation should preserve order")
     }
 

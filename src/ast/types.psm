@@ -1,6 +1,7 @@
 import ast.nodes
 import common.text
 import common.target
+import std.string
 
 // As with NodeKind (ast.psm), **nothing may take ordinal 0**: a TypeInfo is
 // punned as a String and `kind` is its first field, so a zero-valued kind makes
@@ -112,17 +113,17 @@ fn typeUsize() -> TypeInfo { return typeMake(TypeKind.INT, "Usize", targetPtrInt
 // Bit width of an integer type, from its LLVM spelling. Casting needs it to
 // choose between truncation and extension.
 fn typeIntBits(t: TypeInfo) -> Int {
-    if (str_equals(t.llvm, "i1") == 1) { return 1 }
-    if (str_equals(t.llvm, "i8") == 1) { return 8 }
-    if (str_equals(t.llvm, "i16") == 1) { return 16 }
-    if (str_equals(t.llvm, "i32") == 1) { return 32 }
-    if (str_equals(t.llvm, "i64") == 1) { return 64 }
+    if (strEquals(t.llvm, "i1")) { return 1 }
+    if (strEquals(t.llvm, "i8")) { return 8 }
+    if (strEquals(t.llvm, "i16")) { return 16 }
+    if (strEquals(t.llvm, "i32")) { return 32 }
+    if (strEquals(t.llvm, "i64")) { return 64 }
     return 0
 }
 
 fn typeIntIsUnsigned(t: TypeInfo) -> Bool {
     if (t.kind != TypeKind.INT) { return false }
-    return str_starts_with(t.name, "U") == 1
+    return strStartsWith(t.name, "U")
 }
 
 // Move-only types are owned, heap-backed values that transfer ownership on use.
@@ -158,7 +159,7 @@ fn typeStruct(name: String) -> TypeInfo {
 //
 // **`none` is a null pointer, and that choice is the whole of the punned-slot
 // question.** This compiler already has a way to spell "this slot is empty": a
-// pointer to the empty string, tested with `str_equals(p, "")`. That encoding
+// pointer to the empty string, tested with `strEquals(p, "")`. That encoding
 // reads the *first byte of the pointed-to struct*, so a live value whose first
 // field is zero is byte-for-byte an empty slot -- which is why NodeKind and
 // TypeKind both reserve ordinal 0, why the layout search pins field 0, and what
@@ -181,7 +182,7 @@ fn typeStruct(name: String) -> TypeInfo {
 fn typeNone() -> TypeInfo { return typeMake(TypeKind.OPTIONAL, "none", "ptr") }
 
 fn typeOptional(inner: TypeInfo) -> TypeInfo {
-    let t = typeMake(TypeKind.OPTIONAL, str_concat(inner.name, "?"), "ptr")
+    let t = typeMake(TypeKind.OPTIONAL, strConcat(inner.name, "?"), "ptr")
     t.child = type_to_ptr(inner)
     return t
 }
@@ -195,13 +196,13 @@ fn typeOptional(inner: TypeInfo) -> TypeInfo {
 // What the name and the `child` add is the one thing a bare `Ptr` could not
 // carry -- what comes back out of the join.
 fn typeTask(result: TypeInfo) -> TypeInfo {
-    let mut t = typeMake(TypeKind.PTR, str_concat("Task<", str_concat(result.name, ">")), "ptr")
+    let mut t = typeMake(TypeKind.PTR, strConcat("Task<", strConcat(result.name, ">")), "ptr")
     t.child = type_to_ptr(result)
     return t
 }
 
 fn typeIsTask(t: TypeInfo) -> Bool {
-    return t.kind == TypeKind.PTR and str_starts_with(t.name, "Task<") == 1
+    return t.kind == TypeKind.PTR and strStartsWith(t.name, "Task<")
 }
 
 fn typeTaskResult(t: TypeInfo) -> TypeInfo {
@@ -269,37 +270,37 @@ fn typeDisplay(t: TypeInfo) -> String {
     if (t.kind == TypeKind.ENUM) { return t.name }
     if (t.kind == TypeKind.ARRAY) {
         if (nodeExists(t.child)) {
-            return str_concat(str_concat("[", typeDisplay(ptr_to_type(t.child))), "]")
+            return strConcat(strConcat("[", typeDisplay(ptr_to_type(t.child))), "]")
         }
         return "[Invalid]"
     }
     if (t.kind == TypeKind.LIST) {
         if (nodeExists(t.child)) {
-            return str_concat(str_concat("List<", typeDisplay(ptr_to_type(t.child))), ">")
+            return strConcat(strConcat("List<", typeDisplay(ptr_to_type(t.child))), ">")
         }
         return "List"
     }
     if (t.kind == TypeKind.SLICE) {
         if (nodeExists(t.child)) {
-            return str_concat(str_concat("Slice<", typeDisplay(ptr_to_type(t.child))), ">")
+            return strConcat(strConcat("Slice<", typeDisplay(ptr_to_type(t.child))), ">")
         }
         return "Slice"
     }
     if (t.kind == TypeKind.DATAVIEW) {
         if (nodeExists(t.child)) {
-            return str_concat(str_concat("DataView<", typeDisplay(ptr_to_type(t.child))), ">")
+            return strConcat(strConcat("DataView<", typeDisplay(ptr_to_type(t.child))), ">")
         }
         return "DataView"
     }
     if (t.kind == TypeKind.DATAELEMENT) {
         if (nodeExists(t.child)) {
-            return str_concat(str_concat("DataElement<", typeDisplay(ptr_to_type(t.child))), ">")
+            return strConcat(strConcat("DataElement<", typeDisplay(ptr_to_type(t.child))), ">")
         }
         return "DataElement"
     }
     if (t.kind == TypeKind.OPTIONAL) {
         if (nodeExists(t.child)) {
-            return str_concat(typeDisplay(ptr_to_type(t.child)), "?")
+            return strConcat(typeDisplay(ptr_to_type(t.child)), "?")
         }
         return "none"
     }
@@ -309,10 +310,10 @@ fn typeDisplay(t: TypeInfo) -> String {
 fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
     if (a.kind != b.kind) { return false }
     if (a.kind == TypeKind.STRUCT or a.kind == TypeKind.ENUM) {
-        return str_equals(a.name, b.name) == 1
+        return strEquals(a.name, b.name)
     }
     if (a.kind == TypeKind.INT) {
-        return str_equals(a.name, b.name) == 1
+        return strEquals(a.name, b.name)
     }
     if (a.kind == TypeKind.ARRAY) {
         if (nodeIsNull(a.child) or nodeIsNull(b.child)) {
@@ -377,7 +378,7 @@ fn typeIrKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.STRING) { return "struct:prismio.str" }
     if (t.kind == TypeKind.PTR) { return "ptr" }
     if (t.kind == TypeKind.ENUM) { return "i32" }
-    if (t.kind == TypeKind.STRUCT) { return str_concat("struct:", t.name) }
+    if (t.kind == TypeKind.STRUCT) { return strConcat("struct:", t.name) }
     if (t.kind == TypeKind.LIST) { return "ptr" }
     if (t.kind == TypeKind.SLICE) { return "struct:prismio.slice" }
     if (t.kind == TypeKind.DATAVIEW) { return "ptr" }
@@ -411,45 +412,45 @@ fn typeSemKey(t: TypeInfo) -> String {
     // optionals fell into, which is why this case was written with its decoder.
     if (t.kind == TypeKind.PTR) {
         if (typeIsTask(t) and nodeExists(t.child)) {
-            return str_concat("task:", typeSemKey(ptr_to_type(t.child)))
+            return strConcat("task:", typeSemKey(ptr_to_type(t.child)))
         }
         return "Ptr"
     }
-    if (t.kind == TypeKind.STRUCT) { return str_concat("struct:", t.name) }
-    if (t.kind == TypeKind.ENUM) { return str_concat("enum:", t.name) }
+    if (t.kind == TypeKind.STRUCT) { return strConcat("struct:", t.name) }
+    if (t.kind == TypeKind.ENUM) { return strConcat("enum:", t.name) }
     if (t.kind == TypeKind.ARRAY) {
         if (nodeExists(t.child)) {
-            return str_concat("array:", typeSemKey(ptr_to_type(t.child)))
+            return strConcat("array:", typeSemKey(ptr_to_type(t.child)))
         }
         return "array:Invalid"
     }
     if (t.kind == TypeKind.LIST) {
         if (nodeExists(t.child)) {
-            return str_concat("list:", typeSemKey(ptr_to_type(t.child)))
+            return strConcat("list:", typeSemKey(ptr_to_type(t.child)))
         }
         return "list:Invalid"
     }
     if (t.kind == TypeKind.SLICE) {
         if (nodeExists(t.child)) {
-            return str_concat("slice:", typeSemKey(ptr_to_type(t.child)))
+            return strConcat("slice:", typeSemKey(ptr_to_type(t.child)))
         }
         return "slice:Invalid"
     }
     if (t.kind == TypeKind.DATAVIEW) {
         if (nodeExists(t.child)) {
-            return str_concat("view:", typeSemKey(ptr_to_type(t.child)))
+            return strConcat("view:", typeSemKey(ptr_to_type(t.child)))
         }
         return "view:Invalid"
     }
     if (t.kind == TypeKind.DATAELEMENT) {
         if (nodeExists(t.child)) {
-            return str_concat("dataelem:", typeSemKey(ptr_to_type(t.child)))
+            return strConcat("dataelem:", typeSemKey(ptr_to_type(t.child)))
         }
         return "dataelem:Invalid"
     }
     if (t.kind == TypeKind.OPTIONAL) {
         if (nodeExists(t.child)) {
-            return str_concat("opt:", typeSemKey(ptr_to_type(t.child)))
+            return strConcat("opt:", typeSemKey(ptr_to_type(t.child)))
         }
         return "opt:Invalid"
     }
@@ -458,8 +459,8 @@ fn typeSemKey(t: TypeInfo) -> String {
 
 fn typeStorageKey(t: TypeInfo) -> String {
     let key = typeIrKey(t)
-    if (str_equals(key, "ptrptr") == 1) { return "ptr" }
-    if (str_starts_with(key, "struct:") == 1) { return "ptr" }
+    if (strEquals(key, "ptrptr")) { return "ptr" }
+    if (strStartsWith(key, "struct:")) { return "ptr" }
     return key
 }
 
@@ -471,29 +472,29 @@ fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
         return typeArray(typeInvalid())
     }
 
-    if (tn.i2 == 1 and str_equals(tn.s1, "Slice") == 1) {
+    if (tn.i2 == 1 and strEquals(tn.s1, "Slice")) {
         if (nodeExists(tn.child1)) {
             return typeSlice(typeFromAnnotation(ptr_to_node(tn.child1)))
         }
         return typeSlice(typeInvalid())
     }
-    if (tn.i2 == 1 and str_equals(tn.s1, "DataView") == 1) {
+    if (tn.i2 == 1 and strEquals(tn.s1, "DataView")) {
         if (nodeExists(tn.child1)) {
             return typeDataView(typeFromAnnotation(ptr_to_node(tn.child1)))
         }
         return typeDataView(typeInvalid())
     }
-    if (tn.i2 == 1 and str_equals(tn.s1, "List") == 1) {
+    if (tn.i2 == 1 and strEquals(tn.s1, "List")) {
         if (nodeExists(tn.child1)) {
             return typeList(typeFromAnnotation(ptr_to_node(tn.child1)))
         }
         return typeList(typeInvalid())
     }
 
-    if (str_equals(tn.s1, "Int") == 1) { return typeInt() }
-    if (str_equals(tn.s1, "Float") == 1) { return typeFloat() }
-    if (str_equals(tn.s1, "Bool") == 1) { return typeBool() }
-    if (str_equals(tn.s1, "String") == 1) { return typeString() }
+    if (strEquals(tn.s1, "Int")) { return typeInt() }
+    if (strEquals(tn.s1, "Float")) { return typeFloat() }
+    if (strEquals(tn.s1, "Bool")) { return typeBool() }
+    if (strEquals(tn.s1, "String")) { return typeString() }
     // An opaque, copyable machine pointer. `typeFromSemKey` has resolved this
     // name since `Task<R>` needed it; the *annotation* path never did, so `Ptr`
     // was a type the compiler could produce and nobody could write.
@@ -506,75 +507,75 @@ fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
     // `typeIsMoveOnly`, so naming one twice is a copy, not a move), and `String`
     // stops having to be a machine word -- which is what a fat `{ptr, len}`
     // String needs.
-    if (str_equals(tn.s1, "Ptr") == 1) { return typePtr() }
-    if (str_equals(tn.s1, "Char") == 1) { return typeChar() }
-    if (str_equals(tn.s1, "I8") == 1) { return typeI8() }
-    if (str_equals(tn.s1, "I16") == 1) { return typeI16() }
-    if (str_equals(tn.s1, "I64") == 1) { return typeI64() }
-    if (str_equals(tn.s1, "Isize") == 1) { return typeIsize() }
-    if (str_equals(tn.s1, "U8") == 1) { return typeU8() }
-    if (str_equals(tn.s1, "U16") == 1) { return typeU16() }
-    if (str_equals(tn.s1, "U32") == 1) { return typeU32() }
-    if (str_equals(tn.s1, "U64") == 1) { return typeU64() }
-    if (str_equals(tn.s1, "Usize") == 1) { return typeUsize() }
-    if (str_equals(tn.s1, "") == 1) { return typeVoid() }
+    if (strEquals(tn.s1, "Ptr")) { return typePtr() }
+    if (strEquals(tn.s1, "Char")) { return typeChar() }
+    if (strEquals(tn.s1, "I8")) { return typeI8() }
+    if (strEquals(tn.s1, "I16")) { return typeI16() }
+    if (strEquals(tn.s1, "I64")) { return typeI64() }
+    if (strEquals(tn.s1, "Isize")) { return typeIsize() }
+    if (strEquals(tn.s1, "U8")) { return typeU8() }
+    if (strEquals(tn.s1, "U16")) { return typeU16() }
+    if (strEquals(tn.s1, "U32")) { return typeU32() }
+    if (strEquals(tn.s1, "U64")) { return typeU64() }
+    if (strEquals(tn.s1, "Usize")) { return typeUsize() }
+    if (strEquals(tn.s1, "")) { return typeVoid() }
     return typeStruct(tn.s1)
 }
 
 fn typeFromIrKey(key: String) -> TypeInfo {
-    if (str_equals(key, "i32") == 1) { return typeInt() }
-    if (str_equals(key, "double") == 1) { return typeFloat() }
-    if (str_equals(key, "i1") == 1) { return typeBool() }
-    if (str_equals(key, "i8") == 1) { return typeChar() }
-    if (str_equals(key, "ptr") == 1) { return typePtr() }
-    if (str_equals(key, "void") == 1) { return typeVoid() }
-    if (str_equals(key, "struct:prismio.slice") == 1) { return typeSlice(typeInvalid()) }
-    if (str_equals(key, "struct:prismio.data_element") == 1) {
+    if (strEquals(key, "i32")) { return typeInt() }
+    if (strEquals(key, "double")) { return typeFloat() }
+    if (strEquals(key, "i1")) { return typeBool() }
+    if (strEquals(key, "i8")) { return typeChar() }
+    if (strEquals(key, "ptr")) { return typePtr() }
+    if (strEquals(key, "void")) { return typeVoid() }
+    if (strEquals(key, "struct:prismio.slice")) { return typeSlice(typeInvalid()) }
+    if (strEquals(key, "struct:prismio.data_element")) {
         return typeDataElement(typeInvalid())
     }
-    if (str_starts_with(key, "struct:") == 1) {
-        return typeStruct(str_substring(key, 7, __builtin_string_len(key) - 7))
+    if (strStartsWith(key, "struct:")) {
+        return typeStruct(strSubstring(key, 7, __builtin_string_len(key) - 7))
     }
     return typeInvalid()
 }
 
 fn typeFromSemKey(key: String) -> TypeInfo {
-    if (str_equals(key, "Int") == 1) { return typeInt() }
-    if (str_equals(key, "Float") == 1) { return typeFloat() }
-    if (str_equals(key, "Bool") == 1) { return typeBool() }
-    if (str_equals(key, "Char") == 1) { return typeChar() }
-    if (str_equals(key, "String") == 1) { return typeString() }
-    if (str_equals(key, "Ptr") == 1) { return typePtr() }
-    if (str_equals(key, "Void") == 1) { return typeVoid() }
-    if (str_equals(key, "I8") == 1) { return typeI8() }
-    if (str_equals(key, "I16") == 1) { return typeI16() }
-    if (str_equals(key, "I64") == 1) { return typeI64() }
-    if (str_equals(key, "Isize") == 1) { return typeIsize() }
-    if (str_equals(key, "U8") == 1) { return typeU8() }
-    if (str_equals(key, "U16") == 1) { return typeU16() }
-    if (str_equals(key, "U32") == 1) { return typeU32() }
-    if (str_equals(key, "U64") == 1) { return typeU64() }
-    if (str_equals(key, "Usize") == 1) { return typeUsize() }
-    if (str_starts_with(key, "struct:") == 1) {
-        return typeStruct(str_substring(key, 7, __builtin_string_len(key) - 7))
+    if (strEquals(key, "Int")) { return typeInt() }
+    if (strEquals(key, "Float")) { return typeFloat() }
+    if (strEquals(key, "Bool")) { return typeBool() }
+    if (strEquals(key, "Char")) { return typeChar() }
+    if (strEquals(key, "String")) { return typeString() }
+    if (strEquals(key, "Ptr")) { return typePtr() }
+    if (strEquals(key, "Void")) { return typeVoid() }
+    if (strEquals(key, "I8")) { return typeI8() }
+    if (strEquals(key, "I16")) { return typeI16() }
+    if (strEquals(key, "I64")) { return typeI64() }
+    if (strEquals(key, "Isize")) { return typeIsize() }
+    if (strEquals(key, "U8")) { return typeU8() }
+    if (strEquals(key, "U16")) { return typeU16() }
+    if (strEquals(key, "U32")) { return typeU32() }
+    if (strEquals(key, "U64")) { return typeU64() }
+    if (strEquals(key, "Usize")) { return typeUsize() }
+    if (strStartsWith(key, "struct:")) {
+        return typeStruct(strSubstring(key, 7, __builtin_string_len(key) - 7))
     }
-    if (str_starts_with(key, "enum:") == 1) {
-        return typeEnum(str_substring(key, 5, __builtin_string_len(key) - 5))
+    if (strStartsWith(key, "enum:")) {
+        return typeEnum(strSubstring(key, 5, __builtin_string_len(key) - 5))
     }
-    if (str_starts_with(key, "array:") == 1) {
-        return typeArray(typeFromSemKey(str_substring(key, 6, __builtin_string_len(key) - 6)))
+    if (strStartsWith(key, "array:")) {
+        return typeArray(typeFromSemKey(strSubstring(key, 6, __builtin_string_len(key) - 6)))
     }
-    if (str_starts_with(key, "list:") == 1) {
-        return typeList(typeFromSemKey(str_substring(key, 5, __builtin_string_len(key) - 5)))
+    if (strStartsWith(key, "list:")) {
+        return typeList(typeFromSemKey(strSubstring(key, 5, __builtin_string_len(key) - 5)))
     }
-    if (str_starts_with(key, "slice:") == 1) {
-        return typeSlice(typeFromSemKey(str_substring(key, 6, __builtin_string_len(key) - 6)))
+    if (strStartsWith(key, "slice:")) {
+        return typeSlice(typeFromSemKey(strSubstring(key, 6, __builtin_string_len(key) - 6)))
     }
-    if (str_starts_with(key, "view:") == 1) {
-        return typeDataView(typeFromSemKey(str_substring(key, 5, __builtin_string_len(key) - 5)))
+    if (strStartsWith(key, "view:")) {
+        return typeDataView(typeFromSemKey(strSubstring(key, 5, __builtin_string_len(key) - 5)))
     }
-    if (str_starts_with(key, "dataelem:") == 1) {
-        return typeDataElement(typeFromSemKey(str_substring(key, 9, __builtin_string_len(key) - 9)))
+    if (strStartsWith(key, "dataelem:")) {
+        return typeDataElement(typeFromSemKey(strSubstring(key, 9, __builtin_string_len(key) - 9)))
     }
     // REQUIREMENTS 4. The inverse of typeSemKey's `opt:` case, which was written
     // without one -- so every optional round-tripping through a binding decoded
@@ -593,11 +594,11 @@ fn typeFromSemKey(key: String) -> TypeInfo {
     // lets `none` reach a typed slot with no inference pass. Decoding to
     // typeOptional(Invalid) would hand back a child that matches nothing, so
     // `let x = none` would stop being assignable to anything at all.
-    if (str_starts_with(key, "task:") == 1) {
-        return typeTask(typeFromSemKey(str_substring(key, 5, __builtin_string_len(key) - 5)))
+    if (strStartsWith(key, "task:")) {
+        return typeTask(typeFromSemKey(strSubstring(key, 5, __builtin_string_len(key) - 5)))
     }
-    if (str_starts_with(key, "opt:") == 1) {
-        let inner = typeFromSemKey(str_substring(key, 4, __builtin_string_len(key) - 4))
+    if (strStartsWith(key, "opt:")) {
+        let inner = typeFromSemKey(strSubstring(key, 4, __builtin_string_len(key) - 4))
         if (typeIsValid(inner) == false) { return typeNone() }
         return typeOptional(inner)
     }
@@ -608,7 +609,7 @@ fn nodeSetType(node: ASTNode, t: TypeInfo) {
     node.typeInfo = type_to_ptr(t)
 }
 
-// `nodeExists` rather than `str_equals(typeInfo, "")`: a TypeInfo begins with
+// `nodeExists` rather than `strEquals(typeInfo, "")`: a TypeInfo begins with
 // its `kind`, and `TypeKind.INVALID` is 0, so a node carrying an invalid type
 // used to report as carrying none. That happened to be harmless -- nodeGetType
 // returns typeInvalid() on both paths -- but it was the same latent bug as the
@@ -748,8 +749,8 @@ fn typeAnnIsPodIn(module: ASTNode, ann: ASTNode, depth: Int, byDecl: Bool) -> Bo
     if (named) {
         return structDeclIsPodIn(module, ann.s1, depth + 1, byDecl)
     }
-    if (str_equals(ann.s1, "String") == 1) { return false }
-    if (str_equals(ann.s1, "Ptr") == 1) { return false }
+    if (strEquals(ann.s1, "String")) { return false }
+    if (strEquals(ann.s1, "Ptr")) { return false }
     return true
 }
 

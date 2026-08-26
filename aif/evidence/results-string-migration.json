@@ -1,0 +1,75 @@
+{
+  "label": "native std.string migration",
+  "runs": 7,
+  "compiler": "build/nostr-4",
+  "baseline": "build/task-rel-2",
+  "baseline_env": [],
+  "modes": [
+    "cold",
+    "incremental",
+    "no-change",
+    "no-cache"
+  ],
+  "programs": {
+    "g1_particles.psm": {
+      "new": {
+        "cold": 0.2905583329999999,
+        "incremental": 0.10613345799999951,
+        "no-change": 0.1075317499999997,
+        "no-cache": 0.2958363750000004
+      },
+      "base": {
+        "cold": 0.291131791,
+        "incremental": 0.10635245799999993,
+        "no-change": 0.10634016600000074,
+        "no-cache": 0.2978362920000013
+      },
+      "ratio": {
+        "cold": 0.9980302460338312,
+        "incremental": 0.9979408092288716,
+        "no-change": 1.0112053990963203,
+        "no-cache": 0.9932851803030072
+      }
+    },
+    "g6_game.psm": {
+      "new": {
+        "cold": 0.3034580829999989,
+        "incremental": 0.11172850000000167,
+        "no-change": 0.11037862499999918,
+        "no-cache": 0.3035358340000016
+      },
+      "base": {
+        "cold": 0.3030057079999988,
+        "incremental": 0.11156662499999825,
+        "no-change": 0.11187212499999788,
+        "no-cache": 0.3034284160000027
+      },
+      "ratio": {
+        "cold": 1.0014929586739008,
+        "incremental": 1.001450926744476,
+        "no-change": 0.9866499362553565,
+        "no-cache": 1.0003540143056309
+      }
+    },
+    "test_09_strings.psm": {
+      "new": {
+        "cold": 0.4054608749999993,
+        "incremental": 0.21295795900000059,
+        "no-change": 0.21267454099999838,
+        "no-cache": 0.40397541600000153
+      },
+      "base": {
+        "cold": 0.40467004199999934,
+        "incremental": 0.21258804200000014,
+        "no-change": 0.21178620799999948,
+        "no-cache": 0.40572137499999883
+      },
+      "ratio": {
+        "cold": 1.0019542662364909,
+        "incremental": 1.0017400649468349,
+        "no-change": 1.0041944799351565,
+        "no-cache": 0.9956966551244748
+      }
+    }
+  }
+}

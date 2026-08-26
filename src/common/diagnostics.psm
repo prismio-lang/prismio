@@ -9,11 +9,10 @@
 // Prismio has no varargs, so a message is composed here with str_concat and
 // handed over finished.
 
-extern fn str_concat(s1: String, s2: String) -> String
-extern fn int_to_str(value: Int) -> String
 
 // Registers a source file's text and returns the id stamped onto every token and
 // AST node parsed from it. Registering the same path twice returns the first id.
+import std.string
 extern fn diag_add_file(path: String, content: String) -> Int
 extern fn diag_file_path(file: Int) -> String alias
 
@@ -46,5 +45,5 @@ extern fn diag_reset()
 // Quotes a name the way every message in the compiler quotes one, so the style
 // cannot drift between call sites.
 fn diagQuote(name: String) -> String {
-    return str_concat(str_concat("`", name), "`")
+    return strConcat(strConcat("`", name), "`")
 }

@@ -6,8 +6,8 @@
 
 import std.io
 import std.option
+import std.string
 
-extern fn str_equals(s1: String, s2: String) -> Int
 
 fn half(n: Int) -> Result<Int, String> {
     if (n % 2 != 0) { return Result<Int, String>.Err("odd") }
@@ -39,13 +39,13 @@ fn main() -> Int {
 
     // Two instantiations of one template, with different payload types.
     let text = Option.Some("here")
-    if (str_equals(optionOr(text, "missing"), "here") == 0) { return fail("Option<String>") }
+    if (strEquals(optionOr(text, "missing"), "here") == false) { return fail("Option<String>") }
 
     if (resultOr(half(10), 0) != 5) { return fail("Ok carries its value") }
     if (resultIsOk(half(7))) { return fail("odd input is an error") }
     if (resultOr(half(7), 99) != 99) { return fail("Err falls back") }
-    if (str_equals(resultErrOr(half(7), "none"), "odd") == 0) { return fail("Err payload") }
-    if (str_equals(resultErrOr(half(8), "none"), "none") == 0) { return fail("Ok has no error") }
+    if (strEquals(resultErrOr(half(7), "none"), "odd") == false) { return fail("Err payload") }
+    if (strEquals(resultErrOr(half(8), "none"), "none") == false) { return fail("Ok has no error") }
 
     println("PASS: option and result")
     return 0

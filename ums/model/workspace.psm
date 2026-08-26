@@ -6,10 +6,10 @@ import ums.parser.lexer
 import ums.parser.parser
 import ums.resolver.discovery
 import ums.builder.build_plan
+import std.string
 
 extern fn read_file(path: String borrow) -> String produce(free)
 extern fn get_directory(path: String borrow) -> String produce(free)
-extern fn str_clone(value: String borrow) -> String produce(free)
 
 struct UmsWorkspace {
     project: UmsProjectModel,
@@ -21,7 +21,7 @@ struct UmsWorkspace {
 fn umsEmptyWorkspace(diagnostics: List<UmsDiagnostic>) -> UmsWorkspace {
     return UmsWorkspace {
         project: umsProjectModel("", "", "debug"),
-        plan: UmsBuildPlan { stateRoot: str_clone(""), artifactRoot: str_clone("") },
+        plan: UmsBuildPlan { stateRoot: strClone(""), artifactRoot: strClone("") },
         diagnostics: diagnostics,
         valid: false
     }
@@ -34,7 +34,7 @@ fn umsLoadText(source: String, manifestPath: String, root: String,
     let document = umsParse(tokens, manifestPath, diagnostics)
     let project = umsLowerDocument(document, root, manifestPath, profile, diagnostics)
     umsProjectValidate(project, diagnostics)
-    let mut plan = UmsBuildPlan { stateRoot: str_clone(""), artifactRoot: str_clone("") }
+    let mut plan = UmsBuildPlan { stateRoot: strClone(""), artifactRoot: strClone("") }
     if (list_len(diagnostics) == 0) {
         plan = umsBuildPlanCreate(project, diagnostics)
     }

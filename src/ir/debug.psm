@@ -23,6 +23,7 @@
 import ast.nodes
 import ast.types
 import common.text
+import std.string
 
 // Set once, from the `-g` flag, before generateModule runs. Everything below is
 // a no-op while it is false, which is what keeps a release build byte-identical
@@ -118,7 +119,7 @@ fn debugTypeName(annotation: Ptr, initializer: Ptr) -> String {
         if (typeNode.i1 == 1 or typeNode.i2 == 1 or typeNode.i3 == 1) {
             return ""
         }
-        if (str_equals(typeNode.s1, "") == 0) {
+        if (strEquals(typeNode.s1, "") == false) {
             return typeNode.s1
         }
     }

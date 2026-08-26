@@ -1,0 +1,15 @@
+// expect-error: list_set_exclusive requires an unobserved local List
+
+struct Named {
+    label: String,
+    value: Int
+}
+
+fn main() -> Int {
+    let items: List<Named> = list_new()
+    list_push(items, Named { label: "first", value: 3 })
+    let old = list_get(items, 0)
+    let n = old.value
+    list_set_exclusive(items, 0, Named { label: "second", value: 7 })
+    return n
+}

@@ -4,6 +4,7 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import std.string
 
 // Whether this match is over an enum with payloads. Sema stamps the variant name
 // on every non-wildcard arm of one and on no other kind of match, so one arm
@@ -12,7 +13,7 @@ fn matchBindsPayload(stmt: ASTNode) -> Bool {
     let mut armPtr = stmt.child2
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
-        if (str_equals(arm.s2, "") == 0) { return true }
+        if (strEquals(arm.s2, "") == false) { return true }
         armPtr = arm.next
     }
     return false
@@ -121,12 +122,34 @@ fn generateStatement(stmt: ASTNode) {
             // value is this scope's to drop is the separate question below.
             if (accumulates) { ir_mark_owns_slot(varName) }
 
-            // AIF Level 2. Only a binding whose initialiser *is* the allocation
-            // is droppable: `let b = a` has an identifier for an initialiser,
-            // so it registers no site and gets no entry -- and `a` is moved by
-            // it, so `a` gets skipped too. That leaks rather than double-frees,
-            // and it is what an ownership-transferring move would fix.
-            if (aif_frees_at_scope_node(stmt.child2) == 1
+            // REQUIREMENTS 15. The task handle is the runtime's own struct and
+            // it had no owner at all: `prismio_task_release` existed and codegen
+            // never emitted it, so every `spawn` leaked one handle. g9 made that
+            // visible -- 8,201 allocations against 23 frees under allocount --
+            // because it is the first corpus program that spawns in a loop.
+            //
+            // **Released at the scope exit and not at the join**, which is the
+            // difference between this being sound and not. A handle is copyable
+            // and the language does not stop a program joining twice; the
+            // runtime guards the second *wait* but could not guard a second read
+            // of freed memory. The scope exit runs once however many joins there
+            // were, and after all of them.
+            //
+            // The premise is AIF's, not a new one: `i1` is set only when
+            // INFERENCE 4.1's E-SPAWN-J proved the task is joined on every path
+            // before this scope exits, so at the exit the thread has finished and
+            // the handle is dead. A spawn that was not proved joined keeps the
+            // old behaviour and leaks, which is the conservative direction --
+            // freeing a handle a running task still writes its result into is
+            // the failure this must not have.
+            if (nodeExists(stmt.child2)
+                    and ptr_to_node(stmt.child2).kind == NodeKind.SPAWN_EXPR
+                and ptr_to_node(stmt.child2).i1 == 1
+                and chainAssignsName(irFunctionBody, varName) == false
+                and chainReturnsName(irFunctionBody, varName) == false
+                and chainCopiesName(irFunctionBody, varName) == false) {
+                ir_mark_droppable(varName, IR_DROP_TASK)
+            } else if (aif_frees_at_scope_node(stmt.child2) == 1
                 and chainAssignsName(irFunctionBody, varName) == false) {
                 ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
             } else if (accumulates and chainReturnsName(irFunctionBody, varName) == false) {
@@ -176,7 +199,7 @@ fn generateStatement(stmt: ASTNode) {
             // value ends up unowned.
             //
             // The old pointer is read before the right-hand side is generated,
-            // and freed after: `out = str_concat(out, x)` passes the displaced
+            // and freed after: `out = strConcat(out, x)` passes the displaced
             // value *into* the call that replaces it, so releasing it any earlier
             // frees the argument being read.
             let releasesOld = ir_var_is_global(varName) == 0
@@ -224,7 +247,7 @@ fn generateStatement(stmt: ASTNode) {
                                                               descriptor, 1))
                 ir_call_begin()
                 ir_call_arg("ptr", view)
-                ir_call_arg("i32", int_to_str(fieldIndex))
+                ir_call_arg("i32", strFromInt(fieldIndex))
                 let column = ir_get_temp_name(ir_call_end("ptr", "data_view_column"))
                 let slot = ir_get_temp_name(ir_elem_ptr(fieldType, column, index))
                 let val = generateExpression(ptr_to_node(stmt.child2))
@@ -481,8 +504,8 @@ fn generateStatement(stmt: ASTNode) {
         let mut armPtr = stmt.child2
         while (nodeExists(armPtr)) {
             let arm = ptr_to_node(armPtr)
-            if (payloadMatch and str_equals(arm.s1, "_") == 0) {
-                let cmp = ir_icmp_eq("i32", stmt.s2, int_to_str(arm.i1))
+            if (payloadMatch and strEquals(arm.s1, "_") == false) {
+                let cmp = ir_icmp_eq("i32", stmt.s2, strFromInt(arm.i1))
                 let armLabel = ir_get_label()
                 let nextLabel = ir_get_label()
                 ir_cond_br_numbered(ir_get_temp_name(cmp), armLabel, nextLabel)
@@ -496,7 +519,7 @@ fn generateStatement(stmt: ASTNode) {
                 ir_label_numbered(nextLabel)
                 needsFinalBr = true
                 armPtr = arm.next
-            } else if (str_equals(arm.s1, "_") == 1) {
+            } else if (strEquals(arm.s1, "_")) {
                 // wildcard: runs in the current fall-through block
                 generateBlock(ptr_to_node(arm.child2))
                 if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
@@ -567,6 +590,16 @@ fn generateStringClone(value: String) -> String {
 // already occupies would free it between the load and the store, and an extern
 // that returns its own argument is not a shape this compiler can rule out. The
 // branch costs an icmp the optimiser folds away wherever both sides are known.
+// The handle goes back to the runtime that made it. Not through the allocator
+// seam: `prismio_task_spawn` uses plain calloc, exactly as C_CODE_STYLE requires
+// of a temporary the runtime frees itself, so releasing it through `rt_free`
+// would report a release of a pointer the verify ledger never handed out.
+fn generateTaskRelease(value: String) {
+    ir_call_begin()
+    ir_call_arg("ptr", value)
+    ir_call_end("void", "prismio_task_release")
+}
+
 fn generateDisplacedRelease(old: String, val: String, kind: Int, declType: String) {
     let differs = ir_get_temp_name(ir_icmp_ne("ptr", old, val))
     let freeLabel = ir_get_label()
@@ -578,6 +611,11 @@ fn generateDisplacedRelease(old: String, val: String, kind: Int, declType: Strin
         ir_free_list(old)
     } else if (kind == IR_DROP_DATAVIEW) {
         ir_free_data_view(old)
+    } else if (kind == IR_DROP_TASK) {
+        // Unreachable today -- a reassigned binding is not marked IR_DROP_TASK.
+        // Present so the fallthrough cannot free a runtime handle through the
+        // allocator seam if that guard is ever relaxed.
+        generateTaskRelease(old)
     } else if (kind == IR_DROP_TYPED) {
         ir_free_typed(old, releaseFnName(structTypeName(declType)))
     } else {
@@ -601,6 +639,8 @@ fn generateScopeDrops(floor: Int) {
             ir_free_list(value)
         } else if (kind == IR_DROP_DATAVIEW) {
             ir_free_data_view(value)
+        } else if (kind == IR_DROP_TASK) {
+            generateTaskRelease(value)
         } else if (kind == IR_DROP_TYPED) {
             // The drop list keeps the declared type, so the generated release is
             // named from it rather than stored a second time.

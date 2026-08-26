@@ -237,6 +237,9 @@
   "235": "Prompt 2 (residual) — the hot/cold split, and only that",
   "236": "arena_emit_range",
   "237": "Prompt 1 is done — what it unblocked",
-  "238": "aif_verify_alloc",
-  "239": "M4.4 — generic/container layout specialization"
+  "239": "M4.4 — generic/container layout specialization",
+  "240": "Boxed `List` replacement ownership",
+  "241": "g9_idiomatic.rs",
+  "242": "g9_tuned.rs",
+  "243": "add_binding"
 }

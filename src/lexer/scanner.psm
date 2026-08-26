@@ -8,9 +8,9 @@
 import lexer.token
 import common.text
 import common.diagnostics
+import std.string
 
 extern fn exit(code: Int)
-extern fn str_from_char(c: Char) -> String
 
 // `length` is the input's size, measured once. Every character read used to go
 // through str_char_at, which calls strlen -- so scanning a file cost O(n) per
@@ -31,8 +31,8 @@ fn createLexer(input: String, file: Int) -> Lexer {
     // is garbage and the file fails with "Unknown declaration" -- a baffling
     // error for a file that looks perfectly fine.
     let mut start = 0
-    if (charCode(str_char_at(input, 0)) == 239) {
-        if (charCode(str_char_at(input, 1)) == 187 and charCode(str_char_at(input, 2)) == 191) {
+    if (charCode(strCharAt(input, 0)) == 239) {
+        if (charCode(strCharAt(input, 1)) == 187 and charCode(strCharAt(input, 2)) == 191) {
             start = 3
         }
     }
@@ -129,10 +129,10 @@ fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) -> Strin
     let n = __builtin_string_len(raw)
 
     while (i < n) {
-        let ch = str_char_at(raw, i)
+        let ch = strCharAt(raw, i)
 
         if (ch == '\\' and i + 1 < n) {
-            let esc = str_char_at(raw, i + 1)
+            let esc = strCharAt(raw, i + 1)
             let mut decoded = esc
             let mut known = true
 
@@ -150,13 +150,13 @@ fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) -> Strin
 
             if (known == false) {
                 lexerFatal(lex, line, baseCol + i,
-                    str_concat("unknown escape sequence \\", str_from_char(esc)))
+                    strConcat("unknown escape sequence \\", strFromChar(esc)))
             }
 
-            out = str_concat(out, str_from_char(decoded))
+            out = strConcat(out, strFromChar(decoded))
             i = i + 2
         } else {
-            out = str_concat(out, str_from_char(ch))
+            out = strConcat(out, strFromChar(ch))
             i = i + 1
         }
     }
@@ -172,7 +172,7 @@ fn lexIdentifier(lex: Lexer) -> Token {
     while (isAlnum(lexerCurrent(lex))) {
         lexerAdvance(lex)
     }
-    let value = str_slice(lex.input, start, lex.pos - start, lex.length)
+    let value = strSubstring(lex.input, start, lex.pos - start)
 
     if (isKeyword(value)) {
         if (isBoolean(value)) {
@@ -203,7 +203,7 @@ fn lexNumber(lex: Lexer) -> Token {
         }
     }
 
-    let value = str_slice(lex.input, start, lex.pos - start, lex.length)
+    let value = strSubstring(lex.input, start, lex.pos - start)
     if (isFloat) {
         return lexerToken(lex, TokenType.FLOAT_LITERAL, value, line, col, start)
     }
@@ -233,7 +233,7 @@ fn lexString(lex: Lexer) -> Token {
         lexerAdvance(lex)
     }
 
-    let mut value = str_slice(lex.input, bodyStart, lex.pos - bodyStart, lex.length)
+    let mut value = strSubstring(lex.input, bodyStart, lex.pos - bodyStart)
 
     if (lexerCurrent(lex) == '"') {
         lexerAdvance(lex)
@@ -281,7 +281,7 @@ fn lexChar(lex: Lexer) -> Token {
             "unterminated character literal (a Char holds exactly one character)")
     }
 
-    return lexerToken(lex, TokenType.CHAR_LITERAL, int_to_str(charCode(value)), line, col, start)
+    return lexerToken(lex, TokenType.CHAR_LITERAL, strFromInt(charCode(value)), line, col, start)
 }
 
 // Whether `first` followed by `second` is a two-character operator. Shifts are
@@ -309,16 +309,16 @@ fn isTwoCharOperator(first: Char, second: Char) -> Bool {
 }
 
 fn twoCharOperatorType(value: String) -> TokenType {
-    if (str_equals(value, "==") == 1 or str_equals(value, "!=") == 1
-        or str_equals(value, "<=") == 1 or str_equals(value, ">=") == 1) {
+    if (strEquals(value, "==") or strEquals(value, "!=")
+        or strEquals(value, "<=") or strEquals(value, ">=")) {
         return TokenType.RELATIONAL_OPERATOR
     }
-    if (str_equals(value, "=>") == 1) { return TokenType.FAT_ARROW }
-    if (str_equals(value, "->") == 1) { return TokenType.ARROW }
+    if (strEquals(value, "=>")) { return TokenType.FAT_ARROW }
+    if (strEquals(value, "->")) { return TokenType.ARROW }
 
     // `x op= y` is an assignment: the second character is '=' and the first is
     // not, which distinguishes it from ==, !=, <= and >= handled above.
-    if (str_char_at(value, 1) == '=' and str_char_at(value, 0) != '=') {
+    if (strCharAt(value, 1) == '=' and strCharAt(value, 0) != '=') {
         return TokenType.ASSIGNMENT_OPERATOR
     }
 
@@ -343,7 +343,7 @@ fn lexOperator(lex: Lexer) -> Token {
         lexerAdvance(lex)
     }
 
-    let value = str_slice(lex.input, start, lex.pos - start, lex.length)
+    let value = strSubstring(lex.input, start, lex.pos - start)
     let mut type = oneCharOperatorType(first)
     if (lex.pos - start == 2) {
         type = twoCharOperatorType(value)
@@ -357,7 +357,7 @@ fn lexSeparator(lex: Lexer) -> Token {
     let col = lex.col
     let start = lex.pos
 
-    let value = str_slice(lex.input, start, 1, lex.length)
+    let value = strSubstring(lex.input, start, 1)
     lexerAdvance(lex)
     return lexerToken(lex, TokenType.SEPARATOR, value, line, col, start)
 }
@@ -381,7 +381,7 @@ fn lexUnexpected(lex: Lexer, c: Char) -> Token {
     let start = lex.pos
 
     lexerAdvance(lex)
-    lexerFatal(lex, line, col, str_concat("unexpected character ", diagQuote(str_from_char(c))))
+    lexerFatal(lex, line, col, strConcat("unexpected character ", diagQuote(strFromChar(c))))
     return lexerToken(lex, TokenType.UNKNOWN, "?", line, col, start)
 }
 

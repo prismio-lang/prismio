@@ -202,11 +202,14 @@ def main():
         # fixture moves exactly two sites, and view provenance is the only thing
         # that can move them.
         sources.append(Path("tests/test_53_aif_views.psm"))
-        # REQUIREMENTS 15. No corpus program spawns anything, so without these
-        # the two implementations would agree about the `T` domain by never
-        # running a rule of it -- which is precisely the shape of agreement this
-        # script exists to distrust, and precisely the shape it had while the
-        # domain was vacuous. The first exercises E-SPAWN vs E-SPAWN-J and
+        # REQUIREMENTS 15. `aif/corpus/g9_bands.psm` spawns as of 2026-08-26 and
+        # is globbed in above, so the `T` domain is no longer reached only from
+        # here -- but g9 exercises one shape, the proved join, and these two are
+        # still the only sources that reach the rest. Without them the two
+        # implementations would agree about most of the domain by never running a
+        # rule of it, which is precisely the shape of agreement this script exists
+        # to distrust and precisely the shape it had while the domain was vacuous.
+        # The first exercises E-SPAWN vs E-SPAWN-J and
         # T-STATIC; the second is the only source anywhere that reaches
         # T-SPAWN-SHARE, whose premise both implementations read off the
         # aliasing domain rather than off the syntax -- a shared decision, and

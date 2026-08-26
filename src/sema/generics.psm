@@ -24,6 +24,7 @@ import ast.types
 import common.text
 import common.diagnostics
 import ir.bridge
+import std.string
 
 // The separator in an instantiated name. `$` rather than `_` because a mangled
 // name has to be one no user declaration can collide with, and `_` is a legal
@@ -33,7 +34,7 @@ fn monoSeparator() -> String { return "$" }
 fn monoIsTemplate(stmt: ASTNode) -> Bool {
     if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.STRUCT_DECL
         or stmt.kind == NodeKind.ENUM_DECL) {
-        return str_equals(stmt.s2, "") == 0
+        return strEquals(stmt.s2, "") == false
     }
     return false
 }
@@ -70,7 +71,7 @@ fn monoFindTypeTemplate(module: ASTNode, name: String) -> ASTNode {
     let mut p = module.child2
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (str_equals(stmt.s1, name) == 1) {
+        if (strEquals(stmt.s1, name)) {
             if (stmt.kind == NodeKind.STRUCT_DECL or stmt.kind == NodeKind.ENUM_DECL) {
                 return stmt
             }
@@ -84,7 +85,7 @@ fn monoFindTemplate(module: ASTNode, name: String, kind: NodeKind) -> ASTNode {
     let mut p = module.child2
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == kind and str_equals(stmt.s1, name) == 1) { return stmt }
+        if (stmt.kind == kind and strEquals(stmt.s1, name)) { return stmt }
         p = stmt.next
     }
     return ptr_to_node(ptr_null())
@@ -167,12 +168,12 @@ fn monoCopyChain(ptr: Ptr) -> Ptr {
 // ---------------------------------------------------------
 
 fn monoParamCount(params: String) -> Int {
-    if (str_equals(params, "") == 1) { return 0 }
+    if (strEquals(params, "")) { return 0 }
     let mut count = 1
     let mut i = 0
     let n = __builtin_string_len(params)
     while (i < n) {
-        if (str_char_at(params, i) == ',') { count = count + 1 }
+        if (strCharAt(params, i) == ',') { count = count + 1 }
         i = i + 1
     }
     return count
@@ -184,8 +185,8 @@ fn monoParamAt(params: String, index: Int) -> String {
     let mut i = 0
     let n = __builtin_string_len(params)
     while (i <= n) {
-        if (i == n or str_char_at(params, i) == ',') {
-            if (seen == index) { return str_substring(params, start, i - start) }
+        if (i == n or strCharAt(params, i) == ',') {
+            if (seen == index) { return strSubstring(params, start, i - start) }
             seen = seen + 1
             start = i + 1
         }
@@ -198,7 +199,7 @@ fn monoParamIndex(params: String, name: String) -> Int {
     let count = monoParamCount(params)
     let mut i = 0
     while (i < count) {
-        if (str_equals(monoParamAt(params, i), name) == 1) { return i }
+        if (strEquals(monoParamAt(params, i), name)) { return i }
         i = i + 1
     }
     return -1
@@ -278,7 +279,7 @@ fn monoMangledName(module: ASTNode, base: String, argsPtr: Ptr) -> String {
     while (nodeExists(p)) {
         let arg = ptr_to_node(p)
         let argT = semaAnnotationType(module, arg)
-        name = str_concat(str_concat(name, monoSeparator()), semaMangleType(argT))
+        name = strConcat(strConcat(name, monoSeparator()), semaMangleType(argT))
         p = arg.next
     }
     return name
@@ -333,7 +334,7 @@ fn monoAnnotationFromType(t: TypeInfo) -> ASTNode {
 // Names the parameters rather than counting them: the list says what to write,
 // where a count only says how many.
 fn monoArityError(node: ASTNode, name: String, params: String) {
-    semaErrorAt(node, str_concat(str_concat(str_concat(
+    semaErrorAt(node, strConcat(strConcat(strConcat(
         diagQuote(name), " takes type parameters <"), params),
         ">, and the type arguments written here do not match"))
 }
@@ -463,7 +464,7 @@ fn monoInstantiateFunction(module: ASTNode, template: ASTNode, argsPtr: Ptr) -> 
 // step and recurses, which is all inference this needs: a type parameter is
 // found in argument position, never solved from a return type.
 fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, paramName: String) -> ASTNode {
-    if (tn.i1 == 0 and tn.i2 == 0 and str_equals(tn.s1, paramName) == 1) {
+    if (tn.i1 == 0 and tn.i2 == 0 and strEquals(tn.s1, paramName)) {
         if (typeIsValid(actual) == false) { return ptr_to_node(ptr_null()) }
         return monoAnnotationFromType(actual)
     }

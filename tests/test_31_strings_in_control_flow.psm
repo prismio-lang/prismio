@@ -7,7 +7,7 @@
 // failing to compile at all is the regression.
 
 import std.io
-extern fn str_equals(s1: String, s2: String) -> Int
+import std.string
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -29,7 +29,7 @@ fn main() -> Int {
     let mut seen = 0
     for i in 0..3 {
         let tag = "in-for"
-        if (str_equals(tag, "in-for") == 0) {
+        if (strEquals(tag, "in-for") == false) {
             return fail("string literal in for body was corrupted")
         }
         seen = seen + 1
@@ -42,7 +42,7 @@ fn main() -> Int {
     let mut spins = 0
     loop {
         let tag = "in-loop"
-        if (str_equals(tag, "in-loop") == 0) {
+        if (strEquals(tag, "in-loop") == false) {
             return fail("string literal in loop body was corrupted")
         }
         spins = spins + 1
@@ -55,13 +55,13 @@ fn main() -> Int {
     }
 
     // literals in match arms, including the wildcard
-    if (str_equals(label_for(0), "zero") == 0) {
+    if (strEquals(label_for(0), "zero") == false) {
         return fail("match arm 0 returned the wrong string")
     }
-    if (str_equals(label_for(1), "one") == 0) {
+    if (strEquals(label_for(1), "one") == false) {
         return fail("match arm 1 returned the wrong string")
     }
-    if (str_equals(label_for(7), "many") == 0) {
+    if (strEquals(label_for(7), "many") == false) {
         return fail("match wildcard arm returned the wrong string")
     }
 
@@ -69,12 +69,12 @@ fn main() -> Int {
     for j in 0..2 {
         match (j) {
             0 => {
-                if (str_equals("nested-zero", "nested-zero") == 0) {
+                if (strEquals("nested-zero", "nested-zero") == false) {
                     return fail("nested match arm string was corrupted")
                 }
             }
             _ => {
-                if (str_equals("nested-other", "nested-other") == 0) {
+                if (strEquals("nested-other", "nested-other") == false) {
                     return fail("nested wildcard string was corrupted")
                 }
             }

@@ -8,7 +8,7 @@
 //  - Bool output used to cross a mismatched i1/i32 runtime ABI directly.
 
 import std.io
-extern fn str_equals(s1: String, s2: String) -> Int
+import std.string
 
 let greeting = "hello from a global"
 
@@ -47,7 +47,7 @@ fn main() -> Int {
     }
 
     // a global initialized from a string literal
-    if (str_equals(greeting, "hello from a global") == 0) {
+    if (strEquals(greeting, "hello from a global") == false) {
         return fail("global string initializer was corrupted")
     }
 

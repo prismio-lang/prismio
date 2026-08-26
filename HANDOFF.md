@@ -1,7 +1,7 @@
 # Handoff — continuing the Prismio work
 
 Read `COMPILER_AUDIT.md` (defects, all closed) and `V1_GAP_ANALYSIS.md` (capability inventory
-against the v1 bar, with a status box at the top) before starting. Current as of **2026-08-25**.
+against the v1 bar, with a status box at the top) before starting. Current as of **2026-08-26**.
 Don't re-derive what's in them.
 
 ---
@@ -12,8 +12,11 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
   IR for `src/main.psm` is byte-identical to the warm build's. Current verified compiler is
-  **`build/m4-dataview-c-12`**, with `build/m4c-final-a.ll` /
-  `build/m4c-final-b.ll` at a fixed point. M4 is complete. M4.3 supplies real consuming AoS↔SoA conversion,
+  **`build/nostr-4`**, with `build/n3.ll` / `build/n4.ll` at a fixed point; suite
+  **172/172** and AIF differential **18/18**, the 18th source being the corpus's new concurrent
+  program `g9_bands.psm`. The last good before the task-handle release is `build/cold-bc-2`, and
+  before the cold-compile work `build/m5-exclusive-3`. `build/m4-dataview-c-12` was the last good
+  through M4, with `build/m4c-final-a.ll` / `build/m4c-final-b.ll` at a fixed point. M4 is complete. M4.3 supplies real consuming AoS↔SoA conversion,
   checked handle/index element descriptors, direct column reads and mutable round trip. The last good before
   M4.3 is `build/m4-slice-9`; `build/inline-default-2` is the last good before M4.1;
   historical last-good before the native-string work was **`build/S44b`**
@@ -498,6 +501,155 @@ instrumentation point already exists when someone wants it — `ir_struct_field_
 choke point for field access, the way `ir_alloc_object` is for allocation.
 
 ---
+
+## Session of 2026-08-26 (Int width + the C string layer) — green
+
+Fifth entry dated 2026-08-26 and later than the four below it; the sequence is monotonic. Current
+compiler **`build/nostr-4`**, suite **172/172**, fixed point (`build/n3.ll == build/n4.ll`), AIF
+differential **18/18**.
+
+**`Int` stays signed 32-bit, and the interesting part is that two arguments for widening it
+measured at zero.** The choice had never been justified anywhere in the tree — `src/ast/types.psm`
+states it and stops. Go's and Swift's case is indexing; Rust RFC 0212's is density. Indexing was
+tested and does not survive: i32-wrapping, i32-`nsw` and i64 indices all read 0.225–0.226 ms with
+identical checksums, AArch64 emits **zero** `sxtw` in the loop for every arm, and x86-64 emits
+exactly one `movslq` in all three — loop setup, not per-index. The follow-on option, making overflow
+UB so the compiler could emit `nsw` (it emits none today), was priced on the compiler's own output:
+`nsw` added to g1/g3/g4's emitted IR gives **1.014×/1.006×/1.005×** — all slightly *slower*, so
+trading away defined wrapping would buy a negative number. Density is the argument that holds:
+64-bit fields cost **1.330×** in Prismio on a corpus-shaped narrow-slice traversal and 1.76–2.15×
+in the C control. The honest cost is silent wrapping, which this session tripped over three times
+including in its own 40-line benchmark; the mitigation is Rust's debug-check model, priced at
+4.1–4.4× and therefore debug-only.
+
+**The C string layer is gone — 1,093 call sites in `src/`, 109 in `ums/`, 82 in `tests/`.**
+`std.string` had been native since the fat String, and almost nothing used it. **Nothing had ever
+been removed from `lang_runtime.c`** — the working tree and `HEAD` both defined all 20 `str_*`
+functions byte for byte, which is the entire answer to why the old ones still worked. The migration
+ran on whole-file text with a code mask, because a line-scoped matcher misses 98 multi-line
+`str_concat` calls and a mask-less one rewrites the prose in `src/ast/types.psm` that *discusses*
+`str_equals(p, "")`. Twelve C functions and the orphaned `StringArray` were deleted (2,192 → 2,041
+lines) with their AIF contracts removed from `src/aif/contracts.psm` and `aif/prototype/aif.py`
+together. `str_slice` went too: it existed only to avoid a `strlen` that a fat String no longer
+performs.
+
+**Parse+sema is 0.843×** — native `strEquals` reads both carried lengths before comparing a byte
+where `strcmp` must scan. Full emit is **1.030×**, reported rather than buried, and a whole build is
+flat because the frontend is ~4% of it. **Emitted IR is byte-identical on all 94 corpus and test
+programs.**
+
+`run_oracle_vocabulary_test` earned its keep: its scraper matched the C-era `== 1` idiom, and when
+that idiom disappeared the check reported itself **blind** rather than passing on an empty set. It
+was repaired, not relaxed.
+
+**Two ownership limitations, both surfaced by the migration and both left open on purpose.**
+
+- **An owned call result used directly as an argument has no owner.**
+  `aif_owns_call_result_at_node` is asked at a binding; a temporary is never bound. One `let` is the
+  whole difference — **bound 27/27/0, unbound 107/27/80**. *This was written up earlier in the day
+  as a `spawn` defect and that was wrong*: the same program with the spawn removed leaks
+  identically, 107/27/80 either way. The record was corrected rather than left standing.
+- **Ownership does not survive a second return** (`sites[s].fn != c->fn`). Depth 1 is 6/6/0; one
+  more level gives 12/7/5. Invisible while `std.string` was C, because an `extern fn` carries its
+  `produce` contract and answered at depth 1.
+
+Neither is fixable by deleting the guard — both guards prevent double frees. Reproductions are
+`tests/owned_temporary_argument.psm` and `tests/owned_return_depth2.psm`, deliberately not named
+`test_*` so the runner leaves them alone. `test_72_reassigned_ownership.psm` was **restored to the C
+`str_concat`** with a header explaining why, rather than weakening its expectation to match the gap.
+
+`prismio aif --why=<symbol>` answered the placement question outright, including the repair
+("have the caller allocate and pass it in — restores T1, no runtime cost"), which is exactly the
+difference between `g9_bands.psm` and `g9_helper_leak.psm`.
+
+Final standing over the seven-program corpus, 25 runs: **0.90×–3.09× of idiomatic Rust, median
+1.58×**, RSS 0.83×–1.01×. Evidence:
+[`RESULTS-int-width.md`](aif/evidence/RESULTS-int-width.md),
+[`RESULTS-string-migration.md`](aif/evidence/RESULTS-string-migration.md).
+
+---
+
+## Session of 2026-08-26 (cold compile + the concurrency axis) — green
+
+Fourth entry dated 2026-08-26; the sequence is monotonic and later than the M5.1 and boxed-
+replacement entries below, which ran earlier the same day. Current compiler **`build/task-rel-2`**,
+suite **172/172**, fixed point (`build/tr_a.ll == build/tr_b.ll`), AIF differential **18/18**.
+
+**Cold compilation, closed by stage attribution rather than by guessing.** The standing entry
+recorded "19–28% with `PRISMIO_OBJ_CACHE=0`", which is a whole-build ratio and names no stage, so
+`PRISMIO_BUILD_TRACE=1` was added first — one wall-clock line per build stage. It answered on the
+first run: the extract and the merge are **2.3 ms together**, and the cost was that a cold
+inline-runtime build ran the C frontend and the `-O2` middle end over `lang_runtime.c` **twice**.
+The curated intermediate is now bitcode, is retained for the rest of the build, and the runtime
+object is lowered from it with `-Xclang -disable-llvm-passes`. **Bitcode and not textual IR, and
+the justification is not the timing** — both are 80 ms — but that the bitcode round trip yields an
+object **byte-identical** to `clang -O2 -c` while the textual one does not. Cold builds are
+**0.804–0.818×**, cached paths unmoved (0.984–1.002×), and the linked executables are
+byte-identical, which is stricter than this host's own floor (two builds by the same compiler
+differ by one byte of embedded path). `--save-temps` was measured at 200 ms against 145 ms and
+rejected.
+
+**The corpus has a concurrent program, and it is the first one below 1.00× of idiomatic Rust.**
+`g9_bands` is a per-frame parallel reduction; `g9_idiomatic.rs` is its honest peer
+(`std::thread::spawn` per frame — one OS thread per task on both sides) and `g9_tuned.rs` keeps a
+worker pool. Prismio runs it at **0.89× idiomatic Rust** (p50 0.90×, p99 0.90×, RSS 0.83×,
+allocations **0.13×**), measured on both harnesses at 0.89× and 0.92× against a **1.001×** A/A
+floor. The mechanism is E-SPAWN-J: Rust must box a `'static` closure every frame, a proved join
+leaves the spawn argument **T0/stack**. **Hand-tuned Rust is still 1.45× faster** and that belongs
+in the same sentence — it has a thread pool and Prismio cannot express one.
+
+**Two leaks the corpus could not have found before, because nothing spawned in a loop.**
+
+- **The task handle had no owner, and now does.** `prismio_task_release` existed from the day tasks
+  did and codegen never emitted it. Invisible to `--verify` — the handle is plain `calloc`,
+  correctly so — and visible to `allocount` at **8,201 allocations against 23 frees**. Released at
+  the **scope exit**, not at the join: a handle is copyable, nothing stops a second join, and a
+  scope exit runs once after all of them. Emitted only where E-SPAWN-J already proved the join, so
+  a task that may still be writing its result is never freed under. frees **23 → 8,019**, RSS
+  **2.1 → 1.5 MB**, loop flat at 1.002×.
+- **A callee-allocated spawn argument still leaks, and is left open on purpose.** `aif_con_return`
+  puts its escape at Caller before E-SPAWN-J sees it and `raise_escape` only raises, so the site
+  lands T2/owned/Transferred with no owner emitted. Reproductions kept in the tree:
+  `g9_helper_leak.psm` (80 of 107) and `test_69_task_results.psm` (4 of 4). An unconditional free at
+  the join is a use-after-free — the result may alias the argument.
+
+Three new discriminating checks, each observed failing before it was trusted:
+`run_runtime_object_from_ir_test` (a `PATH` shim that refuses `-disable-llvm-passes` makes the
+fallback engage and the test fail), and `run_task_release_test` (fails against the pre-fix compiler
+at `emitted 0 release(s), expected 2`, and separately requires the release to be **withheld** for a
+copied handle and an unprovable join).
+
+`aif/evidence/compile_bench.py` was repaired and extended: it copied a single source file, so `g6`
+— one of the two programs the cold regression was recorded against — failed to build and was
+silently dropped from every run. It now copies sibling modules, interleaves the two arms in one run
+loop, takes `--baseline-env` so a feature toggle can be measured against itself, and writes JSON.
+
+Evidence: [`RESULTS-cold-compile.md`](aif/evidence/RESULTS-cold-compile.md),
+[`RESULTS-concurrency.md`](aif/evidence/RESULTS-concurrency.md).
+
+---
+
+## Session of 2026-08-26 (M5.1 direct allocator evaluation) — green, change rejected
+
+M5.1 is complete and the system allocator remains. The experiment first exposed an important
+soundness constraint: moving only runtime allocation while generated objects still use `malloc`
+crosses allocator domains at `rt_free`. The corrected temporary seam moved generated object
+allocation, runtime allocation, verifier shims, and the curated inline module together. It reached
+a fixed point and passed the suite **166/166** plus AIF differential **17/17**.
+
+Official mimalloc v3.4.5 measured **1.021×** corpus-median loop time and **1.242×** peak RSS on
+g1/g3/g4/g5. Official rpmalloc v1.4.5 measured **1.003×** loop time and **1.627×** RSS. Every
+per-program checksum and verifier count agreed, warm and genuinely-cold compile time remained
+flat, and static linkage grew executables. Both candidates therefore fail the runtime/RSS gate.
+The temporary production hooks were removed; no allocator dependency or API ships. The retained
+system milestone gate is **0.998×**, range **0.952–1.061×**, with identical executable sizes and
+checksums. Raw data and research rationale are in
+[`aif/evidence/RESULTS-M5-allocator.md`](aif/evidence/RESULTS-M5-allocator.md).
+
+The next locally actionable item is boxed `OBJECT` replacement ownership: prove prior `list_get`
+element borrows dead before reclaiming an overwritten object, or add an exclusive replacement
+operation. The remote inline-runtime CI observation remains externally blocked without a push;
+the genuinely-cold compile regression follows the ownership item.
 
 ## Session of 2026-08-25 (M4.4 generic/container layout specialization) — green
 

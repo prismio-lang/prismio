@@ -11,7 +11,7 @@
 // leave the annotation off.
 
 import std.io
-extern fn str_equals(s1: String, s2: String) -> Int
+import std.string
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -22,9 +22,9 @@ fn fail(message: String) -> Int {
 fn main() -> Int {
     // pointers
     let words = ["alpha", "beta", "gamma"]
-    if (str_equals(words[0], "alpha") == 0) { return fail("String array index 0") }
-    if (str_equals(words[1], "beta") == 0) { return fail("String array index 1") }
-    if (str_equals(words[2], "gamma") == 0) { return fail("String array index 2") }
+    if (strEquals(words[0], "alpha") == false) { return fail("String array index 0") }
+    if (strEquals(words[1], "beta") == false) { return fail("String array index 1") }
+    if (strEquals(words[2], "gamma") == false) { return fail("String array index 2") }
 
     // doubles
     let reals = [1.5, 2.5, 3.5]

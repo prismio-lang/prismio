@@ -6,6 +6,8 @@ import lexer.token
 import ast.types
 import ir.bridge
 import common.diagnostics
+import std.string
+import std.option
 
 // Whether binding this expression to a name produces a *borrow* rather than an
 // owned value.
@@ -50,7 +52,7 @@ fn semaMoveOperand(node: ASTNode) {
             // that predates the loop still does.
             if (ir_binding_predates_loop(node.s1) == 1
                 and ir_is_reinit_target(node.s1) == 0) {
-                semaErrorAt(node, str_concat(diagQuote(node.s1), " is moved inside a loop, so the move would repeat on the next iteration"))
+                semaErrorAt(node, strConcat(diagQuote(node.s1), " is moved inside a loop, so the move would repeat on the next iteration"))
             }
             ir_mark_moved(node.s1)
         }
@@ -65,7 +67,7 @@ fn semaConsumeOperand(node: ASTNode) {
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
         if (typeIsMoveOnly(nodeGetType(node))) {
             if (ir_is_borrowed(node.s1) == 1) {
-                semaErrorAt(node, str_concat("cannot move out of borrowed value ", diagQuote(node.s1)))
+                semaErrorAt(node, strConcat("cannot move out of borrowed value ", diagQuote(node.s1)))
                 return
             }
         }
@@ -133,27 +135,27 @@ fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo, context
 // apply a default instead. So the declaration is the only place these can be
 // rejected, and they are rejected here rather than warned about.
 fn semaContractName(encoded: String) -> String {
-    let at = str_index_of(encoded, ":")
+    let at = strIndexOf(encoded, ":")
     if (at < 0) {
         return encoded
     }
-    return str_substring(encoded, 0, at)
+    return strSubstring(encoded, 0, at)
 }
 
 fn semaContractArgument(encoded: String) -> String {
-    let at = str_index_of(encoded, ":")
+    let at = strIndexOf(encoded, ":")
     if (at < 0) {
         return ""
     }
-    return str_substring(encoded, at + 1, __builtin_string_len(encoded) - at - 1)
+    return strSubstring(encoded, at + 1, __builtin_string_len(encoded) - at - 1)
 }
 
 fn semaIsParameterContract(name: String) -> Bool {
-    if (str_equals(name, "borrow") == 1) { return true }
-    if (str_equals(name, "retain") == 1) { return true }
-    if (str_equals(name, "retain_in") == 1) { return true }
-    if (str_equals(name, "consume") == 1) { return true }
-    if (str_equals(name, "out") == 1) { return true }
+    if (strEquals(name, "borrow")) { return true }
+    if (strEquals(name, "retain")) { return true }
+    if (strEquals(name, "retain_in")) { return true }
+    if (strEquals(name, "consume")) { return true }
+    if (strEquals(name, "out")) { return true }
     return false
 }
 
@@ -163,11 +165,11 @@ fn semaIsParameterContract(name: String) -> Bool {
 // passing the private `{ handle, offset, length }` aggregate as though it were
 // a stable foreign ABI.
 fn semaExternTypeIsSlice(annotation: ASTNode) -> Bool {
-    return annotation.i2 == 1 and str_equals(annotation.s1, "Slice") == 1
+    return annotation.i2 == 1 and strEquals(annotation.s1, "Slice")
 }
 
 fn semaExternTypeIsDataView(annotation: ASTNode) -> Bool {
-    return annotation.i2 == 1 and str_equals(annotation.s1, "DataView") == 1
+    return annotation.i2 == 1 and strEquals(annotation.s1, "DataView")
 }
 
 fn semaCheckExternContracts(extNode: ASTNode) {
@@ -193,36 +195,36 @@ fn semaCheckExternContracts(extNode: ASTNode) {
 
             if (semaExternTypeIsSlice(annotation)) {
                 diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
-                    str_concat("Slice cannot cross an extern boundary without explicit marshalling: ",
+                    strConcat("Slice cannot cross an extern boundary without explicit marshalling: ",
                                diagQuote(param.s1)))
                 diag_note("copy the view into a C-compatible buffer before the call")
             }
             if (semaExternTypeIsDataView(annotation)) {
                 diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
-                    str_concat("DataView cannot cross an extern boundary: ", diagQuote(param.s1)))
+                    strConcat("DataView cannot cross an extern boundary: ", diagQuote(param.s1)))
                 diag_note("materialise ordinary AoS storage with aos(view) before the call")
             }
 
-            if (str_equals(encoded, "") == 0) {
+            if (strEquals(encoded, "") == false) {
                 let name = semaContractName(encoded)
 
                 if (semaIsParameterContract(name) == false) {
                     diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
-                        str_concat(str_concat(diagQuote(name),
+                        strConcat(strConcat(diagQuote(name),
                                    " is a return contract and cannot appear on parameter "),
                                    diagQuote(param.s1)))
                     diag_note("parameters take `borrow`, `retain`, `retain_in(k)`, `consume` or `out`")
-                } else if (str_equals(name, "retain_in") == 1) {
-                    let target = str_to_int(semaContractArgument(encoded))
+                } else if (strEquals(name, "retain_in")) {
+                    let target = optionOr(strParseInt(semaContractArgument(encoded)), 0)
                     if (target < 0 or target >= arity) {
                         diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
-                            str_concat(str_concat("`retain_in` names argument ",
+                            strConcat(strConcat("`retain_in` names argument ",
                                        semaContractArgument(encoded)),
-                                       str_concat(", but this function takes ", int_to_str(arity))))
+                                       strConcat(", but this function takes ", strFromInt(arity))))
                         diag_note("the index is zero-based and names the container this argument is stored into")
                     } else if (target == index) {
                         diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
-                            str_concat(str_concat("`retain_in` on ", diagQuote(param.s1)),
+                            strConcat(strConcat("`retain_in` on ", diagQuote(param.s1)),
                                        " names itself"))
                         diag_note("it names the *other* argument this one is stored into; a value cannot contain itself")
                     }
@@ -245,15 +247,15 @@ fn semaCheckExternContracts(extNode: ASTNode) {
                 "DataView cannot cross an extern boundary")
             diag_note("return ordinary AoS storage and construct the DataView inside Prismio")
         }
-        if (str_equals(ret.s2, "") == 0) {
+        if (strEquals(ret.s2, "") == false) {
             let name = semaContractName(ret.s2)
-            if (str_equals(name, "alias") == 0 and str_equals(name, "produce") == 0) {
+            if (strEquals(name, "alias") == false and strEquals(name, "produce") == false) {
                 diag_error_at(extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
-                    str_concat(diagQuote(name),
+                    strConcat(diagQuote(name),
                                " is a parameter contract and cannot appear on a return type"))
                 diag_note("returns take `alias` or `produce(free_fn)`")
-            } else if (str_equals(name, "produce") == 1) {
-                if (str_equals(semaContractArgument(ret.s2), "") == 1) {
+            } else if (strEquals(name, "produce")) {
+                if (strEquals(semaContractArgument(ret.s2), "")) {
                     diag_error_at(extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
                         "`produce` requires the name of the function that releases the value")
                     diag_note("FFI 5.2: calling `free` on something from a custom allocator is the bug this prevents")

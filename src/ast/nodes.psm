@@ -132,13 +132,10 @@ extern fn ptr_is_null(p: Ptr) -> Int
 extern fn ptr_to_node(ptr: Ptr) -> ASTNode alias
 extern fn node_to_ptr(node: ASTNode borrow) -> Ptr alias
 
-// Declared rather than imported from utils: ast.psm is the bottom of the import
-// graph and everything else depends on it.
-extern fn str_equals(s1: String, s2: String) -> Int
 
 // Is there a node here?
 //
-// **Use these two rather than spelling out `str_equals(ptr, "")`.** Not because
+// **Use these two rather than spelling out `strEquals(ptr, "")`.** Not because
 // the spelling is long, but because it is only correct under an invariant that
 // has to be written down somewhere, and this is that place.
 //

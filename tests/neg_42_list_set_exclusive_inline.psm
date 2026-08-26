@@ -1,0 +1,13 @@
+// expect-error: list_set_exclusive requires a boxed struct element type
+
+struct Flat {
+    x: Int,
+    y: Int
+}
+
+fn main() -> Int {
+    let items: List<Flat> = list_new()
+    list_push(items, Flat { x: 1, y: 2 })
+    list_set_exclusive(items, 0, Flat { x: 3, y: 4 })
+    return 0
+}

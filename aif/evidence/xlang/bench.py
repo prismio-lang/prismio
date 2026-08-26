@@ -92,7 +92,7 @@ RSS_SCALE = 1.0 if sys.platform == "darwin" else 1024.0
 PRELOAD_VAR = "DYLD_INSERT_LIBRARIES" if sys.platform == "darwin" else "LD_PRELOAD"
 DYLIB = "allocount.dylib" if sys.platform == "darwin" else "allocount.so"
 
-PROGRAMS = ["g1", "g2", "g3", "g4", "g5", "g6"]
+PROGRAMS = ["g1", "g2", "g3", "g4", "g5", "g6", "g9"]
 
 # (variant key, label, language). Order is the report order.
 #

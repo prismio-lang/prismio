@@ -14,6 +14,7 @@ import lexer.token
 import common.text
 import ast.nodes
 import common.diagnostics
+import std.string
 
 extern fn exit(code: Int)
 
@@ -53,7 +54,7 @@ fn parserCheck(p: Parser, t: TokenType) -> Bool {
 
 fn parserCheckVal(p: Parser, t: TokenType, val: String) -> Bool {
     let current = parserCurrent(p)
-    return current.type == t and str_equals(current.value, val) == 1
+    return current.type == t and strEquals(current.value, val)
 }
 
 fn parserMatch(p: Parser, t: TokenType) -> Bool {
@@ -129,9 +130,9 @@ fn parserFatal(p: Parser, message: String) {
 fn parserExpect(p: Parser, t: TokenType, context: String) {
     if (parserCheck(p, t) == false) {
         let tok = parserCurrent(p)
-        parserFatal(p, str_concat(str_concat(str_concat("expected ", typeToString(t)),
-                     str_concat(" in ", context)),
-                     str_concat(", found ", parserDescribe(tok))))
+        parserFatal(p, strConcat(strConcat(strConcat("expected ", typeToString(t)),
+                     strConcat(" in ", context)),
+                     strConcat(", found ", parserDescribe(tok))))
     }
     parserAdvance(p)
 }
@@ -139,9 +140,9 @@ fn parserExpect(p: Parser, t: TokenType, context: String) {
 fn parserExpectVal(p: Parser, t: TokenType, val: String, context: String) {
     if (parserCheckVal(p, t, val) == false) {
         let tok = parserCurrent(p)
-        parserFatal(p, str_concat(str_concat(str_concat("expected ", diagQuote(val)),
-                     str_concat(" in ", context)),
-                     str_concat(", found ", parserDescribe(tok))))
+        parserFatal(p, strConcat(strConcat(strConcat("expected ", diagQuote(val)),
+                     strConcat(" in ", context)),
+                     strConcat(", found ", parserDescribe(tok))))
     }
     parserAdvance(p)
 }
@@ -149,21 +150,21 @@ fn parserExpectVal(p: Parser, t: TokenType, val: String, context: String) {
 // Whether this keyword can only begin a construct, and so is a safe place for
 // recovery to resume.
 fn startsConstruct(word: String) -> Bool {
-    if (str_equals(word, "fn") == 1) { return true }
-    if (str_equals(word, "let") == 1) { return true }
-    if (str_equals(word, "struct") == 1) { return true }
-    if (str_equals(word, "enum") == 1) { return true }
-    if (str_equals(word, "extern") == 1) { return true }
-    if (str_equals(word, "import") == 1) { return true }
-    if (str_equals(word, "impl") == 1) { return true }
-    if (str_equals(word, "trait") == 1) { return true }
-    if (str_equals(word, "if") == 1) { return true }
-    if (str_equals(word, "while") == 1) { return true }
-    if (str_equals(word, "for") == 1) { return true }
-    if (str_equals(word, "loop") == 1) { return true }
-    if (str_equals(word, "match") == 1) { return true }
-    if (str_equals(word, "return") == 1) { return true }
-    if (str_equals(word, "region") == 1) { return true }
+    if (strEquals(word, "fn")) { return true }
+    if (strEquals(word, "let")) { return true }
+    if (strEquals(word, "struct")) { return true }
+    if (strEquals(word, "enum")) { return true }
+    if (strEquals(word, "extern")) { return true }
+    if (strEquals(word, "import")) { return true }
+    if (strEquals(word, "impl")) { return true }
+    if (strEquals(word, "trait")) { return true }
+    if (strEquals(word, "if")) { return true }
+    if (strEquals(word, "while")) { return true }
+    if (strEquals(word, "for")) { return true }
+    if (strEquals(word, "loop")) { return true }
+    if (strEquals(word, "match")) { return true }
+    if (strEquals(word, "return")) { return true }
+    if (strEquals(word, "region")) { return true }
     return false
 }
 
@@ -181,7 +182,7 @@ fn parserSynchronize(p: Parser) {
     loop {
         let tok = parserCurrent(p)
         if (tok.type == TokenType.EOF) { break }
-        if (tok.type == TokenType.SEPARATOR and str_equals(tok.value, "}") == 1) { break }
+        if (tok.type == TokenType.SEPARATOR and strEquals(tok.value, "}")) { break }
         if (tok.type == TokenType.KEYWORD and startsConstruct(tok.value)) { break }
         parserAdvance(p)
     }
@@ -193,7 +194,7 @@ fn parserSynchronize(p: Parser) {
 fn parseModuleSegment(p: Parser) -> String {
     let segment = parserCurrent(p)
     if (segment.type != TokenType.IDENTIFIER and segment.type != TokenType.KEYWORD) {
-        parserFatal(p, str_concat("expected a module name after `import`, found ",
+        parserFatal(p, strConcat("expected a module name after `import`, found ",
                                    parserDescribe(segment)))
     }
     parserAdvance(p)
@@ -231,7 +232,7 @@ fn parseImportStatement(p: Parser) -> ASTNode {
             importNode.i1 = 1
             break
         }
-        importNode.s1 = str_concat(str_concat(importNode.s1, "."), parseModuleSegment(p))
+        importNode.s1 = strConcat(strConcat(importNode.s1, "."), parseModuleSegment(p))
     }
 
     importNode.len = endCol - importNode.col

@@ -146,10 +146,6 @@ int str_equals(const char* s1, const char* s2) {
     return strcmp(s1, s2) == 0 ? 1 : 0;
 }
 
-int str_compare(const char* s1, const char* s2) {
-    return strcmp(s1, s2);
-}
-
 // `strcat` here was a third and a fourth pass over the data: it walks `result`
 // from the start to find the end it was just told, then copies. With both
 // lengths already in hand, two `memcpy`s are the whole operation -- the second
@@ -204,7 +200,9 @@ char* str_substring(const char* s, int start, int length) {
 // identical scan with the call removed, i.e. **98% of the work**, and doubling
 // the input multiplies the time by ~2.9 rather than by 2.
 //
-// This is the same defect `str_char_at` had, fixed the same way. createLexer
+// This is the same defect the old C `str_char_at` had, fixed the same way --
+// that function is gone now, and `strCharAt` in std/string.psm is the O(1)
+// replacement that reads the carried length. createLexer
 // already measures the input once and holds it in `Lexer.length` precisely
 // because a per-character strlen made scanning quadratic; the comment there
 // says so. That fix stopped at the character reads and never reached the
@@ -235,78 +233,6 @@ char* str_slice(const char* s, int start, int length, int base_len) {
     char* result = (char*)rt_alloc(length + 1);
     strncpy(result, s + start, length);
     result[length] = '\0';
-
-    return result;
-}
-
-char str_char_at(const char* s, int index) {
-    int len = strlen(s);
-
-    if (index < 0 || index >= len) {
-        return '\0';
-    }
-
-    return s[index];
-}
-
-int str_contains(const char* haystack, const char* needle) {
-    return strstr(haystack, needle) != NULL ? 1 : 0;
-}
-
-int str_starts_with(const char* s, const char* prefix) {
-    int s_len = strlen(s);
-    int prefix_len = strlen(prefix);
-
-    if (prefix_len > s_len) {
-        return 0;
-    }
-
-    return strncmp(s, prefix, prefix_len) == 0 ? 1 : 0;
-}
-
-int str_ends_with(const char* s, const char* suffix) {
-    int s_len = strlen(s);
-    int suffix_len = strlen(suffix);
-
-    if (suffix_len > s_len) {
-        return 0;
-    }
-
-    return strcmp(s + (s_len - suffix_len), suffix) == 0 ? 1 : 0;
-}
-
-int str_index_of(const char* haystack, const char* needle) {
-    const char* pos = strstr(haystack, needle);
-
-    if (pos == NULL) {
-        return -1;
-    }
-
-    return pos - haystack;
-}
-
-char* str_replace(const char* s, const char* old_str, const char* new_str) {
-    const char* pos = strstr(s, old_str);
-
-    if (pos == NULL) {
-        char* result = (char*)rt_alloc(strlen(s) + 1);
-        strcpy(result, s);
-        return result;
-    }
-
-    int old_len = strlen(old_str);
-    int new_len = strlen(new_str);
-    int prefix_len = pos - s;
-    int suffix_len = strlen(pos + old_len);
-
-    char* result = (char*)rt_alloc(prefix_len + new_len + suffix_len + 1);
-
-    strncpy(result, s, prefix_len);
-    result[prefix_len] = '\0';
-
-    strcat(result, new_str);
-
-    strcat(result, pos + old_len);
 
     return result;
 }
@@ -420,7 +346,7 @@ int str_find_byte_pair(const char* s, int from, int last,
 //
 // The primitive the language was missing, and its absence shaped std/string.psm
 // more than anything else in this file. With only `str_concat` and
-// `str_from_char` to build with, producing an n-byte string costs n allocations
+// a one-character string to build with, producing an n-byte string costs n allocations
 // and copies O(n^2) bytes, and it has to recurse because the loop form leaks --
 // which put a stack ceiling on it at 150 000 characters. One allocation the
 // caller writes into removes all three problems at once, and moves `strToUpper`,
@@ -459,10 +385,6 @@ char* str_with_capacity(int length) {
     return result;
 }
 
-int str_to_int(const char* s) {
-    return atoi(s);
-}
-
 char* int_to_str(int n) {
     char* result = (char*)rt_alloc(32);  // enough for any int
     sprintf(result, "%d", n);
@@ -474,82 +396,6 @@ char* str_clone(const char* s) {
     char* result = (char*)rt_alloc(len + 1);
     strcpy(result, s);
     return result;
-}
-
-// One-character string. The lexer assembles a decoded string literal a character
-// at a time and there is no other way to turn a Char into a String -- the
-// language has no string builder and no char-to-string conversion.
-char* str_from_char(char c) {
-    char* result = (char*)rt_alloc(2);
-    result[0] = c;
-    result[1] = '\0';
-    return result;
-}
-
-char* str_trim(const char* s) {
-    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') {
-        s++;
-    }
-
-    // An all-whitespace input falls through to a one-byte allocation rather than
-    // returning the literal "" -- see str_substring for why a String return is
-    // always something the caller can release.
-
-    const char* end = s + strlen(s) - 1;
-    while (end > s && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) {
-        end--;
-    }
-
-    int len = end - s + 1;
-    char* result = (char*)rt_alloc(len + 1);
-    strncpy(result, s, len);
-    result[len] = '\0';
-
-    return result;
-}
-
-typedef struct {
-    char** parts;
-    int count;
-} StringArray;
-
-StringArray* str_split(const char* s, char delimiter) {
-    int count = 1;
-    for (const char* p = s; *p; p++) {
-        if (*p == delimiter) count++;
-    }
-
-    StringArray* result = (StringArray*)malloc(sizeof(StringArray));
-    result->parts = (char**)malloc(count * sizeof(char*));
-    result->count = count;
-
-    int part_index = 0;
-    const char* start = s;
-    const char* p = s;
-
-    while (1) {
-        if (*p == delimiter || *p == '\0') {
-            int len = p - start;
-            result->parts[part_index] = (char*)malloc(len + 1);
-            strncpy(result->parts[part_index], start, len);
-            result->parts[part_index][len] = '\0';
-            part_index++;
-
-            if (*p == '\0') break;
-            start = p + 1;
-        }
-        p++;
-    }
-
-    return result;
-}
-
-void str_split_free(StringArray* arr) {
-    for (int i = 0; i < arr->count; i++) {
-        free(arr->parts[i]);
-    }
-    free(arr->parts);
-    free(arr);
 }
 
 // Helpers for type punning ASTNode pointers in Prismio
@@ -1743,6 +1589,28 @@ void list_set(void* lp, int index, void* value) {
         rc_release_atomic(l->data[index]);
     }
     l->data[index] = value;
+}
+
+// Boxed replacement with a compiler-proved exclusive handle. Unlike list_set,
+// this operation owns the displaced slot and may apply the same release that
+// list teardown would. The store happens first so a counted self-replacement
+// cannot leave the slot pointing at memory released by the old ownership edge.
+// Sema admits this symbol only for non-flat struct Lists created locally and
+// not observed through list_get, indexing, slicing, or an arbitrary call.
+void list_set_exclusive(void* lp, int index, void* value) {
+    RtList* l = (RtList*)lp;
+    if (index < 0 || index >= l->len) {
+        fprintf(stderr, "runtime error: list_set_exclusive index %d out of bounds for length %d\n",
+                index, l->len);
+        exit(1);
+    }
+    if (l->elem_size) {
+        fprintf(stderr, "runtime error: list_set_exclusive requires boxed elements\n");
+        exit(1);
+    }
+    void* old = l->data[index];
+    l->data[index] = value;
+    list_release_source(l, old);
 }
 
 int list_len(void* lp) {

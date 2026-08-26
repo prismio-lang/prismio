@@ -1,0 +1,127 @@
+// REQUIREMENTS 15 -- the task handle finally has an owner.
+//
+// `prismio_task_release` existed in the runtime from the day tasks did and
+// **codegen never emitted it**, so every `spawn` leaked one handle for the life
+// of the process. Nothing caught it: the handle is plain `calloc` -- correctly,
+// it is a runtime temporary the runtime frees itself -- so `--verify` never sees
+// it, and no test before this one spawned in a loop. `aif/corpus/g9_bands.psm`
+// is what made it visible, at 8,201 allocations against 23 frees.
+//
+// The release is emitted at the **scope exit**, not at the join. A handle is
+// copyable and nothing stops a program joining twice; the runtime guards the
+// second wait but could not guard a read of freed memory. A scope exit runs once
+// however many joins there were, and after all of them.
+//
+// Its premise is AIF's: the drop is emitted only where INFERENCE 4.1's E-SPAWN-J
+// already proved the task is joined on every path before the scope exits, so the
+// thread has finished and nothing will write the handle again. Everything below
+// that is *not* proved keeps the old behaviour, because freeing a handle a live
+// task still writes its result into is the failure this must not have.
+//
+// The IR-level assertions -- that the release is emitted here and *not* emitted
+// for the copied handle -- are in tests/test_runner.py's run_task_release_test.
+// This file is the half that has to still compute the right answers.
+
+import std.io
+import std.string
+extern fn print(s: String)
+extern fn println(s: String)
+
+struct Band {
+    seed: Int,
+    steps: Int
+}
+
+fn simulate(b: Band) -> Int {
+    let mut s = b.seed
+    let mut acc = 0
+    let mut i = 0
+    while (i < b.steps) {
+        s = s * 1103515245 + 12345
+        acc = acc + ((s / 65536) & 32767)
+        i = i + 1
+    }
+    return acc
+}
+
+// The shape the leak was found in: a spawn inside a loop, joined in the same
+// iteration. Every handle here is released at the iteration's scope exit, so the
+// live handle count is bounded by the number of tasks in flight rather than by
+// the number of tasks ever created.
+fn many_frames() -> Int {
+    let mut total = 0
+    let mut frame = 0
+    while (frame < 64) {
+        let a = spawn simulate(Band { seed: frame * 7919 + 1, steps: 32 })
+        let b = spawn simulate(Band { seed: frame * 7919 + 104730, steps: 32 })
+        let ra = join a
+        let rb = join b
+        total = total + ra + rb
+        frame = frame + 1
+    }
+    return total
+}
+
+// The guard. `u` names the same handle as `t`, so releasing `t` at the scope
+// exit would be correct only because `u` is joined before it -- but the compiler
+// does not have to reason about that at all: a handle that is copied is not
+// marked droppable. This function must therefore emit no release, and must
+// still produce the right answer.
+fn copied_handle() -> Int {
+    let t = spawn simulate(Band { seed: 5, steps: 16 })
+    let u = t
+    return join u
+}
+
+// The conservative direction, kept honest. A `while` may run zero times, so
+// E-SPAWN-J cannot prove this join happens and the handle keeps the old
+// behaviour. The answer still has to be right.
+fn join_inside_a_loop() -> Int {
+    let t = spawn simulate(Band { seed: 9, steps: 16 })
+    let mut got = 0
+    let mut i = 0
+    while (i < 1) {
+        got = join t
+        i = i + 1
+    }
+    return got
+}
+
+fn check(name: String, got: Int, want: Int) -> Int {
+    if (got == want) {
+        return 0
+    }
+    print("FAIL ")
+    print(name)
+    print(": got ")
+    print(strFromInt(got))
+    print(" want ")
+    println(strFromInt(want))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // The two independent routes to the same value: a joined task and a direct
+    // call. A release emitted in the wrong place would show up here as a wrong
+    // answer or a crash, not as a leak.
+    let direct = simulate(Band { seed: 5, steps: 16 })
+    bad = bad + check("copied handle", copied_handle(), direct)
+    bad = bad + check("loop join", join_inside_a_loop(),
+                      simulate(Band { seed: 9, steps: 16 }))
+
+    let a = many_frames()
+    let b = many_frames()
+    bad = bad + check("frames are deterministic", a, b)
+    if (a == 0) {
+        println("FAIL frames: the workload computed nothing")
+        bad = bad + 1
+    }
+
+    if (bad == 0) {
+        println("PASS: task release")
+        return 0
+    }
+    return 1
+}

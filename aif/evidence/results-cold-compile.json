@@ -1,0 +1,75 @@
+{
+  "label": "cold compile: bitcode reuse + backend-only lowering",
+  "runs": 7,
+  "compiler": "build/cold-bc-2",
+  "baseline": "build/m5-exclusive-3",
+  "baseline_env": [],
+  "modes": [
+    "cold",
+    "incremental",
+    "no-change",
+    "no-cache"
+  ],
+  "programs": {
+    "g1_particles.psm": {
+      "new": {
+        "cold": 0.30997437500000036,
+        "incremental": 0.10756008399999928,
+        "no-change": 0.10736504100000133,
+        "no-cache": 0.3048930409999997
+      },
+      "base": {
+        "cold": 0.38570575000000007,
+        "incremental": 0.10828999999999933,
+        "no-change": 0.10905933299999937,
+        "no-cache": 0.3757273750000003
+      },
+      "ratio": {
+        "cold": 0.8036550531071945,
+        "incremental": 0.9932596176932306,
+        "no-change": 0.9844644932864384,
+        "no-cache": 0.8114741200318434
+      }
+    },
+    "g6_game.psm": {
+      "new": {
+        "cold": 0.3141544159999974,
+        "incremental": 0.11211679199999836,
+        "no-change": 0.11306654199999855,
+        "no-cache": 0.31267220800000217
+      },
+      "base": {
+        "cold": 0.38401733399999927,
+        "incremental": 0.11205366699999786,
+        "no-change": 0.11309433399999946,
+        "no-cache": 0.3849543329999996
+      },
+      "ratio": {
+        "cold": 0.8180735299828887,
+        "incremental": 1.0005633461330676,
+        "no-change": 0.9997542582460328,
+        "no-cache": 0.8122319485620714
+      }
+    },
+    "test_09_strings.psm": {
+      "new": {
+        "cold": 0.30016570800000153,
+        "incremental": 0.09856395799999973,
+        "no-change": 0.09935729200000054,
+        "no-cache": 0.29758183399999893
+      },
+      "base": {
+        "cold": 0.3694841249999996,
+        "incremental": 0.0989391669999975,
+        "no-change": 0.09916512499999897,
+        "no-cache": 0.3687069160000007
+      },
+      "ratio": {
+        "cold": 0.8123913524024932,
+        "incremental": 0.9962076798160452,
+        "no-change": 1.0019378486136288,
+        "no-cache": 0.8070958831702477
+      }
+    }
+  }
+}

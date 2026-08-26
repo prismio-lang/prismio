@@ -102,11 +102,6 @@ FFI_CONTRACTS = {
     'str_equals':     {0: 'borrow', 1: 'borrow'},
     'str_substring':  {0: 'borrow'},
     'str_slice':      {0: 'borrow'},
-    'str_index_of':   {0: 'borrow', 1: 'borrow'},
-    'str_contains':   {0: 'borrow', 1: 'borrow'},
-    'str_starts_with': {0: 'borrow', 1: 'borrow'},
-    'str_ends_with':  {0: 'borrow', 1: 'borrow'},
-    'str_char_at':    {0: 'borrow'},
     # Compiler builtins remain call-shaped in the AST even though codegen emits
     # no call. They borrow for the duration of the operation and retain nothing.
     '__builtin_string_len': {0: 'borrow'},
@@ -152,7 +147,7 @@ def elem_key(container_type):
 FFI_RETURNS_PRODUCE = {
     'list_new', 'list_new_with_capacity',
     'soa', 'aos',
-    'str_concat', 'str_substring', 'str_slice', 'str_from_char',
+    'str_concat', 'str_substring', 'str_slice',
     'int_to_str',
     'read_file', 'get_directory', 'join_path',
 }

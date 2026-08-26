@@ -15,7 +15,7 @@
 // neg_07_scope_leak.psm.
 
 import std.io
-extern fn str_equals(s1: String, s2: String) -> Int
+import std.string
 
 let counter = 100
 let label = "global"
@@ -42,7 +42,7 @@ fn main() -> Int {
     }
 
     let label = "local"
-    if (str_equals(label, "local") == 0) {
+    if (strEquals(label, "local") == false) {
         return fail("string local should shadow the global")
     }
 
@@ -55,7 +55,7 @@ fn main() -> Int {
         }
     } else {
         let v: String = "unused"
-        if (str_equals(v, "unused") == 0) {
+        if (strEquals(v, "unused") == false) {
             return fail("String binding in the else-branch")
         }
     }

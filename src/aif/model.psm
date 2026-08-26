@@ -70,6 +70,7 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import std.string
 
 // ---------------------------------------------------------------------------
 // runtime/aif_support.c
@@ -543,48 +544,48 @@ fn aifNodeType(node: ASTNode) -> String {
 // container's fields are shared across its instantiations -- object-insensitive
 // in the type argument as well as in the object (INFERENCE 11.1).
 fn aifBaseType(ty: String) -> String {
-    let at = str_index_of(ty, "<")
+    let at = strIndexOf(ty, "<")
     if (at < 0) {
         return ty
     }
-    return str_substring(ty, 0, at)
+    return strSubstring(ty, 0, at)
 }
 
 // Does a value of this type participate in the memory model at all? Scalars and
 // enums do not: they are registers, they are copied, and there is nothing to
 // reclaim.
 fn aifIsRef(ty: String) -> Bool {
-    if (str_equals(ty, "") == 1) { return false }
-    if (str_equals(ty, "Int") == 1) { return false }
-    if (str_equals(ty, "I8") == 1) { return false }
-    if (str_equals(ty, "I16") == 1) { return false }
-    if (str_equals(ty, "I32") == 1) { return false }
-    if (str_equals(ty, "I64") == 1) { return false }
-    if (str_equals(ty, "U8") == 1) { return false }
-    if (str_equals(ty, "U16") == 1) { return false }
-    if (str_equals(ty, "U32") == 1) { return false }
-    if (str_equals(ty, "U64") == 1) { return false }
-    if (str_equals(ty, "Isize") == 1) { return false }
-    if (str_equals(ty, "Usize") == 1) { return false }
-    if (str_equals(ty, "Float") == 1) { return false }
-    if (str_equals(ty, "Bool") == 1) { return false }
-    if (str_equals(ty, "Char") == 1) { return false }
-    if (str_equals(ty, "Void") == 1) { return false }
+    if (strEquals(ty, "")) { return false }
+    if (strEquals(ty, "Int")) { return false }
+    if (strEquals(ty, "I8")) { return false }
+    if (strEquals(ty, "I16")) { return false }
+    if (strEquals(ty, "I32")) { return false }
+    if (strEquals(ty, "I64")) { return false }
+    if (strEquals(ty, "U8")) { return false }
+    if (strEquals(ty, "U16")) { return false }
+    if (strEquals(ty, "U32")) { return false }
+    if (strEquals(ty, "U64")) { return false }
+    if (strEquals(ty, "Isize")) { return false }
+    if (strEquals(ty, "Usize")) { return false }
+    if (strEquals(ty, "Float")) { return false }
+    if (strEquals(ty, "Bool")) { return false }
+    if (strEquals(ty, "Char")) { return false }
+    if (strEquals(ty, "Void")) { return false }
     if (aif_is_enum(ty) == 1) { return false }
     return true
 }
 
 fn aifKindOf(ty: String) -> Int {
     if (aif_is_struct(ty) == 1) { return AIF_KIND_STRUCT }
-    if (str_equals(ty, "String") == 1) { return AIF_KIND_STRING }
-    if (str_equals(aifBaseType(ty), "List") == 1) { return AIF_KIND_LIST }
+    if (strEquals(ty, "String")) { return AIF_KIND_STRING }
+    if (strEquals(aifBaseType(ty), "List")) { return AIF_KIND_LIST }
     // A DataView has the same analysis-relevant resource shape as a List: it is
     // affine, dynamically sized, owns subordinate storage, cannot become T0,
     // and is not arena-placed. Codegen still selects its distinct release from
     // the semantic TypeKind.
-    if (str_equals(aifBaseType(ty), "DataView") == 1) { return AIF_KIND_LIST }
-    if (str_starts_with(ty, "[") == 1) { return AIF_KIND_ARRAY }
-    if (str_equals(ty, "Array") == 1) { return AIF_KIND_ARRAY }
+    if (strEquals(aifBaseType(ty), "DataView")) { return AIF_KIND_LIST }
+    if (strStartsWith(ty, "[")) { return AIF_KIND_ARRAY }
+    if (strEquals(ty, "Array")) { return AIF_KIND_ARRAY }
     return AIF_KIND_OPAQUE
 }
 
@@ -618,8 +619,8 @@ fn aifElemKey(containerType: String) -> Int {
 // facts therefore belong to the List key, not to a parallel Slice key that no
 // store ever populates.
 fn aifElementContainerType(ty: String) -> String {
-    if (str_starts_with(ty, "Slice<") == 1) {
-        return str_concat("List", str_substring(ty, 5, __builtin_string_len(ty) - 5))
+    if (strStartsWith(ty, "Slice<")) {
+        return strConcat("List", strSubstring(ty, 5, __builtin_string_len(ty) - 5))
     }
     return ty
 }

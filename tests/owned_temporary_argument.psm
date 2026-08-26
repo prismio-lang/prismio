@@ -1,0 +1,86 @@
+// An owned call result passed straight into another call has no owner.
+//
+// **Not named `test_*.psm`, so the runner does not execute it.** It is the
+// reproduction for a known limitation, and the two loops below differ by exactly
+// one `let`.
+//
+// `aif_owns_call_result_at_node` answers "does this frame own what the call
+// returned", and codegen asks it at a **binding** -- `VARIABLE_DECL` and
+// assignment, in src/ir/stmt.psm. A call result consumed directly as an argument
+// is never bound, so nothing asks, and nothing drops it.
+//
+// Most of the time an automatic region hides this: a callee-allocated value is
+// normally reclaimed in bulk by the arena M3 places around the caller's loop.
+// When call-site bracketing declines -- `prismio aif --why` says it plainly,
+// "0 of 4 call sites lie inside a region -- so no arena would serve it either
+// way" -- there is no second owner and the value leaks.
+//
+// Under `--verify`, built with the compiler of 2026-08-26, this file runs both
+// halves and reports **92 allocated, 52 released, 40 leaked** -- every leaked
+// allocation belonging to the unbound half, and both halves printing the same
+// answer (3010520), so the difference is ownership and not arithmetic. Measured
+// separately at 20 iterations each: bound **27/27/0**, unbound **107/27/80**.
+//
+// **This is not a `spawn` defect**, which is how it was first written up on
+// 2026-08-26 before being measured properly. The same file with `spawn`/`join`
+// around the calls leaks *identically* -- 107/27/80 either way. `spawn` was
+// simply the first thing that happened to be looking.
+//
+// **The fix needs a guard, not just a drop.** Releasing every owned temporary
+// argument is a use-after-free wherever the callee retains it -- `list_push` is
+// the obvious case, and its FFI contract already says `RETAIN_IN_BASE`. A
+// Prismio callee needs the same question answered from the escape facts before
+// any drop is emitted here. See TODO.
+
+import std.io
+extern fn clock_gettime_nsec_np(clk: Int) -> Int
+
+struct Band {
+    seed: Int,
+    steps: Int
+}
+
+fn simulate(b: Band) -> Int {
+    return b.seed + b.steps
+}
+
+fn band(f: Int, i: Int, s: Int) -> Band {
+    return Band { seed: f * 7919 + i, steps: s }
+}
+
+// The samples list and the clock calls are not decoration: they are what makes
+// call-site bracketing decline, which is what removes the arena that would
+// otherwise hide the whole question.
+fn drive(bound: Bool) -> Int {
+    let mut samples: List<Int> = list_new()
+    let mut g = 0
+    while (g < 20) {
+        list_push(samples, 0)
+        g = g + 1
+    }
+
+    let mut total = 0
+    let mut frame = 0
+    while (frame < 20) {
+        let t0 = clock_gettime_nsec_np(4)
+        if (bound) {
+            let b0 = band(frame, 0, 32)
+            let b1 = band(frame, 1, 32)
+            total = total + simulate(b0) + simulate(b1)
+        } else {
+            total = total + simulate(band(frame, 0, 32)) + simulate(band(frame, 1, 32))
+        }
+        let t1 = clock_gettime_nsec_np(4)
+        list_set(samples, frame, t1 - t0)
+        frame = frame + 1
+    }
+    return total
+}
+
+fn main() -> Int {
+    print("bound   ")
+    println(drive(true))
+    print("unbound ")
+    println(drive(false))
+    return 0
+}

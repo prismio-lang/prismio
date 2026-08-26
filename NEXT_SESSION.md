@@ -1,3 +1,112 @@
+# Handoff — 2026-08-26, third session of the day
+
+**Current compiler: `build/nostr-4`. Suite 172/172, fixed point, AIF differential 18/18.**
+
+Two decisions and one large refactor, on top of the cold-compile/concurrency work below.
+
+1. **`Int` stays signed 32-bit — decided by measurement, not inheritance.** The choice had never
+   been justified anywhere in the tree. Go's and Swift's indexing argument is worth **zero** here
+   (i32-wrapping, i32-`nsw` and i64 indices all read 0.225–0.226 ms; AArch64 emits no `sxtw`,
+   x86-64 one `movslq` in every arm). Making overflow UB to unlock `nsw` is worth **less** than
+   zero — 1.014×/1.006×/1.005× on the compiler's own emitted IR for g1/g3/g4. Rust RFC 0212's
+   density argument is the one that survives: 64-bit fields cost **1.330×** in Prismio and
+   1.76–2.15× in the C control. [`RESULTS-int-width.md`](aif/evidence/RESULTS-int-width.md).
+
+2. **The C string layer is gone.** 1,093 call sites in `src/`, 109 in `ums/`, 82 in `tests/`.
+   Twelve C functions and `StringArray` deleted; contracts removed from `contracts.psm` *and*
+   `aif.py` together. **Parse+sema 0.843×**, full emit 1.030×, whole builds flat, and emitted IR
+   **byte-identical on all 94 programs**. Nothing had ever been removed from `lang_runtime.c` —
+   that is why the old functions still worked.
+   [`RESULTS-string-migration.md`](aif/evidence/RESULTS-string-migration.md).
+
+**Two ownership limitations, both with discriminating reproductions in `tests/`:**
+
+- `owned_temporary_argument.psm` — an owned call result passed straight into another call has no
+  owner. One `let` is the whole difference: **bound 27/27/0, unbound 107/27/80.** *This was first
+  written up as a `spawn` defect; that was wrong — the same program leaks identically with the
+  spawn removed.* An automatic region usually hides it; `prismio aif --why` says exactly when it
+  cannot and names the repair.
+- `owned_return_depth2.psm` — ownership does not survive a second return
+  (`sites[s].fn != c->fn`). Depth 1 is **6/6/0**; one more level gives **12/7/5**. Invisible while
+  `std.string` was C, because an `extern fn` carries its `produce` contract.
+
+**Neither is fixable by removing the guard** — both guards prevent double frees. Enumerate the
+existing owners first; that warning is in the tree because a previous attempt collided with three.
+
+**Still externally blocked:** the `PRISMIO_INLINE_RUNTIME` remote three-platform gate needs
+commit/push authorisation. Three discriminating checks are waiting on it now.
+
+Everything below is retained history.
+
+---
+
+# Concurrency + cold-compile handoff (2026-08-26, second session of the day)
+
+**Current compiler: `build/task-rel-2`. Suite 172/172, fixed point, AIF differential 18/18.**
+
+Three items closed and one compiler defect fixed:
+
+1. **Genuinely-cold compilation, closed.** A cold build was compiling `lang_runtime.c` twice — once
+   for the curated module, once for the runtime object. The curated intermediate is now **bitcode**,
+   is retained for the rest of the build, and the object is lowered from it with
+   `-Xclang -disable-llvm-passes` (target backend only). Bitcode rather than textual IR because that
+   round trip produces an object **byte-identical** to `clang -O2 -c` and the textual one does not.
+   Cold and `PRISMIO_OBJ_CACHE=0` builds are **0.804–0.818×** of the previous compiler with the
+   cached paths unmoved. Provably codegen-neutral: linked executables are byte-identical.
+   `PRISMIO_BUILD_TRACE=1` is the new per-stage trace that made the attribution possible.
+   [`RESULTS-cold-compile.md`](aif/evidence/RESULTS-cold-compile.md).
+
+2. **The corpus has a concurrent program.** `g9_bands` — four `spawn`ed bands per frame, joined at
+   the frame boundary — plus `g9_idiomatic.rs` (`std::thread::spawn` per frame, the honest peer) and
+   `g9_tuned.rs` (a persistent worker pool). **Prismio is 0.89× idiomatic Rust** on it, with 0.13×
+   the allocations, because E-SPAWN-J keeps the spawn argument **T0/stack** while Rust must box a
+   `'static` closure every frame. Hand-tuned Rust is still **1.45×** faster: it has a pool and
+   Prismio cannot express one. [`RESULTS-concurrency.md`](aif/evidence/RESULTS-concurrency.md).
+
+3. **The task handle had no owner.** `prismio_task_release` existed from the day tasks did and
+   codegen never emitted it — every `spawn` leaked one handle, invisible to `--verify` because the
+   handle is plain `calloc`. Released at the **scope exit** (not the join: handles are copyable and
+   nothing stops a second join) and only where E-SPAWN-J proved the join. **frees 23 → 8,019,
+   RSS 2.1 → 1.5 MB, loop flat.**
+
+**The one thing left open, and it is the next sequential work.** A `spawn` argument built in a
+*callee* still leaks: `aif_con_return` has already put its escape at Caller before E-SPAWN-J sees
+it, and `raise_escape` only raises. Two reproductions are in the tree —
+`aif/evidence/xlang/prismio/g9_helper_leak.psm` (80 leaked of 107) and
+`tests/test_69_task_results.psm` (4 of 4). **Do not fix it with an unconditional free at the join**:
+a task result may alias its argument, a handle may be joined twice, and an unjoined task may outlive
+every scope. See the TODO entry for the three candidates.
+
+**Still externally blocked:** the `PRISMIO_INLINE_RUNTIME` remote three-platform gate needs
+commit/push authorisation. It now has **two** discriminating checks waiting to run on it —
+`run_inline_runtime_default_test` and `run_runtime_object_from_ir_test`.
+
+Everything below is retained history.
+
+---
+
+# M5.1 allocator handoff (2026-08-26)
+
+M5.1 is complete and no allocator dependency shipped. A sound direct seam moved generated object
+allocation/release, runtime-owned allocations, verifier shims, and the curated inline module
+together. mimalloc v3.4.5 measured **1.021×** corpus-median loop time with **1.242×** RSS; rpmalloc
+v1.4.5 measured **1.003×** loop time with **1.627×** RSS. Both were rejected and all temporary
+compiler/runtime hooks were removed. The retained-system A/B gate is **0.998×**, suite 166/166,
+fixed point, and AIF differential 17/17. Evidence: `aif/evidence/RESULTS-M5-allocator.md`.
+
+Next sequential work is boxed `OBJECT` replacement ownership. `list_set` must reclaim an
+overwritten object only when no derived `list_get` borrow can still name it. An unconditional free
+is a use-after-free. Research derived borrow liveness, an exclusive replacement operation, and
+compiler-supported unique ownership before choosing. After that, profile the genuinely-cold
+`PRISMIO_OBJ_CACHE=0` regression by compiler stage.
+
+The inline-runtime remote Windows/Linux/macOS gate is still externally blocked on commit/push
+authorization. Do not mark it complete from local evidence.
+
+Everything below is retained history.
+
+---
+
 # M4.4 generic/container layout handoff (2026-08-25)
 
 Current compiler remains `build/m4-dataview-c-12`; suite **166/166**. M4.4 changes no compiler or
@@ -17,7 +126,7 @@ The prior DataView result still holds: natural source is **0.221× Prismio AoS**
 Rust**, and **1.076× hand-tuned Rust SoA**, while the separately labelled tuned Prismio source is at
 hot-loop parity.
 
-Next sequential work is **M5.1: evaluate mimalloc** behind the allocator seam on g1/g3/g4/g5,
+The next work at that point was **M5.1: evaluate mimalloc** behind the allocator seam on g1/g3/g4/g5,
 reporting each workload rather than hiding them in a corpus median. M4.4 also exposed a separate
 backlog item: boxed `OBJECT` replacement cannot reclaim the overwritten value until the compiler
 tracks the end of derived element borrows. It is recorded in TODO and must not be “fixed” by an

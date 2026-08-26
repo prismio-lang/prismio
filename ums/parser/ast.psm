@@ -1,3 +1,4 @@
+import std.string
 enum UmsAstValueKind {
     UNKNOWN,
     STRING,
@@ -6,7 +7,6 @@ enum UmsAstValueKind {
     IDENTIFIER
 }
 
-extern fn str_clone(value: String borrow) -> String produce(free)
 
 enum UmsAstStatementKind {
     UNKNOWN,
@@ -45,7 +45,7 @@ struct UmsAstDocument {
 fn umsAstEmptyValue() -> UmsAstValue {
     return UmsAstValue {
         kind: UmsAstValueKind.UNKNOWN,
-        text: str_clone(""),
+        text: strClone(""),
         line: 0,
         col: 0,
         len: 0
@@ -56,7 +56,7 @@ fn umsAstStatement(kind: UmsAstStatementKind, name: String,
                    line: Int, col: Int, len: Int) -> UmsAstStatement {
     return UmsAstStatement {
         kind: kind,
-        name: str_clone(name),
+        name: strClone(name),
         value: umsAstEmptyValue(),
         arguments: list_new(),
         children: list_new(),

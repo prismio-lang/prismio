@@ -1,3 +1,4 @@
+import std.string
 enum UmsTokenKind {
     UNKNOWN,
     IDENTIFIER,
@@ -14,7 +15,6 @@ enum UmsTokenKind {
     EOF
 }
 
-extern fn str_clone(value: String borrow) -> String produce(free)
 
 struct UmsToken {
     kind: UmsTokenKind,
@@ -25,7 +25,7 @@ struct UmsToken {
 }
 
 fn umsToken(kind: UmsTokenKind, value: String, line: Int, col: Int, len: Int) -> UmsToken {
-    return UmsToken { kind: kind, value: str_clone(value), line: line, col: col, len: len }
+    return UmsToken { kind: kind, value: strClone(value), line: line, col: col, len: len }
 }
 
 fn umsTokenKindName(kind: UmsTokenKind) -> String {

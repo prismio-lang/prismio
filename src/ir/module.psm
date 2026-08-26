@@ -6,6 +6,7 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import std.string
 
 // Keep the language addition inert for programs that do not use it. Runtime
 // declarations are ordinary IR and therefore part of the reproducibility
@@ -17,7 +18,7 @@ fn moduleTreeUsesSlice(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let node = ptr_to_node(nodePtr)
     if (node.kind == NodeKind.SLICE_EXPR) { return true }
-    if (node.kind == NodeKind.TYPE_ANNOTATION and str_equals(node.s1, "Slice") == 1) {
+    if (node.kind == NodeKind.TYPE_ANNOTATION and strEquals(node.s1, "Slice")) {
         return true
     }
     if (moduleTreeUsesSlice(node.child1)) { return true }
@@ -29,13 +30,13 @@ fn moduleTreeUsesSlice(nodePtr: Ptr) -> Bool {
 fn moduleTreeUsesDataView(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let node = ptr_to_node(nodePtr)
-    if (node.kind == NodeKind.TYPE_ANNOTATION and str_equals(node.s1, "DataView") == 1) {
+    if (node.kind == NodeKind.TYPE_ANNOTATION and strEquals(node.s1, "DataView")) {
         return true
     }
     if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)) {
         let callee = ptr_to_node(node.child1)
-        if (str_equals(callee.s1, "soa") == 1 or str_equals(callee.s1, "aos") == 1
-            or str_equals(callee.s1, "data_len") == 1) {
+        if (strEquals(callee.s1, "soa") or strEquals(callee.s1, "aos")
+            or strEquals(callee.s1, "data_len")) {
             return true
         }
     }
@@ -56,7 +57,7 @@ fn generateFunction(func: ASTNode) {
     }
     
     let mut isMain = 0
-    if (str_equals(funcName, "main") == 1) {
+    if (strEquals(funcName, "main")) {
         retType = "i32"
         isMain = 1
     }
@@ -83,7 +84,7 @@ fn generateFunction(func: ASTNode) {
         // asserts exactly the fact `noalias` states, so lowering it is a use of
         // an existing annotation rather than a fifth one.
         let pStore = storageType(mapTypeNode(pTypeNode))
-        let pName = str_concat("p_", paramNode.s1)
+        let pName = strConcat("p_", paramNode.s1)
         if (paramNode.i2 == 1) {
             ir_function_param_unique(pStore, pName)
         } else {
@@ -122,7 +123,7 @@ fn generateFunction(func: ASTNode) {
         ir_set_var_type(paramNode.s1, pTypeStr)
         let pSlot = ir_get_var_slot(paramNode.s1)
         ir_alloca(pStoreType, pSlot)
-        ir_store(pStoreType, str_concat("%p_", paramNode.s1), pSlot)
+        ir_store(pStoreType, strConcat("%p_", paramNode.s1), pSlot)
 
         // The *declared* key, not the storage one: `struct:Point` is what says
         // the slot holds a Point and not an unlabelled address. argc/argv are
@@ -150,7 +151,7 @@ fn generateFunction(func: ASTNode) {
     ir_scope_pop()
     
     if (ir_has_returned() == 0) {
-        if (str_equals(retSigType, "void") == 1) {
+        if (strEquals(retSigType, "void")) {
             ir_ret_void()
         } else {
             if (isMain == 1) {
@@ -182,14 +183,14 @@ fn functionHasStringParam(func: ASTNode) -> Bool {
 fn taskFunctionForCall(call: ASTNode) -> Ptr {
     let callee = ptr_to_node(call.child1)
     let mut symbol = callee.s1
-    if (str_equals(call.s2, "") == 0) { symbol = call.s2 }
+    if (strEquals(call.s2, "") == false) { symbol = call.s2 }
 
     let count = ir_decl_count(callee.s1)
     let mut i = 0
     while (i < count) {
         let decl = ptr_to_node(ir_decl_at(callee.s1, i))
         if (decl.kind == NodeKind.FUNCTION) {
-            if (str_equals(functionSymbolName(decl), symbol) == 1) {
+            if (strEquals(functionSymbolName(decl), symbol)) {
                 return node_to_ptr(decl)
             }
         }
@@ -199,7 +200,7 @@ fn taskFunctionForCall(call: ASTNode) -> Ptr {
 }
 
 fn taskThunkName(func: ASTNode) -> String {
-    return str_concat(functionSymbolName(func), "__task")
+    return strConcat(functionSymbolName(func), "__task")
 }
 
 // A task crosses the C runtime through up to three `void*` slots. A String does
@@ -214,7 +215,7 @@ fn generateTaskThunk(func: ASTNode) {
     let mut paramPtr = func.child1
     let mut i = 0
     while (nodeExists(paramPtr)) {
-        ir_function_param("ptr", str_concat("p_task", int_to_str(i)))
+        ir_function_param("ptr", strConcat("p_task", strFromInt(i)))
         paramPtr = ptr_to_node(paramPtr).next
         i = i + 1
     }
@@ -226,7 +227,7 @@ fn generateTaskThunk(func: ASTNode) {
     while (nodeExists(argPtr)) {
         let param = ptr_to_node(argPtr)
         let paramType = storageType(mapTypeNode(ptr_to_node(param.child1)))
-        let raw = str_concat("%p_task", int_to_str(j))
+        let raw = strConcat("%p_task", strFromInt(j))
         if (isFatStringKey(paramType)) {
             ir_call_arg(paramType, fatFromPtr(raw))
         } else {
@@ -236,7 +237,7 @@ fn generateTaskThunk(func: ASTNode) {
         j = j + 1
     }
 
-    if (str_equals(retType, "void") == 1) {
+    if (strEquals(retType, "void")) {
         ir_call_end("void", functionSymbolName(func))
         ir_ret_void()
     } else {
@@ -250,7 +251,7 @@ fn generateTaskThunk(func: ASTNode) {
 fn collectStringsExpr(expr: ASTNode) {
     if (expr.kind == NodeKind.LITERAL_EXPR) {
         if (expr.i1 == TokenType.STRING_LITERAL) {
-            let strName = str_concat(".str.s", int_to_str(irStringCounter))
+            let strName = strConcat(".str.s", strFromInt(irStringCounter))
             irStringCounter = irStringCounter + 1
             ir_global_string(strName, expr.s1)
             expr.s2 = strName
@@ -362,24 +363,24 @@ fn declareExternFunction(ext: ASTNode) {
 // the clause's intent read literally: a workload needing a real environment is
 // not reproducible and is therefore not a workload.
 fn irRuntimeProvides(name: String) -> Bool {
-    if (str_starts_with(name, "str_") == 1) { return true }
-    if (str_starts_with(name, "list_") == 1) { return true }
-    if (str_starts_with(name, "prismio_rt_") == 1) { return true }
-    if (str_starts_with(name, "rt_") == 1) { return true }
-    if (str_starts_with(name, "rc_") == 1) { return true }
-    if (str_starts_with(name, "arena_") == 1) { return true }
-    if (str_starts_with(name, "cyc_") == 1) { return true }
-    if (str_starts_with(name, "aif_verify_") == 1) { return true }
-    if (str_equals(name, "int_to_str") == 1) { return true }
-    if (str_equals(name, "float_to_str") == 1) { return true }
-    if (str_equals(name, "char_code") == 1) { return true }
-    if (str_equals(name, "malloc") == 1) { return true }
-    if (str_equals(name, "free") == 1) { return true }
+    if (strStartsWith(name, "str_")) { return true }
+    if (strStartsWith(name, "list_")) { return true }
+    if (strStartsWith(name, "prismio_rt_")) { return true }
+    if (strStartsWith(name, "rt_")) { return true }
+    if (strStartsWith(name, "rc_")) { return true }
+    if (strStartsWith(name, "arena_")) { return true }
+    if (strStartsWith(name, "cyc_")) { return true }
+    if (strStartsWith(name, "aif_verify_")) { return true }
+    if (strEquals(name, "int_to_str")) { return true }
+    if (strEquals(name, "float_to_str")) { return true }
+    if (strEquals(name, "char_code")) { return true }
+    if (strEquals(name, "malloc")) { return true }
+    if (strEquals(name, "free")) { return true }
     // `exit` is deliberately provided. A workload that exits early has measured
     // whatever ran before it, which is a smaller sample and not a broken one --
     // stubbing it would turn a program that stops into one that runs on past the
     // point its author meant it to stop, which is worse.
-    if (str_equals(name, "exit") == 1) { return true }
+    if (strEquals(name, "exit")) { return true }
     return false
 }
 
@@ -397,7 +398,7 @@ fn generateExternStub(ext: ASTNode) {
     while (nodeExists(paramPtr)) {
         let paramNode = ptr_to_node(paramPtr)
         let pTypeNode = ptr_to_node(paramNode.child1)
-        ir_function_param(storageType(mapTypeNode(pTypeNode)), str_concat("p_s", int_to_str(i)))
+        ir_function_param(storageType(mapTypeNode(pTypeNode)), strConcat("p_s", strFromInt(i)))
         i = i + 1
         paramPtr = paramNode.next
     }
@@ -407,9 +408,9 @@ fn generateExternStub(ext: ASTNode) {
     ir_call_arg("ptr", ir_get_temp_name(ir_const_cstring(ext.s1)))
     ir_call_end("i64", "rt_workload_stub")
 
-    if (str_equals(retSig, "void") == 1) {
+    if (strEquals(retSig, "void")) {
         ir_ret_void()
-    } else if (str_equals(retSig, "ptr") == 1) {
+    } else if (strEquals(retSig, "ptr")) {
         ir_ret("ptr", "null")
     } else {
         ir_ret(retSig, "0")
@@ -470,7 +471,7 @@ fn generateWorkloadDriver(workload: ASTNode, profilePath: String) {
     ir_br_numbered(headLabel)
     ir_label_numbered(headLabel)
     let cur = ir_get_temp_name(ir_load("i32", counterSlot))
-    let more = ir_get_temp_name(ir_icmp_slt("i32", cur, int_to_str(workload.i1)))
+    let more = ir_get_temp_name(ir_icmp_slt("i32", cur, strFromInt(workload.i1)))
     ir_cond_br_numbered(more, bodyLabel, doneLabel)
 
     ir_label_numbered(bodyLabel)
@@ -492,7 +493,7 @@ fn generateWorkloadDriver(workload: ASTNode, profilePath: String) {
     ir_call_begin()
     ir_call_arg("ptr", ir_get_temp_name(ir_const_cstring(profilePath)))
     ir_call_arg("ptr", ir_get_temp_name(ir_const_cstring(workload.s1)))
-    ir_call_arg("i32", int_to_str(workload.i1))
+    ir_call_arg("i32", strFromInt(workload.i1))
     ir_call_end("i32", "rt_profile_dump")
 
     ir_scope_pop()
@@ -591,7 +592,7 @@ fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
         let depType = fieldTypeFor(module, ptr_to_node(depField.child1))
         if (isStructTypeKey(depType)) {
             let depName = structTypeName(depType)
-            if (str_equals(depName, structNode.s1) == 0) {
+            if (strEquals(depName, structNode.s1) == false) {
                 let depDecl = findStructDeclNamed(module, depName)
                 if (nodeExists(node_to_ptr(depDecl))) {
                     generateStructDecl(depDecl, module)
@@ -619,7 +620,7 @@ fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
     let mut emitted = 0
     while (i < irFieldCountOf(structNode)) {
         let chosen = aif_layout_field(structNode.s1, i)
-        if (str_equals(chosen, "") == 0) {
+        if (strEquals(chosen, "") == false) {
             let field = findStructField(structNode, chosen)
             if (nodeExists(node_to_ptr(field))) {
                 let fieldType = fieldTypeFor(module, ptr_to_node(field.child1))
@@ -663,7 +664,7 @@ fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
 // Named rather than numbered so the IR reads, and so two builds of the same
 // program name the same function -- the manifest is diffed and so is the IR.
 fn releaseFnName(typeName: String) -> String {
-    return str_concat("__aif_release_", typeName)
+    return strConcat("__aif_release_", typeName)
 }
 
 // Emits one release per owned field, then frees the object.
@@ -771,7 +772,7 @@ fn generateReleaseFn(structNode: ASTNode) {
 // the skeleton into the string and token graphs hanging off it, which are
 // usually far larger.
 fn cyclicChildrenFnName(typeName: String) -> String {
-    return str_concat("__aif_cyclic_children_", typeName)
+    return strConcat("__aif_cyclic_children_", typeName)
 }
 
 fn generateCyclicChildrenFn(structNode: ASTNode) {
@@ -829,7 +830,7 @@ fn findStructField(structNode: ASTNode, name: String) -> ASTNode {
     let mut p = structNode.child1
     while (nodeExists(p)) {
         let f = ptr_to_node(p)
-        if (str_equals(f.s1, name) == 1) { return f }
+        if (strEquals(f.s1, name)) { return f }
         p = f.next
     }
     return ptr_to_node(ptr_null())
@@ -1244,6 +1245,12 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_param("ptr")
     ir_declare_function_end()
 
+    ir_declare_function_begin("list_set_exclusive", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
     ir_declare_function_begin("list_len", "i32")
     ir_declare_function_param("ptr")
     ir_declare_function_end()
@@ -1351,7 +1358,7 @@ fn generateModule(module: ASTNode) {
                         collectStringsExpr(initNode)
                         globalStrName = initNode.s2
                         globalStrLen = __builtin_string_len(initNode.s1)
-                        initVal = str_concat("@", initNode.s2)
+                        initVal = strConcat("@", initNode.s2)
                     } else {
                         initVal = initNode.s1
                     }
@@ -1368,7 +1375,7 @@ fn generateModule(module: ASTNode) {
             // A String global is a constant *pair*, which cannot be spelled in
             // the text initialiser every other type uses -- so it goes to
             // ir_global_str_var, which builds the constant instead.
-            if (str_equals(storageType(varType), "struct:prismio.str") == 1) {
+            if (strEquals(storageType(varType), "struct:prismio.str")) {
                 ir_global_str_var(stmt.s1, globalStrName, globalStrLen)
             } else {
                 ir_global_var(stmt.s1, storageType(varType), initVal, 0)
@@ -1387,7 +1394,7 @@ fn generateModule(module: ASTNode) {
         
         if (stmt.kind == NodeKind.FUNCTION) {
             let mut retType = getDeclaredReturnType(stmt, stmt.child3)
-            if (str_equals(stmt.s1, "main") == 1) {
+            if (strEquals(stmt.s1, "main")) {
                 retType = "i32"
             }
             ir_set_fn_return_type(functionSymbolName(stmt), retType)
@@ -1409,7 +1416,7 @@ fn generateModule(module: ASTNode) {
             // is skipped rather than emitted and shadowed. Two definitions of one
             // symbol is a link error, and picking which one wins by link order is
             // exactly the kind of thing that works until it does not.
-            if (irProfileMode and str_equals(stmt2.s1, "main") == 1) {
+            if (irProfileMode and strEquals(stmt2.s1, "main")) {
                 // replaced by generateWorkloadDriver
             } else {
                 generateFunction(stmt2)

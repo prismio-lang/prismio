@@ -4,6 +4,8 @@ import lexer.token
 import common.text
 import ast.nodes
 import common.diagnostics
+import std.string
+import std.option
 
 extern fn exit(code: Int)
 
@@ -91,7 +93,7 @@ fn parseRegionStatement(p: Parser) -> ASTNode {
         regionNode.s1 = name.value
         parserAdvance(p)
     } else {
-        parserFatal(p, str_concat("expected a name for the region, found ",
+        parserFatal(p, strConcat("expected a name for the region, found ",
                                    parserDescribe(name)))
     }
 
@@ -108,9 +110,9 @@ fn parseRegionStatement(p: Parser) -> ASTNode {
         parserExpectVal(p, TokenType.SEPARATOR, "(", "region budget")
         let cap = parserCurrent(p)
         if (cap.type != TokenType.NUMBER_LITERAL) {
-            parserFatal(p, str_concat("expected a byte budget, found ", parserDescribe(cap)))
+            parserFatal(p, strConcat("expected a byte budget, found ", parserDescribe(cap)))
         }
-        regionNode.i1 = str_to_int(cap.value)
+        regionNode.i1 = optionOr(strParseInt(cap.value), 0)
         parserAdvance(p)
         parserExpectVal(p, TokenType.SEPARATOR, ")", "region budget")
     }
@@ -175,7 +177,7 @@ fn parseMatchStatement(p: Parser) -> ASTNode {
 fn parseReturnStatement(p: Parser) -> ASTNode {
     let retNode = parserNode(p, NodeKind.RETURN_STATEMENT)
     let next = parserCurrent(p)
-    if (next.type != TokenType.SEPARATOR or str_equals(next.value, "}") == 0) {
+    if (next.type != TokenType.SEPARATOR or strEquals(next.value, "}") == false) {
         retNode.child1 = node_to_ptr(parseExpression(p, 0))
     }
     return retNode
@@ -189,12 +191,12 @@ fn parseReturnStatement(p: Parser) -> ASTNode {
 // silently doing it, and the workaround is to write the assignment out in full.
 fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: Token,
                             first: Token) -> ASTNode {
-    let op = str_substring(operatorToken.value, 0, 1)
+    let op = strSubstring(operatorToken.value, 0, 1)
     parserAdvance(p)
 
     if (target.kind != NodeKind.IDENTIFIER_EXPR) {
         diag_error_at(target.file, target.line, target.col, target.len,
-            str_concat(str_concat("compound assignment ", diagQuote(operatorToken.value)),
+            strConcat(strConcat("compound assignment ", diagQuote(operatorToken.value)),
                        " requires a plain variable on the left"))
         diag_note("the desugaring names the target twice, so a subexpression here would be evaluated twice; write the assignment out in full instead")
         diag_finish()

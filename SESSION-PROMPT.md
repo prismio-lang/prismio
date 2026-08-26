@@ -12,16 +12,62 @@ The rule that decides which side anything falls on:
 > **If getting it wrong produces a miscompile, it belongs to the compiler.**
 > **If getting it wrong produces a link error or a missing feature, it does not.**
 
-**Current verified compiler: `build/m4-dataview-c-12`.** Suite **166/166**. It reaches a fixed point
-and passes the 17-source AIF differential. M4 is complete: M4.4 proves concrete generic clones choose
-inline or boxed container operations only after substitution. Start with M5.1's allocator
-experiment, using `aif/evidence/RESULTS-M4-generic-layout.md` and the existing cross-language
-corpus as the baseline. Do not run
-the suite concurrently with benchmarks: several runner checks and the object cache use fixed paths.
+**Current verified compiler: `build/nostr-4`.** Suite **172/172**, fixed point, 18-source AIF
+differential. M5.1, boxed `OBJECT` replacement, the cold-compile regression, the concurrency corpus
+gap, the task-handle leak, the `Int`-width question and the C string layer are all closed. Do not
+run the suite concurrently with benchmarks: several runner checks and the object cache use fixed
+paths.
+
+## Start here — two ownership guards, and neither may simply be removed
+
+Both are reproduced by a fixture in `tests/` that is deliberately not named `test_*` (so the runner
+does not execute it), and both differ from a clean program by one line.
+
+1. **`tests/owned_temporary_argument.psm` — an owned call result used directly as an argument has
+   no owner.** `aif_owns_call_result_at_node` is asked at a *binding*; a temporary is never bound.
+   **Bound 27/27/0, unbound 107/27/80.** An automatic region usually reclaims the value in bulk;
+   `prismio aif --why` names the exact moment it cannot ("0 of 4 call sites lie inside a region")
+   and the repair it wants ("have the caller allocate and pass it in — restores T1, no runtime
+   cost"). *Recorded first as a `spawn` defect, which was wrong: removing the spawn leaks
+   identically.*
+   **The guard it needs**: releasing every owned temporary is a use-after-free wherever the callee
+   retains it. `list_push`'s FFI contract already answers `RETAIN_IN_BASE`; a Prismio callee needs
+   the same question answered from the escape facts *before* any drop is emitted.
+
+2. **`tests/owned_return_depth2.psm` — ownership does not survive a second return.**
+   `if (sites[s].fn != c->fn) return AIF_ELEM_NONE;` in `aif_support.c`. Depth 1 is **6/6/0**; one
+   more level of call depth gives **12/7/5**. It needs the transitive fact — the site escaped to
+   Caller through every intermediate frame and no intermediate frame owns it — which is a
+   fixed-point change, not a predicate change.
+
+**Neither guard is arbitrary. Both prevent double frees, which is a worse category than the leak
+they cause.** `tests/test_72_reassigned_ownership.psm` is deliberately still on the C `str_concat`
+because of (2), and its header says so. Enumerate the existing owners before adding any free — that
+warning is in the tree because an earlier attempt collided with three.
+
+**The ranked list from here:**
+
+1. The two ownership guards above.
+2. **Concurrency has a thread-pool-shaped gap.** Hand-tuned Rust is **1.44×** faster on `g9`
+   because it starts four workers once; `spawn` is one `pthread_create` per task and the language
+   cannot express a reusable worker. Largest measured concurrency prize, and a language question.
+3. **Debug-mode overflow checking.** `Int` wraps silently; this session tripped over it three
+   times. Rust's model (check in debug, wrap in release), priced at **4.1–4.4×** so it can only be
+   a debug mode.
+4. **Finish the `PRISMIO_INLINE_RUNTIME` default gate** — externally blocked on push
+   authorisation. Three discriminating checks are waiting on the remote matrix.
+5. **Four C string functions survive only as an FFI test surface.** `str_concat`, `str_substring`,
+   `str_equals`, `int_to_str` and `str_slice` stay in `lang_runtime.c` only because 13 AIF fixtures
+   and one benchmark declare them. Give those fixtures a purpose-built foreign surface instead.
+
+**Before you measure anything.** `Int` is **32 bits and wraps** — a cross-language port must compute
+in `i32` with `wrapping_*` or the checksums disagree. `PRISMIO_BUILD_TRACE=1` prints one wall-clock
+line per build stage. And `prismio aif <src> --why=<symbol>` answers tier and placement questions
+directly; it is faster and more reliable than reasoning from a recorded blocker.
 
 ---
 
-## Start here — the standing benchmark is current; decide the runtime default next
+## Start here — allocator evaluation is closed; prove replacement ownership next
 
 **M2's implemented work finished 2026-08-23; its remaining research was retired 2026-08-25.** Read
 [`TODO.md`](TODO.md) § "M2 — closing state" first; it is one table and three numbered facts.
@@ -44,11 +90,10 @@ measured-workload trigger in TODO.
 
 1. **Finish the `PRISMIO_INLINE_RUNTIME` default gate.** Default-on and its discriminating test are
    implemented and locally green; observe the new check on the remote Windows/Linux/macOS matrix.
-2. **M5.1 — evaluate mimalloc** on g1/g3/g4/g5, which still allocate 10.7×–21.3× more than Rust.
-3. **Boxed `OBJECT` replacement borrow-liveness.** Recorded, but do not replace the conservative
+2. **Boxed `OBJECT` replacement borrow-liveness.** Do not replace the conservative
    leak with an unconditional free; prove derived `list_get` borrows dead or add an exclusive API.
-4. **M2 is retired until measured evidence reactivates it.** Investigate the genuinely-cold
-   19–28% compile regression if first-build latency matters more.
+3. **Genuinely-cold compile regression.** Profile the 19–28% `PRISMIO_OBJ_CACHE=0` loss by stage.
+4. **M2 is retired until measured evidence reactivates it.**
 
 **Before anything else, read TODO § M2.1a-ii's two attempt notes.** Two working implementations
 were built and reverted there, and both reverts were byte-clean. The cheapest thing in this file is
@@ -124,8 +169,8 @@ same date) then produced five items, ranked here by measured prize:
      prior g2 number was measured on, and `milestone_bench` checks its checksums before it times
      anything.
    - **Nothing in the corpus is a plausible-and-absent arena any more**, and every ledger is
-     clean. Placement and inline flat elements are done; the remaining allocation experiment is
-     M5.1 on the four programs that still allocate more than Rust.
+     clean. Placement and inline flat elements are done. M5.1 subsequently measured direct
+     mimalloc and rpmalloc and rejected both; allocation-count reductions remain the useful lever.
 
 2b. **M2 (reuse analysis) is not the next item, and its premise is wrong as written.** Reuse
    tokens pair a dead value with a same-size constructor *in the same branch*; `match` appears in

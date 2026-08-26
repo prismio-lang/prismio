@@ -20,9 +20,9 @@
 // code rather than a number nobody reads.
 
 import std.io
+import std.string
 extern fn print(s: String)
 extern fn println(s: String)
-extern fn int_to_str(n: Int) -> String produce(free)
 extern fn list_new() -> List<Cell>
 extern fn list_push(l: List<Cell>, item: Cell retain_in(0))
 extern fn list_get(l: List<Cell>, i: Int) -> Cell alias
@@ -137,7 +137,7 @@ fn main() -> Int {
     // sum(hits) = 50*40 = 2000; sum(spare2) = sum(i+1 for i in 0..49) = 1275.
     let got = checksum(cells)
     print("checksum ")
-    println(int_to_str(got))
+    println(strFromInt(got))
     if (got != 3275) {
         println("FAIL: checksum is wrong")
         exit(1)

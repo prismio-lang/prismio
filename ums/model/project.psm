@@ -1,7 +1,7 @@
 import ums.targets.target
 import ums.dependency.dependency
+import std.string
 
-extern fn str_clone(value: String borrow) -> String produce(free)
 
 struct UmsProjectMetadata {
     name: String,
@@ -28,17 +28,17 @@ struct UmsProjectModel {
 
 fn umsProjectModel(root: String, manifestPath: String, profile: String) -> UmsProjectModel {
     return UmsProjectModel {
-        root: str_clone(root),
-        manifestPath: str_clone(manifestPath),
+        root: strClone(root),
+        manifestPath: strClone(manifestPath),
         metadata: UmsProjectMetadata {
-            name: str_clone(""),
-            version: str_clone(""),
-            prismioVersion: str_clone("")
+            name: strClone(""),
+            version: strClone(""),
+            prismioVersion: strClone("")
         },
         build: UmsBuildConfiguration {
-            profile: str_clone(profile),
-            stateDirectory: str_clone(".prismio"),
-            buildDirectory: str_clone("build")
+            profile: strClone(profile),
+            stateDirectory: strClone(".prismio"),
+            buildDirectory: strClone("build")
         },
         targets: list_new(),
         dependencies: list_new()

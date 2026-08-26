@@ -26,11 +26,9 @@
 // days (see test_68), so this file exercises the round-trip on purpose.
 
 import std.io
+import std.string
 extern fn print(s: String)
 extern fn println(s: String)
-extern fn int_to_str(n: Int) -> String
-extern fn str_concat(a: String, b: String) -> String
-extern fn str_equals(a: String, b: String) -> Int
 
 struct Job {
     lo: Int,
@@ -47,7 +45,7 @@ fn count_span(j: Job) -> Int {
 }
 
 fn name_span(j: Job) -> String {
-    return str_concat("span-", int_to_str(j.hi - j.lo))
+    return strConcat("span-", strFromInt(j.hi - j.lo))
 }
 
 fn summarise(j: Job) -> Report {
@@ -67,7 +65,7 @@ fn int_result() -> Int {
 
 fn string_result() -> Int {
     let t = spawn name_span(Job { lo: 0, hi: 4 })
-    if (str_equals(join t, "span-4") == 1) {
+    if (strEquals(join t, "span-4")) {
         return 1
     }
     return 0
@@ -91,7 +89,7 @@ fn void_result() -> Int {
 fn result_type_survives_a_binding() -> Int {
     let t = spawn name_span(Job { lo: 0, hi: 7 })
     let u = t
-    if (str_equals(join u, "span-7") == 1) {
+    if (strEquals(join u, "span-7")) {
         return 1
     }
     return 0
@@ -115,9 +113,9 @@ fn check(name: String, got: Int, want: Int) -> Int {
     print("FAIL ")
     print(name)
     print(": got ")
-    print(int_to_str(got))
+    print(strFromInt(got))
     print(" want ")
-    println(int_to_str(want))
+    println(strFromInt(want))
     return 1
 }
 

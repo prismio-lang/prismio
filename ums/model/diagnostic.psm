@@ -2,10 +2,9 @@
 // the compiler's diagnostic registry lets UMS be embedded by other Prismio tools.
 
 import std.io
+import std.string
 extern fn print(value: String)
 extern fn println(value: String)
-extern fn int_to_str(value: Int) -> String
-extern fn str_clone(value: String borrow) -> String produce(free)
 
 struct UmsDiagnostic {
     code: String,
@@ -23,12 +22,12 @@ fn umsDiagnostics() -> List<UmsDiagnostic> {
 fn umsDiagnosticAdd(diagnostics: List<UmsDiagnostic>, code: String, path: String,
                     line: Int, col: Int, len: Int, message: String) {
     list_push(diagnostics, UmsDiagnostic {
-        code: str_clone(code),
-        path: str_clone(path),
+        code: strClone(code),
+        path: strClone(path),
         line: line,
         col: col,
         len: len,
-        message: str_clone(message)
+        message: strClone(message)
     })
 }
 
@@ -37,9 +36,9 @@ fn umsDiagnosticPrint(diagnostic: UmsDiagnostic) {
         print(diagnostic.path)
         if (diagnostic.line > 0) {
             print(":")
-            print(int_to_str(diagnostic.line))
+            print(strFromInt(diagnostic.line))
             print(":")
-            print(int_to_str(diagnostic.col))
+            print(strFromInt(diagnostic.col))
         }
         print(": ")
     }

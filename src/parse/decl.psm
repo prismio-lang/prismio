@@ -5,6 +5,8 @@ import lexer.token
 import common.text
 import ast.nodes
 import common.diagnostics
+import std.string
+import std.option
 
 fn parseDeclaration(p: Parser) -> ASTNode {
     if (parserCheckVal(p, TokenType.KEYWORD, "import")) { return parseImportStatement(p) }
@@ -20,7 +22,7 @@ fn parseDeclaration(p: Parser) -> ASTNode {
     // reports three errors instead of only the first.
     let bad = parserNode(p, NodeKind.ERROR_NODE)
     let current = parserCurrent(p)
-    parserError(p, str_concat(str_concat("expected a declaration, found ", parserDescribe(current)),
+    parserError(p, strConcat(strConcat("expected a declaration, found ", parserDescribe(current)),
                                " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`)"))
     parserSynchronize(p)
     return bad
@@ -45,7 +47,7 @@ fn parseDeclaration(p: Parser) -> ASTNode {
 // had written one.
 fn parserExpectCloseAngle(p: Parser, context: String) {
     let current = parserCurrent(p)
-    if (str_equals(current.value, ">>") == 1) {
+    if (strEquals(current.value, ">>")) {
         current.value = ">"
         current.type = TokenType.RELATIONAL_OPERATOR
         return
@@ -74,10 +76,10 @@ fn parseGenericParams(p: Parser) -> String {
     loop {
         let name = parserCurrent(p)
         parserExpect(p, TokenType.IDENTIFIER, "type parameter name")
-        if (str_equals(params, "") == 1) {
+        if (strEquals(params, "")) {
             params = name.value
         } else {
-            params = str_concat(str_concat(params, ","), name.value)
+            params = strConcat(strConcat(params, ","), name.value)
         }
         if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
     }
@@ -121,7 +123,7 @@ fn parseTypeAnnotation(p: Parser) -> ASTNode {
         typeNode.s1 = name.value
         parserAdvance(p)
     } else {
-        parserFatal(p, str_concat("expected a type name, found ", parserDescribe(name)))
+        parserFatal(p, strConcat("expected a type name, found ", parserDescribe(name)))
     }
 
     // A type constructor applied to arguments: `List<Int>`, `Map<String, Int>`.
@@ -168,11 +170,11 @@ fn parserAtAnnotation(p: Parser, name: String) -> Bool {
     if (parserCheck(p, TokenType.IDENTIFIER) == false) { return false }
 
     let current = parserCurrent(p)
-    if (str_equals(current.value, name) == 0) { return false }
+    if (strEquals(current.value, name) == false) { return false }
 
     let next = parserPeek(p)
-    if (str_equals(name, "pin") == 1) {
-        return str_equals(next.value, "(") == 1
+    if (strEquals(name, "pin")) {
+        return strEquals(next.value, "(")
     }
     return next.type == TokenType.IDENTIFIER
 }
@@ -184,14 +186,14 @@ fn parseAifAnnotations(p: Parser, node: ASTNode) {
     loop {
         if (parserAtAnnotation(p, "unique")) {
             parserExpect(p, TokenType.IDENTIFIER, "unique annotation")
-            node.s2 = str_concat(node.s2, "unique ")
+            node.s2 = strConcat(node.s2, "unique ")
         } else if (parserAtAnnotation(p, "pin")) {
             parserExpect(p, TokenType.IDENTIFIER, "pin annotation")
             parserExpectVal(p, TokenType.SEPARATOR, "(", "pin tier")
             let tier = parserCurrent(p)
             parserExpect(p, TokenType.IDENTIFIER, "a tier name such as T1")
             parserExpectVal(p, TokenType.SEPARATOR, ")", "pin tier")
-            node.s2 = str_concat(node.s2, str_concat(str_concat("pin:", tier.value), " "))
+            node.s2 = strConcat(node.s2, strConcat(strConcat("pin:", tier.value), " "))
         } else {
             break
         }
@@ -231,13 +233,13 @@ fn parseAifAnnotations(p: Parser, node: ASTNode) {
 // at all -- there is no static-root invalidation to switch off. They trail the
 // declaration, so adding them later breaks nothing.
 fn isFfiContractName(name: String) -> Bool {
-    if (str_equals(name, "borrow") == 1) { return true }
-    if (str_equals(name, "retain") == 1) { return true }
-    if (str_equals(name, "retain_in") == 1) { return true }
-    if (str_equals(name, "consume") == 1) { return true }
-    if (str_equals(name, "out") == 1) { return true }
-    if (str_equals(name, "alias") == 1) { return true }
-    if (str_equals(name, "produce") == 1) { return true }
+    if (strEquals(name, "borrow")) { return true }
+    if (strEquals(name, "retain")) { return true }
+    if (strEquals(name, "retain_in")) { return true }
+    if (strEquals(name, "consume")) { return true }
+    if (strEquals(name, "out")) { return true }
+    if (strEquals(name, "alias")) { return true }
+    if (strEquals(name, "produce")) { return true }
     return false
 }
 
@@ -245,8 +247,8 @@ fn isFfiContractName(name: String) -> Bool {
 // `borrow(3)` is a syntax error where it is written rather than a silently
 // ignored suffix.
 fn ffiContractTakesArgument(name: String) -> Bool {
-    if (str_equals(name, "retain_in") == 1) { return true }
-    if (str_equals(name, "produce") == 1) { return true }
+    if (strEquals(name, "retain_in")) { return true }
+    if (strEquals(name, "produce")) { return true }
     return false
 }
 
@@ -267,13 +269,13 @@ fn parseFfiContract(p: Parser, annotation: ASTNode) {
         let argumentText = argument.value
         parserAdvance(p)
         parserExpectVal(p, TokenType.SEPARATOR, ")", "contract argument")
-        annotation.s2 = str_concat(str_concat(name, ":"), argumentText)
+        annotation.s2 = strConcat(strConcat(name, ":"), argumentText)
         return
     }
 
     if (parserCheckVal(p, TokenType.SEPARATOR, "(")) {
         diag_error_at(current.file, current.line, current.col, __builtin_string_len(name),
-            str_concat(str_concat("the ", diagQuote(name)), " contract takes no argument"))
+            strConcat(strConcat("the ", diagQuote(name)), " contract takes no argument"))
         diag_note("only `retain_in(k)` and `produce(free_fn)` are parameterised")
     }
 
@@ -421,7 +423,7 @@ fn parseFunctionDecl(p: Parser) -> ASTNode {
 fn parserAtWorkload(p: Parser) -> Bool {
     if (parserCheck(p, TokenType.IDENTIFIER) == false) { return false }
     let current = parserCurrent(p)
-    if (str_equals(current.value, "workload") == 0) { return false }
+    if (strEquals(current.value, "workload") == false) { return false }
     return parserPeek(p).type == TokenType.IDENTIFIER
 }
 
@@ -460,24 +462,24 @@ fn parseWorkloadDecl(p: Parser) -> ASTNode {
         }
 
         let clause = parserCurrent(p)
-        if (str_equals(clause.value, "setup") == 1) {
+        if (strEquals(clause.value, "setup")) {
             parserAdvance(p)
             if (nodeExists(node.child1)) {
                 parserError(p, "duplicate `setup` in this workload")
             }
             node.child1 = node_to_ptr(parseBlock(p))
-        } else if (str_equals(clause.value, "measure") == 1) {
+        } else if (strEquals(clause.value, "measure")) {
             parserAdvance(p)
             if (sawMeasure) {
                 parserError(p, "duplicate `measure` in this workload")
             }
             sawMeasure = true
             node.child2 = node_to_ptr(parseBlock(p))
-        } else if (str_equals(clause.value, "repeat") == 1) {
+        } else if (strEquals(clause.value, "repeat")) {
             parserAdvance(p)
             node.i1 = parseWorkloadCount(p, "repeat")
         } else {
-            parserError(p, str_concat(str_concat("expected `setup`, `measure` or `repeat`, found ",
+            parserError(p, strConcat(strConcat("expected `setup`, `measure` or `repeat`, found ",
                                                   parserDescribe(clause)),
                                        " in this workload"))
             parserSynchronize(p)
@@ -499,16 +501,16 @@ fn parseWorkloadDecl(p: Parser) -> ASTNode {
 fn parseWorkloadCount(p: Parser, clause: String) -> Int {
     let tok = parserCurrent(p)
     if (tok.type != TokenType.NUMBER_LITERAL) {
-        parserFatal(p, str_concat(str_concat("expected a count after `", clause), "`"))
+        parserFatal(p, strConcat(strConcat("expected a count after `", clause), "`"))
     }
-    let n = str_to_int(tok.value)
+    let n = optionOr(strParseInt(tok.value), 0)
     parserAdvance(p)
     // Zero repeats profiles nothing and a negative one is meaningless; both would
     // reach the runner and produce an empty profile that reads as a failed run.
     // Rejecting here keeps W2's fallback meaning "the workload failed", not "the
     // workload was written to do nothing".
     if (n < 1) {
-        parserError(p, str_concat(str_concat("`", clause), "` must be at least 1"))
+        parserError(p, strConcat(strConcat("`", clause), "` must be at least 1"))
         return 1
     }
     return n

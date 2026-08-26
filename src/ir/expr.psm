@@ -4,6 +4,7 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import std.string
 
 // `and` / `or` with the right-hand side evaluated only when it can change the
 // answer. Previously both operands were generated unconditionally and combined
@@ -18,9 +19,9 @@ import common.diagnostics
 // with a dot, which no Prismio identifier can contain, so it can never collide
 // with a user variable.
 fn generateShortCircuit(expr: ASTNode) -> String {
-    let isAnd = str_equals(expr.s1, "and") == 1
+    let isAnd = strEquals(expr.s1, "and")
 
-    let slot = str_concat("sc.", int_to_str(irShortCircuitCounter))
+    let slot = strConcat("sc.", strFromInt(irShortCircuitCounter))
     irShortCircuitCounter = irShortCircuitCounter + 1
     ir_alloca("i1", slot)
 
@@ -72,7 +73,7 @@ fn nodeAssignsName(nodePtr: Ptr, name: String) -> Bool {
     if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
         if (nodeExists(n.child1)) {
             let target = ptr_to_node(n.child1)
-            if (target.kind == NodeKind.IDENTIFIER_EXPR and str_equals(target.s1, name) == 1) {
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and strEquals(target.s1, name)) {
                 return true
             }
         }
@@ -146,7 +147,7 @@ fn nodeAssignsUnowned(nodePtr: Ptr, name: String) -> Bool {
     if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
         if (nodeExists(n.child1)) {
             let target = ptr_to_node(n.child1)
-            if (target.kind == NodeKind.IDENTIFIER_EXPR and str_equals(target.s1, name) == 1) {
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and strEquals(target.s1, name)) {
                 if (nodeProducesOwnedValue(n.child2) == false) { return true }
             }
         }
@@ -205,7 +206,7 @@ fn nodeReturnsName(nodePtr: Ptr, name: String) -> Bool {
     if (n.kind == NodeKind.RETURN_STATEMENT) {
         if (nodeExists(n.child1)) {
             let value = ptr_to_node(n.child1)
-            if (value.kind == NodeKind.IDENTIFIER_EXPR and str_equals(value.s1, name) == 1) {
+            if (value.kind == NodeKind.IDENTIFIER_EXPR and strEquals(value.s1, name)) {
                 return true
             }
         }
@@ -221,6 +222,40 @@ fn chainReturnsName(head: Ptr, name: String) -> Bool {
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
         if (nodeReturnsName(p, name)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+// Whether `name` is ever the whole initialiser of another binding -- `let u = t`.
+//
+// Asked only of a task handle. Every other droppable binding gets this for free:
+// an identifier initialiser registers no site, so the second binding is not
+// droppable and the first one's own entry still owns the value. A task handle is
+// droppable because of the *spawn*, not because of a site, so that reasoning does
+// not reach it and the copy has to be excluded by name. `test_69`'s
+// `result_type_survives_a_binding` is the shape, and it is in the suite.
+fn nodeCopiesName(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+
+    if (n.kind == NodeKind.VARIABLE_DECL and nodeExists(n.child2)) {
+        let init = ptr_to_node(n.child2)
+        if (init.kind == NodeKind.IDENTIFIER_EXPR and strEquals(init.s1, name)) {
+            return true
+        }
+    }
+
+    if (chainCopiesName(n.child1, name)) { return true }
+    if (chainCopiesName(n.child2, name)) { return true }
+    return chainCopiesName(n.child3, name)
+}
+
+fn chainCopiesName(head: Ptr, name: String) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (nodeCopiesName(p, name)) { return true }
         p = n.next
     }
     return false
@@ -286,7 +321,7 @@ fn irProfileRange(structName: String, fieldName: String, fieldType: String, valu
     // 4294967295 would make the observed range span the whole word and decline a
     // packing that is in fact available.
     let mut wide = value
-    if (str_equals(fieldType, "i64") == 0) {
+    if (strEquals(fieldType, "i64") == false) {
         wide = ir_get_temp_name(ir_sext(fieldType, value, "i64"))
     }
     ir_call_begin()
@@ -304,10 +339,10 @@ fn irProfileAlloc(structName: String) {
 }
 
 fn irTypeIsProfilableInt(t: String) -> Bool {
-    if (str_equals(t, "i8") == 1) { return true }
-    if (str_equals(t, "i16") == 1) { return true }
-    if (str_equals(t, "i32") == 1) { return true }
-    if (str_equals(t, "i64") == 1) { return true }
+    if (strEquals(t, "i8")) { return true }
+    if (strEquals(t, "i16")) { return true }
+    if (strEquals(t, "i32")) { return true }
+    if (strEquals(t, "i64")) { return true }
     return false
 }
 
@@ -324,7 +359,7 @@ fn irTypeIsProfilableInt(t: String) -> Bool {
 // access cannot disagree about which types are inline -- a disagreement would
 // read a body as a pointer.
 fn inlineElemSize(typeName: String) -> Int {
-    if (str_equals(typeName, "") == 1) { return 0 }
+    if (strEquals(typeName, "")) { return 0 }
     if (ir_struct_is_flat(typeName) == 0) { return 0 }
     // A counted element cannot be inline: the count lives in a header in front
     // of the object and an inline body has neither header nor identity. See
@@ -444,7 +479,7 @@ fn inlineElemSizeOfCall(expr: ASTNode) -> Int {
 //
 // True when it emitted the call itself.
 fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
-    if (str_equals(funcName, "list_push") == 0) { return false }
+    if (strEquals(funcName, "list_push") == false) { return false }
     if (nodeIsNull(expr.child2)) { return false }
     let listNode = ptr_to_node(expr.child2)
     if (nodeIsNull(listNode.next)) { return false }
@@ -457,7 +492,7 @@ fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
     let listVal = generateExpression(listNode)
     ir_call_begin()
     ir_call_arg("ptr", listVal)
-    ir_call_arg("i32", int_to_str(esize))
+    ir_call_arg("i32", strFromInt(esize))
     let slot = ir_get_temp_name(ir_call_end("ptr", "list_push_slot"))
     generateStructLiteralFields(valueNode, valueNode.s1, slot)
     return true
@@ -470,15 +505,15 @@ fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
 // with no list inline at all**. See the note on `elem_size` in
 // runtime/lang_runtime.c.
 fn inlineOpName(funcName: String) -> String {
-    if (str_equals(funcName, "list_get") == 1) { return "list_get_inline" }
-    if (str_equals(funcName, "list_set") == 1) { return "list_set_inline" }
-    if (str_equals(funcName, "list_push") == 1) { return "list_push_inline" }
+    if (strEquals(funcName, "list_get")) { return "list_get_inline" }
+    if (strEquals(funcName, "list_set")) { return "list_set_inline" }
+    if (strEquals(funcName, "list_push")) { return "list_push_inline" }
     return ""
 }
 
 fn generateElemInlineStamp(expr: ASTNode, funcName: String, result: String) {
-    if (str_equals(funcName, "list_new") == 0
-        and str_equals(funcName, "list_new_with_capacity") == 0) {
+    if (strEquals(funcName, "list_new") == false
+        and strEquals(funcName, "list_new_with_capacity") == false) {
         return
     }
 
@@ -487,7 +522,7 @@ fn generateElemInlineStamp(expr: ASTNode, funcName: String, result: String) {
 
     ir_call_begin()
     ir_call_arg("ptr", result)
-    ir_call_arg("i32", int_to_str(esize))
+    ir_call_arg("i32", strFromInt(esize))
     ir_call_end("void", "list_set_elem_inline")
 }
 
@@ -556,7 +591,7 @@ fn generateExpression(expr: ASTNode) -> String {
             return expr.s1
         }
         if (expr.i1 == TokenType.BOOL_LITERAL) {
-            if (str_equals(expr.s1, "true") == 1) { return "1" }
+            if (strEquals(expr.s1, "true")) { return "1" }
             return "0"
         }
         if (expr.i1 == TokenType.CHAR_LITERAL) {
@@ -575,7 +610,7 @@ fn generateExpression(expr: ASTNode) -> String {
             // Naming it here makes the pre-pass an optimisation (it batches the
             // globals) rather than a correctness requirement, so the next node
             // kind nobody adds cannot reintroduce this.
-            if (str_equals(expr.s2, "") == 1) {
+            if (strEquals(expr.s2, "")) {
                 collectStringsExpr(expr)
             }
             // A constant pair -- `{ @.strN, <len> }` -- so a literal costs no
@@ -670,7 +705,7 @@ fn generateExpression(expr: ASTNode) -> String {
         if (objectNode.kind == NodeKind.IDENTIFIER_EXPR) {
             let enumVal = ir_get_enum_variant(objectNode.s1, expr.s1)
             if (enumVal >= 0) {
-                return int_to_str(enumVal)
+                return strFromInt(enumVal)
             }
         }
 
@@ -691,7 +726,7 @@ fn generateExpression(expr: ASTNode) -> String {
                                                           descriptor, 1))
             ir_call_begin()
             ir_call_arg("ptr", view)
-            ir_call_arg("i32", int_to_str(fieldIndex))
+            ir_call_arg("i32", strFromInt(fieldIndex))
             let column = ir_get_temp_name(ir_call_end("ptr", "data_view_column"))
             // The row type makes the stride a compile-time LLVM type rather
             // than the runtime column's dynamic byte size. That is what lets a
@@ -753,7 +788,7 @@ fn generateExpression(expr: ASTNode) -> String {
         while (nodeExists(elemPtr)) {
             let elemNode = ptr_to_node(elemPtr)
             let elemVal = generateExpression(elemNode)
-            let slot = ir_elem_ptr(elemType, base, int_to_str(elemIndex))
+            let slot = ir_elem_ptr(elemType, base, strFromInt(elemIndex))
             ir_store_ptr(elemType, elemVal, ir_get_temp_name(slot))
             elemIndex = elemIndex + 1
             elemPtr = elemNode.next
@@ -817,7 +852,7 @@ fn generateExpression(expr: ASTNode) -> String {
             let raw = ir_get_temp_name(ir_call_end("ptr", getName))
             let retType = storageType(getExprType(expr))
             if (isFatStringKey(retType)) { return fatFromPtr(raw) }
-            if (str_equals(retType, "ptr") == 0) { return slotToScalar(retType, raw) }
+            if (strEquals(retType, "ptr") == false) { return slotToScalar(retType, raw) }
             return raw
         }
 
@@ -837,7 +872,7 @@ fn generateExpression(expr: ASTNode) -> String {
             let raw = ir_get_temp_name(ir_call_end("ptr", getName))
             let retType = storageType(getExprType(expr))
             if (isFatStringKey(retType)) { return fatFromPtr(raw) }
-            if (str_equals(retType, "ptr") == 0) { return slotToScalar(retType, raw) }
+            if (strEquals(retType, "ptr") == false) { return slotToScalar(retType, raw) }
             return raw
         }
 
@@ -862,7 +897,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // reads the right width and stride. Hardcoding i32 here loaded four
         // bytes out of an array of pointers or doubles.
         let mut elemType = storageType(getExprType(expr))
-        if (str_equals(elemType, "") == 1) {
+        if (strEquals(elemType, "")) {
             elemType = "i32"
         }
 
@@ -881,18 +916,18 @@ fn generateExpression(expr: ASTNode) -> String {
 
         // Same representation: Enum to Int, or between same-width integer types
         // of different signedness. Nothing to emit.
-        if (str_equals(fromKey, toKey) == 1) {
+        if (strEquals(fromKey, toKey)) {
             return val
         }
 
-        if (str_equals(toKey, "double") == 1) {
+        if (strEquals(toKey, "double")) {
             if (typeIntIsUnsigned(fromT)) {
                 return ir_get_temp_name(ir_uitofp(fromKey, val, toKey))
             }
             return ir_get_temp_name(ir_sitofp(fromKey, val, toKey))
         }
 
-        if (str_equals(fromKey, "double") == 1) {
+        if (strEquals(fromKey, "double")) {
             if (typeIntIsUnsigned(toT)) {
                 return ir_get_temp_name(ir_fptoui(fromKey, val, toKey))
             }
@@ -920,7 +955,7 @@ fn generateExpression(expr: ASTNode) -> String {
         let operandVal = generateExpression(operandNode)
         let uop = expr.s1
 
-        if (str_equals(uop, "!") == 1) {
+        if (strEquals(uop, "!")) {
             // Logical not. Comparing against 0 rather than xor-ing with true:
             // the bridge has an icmp primitive and no xor, and the two are
             // equivalent for i1.
@@ -928,16 +963,16 @@ fn generateExpression(expr: ASTNode) -> String {
             return ir_get_temp_name(notId)
         }
 
-        if (str_equals(uop, "~") == 1) {
+        if (strEquals(uop, "~")) {
             let intType = getExprType(operandNode)
             return ir_get_temp_name(ir_not(intType, operandVal))
         }
 
-        if (str_equals(uop, "-") == 1) {
+        if (strEquals(uop, "-")) {
             let operandType = getExprType(operandNode)
             // ir_neg emits an integer `sub 0, x`, which is not valid for a
             // double -- floats need fsub.
-            if (str_equals(operandType, "double") == 1) {
+            if (strEquals(operandType, "double")) {
                 let fnegId = ir_fsub("double", "0.0", operandVal)
                 return ir_get_temp_name(fnegId)
             }
@@ -974,7 +1009,7 @@ fn generateExpression(expr: ASTNode) -> String {
         let call = ptr_to_node(expr.child1)
         let callee = ptr_to_node(call.child1)
         let mut target = callee.s1
-        if (str_equals(call.s2, "") == 0) { target = call.s2 }
+        if (strEquals(call.s2, "") == false) { target = call.s2 }
         let taskFunc = taskFunctionForCall(call)
         if (nodeExists(taskFunc)) {
             let func = ptr_to_node(taskFunc)
@@ -992,7 +1027,7 @@ fn generateExpression(expr: ASTNode) -> String {
 
         ir_call_begin()
         ir_call_arg("ptr", ir_get_temp_name(ir_func_addr(target)))
-        ir_call_arg("i32", int_to_str(rkind))
+        ir_call_arg("i32", strFromInt(rkind))
 
         // The arity is counted before the arguments are emitted, because
         // ir_call_arg wants them in order and the count comes first.
@@ -1002,7 +1037,7 @@ fn generateExpression(expr: ASTNode) -> String {
             argc = argc + 1
             countPtr = ptr_to_node(countPtr).next
         }
-        ir_call_arg("i32", int_to_str(argc))
+        ir_call_arg("i32", strFromInt(argc))
 
         let mut argPtr = call.child2
         let mut emitted = 0
@@ -1040,7 +1075,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // A task's result crosses back through `void*`, so a `Task<String>`
         // yields a bare pointer that has to be given a length -- the same
         // boundary as any other value arriving from the runtime.
-        if (str_equals(typeIrKey(resultT), "struct:prismio.str") == 1) {
+        if (strEquals(typeIrKey(resultT), "struct:prismio.str")) {
             return fatFromPtr(ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p")))
         }
         return ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p"))
@@ -1048,7 +1083,7 @@ fn generateExpression(expr: ASTNode) -> String {
 
     if (expr.kind == NodeKind.BINARY_EXPR) {
         // Handled before either operand is generated -- that is the whole point.
-        if (str_equals(expr.s1, "and") == 1 or str_equals(expr.s1, "or") == 1) {
+        if (strEquals(expr.s1, "and") or strEquals(expr.s1, "or")) {
             return generateShortCircuit(expr)
         }
 
@@ -1063,49 +1098,49 @@ fn generateExpression(expr: ASTNode) -> String {
         if (nodeHasType(leftNode)) {
             isUnsigned = typeIntIsUnsigned(nodeGetType(leftNode))
         }
-        if (str_equals(opType, "double") == 1) {
-            if (str_equals(op, "+") == 1) { tempId = ir_fadd(opType, leftVal, rightVal) }
-            if (str_equals(op, "-") == 1) { tempId = ir_fsub(opType, leftVal, rightVal) }
-            if (str_equals(op, "*") == 1) { tempId = ir_fmul(opType, leftVal, rightVal) }
-            if (str_equals(op, "/") == 1) { tempId = ir_fdiv(opType, leftVal, rightVal) }
-            if (str_equals(op, "==") == 1) { tempId = ir_fcmp_oeq(opType, leftVal, rightVal) }
-            if (str_equals(op, "!=") == 1) { tempId = ir_fcmp_one(opType, leftVal, rightVal) }
-            if (str_equals(op, "<") == 1) { tempId = ir_fcmp_olt(opType, leftVal, rightVal) }
-            if (str_equals(op, "<=") == 1) { tempId = ir_fcmp_ole(opType, leftVal, rightVal) }
-            if (str_equals(op, ">") == 1) { tempId = ir_fcmp_ogt(opType, leftVal, rightVal) }
-            if (str_equals(op, ">=") == 1) { tempId = ir_fcmp_oge(opType, leftVal, rightVal) }
+        if (strEquals(opType, "double")) {
+            if (strEquals(op, "+")) { tempId = ir_fadd(opType, leftVal, rightVal) }
+            if (strEquals(op, "-")) { tempId = ir_fsub(opType, leftVal, rightVal) }
+            if (strEquals(op, "*")) { tempId = ir_fmul(opType, leftVal, rightVal) }
+            if (strEquals(op, "/")) { tempId = ir_fdiv(opType, leftVal, rightVal) }
+            if (strEquals(op, "==")) { tempId = ir_fcmp_oeq(opType, leftVal, rightVal) }
+            if (strEquals(op, "!=")) { tempId = ir_fcmp_one(opType, leftVal, rightVal) }
+            if (strEquals(op, "<")) { tempId = ir_fcmp_olt(opType, leftVal, rightVal) }
+            if (strEquals(op, "<=")) { tempId = ir_fcmp_ole(opType, leftVal, rightVal) }
+            if (strEquals(op, ">")) { tempId = ir_fcmp_ogt(opType, leftVal, rightVal) }
+            if (strEquals(op, ">=")) { tempId = ir_fcmp_oge(opType, leftVal, rightVal) }
         } else {
-            if (str_equals(op, "+") == 1) { tempId = ir_add(opType, leftVal, rightVal) }
-            if (str_equals(op, "-") == 1) { tempId = ir_sub(opType, leftVal, rightVal) }
-            if (str_equals(op, "*") == 1) { tempId = ir_mul(opType, leftVal, rightVal) }
-            if (str_equals(op, "==") == 1) { tempId = ir_icmp_eq(opType, leftVal, rightVal) }
-            if (str_equals(op, "!=") == 1) { tempId = ir_icmp_ne(opType, leftVal, rightVal) }
+            if (strEquals(op, "+")) { tempId = ir_add(opType, leftVal, rightVal) }
+            if (strEquals(op, "-")) { tempId = ir_sub(opType, leftVal, rightVal) }
+            if (strEquals(op, "*")) { tempId = ir_mul(opType, leftVal, rightVal) }
+            if (strEquals(op, "==")) { tempId = ir_icmp_eq(opType, leftVal, rightVal) }
+            if (strEquals(op, "!=")) { tempId = ir_icmp_ne(opType, leftVal, rightVal) }
             if (isUnsigned) {
-                if (str_equals(op, "/") == 1) { tempId = ir_udiv(opType, leftVal, rightVal) }
-                if (str_equals(op, "<") == 1) { tempId = ir_icmp_ult(opType, leftVal, rightVal) }
-                if (str_equals(op, "<=") == 1) { tempId = ir_icmp_ule(opType, leftVal, rightVal) }
-                if (str_equals(op, ">") == 1) { tempId = ir_icmp_ugt(opType, leftVal, rightVal) }
-                if (str_equals(op, ">=") == 1) { tempId = ir_icmp_uge(opType, leftVal, rightVal) }
+                if (strEquals(op, "/")) { tempId = ir_udiv(opType, leftVal, rightVal) }
+                if (strEquals(op, "<")) { tempId = ir_icmp_ult(opType, leftVal, rightVal) }
+                if (strEquals(op, "<=")) { tempId = ir_icmp_ule(opType, leftVal, rightVal) }
+                if (strEquals(op, ">")) { tempId = ir_icmp_ugt(opType, leftVal, rightVal) }
+                if (strEquals(op, ">=")) { tempId = ir_icmp_uge(opType, leftVal, rightVal) }
             } else {
-                if (str_equals(op, "/") == 1) { tempId = ir_sdiv(opType, leftVal, rightVal) }
-                if (str_equals(op, "<") == 1) { tempId = ir_icmp_slt(opType, leftVal, rightVal) }
-                if (str_equals(op, "<=") == 1) { tempId = ir_icmp_sle(opType, leftVal, rightVal) }
-                if (str_equals(op, ">") == 1) { tempId = ir_icmp_sgt(opType, leftVal, rightVal) }
-                if (str_equals(op, ">=") == 1) { tempId = ir_icmp_sge(opType, leftVal, rightVal) }
+                if (strEquals(op, "/")) { tempId = ir_sdiv(opType, leftVal, rightVal) }
+                if (strEquals(op, "<")) { tempId = ir_icmp_slt(opType, leftVal, rightVal) }
+                if (strEquals(op, "<=")) { tempId = ir_icmp_sle(opType, leftVal, rightVal) }
+                if (strEquals(op, ">")) { tempId = ir_icmp_sgt(opType, leftVal, rightVal) }
+                if (strEquals(op, ">=")) { tempId = ir_icmp_sge(opType, leftVal, rightVal) }
             }
         }
-        if (str_equals(op, "%") == 1) {
+        if (strEquals(op, "%")) {
             if (isUnsigned) { tempId = ir_urem(opType, leftVal, rightVal) }
             else { tempId = ir_srem(opType, leftVal, rightVal) }
         }
 
-        if (str_equals(op, "&") == 1) { tempId = ir_and(opType, leftVal, rightVal) }
-        if (str_equals(op, "|") == 1) { tempId = ir_or(opType, leftVal, rightVal) }
-        if (str_equals(op, "^") == 1) { tempId = ir_xor(opType, leftVal, rightVal) }
-        if (str_equals(op, "<<") == 1) { tempId = ir_shl(opType, leftVal, rightVal) }
+        if (strEquals(op, "&")) { tempId = ir_and(opType, leftVal, rightVal) }
+        if (strEquals(op, "|")) { tempId = ir_or(opType, leftVal, rightVal) }
+        if (strEquals(op, "^")) { tempId = ir_xor(opType, leftVal, rightVal) }
+        if (strEquals(op, "<<")) { tempId = ir_shl(opType, leftVal, rightVal) }
         // Right shift follows the left operand's signedness: logical for
         // unsigned so the sign bit is not smeared, arithmetic for signed.
-        if (str_equals(op, ">>") == 1) {
+        if (strEquals(op, ">>")) {
             if (isUnsigned) { tempId = ir_lshr(opType, leftVal, rightVal) }
             else { tempId = ir_ashr(opType, leftVal, rightVal) }
         }
@@ -1127,7 +1162,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // checks the value was live, and an arena build will not be able to use
         // libc free at all. Calling `free` directly here made explicit drops
         // invisible to both.
-        if (str_equals(funcName, "drop") == 1) {
+        if (strEquals(funcName, "drop")) {
             let dropArg = expr.child2
             if (nodeExists(dropArg)) {
                 let argNode = ptr_to_node(dropArg)
@@ -1149,7 +1184,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // M4.3a. Build real per-field storage from an ordinary AoS list. The
         // layout queries are target-aware constants, so padding and nested flat
         // fields are copied exactly as LLVM laid the row out.
-        if (str_equals(funcName, "soa") == 1 and nodeExists(expr.child2)) {
+        if (strEquals(funcName, "soa") and nodeExists(expr.child2)) {
             let sourceNode = ptr_to_node(expr.child2)
             if (nodeIsNull(sourceNode.next)) {
                 let sourceT = nodeGetType(sourceNode)
@@ -1161,17 +1196,17 @@ fn generateExpression(expr: ASTNode) -> String {
 
                 ir_call_begin()
                 ir_call_arg("ptr", source)
-                ir_call_arg("i32", int_to_str(fieldCount))
-                ir_call_arg("i32", int_to_str(elemSize))
+                ir_call_arg("i32", strFromInt(fieldCount))
+                ir_call_arg("i32", strFromInt(elemSize))
                 expr.s1 = ir_get_temp_name(ir_call_end("ptr", "data_view_begin"))
 
                 let mut field = 0
                 while (field < fieldCount) {
                     ir_call_begin()
                     ir_call_arg("ptr", expr.s1)
-                    ir_call_arg("i32", int_to_str(field))
-                    ir_call_arg("i32", int_to_str(ir_struct_field_offset(structName, field)))
-                    ir_call_arg("i32", int_to_str(ir_struct_field_size(structName, field)))
+                    ir_call_arg("i32", strFromInt(field))
+                    ir_call_arg("i32", strFromInt(ir_struct_field_offset(structName, field)))
+                    ir_call_arg("i32", strFromInt(ir_struct_field_size(structName, field)))
                     ir_call_end("void", "data_view_add_column")
                     field = field + 1
                 }
@@ -1182,7 +1217,7 @@ fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
-        if (str_equals(funcName, "aos") == 1 and nodeExists(expr.child2)) {
+        if (strEquals(funcName, "aos") and nodeExists(expr.child2)) {
             let viewNode = ptr_to_node(expr.child2)
             if (nodeIsNull(viewNode.next)) {
                 let view = generateExpression(viewNode)
@@ -1192,7 +1227,7 @@ fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
-        if (str_equals(funcName, "data_len") == 1 and nodeExists(expr.child2)) {
+        if (strEquals(funcName, "data_len") and nodeExists(expr.child2)) {
             let viewNode = ptr_to_node(expr.child2)
             if (nodeIsNull(viewNode.next)) {
                 let view = generateExpression(viewNode)
@@ -1202,7 +1237,7 @@ fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
-        if (str_equals(funcName, "slice_len") == 1 and nodeExists(expr.child2)) {
+        if (strEquals(funcName, "slice_len") and nodeExists(expr.child2)) {
             let sliceNode = ptr_to_node(expr.child2)
             if (nodeIsNull(sliceNode.next)) {
                 let slice = generateExpression(sliceNode)
@@ -1210,7 +1245,7 @@ fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
-        if (str_equals(funcName, "slice_set") == 1 and nodeExists(expr.child2)) {
+        if (strEquals(funcName, "slice_set") and nodeExists(expr.child2)) {
             let sliceNode = ptr_to_node(expr.child2)
             if (nodeExists(sliceNode.next)) {
                 let indexNode = ptr_to_node(sliceNode.next)
@@ -1226,7 +1261,7 @@ fn generateExpression(expr: ASTNode) -> String {
                     if (isFatStringKey(valueType)) {
                         let value = generateExpression(valueNode)
                         passed = ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 0))
-                    } else if (str_equals(valueType, "ptr") == 0) {
+                    } else if (strEquals(valueType, "ptr") == false) {
                         let value = generateExpression(valueNode)
                         passed = scalarToSlot(valueType, value)
                     } else {
@@ -1263,7 +1298,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // Byte length is the pair's second field. This is a reserved compiler
         // builtin, not an extern: its source spelling carries no declaration,
         // LLVM symbol or link requirement.
-        if (str_equals(funcName, "__builtin_string_len") == 1
+        if (strEquals(funcName, "__builtin_string_len")
             and nodeExists(expr.child2)) {
             let a0 = ptr_to_node(expr.child2)
             if (nodeExists(a0.next) == false) {
@@ -1288,7 +1323,7 @@ fn generateExpression(expr: ASTNode) -> String {
         //
         // The arena bracket is repeated rather than shared: this returns before
         // the general path's copy of it, and this call allocates.
-        if (str_equals(funcName, "str_with_capacity") == 1 and nodeExists(expr.child2)) {
+        if (strEquals(funcName, "str_with_capacity") and nodeExists(expr.child2)) {
             let a0 = ptr_to_node(expr.child2)
             if (nodeExists(a0.next) == false) {
                 let n = generateExpression(a0)
@@ -1322,7 +1357,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // index is in [0, len)" and std/string.psm establishes that bound before
         // every use. `strCharAt` remains the checked accessor for callers who
         // want one.
-        if (str_equals(funcName, "__builtin_string_byte_at") == 1
+        if (strEquals(funcName, "__builtin_string_byte_at")
             and nodeExists(expr.child2)) {
             let a0 = ptr_to_node(expr.child2)
             if (nodeExists(a0.next)) {
@@ -1333,7 +1368,7 @@ fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
-        if (str_equals(funcName, "__builtin_string_put_byte") == 1
+        if (strEquals(funcName, "__builtin_string_put_byte")
             and nodeExists(expr.child2)) {
             let a0 = ptr_to_node(expr.child2)
             if (nodeExists(a0.next)) {
@@ -1378,7 +1413,7 @@ fn generateExpression(expr: ASTNode) -> String {
             //
             // The two branches each name `argVal` once and never both -- a String
             // is affine, so hoisting the common tail out would move it twice.
-            if (isForeign and str_equals(argStore, "struct:prismio.str") == 1) {
+            if (isForeign and strEquals(argStore, "struct:prismio.str")) {
                 let half = ir_get_temp_name(ir_extract_value("struct:prismio.str", argVal, 0))
                 if (argIndex == elemArg) {
                     ir_call_arg("ptr", scalarToSlot("ptr", half))
@@ -1397,7 +1432,7 @@ fn generateExpression(expr: ASTNode) -> String {
         }
         
         let mut callName = funcName
-        if (str_equals(expr.s2, "") == 0) {
+        if (strEquals(expr.s2, "") == false) {
             callName = expr.s2
         }
         // M4.2. The inline family, chosen from the list's static element type.
@@ -1407,22 +1442,22 @@ fn generateExpression(expr: ASTNode) -> String {
         // annotation reaches it already stamped.
         if (inlineSize > 0) {
             let inlineName = inlineOpName(funcName)
-            if (str_equals(inlineName, "") == 0) {
+            if (strEquals(inlineName, "") == false) {
                 callName = inlineName
-                if (str_equals(funcName, "list_push") == 1) {
-                    ir_call_arg("i32", int_to_str(inlineSize))
+                if (strEquals(funcName, "list_push")) {
+                    ir_call_arg("i32", strFromInt(inlineSize))
                 }
             }
         }
         // REQUIREMENTS 4. The checked unwrap is an ordinary call that returns
         // its argument, which is why it needs no new control flow here: the
         // runtime aborts on a null rather than codegen branching around one.
-        if (str_equals(funcName, "expect") == 1) {
+        if (strEquals(funcName, "expect")) {
             callName = "prismio_expect"
         }
 
         let mut retType = storageType(getExprType(expr))
-        if (str_equals(retType, "void") == 1) {
+        if (strEquals(retType, "void")) {
             ir_call_end("void", callName)
             return ""
         }
@@ -1455,7 +1490,7 @@ fn generateExpression(expr: ASTNode) -> String {
         // none. Returning above the gate is what made every `str_concat` inside a
         // `region` come from malloc -- the arena served nothing, silently, and
         // the program still printed the right answer.
-        if (isForeign and str_equals(retType, "struct:prismio.str") == 1) {
+        if (isForeign and strEquals(retType, "struct:prismio.str")) {
             if (arenaPlaced) { ir_arena_hint_begin() }
             let raw = ir_get_temp_name(ir_call_end("ptr", callName))
             if (arenaPlaced) { ir_arena_hint_end() }
@@ -1468,8 +1503,8 @@ fn generateExpression(expr: ASTNode) -> String {
         // rather than below because the call's own type is `ptr` whatever the
         // element is -- and a scalar element is never arena-placed or refcounted,
         // since it registers no site to place or count.
-        if (str_equals(funcName, "list_get") == 1 and str_equals(retType, "ptr") == 0
-            and str_equals(retType, "struct:prismio.str") == 0) {
+        if (strEquals(funcName, "list_get") and strEquals(retType, "ptr") == false
+            and strEquals(retType, "struct:prismio.str") == false) {
             let slot = ir_get_temp_name(ir_call_end("ptr", callName))
             return slotToScalar(retType, slot)
         }
@@ -1488,7 +1523,7 @@ fn generateExpression(expr: ASTNode) -> String {
         if (elemOwn != AIF_ELEM_NONE) {
             ir_call_begin()
             ir_call_arg("ptr", result)
-            ir_call_arg("i32", int_to_str(elemOwn))
+            ir_call_arg("i32", strFromInt(elemOwn))
             ir_call_end("void", "list_set_elem_owner")
 
             // Struct-field ownership. An int cannot name a type, and a container
@@ -1496,7 +1531,7 @@ fn generateExpression(expr: ASTNode) -> String {
             // type -- so this one is told the function as well as the mode.
             if (elemOwn == AIF_ELEM_TYPED) {
                 let etype = aif_elem_type_at_node(node_to_ptr(expr))
-                if (str_equals(etype, "") == 0) {
+                if (strEquals(etype, "") == false) {
                     let fnPtr = ir_func_addr(releaseFnName(etype))
                     ir_call_begin()
                     ir_call_arg("ptr", result)

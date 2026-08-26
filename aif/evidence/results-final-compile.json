@@ -1,0 +1,55 @@
+{
+  "label": "full session",
+  "runs": 7,
+  "compiler": "build/nostr-4",
+  "baseline": "build/m5-exclusive-3",
+  "baseline_env": [],
+  "modes": [
+    "cold",
+    "incremental",
+    "no-change",
+    "no-cache"
+  ],
+  "programs": {
+    "g1_particles.psm": {
+      "new": {
+        "cold": 0.29038624999999985,
+        "incremental": 0.10413412499999986,
+        "no-change": 0.103977875,
+        "no-cache": 0.29145662500000036
+      },
+      "base": {
+        "cold": 0.360559875,
+        "incremental": 0.10360487500000026,
+        "no-change": 0.10440033300000007,
+        "no-cache": 0.36322770800000015
+      },
+      "ratio": {
+        "cold": 0.8053759448413383,
+        "incremental": 1.0051083503551315,
+        "no-change": 0.9959534803399519,
+        "no-cache": 0.8024074666682649
+      }
+    },
+    "g6_game.psm": {
+      "new": {
+        "cold": 0.29836333399999937,
+        "incremental": 0.10885779200000201,
+        "no-change": 0.10788600000000059,
+        "no-cache": 0.2972649169999997
+      },
+      "base": {
+        "cold": 0.3700065420000005,
+        "incremental": 0.10803420799999941,
+        "no-change": 0.10951116600000077,
+        "no-cache": 0.36874654100000015
+      },
+      "ratio": {
+        "cold": 0.8063731316404643,
+        "incremental": 1.0076233631481113,
+        "no-change": 0.9851598146621855,
+        "no-cache": 0.8061497097541576
+      }
+    }
+  }
+}

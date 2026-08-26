@@ -1,0 +1,80 @@
+// Ownership of a callee-allocated value does not survive a second return.
+//
+// **Not named `test_*.psm`, so the runner does not execute it.** It is the
+// reproduction for a known limitation, kept beside the tests because the two
+// functions below differ by exactly one level of call depth and nothing else.
+//
+// `aif_owns_call_result_at_node` answers "does this frame own what the call
+// returned". It requires the returned site to have been allocated *in the callee
+// itself*:
+//
+//     if (sites[s].fn != c->fn) return AIF_ELEM_NONE;   // aif_support.c
+//
+// The guard is not arbitrary -- the comment above it is the reason: a
+// pass-through leaves the value owned where it was created, and freeing it at
+// the caller double-frees through whichever binding owns it there. But it also
+// declines the case where the intermediate frame *returned* the value and so
+// kept no claim on it, which is every ordinary producer written in Prismio.
+//
+// It went unnoticed while `std.string` was C: an `extern fn` carries its
+// `produce` contract in the declaration, so `str_concat` answered at depth 1 and
+// the question was never asked at depth 2. Moving the standard library to native
+// Prismio in 2026-08 made depth 2 the common case and this reproduction the
+// first thing that showed it.
+//
+// Under `--verify`, built with the compiler of 2026-08-26:
+//
+//     this file, both calls        12 allocated,  7 released,  5 leaked
+//     the same file, depthTwo cut   6 allocated,  6 released,  0 leaked
+//
+// Every leaked allocation is one `pieceDepthTwo` result. Commenting out the
+// depthTwo call is the whole difference, which is what makes this a
+// reproduction rather than an observation.
+//
+// **The fix is not "drop the guard".** Doing that frees pass-through returns and
+// double-frees them. It needs the transitive fact -- that the site escaped to
+// Caller through every intermediate frame and no intermediate frame owns it --
+// which is a fixed-point change, not a predicate change. See TODO.
+
+import std.io
+import std.string
+
+// The producing runtime call is in this function's own body, so the site's `fn`
+// is this function and the caller is allowed to own the result.
+fn pieceDepthOne() -> String {
+    return str_with_capacity(5)
+}
+
+// One level further down: the site now lives in `strConcat`, so the caller is
+// declined and nothing ever releases it.
+fn pieceDepthTwo() -> String {
+    return strConcat("pie", "ce")
+}
+
+fn depthOne(n: Int) -> Int {
+    let mut s = pieceDepthOne()
+    let mut i = 0
+    while (i < n) {
+        s = pieceDepthOne()
+        i = i + 1
+    }
+    return strLength(s)
+}
+
+fn depthTwo(n: Int) -> Int {
+    let mut s = pieceDepthTwo()
+    let mut i = 0
+    while (i < n) {
+        s = pieceDepthTwo()
+        i = i + 1
+    }
+    return strLength(s)
+}
+
+fn main() -> Int {
+    print("depth1 ")
+    println(depthOne(4))
+    print("depth2 ")
+    println(depthTwo(4))
+    return 0
+}

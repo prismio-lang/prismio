@@ -1,3 +1,4 @@
+import std.string
 enum UmsDependencyScope {
     UNKNOWN,
     IMPLEMENTATION,
@@ -19,7 +20,7 @@ fn umsDependencyFind(dependencies: List<UmsDependency>, scope: UmsDependencyScop
     let mut i = 0
     while (i < list_len(dependencies)) {
         let dependency = list_get(dependencies, i)
-        if (dependency.scope == scope and str_equals(dependency.name, name) == 1) {
+        if (dependency.scope == scope and strEquals(dependency.name, name)) {
             return i
         }
         i = i + 1

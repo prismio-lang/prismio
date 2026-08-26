@@ -6,6 +6,7 @@ import ast.types
 import common.text
 import common.diagnostics
 import common.target
+import std.string
 
 // ---------------------------------------------------------------------------
 // Building the fact graph
@@ -58,26 +59,26 @@ fn aifTypeBytes(ann: ASTNode) -> Int {
     if (ann.i2 == 1) { return targetPointerBytes() }
 
     let n = ann.s1
-    if (str_equals(n, "I8") == 1) { return 1 }
-    if (str_equals(n, "U8") == 1) { return 1 }
-    if (str_equals(n, "Char") == 1) { return 1 }
-    if (str_equals(n, "Bool") == 1) { return 1 }
-    if (str_equals(n, "I16") == 1) { return 2 }
-    if (str_equals(n, "U16") == 1) { return 2 }
-    if (str_equals(n, "Int") == 1) { return 4 }
-    if (str_equals(n, "I32") == 1) { return 4 }
-    if (str_equals(n, "U32") == 1) { return 4 }
-    if (str_equals(n, "I64") == 1) { return 8 }
-    if (str_equals(n, "U64") == 1) { return 8 }
-    if (str_equals(n, "Isize") == 1) { return targetPointerBytes() }
-    if (str_equals(n, "Usize") == 1) { return targetPointerBytes() }
+    if (strEquals(n, "I8")) { return 1 }
+    if (strEquals(n, "U8")) { return 1 }
+    if (strEquals(n, "Char")) { return 1 }
+    if (strEquals(n, "Bool")) { return 1 }
+    if (strEquals(n, "I16")) { return 2 }
+    if (strEquals(n, "U16")) { return 2 }
+    if (strEquals(n, "Int")) { return 4 }
+    if (strEquals(n, "I32")) { return 4 }
+    if (strEquals(n, "U32")) { return 4 }
+    if (strEquals(n, "I64")) { return 8 }
+    if (strEquals(n, "U64")) { return 8 }
+    if (strEquals(n, "Isize")) { return targetPointerBytes() }
+    if (strEquals(n, "Usize")) { return targetPointerBytes() }
     // These two are *not* target questions, which is why they are literals and
     // stay literals. `Float` lowers to `double` (src/ir/types.psm) and an enum
     // falls through to `i32`; both are the same width on every target LLVM
     // emits for. Routing them through the target would suggest a variation that
     // does not exist. If either lowering ever changes, this is the line to change
     // with it.
-    if (str_equals(n, "Float") == 1) { return 8 }
+    if (strEquals(n, "Float")) { return 8 }
     if (aif_is_enum(n) == 1) { return 4 }
 
     // String, Ptr, and a struct field that is a reference edge: one pointer.
@@ -152,7 +153,7 @@ fn aifComputeStructSize(decl: ASTNode, module: ASTNode) {
         let mut width = aif_layout_field_bytes(decl.s1, i)
         let mut align = width
         let chosen = aif_layout_field(decl.s1, i)
-        if (str_equals(chosen, "") == 0) {
+        if (strEquals(chosen, "") == false) {
             let f = findStructField(decl, chosen)
             if (nodeExists(node_to_ptr(f))) {
                 if (nodeExists(f.child1)) {
@@ -229,7 +230,7 @@ fn aifComputeSizesOf(module: ASTNode, d: ASTNode) {
                 let ann = ptr_to_node(f.child1)
                 if (typeAnnIsPod(module, ann, 0)) {
                     if (ir_is_struct_type_name(ann.s1) == 1) {
-                        if (str_equals(ann.s1, d.s1) == 0) {
+                        if (strEquals(ann.s1, d.s1) == false) {
                             let dep = findStructDeclNamed(module, ann.s1)
                             if (nodeExists(node_to_ptr(dep))) {
                                 aifComputeSizesOf(module, dep)
@@ -362,7 +363,7 @@ fn aifLayoutVetoDataViews(nodePtr: Ptr) {
     if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)
         and nodeExists(node.child2)) {
         let callee = ptr_to_node(node.child1)
-        if (str_equals(callee.s1, "soa") == 1) {
+        if (strEquals(callee.s1, "soa")) {
             let sourceT = nodeGetType(ptr_to_node(node.child2))
             if (sourceT.kind == TypeKind.LIST and nodeExists(sourceT.child)) {
                 let elemT = ptr_to_type(sourceT.child)

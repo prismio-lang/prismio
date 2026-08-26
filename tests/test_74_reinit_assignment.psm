@@ -18,7 +18,7 @@
 // keep failing -- `drop(b)` in a loop is still a move that repeats.
 
 import std.io
-extern fn str_concat(s1: String, s2: String) -> String
+import std.string
 
 enum Tree { Leaf, Node(Tree, Int, Tree) }
 
@@ -81,17 +81,17 @@ fn main() -> Int {
 
     // A binding moved into a `sink` and then reused. Nothing to do with loops --
     // this is the half that made the *straight-line* form fail too.
-    let mut s = str_concat("ab", "cd")
+    let mut s = strConcat("ab", "cd")
     let mut total = consumeStr(s)
-    s = str_concat("ef", "gh")
+    s = strConcat("ef", "gh")
     total = total + consumeStr(s)
     if (total != 8) { failures = failures + fail("sink then rebind") }
 
     // Re-initialised in a loop, read after it.
-    let mut acc2 = str_concat("x", "y")
+    let mut acc2 = strConcat("x", "y")
     let mut j = 0
     while (j < 4) {
-        acc2 = str_concat(acc2, "z")
+        acc2 = strConcat(acc2, "z")
         j = j + 1
     }
     if (__builtin_string_len(acc2) != 6) { failures = failures + fail("string accumulator after loop") }

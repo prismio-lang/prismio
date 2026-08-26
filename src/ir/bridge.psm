@@ -120,6 +120,13 @@ extern fn ir_clear_moved()
 extern fn ir_mark_moved(name: String)
 extern fn ir_unmark_moved(name: String)
 extern fn ir_is_moved(name: String) -> Int
+// A scoped, conservative capability for `list_set_exclusive`: local list_new
+// starts exclusive; any operation that can expose an element or the handle
+// clears it. Unlike borrowed state this belongs to the List owner, not a value
+// read from it.
+extern fn ir_mark_list_exclusive(name: String)
+extern fn ir_unmark_list_exclusive(name: String)
+extern fn ir_is_list_exclusive(name: String) -> Int
 
 // Borrow tracking (non-owning bindings: let/inout params)
 extern fn ir_clear_borrowed()

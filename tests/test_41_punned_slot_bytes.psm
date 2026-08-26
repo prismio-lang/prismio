@@ -16,8 +16,8 @@
 // rather than this test patched.
 
 import std.io
+import std.string
 extern fn node_to_ptr(slot: Slot) -> String
-extern fn str_equals(s1: String, s2: String) -> Int
 
 struct Slot {
     tag: Int,
@@ -26,7 +26,7 @@ struct Slot {
 
 fn reads_as_empty(tag: Int) -> Bool {
     let s = Slot { tag: tag, value: 99 }
-    return str_equals(node_to_ptr(s), "") == 1
+    return strEquals(node_to_ptr(s), "")
 }
 
 fn main() -> Int {

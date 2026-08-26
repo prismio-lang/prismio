@@ -8,7 +8,6 @@
 
 import std.io
 import std.string
-extern fn int_to_str(n: Int) -> String produce(free)
 
 struct Reading {
     id: Int,
@@ -142,8 +141,8 @@ fn main() -> Int {
         println("unreachable")
     }
     println(describe(sample, unit))
-    println(int_to_str(count))
-    println(int_to_str(scopeExit("scope", true)))
+    println(strFromInt(count))
+    println(strFromInt(scopeExit("scope", true)))
     if (stamp > 0) {
         println("PASS: checkpoint")
     }

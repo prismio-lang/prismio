@@ -28,6 +28,7 @@ import ast.types
 import common.text
 import common.diagnostics
 import ir.bridge
+import std.string
 
 // `$` cannot occur in a Prismio identifier, so neither of these can collide with
 // a field a program declared -- which matters because they share a namespace
@@ -35,7 +36,7 @@ import ir.bridge
 fn enumTagField() -> String { return "$tag" }
 
 fn enumPayloadField(variantName: String, index: Int) -> String {
-    return str_concat(str_concat(variantName, "$"), int_to_str(index))
+    return strConcat(strConcat(variantName, "$"), strFromInt(index))
 }
 
 fn enumHasPayload(enumDecl: ASTNode) -> Bool {
@@ -67,7 +68,7 @@ fn enumShadowFind(module: ASTNode, name: String) -> ASTNode {
     let mut p = module.child3
     while (nodeExists(p)) {
         let decl = ptr_to_node(p)
-        if (str_equals(decl.s1, name) == 1) { return decl }
+        if (strEquals(decl.s1, name)) { return decl }
         p = decl.next
     }
     return ptr_to_node(ptr_null())
@@ -82,7 +83,7 @@ fn enumVariantNode(enumDecl: ASTNode, variantName: String) -> ASTNode {
     let mut p = enumDecl.child1
     while (nodeExists(p)) {
         let variant = ptr_to_node(p)
-        if (str_equals(variant.s1, variantName) == 1) { return variant }
+        if (strEquals(variant.s1, variantName)) { return variant }
         p = variant.next
     }
     return ptr_to_node(ptr_null())
@@ -101,7 +102,7 @@ fn enumVariantTag(enumDecl: ASTNode, variantName: String) -> Int {
     let mut index = 0
     while (nodeExists(p)) {
         let variant = ptr_to_node(p)
-        if (str_equals(variant.s1, variantName) == 1) { return index + 1 }
+        if (strEquals(variant.s1, variantName)) { return index + 1 }
         index = index + 1
         p = variant.next
     }
@@ -209,7 +210,7 @@ fn enumDesugarModule(module: ASTNode) {
 fn enumTagLiteral(tag: Int) -> ASTNode {
     let literal = createNode(NodeKind.LITERAL_EXPR)
     literal.i1 = TokenType.NUMBER_LITERAL
-    literal.s1 = int_to_str(tag)
+    literal.s1 = strFromInt(tag)
     return literal
 }
 
@@ -307,15 +308,15 @@ fn enumConcreteName(module: ASTNode, enumName: String, variantName: String, argP
 fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: String, variantName: String,
                            argPtr: Ptr, explicitArgs: Ptr) -> Bool {
     let concrete = enumConcreteName(module, enumName, variantName, argPtr, explicitArgs)
-    if (str_equals(concrete, "") == 1) {
+    if (strEquals(concrete, "")) {
         // Naming the fix rather than letting this fall through as "unknown
         // function `Ok`", which is what it looked like before and says nothing
         // about the actual problem.
         if (enumNeedsWrittenArgs(module, enumName)) {
-            semaErrorAt(expr, str_concat(str_concat(str_concat(
+            semaErrorAt(expr, strConcat(strConcat(strConcat(
                 "cannot infer the type arguments of ", diagQuote(enumName)),
                 " here; write them, as "),
-                diagQuote(str_concat(str_concat(enumName, "<...>."), variantName))))
+                diagQuote(strConcat(strConcat(enumName, "<...>."), variantName))))
         }
         return false
     }
@@ -325,7 +326,7 @@ fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: String, var
 
     let tag = enumVariantTag(shadow, variantName)
     if (tag < 0) {
-        semaErrorAt(expr, str_concat(str_concat(diagQuote(enumName), " has no variant "),
+        semaErrorAt(expr, strConcat(strConcat(diagQuote(enumName), " has no variant "),
                                       diagQuote(variantName)))
         return false
     }
@@ -339,7 +340,7 @@ fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: String, var
     let mut index = 0
     while (nodeExists(payload)) {
         if (nodeIsNull(arg)) {
-            semaErrorAt(expr, str_concat(str_concat("variant ", diagQuote(variantName)),
+            semaErrorAt(expr, strConcat(strConcat("variant ", diagQuote(variantName)),
                                           " is missing a payload value"))
             return false
         }
@@ -355,7 +356,7 @@ fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: String, var
         arg = following
     }
     if (nodeExists(arg)) {
-        semaErrorAt(expr, str_concat(str_concat("variant ", diagQuote(variantName)),
+        semaErrorAt(expr, strConcat(strConcat("variant ", diagQuote(variantName)),
                                       " was given more payload values than it carries"))
         return false
     }
@@ -414,7 +415,7 @@ fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, expectedR
     arm.s2 = enumArmVariantName(pattern)
     let tag = enumVariantTag(shadow, arm.s2)
     if (tag < 0) {
-        semaErrorAt(pattern, str_concat(str_concat(diagQuote(shadow.s1), " has no variant "),
+        semaErrorAt(pattern, strConcat(strConcat(diagQuote(shadow.s1), " has no variant "),
                                          diagQuote(arm.s2)))
         return
     }
@@ -437,11 +438,11 @@ fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, expectedR
         binder = name.next
     }
     if (nodeExists(payload)) {
-        semaErrorAt(pattern, str_concat(str_concat("variant ", diagQuote(arm.s2)),
+        semaErrorAt(pattern, strConcat(strConcat("variant ", diagQuote(arm.s2)),
                                          " carries more values than this pattern binds"))
     }
     if (nodeExists(binder)) {
-        semaErrorAt(pattern, str_concat(str_concat("variant ", diagQuote(arm.s2)),
+        semaErrorAt(pattern, strConcat(strConcat("variant ", diagQuote(arm.s2)),
                                          " carries fewer values than this pattern binds"))
     }
 
@@ -452,7 +453,7 @@ fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, expectedR
 fn semaMatchHasWildcard(stmt: ASTNode) -> Bool {
     let mut armPtr = stmt.child2
     while (nodeExists(armPtr)) {
-        if (str_equals(ptr_to_node(armPtr).s1, "_") == 1) { return true }
+        if (strEquals(ptr_to_node(armPtr).s1, "_")) { return true }
         armPtr = ptr_to_node(armPtr).next
     }
     return false
@@ -465,7 +466,7 @@ fn semaMatchCoversTag(stmt: ASTNode, tag: Int) -> Bool {
     let mut armPtr = stmt.child2
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
-        if (str_equals(arm.s1, "_") == 0 and arm.i1 == tag) { return true }
+        if (strEquals(arm.s1, "_") == false and arm.i1 == tag) { return true }
         armPtr = arm.next
     }
     return false
@@ -495,20 +496,20 @@ fn semaCheckExhaustive(stmt: ASTNode, shadow: ASTNode) {
     while (nodeExists(p)) {
         let variant = ptr_to_node(p)
         if (semaMatchCoversTag(stmt, index + 1) == false) {
-            if (str_equals(missing, "") == 1) {
+            if (strEquals(missing, "")) {
                 missing = variant.s1
             } else {
-                missing = str_concat(str_concat(missing, ", "), variant.s1)
+                missing = strConcat(strConcat(missing, ", "), variant.s1)
             }
         }
         index = index + 1
         p = variant.next
     }
 
-    if (str_equals(missing, "") == 0) {
-        semaErrorAt(stmt, str_concat(str_concat(str_concat(
+    if (strEquals(missing, "") == false) {
+        semaErrorAt(stmt, strConcat(strConcat(strConcat(
             "this match does not cover ", missing),
-            " of "), str_concat(diagQuote(shadow.s1), "; add the missing arms or a `_` arm")))
+            " of "), strConcat(diagQuote(shadow.s1), "; add the missing arms or a `_` arm")))
     }
 }
 
@@ -523,7 +524,7 @@ fn semaTagCoveredBefore(stmt: ASTNode, before: Int, tag: Int) -> Bool {
     let mut i = 0
     while (nodeExists(p) and i < before) {
         let arm = ptr_to_node(p)
-        if (str_equals(arm.s1, "_") == 0 and arm.i1 == tag) { return true }
+        if (strEquals(arm.s1, "_") == false and arm.i1 == tag) { return true }
         i = i + 1
         p = arm.next
     }
@@ -539,8 +540,8 @@ fn semaCheckDuplicateArms(stmt: ASTNode) {
     let mut position = 0
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
-        if (str_equals(arm.s1, "_") == 0 and semaTagCoveredBefore(stmt, position, arm.i1)) {
-            semaErrorAt(arm, str_concat(str_concat(
+        if (strEquals(arm.s1, "_") == false and semaTagCoveredBefore(stmt, position, arm.i1)) {
+            semaErrorAt(arm, strConcat(strConcat(
                 "this arm is unreachable: an earlier arm already matches ",
                 diagQuote(arm.s2)), ""))
         }
@@ -554,7 +555,7 @@ fn semaMatchPayloadArms(module: ASTNode, stmt: ASTNode, scrutT: TypeInfo, expect
     let mut armPtr = stmt.child2
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
-        if (str_equals(arm.s1, "_") == 1) {
+        if (strEquals(arm.s1, "_")) {
             semaBlock(module, ptr_to_node(arm.child2), expectedReturn)
         } else {
             semaCheckPayloadArm(module, arm, shadow, expectedReturn)

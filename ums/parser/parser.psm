@@ -2,10 +2,8 @@ import std.io
 import ums.parser.ast
 import ums.parser.token
 import ums.model.diagnostic
+import std.string
 
-extern fn str_equals(left: String, right: String) -> Int
-extern fn str_concat(left: String, right: String) -> String
-extern fn str_clone(value: String borrow) -> String produce(free)
 
 struct UmsParser {
     tokens: List<UmsToken>,
@@ -42,8 +40,8 @@ fn umsParserError(parser: UmsParser, token: UmsToken, code: String, message: Str
 fn umsParserExpected(parser: UmsParser, expected: String) {
     let token = umsParserCurrent(parser)
     umsParserError(parser, token, "UMS1101",
-        str_concat(str_concat("expected ", expected),
-                   str_concat(", found ", umsTokenKindName(token.kind))))
+        strConcat(strConcat("expected ", expected),
+                   strConcat(", found ", umsTokenKindName(token.kind))))
 }
 
 fn umsParseValue(parser: UmsParser) -> UmsAstValue {
@@ -59,7 +57,7 @@ fn umsParseValue(parser: UmsParser) -> UmsAstValue {
     if (token.kind != UmsTokenKind.EOF) { umsParserAdvance(parser) }
     return UmsAstValue {
         kind: kind,
-        text: str_clone(token.value),
+        text: strClone(token.value),
         line: token.line,
         col: token.col,
         len: token.len
@@ -125,7 +123,7 @@ fn umsParseStatement(parser: UmsParser, document: UmsAstDocument) -> Int {
         }
     } else if (list_len(statement.arguments) == 0) {
         umsParserError(parser, name, "UMS1102",
-            str_concat(str_concat("DSL element '", name.value),
+            strConcat(strConcat("DSL element '", name.value),
                        "' requires arguments or a block"))
     }
 

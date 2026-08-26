@@ -1,0 +1,24 @@
+// Boxed replacement with compiler-proved exclusive access. Named owns a String,
+// so it cannot use inline List storage: replacing slot 0 must run Named's typed
+// release for "first" before the List later releases "second".
+
+import std.io
+
+struct Named {
+    label: String,
+    value: Int
+}
+
+fn main() -> Int {
+    let items: List<Named> = list_new()
+    list_push(items, Named { label: "first", value: 3 })
+    list_set_exclusive(items, 0, Named { label: "second", value: 7 })
+
+    let current = list_get(items, 0)
+    if (current.value != 7) {
+        println("FAIL: exclusive replacement value")
+        return 1
+    }
+    println("PASS: exclusive boxed replacement")
+    return 0
+}

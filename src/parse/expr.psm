@@ -8,6 +8,7 @@ import lexer.token
 import common.text
 import ast.nodes
 import common.diagnostics
+import std.string
 
 // Bitwise operators bind *tighter* than comparison, unlike C.
 //
@@ -17,18 +18,18 @@ import common.diagnostics
 // to inherit it, and the ordering below makes the natural reading the correct one.
 // Everything else follows C.
 fn getOperatorPrecedence(t: Token) -> Int {
-    if (str_equals(t.value, "or") == 1) { return 1 }
-    if (str_equals(t.value, "and") == 1) { return 2 }
+    if (strEquals(t.value, "or")) { return 1 }
+    if (strEquals(t.value, "and")) { return 2 }
     if (t.type == TokenType.KEYWORD) { return 0 }
 
-    if (str_equals(t.value, "==") == 1 or str_equals(t.value, "!=") == 1) { return 3 }
-    if (str_equals(t.value, "<") == 1 or str_equals(t.value, ">") == 1 or str_equals(t.value, "<=") == 1 or str_equals(t.value, ">=") == 1) { return 4 }
-    if (str_equals(t.value, "|") == 1) { return 5 }
-    if (str_equals(t.value, "^") == 1) { return 6 }
-    if (str_equals(t.value, "&") == 1) { return 7 }
-    if (str_equals(t.value, "<<") == 1 or str_equals(t.value, ">>") == 1) { return 8 }
-    if (str_equals(t.value, "+") == 1 or str_equals(t.value, "-") == 1) { return 9 }
-    if (str_equals(t.value, "*") == 1 or str_equals(t.value, "/") == 1 or str_equals(t.value, "%") == 1) { return 10 }
+    if (strEquals(t.value, "==") or strEquals(t.value, "!=")) { return 3 }
+    if (strEquals(t.value, "<") or strEquals(t.value, ">") or strEquals(t.value, "<=") or strEquals(t.value, ">=")) { return 4 }
+    if (strEquals(t.value, "|")) { return 5 }
+    if (strEquals(t.value, "^")) { return 6 }
+    if (strEquals(t.value, "&")) { return 7 }
+    if (strEquals(t.value, "<<") or strEquals(t.value, ">>")) { return 8 }
+    if (strEquals(t.value, "+") or strEquals(t.value, "-")) { return 9 }
+    if (strEquals(t.value, "*") or strEquals(t.value, "/") or strEquals(t.value, "%")) { return 10 }
 
     return 0
 }
@@ -36,7 +37,7 @@ fn getOperatorPrecedence(t: Token) -> Int {
 fn isBinaryOperator(t: Token) -> Bool {
     if (t.type == TokenType.ARITHMETIC_OPERATOR) { return true }
     if (t.type == TokenType.RELATIONAL_OPERATOR) { return true }
-    return str_equals(t.value, "and") == 1 or str_equals(t.value, "or") == 1
+    return strEquals(t.value, "and") or strEquals(t.value, "or")
 }
 
 fn parseExpression(p: Parser, precedence: Int) -> ASTNode {
@@ -76,9 +77,9 @@ fn foldNegativeLiteral(operand: ASTNode, minus: Token) -> Bool {
     if (operand.kind != NodeKind.LITERAL_EXPR) { return false }
 
     let isNumber = operand.i1 == TokenType.NUMBER_LITERAL or operand.i1 == TokenType.FLOAT_LITERAL
-    if (isNumber == false or str_starts_with(operand.s1, "-") == 1) { return false }
+    if (isNumber == false or strStartsWith(operand.s1, "-")) { return false }
 
-    operand.s1 = str_concat("-", operand.s1)
+    operand.s1 = strConcat("-", operand.s1)
     // The folded literal's span still covered only the digits, so a diagnostic
     // about `-42` underlined `42`. Widen it to include the sign that is now part
     // of its value.
@@ -94,9 +95,9 @@ fn foldNegativeLiteral(operand: ASTNode, minus: Token) -> Bool {
 fn parseUnary(p: Parser) -> ASTNode {
     let current = parserCurrent(p)
 
-    let isNegate = current.type == TokenType.ARITHMETIC_OPERATOR and str_equals(current.value, "-") == 1
-    let isNot = current.type == TokenType.NEGATION and str_equals(current.value, "!") == 1
-    let isComplement = current.type == TokenType.ARITHMETIC_OPERATOR and str_equals(current.value, "~") == 1
+    let isNegate = current.type == TokenType.ARITHMETIC_OPERATOR and strEquals(current.value, "-")
+    let isNot = current.type == TokenType.NEGATION and strEquals(current.value, "!")
+    let isComplement = current.type == TokenType.ARITHMETIC_OPERATOR and strEquals(current.value, "~")
 
     if (isNegate == false and isNot == false and isComplement == false) {
         return parsePostfix(p)
@@ -106,7 +107,7 @@ fn parseUnary(p: Parser) -> ASTNode {
     parserAdvance(p)
     let operand = parseUnary(p)
 
-    if (str_equals(op, "-") == 1 and foldNegativeLiteral(operand, current)) {
+    if (strEquals(op, "-") and foldNegativeLiteral(operand, current)) {
         return operand
     }
 
@@ -146,7 +147,7 @@ fn parsePostfix(p: Parser) -> ASTNode {
 fn parserLooksLikeTypeArgs(p: Parser, opener: String) -> Bool {
     let mut tok = ptr_to_token(p.current).tokNext
     if (nodeIsNull(tok)) { return false }
-    if (str_equals(ptr_to_token(tok).value, "<") == 0) { return false }
+    if (strEquals(ptr_to_token(tok).value, "<") == false) { return false }
 
     let mut depth = 1
     tok = ptr_to_token(tok).tokNext
@@ -154,19 +155,19 @@ fn parserLooksLikeTypeArgs(p: Parser, opener: String) -> Bool {
         let current = ptr_to_token(tok)
         if (current.type == TokenType.IDENTIFIER) {
             // nothing to do: a type name
-        } else if (str_equals(current.value, "<") == 1) {
+        } else if (strEquals(current.value, "<")) {
             depth = depth + 1
-        } else if (str_equals(current.value, ">") == 1) {
+        } else if (strEquals(current.value, ">")) {
             depth = depth - 1
-        } else if (str_equals(current.value, ">>") == 1) {
+        } else if (strEquals(current.value, ">>")) {
             depth = depth - 2
-        } else if (str_equals(current.value, ",") == 1) {
+        } else if (strEquals(current.value, ",")) {
             // nothing to do: an argument separator
-        } else if (str_equals(current.value, "[") == 1) {
+        } else if (strEquals(current.value, "[")) {
             // nothing to do: an array element type
-        } else if (str_equals(current.value, "]") == 1) {
+        } else if (strEquals(current.value, "]")) {
             // nothing to do
-        } else if (str_equals(current.value, "?") == 1) {
+        } else if (strEquals(current.value, "?")) {
             // nothing to do: an optional suffix
         } else {
             return false
@@ -176,7 +177,7 @@ fn parserLooksLikeTypeArgs(p: Parser, opener: String) -> Bool {
 
     if (depth != 0) { return false }
     if (nodeIsNull(tok)) { return false }
-    return str_equals(ptr_to_token(tok).value, opener) == 1
+    return strEquals(ptr_to_token(tok).value, opener)
 }
 
 // The cursor is on the `{`. Both callers have consumed the name already -- the
@@ -300,7 +301,7 @@ fn parsePrimary(p: Parser) -> ASTNode {
     // REQUIREMENTS 4. The absent reference. A keyword rather than an identifier,
     // so it cannot be shadowed by a binding -- `let none = 5` would otherwise
     // make the literal mean something else halfway down a file.
-    if (current.type == TokenType.KEYWORD and str_equals(current.value, "none") == 1) {
+    if (current.type == TokenType.KEYWORD and strEquals(current.value, "none")) {
         let noneLiteral = parserNode(p, NodeKind.NONE_LITERAL_EXPR)
         parserAdvance(p)
         return noneLiteral
@@ -334,7 +335,7 @@ fn parsePrimary(p: Parser) -> ASTNode {
         // access reaches its name through `.` and never comes through here at
         // all. No existing spelling is claimed.
         if (next.type == TokenType.IDENTIFIER) {
-            if (str_equals(current.value, "spawn") == 1) {
+            if (strEquals(current.value, "spawn")) {
                 let spawnNode = parserNode(p, NodeKind.SPAWN_EXPR)
                 parserAdvance(p)
                 let callee = parsePrimary(p)
@@ -345,7 +346,7 @@ fn parsePrimary(p: Parser) -> ASTNode {
                 spawnNode.child1 = node_to_ptr(callee)
                 return spawnNode
             }
-            if (str_equals(current.value, "join") == 1) {
+            if (strEquals(current.value, "join")) {
                 let joinNode = parserNode(p, NodeKind.JOIN_EXPR)
                 parserAdvance(p)
                 joinNode.child1 = node_to_ptr(parsePrimary(p))
@@ -353,7 +354,7 @@ fn parsePrimary(p: Parser) -> ASTNode {
             }
         }
 
-        let opensStruct = next.type == TokenType.SEPARATOR and str_equals(next.value, "{") == 1
+        let opensStruct = next.type == TokenType.SEPARATOR and strEquals(next.value, "{")
         if (opensStruct and p.allowStructLit == 1) {
             parserAdvance(p)
             return parseStructLiteral(p, current)
@@ -430,7 +431,7 @@ fn parsePrimary(p: Parser) -> ASTNode {
         return parseArrayLiteral(p)
     }
 
-    parserFatal(p, str_concat(str_concat("expected an expression, found ", parserDescribe(current)),
-                               str_concat(" (a ", str_concat(typeToString(current.type), ")"))))
+    parserFatal(p, strConcat(strConcat("expected an expression, found ", parserDescribe(current)),
+                               strConcat(" (a ", strConcat(typeToString(current.type), ")"))))
     return parserNode(p, NodeKind.ERROR_NODE)
 }

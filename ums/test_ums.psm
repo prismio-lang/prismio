@@ -1,7 +1,7 @@
 import std.io
 import ums.ums
+import std.string
 
-extern fn str_equals(left: String, right: String) -> Int
 
 fn umsTestFail(message: String) -> Int {
     print("FAIL: ")
@@ -15,10 +15,10 @@ fn main() -> Int {
         umsDiagnosticsPrint(workspace.diagnostics)
         return umsTestFail("valid fixture should load")
     }
-    if (str_equals(workspace.project.metadata.name, "http") == 0) {
+    if (strEquals(workspace.project.metadata.name, "http") == false) {
         return umsTestFail("project name should be lowered")
     }
-    if (str_equals(workspace.project.metadata.version, "1.0.0") == 0) {
+    if (strEquals(workspace.project.metadata.version, "1.0.0") == false) {
         return umsTestFail("project version should be lowered")
     }
     if (umsWorkspaceTargetCount(workspace) != 1) {
@@ -28,7 +28,7 @@ fn main() -> Int {
     if (target.kind != UmsTargetKind.EXECUTABLE) {
         return umsTestFail("target kind should be executable")
     }
-    if (str_equals(target.entry, "src/main.psm") == 0) {
+    if (strEquals(target.entry, "src/main.psm") == false) {
         return umsTestFail("target entry should be preserved")
     }
     if (list_len(workspace.project.dependencies) != 1) {

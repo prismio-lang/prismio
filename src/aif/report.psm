@@ -5,6 +5,7 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import std.string
 
 // ---------------------------------------------------------------------------
 // Reporting
@@ -47,7 +48,7 @@ fn aifPlacement(tier: Int, site: Int) -> String {
     // value the arena bump-allocates would be the manifest describing a build
     // that did not happen, which is the whole reason `rc:none` exists below.
     let placed = aif_region_name_at_site(site)
-    if (str_equals(placed, "") == 0) { return str_concat("region:", placed) }
+    if (strEquals(placed, "") == false) { return strConcat("region:", placed) }
 
     if (tier == 1) {
         // `region:none`, not `region:scope`, and the rename is the whole point.
@@ -146,10 +147,10 @@ fn aifPad(s: String, width: Int) -> String {
     // Already at or past the column: one space, so the fields stay separable.
     // Tested before the loop, because after it `n >= width` always holds and
     // padding every field by one more character would shift the whole table.
-    if (n >= width) { return str_concat(s, " ") }
+    if (n >= width) { return strConcat(s, " ") }
     let mut out = s
     while (n < width) {
-        out = str_concat(out, " ")
+        out = strConcat(out, " ")
         n = n + 1
     }
     return out
@@ -162,8 +163,8 @@ fn aifKv(key: String, value: String) {
 
 fn aifSitePosition(site: Int) -> String {
     let path = diag_file_path(aif_site_file(site))
-    return str_concat(str_concat(path, ":"), str_concat(int_to_str(aif_site_line(site)),
-           str_concat(":", int_to_str(aif_site_col(site)))))
+    return strConcat(strConcat(path, ":"), strConcat(strFromInt(aif_site_line(site)),
+           strConcat(":", strFromInt(aif_site_col(site)))))
 }
 
 // The manifest's record name. Numbering within the declaring function rather
@@ -174,7 +175,7 @@ fn aifSymbolOf(site: Int) -> String {
     let owner = aif_site_fn(site)
     let mut base = "<module>"
     if (owner >= 0) { base = aif_fn_symbol(owner) }
-    return str_concat(str_concat(base, "#"), int_to_str(aif_site_ordinal(site)))
+    return strConcat(strConcat(base, "#"), strFromInt(aif_site_ordinal(site)))
 }
 
 // SPEC 6.2. Line-oriented UTF-8, records sorted byte-wise ascending by symbol --
@@ -200,7 +201,7 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
     // analysis, not a build. SPEC 7.3's verify mode changes the allocator names
     // and nothing the inference does, so the facts here are the same either way.
     aifKv("build", "release")
-    aifKv("budget", str_concat(int_to_str(aifBudget), " rounds"))
+    aifKv("budget", strConcat(strFromInt(aifBudget), " rounds"))
     if (converged) {
         aifKv("converged", "yes")
     } else {
@@ -209,18 +210,18 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
     // Split because the two phases truncate very differently: a budget that
     // stops the points-to phase leaves the whole graph unproven, one that stops
     // the fact phase leaves only a frontier.
-    aifKv("rounds", str_concat(str_concat(int_to_str(aif_rounds()), " (points-to "),
-                                str_concat(int_to_str(aif_pt_rounds()), ")")))
+    aifKv("rounds", strConcat(strConcat(strFromInt(aif_rounds()), " (points-to "),
+                                strConcat(strFromInt(aif_pt_rounds()), ")")))
     // SPEC 4.2 requires the implementation document its Theta_stack. This is
     // where it does it.
     let mut thetaUnit = " bytes"
     if (aif_theta_mode() == 1) { thetaUnit = " fields (oracle-parity mode)" }
-    aifKv("theta-stack", str_concat(int_to_str(aif_theta_stack()), thetaUnit))
+    aifKv("theta-stack", strConcat(strFromInt(aif_theta_stack()), thetaUnit))
     aifKv("ffi-default", "borrow")
-    aifKv("compiler", str_concat("prismio ", version))
+    aifKv("compiler", strConcat("prismio ", version))
     aifKv("llvm", ir_llvm_version())
     aifKv("source", sourcePath)
-    aifKv("sites", int_to_str(total))
+    aifKv("sites", strFromInt(total))
     // CYCLES 2's headline result, and it costs one line: a program whose types
     // have no non-trivial SCC needs no cycle collector, and this is where the
     // compiler says so. It is a property of the type declarations, checkable
@@ -231,10 +232,10 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
     // layout, a string's is its length, and a fabricated per-string constant
     // would make the `pin` gate turn on a number nobody computed.
     let unsized = aif_arena_unsized_sites()
-    let mut budgetNote = str_concat(int_to_str(aif_arena_high_water()), " bytes peak arena (est.)")
+    let mut budgetNote = strConcat(strFromInt(aif_arena_high_water()), " bytes peak arena (est.)")
     if (unsized > 0) {
-        budgetNote = str_concat(budgetNote,
-                                 str_concat(str_concat(", ", int_to_str(unsized)),
+        budgetNote = strConcat(budgetNote,
+                                 strConcat(strConcat(", ", strFromInt(unsized)),
                                             " dynamically-sized site(s) excluded"))
     }
     aifKv("peak-bytes", budgetNote)
@@ -251,9 +252,9 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
     if (sccTypes == 0) {
         aifKv("cycles", "none")
     } else {
-        aifKv("cycles", str_concat(str_concat("collector (", int_to_str(sccTypes)),
-                                    str_concat(" cyclic type(s), ",
-                                    str_concat(int_to_str(aif_t4b_site_count()), " T4b site(s))"))))
+        aifKv("cycles", strConcat(strConcat("collector (", strFromInt(sccTypes)),
+                                    strConcat(" cyclic type(s), ",
+                                    strConcat(strFromInt(aif_t4b_site_count()), " T4b site(s))"))))
     }
     println("#")
     println("# symbol                                      tier  thread       placement         type            layout      origin            site")
@@ -320,8 +321,8 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
         if (aif_layout_reordered(aif_site_type(site)) == 1) { grouping = "AoS*" }
         let hotCount = aif_layout_hot_count(aif_site_type(site))
         if (hotCount > 0) {
-            grouping = str_concat(grouping, str_concat("+", str_concat(int_to_str(hotCount),
-                        str_concat("/", int_to_str(aif_struct_nfields(aif_site_type(site)))))))
+            grouping = strConcat(grouping, strConcat("+", strConcat(strFromInt(hotCount),
+                        strConcat("/", strFromInt(aif_struct_nfields(aif_site_type(site)))))))
         }
         print(aifPad(grouping, 12))
         print(aifPad(origin, 18))
@@ -355,12 +356,12 @@ fn aifEmitBrackets() {
         let scope = aif_bracket_scope(i)
         print("#   ")
         print(aifPad(aif_fn_name(aif_bracket_callee(i)), 30))
-        print(aifPad(str_concat("region:", aif_scope_region(scope)), 24))
-        print(aifPad(str_concat(int_to_str(aif_bracket_served(i)), " site(s) served"), 20))
+        print(aifPad(strConcat("region:", aif_scope_region(scope)), 24))
+        print(aifPad(strConcat(strFromInt(aif_bracket_served(i)), " site(s) served"), 20))
         let path = diag_file_path(aif_scope_region_file(scope))
-        println(str_concat(str_concat(path, ":"),
-                str_concat(int_to_str(aif_scope_region_line(scope)),
-                str_concat(":", int_to_str(aif_scope_region_col(scope))))))
+        println(strConcat(strConcat(path, ":"),
+                strConcat(strFromInt(aif_scope_region_line(scope)),
+                strConcat(":", strFromInt(aif_scope_region_col(scope))))))
         i = i + 1
     }
 }
@@ -419,15 +420,15 @@ fn aifEmitPackingAdvice(module: ASTNode) {
                                     println("# type.field                    declared  observed range        fits in")
                                 }
                                 print("# ")
-                                print(aifPad(str_concat(str_concat(d.s1, "."), f.s1), 30))
-                                print(aifPad(str_concat(int_to_str(declared), " bytes"), 10))
+                                print(aifPad(strConcat(strConcat(d.s1, "."), f.s1), 30))
+                                print(aifPad(strConcat(strFromInt(declared), " bytes"), 10))
                                 // Narrowed to Int for printing, which is exact
                                 // here and only here: this branch runs when the
                                 // range fits in 1 or 2 bytes, so both ends are
                                 // inside i32 by the test just above.
-                                print(aifPad(str_concat(str_concat(int_to_str(lo as Int), ".."),
-                                                         int_to_str(hi as Int)), 22))
-                                println(str_concat(int_to_str(needed), " bytes"))
+                                print(aifPad(strConcat(strConcat(strFromInt(lo as Int), ".."),
+                                                         strFromInt(hi as Int)), 22))
+                                println(strConcat(strFromInt(needed), " bytes"))
                                 shown = shown + 1
                             }
                         }
@@ -446,10 +447,10 @@ fn aifEmitKindRow(kind: Int) {
     if (n == 0) { return }
     print("  ")
     print(aifPad(aifKindName(kind), 9))
-    print(aifPad(int_to_str(n), 8))
+    print(aifPad(strFromInt(n), 8))
     let mut t = 0
     while (t < 6) {
-        print(aifPad(int_to_str(aifCountKindTier(kind, t)), 7))
+        print(aifPad(strFromInt(aifCountKindTier(kind, t)), 7))
         t = t + 1
     }
     println("")
@@ -467,34 +468,34 @@ fn aifEmitSummary(sourcePath: String, converged: Bool) {
     print("# ")
     print(sourcePath)
     print("  (")
-    print(int_to_str(aif_fn_count()))
+    print(strFromInt(aif_fn_count()))
     print(" functions, ")
-    print(int_to_str(aif_nominal_count()))
+    print(strFromInt(aif_nominal_count()))
     println(" nominal types)")
 
     print("aif-manifest 1 (in-compiler)  rounds=")
-    print(int_to_str(aif_rounds()))
+    print(strFromInt(aif_rounds()))
     print("  converged=")
     if (converged) { print("yes") } else { print("no") }
     print("  constraints=")
-    println(int_to_str(aif_con_count()))
+    println(strFromInt(aif_con_count()))
 
     print("sites        ")
-    print(int_to_str(total))
+    print(strFromInt(total))
     print("   (excluded: ")
-    print(int_to_str(aifLiteralStrings))
+    print(strFromInt(aifLiteralStrings))
     println(" string literals -- static, not allocated)")
 
     print("opaque-ret   ")
-    print(int_to_str(aifOpaqueReturns))
+    print(strFromInt(aifOpaqueReturns))
     println("  (undeclared extern/sealed returns -- provenance unknown)")
 
     print("extern-alloc ")
-    print(int_to_str(aifExternAlloc))
+    print(strFromInt(aifExternAlloc))
     println("  (values produced by runtime calls, e.g. str_concat)")
 
     print("static-ret   ")
-    print(int_to_str(aifStaticReturns))
+    print(strFromInt(aifStaticReturns))
     println("  (declared `alias` with nothing to alias -- static, not allocated)")
 
     println("#")
@@ -507,13 +508,13 @@ fn aifEmitSummary(sourcePath: String, converged: Bool) {
         if (t < 3) { cheap = cheap + n }
         print("  ")
         print(aifPad(aifTierName(t), 5))
-        print(aifPad(int_to_str(n), 8))
-        print(aifPad(str_concat(int_to_str(100 * n / denom), "%"), 6))
+        print(aifPad(strFromInt(n), 8))
+        print(aifPad(strConcat(strFromInt(100 * n / denom), "%"), 6))
         let mut bar = ""
         let mut b = 0
         let width = 60 * n / denom
         while (b < width) {
-            bar = str_concat(bar, "#")
+            bar = strConcat(bar, "#")
             b = b + 1
         }
         println(bar)
@@ -522,11 +523,11 @@ fn aifEmitSummary(sourcePath: String, converged: Bool) {
 
     println("")
     print("  T0-T2 (no runtime bookkeeping): ")
-    print(int_to_str(cheap))
+    print(strFromInt(cheap))
     print(" / ")
-    print(int_to_str(total))
+    print(strFromInt(total))
     print(" = ")
-    print(int_to_str(100 * cheap / denom))
+    print(strFromInt(100 * cheap / denom))
     println("%")
     print("  H1 kill criterion is < 70%.  ")
     if (100 * cheap / denom >= 70) { println("PASS") } else { println("FAIL") }
@@ -556,7 +557,7 @@ fn aifEmitSummary(sourcePath: String, converged: Bool) {
         }
         print("  ")
         print(aifPad(aifThreadName(ti), 12))
-        println(int_to_str(n))
+        println(strFromInt(n))
         ti = ti + 1
     }
 
@@ -574,14 +575,14 @@ fn aifEmitSummary(sourcePath: String, converged: Bool) {
     }
     if (cyclic == 0) {
         print("  none -- no struct type lies in a non-trivial SCC, of ")
-        print(int_to_str(structs))
+        print(strFromInt(structs))
         println(" struct types.")
         println("  The collector can be omitted from the binary entirely.")
     } else {
         print("  collector needed: ")
-        print(int_to_str(cyclic))
+        print(strFromInt(cyclic))
         print(" of ")
-        print(int_to_str(structs))
+        print(strFromInt(structs))
         println(" struct types lie in or reach a non-trivial SCC")
     }
 
@@ -638,35 +639,35 @@ fn aifEmitBracketing() {
     println("# call-site bracketing (SPEC 5.2.1) -- may a caller's region reach a callee's allocations?")
 
     print("bracketable  ")
-    print(int_to_str(ok))
+    print(strFromInt(ok))
     print(" / ")
-    print(int_to_str(fnCount))
+    print(strFromInt(fnCount))
     println("  (obligations 1, 2, 4: nothing the extent allocates outlives the call)")
 
     print("sole-regime  ")
-    print(int_to_str(sole))
+    print(strFromInt(sole))
     println("  (of those: one call site, so regime (a) holds whatever the region)")
 
     print("region-calls ")
-    print(int_to_str(aif_region_call_sites()))
+    print(strFromInt(aif_region_call_sites()))
     print(" / ")
-    print(int_to_str(aif_call_edge_count()))
+    print(strFromInt(aif_call_edge_count()))
     print("  call sites lie inside a region; ")
-    print(int_to_str(aif_bracketable_region_call_sites()))
+    print(strFromInt(aif_bracketable_region_call_sites()))
     println(" of them reach a bracketable callee")
 
     print("br-global    ")
-    println(int_to_str(nGlobal))
+    println(strFromInt(nGlobal))
     print("br-param     ")
-    println(int_to_str(nParam))
+    println(strFromInt(nParam))
     print("br-opaque    ")
-    println(int_to_str(nOpaque))
+    println(strFromInt(nOpaque))
     print("br-drop      ")
-    println(int_to_str(nDrop))
+    println(strFromInt(nDrop))
     print("br-shared    ")
-    println(int_to_str(nShared))
+    println(strFromInt(nShared))
     print("br-multicall ")
-    print(int_to_str(nMulti))
+    print(strFromInt(nMulti))
     println("  (more than one call site: regime (a) is then a question about the region)")
 
     // The placement itself (SPEC 5.2.1.1), and the two numbers are deliberately
@@ -677,7 +678,7 @@ fn aifEmitBracketing() {
     // site already has the frame and a T3 one has a count in front of it. A
     // bracket with 0 served is the call-site form of the inert `region`.
     print("bracketed    ")
-    print(int_to_str(aif_bracket_count()))
+    print(strFromInt(aif_bracket_count()))
     print("  call site(s) placed; ")
     let mut served = 0
     let mut b = 0
@@ -685,7 +686,7 @@ fn aifEmitBracketing() {
         served = served + aif_bracket_served(b)
         b = b + 1
     }
-    print(int_to_str(served))
+    print(strFromInt(served))
     println(" site(s) now arena-served")
 }
 
@@ -763,7 +764,7 @@ fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
     // search reads them. Loading it earlier would write into a table aif_reset
     // has emptied; later would search the estimate and then change the numbers
     // underneath the answer.
-    if (str_equals(profilePath, "") == 0) {
+    if (strEquals(profilePath, "") == false) {
         if (aif_profile_load(profilePath) == 0) {
             // A file that exists but names nothing this module declares. Stale
             // against a rename, most likely (LAYOUT 10.3). W2's fallback, and it
@@ -854,25 +855,25 @@ fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
 // nothing -- rather than in cycles, which would be a modelled number pretending
 // to be a measured one.
 fn aifRepairFor(rule: Int) -> String {
-    if (str_equals(aif_rule_name(rule), "E-STATIC") == 1) {
+    if (strEquals(aif_rule_name(rule), "E-STATIC")) {
         return "make the destination region-scoped instead of static     restores T1, no runtime cost"
     }
-    if (str_equals(aif_rule_name(rule), "E-RETURN") == 1) {
+    if (strEquals(aif_rule_name(rule), "E-RETURN")) {
         return "have the caller allocate and pass it in                  restores T1, no runtime cost"
     }
-    if (str_equals(aif_rule_name(rule), "E-OPAQUE") == 1) {
+    if (strEquals(aif_rule_name(rule), "E-OPAQUE")) {
         return "declare the extern's return contract (FFI 5.2)           restores T2, no runtime cost"
     }
-    if (str_equals(aif_rule_name(rule), "A-STORE") == 1) {
+    if (strEquals(aif_rule_name(rule), "A-STORE")) {
         return "store a copy instead of the value                        restores T2, +1 copy per store"
     }
-    if (str_equals(aif_rule_name(rule), "A-RETAIN") == 1) {
+    if (strEquals(aif_rule_name(rule), "A-RETAIN")) {
         return "declare the parameter `borrow` if the callee keeps nothing  restores T2, no runtime cost"
     }
-    if (str_equals(aif_rule_name(rule), "A-COPY") == 1) {
+    if (strEquals(aif_rule_name(rule), "A-COPY")) {
         return "make the type move-only so a second holder is a move     restores T2, no runtime cost"
     }
-    if (str_equals(aif_rule_name(rule), "E-BIND") == 1) {
+    if (strEquals(aif_rule_name(rule), "E-BIND")) {
         return "declare the binding inside the scope that uses it        restores T1, no runtime cost"
     }
     return ""
@@ -921,7 +922,7 @@ fn aifEmitPlacement(site: Int) {
     println("  placement")
 
     let where = aif_region_name_at_site(site)
-    if (str_equals(where, "") == 0) {
+    if (strEquals(where, "") == false) {
         print("    region:")
         print(where)
         println("  -- bump-allocated, and released in bulk when the region exits")
@@ -1032,7 +1033,7 @@ fn aifEmitBracketing(site: Int) {
     if (unsafeMask == 0) {
         if (mask == 0) {
             print("      yes  -- every obligation holds, and the body serves one regime (")
-            print(int_to_str(calls))
+            print(strFromInt(calls))
             println(" call site)")
         } else if (mask / AIF_BR_B_SHARED_BODY % 2 == 1) {
             println("      no   -- the body is reachable from outside the bracket, so it would")
@@ -1043,7 +1044,7 @@ fn aifEmitBracketing(site: Int) {
             // question belongs to a region, and the `callers` line below is
             // where a reader finds out whether one was found.
             print("      maybe -- every obligation holds, and the body has ")
-            print(int_to_str(calls))
+            print(strFromInt(calls))
             println(" call sites")
             println("      note     one regime iff all of them are bracketed into the same region,")
             println("               which is decided per region, not here")
@@ -1063,9 +1064,9 @@ fn aifEmitBracketing(site: Int) {
     // them is still never placed if nothing calls it from a region, and saying
     // "yes" without this would report a property that reads as a placement.
     print("      callers  ")
-    print(int_to_str(inRegion))
+    print(strFromInt(inRegion))
     print(" of ")
-    print(int_to_str(calls))
+    print(strFromInt(calls))
     if (inRegion == 0) {
         println(" call sites lie inside a region -- so no arena would serve it either way")
     } else {
@@ -1105,9 +1106,9 @@ fn aifEmitCause(site: Int, converged: Bool) {
         print(aifPad(aif_rule_name(rule), 10))
         print(aifPad(diag_file_path(aif_cause_file(i)), 36))
         print(" ")
-        print(int_to_str(aif_cause_line(i)))
+        print(strFromInt(aif_cause_line(i)))
         print(":")
-        println(int_to_str(aif_cause_col(i)))
+        println(strFromInt(aif_cause_col(i)))
         i = i + 1
     }
 
@@ -1124,9 +1125,9 @@ fn aifEmitCause(site: Int, converged: Bool) {
     let mut j = n - 1
     while (j >= 0) {
         let repair = aifRepairFor(aif_cause_rule(j))
-        if (str_equals(repair, "") == 0) {
+        if (strEquals(repair, "") == false) {
             print("    ")
-            print(int_to_str(rank))
+            print(strFromInt(rank))
             print(". ")
             println(repair)
             rank = rank + 1
@@ -1141,7 +1142,7 @@ fn aifEmitCause(site: Int, converged: Bool) {
     // truncated run the same pin is unproven rather than disproven, and SPEC
     // 5.4.2 makes it a warning that raising the budget may clear.
     print("    ")
-    print(int_to_str(rank))
+    print(strFromInt(rank))
     print(". pin(")
     print(aifTierName(aif_tier_of(site) - 1))
     if (converged) {
@@ -1162,7 +1163,7 @@ fn aifExplain(symbol: String, converged: Bool) -> Int {
     let total = aif_site_count()
     let mut i = 0
     while (i < total) {
-        if (str_equals(aifSymbolOf(i), symbol) == 1) {
+        if (strEquals(aifSymbolOf(i), symbol)) {
             aifEmitCause(i, converged)
             return 1
         }
@@ -1194,7 +1195,7 @@ fn aifReportPins() -> Int {
             let want = aifTierName(aif_site_pin_tier(i))
             let got = aifTierName(aif_site_derived_tier(i))
             diag_error_at(aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
-                          str_concat(str_concat(str_concat("pin(", want), ") cannot hold: this value is "), got))
+                          strConcat(strConcat(strConcat("pin(", want), ") cannot hold: this value is "), got))
             diag_note("inference converged, so this is a proven-false assertion rather than a limit of the analysis")
             errors = errors + 1
         }
@@ -1202,7 +1203,7 @@ fn aifReportPins() -> Int {
         if (verdict == AIF_PIN_UNPROVEN) {
             let want = aifTierName(aif_site_pin_tier(i))
             diag_warning_at(aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
-                            str_concat(str_concat("pin(", want), ") is unproven: the analysis budget ran out"))
+                            strConcat(strConcat("pin(", want), ") is unproven: the analysis budget ran out"))
             diag_note("raising --budget may settle it; the derived tier is used meanwhile")
         }
 
@@ -1219,7 +1220,7 @@ fn aifRegionExists(name: String) -> Bool {
     let n = aif_budget_count()
     let mut s = 0
     while (s < n) {
-        if (str_equals(aif_scope_region(s), name) == 1) { return true }
+        if (strEquals(aif_scope_region(s), name)) { return true }
         s = s + 1
     }
     return false
@@ -1251,22 +1252,22 @@ fn aifReportPlacementPin(i: Int) -> Int {
         // arena away from sites a converged run keeps it for. Refusing the build
         // on that would fail a program for the budget it was given.
         diag_warning_at(aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
-                        str_concat(str_concat("pin(", want), ") is unproven: the analysis budget ran out"))
+                        strConcat(strConcat("pin(", want), ") is unproven: the analysis budget ran out"))
         diag_note("raising --budget may settle it; placement is unchanged meanwhile")
         return 0
     }
 
     diag_error_at(aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
-                  str_concat(str_concat("pin(", want), ") cannot hold: this value is not served by that arena"))
+                  strConcat(strConcat("pin(", want), ") cannot hold: this value is not served by that arena"))
 
     if (aifRegionExists(want) == false) {
-        diag_note(str_concat(str_concat("no `region` in this program is named ", diagQuote(want)),
+        diag_note(strConcat(strConcat("no `region` in this program is named ", diagQuote(want)),
                              "; a tier pin is one of T0, T1, T2, T3, T4b, T4a"))
         return 1
     }
 
-    if (str_equals(got, "") == 0) {
-        diag_note(str_concat(str_concat("it is served by region:", got),
+    if (strEquals(got, "") == false) {
+        diag_note(strConcat(strConcat("it is served by region:", got),
                              " -- a nested region takes the values that die earlier"))
         return 1
     }
@@ -1280,9 +1281,9 @@ fn aifReportPlacementPin(i: Int) -> Int {
     let f = aif_site_fn(i)
     let mask = aif_fn_bracket_blockers(f)
     if (f >= 0 and mask / AIF_BR_B_SHARED_BODY % 2 == 1) {
-        diag_note(str_concat(str_concat("the call that reached it was bracketed into ", want),
+        diag_note(strConcat(strConcat("the call that reached it was bracketed into ", want),
                              " (SPEC 5.2.1.1 regime (a)) and no longer is:"))
-        diag_note(str_concat(aif_fn_name(f),
+        diag_note(strConcat(aif_fn_name(f),
                              " reaches a body that is also called from outside the region"))
         return 1
     }
@@ -1290,10 +1291,10 @@ fn aifReportPlacementPin(i: Int) -> Int {
     // while they are all in the same region -- so the note names what a reader
     // has to go and check rather than asserting the count is the fault.
     if (f >= 0 and mask / AIF_BR_B_MULTI_CALL % 2 == 1) {
-        diag_note(str_concat(str_concat("the call that reached it was bracketed into ", want),
+        diag_note(strConcat(strConcat("the call that reached it was bracketed into ", want),
                              " (SPEC 5.2.1.1 regime (a)) and no longer is:"))
-        diag_note(str_concat(str_concat(aif_fn_name(f), " has "),
-                  str_concat(int_to_str(aif_fn_call_sites(f)),
+        diag_note(strConcat(strConcat(aif_fn_name(f), " has "),
+                  strConcat(strFromInt(aif_fn_call_sites(f)),
                              " call sites, and a bracketed callee may have exactly one outside the region")))
         return 1
     }
@@ -1324,9 +1325,9 @@ fn aifReportBudgets(converged: Bool) -> Int {
             if (served > cap) {
                 diag_error_at(aif_scope_budget_file(s), aif_scope_budget_line(s),
                               aif_scope_budget_col(s), 0,
-                              str_concat(str_concat(str_concat("region ", aif_scope_region(s)),
-                                         str_concat(" exceeds its budget: ", int_to_str(served))),
-                                         str_concat(" bytes estimated, ", str_concat(int_to_str(cap), " asserted"))))
+                              strConcat(strConcat(strConcat("region ", aif_scope_region(s)),
+                                         strConcat(" exceeds its budget: ", strFromInt(served))),
+                                         strConcat(" bytes estimated, ", strConcat(strFromInt(cap), " asserted"))))
                 diag_note("the estimate counts statically sized allocations only; a string's length is a run-time value")
                 errors = errors + 1
             }
@@ -1361,10 +1362,10 @@ fn aifReportInertRegions() {
     let mut s = 0
     while (s < n) {
         let name = aif_scope_region(s)
-        if (str_equals(name, "") == 0 and aif_region_serves(s) == 0) {
+        if (strEquals(name, "") == false and aif_region_serves(s) == 0) {
             diag_warning_at(aif_scope_region_file(s), aif_scope_region_line(s),
                             aif_scope_region_col(s), 0,
-                            str_concat(str_concat("region ", name),
+                            strConcat(strConcat("region ", name),
                                        " serves no allocation; it costs an arena push and pop per entry and reclaims nothing"))
             diag_note("an arena serves a value allocated in the same function, or one in a callee whose call this region brackets; a callee called from more than one place, or a region holding a call this compilation cannot see through, cannot reach it")
         }
@@ -1424,10 +1425,10 @@ fn aifEmitLayout(module: ASTNode, sourcePath: String) {
                     let total = aif_struct_nfields(d.s1)
                     let mut label = "unsplit"
                     if (hot < total) {
-                        label = str_concat("split ", str_concat(int_to_str(hot),
-                                 str_concat("/", int_to_str(total))))
+                        label = strConcat("split ", strConcat(strFromInt(hot),
+                                 strConcat("/", strFromInt(total))))
                     }
-                    if (i == best) { label = str_concat(label, " *") }
+                    if (i == best) { label = strConcat(label, " *") }
                     let mut emitted = ""
                     if (emittedHot == 0) {
                         if (hot == total) { emitted = "emitted" }
@@ -1438,12 +1439,12 @@ fn aifEmitLayout(module: ASTNode, sourcePath: String) {
                     }
                     print("  ")
                     print(aifPad(d.s1, 24))
-                    print(aifPad(int_to_str(total), 8))
-                    print(aifPad(int_to_str(trav), 6))
+                    print(aifPad(strFromInt(total), 8))
+                    print(aifPad(strFromInt(trav), 6))
                     print(aifPad(label, 15))
-                    print(aifPad(int_to_str(aif_layout_cand_bytes(i, 0)), 7))
-                    print(aifPad(int_to_str(aif_layout_cand_bytes(i, 1)), 8))
-                    print(aifPad(int_to_str(aif_layout_cand_ratio(i)), 10))
+                    print(aifPad(strFromInt(aif_layout_cand_bytes(i, 0)), 7))
+                    print(aifPad(strFromInt(aif_layout_cand_bytes(i, 1)), 8))
+                    print(aifPad(strFromInt(aif_layout_cand_ratio(i)), 10))
                     println(emitted)
                     i = i + 1
                 }

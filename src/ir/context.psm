@@ -61,6 +61,11 @@ let IR_DROP_TYPED = 2
 // M4.3. A DataView is a header plus one allocation per column, so neither the
 // object seam nor List's release is sufficient.
 let IR_DROP_DATAVIEW = 3
+// A task handle is the runtime's own struct, not an allocator-seam object, so
+// only the runtime can free it -- `prismio_task_release` is what does. It is a
+// separate kind rather than IR_DROP_OBJECT because freeing it through the seam
+// would report a release of a pointer the verify ledger never handed out.
+let IR_DROP_TASK = 4
 
 // AIF item 3. What a container does with its elements when it is released, and
 // what a known callee's return leaves the caller owning. One encoding for both,

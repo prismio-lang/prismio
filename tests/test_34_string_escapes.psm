@@ -10,8 +10,7 @@
 // the literal early.
 
 import std.io
-extern fn str_equals(s1: String, s2: String) -> Int
-extern fn str_char_at(s: String, index: Int) -> Char
+import std.string
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -25,7 +24,7 @@ fn main() -> Int {
     if (__builtin_string_len(nl) != 3) {
         return fail("\\n should decode to a single character")
     }
-    if (str_char_at(nl, 1) != '\n') {
+    if (strCharAt(nl, 1) != '\n') {
         return fail("\\n decoded to the wrong character")
     }
 
@@ -34,7 +33,7 @@ fn main() -> Int {
     if (__builtin_string_len(tab) != 3) {
         return fail("\\t should decode to a single character")
     }
-    if (str_char_at(tab, 1) != '\t') {
+    if (strCharAt(tab, 1) != '\t') {
         return fail("\\t decoded to the wrong character")
     }
 
@@ -43,7 +42,7 @@ fn main() -> Int {
     if (__builtin_string_len(back) != 3) {
         return fail("\\\\ should decode to a single backslash")
     }
-    if (str_char_at(back, 1) != '\\') {
+    if (strCharAt(back, 1) != '\\') {
         return fail("\\\\ decoded to the wrong character")
     }
 
@@ -52,21 +51,21 @@ fn main() -> Int {
     if (__builtin_string_len(quoted) != 8) {
         return fail("escaped quotes should not end the literal")
     }
-    if (str_char_at(quoted, 4) != '"') {
+    if (strCharAt(quoted, 4) != '"') {
         return fail("\\\" decoded to the wrong character")
     }
 
     // \r and \'
-    if (str_char_at("x\ry", 1) != '\r') {
+    if (strCharAt("x\ry", 1) != '\r') {
         return fail("\\r decoded to the wrong character")
     }
-    if (str_char_at("x\'y", 1) != '\'') {
+    if (strCharAt("x\'y", 1) != '\'') {
         return fail("\\' decoded to the wrong character")
     }
 
     // a windows-style path round-trips
     let path = "C:\\dir\\file.txt"
-    if (str_equals(path, "C:\\dir\\file.txt") == 0) {
+    if (strEquals(path, "C:\\dir\\file.txt") == false) {
         return fail("path with escaped backslashes did not round-trip")
     }
     if (__builtin_string_len(path) != 15) {

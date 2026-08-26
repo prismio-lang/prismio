@@ -891,9 +891,15 @@ therefore deliberately unchanged; it is M4.3's exit signal, not a Slice-only sig
 **Paper:** Mimalloc (APLAS 2019) — built specifically as the backend for reference-counted
 runtimes (Koka, Lean), which is Prismio's workload shape.
 
-- [ ] **M5.1 — Evaluate mimalloc** behind the existing allocator seam. After automatic arenas and
-      inline flat elements, Prismio allocates fewer times than Rust on g2/g6 but still 10.7×–21.3×
-      more on g1/g3/g4/g5. Measure the four programs where allocator choice can still matter.
+- [x] **M5.1 — Allocator evaluation complete; retain system malloc, 2026-08-26.** Dynamic
+      interposition was followed by sound direct-seam experiments in which generated objects, the
+      runtime, verifier shims, and curated inline bodies all selected the same allocator. Direct
+      mimalloc v3.4.5 loses at **1.021×** corpus-median loop time and raises RSS **24.2%**; direct
+      rpmalloc v1.4.5 is runtime-flat at **1.003×** and raises RSS **62.7%**. g1/g3/g4/g5 are
+      reported separately, all checksums agree, all four ledgers are clean, compile time is flat,
+      and static linkage grows executables. Both dependencies and the temporary production hooks
+      were removed. The retained-system milestone gate is **0.998×** and 166/166. See
+      [`RESULTS-M5-allocator.md`](aif/evidence/RESULTS-M5-allocator.md).
 - [x] **M5.2 — Bisect the RSS regression. Closed by measurement, 2026-08-25.**
       The standing text was 0.84–1.00× → **1.09–1.60×** of idiomatic Rust, +27% (g5) to +86% (g6),
       Rust unmoved, with the fixed runtime footprint and the hot/cold split already excluded.
@@ -932,19 +938,124 @@ checkbox, or the two drift and only one of them gets read.)*
             and milestone corpus median **0.948×** (range 0.635×–1.000×), RSS flat, checksums equal.
       - [ ] Observe that new check green on the remote three-platform CI matrix. This requires the
             working-tree change to be committed/pushed; do not mark the parent complete before it.
-- [ ] **Genuinely-cold compile regressed 19–28%** — g1 183 → 235 ms, g6 203 → 241 ms with
-      `PRISMIO_OBJ_CACHE=0`. Hidden by the object cache in the default path (103–110 ms, 0.71–0.85×
-      rustc). Affects first builds and uncached CI.
-- [ ] **Reclaim overwritten boxed `OBJECT` list elements after element-borrow liveness exists.**
-      M4.4's first verifier fixture exposed the deliberate fallback in `list_set`: it cannot free
-      the old object while a `list_get` borrow may still name it, so replacement currently leaks
-      that overwritten object rather than risking use-after-free. Do not change the runtime alone;
-      the prerequisite is a compiler proof that derived element borrows are dead (or an explicit
-      exclusive replacement operation). This is separate from generic layout specialization,
-      whose boxed/inline choice is already green.
-- [ ] **Keep the corpus honest.** It is six single-threaded programs; concurrency is unmeasured and
-      it is the axis where Rust's claim is strongest. Any concurrency ranking needs a concurrent
-      program in the corpus first.
+            **Still blocked on push authorisation as of 2026-08-26**, and every local check that can
+            substitute for it is green: suite **170/170** on macOS, fixed point, differential 17/17,
+            curated closure, `--target` cross-build and link, packaged-runtime separation. The
+            matrix now has a **second** discriminating check to run —
+            `run_runtime_object_from_ir_test`, from the cold-compile work — and it covers the same
+            portability question from the other side: whether this host's clang flags are ones every
+            platform's clang takes.
+- [x] **Reclaim overwritten boxed `OBJECT` list elements through an explicit exclusive operation,
+      2026-08-26.** `list_set_exclusive` is admitted only for a locally created boxed-struct List
+      whose scoped capability has not been cleared by element access, slicing, or an arbitrary
+      borrowing call. It releases the displaced element through the List's actual disposition and
+      typed releaser. Ordinary `list_set` remains conservative; no partial source-order lifetime
+      approximation was added. The discriminator moves **4 allocated / 3 released / 1 leaked** to
+      **4 / 4 / 0**, while observed and inline cases are compile errors. Fixed point, suite
+      **169/169**, differential 17/17, and the **1.002×** milestone gate are green. See
+      [`RESULTS-boxed-replacement.md`](aif/evidence/RESULTS-boxed-replacement.md).
+- [x] **Genuinely-cold compile regression — attributed by stage and closed, 2026-08-26.** The
+      cost was never the extract or the merge (2.3 ms together): a cold inline-runtime build ran the
+      C frontend and the `-O2` middle end over `lang_runtime.c` **twice**. The curated intermediate
+      is now bitcode, is retained for the rest of the build, and the runtime object is lowered from
+      it with `-Xclang -disable-llvm-passes` — target backend only. Bitcode rather than textual IR
+      because that round trip produces an object **byte-identical** to `clang -O2 -c` and the
+      textual one does not. Cold and `PRISMIO_OBJ_CACHE=0` builds are **0.804–0.818×** of the
+      previous compiler with the cached paths unmoved (0.984–1.002×), and the inline-runtime cold
+      penalty falls from 1.359×/1.334× to **1.103×/1.091×** on g1/g6. Codegen-neutral by
+      construction and by check: emitted IR is byte-identical everywhere and the **linked
+      executables are byte-identical**, which is stricter than this host's floor. `--save-temps`
+      was measured (200 ms against 145 ms) and rejected. `PRISMIO_BUILD_TRACE=1` is the stage trace
+      that made the attribution possible and is now maintained. It fails open like the merge, so
+      `run_runtime_object_from_ir_test` requires the `(from IR)` stage on the cold path and its
+      absence under the opt-out; a `PATH` shim that refuses the flag was used to observe the test
+      failing, so the assertion is not vacuous. Suite **170/170**, differential 17/17, milestone
+      **1.000×**. See [`RESULTS-cold-compile.md`](aif/evidence/RESULTS-cold-compile.md).
+- [x] **Keep the corpus honest — the corpus has a concurrent program, 2026-08-26.** `g9_bands` is a
+      per-frame parallel reduction: four `spawn`ed bands, joined at the frame boundary. Two Rust
+      ports, and the split between them is the result — `g9_idiomatic.rs` is `std::thread::spawn`
+      per frame (the honest peer, one OS thread per task either way) and `g9_tuned.rs` keeps four
+      workers alive over channels (what a tuned Rust program does). `aif_differential.py` globs the
+      corpus, so 17 sources became **18** and `spawn` is now in the differential.
+      **Prismio beats idiomatic Rust here**: loop **0.89×**, p50 0.90×, p99 0.90×, p999 0.91×,
+      RSS 0.83×, allocations **0.13×** — measured twice on two harnesses (0.89× and 0.92×) with an
+      A/A floor of 1.001×, tighter than g1's 1.098×. The mechanism is E-SPAWN-J: Rust's
+      `std::thread::spawn` needs a `'static` closure and boxes it every frame, while a proved join
+      keeps the argument **T0/stack** and allocates nothing.
+      **Hand-tuned Rust is still 1.45× faster** — a thread pool does not pay `pthread_create` per
+      frame and Prismio has no way to express one. That is a language question, not codegen.
+      See [`RESULTS-concurrency.md`](aif/evidence/RESULTS-concurrency.md).
+- [x] **The task handle had no owner — fixed 2026-08-26.** `prismio_task_release` existed from the
+      day tasks did and codegen never emitted it, so every `spawn` leaked one handle. Invisible to
+      `--verify` because the handle is plain `calloc` (correctly — it is a runtime temporary the
+      runtime frees itself); `allocount` read **8,201 allocations against 23 frees** on g9. Now
+      released at the **scope exit**, not at the join: a handle is copyable, nothing stops a second
+      join, and a scope exit runs once after all of them. Emitted only where E-SPAWN-J already
+      proved the join, so a task that may still be running is never freed under.
+      **frees 23 → 8,019, RSS 2.1 → 1.5 MB (1.17× → 0.83× of Rust), loop flat at 1.002×.**
+      `run_task_release_test` asserts the release is emitted for a proved join and **withheld** for
+      a copied handle and an unprovable one; it fails against the pre-fix compiler.
+- [ ] **An owned call result passed straight into another call has no owner.** *(Recorded on
+      2026-08-26 as a `spawn` defect; that was wrong and the correction is the useful part —
+      the same program leaks **identically, 107/27/80, with and without `spawn`**. `spawn` was
+      simply the first thing looking.)*
+      `aif_owns_call_result_at_node` answers the ownership question, and codegen asks it at a
+      **binding** (`VARIABLE_DECL` and assignment, `src/ir/stmt.psm`). A result consumed directly as
+      an argument is never bound, so nothing asks and nothing drops. One `let` is the whole
+      difference: **bound 27/27/0, unbound 107/27/80.**
+      An automatic region normally hides this by reclaiming the value in bulk; when call-site
+      bracketing declines, `prismio aif --why` says so outright — *"0 of 4 call sites lie inside a
+      region, so no arena would serve it either way"* — and names the repair it wants
+      (*"have the caller allocate and pass it in — restores T1, no runtime cost"*), which is exactly
+      what `g9_bands.psm` does and `g9_helper_leak.psm` does not.
+      Reproductions: `tests/owned_temporary_argument.psm` (the discriminator) and
+      `aif/evidence/xlang/prismio/g9_helper_leak.psm`.
+      **The fix needs a guard, not just a drop.** Releasing every owned temporary argument is a
+      use-after-free wherever the callee retains it — `list_push` is the obvious case and its FFI
+      contract already answers `RETAIN_IN_BASE`. A Prismio callee needs the same question answered
+      from the escape facts *before* any drop is emitted. Enumerate the existing owners first.
+- [ ] **Ownership of a callee-allocated value does not survive a second return.**
+      `aif_owns_call_result_at_node` requires the returned site to have been allocated in the callee
+      itself (`if (sites[s].fn != c->fn) return AIF_ELEM_NONE;`). The guard is not arbitrary — a
+      pass-through leaves the value owned where it was created and freeing it at the caller
+      double-frees — but it also declines the ordinary case where the intermediate frame *returned*
+      the value and kept no claim on it, which is every producer written in Prismio.
+      Invisible while `std.string` was C, because an `extern fn` carries its `produce` contract and
+      answered at depth 1. Reproduction: `tests/owned_return_depth2.psm` — depth 1 is **6/6/0**,
+      adding one level gives **12/7/5**. `tests/test_72_reassigned_ownership.psm` is deliberately
+      left on the C `str_concat` for this reason and its header says so.
+      **Not fixable by dropping the guard**; it needs the transitive fact — the site escaped to
+      Caller through every intermediate frame and no intermediate frame owns it — which is a
+      fixed-point change, not a predicate change.
+- [x] **The C string layer is gone, 2026-08-26.** 1,093 call sites in `src/`, 109 in `ums/` and 82
+      in `tests/` moved off `extern fn str_*` onto native `std.string`; twelve C functions and the
+      orphaned `StringArray` deleted (`lang_runtime.c` 2,192 → 2,041 lines), with their AIF
+      contracts removed from `src/aif/contracts.psm` and `aif/prototype/aif.py` together.
+      `str_slice` went with them: it existed only to avoid a `strlen` that a fat String no longer
+      performs. **Parse+sema is 0.843×**; full emit is 1.030× and a whole build is flat.
+      Emitted IR is byte-identical on all 94 corpus and test programs. Suite **172/172**.
+      See [`RESULTS-string-migration.md`](aif/evidence/RESULTS-string-migration.md).
+- [x] **`Int` stays signed 32-bit, decided by measurement 2026-08-26.** The index-width argument
+      (Go's and Swift's) is worth **zero** on both targets — i32-wrapping, i32-`nsw` and i64 indices
+      all read 0.225–0.226 ms, AArch64 emits no `sxtw` and x86-64 one `movslq` in every arm. Making
+      overflow UB to unlock `nsw` is worth **less** than zero: adding `nsw` to the compiler's own
+      emitted IR for g1/g3/g4 gives 1.014×/1.006×/1.005×. Rust RFC 0212's density argument is the
+      one that holds — 64-bit fields cost **1.330×** in Prismio on a corpus-shaped traversal and
+      1.76–2.15× in the C control. See [`RESULTS-int-width.md`](aif/evidence/RESULTS-int-width.md).
+- [ ] **Debug-mode integer overflow checking.** `Int` wraps silently and this session tripped over it
+      three times, including in a 40-line benchmark whose two arms disagreed because one wrapped.
+      Rust's model — check in debug, wrap in release — is the answer; priced with clang's
+      signed-overflow sanitizer at **4.1–4.4×**, so it can only ever be a debug mode.
+- [ ] **`__builtin_string_len` truncates.** `%prismio.str` carries its length in **i64** and the
+      builtin returns `Int`, so the read emits `trunc i64 … to i32`. The representation is wider
+      than every path that reads it, which is incoherent under either width choice. Also
+      `clock_gettime_nsec_np` is declared `-> Int` in every benchmark source against a `uint64_t`;
+      it works only because the code takes a difference and frames are short.
+- [ ] **Four C string functions survive only as an FFI test surface.** `str_concat`,
+      `str_substring`, `str_equals` and `int_to_str` remain in `lang_runtime.c` because 13 AIF/tier
+      fixtures declare them to exercise `extern fn` ownership, and `str_slice` because `g7.psm`
+      measures it against Rust. Those fixtures should declare a purpose-built foreign surface
+      instead, so the runtime is not carrying dead code to keep a test alive.
 
 ---
 

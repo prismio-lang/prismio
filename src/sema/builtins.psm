@@ -5,16 +5,17 @@ import lexer.token
 import ast.types
 import ir.bridge
 import common.diagnostics
+import std.string
 
 fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
-    if (str_equals(name, "drop") == 1) { return typeVoid() }
+    if (strEquals(name, "drop")) { return typeVoid() }
 
     // String's irreducible representation operations. These are compiler
     // builtins, not foreign functions: sema owns their signatures and codegen
     // replaces their call-shaped syntax with field/GEP operations.
-    if (str_equals(name, "__builtin_string_len") == 1) { return typeInt() }
-    if (str_equals(name, "__builtin_string_byte_at") == 1) { return typeChar() }
-    if (str_equals(name, "__builtin_string_put_byte") == 1) { return typeVoid() }
+    if (strEquals(name, "__builtin_string_len")) { return typeInt() }
+    if (strEquals(name, "__builtin_string_byte_at")) { return typeChar() }
+    if (strEquals(name, "__builtin_string_put_byte")) { return typeVoid() }
 
     // REQUIREMENTS 4. The narrowing half. `T?` cannot be used as a `T` -- that
     // is what the type buys -- so there has to be one way across, and this is it.
@@ -25,7 +26,7 @@ fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // fails loudly where narrowing would have failed silently. It is also the
     // idiom the compiler already writes by hand -- `if (nodeExists(p)) { let n =
     // ptr_to_node(p) }` is exactly this shape.
-    if (str_equals(name, "expect") == 1) {
+    if (strEquals(name, "expect")) {
         if (nodeExists(argPtr)) {
             let ot = nodeGetType(ptr_to_node(argPtr))
             if (ot.kind == TypeKind.OPTIONAL) { return typeOptionalInner(ot) }
@@ -33,15 +34,16 @@ fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
         return typeInvalid()
     }
 
-    if (str_equals(name, "list_new") == 1) { return typeList(typeInvalid()) }
-    if (str_equals(name, "list_new_with_capacity") == 1) { return typeList(typeInvalid()) }
-    if (str_equals(name, "list_len") == 1) { return typeInt() }
-    if (str_equals(name, "list_push") == 1) { return typeVoid() }
-    if (str_equals(name, "list_set") == 1) { return typeVoid() }
-    if (str_equals(name, "slice_len") == 1) { return typeInt() }
-    if (str_equals(name, "slice_set") == 1) { return typeVoid() }
-    if (str_equals(name, "data_len") == 1) { return typeInt() }
-    if (str_equals(name, "soa") == 1) {
+    if (strEquals(name, "list_new")) { return typeList(typeInvalid()) }
+    if (strEquals(name, "list_new_with_capacity")) { return typeList(typeInvalid()) }
+    if (strEquals(name, "list_len")) { return typeInt() }
+    if (strEquals(name, "list_push")) { return typeVoid() }
+    if (strEquals(name, "list_set")) { return typeVoid() }
+    if (strEquals(name, "list_set_exclusive")) { return typeVoid() }
+    if (strEquals(name, "slice_len")) { return typeInt() }
+    if (strEquals(name, "slice_set")) { return typeVoid() }
+    if (strEquals(name, "data_len")) { return typeInt() }
+    if (strEquals(name, "soa")) {
         if (nodeExists(argPtr)) {
             let lt = nodeGetType(ptr_to_node(argPtr))
             if (lt.kind == TypeKind.LIST and nodeExists(lt.child)) {
@@ -50,7 +52,7 @@ fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
         }
         return typeInvalid()
     }
-    if (str_equals(name, "aos") == 1) {
+    if (strEquals(name, "aos")) {
         if (nodeExists(argPtr)) {
             let vt = nodeGetType(ptr_to_node(argPtr))
             if (vt.kind == TypeKind.DATAVIEW and nodeExists(vt.child)) {
@@ -59,7 +61,7 @@ fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
         }
         return typeInvalid()
     }
-    if (str_equals(name, "list_get") == 1) {
+    if (strEquals(name, "list_get")) {
         if (nodeExists(argPtr)) {
             let lt = nodeGetType(ptr_to_node(argPtr))
             if (lt.kind == TypeKind.LIST and nodeExists(lt.child)) {
@@ -74,12 +76,12 @@ fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
 fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     // drop(x): deterministic, safe free. Consumes (moves) an owned value, so
     // use-after-drop and double-drop are caught by move tracking.
-    if (str_equals(name, "drop") == 1) {
+    if (strEquals(name, "drop")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let mut arg = ptr_to_node(argPtr)
         let mut t = semaExpr(module, arg)
         if (typeIsMoveOnly(t) == false) {
-            semaErrorAt(arg, str_concat("drop requires an owned (move-only) value, found ", typeDisplay(t)))
+            semaErrorAt(arg, strConcat("drop requires an owned (move-only) value, found ", typeDisplay(t)))
             return true
         }
         semaConsumeOperand(arg)
@@ -91,12 +93,12 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
     // held, so it transfers no ownership and the optional stays usable. Treating
     // it as a move would make `if (p != none) { use(expect(p)) }` fail on the
     // second visit to a loop body.
-    if (str_equals(name, "expect") == 1) {
+    if (strEquals(name, "expect")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let ot = semaExpr(module, a0)
         if (ot.kind != TypeKind.OPTIONAL) {
-            semaErrorAt(a0, str_concat("expect requires an optional value, found ",
+            semaErrorAt(a0, strConcat("expect requires an optional value, found ",
                                          typeDisplay(ot)))
             return true
         }
@@ -106,13 +108,13 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
         return true
     }
 
-    if (str_equals(name, "__builtin_string_len") == 1) {
+    if (strEquals(name, "__builtin_string_len")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         semaCheckValue(module, ptr_to_node(argPtr), typeString(), "string length operand")
         return true
     }
 
-    if (str_equals(name, "__builtin_string_byte_at") == 1) {
+    if (strEquals(name, "__builtin_string_byte_at")) {
         if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         semaCheckValue(module, a0, typeString(), "string byte operand")
@@ -120,7 +122,7 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
         return true
     }
 
-    if (str_equals(name, "__builtin_string_put_byte") == 1) {
+    if (strEquals(name, "__builtin_string_put_byte")) {
         if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let a1 = ptr_to_node(a0.next)
@@ -130,24 +132,24 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
         return true
     }
 
-    if (str_equals(name, "list_new") == 1) {
+    if (strEquals(name, "list_new")) {
         semaCheckArity(call, name, argPtr, 0)
         return true
     }
     // Vec::with_capacity. A hint, not a bound -- the list still doubles past it --
     // so there is nothing here for the analysis to trust and no annotation budget
     // to spend. Worth 0.926x on g2's per-frame list; see runtime/lang_runtime.c.
-    if (str_equals(name, "list_new_with_capacity") == 1) {
+    if (strEquals(name, "list_new_with_capacity")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         semaCheckValue(module, ptr_to_node(argPtr), typeInt(), "list_new_with_capacity")
         return true
     }
-    if (str_equals(name, "list_len") == 1) {
+    if (strEquals(name, "list_len")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, str_concat("list_len expects a List, found ", typeDisplay(lt)))
+            semaErrorAt(a0, strConcat("list_len expects a List, found ", typeDisplay(lt)))
         }
         return true
     }
@@ -156,21 +158,21 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
     // `soa(rows)`, the rows live in columns and the old List handle is gone;
     // after `aos(view)`, the reverse is true. Restrict the first boundary to
     // flat structs so a byte copy never duplicates an owned pointer.
-    if (str_equals(name, "soa") == 1) {
+    if (strEquals(name, "soa")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let rows = ptr_to_node(argPtr)
         let lt = semaExpr(module, rows)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(rows, str_concat("soa expects a List, found ", typeDisplay(lt)))
+            semaErrorAt(rows, strConcat("soa expects a List, found ", typeDisplay(lt)))
             return true
         }
         let elemT = semaListElementType(lt)
         if (elemT.kind != TypeKind.STRUCT) {
-            semaErrorAt(rows, str_concat("soa requires a List of flat structs, found ", typeDisplay(lt)))
+            semaErrorAt(rows, strConcat("soa requires a List of flat structs, found ", typeDisplay(lt)))
             return true
         }
         if (structDeclIsPodIn(module, elemT.name, 0, true) == false) {
-            semaErrorAt(rows, str_concat(str_concat("soa requires a flat struct with no owned fields; ",
+            semaErrorAt(rows, strConcat(strConcat("soa requires a flat struct with no owned fields; ",
                                                      elemT.name),
                                           " contains non-flat storage"))
             return true
@@ -179,44 +181,50 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
         return true
     }
 
-    if (str_equals(name, "aos") == 1) {
+    if (strEquals(name, "aos")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let view = ptr_to_node(argPtr)
         let vt = semaExpr(module, view)
         if (vt.kind != TypeKind.DATAVIEW) {
-            semaErrorAt(view, str_concat("aos expects a DataView, found ", typeDisplay(vt)))
+            semaErrorAt(view, strConcat("aos expects a DataView, found ", typeDisplay(vt)))
             return true
         }
         semaConsumeOperand(view)
         return true
     }
 
-    if (str_equals(name, "data_len") == 1) {
+    if (strEquals(name, "data_len")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let view = ptr_to_node(argPtr)
         let vt = semaExpr(module, view)
         if (vt.kind != TypeKind.DATAVIEW) {
-            semaErrorAt(view, str_concat("data_len expects a DataView, found ", typeDisplay(vt)))
+            semaErrorAt(view, strConcat("data_len expects a DataView, found ", typeDisplay(vt)))
         }
         return true
     }
-    if (str_equals(name, "list_get") == 1) {
+    if (strEquals(name, "list_get")) {
         if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, str_concat("list_get expects a List, found ", typeDisplay(lt)))
+            semaErrorAt(a0, strConcat("list_get expects a List, found ", typeDisplay(lt)))
             return true
         }
         semaCheckValue(module, ptr_to_node(a0.next), typeInt(), "list_get index")
+        // Once an element has been exposed, Prismio has no CFG lifetime with
+        // which to prove that derived borrow dead. The exclusive replacement
+        // capability therefore closes permanently for this binding.
+        if (a0.kind == NodeKind.IDENTIFIER_EXPR) {
+            ir_unmark_list_exclusive(a0.s1)
+        }
         return true
     }
-    if (str_equals(name, "list_push") == 1) {
+    if (strEquals(name, "list_push")) {
         if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, str_concat("list_push expects a List, found ", typeDisplay(lt)))
+            semaErrorAt(a0, strConcat("list_push expects a List, found ", typeDisplay(lt)))
             return true
         }
         let valueNode = ptr_to_node(a0.next)
@@ -245,12 +253,12 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
         semaConsumeOperand(ptr_to_node(a0.next))
         return true
     }
-    if (str_equals(name, "list_set") == 1) {
+    if (strEquals(name, "list_set")) {
         if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, str_concat("list_set expects a List, found ", typeDisplay(lt)))
+            semaErrorAt(a0, strConcat("list_set expects a List, found ", typeDisplay(lt)))
             return true
         }
         let a1 = ptr_to_node(a0.next)
@@ -271,13 +279,48 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
         semaConsumeOperand(ptr_to_node(a1.next))
         return true
     }
+    // An explicit safe escape hatch for the boxed replacement leak. Ordinary
+    // list_set keeps its compatibility semantics. This operation is admitted
+    // only while the first argument is the locally owned list_new binding and
+    // no element, Slice, or arbitrary callee has observed it. That is Swift's
+    // exclusive-access rule expressed as a small typestate fact; it does not
+    // pretend Prismio already has Rust-style CFG borrow liveness.
+    if (strEquals(name, "list_set_exclusive")) {
+        if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let lt = semaExpr(module, a0)
+        if (lt.kind != TypeKind.LIST) {
+            semaErrorAt(a0, strConcat("list_set_exclusive expects a List, found ", typeDisplay(lt)))
+            return true
+        }
+        let a1 = ptr_to_node(a0.next)
+        semaCheckValue(module, a1, typeInt(), "list_set_exclusive index")
+        let valueNode = ptr_to_node(a1.next)
+        let elemT = semaListElementType(lt)
+        semaCheckValue(module, valueNode, elemT, "list_set_exclusive value")
 
-    if (str_equals(name, "slice_len") == 1) {
+        // Inline replacement overwrites the bytes a saved element address names;
+        // this task is specifically the separately allocated boxed OBJECT case.
+        if (elemT.kind != TypeKind.STRUCT
+            or structDeclIsPodIn(module, elemT.name, 0, true)) {
+            semaErrorAt(a0, "list_set_exclusive requires a boxed struct element type")
+            diag_note("flat List elements are inline; use list_set for them")
+        }
+        if (a0.kind != NodeKind.IDENTIFIER_EXPR
+            or ir_is_list_exclusive(a0.s1) == 0) {
+            semaErrorAt(a0, "list_set_exclusive requires an unobserved local List")
+            diag_note("create it with list_new and replace before list_get, slicing, or passing it to another function")
+        }
+        semaConsumeOperand(valueNode)
+        return true
+    }
+
+    if (strEquals(name, "slice_len")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let slice = ptr_to_node(argPtr)
         let st = semaExpr(module, slice)
         if (st.kind != TypeKind.SLICE) {
-            semaErrorAt(slice, str_concat("slice_len expects a Slice, found ", typeDisplay(st)))
+            semaErrorAt(slice, strConcat("slice_len expects a Slice, found ", typeDisplay(st)))
         }
         return true
     }
@@ -285,12 +328,12 @@ fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Pt
     // Mutable views use an explicit operation in v0.1. Two overlapping slices
     // may both call it; the handle is resolved at each access, so list growth
     // cannot strand either one and no aliasing promise is made.
-    if (str_equals(name, "slice_set") == 1) {
+    if (strEquals(name, "slice_set")) {
         if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
         let slice = ptr_to_node(argPtr)
         let st = semaExpr(module, slice)
         if (st.kind != TypeKind.SLICE) {
-            semaErrorAt(slice, str_concat("slice_set expects a Slice, found ", typeDisplay(st)))
+            semaErrorAt(slice, strConcat("slice_set expects a Slice, found ", typeDisplay(st)))
             return true
         }
         let index = ptr_to_node(slice.next)

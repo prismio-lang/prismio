@@ -5,6 +5,7 @@ import lexer.token
 import ast.types
 import ir.bridge
 import common.diagnostics
+import std.string
 
 fn semaMangleType(t: TypeInfo) -> String {
     if (t.kind == TypeKind.VOID) { return "Void" }
@@ -14,29 +15,29 @@ fn semaMangleType(t: TypeInfo) -> String {
     if (t.kind == TypeKind.CHAR) { return "Char" }
     if (t.kind == TypeKind.STRING) { return "String" }
     if (t.kind == TypeKind.PTR) { return "Ptr" }
-    if (t.kind == TypeKind.STRUCT) { return str_concat("Struct_", t.name) }
-    if (t.kind == TypeKind.ENUM) { return str_concat("Enum_", t.name) }
+    if (t.kind == TypeKind.STRUCT) { return strConcat("Struct_", t.name) }
+    if (t.kind == TypeKind.ENUM) { return strConcat("Enum_", t.name) }
     if (t.kind == TypeKind.ARRAY) {
         if (nodeExists(t.child)) {
-            return str_concat("Array_", semaMangleType(ptr_to_type(t.child)))
+            return strConcat("Array_", semaMangleType(ptr_to_type(t.child)))
         }
         return "Array_Invalid"
     }
     if (t.kind == TypeKind.LIST) {
         if (nodeExists(t.child)) {
-            return str_concat("List_", semaMangleType(ptr_to_type(t.child)))
+            return strConcat("List_", semaMangleType(ptr_to_type(t.child)))
         }
         return "List_Invalid"
     }
     if (t.kind == TypeKind.SLICE) {
         if (nodeExists(t.child)) {
-            return str_concat("Slice_", semaMangleType(ptr_to_type(t.child)))
+            return strConcat("Slice_", semaMangleType(ptr_to_type(t.child)))
         }
         return "Slice_Invalid"
     }
     if (t.kind == TypeKind.DATAVIEW) {
         if (nodeExists(t.child)) {
-            return str_concat("DataView_", semaMangleType(ptr_to_type(t.child)))
+            return strConcat("DataView_", semaMangleType(ptr_to_type(t.child)))
         }
         return "DataView_Invalid"
     }
@@ -49,14 +50,14 @@ fn semaParamSignature(module: ASTNode, paramPtr: Ptr) -> String {
     while (nodeExists(curr)) {
         let mut param = ptr_to_node(curr)
         let paramT = semaAnnotationType(module, ptr_to_node(param.child1))
-        if (str_equals(sig, "") == 1) {
+        if (strEquals(sig, "")) {
             sig = semaMangleType(paramT)
         } else {
-            sig = str_concat(str_concat(sig, "_"), semaMangleType(paramT))
+            sig = strConcat(strConcat(sig, "_"), semaMangleType(paramT))
         }
         curr = param.next
     }
-    if (str_equals(sig, "") == 1) { return "Void" }
+    if (strEquals(sig, "")) { return "Void" }
     return sig
 }
 
@@ -64,10 +65,10 @@ fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
     if (fnNode.kind == NodeKind.EXTERN_FUNCTION) {
         return fnNode.s1
     }
-    if (str_equals(fnNode.s1, "main") == 1) {
+    if (strEquals(fnNode.s1, "main")) {
         return "main"
     }
-    return str_concat(str_concat(fnNode.s1, "__"), semaParamSignature(module, fnNode.child1))
+    return strConcat(strConcat(fnNode.s1, "__"), semaParamSignature(module, fnNode.child1))
 }
 
 // Mangles every function's symbol once and stores it on the node, so the
@@ -107,7 +108,7 @@ fn semaFirstFunctionWithSymbol(module: ASTNode, fnNode: ASTNode) -> ASTNode {
     while (i < count) {
         let stmt = ptr_to_node(ir_decl_at(name, i))
         if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
-            if (str_equals(stmt.s2, symbol) == 1) {
+            if (strEquals(stmt.s2, symbol)) {
                 return stmt
             }
         }
@@ -155,7 +156,7 @@ fn semaDefaultLiteralScore(module: ASTNode, fnNode: ASTNode, argPtr: Ptr) -> Int
         let paramNode = ptr_to_node(param)
         let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
         if (semaIsIntLiteral(argNode) and paramT.kind == TypeKind.INT
-            and str_equals(paramT.name, "Int") == 1) {
+            and strEquals(paramT.name, "Int")) {
             score = score + 1
         }
         arg = argNode.next
@@ -232,7 +233,7 @@ fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr
     // because semaError exited. Now that it returns, an ambiguous call would
     // also be reported as having no matching overload and as being unknown.
     if (matchCount > 1) {
-        semaErrorAt(call, str_concat(str_concat("ambiguous call to ", diagQuote(name)),
+        semaErrorAt(call, strConcat(strConcat("ambiguous call to ", diagQuote(name)),
                                        ": more than one overload matches these arguments"))
         return ptr_to_node(bestPtr)
     }
@@ -240,11 +241,11 @@ fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr
         return ptr_to_node(bestPtr)
     }
     if (nameSeen) {
-        semaErrorAt(call, str_concat(str_concat("no overload of ", diagQuote(name)),
+        semaErrorAt(call, strConcat(strConcat("no overload of ", diagQuote(name)),
                                        " accepts these argument types"))
         return createNode(NodeKind.MODULE)
     }
-    semaErrorAt(call, str_concat("unknown function ", diagQuote(name)))
+    semaErrorAt(call, strConcat("unknown function ", diagQuote(name)))
     return createNode(NodeKind.MODULE)
 }
 
@@ -270,7 +271,7 @@ fn semaCheckArity(call: ASTNode, name: String, argPtr: Ptr, expected: Int) -> Bo
 
     let mut noun = " arguments, found "
     if (expected == 1) { noun = " argument, found " }
-    semaErrorAt(call, str_concat(str_concat(diagQuote(name), " expects "),
-                  str_concat(int_to_str(expected), str_concat(noun, int_to_str(actual)))))
+    semaErrorAt(call, strConcat(strConcat(diagQuote(name), " expects "),
+                  strConcat(strFromInt(expected), strConcat(noun, strFromInt(actual)))))
     return false
 }

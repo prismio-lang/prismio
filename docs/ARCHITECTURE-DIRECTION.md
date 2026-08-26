@@ -14,6 +14,22 @@ The local gate is green at 150/150 plus fixpoint, seed agreement, and AIF differ
 default's remaining gate is the remote Windows/Linux/macOS matrix, which now contains a
 discriminating suite test for the real merge path.
 
+**Amended 2026-08-26 — the band has a program below 1.00× in it now, and it is not a
+single-threaded one.** The corpus gained `g9_bands`, a per-frame parallel reduction, and Prismio
+runs it at **0.89× of idiomatic Rust** on loop time (0.90× p50, 0.90× p99, 0.83× RSS) with
+**0.13×** the allocations. Measured on both harnesses (0.89× and 0.92×) against an A/A floor of
+1.001×. **The mechanism re-ranks §1's list rather than adding to it**: Rust's `std::thread::spawn`
+requires a `'static` closure and boxes what it captures every frame, while INFERENCE 4.1's
+E-SPAWN-J proves the join happens before the scope exits and leaves the argument **T0/stack**. This
+is the first measured case where an AIF fact converts into *beating* Rust rather than into closing
+a gap — and it is the same correction §0 already made, arriving from the other side: the win is
+allocations not eliminated by a better representation but never forced in the first place.
+
+**Hand-tuned Rust is still 1.45× faster on that program**, because a thread pool does not pay
+`pthread_create` per frame and Prismio has no way to express one. That is the ranked concurrency
+item now: a pool or a reusable task, not codegen. See
+[`RESULTS-concurrency.md`](../aif/evidence/RESULTS-concurrency.md).
+
 ---
 
 ## 0 · The diagnosis, and the one thing everybody had backwards
@@ -241,19 +257,22 @@ is **0.997×** corpus median.
 
 ---
 
-## 5 · The allocator — cheap, mechanical, and now only about allocation cost
+## 5 · The allocator — measured and closed for the current workload
 
-If the allocations cannot all be removed, make each one cheaper.
+M5.1 tested whether the allocations that remain could be made cheaper.
 
 - **[Mimalloc: Free List Sharding in Action](https://www.microsoft.com/en-us/research/wp-content/uploads/2019/06/mimalloc-tr-v1.pdf)**
   (Leijen, Zorn & de Moura, APLAS 2019). Page-local sharded free lists, a very short fast path, and
   **it was built specifically as the backend for reference-counted runtimes** — Koka and Lean. That
   is the same workload shape Prismio has: high allocation count, small objects, predictable sizes.
 
-The current standing changes where this matters: automatic arenas give Prismio fewer loop
-allocations than Rust on g2 and g6, while g1/g3/g4/g5 still allocate **10.7×–21.3×** more. An
-allocator experiment should therefore report those four separately instead of hiding them in a
-corpus median.
+Automatic arenas give Prismio fewer loop allocations than Rust on g2 and g6, while g1/g3/g4/g5
+still allocate **10.7×–21.3×** more. The direct experiment therefore reported those four
+separately. Current mimalloc v3.4.5 measured **1.021×** corpus-median loop time and **1.242×** RSS;
+rpmalloc v1.4.5 measured **1.003×** loop time and **1.627×** RSS. Both missed the per-program
+runtime/RSS acceptance bar, so Prismio retains the macOS system allocator and ships neither a new
+dependency nor an allocator-selection seam. The temporary seam proved that generated objects,
+runtime objects, verifier shims, and curated bodies must always move together.
 
 **The second reason is gone, and the correction is worth more than the entry was.** This section
 used to cite the peak RSS regression — 0.84–1.00× → 1.09–1.60× of idiomatic Rust — as "an
@@ -262,8 +281,9 @@ allocator-adjacent symptom that is still unexplained". It was **leaks**. Removin
 and both were a *missing owner* rather than a missing free. Two cross-language passes now put the
 current compiler at **0.89×–1.00× Rust RSS**, closing the investigation. The entry described the signature
 correctly for eight sessions — "scales with live set rather than churn" — and nobody read that
-sentence as the definition of a leak. mimalloc is still worth evaluating on allocation *cost*; it
-was never going to fix the footprint.
+sentence as the definition of a leak. The subsequent allocator experiment confirmed that a
+different allocator does not improve either dimension for this workload. Remove or reuse
+allocations instead. Full method and raw evidence: [`RESULTS-M5-allocator.md`](../aif/evidence/RESULTS-M5-allocator.md).
 
 ---
 
@@ -272,15 +292,15 @@ was never going to fix the footprint.
 | # | Item | Prize | Cost | Language change? | Source |
 |---|---|---|---|---|---|
 | 1 | **Finish the inline-runtime remote CI gate** | default flip **0.948×** measured | low | **no** | existing three-OS matrix |
-| 2 | **mimalloc** on g1/g3/g4/g5 | attacks 10.7×–21.3× alloc counts | low | no | APLAS 2019 |
-| 3 | **Boxed replacement borrow-liveness** | reclaim overwritten objects without invalidating element borrows | medium/high | likely | M4.4 verifier finding |
+| 2 | **Boxed replacement borrow-liveness** | reclaim overwritten objects without invalidating element borrows | medium/high | possibly | M4.4 verifier finding |
+| 3 | **Genuinely-cold compile regression** | 19–28% first-build cost | medium | no | local measurement |
 | 4 | **Reuse analysis — retired until a measured trigger exists** | no corpus trigger today | dormant | no | Perceus / Immutable Beans |
-| 5 | **Genuinely-cold compile regression** | 19–28% first-build cost | medium | no | local measurement |
 
 **Take 1 first when remote CI state is available.** The implementation is already built and
-measured; only its portability/default gate is open. M4 is measured and green, so M5.1 is the next
-local experiment. Do not reopen Slice, DataView, or generic representation design without a new
-failing gate: their current correctness and performance evidence is recorded.
+measured; only its portability/default gate is open. M5.1 is measured and rejected, so boxed
+replacement ownership is the next local item, followed by the cold compile regression. Do not
+reopen Slice, DataView, generic representation, or allocator design without a new failing gate:
+their current correctness and performance evidence is recorded.
 
 ---
 
@@ -300,6 +320,11 @@ failing gate: their current correctness and performance evidence is recorded.
   Prismio's representation. Automatic arenas and inline elements invalidate that control; current
   g1/g2/g4 diagnostic ratios are 1.24×, 0.22×, and 1.41×.
 - **Assuming boxed layout costs indirection.** Measured **0.86×** — free. It costs *allocations*.
+- **Replacing system malloc with direct mimalloc v3.4.5.** **1.021×** median loop time and
+  **1.242×** RSS on the four allocation-heavy programs; static executables grew as well.
+- **Replacing system malloc with direct rpmalloc v1.4.5.** **1.003×** median loop time and
+  **1.627×** RSS. The workload does not reward its same-thread fast path enough to offset the
+  footprint. Neither allocator ships; see the M5 evidence before proposing another.
 - **Fully automatic layout search before views exist.** The cost model already ranked two layouts
   the measurement rejected, and the vetoes that removed them were written from measured regressions
   rather than from a search. The PPAM "semi-manual + data views" framing is the defensible one.

@@ -10,6 +10,8 @@ import common.diagnostics
 import ast.dump
 import aif.*
 import ums.ums
+import std.string
+import std.option
 
 extern fn read_file(path: String) -> String
 extern fn get_directory(path: String) -> String
@@ -23,7 +25,6 @@ extern fn cli_arg_count() -> Int
 // argv, which the C runtime owns and outlives every use of it. Not an
 // allocation, and freeing one would be a free of memory this program never got.
 extern fn cli_arg(index: Int) -> String alias
-extern fn str_ends_with(s: String, suffix: String) -> Int
 // Both malloc and hand the buffer over: compiler_default_exe_path sprintfs into
 // a fresh block, compiler_temp_ir_path goes through compiler_temp_path which
 // does the same. The caller owns them.
@@ -104,7 +105,7 @@ let mut mergeTailPtr: Ptr
 
 fn sameTopLevelName(a: ASTNode, b: ASTNode) -> Bool {
     if (a.kind != b.kind) { return false }
-    if (str_equals(a.s1, b.s1) == 0) { return false }
+    if (strEquals(a.s1, b.s1) == false) { return false }
     if (a.kind == NodeKind.FUNCTION) {
         return false
     }
@@ -184,11 +185,11 @@ fn moduleRelativePath(moduleName: String) -> String {
     let mut i = 0
     let length = __builtin_string_len(moduleName)
     while (i < length) {
-        let c = str_char_at(moduleName, i)
+        let c = strCharAt(moduleName, i)
         if (c == '.') {
-            relative = str_concat(relative, "/")
+            relative = strConcat(relative, "/")
         } else {
-            relative = str_concat(relative, str_from_char(c))
+            relative = strConcat(relative, strFromChar(c))
         }
         i = i + 1
     }
@@ -200,7 +201,7 @@ fn moduleRelativePath(moduleName: String) -> String {
 // thing written anywhere in the tree. The `.` case exists because there is
 // nothing to join to.
 fn resolveUnder(baseDir: String, relative: String) -> String {
-    if (str_equals(baseDir, ".") == 1) {
+    if (strEquals(baseDir, ".")) {
         return relative
     }
     return join_path(baseDir, relative)
@@ -215,7 +216,7 @@ fn resolveUnder(baseDir: String, relative: String) -> String {
 
 
 fn importBaseDir(baseDir: String, moduleName: String) -> String {
-    if (str_equals(moduleName, "ums") == 1 or str_starts_with(moduleName, "ums.") == 1) {
+    if (strEquals(moduleName, "ums") or strStartsWith(moduleName, "ums.")) {
         return get_directory(baseDir)
     }
     return baseDir
@@ -223,7 +224,7 @@ fn importBaseDir(baseDir: String, moduleName: String) -> String {
 
 fn joinImportPath(baseDir: String, moduleName: String) -> String {
     return resolveUnder(importBaseDir(baseDir, moduleName),
-                        str_concat(moduleRelativePath(moduleName), ".psm"))
+                        strConcat(moduleRelativePath(moduleName), ".psm"))
 }
 
 fn joinImportDir(baseDir: String, packageName: String) -> String {
@@ -234,7 +235,7 @@ fn joinImportDir(baseDir: String, packageName: String) -> String {
 // substring search can never match a partial path (e.g. "src\ir.psm" must not be
 // found inside "src\dir.psm").
 fn importMemoKey(importPath: String) -> String {
-    return str_concat(str_concat("|", importPath), "|")
+    return strConcat(strConcat("|", importPath), "|")
 }
 
 // Resolves one named module into `merged`, unless it has already been resolved.
@@ -252,17 +253,17 @@ fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
                       baseDir: String, visited: String) -> String {
     let importPath = resolveImportPath(baseDir, moduleName)
     let key = importMemoKey(importPath)
-    if (str_contains(visited, key) == 1) {
+    if (strContains(visited, key)) {
         return visited
     }
 
-    let seen = str_concat(visited, key)
+    let seen = strConcat(visited, key)
 
     let content = read_file(importPath)
-    if (str_equals(content, "") == 1 and file_exists(importPath) == 0) {
+    if (strEquals(content, "") and file_exists(importPath) == 0) {
         diag_error_at(site.file, site.line, site.col, site.len,
-            str_concat(str_concat("cannot read imported module ", diagQuote(moduleName)),
-                       str_concat(": no such file ", importPath)))
+            strConcat(strConcat("cannot read imported module ", diagQuote(moduleName)),
+                       strConcat(": no such file ", importPath)))
         diag_finish()
         exit(1)
     }
@@ -286,10 +287,10 @@ fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
     let dirPath = joinImportDir(baseDir, site.s1)
     let listing = list_modules(dirPath)
 
-    if (str_equals(listing, "") == 1) {
+    if (strEquals(listing, "")) {
         diag_error_at(site.file, site.line, site.col, site.len,
-            str_concat(str_concat("package ", diagQuote(site.s1)),
-                       str_concat(" contains no modules: ", dirPath)))
+            strConcat(strConcat("package ", diagQuote(site.s1)),
+                       strConcat(" contains no modules: ", dirPath)))
         diag_finish()
         exit(1)
     }
@@ -300,18 +301,18 @@ fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
     let length = __builtin_string_len(listing)
 
     while (i < length) {
-        let c = str_char_at(listing, i)
+        let c = strCharAt(listing, i)
         if (c == '\n') {
-            let qualified = str_concat(str_concat(site.s1, "."), name)
+            let qualified = strConcat(strConcat(site.s1, "."), name)
             seen = mergeNamedModule(merged, site, qualified, baseDir, seen)
             name = ""
         } else {
-            name = str_concat(name, str_from_char(c))
+            name = strConcat(name, strFromChar(c))
         }
         i = i + 1
     }
 
-    let last = str_concat(str_concat(site.s1, "."), name)
+    let last = strConcat(strConcat(site.s1, "."), name)
     return mergeNamedModule(merged, site, last, baseDir, seen)
 }
 
@@ -352,18 +353,18 @@ fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited
 // `leaf` is the file name, because the installed layout flattens the package:
 // `std/map.psm` in a checkout is `stdlib/map.psm` once installed.
 fn standardModulePath(baseDir: String, leaf: String) -> String {
-    let besideEntry = join_path(baseDir, str_concat("std/", leaf))
+    let besideEntry = join_path(baseDir, strConcat("std/", leaf))
     if (file_exists(besideEntry) == 1) { return besideEntry }
 
-    let inSourceTree = join_path(get_directory(baseDir), str_concat("std/", leaf))
+    let inSourceTree = join_path(get_directory(baseDir), strConcat("std/", leaf))
     if (file_exists(inSourceTree) == 1) { return inSourceTree }
 
     let toolchainRoot = get_directory(executable_directory())
 
-    let installed = join_path(toolchainRoot, str_concat("stdlib/", leaf))
+    let installed = join_path(toolchainRoot, strConcat("stdlib/", leaf))
     if (file_exists(installed) == 1) { return installed }
 
-    let besideBuild = join_path(toolchainRoot, str_concat("std/", leaf))
+    let besideBuild = join_path(toolchainRoot, strConcat("std/", leaf))
     if (file_exists(besideBuild) == 1) { return besideBuild }
 
     return ""
@@ -385,14 +386,14 @@ fn resolveImportPath(baseDir: String, moduleName: String) -> String {
     if (file_exists(joinImportPath(baseDir, moduleName)) == 1) {
         return joinImportPath(baseDir, moduleName)
     }
-    if (str_starts_with(moduleName, "std.") == 0) {
+    if (strStartsWith(moduleName, "std.") == false) {
         return joinImportPath(baseDir, moduleName)
     }
-    let leaf = str_concat(str_substring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm")
-    if (str_equals(standardModulePath(baseDir, leaf), "") == 1) {
+    let leaf = strConcat(strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm")
+    if (strEquals(standardModulePath(baseDir, leaf), "")) {
         return joinImportPath(baseDir, moduleName)
     }
-    return standardModulePath(baseDir, str_concat(str_substring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm"))
+    return standardModulePath(baseDir, strConcat(strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm"))
 }
 
 // The entry file is marked resolved before the walk begins, so that a package
@@ -472,16 +473,16 @@ fn printUsage() {
 // rather than a warning: a mistyped force that carried on would measure the argmin
 // twice and report it as two candidates.
 fn parseForceLayout(flag: String) -> Bool {
-    let value = str_substring(flag, 15, __builtin_string_len(flag) - 15)
-    let colon = str_index_of(value, ":")
+    let value = strSubstring(flag, 15, __builtin_string_len(flag) - 15)
+    let colon = strIndexOf(value, ":")
     if (colon < 1) { return false }
-    let typeName = str_substring(value, 0, colon)
-    let hotText = str_substring(value, colon + 1, __builtin_string_len(value) - colon - 1)
-    if (str_equals(hotText, "") == 1) { return false }
+    let typeName = strSubstring(value, 0, colon)
+    let hotText = strSubstring(value, colon + 1, __builtin_string_len(value) - colon - 1)
+    if (strEquals(hotText, "")) { return false }
     // str_to_int answers 0 for a non-numeric string, which is also the value a
     // hot count can never legally take -- field 0 is pinned hot, so every real
     // candidate keeps at least one field. One check covers both.
-    let hot = str_to_int(hotText)
+    let hot = optionOr(strParseInt(hotText), 0)
     if (hot < 1) { return false }
     aif_layout_force(typeName, hot)
     return true
@@ -499,10 +500,10 @@ fn reportForcedLayouts() {
     let mut i = 0
     while (i < aif_layout_forced_count()) {
         if (aif_layout_force_applied(i) == 0) {
-            diag_warning(str_concat(str_concat(str_concat(
+            diag_warning(strConcat(strConcat(strConcat(
                 "--force-layout did not apply: no candidate of ",
                 diagQuote(aif_layout_forced_type(i))),
-                str_concat(" keeps ", int_to_str(aif_layout_forced_hot(i)))),
+                strConcat(" keeps ", strFromInt(aif_layout_forced_hot(i)))),
                 " fields hot (see `aif --layout` for the candidates)"))
         }
         i = i + 1
@@ -516,16 +517,16 @@ fn reportForcedLayouts() {
 // or a file copy does not read as a change.
 fn checkRuntimeFreshness() {
     let installed = compiler_installed_runtime_hash()
-    if (str_equals(installed, "") == 1) {
+    if (strEquals(installed, "")) {
         return
     }
 
     let current = compiler_runtime_source_hash()
-    if (str_equals(current, "") == 1) {
+    if (strEquals(current, "")) {
         return
     }
 
-    if (str_equals(installed, current) == 1) {
+    if (strEquals(installed, current)) {
         return
     }
 
@@ -559,8 +560,8 @@ fn checkRuntimeFreshness() {
 // `kind`, of which MODULE is 0. See ast.psm.
 fn analyzedModule(path: String) -> ASTNode {
     let content = read_file(path)
-    if (str_equals(content, "") == 1 and file_exists(path) == 0) {
-        diag_error(str_concat("cannot read ", path))
+    if (strEquals(content, "") and file_exists(path) == 0) {
+        diag_error(strConcat("cannot read ", path))
         return createNode(NodeKind.MODULE)
     }
 
@@ -644,7 +645,7 @@ fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: 
     // That last clause was false while ownedCollections defaulted to off: the
     // derivation explained a tier from a model the build does not use, and
     // A-COPY was the answer to every "why is this T3" the compiler could ask.
-    if (str_equals(why, "") == 0) {
+    if (strEquals(why, "") == false) {
         let converged = aifRunProfiled(merged, ownedCollections, thetaFields, budget,
                                         profilePath)
         discardWorkloadProfile(profilePath)
@@ -749,14 +750,14 @@ fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> 
         failure = "could not write the workload driver's IR; using the static profile"
     }
 
-    if (str_equals(failure, "") == 1) {
+    if (strEquals(failure, "")) {
         if (compiler_build_executable(driverIr, driverExe) != 0) {
             // The driver's IR is deliberately *kept* when it fails to build, and
             // named in the warning. A workload that will not compile is a compiler
             // bug far more often than a user one -- the driver is generated code --
             // and deleting the only artifact that shows why would leave nothing to
             // read but a linker's opinion of a file that no longer exists.
-            failure = str_concat(str_concat("the workload failed to build; using the static profile (driver IR kept at ",
+            failure = strConcat(strConcat("the workload failed to build; using the static profile (driver IR kept at ",
                                              driverIr), ")")
         } else {
             delete_file(driverIr)
@@ -778,7 +779,7 @@ fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> 
 
     endWorkloadPass(verifyMode)
 
-    if (str_equals(failure, "") == 0) {
+    if (strEquals(failure, "") == false) {
         diag_warning(failure)
         return ""
     }
@@ -795,7 +796,7 @@ fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> 
 // this process's pid -- so no later build will ever clean it up and every
 // consumer of the path runWorkloadProfile returns has to.
 fn discardWorkloadProfile(profilePath: String) {
-    if (str_equals(profilePath, "") == 0) {
+    if (strEquals(profilePath, "") == false) {
         delete_file(profilePath)
     }
 }
@@ -826,7 +827,7 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
         checkRuntimeFreshness()
     }
 
-    if (str_ends_with(outputFile, ".ll") == 1) {
+    if (strEndsWith(outputFile, ".ll")) {
         outFile = outputFile
         emitIrOnly = true
     } else {
@@ -834,8 +835,8 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
     }
 
     let content = read_file(path)
-    if (str_equals(content, "") == 1 and file_exists(path) == 0) {
-        diag_error(str_concat("cannot read ", path))
+    if (strEquals(content, "") and file_exists(path) == 0) {
+        diag_error(strConcat("cannot read ", path))
         if (bootstrapMode) {
             println("  bootstrap compiles the Prismio compiler from a source checkout.")
             println("  Run it from the repository root, or give the source path explicitly:")
@@ -969,7 +970,7 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
     // variable may have been folded away. Claiming otherwise is exactly the kind
     // of small lie ir/debug.psm exists to prevent.
     if (debugInfo) {
-        irSetDebugInfo(true, str_concat("prismio ", PRISMIO_VERSION), path, optimized)
+        irSetDebugInfo(true, strConcat("prismio ", PRISMIO_VERSION), path, optimized)
         compiler_set_debug_info(1)
     }
 
@@ -986,14 +987,14 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
         // That is also what makes the two comparable in run_jit_test.
         let status = ir_jit_run_main(path)
         if (status != 0) {
-            diag_error(str_concat(path, " exited with a failure status"))
+            diag_error(strConcat(path, " exited with a failure status"))
             return 1
         }
         return 0
     }
 
     if (ir_write_file(outFile) != 0) {
-        diag_error(str_concat("cannot write LLVM IR to ", outFile))
+        diag_error(strConcat("cannot write LLVM IR to ", outFile))
         return 1
     }
 
@@ -1023,7 +1024,7 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
 
     if (runAfterBuild) {
         if (compiler_run_executable(outputFile) != 0) {
-            diag_error(str_concat(outputFile, " exited with a failure status"))
+            diag_error(strConcat(outputFile, " exited with a failure status"))
             return 1
         }
     }
@@ -1072,14 +1073,14 @@ fn main() -> Int {
 
     let first = cli_arg(1)
 
-    if (str_equals(first, "--help") == 1 or str_equals(first, "-h") == 1) {
+    if (strEquals(first, "--help") or strEquals(first, "-h")) {
         printUsage()
         return 0
     }
 
     // Reports the LLVM actually loaded rather than the one built against, so a
     // version mismatch is visible without having to provoke it.
-    if (str_equals(first, "--version") == 1 or str_equals(first, "-V") == 1) {
+    if (strEquals(first, "--version") or strEquals(first, "-V")) {
         print("prismio ")
         println(PRISMIO_VERSION)
         print("llvm ")
@@ -1091,9 +1092,9 @@ fn main() -> Int {
     // beside the packaged libraries so later builds can detect drift, and it keeps
     // that hash defined in exactly one place -- here, in C -- rather than
     // reimplemented in the packaging script.
-    if (str_equals(first, "runtime-hash") == 1) {
+    if (strEquals(first, "runtime-hash")) {
         let sourceHash = compiler_runtime_source_hash()
-        if (str_equals(sourceHash, "") == 1) {
+        if (strEquals(sourceHash, "")) {
             diag_error("cannot find the Prismio runtime sources to hash")
             return 1
         }
@@ -1101,7 +1102,7 @@ fn main() -> Int {
         return 0
     }
 
-    if (str_equals(first, "check") == 1) {
+    if (strEquals(first, "check")) {
         if (cli_arg_count() <= 2) {
             diag_error("missing source file")
             printUsage()
@@ -1111,10 +1112,10 @@ fn main() -> Int {
         let mut checkArg = 3
         while (checkArg < cli_arg_count()) {
             let option = cli_arg(checkArg)
-            if (str_equals(option, "--diagnostic-format=json") == 1) {
+            if (strEquals(option, "--diagnostic-format=json")) {
                 diag_set_json_mode(1)
             } else {
-                diag_error(str_concat("unknown argument ", diagQuote(option)))
+                diag_error(strConcat("unknown argument ", diagQuote(option)))
                 printUsage()
                 return 1
             }
@@ -1127,7 +1128,7 @@ fn main() -> Int {
     // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and
     // touches no codegen, so it cannot affect what `build` generates. Exists for
     // the AIF memory-model work, which analyses the real AST out-of-process.
-    if (str_equals(first, "dump-ast") == 1) {
+    if (strEquals(first, "dump-ast")) {
         if (cli_arg_count() <= 2) {
             diag_error("missing source file")
             printUsage()
@@ -1140,7 +1141,7 @@ fn main() -> Int {
     // aif/prototype/aif.py prints it, so the two can be compared directly --
     // that comparison is the only real defence against a transfer function that
     // is subtly wrong and yields a silently wrong tier rather than a crash.
-    if (str_equals(first, "aif") == 1) {
+    if (strEquals(first, "aif")) {
         if (cli_arg_count() <= 2) {
             diag_error("missing source file")
             printUsage()
@@ -1163,53 +1164,53 @@ fn main() -> Int {
         let mut aifArg = 3
         while (aifArg < cli_arg_count()) {
             let flag = cli_arg(aifArg)
-            if (str_equals(flag, "--summary") == 1) {
+            if (strEquals(flag, "--summary")) {
                 aifSummary = true
-            } else if (str_equals(flag, "--layout") == 1) {
+            } else if (strEquals(flag, "--layout")) {
                 // LAYOUT 7.2's argmin and 8's ranked top-k. Acted on since
                 // 2026-08-17: the `emitted` column says which candidate the binary
                 // actually contains, which is what makes the table checkable
                 // rather than a ranking nobody can tie to an object.
                 aifLayout = true
-            } else if (str_starts_with(flag, "--force-layout=") == 1) {
+            } else if (strStartsWith(flag, "--force-layout=")) {
                 if (parseForceLayout(flag) == false) {
                     diag_error("--force-layout= takes <Type>:<hot-field-count>, e.g. Particle:8")
                     return 1
                 }
-            } else if (str_starts_with(flag, "--why=") == 1) {
+            } else if (strStartsWith(flag, "--why=")) {
                 // SPEC 6.3's minimal cause for one record. The symbol is the one
                 // the manifest prints, so it can be copied straight out of a
                 // diff -- which is where a reader will have found it.
-                aifWhy = str_substring(flag, 6, __builtin_string_len(flag) - 6)
-            } else if (str_starts_with(flag, "--budget=") == 1) {
+                aifWhy = strSubstring(flag, 6, __builtin_string_len(flag) - 6)
+            } else if (strStartsWith(flag, "--budget=")) {
                 // INFERENCE 5.3's truncation path is unreachable at the default
                 // of 200 rounds, and an unreachable path is where a bug lives
                 // undisturbed. This makes it reachable, which is what
                 // tests/test_43 uses to check that widening only ever raises.
-                aifBudgetArg = str_to_int(str_substring(flag, 9, __builtin_string_len(flag) - 9))
+                aifBudgetArg = optionOr(strParseInt(strSubstring(flag, 9, __builtin_string_len(flag) - 9)), 0)
                 if (aifBudgetArg < 1) {
                     diag_error("--budget= must be at least 1 round")
                     return 1
                 }
-            } else if (str_equals(flag, "--theta-fields") == 1) {
+            } else if (strEquals(flag, "--theta-fields")) {
                 // Approximate Theta_stack by field count instead of bytes, the
                 // way aif/prototype/aif.py must because a JSON dump carries no
                 // layout. tools/aif_differential.py passes this so the two are
                 // compared on their inference rather than on a threshold only
                 // one of them can evaluate.
                 aifThetaFields = true
-            } else if (str_equals(flag, "--owned-collections") == 1) {
+            } else if (strEquals(flag, "--owned-collections")) {
                 // The default since Level 4 made String and List move-only.
                 // Accepted so existing scripts keep working, and because saying
                 // so explicitly costs nothing.
                 aifOwned = true
-            } else if (str_equals(flag, "--copyable-collections") == 1) {
+            } else if (strEquals(flag, "--copyable-collections")) {
                 // The pre-Level-4 language, where only structs were move-only.
                 // Kept because it is the differential's second arm, not because
                 // anything still compiles that way -- `prismio build` always
                 // analyses with collections owned (see aifRun below).
                 aifOwned = false
-            } else if (str_equals(flag, "--target") == 1) {
+            } else if (strEquals(flag, "--target")) {
                 // The layout model is target-dependent -- a String field, a
                 // reference edge, an `Isize`, a `[T]` and a `List<T>` are all one
                 // pointer, and a pointer is four bytes on wasm32. Without this
@@ -1220,12 +1221,12 @@ fn main() -> Int {
                     return 1
                 }
                 if (targetSelect(cli_arg(aifArg + 1)) == false) {
-                    diag_error(str_concat("unknown target triple ", diagQuote(cli_arg(aifArg + 1))))
+                    diag_error(strConcat("unknown target triple ", diagQuote(cli_arg(aifArg + 1))))
                     return 1
                 }
                 aifArg = aifArg + 1
             } else {
-                diag_error(str_concat("unknown argument ", diagQuote(flag)))
+                diag_error(strConcat("unknown argument ", diagQuote(flag)))
                 printUsage()
                 return 1
             }
@@ -1239,7 +1240,7 @@ fn main() -> Int {
     // Compiler development. The command itself selects the build mode -- there is no
     // flag and no environment variable -- so a single binary can build user programs
     // against the installed runtime and still bootstrap against repository sources.
-    if (str_equals(first, "bootstrap") == 1) {
+    if (strEquals(first, "bootstrap")) {
         command = "bootstrap"
         bootstrapMode = true
         runAfterBuild = false
@@ -1251,7 +1252,7 @@ fn main() -> Int {
             // Every flag `bootstrap` accepts has to be named here too, or it
             // is taken for the source path and the build silently compiles a
             // file called `-g`.
-            if (str_equals(candidate, "-o") == 0 and str_equals(candidate, "-g") == 0) {
+            if (strEquals(candidate, "-o") == false and strEquals(candidate, "-g") == false) {
                 path = candidate
                 argIndex = 3
             }
@@ -1263,20 +1264,20 @@ fn main() -> Int {
 
         while (argIndex < cli_arg_count()) {
             let barg = cli_arg(argIndex)
-            if (str_equals(barg, "-o") == 1) {
+            if (strEquals(barg, "-o")) {
                 if (argIndex + 1 >= cli_arg_count()) {
                     diag_error("`-o` requires an output path")
                     return 1
                 }
                 outputFile = cli_arg(argIndex + 1)
                 argIndex = argIndex + 2
-            } else if (str_equals(barg, "-g") == 1) {
+            } else if (strEquals(barg, "-g")) {
                 // The compiler is the largest Prismio program there is, and it
                 // was the one program that could not be stepped through.
                 bootstrapDebugInfo = true
                 argIndex = argIndex + 1
             } else {
-                diag_error(str_concat("unknown argument ", diagQuote(barg)))
+                diag_error(strConcat("unknown argument ", diagQuote(barg)))
                 printUsage()
                 return 1
             }
@@ -1286,7 +1287,7 @@ fn main() -> Int {
                               bootstrapDebugInfo, false, false)
     }
 
-    if (str_equals(first, "build") == 1) {
+    if (strEquals(first, "build")) {
         command = "build"
         runAfterBuild = false
         argIndex = 3
@@ -1296,12 +1297,12 @@ fn main() -> Int {
         }
 
         path = cli_arg(2)
-        if (str_equals(path, "run") == 1 or str_equals(path, "build") == 1) {
+        if (strEquals(path, "run") or strEquals(path, "build")) {
             diag_error("use either `build` or `run`, not both")
             return 1
         }
     } else {
-        if (str_equals(first, "run") == 1) {
+        if (strEquals(first, "run")) {
             command = "run"
             runAfterBuild = true
             argIndex = 3
@@ -1313,7 +1314,7 @@ fn main() -> Int {
             }
 
             path = cli_arg(2)
-            if (str_equals(path, "run") == 1 or str_equals(path, "build") == 1) {
+            if (strEquals(path, "run") or strEquals(path, "build")) {
                 diag_error("use either `build` or `run`, not both")
                 return 1
             }
@@ -1333,25 +1334,25 @@ fn main() -> Int {
     while (argIndex < cli_arg_count()) {
         let mut arg = cli_arg(argIndex)
 
-        if (str_equals(arg, "-o") == 1) {
+        if (strEquals(arg, "-o")) {
             if (argIndex + 1 >= cli_arg_count()) {
                 diag_error("`-o` requires an output path")
                 return 1
             }
             outputFile = cli_arg(argIndex + 1)
             argIndex = argIndex + 2
-        } else if (str_starts_with(arg, "-O") == 1 and __builtin_string_len(arg) == 3) {
+        } else if (strStartsWith(arg, "-O") and __builtin_string_len(arg) == 3) {
             // -O0..-O3. Runs LLVM's standard pipeline over the module before it
             // is written; without it the output keeps a load/store per binding.
-            let level = str_to_int(str_substring(arg, 2, 1))
+            let level = optionOr(strParseInt(strSubstring(arg, 2, 1)), 0)
             if (level < 0 or level > 3) {
-                diag_error(str_concat("unknown optimization level ", diagQuote(arg)))
+                diag_error(strConcat("unknown optimization level ", diagQuote(arg)))
                 return 1
             }
             ir_set_opt_level(level)
             optimized = level > 0
             argIndex = argIndex + 1
-        } else if (str_equals(arg, "--target") == 1) {
+        } else if (strEquals(arg, "--target")) {
             if (argIndex + 1 >= cli_arg_count()) {
                 diag_error("`--target` requires an LLVM target triple (e.g. x86_64-apple-macos)")
                 return 1
@@ -1360,7 +1361,7 @@ fn main() -> Int {
             // here: a list would be a second copy of what LLVM knows, and the
             // failure mode of a stale entry is a miscompile.
             if (targetSelect(cli_arg(argIndex + 1)) == false) {
-                diag_error(str_concat("unknown target triple ", diagQuote(cli_arg(argIndex + 1))))
+                diag_error(strConcat("unknown target triple ", diagQuote(cli_arg(argIndex + 1))))
                 return 1
             }
             // A contradiction rather than a combination: the JIT emits code for
@@ -1373,24 +1374,24 @@ fn main() -> Int {
                 return 1
             }
             argIndex = argIndex + 2
-        } else if (str_equals(arg, "--sysroot") == 1) {
+        } else if (strEquals(arg, "--sysroot")) {
             if (argIndex + 1 >= cli_arg_count()) {
                 diag_error("`--sysroot` requires a path to the target's SDK")
                 return 1
             }
             compiler_set_sysroot(cli_arg(argIndex + 1))
             argIndex = argIndex + 2
-        } else if (str_equals(arg, "--verify") == 1) {
+        } else if (strEquals(arg, "--verify")) {
             // SPEC 7.3. Slower and heavier by design: the mode exists to be run
             // by CI, not by users.
             verifyMode = true
             argIndex = argIndex + 1
-        } else if (str_equals(arg, "--jit") == 1) {
+        } else if (strEquals(arg, "--jit")) {
             // `run` without the clang compile and the link. Off by default and
             // scoped to `run`, so codegen and every emission path are untouched:
             // this adds a way of executing the module, not a way of producing
             // one. See ir_jit_run_main in runtime/llvm-api-backend.c.
-            if (str_equals(command, "run") == 0) {
+            if (strEquals(command, "run") == false) {
                 diag_error("`--jit` is only meaningful with `prismio run`")
                 diag_note("`build` produces an object; there is nothing to run in this process")
                 return 1
@@ -1402,7 +1403,7 @@ fn main() -> Int {
             }
             jitMode = true
             argIndex = argIndex + 1
-        } else if (str_equals(arg, "-g") == 1) {
+        } else if (strEquals(arg, "-g")) {
             // Source-level debug info, and nothing else -- not an analysis level
             // and not an optimisation setting at the Prismio end. Named `-g`
             // because that is what every compiler in the world spells it; the
@@ -1411,7 +1412,7 @@ fn main() -> Int {
             // released flag over.
             debugInfo = true
             argIndex = argIndex + 1
-        } else if (str_equals(arg, "--debug") == 1) {
+        } else if (strEquals(arg, "--debug")) {
             // SPEC 7.1/7.2's zero-analysis level. `max` is deliberately not
             // offered: with today's engine it would be byte-identical to
             // `release` -- the bounds it raises are never reached and there is no
@@ -1419,7 +1420,7 @@ fn main() -> Int {
             // be told apart is a check that cannot fail.
             debugMode = true
             argIndex = argIndex + 1
-        } else if (str_starts_with(arg, "--force-layout=") == 1) {
+        } else if (strStartsWith(arg, "--force-layout=")) {
             // LAYOUT 8 selects the measured winner, so the flag has to reach the
             // path that produces something to measure.
             if (parseForceLayout(arg) == false) {
@@ -1428,19 +1429,19 @@ fn main() -> Int {
             }
             argIndex = argIndex + 1
         } else {
-            if (str_equals(arg, "build") == 1 or str_equals(arg, "run") == 1) {
+            if (strEquals(arg, "build") or strEquals(arg, "run")) {
                 diag_error("use either `build` or `run`, not both")
                 return 1
             }
 
-            if (str_equals(command, "build") == 1 and argIndex == 2) {
+            if (strEquals(command, "build") and argIndex == 2) {
                 // Re-read rather than `outputFile = arg`: that moves `arg`, and
                 // move state is per name for the whole body, so the `else` below
                 // would report a use of a moved value on a path that never ran.
                 outputFile = cli_arg(argIndex)
                 argIndex = argIndex + 1
             } else {
-                diag_error(str_concat("unknown argument ", diagQuote(arg)))
+                diag_error(strConcat("unknown argument ", diagQuote(arg)))
                 printUsage()
                 return 1
             }

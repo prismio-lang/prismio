@@ -1,18 +1,10 @@
-extern fn str_equals(s1: String, s2: String) -> Int
-extern fn str_concat(s1: String, s2: String) -> String
-extern fn str_substring(s: String, start: Int, length: Int) -> String
-// The length-carrying slice. `str_substring` must strlen its whole input to
-// bound the range, so calling it once per token makes scanning O(n x tokens);
-// this takes the length the caller already has. See the native definition in
-// runtime/lang_runtime.c for the measurement, and for why it is only half of
-// SPEC 8.4's view -- it still allocates and copies.
-extern fn str_slice(s: String, start: Int, length: Int, baseLen: Int) -> String
-extern fn str_char_at(s: String, index: Int) -> Char
-extern fn str_contains(haystack: String, needle: String) -> Int
-extern fn str_starts_with(s: String, prefix: String) -> Int
-extern fn str_index_of(haystack: String, needle: String) -> Int
-extern fn int_to_str(n: Int) -> String
-extern fn str_to_int(s: String) -> Int
+// Character classification for the scanner. Everything textual beyond this is
+// `std.string`'s now: the C `str_*` layer this module used to declare was
+// replaced by native Prismio in 2026-08, including the length-carrying
+// `str_slice` whose whole purpose was avoiding a `strlen` that a fat String no
+// longer performs -- `strSubstring` reads the carried length and is O(1)-bounded.
+import std.string
+import std.option
 
 fn isDigit(c: Char) -> Bool {
     return c >= '0' and c <= '9'

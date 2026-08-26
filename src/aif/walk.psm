@@ -5,6 +5,7 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import std.string
 
 // ---------------------------------------------------------------------------
 // Abstract evaluation
@@ -32,7 +33,7 @@ fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
         // read again by the branches below -- a move here would poison it for
         // every one of them, because move state is per name over the whole body.
         let mut sname = e.s1
-        if (str_equals(sname, "") == 1) { sname = aifNodeType(e) }
+        if (strEquals(sname, "")) { sname = aifNodeType(e) }
 
         let sid = aifNewSite(sname, fnId, scope, nodePtr)
         let owner = aifVsOfSite(sid)
@@ -60,7 +61,7 @@ fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
 
     if (e.kind == NodeKind.ARRAY_LITERAL_EXPR) {
         let mut aname = aifNodeType(e)
-        if (str_equals(aname, "") == 1) { aname = "Array" }
+        if (strEquals(aname, "")) { aname = "Array" }
 
         let sid = aifNewSite(aname, fnId, scope, nodePtr)
         let owner = aifVsOfSite(sid)
@@ -85,7 +86,7 @@ fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
         // static, immortal, zero cost -- so it has no place on a ladder that
         // ranks ways of reclaiming heap memory. Counted so the exclusion is
         // visible in the manifest rather than silent.
-        if (str_equals(ty, "String") == 1) {
+        if (strEquals(ty, "String")) {
             aifLiteralStrings = aifLiteralStrings + 1
         }
         return aifVsEmpty()
@@ -122,7 +123,7 @@ fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
         let baseNode = ptr_to_node(e.child1)
         let baseTy = aifNodeType(baseNode)
         let baseKind = aifBaseType(baseTy)
-        if (str_equals(baseKind, "List") == 1 or str_equals(baseKind, "Slice") == 1) {
+        if (strEquals(baseKind, "List") or strEquals(baseKind, "Slice")) {
             let collection = aifSitesOf(e.child1, fnId, scope)
             aifSitesOf(e.child2, fnId, scope)
             let element = aifVsOfKey(aifElemKey(aifElementContainerType(baseTy)))
@@ -238,7 +239,7 @@ fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     if (nodeExists(e.child1)) {
         let target = ptr_to_node(e.child1)
         plain = target.s1
-        if (str_equals(callee, "") == 1) { callee = target.s1 }
+        if (strEquals(callee, "")) { callee = target.s1 }
     }
 
     let calleeId = aif_fn_lookup(callee)
@@ -271,7 +272,7 @@ fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     // about the one builtin whose effect the model knows exactly.
     if (known) {
         aif_call_edge(fnId, calleeId, scope)
-    } else if (str_equals(plain, "drop") == 0) {
+    } else if (strEquals(plain, "drop") == false) {
         if (aifCallIsSummarised(plain, argc) == false) {
             aif_call_opaque(fnId, scope)
         }
@@ -280,7 +281,7 @@ fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     // `drop(x)` lowers to a free, and a stack slot cannot be freed. Suppress T0
     // for whatever it names -- see aif_con_no_stack for why this is a codegen
     // constraint rather than a fact.
-    if (str_equals(plain, "drop") == 1) {
+    if (strEquals(plain, "drop")) {
         if (argc > 0) {
             aif_con_no_stack(aif_argv_get(base, 0))
         }
@@ -484,32 +485,32 @@ fn aifIsStatementKind(k: NodeKind) -> Bool {
 // either a tier or a region, and a region that does not exist or does not serve
 // the value is refuted by aif_check_placement_pins, which is an error.
 fn aifTierFromName(name: String) -> Int {
-    if (str_equals(name, "T0") == 1) { return 0 }
-    if (str_equals(name, "T1") == 1) { return 1 }
-    if (str_equals(name, "T2") == 1) { return 2 }
-    if (str_equals(name, "T3") == 1) { return 3 }
-    if (str_equals(name, "T4b") == 1) { return 4 }
+    if (strEquals(name, "T0")) { return 0 }
+    if (strEquals(name, "T1")) { return 1 }
+    if (strEquals(name, "T2")) { return 2 }
+    if (strEquals(name, "T3")) { return 3 }
+    if (strEquals(name, "T4b")) { return 4 }
     // REQUIREMENTS 15. `pin(T4a)` asks for an atomic count, and it is honoured
     // wherever the derived tier is cheaper -- raising a tier is always sound, so
     // this is the one direction a pin can go without the facts backing it.
     // `pin(T4b)` on a site the solver put at T4a goes the other way and is
     // refuted, which is what the ordinal order buys.
-    if (str_equals(name, "T4a") == 1) { return 5 }
+    if (strEquals(name, "T4a")) { return 5 }
     return 0 - 1
 }
 
 fn aifApplyAnnotations(decl: ASTNode, vs: Int) {
-    if (str_equals(decl.s2, "") == 1) { return }
+    if (strEquals(decl.s2, "")) { return }
 
-    if (str_contains(decl.s2, "unique ") == 1) {
+    if (strContains(decl.s2, "unique ")) {
         aif_con_unique(vs)
     }
 
-    let at = str_index_of(decl.s2, "pin:")
+    let at = strIndexOf(decl.s2, "pin:")
     if (at >= 0) {
-        let mut name = str_substring(decl.s2, at + 4, __builtin_string_len(decl.s2) - at - 4)
-        let space = str_index_of(name, " ")
-        if (space >= 0) { name = str_substring(name, 0, space) }
+        let mut name = strSubstring(decl.s2, at + 4, __builtin_string_len(decl.s2) - at - 4)
+        let space = strIndexOf(name, " ")
+        if (space >= 0) { name = strSubstring(name, 0, space) }
         let tier = aifTierFromName(name)
         if (tier >= 0) {
             aif_con_pin(vs, tier)
@@ -621,7 +622,7 @@ fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
             if (init.kind == NodeKind.CALL_EXPR) {
                 if (nodeExists(init.child1)) {
                     let callee = ptr_to_node(init.child1)
-                    if (str_equals(callee.s1, "list_get") == 1) {
+                    if (strEquals(callee.s1, "list_get")) {
                         aif_traversal_elem(aifBaseType(aifNodeType(n)), 1)
                     }
                 }
@@ -709,7 +710,7 @@ fn aifExprHasJoinOf(ptr: Ptr, name: String) -> Bool {
     if (n.kind == NodeKind.JOIN_EXPR) {
         if (nodeExists(n.child1)) {
             let target = ptr_to_node(n.child1)
-            if (target.kind == NodeKind.IDENTIFIER_EXPR and str_equals(target.s1, name) == 1) {
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and strEquals(target.s1, name)) {
                 return true
             }
         }
@@ -985,7 +986,7 @@ fn aifDeclare(module: ASTNode) {
                 if (param.kind == NodeKind.FUNCTION_PARAMETER) {
                     if (nodeExists(param.child1)) {
                         let ann = ptr_to_node(param.child1)
-                        if (str_equals(ann.s2, "") == 0) {
+                        if (strEquals(ann.s2, "") == false) {
                             aif_extern_contract_set(d.s1, index, ann.s2)
                         }
                     }
@@ -995,7 +996,7 @@ fn aifDeclare(module: ASTNode) {
             }
             if (nodeExists(d.child2)) {
                 let ret = ptr_to_node(d.child2)
-                if (str_equals(ret.s2, "") == 0) {
+                if (strEquals(ret.s2, "") == false) {
                     aif_extern_contract_set(d.s1, 0 - 1, ret.s2)
                 }
             }
@@ -1005,7 +1006,7 @@ fn aifDeclare(module: ASTNode) {
             // that has not been through sema, which is a debugging convenience
             // rather than a supported path.
             let mut sym = d.s2
-            if (str_equals(sym, "") == 1) { sym = d.s1 }
+            if (strEquals(sym, "")) { sym = d.s1 }
             aif_fn_new(sym, d.s1, d.file)
         }
 
@@ -1031,7 +1032,7 @@ fn aifBuild(module: ASTNode) {
         let d = ptr_to_node(q)
         if (d.kind == NodeKind.FUNCTION) {
             let mut sym = d.s2
-            if (str_equals(sym, "") == 1) { sym = d.s1 }
+            if (strEquals(sym, "")) { sym = d.s1 }
             let fid = aif_fn_lookup(sym)
 
             if (fid >= 0) {
@@ -1047,7 +1048,7 @@ fn aifBuild(module: ASTNode) {
                         // every block inside it.
                         aif_var_note_scope(fid, param.s1, root)
                         let mut pty = aifNodeType(param)
-                        if (str_equals(pty, "") == 1) {
+                        if (strEquals(pty, "")) {
                             if (nodeExists(param.child1)) {
                                 let ann = ptr_to_node(param.child1)
                                 pty = ann.s1

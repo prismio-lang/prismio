@@ -1,12 +1,12 @@
 import std.io
-extern fn str_equals(s1: String, s2: String) -> Int
+import std.string
 
 fn choose(value: Int) -> Int {
     return value + 10
 }
 
 fn choose(value: String) -> Int {
-    if (str_equals(value, "x") == 1) {
+    if (strEquals(value, "x")) {
         return 20
     }
     return 0

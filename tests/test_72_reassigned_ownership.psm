@@ -35,6 +35,19 @@
 
 import std.io
 
+// **Deliberately still on the C `str_concat`, and not migrated with the rest of
+// the tree in 2026-08.** Its subject is the reassignment/displacement machinery,
+// and reaching that machinery requires the compiler to know the call produces an
+// owned value. An `extern fn` says so in its contract; a *native* producer has
+// to be inferred, and `aif_owns_call_result_at_node` only propagates that one
+// frame (`sites[s].fn != c->fn` declines a pass-through, to avoid double-freeing
+// a value an intermediate frame still owns).
+//
+// So a migrated copy of this file measures the depth-2 gap instead of the thing
+// it was written for: 48 allocated / 35 released / **13 leaked**, against 29/27/2
+// here. That gap has its own fixture and its own TODO entry; this file keeps the
+// coverage it was built for.
+
 extern fn str_concat(s1: String, s2: String) -> String
 
 struct Holder {

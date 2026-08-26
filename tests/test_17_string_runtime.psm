@@ -1,13 +1,6 @@
 import std.io
-extern fn str_equals(s1: String, s2: String) -> Int
-extern fn str_concat(s1: String, s2: String) -> String
-extern fn str_substring(s: String, start: Int, length: Int) -> String
-extern fn str_char_at(s: String, index: Int) -> Char
-extern fn str_contains(haystack: String, needle: String) -> Int
-extern fn str_starts_with(s: String, prefix: String) -> Int
-extern fn str_index_of(haystack: String, needle: String) -> Int
-extern fn int_to_str(n: Int) -> String
-extern fn str_to_int(s: String) -> Int
+import std.string
+import std.option
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -22,35 +15,35 @@ fn main() -> Int {
         return fail("string length builtin should read the native length")
     }
 
-    if (str_equals(str_substring(text, 0, 5), "Hello") != 1) {
+    if (strEquals(strSubstring(text, 0, 5), "Hello") == false) {
         return fail("str_substring should extract the requested slice")
     }
 
-    if (str_char_at(text, 7) != 'W') {
+    if (strCharAt(text, 7) != 'W') {
         return fail("str_char_at should read the requested character")
     }
 
-    if (str_contains(text, "World") != 1) {
+    if (strContains(text, "World") == false) {
         return fail("str_contains should find an included substring")
     }
 
-    if (str_starts_with(text, "Hello") != 1) {
+    if (strStartsWith(text, "Hello") == false) {
         return fail("str_starts_with should match prefixes")
     }
 
-    if (str_index_of(text, "World") != 7) {
+    if (strIndexOf(text, "World") != 7) {
         return fail("str_index_of should return the substring offset")
     }
 
-    if (str_equals(str_concat("Hello, ", "World"), "Hello, World") != 1) {
+    if (strEquals(strConcat("Hello, ", "World"), "Hello, World") == false) {
         return fail("str_concat should join strings")
     }
 
-    if (str_equals(int_to_str(42), "42") != 1) {
+    if (strEquals(strFromInt(42), "42") == false) {
         return fail("int_to_str should format integers")
     }
 
-    if (str_to_int("123") != 123) {
+    if (optionOr(strParseInt("123"), 0) != 123) {
         return fail("str_to_int should parse decimal integers")
     }
 

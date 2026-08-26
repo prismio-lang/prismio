@@ -1,0 +1,195 @@
+{
+  "meta": {
+    "platform": "darwin",
+    "runs": 25,
+    "compiler": "/Users/vibrant/Desktop/Projects/Prismio/prismio/build/cold-bc-2",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "swiftc": null,
+    "clang": "Homebrew clang version 22.1.8",
+    "when": "2026-08-26 12:20:40"
+  },
+  "results": {
+    "g9": [
+      {
+        "variant": "prismio",
+        "label": "Prismio",
+        "language": "prismio",
+        "frames": 2000,
+        "p50_us": [
+          50.708,
+          50.458,
+          53.25
+        ],
+        "p99_us": [
+          75.042,
+          72.209,
+          80.833
+        ],
+        "p999_us": [
+          89.666,
+          83.917,
+          109.416
+        ],
+        "loop_ms": [
+          102.771495,
+          101.89049,
+          108.126801
+        ],
+        "wall_ms": [
+          108.695333,
+          107.5721250000008,
+          113.74470800000047
+        ],
+        "rss_mb": [
+          2.140625,
+          2.140625,
+          2.140625
+        ],
+        "allocs": 8201,
+        "frees": 23,
+        "alloc_raw": {
+          "malloc": 2040,
+          "calloc": 8163,
+          "realloc": 1,
+          "free": 2027,
+          "loop_malloc": 37,
+          "loop_calloc": 8163,
+          "loop_realloc": 1,
+          "loop_free": 23,
+          "clock_calls": 4018
+        },
+        "process_allocs": 10204,
+        "process_frees": 2027,
+        "allocs_per_s": 79798.39156762291,
+        "frees_per_s": 223.79746446230055,
+        "exe_bytes": 79576,
+        "compile_ms": 103.32137500000016,
+        "checksums": [
+          "checksum total 1856014121",
+          "checksum last 1579165008"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_idiomatic",
+        "label": "Rust idiomatic",
+        "language": "rust",
+        "frames": 2000,
+        "p50_us": [
+          54.75,
+          54.166,
+          59.708
+        ],
+        "p99_us": [
+          82.958,
+          78.833,
+          93.5
+        ],
+        "p999_us": [
+          101.583,
+          90.042,
+          117.333
+        ],
+        "loop_ms": [
+          111.536215,
+          109.706224,
+          122.182072
+        ],
+        "wall_ms": [
+          113.32216699999975,
+          111.39712499999987,
+          123.94370800000054
+        ],
+        "rss_mb": [
+          1.828125,
+          1.796875,
+          1.859375
+        ],
+        "allocs": 63201,
+        "frees": 63764,
+        "alloc_raw": {
+          "malloc": 55039,
+          "calloc": 8164,
+          "realloc": 1,
+          "free": 63770,
+          "loop_malloc": 55036,
+          "loop_calloc": 8164,
+          "loop_realloc": 1,
+          "loop_free": 63764,
+          "clock_calls": 4016
+        },
+        "process_allocs": 63204,
+        "process_frees": 63770,
+        "allocs_per_s": 566641.0681050994,
+        "frees_per_s": 571688.755979392,
+        "exe_bytes": 517568,
+        "compile_ms": 141.89170799999928,
+        "checksums": [
+          "checksum total 1856014121",
+          "checksum last 1579165008"
+        ],
+        "runs": 25
+      },
+      {
+        "variant": "rust_tuned",
+        "label": "Rust hand-tuned",
+        "language": "rust",
+        "frames": 2000,
+        "p50_us": [
+          34.625,
+          33.417,
+          35.25
+        ],
+        "p99_us": [
+          49.5,
+          47.25,
+          55.417
+        ],
+        "p999_us": [
+          59.084,
+          55.834,
+          71.5
+        ],
+        "loop_ms": [
+          70.790679,
+          69.267293,
+          72.134112
+        ],
+        "wall_ms": [
+          72.35529200000101,
+          70.97245900000004,
+          73.76116699999713
+        ],
+        "rss_mb": [
+          1.78125,
+          1.78125,
+          1.8125
+        ],
+        "allocs": 781,
+        "frees": 546,
+        "alloc_raw": {
+          "malloc": 80,
+          "calloc": 706,
+          "realloc": 1,
+          "free": 607,
+          "loop_malloc": 76,
+          "loop_calloc": 704,
+          "loop_realloc": 1,
+          "loop_free": 546,
+          "clock_calls": 4020
+        },
+        "process_allocs": 787,
+        "process_frees": 607,
+        "allocs_per_s": 11032.525906412058,
+        "frees_per_s": 7712.879827017905,
+        "exe_bytes": 563568,
+        "compile_ms": 198.65625000000085,
+        "checksums": [
+          "checksum total 1856014121",
+          "checksum last 1579165008"
+        ],
+        "runs": 25
+      }
+    ]
+  }
+}

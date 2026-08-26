@@ -26,9 +26,9 @@
 // binding or it is testing test_51's ground again.
 
 import std.io
+import std.string
 extern fn print(s: String)
 extern fn println(s: String)
-extern fn int_to_str(n: Int) -> String
 
 struct Node {
     id: Int,
@@ -113,9 +113,9 @@ fn check(name: String, got: Int, want: Int) -> Int {
     print("FAIL ")
     print(name)
     print(": got ")
-    print(int_to_str(got))
+    print(strFromInt(got))
     print(" want ")
-    println(int_to_str(want))
+    println(strFromInt(want))
     return 1
 }
 

@@ -17,10 +17,8 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import std.string
 
-extern fn str_from_char(c: Char) -> String
-extern fn str_equals(s1: String, s2: String) -> Int
-extern fn int_to_str(value: Int) -> String
 
 fn hexDigit(v: Int) -> String {
     if (v == 0) { return "0" }
@@ -62,7 +60,7 @@ fn jsonString(s: String) {
             print(hexDigit(hi))
             print(hexDigit(c - hi * 16))
         }
-        else { print(str_from_char(b)) }
+        else { print(strFromChar(b)) }
         i = i + 1
     }
     print("\"")
@@ -79,7 +77,7 @@ fn jsonFieldInt(name: String, value: Int) {
     print("\"")
     print(name)
     print("\":")
-    print(int_to_str(value))
+    print(strFromInt(value))
 }
 
 // Names rather than ordinals, so the consumer never depends on the declaration
@@ -198,7 +196,7 @@ fn dumpFileTable() {
     let mut first = true
     while (i < 4096) {
         let path = diag_file_path(i)
-        if (str_equals(path, "") == 1 or str_equals(path, "<unknown>") == 1) {
+        if (strEquals(path, "") or strEquals(path, "<unknown>")) {
             i = 4096
         } else {
             if (first == false) { print(",") }

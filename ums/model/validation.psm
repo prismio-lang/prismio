@@ -1,9 +1,8 @@
 import std.io
 import ums.model.project
 import ums.model.diagnostic
+import std.string
 
-extern fn str_char_at(value: String, index: Int) -> Char
-extern fn str_concat(left: String, right: String) -> String
 extern fn file_exists(path: String borrow) -> Int
 extern fn join_path(directory: String borrow, child: String borrow) -> String produce(free)
 
@@ -11,7 +10,7 @@ fn umsValidName(value: String) -> Bool {
     if (__builtin_string_len(value) == 0) { return false }
     let mut i = 0
     while (i < __builtin_string_len(value)) {
-        let current = str_char_at(value, i)
+        let current = strCharAt(value, i)
         if (umsIsAlnum(current) == false and current != '-' and current != '_' and current != '.') {
             return false
         }
@@ -25,7 +24,7 @@ fn umsValidVersion(value: String, minimumComponents: Int) -> Bool {
     let mut componentDigits = 0
     let mut i = 0
     while (i < __builtin_string_len(value)) {
-        let current = str_char_at(value, i)
+        let current = strCharAt(value, i)
         if (umsIsDigit(current)) {
             componentDigits = componentDigits + 1
         } else if (current == '.' and componentDigits > 0) {
@@ -77,18 +76,18 @@ fn umsProjectValidate(project: UmsProjectModel, diagnostics: List<UmsDiagnostic>
         if (umsValidName(target.name) == false) {
             umsDiagnosticAdd(diagnostics, "UMS2308", project.manifestPath,
                 target.line, target.col, target.len,
-                str_concat(str_concat("invalid target name '", target.name), "'"))
+                strConcat(strConcat("invalid target name '", target.name), "'"))
         }
         if (__builtin_string_len(target.entry) == 0) {
             umsDiagnosticAdd(diagnostics, "UMS2309", project.manifestPath,
                 target.line, target.col, target.len,
-                str_concat(str_concat("target '", target.name), "' requires an entry source"))
+                strConcat(strConcat("target '", target.name), "' requires an entry source"))
         } else {
             let sourcePath = join_path(project.root, target.entry)
             if (file_exists(sourcePath) == 0) {
                 umsDiagnosticAdd(diagnostics, "UMS2310", project.manifestPath,
                     target.line, target.col, target.len,
-                    str_concat(str_concat(str_concat("target '", target.name),
+                    strConcat(strConcat(strConcat("target '", target.name),
                                "' entry does not exist: "), target.entry))
             }
         }
@@ -106,12 +105,12 @@ fn umsProjectValidate(project: UmsProjectModel, diagnostics: List<UmsDiagnostic>
         if (umsValidName(dependency.name) == false) {
             umsDiagnosticAdd(diagnostics, "UMS2311", project.manifestPath,
                 dependency.line, dependency.col, dependency.len,
-                str_concat(str_concat("invalid dependency name '", dependency.name), "'"))
+                strConcat(strConcat("invalid dependency name '", dependency.name), "'"))
         }
         if (__builtin_string_len(dependency.constraint) == 0) {
             umsDiagnosticAdd(diagnostics, "UMS2312", project.manifestPath,
                 dependency.line, dependency.col, dependency.len,
-                str_concat(str_concat("dependency '", dependency.name),
+                strConcat(strConcat("dependency '", dependency.name),
                            "' has an empty version constraint"))
         }
         dependencyIndex = dependencyIndex + 1

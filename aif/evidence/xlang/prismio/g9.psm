@@ -1,0 +1,116 @@
+// G9 parallel bands -- the concurrency axis, which this corpus did not have.
+//
+// TODO's standing item: "it is six single-threaded programs; concurrency is
+// unmeasured and it is the axis where Rust's claim is strongest." Every
+// cross-language number this project has recorded came from one thread, so no
+// concurrency claim in either direction was supported by anything.
+//
+// **The shape is a per-frame parallel reduction**, because that is what a frame
+// loop does with more than one core: partition the step, run the partitions,
+// join at the frame boundary. It is also the only shape Prismio's model admits
+// without argument -- tasks are isolated, so a band shares nothing with its
+// siblings and the join is the single edge between them.
+//
+// The kernel is an LCG chain, not floating point, and every arithmetic result
+// is taken modulo 2^32 by construction: Prismio's `Int` is **32 bits and wraps**
+// (`2147483647 + 1` prints `-2147483648`), so the Rust port computes in `i32`
+// with `wrapping_*` and widens only to print. An i64 port silently disagrees on
+// the checksum, which is how this was found.
+//
+// A band's work is serial and depends on its own previous value, so nothing here
+// vectorises and nothing hoists: the seed changes every frame.
+//
+// **The spawn argument is T0/stack here, which is the result worth reading.**
+// Rust's `std::thread::spawn` requires a `'static` closure and therefore boxes
+// what it captures; Prismio proves the join happens before the scope exits
+// (INFERENCE 4.1's E-SPAWN-J), so the argument stays in the parent frame and the
+// spawn allocates nothing. That is structured concurrency being worth something
+// measurable rather than being a slogan.
+//
+// **This program prices task creation, deliberately.** Prismio's `spawn` is one
+// `pthread_create` per task and there is no pool; Rust's `std::thread::spawn` is
+// the same system call, so g9_idiomatic is the honest peer. `g9_pooled.rs` is
+// the hand-tuned arm and keeps its workers alive across frames, which is what a
+// tuned Rust program actually does -- that arm is what says how much of the gap
+// is the thread and how much is the code.
+
+import std.io
+extern fn clock_gettime_nsec_np(clk: Int) -> Int
+
+struct Band {
+    seed: Int,
+    steps: Int
+}
+
+// One band. Serial by construction: `s` carries across the iteration, so the
+// loop cannot be split, reassociated or vectorised in any of the three
+// languages, and the only parallelism available is between bands.
+fn simulate(b: Band) -> Int {
+    let mut s = b.seed
+    let mut acc = 0
+    let mut i = 0
+    while (i < b.steps) {
+        s = s * 1103515245 + 12345
+        acc = acc + ((s / 65536) & 32767)
+        i = i + 1
+    }
+    return acc
+}
+
+fn main() -> Int {
+    let frames = 2000
+    let steps = 24000
+
+    let mut samples: List<Int> = list_new()
+    let mut g = 0
+    while (g < frames) {
+        list_push(samples, 0)
+        g = g + 1
+    }
+
+    let mut total = 0
+    let mut last = 0
+    let mut frame = 0
+    while (frame < frames) {
+        let t0 = clock_gettime_nsec_np(4)
+
+        // **The band is built at the spawn site, and that is load-bearing.**
+        // A `band(frame, i, steps)` helper reads better and leaks: the value is
+        // then allocated in the callee, its escape is already Caller when
+        // E-SPAWN-J looks at it, and a rule that only raises cannot bottom it
+        // back at this scope. It lands T2/owned/Transferred, nothing drops it,
+        // and `--verify` reports 80 leaked of 107 at 20 frames. Written here the
+        // site is in this frame, the proved join bounds it, and all four land
+        // **T0/stack** -- no allocation at all. The helper form is kept in
+        // `g9_helper_leak.psm` because the difference is the measurement.
+        let w0 = spawn simulate(Band { seed: frame * 7919 + 1, steps: steps })
+        let w1 = spawn simulate(Band { seed: frame * 7919 + 104730, steps: steps })
+        let w2 = spawn simulate(Band { seed: frame * 7919 + 209459, steps: steps })
+        let w3 = spawn simulate(Band { seed: frame * 7919 + 314188, steps: steps })
+
+        let r0 = join w0
+        let r1 = join w1
+        let r2 = join w2
+        let r3 = join w3
+
+        let t1 = clock_gettime_nsec_np(4)
+
+        last = r0 + r1 + r2 + r3
+        total = total + last
+        list_set(samples, frame, t1 - t0)
+        frame = frame + 1
+    }
+
+    print("checksum total ")
+    println(total)
+    print("checksum last ")
+    println(last)
+
+    let mut j = 0
+    while (j < frames) {
+        print("frame_ns ")
+        println(list_get(samples, j))
+        j = j + 1
+    }
+    return 0
+}

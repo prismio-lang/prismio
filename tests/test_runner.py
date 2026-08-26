@@ -679,8 +679,12 @@ def run_oracle_vocabulary_test():
     contracts = (PROJECT_ROOT / "src" / "aif" / "contracts.psm").read_text(encoding="utf-8")
     oracle_src = (PROJECT_ROOT / "aif" / "prototype" / "aif.py").read_text(encoding="utf-8")
 
+    # `strEquals` returns Bool, so the C-era `== 1` is gone. This scraper is the
+    # thing the check depends on seeing, so when the compiler moved off the C
+    # string layer in 2026-08 this pattern stopped matching and the check
+    # correctly reported itself blind rather than passing on an empty set.
     produces = set(re.findall(
-        r'str_equals\(name,\s*"([a-z_0-9]+)"\)\s*==\s*1\)\s*\{\s*return true\s*\}', contracts))
+        r'strEquals\(name,\s*"([a-z_0-9]+)"\)\)\s*\{\s*return true\s*\}', contracts))
     at = oracle_src.find("FFI_RETURNS_PRODUCE = {")
     if at < 0 or not produces:
         print(f"{RED}[FAIL] could not locate both produce lists -- this check has "
@@ -4769,6 +4773,12 @@ def run_aif_verify_test():
         # a destructured block yet. **It should fall when M2.1a-ii lands**, and a
         # rise means something stopped being reclaimed that was.
         "test_74_reinit_assignment": 504,
+        # Boxed OBJECT replacement through the explicit exclusive capability.
+        # The displaced Named owns a String, so zero proves list_set_exclusive
+        # invoked the typed element release; ordinary list_set leaves one leak
+        # for exactly this shape. The two neg_4x fixtures guard the other half:
+        # an observed list and an inline element type are both rejected.
+        "test_83_list_set_exclusive": 0,
     }
 
     exe = TEST_DIR / "aif_verify_probe.exe"
@@ -5103,6 +5113,154 @@ def run_inline_runtime_default_test():
     return True
 
 
+def run_task_release_test():
+    """The task handle has an owner, and only where AIF proved it may.
+
+    `prismio_task_release` existed from the day tasks did and codegen never
+    emitted it, so every `spawn` leaked one handle. `--verify` cannot see it --
+    the handle is plain `calloc`, correctly, because it is a runtime temporary
+    the runtime frees itself -- so the assertion has to be on the emitted IR.
+
+    Three facts, and all three are needed. The first alone would pass against a
+    compiler that released *every* handle, which is a use-after-free on the two
+    shapes below it:
+
+      many_frames        proved joined and never copied -> one release per spawn
+      copied_handle      `let u = t` aliases the handle -> no release
+      join_inside_a_loop a `while` may run zero times, so E-SPAWN-J cannot prove
+                         the join -> no release
+
+    The fixture separately checks that all three still compute the right answer,
+    which is what would break if a release landed in the wrong place.
+    """
+    print(f"\n{BLUE}--- Running task_release ---{RESET}")
+
+    fixture = TEST_DIR / "test_84_task_release.psm"
+    with tempfile.TemporaryDirectory(prefix="prismio-task-release-") as td:
+        ll = Path(td) / "task.ll"
+        built = subprocess.run(
+            [str(PRISMIO_EXE), "build", str(fixture), "-o", str(ll)],
+            capture_output=True, text=True)
+        if built.returncode != 0 or not ll.is_file():
+            print(f"{RED}[FAIL] task release: build failed{RESET}")
+            print(f"{built.stdout}\n{built.stderr}"[:1200])
+            return False
+
+        # Attribute every release to the function it is in, so "two releases
+        # somewhere in the module" cannot stand in for "two releases in the one
+        # function that may have them".
+        current, found = None, {}
+        for line in ll.read_text(encoding="utf-8").splitlines():
+            if line.startswith("define "):
+                current = line.split("@", 1)[1].split("(", 1)[0] if "@" in line else None
+            elif "call void @prismio_task_release" in line and current:
+                found[current] = found.get(current, 0) + 1
+
+        want = {"many_frames__Void": 2}
+        forbidden = ("copied_handle__Void", "join_inside_a_loop__Void")
+
+        for fn, n in want.items():
+            if found.get(fn, 0) != n:
+                print(f"{RED}[FAIL] task release: {fn} emitted {found.get(fn, 0)} "
+                      f"release(s), expected {n}{RESET}")
+                return False
+        for fn in forbidden:
+            if found.get(fn, 0) != 0:
+                print(f"{RED}[FAIL] task release: {fn} released a handle it does "
+                      f"not exclusively own{RESET}")
+                return False
+        extra = set(found) - set(want)
+        if extra:
+            print(f"{RED}[FAIL] task release: unexpected release in {sorted(extra)}{RESET}")
+            return False
+
+    print(f"{GREEN}[PASS] task release: emitted where the join is proved, "
+          f"withheld for a copied handle and an unprovable join{RESET}")
+    return True
+
+
+def run_runtime_object_from_ir_test():
+    """A cold inline-runtime build lowers the runtime object from the curated
+    bitcode, and did not quietly fall back to recompiling the C.
+
+    The build already produced `lang_runtime.c` as an optimised module in order to
+    cut the curated ops out of it. Compiling that same translation unit a second
+    time to get the object was the whole of the 19-28% cold regression, so the
+    object is lowered from the retained bitcode with the target backend alone.
+
+    Like the merge, this fails open: a clang that rejects
+    `-Xclang -disable-llvm-passes` compiles from source instead of failing the
+    build. That is the right product behaviour and it is exactly why a value test
+    cannot gate it -- the fallback produces the same program, just slower. The
+    stage trace names which path ran, so requiring `(from IR)` here makes the
+    three-platform suite the portability gate for it.
+
+    `PRISMIO_OBJ_CACHE=0` because a warm build has no runtime object to compile
+    and no raw module to retain; the reuse exists only on the cold path.
+    """
+    print(f"\n{BLUE}--- Running runtime_object_from_ir ---{RESET}")
+
+    fixture = TEST_DIR / "test_28_list.psm"
+    from_ir = "lang_runtime (from IR)"
+
+    with tempfile.TemporaryDirectory(prefix="prismio-runtime-from-ir-") as td:
+        root = Path(td)
+
+        def build(label, inline_runtime):
+            exe = root / f"{label}.exe"
+            env = os.environ.copy()
+            env["PRISMIO_OBJ_CACHE"] = "0"
+            env["PRISMIO_BUILD_TRACE"] = "1"
+            if inline_runtime is None:
+                env.pop("PRISMIO_INLINE_RUNTIME", None)
+            else:
+                env["PRISMIO_INLINE_RUNTIME"] = inline_runtime
+
+            built = subprocess.run(
+                [str(PRISMIO_EXE), "build", str(fixture), "-o", str(exe)],
+                capture_output=True, text=True, env=env)
+            output = f"{built.stdout}\n{built.stderr}"
+            if built.returncode != 0 or not exe.is_file():
+                print(f"{RED}[FAIL] runtime object {label}: build failed{RESET}")
+                print(output[:1200])
+                return None
+            ran = subprocess.run([str(exe)], capture_output=True, text=True)
+            if ran.returncode != 0 or "PASS: list" not in ran.stdout:
+                print(f"{RED}[FAIL] runtime object {label}: compiled program failed{RESET}")
+                print(f"{ran.stdout}\n{ran.stderr}"[:1200])
+                return None
+            return output, ran.stdout
+
+        default = build("default", None)
+        if default is None:
+            return False
+        if from_ir not in default[0]:
+            print(f"{RED}[FAIL] runtime object: the cold build recompiled lang_runtime.c "
+                  f"instead of lowering the retained bitcode{RESET}")
+            print(default[0][:1200])
+            return False
+
+        # The opt-out never produces a curated module, so there is nothing to
+        # retain and this stage must report the ordinary compile. Without this
+        # arm, a trace that printed `(from IR)` unconditionally would pass.
+        opt_out = build("disabled", "0")
+        if opt_out is None:
+            return False
+        if from_ir in opt_out[0]:
+            print(f"{RED}[FAIL] runtime object: the opt-out path claimed to lower "
+                  f"from IR, but it builds no curated module{RESET}")
+            print(opt_out[0][:1200])
+            return False
+
+        if default[1] != opt_out[1]:
+            print(f"{RED}[FAIL] runtime object: the two paths disagree on output{RESET}")
+            return False
+
+    print(f"{GREEN}[PASS] runtime object lowered from the curated bitcode; "
+          f"`=0` compiled it from source; both agree{RESET}")
+    return True
+
+
 def run_curated_closure_test():
     """M1.1's curated inlinable module: the set must be closed over exported symbols.
 
@@ -5428,6 +5586,16 @@ def main():
         failed += 1
 
     if run_inline_runtime_default_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_runtime_object_from_ir_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_task_release_test():
         passed += 1
     else:
         failed += 1

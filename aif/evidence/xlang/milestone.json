@@ -1,177 +1,35 @@
 {
   "meta": {
-    "label": "M4.3c mutable DataView round-trip",
-    "old": "build/m4-dataview-b-6",
-    "new": "build/m4-dataview-c-12",
+    "label": "",
+    "old": "build/cold-bc-2",
+    "new": "build/cold-bc-2",
     "runs": 25,
-    "tolerance_pct": 12.0,
-    "when": "2026-08-25 22:57:21",
+    "tolerance_pct": 10.0,
+    "when": "2026-08-26 12:20:11",
     "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
   },
   "results": {
-    "g1": {
+    "g9": {
       "old_loop_ms": [
-        23.052431,
-        22.016675,
-        25.822446
+        106.1045,
+        102.124369,
+        114.781056
       ],
       "new_loop_ms": [
-        25.105467,
-        22.282505,
-        25.872307
+        106.228526,
+        102.586954,
+        108.047285
       ],
-      "ratio": 1.0890594141676426,
-      "old_rss_mb": 1.765625,
-      "new_rss_mb": 1.765625,
+      "ratio": 1.0011689042406307,
+      "old_rss_mb": 2.140625,
+      "new_rss_mb": 2.140625,
       "rss_ratio": 1.0,
-      "old_exe_bytes": 80312,
-      "new_exe_bytes": 80312,
-      "baselines": {
-        "rust_idiomatic": 18.688,
-        "rust_tuned": 4.746302
-      },
+      "old_exe_bytes": 79576,
+      "new_exe_bytes": 79576,
+      "baselines": {},
       "checksums": [
-        "checksum alive 2000",
-        "checksum beyond 1095"
-      ],
-      "runs": 25
-    },
-    "g2": {
-      "old_loop_ms": [
-        32.155585,
-        31.880111,
-        33.877176
-      ],
-      "new_loop_ms": [
-        32.178284,
-        31.622883,
-        32.424571
-      ],
-      "ratio": 1.00070591158581,
-      "old_rss_mb": 1.921875,
-      "new_rss_mb": 1.9375,
-      "rss_ratio": 1.008130081300813,
-      "old_exe_bytes": 80040,
-      "new_exe_bytes": 80040,
-      "baselines": {
-        "rust_idiomatic": 18.269188,
-        "rust_tuned": 10.53158
-      },
-      "checksums": [
-        "checksum submitted 10020000",
-        "checksum culled 9980000"
-      ],
-      "runs": 25
-    },
-    "g3": {
-      "old_loop_ms": [
-        49.965353,
-        49.611342,
-        50.450141
-      ],
-      "new_loop_ms": [
-        49.808731,
-        49.52664,
-        50.162996
-      ],
-      "ratio": 0.9968653879018927,
-      "old_rss_mb": 2.046875,
-      "new_rss_mb": 2.03125,
-      "rss_ratio": 0.9923664122137404,
-      "old_exe_bytes": 80312,
-      "new_exe_bytes": 80312,
-      "baselines": {
-        "rust_idiomatic": 45.502474,
-        "rust_tuned": 30.774907
-      },
-      "checksums": [
-        "checksum nodes 1365",
-        "checksum visited 1365",
-        "checksum visible 1365"
-      ],
-      "runs": 25
-    },
-    "g4": {
-      "old_loop_ms": [
-        68.675044,
-        67.724912,
-        90.529784
-      ],
-      "new_loop_ms": [
-        68.635993,
-        67.348487,
-        72.989502
-      ],
-      "ratio": 0.9994313654899151,
-      "old_rss_mb": 2.109375,
-      "new_rss_mb": 2.078125,
-      "rss_ratio": 0.9851851851851852,
-      "old_exe_bytes": 80312,
-      "new_exe_bytes": 80312,
-      "baselines": {
-        "rust_idiomatic": 21.995723,
-        "rust_tuned": 17.913616
-      },
-      "checksums": [
-        "checksum entities 1500",
-        "checksum draws 1215783"
-      ],
-      "runs": 25
-    },
-    "g5": {
-      "old_loop_ms": [
-        50.157248,
-        49.151374,
-        50.62537
-      ],
-      "new_loop_ms": [
-        49.494087,
-        49.17165,
-        57.184565
-      ],
-      "ratio": 0.986778361524141,
-      "old_rss_mb": 1.625,
-      "new_rss_mb": 1.625,
-      "rss_ratio": 1.0,
-      "old_exe_bytes": 97464,
-      "new_exe_bytes": 97464,
-      "baselines": {
-        "rust_idiomatic": 28.985522,
-        "rust_tuned": 4.421287
-      },
-      "checksums": [
-        "checksum entities 2000",
-        "checksum submitted 8000000",
-        "checksum batches 12",
-        "checksum evicted 0"
-      ],
-      "runs": 25
-    },
-    "g6": {
-      "old_loop_ms": [
-        151.706736,
-        150.78081,
-        179.646461
-      ],
-      "new_loop_ms": [
-        151.589354,
-        150.510072,
-        155.750953
-      ],
-      "ratio": 0.999226257165008,
-      "old_rss_mb": 2.328125,
-      "new_rss_mb": 2.34375,
-      "rss_ratio": 1.0067114093959733,
-      "old_exe_bytes": 97624,
-      "new_exe_bytes": 97624,
-      "baselines": {
-        "rust_idiomatic": 55.910224,
-        "rust_tuned": 39.792196
-      },
-      "checksums": [
-        "checksum alive 120000",
-        "checksum orders 13800000",
-        "checksum kills 120000"
+        "checksum total 1856014121",
+        "checksum last 1579165008"
       ],
       "runs": 25
     }

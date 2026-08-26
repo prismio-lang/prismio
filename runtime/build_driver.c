@@ -10,6 +10,7 @@
 
 #include "prismio_platform.h"
 #include "prismio_runtime.h"
+#include <time.h>
 
 #ifndef PRISMIO_EMBEDDED_SOURCES_HEADER
 #define PRISMIO_EMBEDDED_SOURCES_HEADER "embedded_sources.h"
@@ -621,6 +622,36 @@ static int run_build_command(const char* command) {
     return result == 0 ? 0 : 1;
 }
 
+// Per-stage wall-clock, on stderr, when PRISMIO_BUILD_TRACE is set.
+//
+// The cold-compile regression this exists for was recorded in TODO as a
+// whole-build ratio -- "19-28% with PRISMIO_OBJ_CACHE=0" -- which names no stage,
+// so every attempt to close it would have been a guess checked by re-timing the
+// whole build. Wall clock rather than clock(): every expensive stage below is a
+// child process, and clock() counts none of them.
+static double build_trace_ms(void) {
+#ifdef _WIN32
+    LARGE_INTEGER freq, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart * 1000.0 / (double)freq.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1.0e6;
+#endif
+}
+
+static int build_trace_enabled(void) {
+    const char* v = getenv("PRISMIO_BUILD_TRACE");
+    return v && v[0] != '\0' && !(v[0] == '0' && v[1] == '\0');
+}
+
+static void build_trace_stage(const char* stage, double t0) {
+    if (!build_trace_enabled()) return;
+    fprintf(stderr, "[build trace] %-24s %8.1f ms\n", stage, build_trace_ms() - t0);
+}
+
 // SPEC 7.3's `--verify`, as seen from the build.
 //
 // Codegen swaps the allocator and deallocator *names* and changes nothing else.
@@ -836,6 +867,21 @@ static int inline_runtime_enabled(void) {
     return !(v && v[0] == '0' && v[1] == '\0');
 }
 
+// A cold inline-runtime build already asks clang to parse and optimise
+// lang_runtime.c into LLVM IR. Keep that raw module until the runtime object is
+// requested later in the same build, so clang can lower it directly instead of
+// parsing and optimising the same C translation unit a second time. This is a
+// transient within one compiler process, never a cache entry and never shared
+// between builds.
+static char* g_curated_raw_ir = NULL;
+
+static void discard_curated_raw_ir(void) {
+    if (!g_curated_raw_ir) return;
+    delete_file(g_curated_raw_ir);
+    free(g_curated_raw_ir);
+    g_curated_raw_ir = NULL;
+}
+
 // Produce the curated module, or NULL if it cannot be produced for any reason.
 //
 // NULL is always safe: the caller compiles exactly as it did before. That is the
@@ -847,6 +893,7 @@ static int inline_runtime_enabled(void) {
 // It is therefore produced once per toolchain per target and reused by every
 // subsequent build, which is what keeps the steady-state cost at one in-process module merge.
 static char* build_curated_module(const char* target_flags) {
+    discard_curated_raw_ir();
     char lr_source[1024];
     if (!find_toolchain_source(lr_source, sizeof(lr_source), "lang_runtime.c")) return NULL;
 
@@ -907,7 +954,7 @@ static char* build_curated_module(const char* target_flags) {
         size_t n = strlen(tmp_ll) + 16;
         tmp_raw = (char*)malloc(n);
         if (!tmp_raw) { failed = 1; }
-        else snprintf(tmp_raw, n, "%s.raw", tmp_ll);
+        else snprintf(tmp_raw, n, "%s.raw.bc", tmp_ll);
     }
 
     char* q_src = failed ? NULL : command_quote_arg(lr_source);
@@ -924,10 +971,17 @@ static char* build_curated_module(const char* target_flags) {
         // 1. the runtime's own IR, at the same -O2 the runtime object is built
         //    with, so the bodies being inlined are the bodies that would have
         //    been called.
+        //
+        //    **Bitcode, not textual IR**, because this module is also what the
+        //    runtime object is lowered from later in the build. Measured on this
+        //    host: the bitcode round trip produces an object *byte-identical* to
+        //    `clang -O2 -c lang_runtime.c`, and the textual one does not.
         if (!failed) {
-            snprintf(command, len, "clang %s%s-O2 -Wno-deprecated-declarations -S -emit-llvm %s -o %s",
+            snprintf(command, len, "clang %s%s-O2 -Wno-deprecated-declarations -emit-llvm -c %s -o %s",
                      target_flags, verify, q_src, q_raw);
+            double t0 = build_trace_ms();
             if (run_build_command(command) != 0) failed = 1;
+            build_trace_stage("curated: runtime IR", t0);
         }
 
         free(command);
@@ -938,16 +992,21 @@ static char* build_curated_module(const char* target_flags) {
     //    enough that the merge costs 1.18x rather than the whole runtime's
     //    1.88x. Byte-identical to what `llvm-extract` produced when this was a
     //    shell-out, which is how the port was checked.
-    if (!failed && ir_curate_module(tmp_raw, PRISMIO_CURATED_OPS,
-                                    PRISMIO_CURATED_OP_COUNT, tmp_ll) != 0) {
-        failed = 1;
+    if (!failed) {
+        double t0 = build_trace_ms();
+        if (ir_curate_module(tmp_raw, PRISMIO_CURATED_OPS,
+                             PRISMIO_CURATED_OP_COUNT, tmp_ll) != 0) {
+            failed = 1;
+        }
+        build_trace_stage("curated: extract", t0);
     }
 
     // A bypassed cache builds to the temporary and uses it in place; installing
     // it would repopulate the very entry the caller asked to skip.
     if (!failed && bypass) {
         free(q_src); free(q_tmp); free(q_raw);
-        if (tmp_raw) { delete_file(tmp_raw); free(tmp_raw); }
+        g_curated_raw_ir = tmp_raw;
+        tmp_raw = NULL;
         free(entry);
         return tmp_ll;
     }
@@ -956,21 +1015,24 @@ static char* build_curated_module(const char* target_flags) {
         // A failed install is not a failed build: use the temporary this once
         // and pay for it again next time.
         free(q_src); free(q_tmp); free(q_raw);
-        if (tmp_raw) { delete_file(tmp_raw); free(tmp_raw); }
+        g_curated_raw_ir = tmp_raw;
+        tmp_raw = NULL;
         free(entry);
         return tmp_ll;
     }
 
-    if (tmp_raw) { delete_file(tmp_raw); free(tmp_raw); }
     free(q_src); free(q_tmp); free(q_raw);
 
     if (failed) {
+        if (tmp_raw) { delete_file(tmp_raw); free(tmp_raw); }
         delete_file(tmp_ll);
         free(tmp_ll);
         free(entry);
         return NULL;
     }
 
+    g_curated_raw_ir = tmp_raw;
+    tmp_raw = NULL;
     free(tmp_ll);
     return entry;
 }
@@ -986,7 +1048,9 @@ static char* merge_curated_into_program(const char* ir_file, const char* target_
     if (!merged) { free(curated); return NULL; }
     snprintf(merged, n, "%s.merged.ll", ir_file);
 
+    double t0 = build_trace_ms();
     int ok = ir_link_modules(ir_file, curated, merged) == 0;
+    build_trace_stage("curated: merge", t0);
     free(curated);
 
     if (!ok) {
@@ -1049,7 +1113,9 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     // worth less than one test that fails.
     snprintf(command, len, "clang %s-Wno-override-module %s -c %s -o %s",
              target, g_debug_info ? "-O0" : "-O2", q_ir, q_obj);
+    double t0 = build_trace_ms();
     int result = run_build_command(command);
+    build_trace_stage(merged ? "program -O2 (merged)" : "program -O2", t0);
 
     if (merged) {
         delete_file(merged);
@@ -1417,15 +1483,49 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
         objs[i] = entry ? object_cache_temp_path(entry)
                         : compiler_temp_obj_path(exe_file, role);
         q_objs[i] = command_quote_arg(objs[i]);
-        char* q_src = command_quote_arg(source_paths[i]);
+        int reuse_curated_ir = strcmp(role, "lang_runtime") == 0
+                               && g_curated_raw_ir != NULL;
+        char* q_src = command_quote_arg(reuse_curated_ir
+                                        ? g_curated_raw_ir : source_paths[i]);
         // -O2 here matters more than it does on the program's own IR: this is
         // where list_get, list_push and the allocator live, and a user program
         // calls them millions of times. Compiling them at -O0 was worth more of
         // the corpus gap than the missing IR pipeline was (RESULTS-xlang 3.1).
-        snprintf(command, command_len, "clang %s-c %s -o %s",
-                 compile_flags, q_src, q_objs[i]);
-        if (run_build_command(command) != 0) result = 1;
+        int built_from_ir = reuse_curated_ir;
+        if (reuse_curated_ir) {
+            // The C frontend and the -O2 middle end already ran when the curated
+            // module was made, and this is that exact module. Run the target
+            // backend over it and nothing else: re-running the middle end on
+            // already-optimised IR cost 30 ms of the 19-28% cold regression and
+            // changed no instruction. Target flags are repeated so clang selects
+            // the same object format and assembler.
+            char* raw_target = target_clang_flags();
+            snprintf(command, command_len,
+                     "clang %s-O2 -Wno-override-module -Xclang -disable-llvm-passes "
+                     "-x ir -c %s -o %s",
+                     raw_target, q_src, q_objs[i]);
+            free(raw_target);
+        } else {
+            snprintf(command, command_len, "clang %s-c %s -o %s",
+                     compile_flags, q_src, q_objs[i]);
+        }
+        double t0 = build_trace_ms();
+        int cmd_failed = run_build_command(command) != 0;
+        if (cmd_failed && reuse_curated_ir) {
+            // Fails open, like the rest of this optimisation. A clang that does
+            // not take -disable-llvm-passes must not turn into a failed build
+            // when the C source it was derived from is still on disk.
+            free(q_src);
+            q_src = command_quote_arg(source_paths[i]);
+            snprintf(command, command_len, "clang %s-c %s -o %s",
+                     compile_flags, q_src, q_objs[i]);
+            cmd_failed = run_build_command(command) != 0;
+            built_from_ir = 0;
+        }
+        if (cmd_failed) result = 1;
+        build_trace_stage(built_from_ir ? "lang_runtime (from IR)" : role, t0);
         free(q_src);
+        if (reuse_curated_ir) discard_curated_raw_ir();
 
         if (result == 0 && entry) {
             // A failed install is not a failed build: link the temporary and
@@ -1459,7 +1559,9 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
             snprintf(command + written, command_len - written, " -L %s -lLLVM-C", q_lib);
             free(q_lib);
         }
+        double t0 = build_trace_ms();
         if (run_build_command(command) != 0) result = 1;
+        build_trace_stage("link", t0);
     }
 
     for (int i = 0; i < PRISMIO_TOOLCHAIN_FILE_COUNT; i++) {
@@ -1574,6 +1676,7 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
     if (result == 0 && g_debug_info && target_is_mach_o()) write_dsym(exe_file);
 
     delete_file(program_obj);
+    discard_curated_raw_ir();
     free(program_obj);
     return result;
 }
@@ -1631,6 +1734,7 @@ int compiler_bootstrap_executable(const char* ir_file, const char* exe_file) {
     if (result == 0 && g_debug_info && target_is_mach_o()) write_dsym(exe_file);
 
     delete_file(program_obj);
+    discard_curated_raw_ir();
     free(program_obj);
     return result;
 }

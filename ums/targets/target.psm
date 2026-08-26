@@ -1,10 +1,10 @@
+import std.string
 enum UmsTargetKind {
     UNKNOWN,
     EXECUTABLE,
     LIBRARY
 }
 
-extern fn str_clone(value: String borrow) -> String produce(free)
 
 struct UmsTarget {
     kind: UmsTargetKind,
@@ -21,10 +21,10 @@ fn umsTarget(kind: UmsTargetKind, name: String, entry: String,
              line: Int, col: Int, len: Int) -> UmsTarget {
     return UmsTarget {
         kind: kind,
-        name: str_clone(name),
-        entry: str_clone(entry),
-        sourcePath: str_clone(""),
-        outputPath: str_clone(""),
+        name: strClone(name),
+        entry: strClone(entry),
+        sourcePath: strClone(""),
+        outputPath: strClone(""),
         line: line,
         col: col,
         len: len
@@ -34,7 +34,7 @@ fn umsTarget(kind: UmsTargetKind, name: String, entry: String,
 fn umsTargetFind(targets: List<UmsTarget>, name: String) -> Int {
     let mut i = 0
     while (i < list_len(targets)) {
-        if (str_equals(list_get(targets, i).name, name) == 1) { return i }
+        if (strEquals(list_get(targets, i).name, name)) { return i }
         i = i + 1
     }
     return -1

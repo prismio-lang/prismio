@@ -4,8 +4,8 @@
 // consumer, which bought nothing -- a keyword is a token that happens to spell a
 // reserved word, and the two answers belong beside the enum that names them.
 
-extern fn str_equals(s1: String, s2: String) -> Int
 
+import std.string
 enum TokenType {
     STRING_LITERAL,
     CHAR_LITERAL,
@@ -74,58 +74,58 @@ fn typeToString(t: TokenType) -> String {
 // identifier, and building a table would mean str_concat calls that allocate on
 // the hottest path in the scanner.
 fn isKeyword(word: String) -> Bool {
-    if (str_equals(word, "import") == 1) { return true }
+    if (strEquals(word, "import")) { return true }
 
-    if (str_equals(word, "match") == 1) { return true }
-    if (str_equals(word, "if") == 1) { return true }
-    if (str_equals(word, "else") == 1) { return true }
-    if (str_equals(word, "and") == 1) { return true }
-    if (str_equals(word, "or") == 1) { return true }
+    if (strEquals(word, "match")) { return true }
+    if (strEquals(word, "if")) { return true }
+    if (strEquals(word, "else")) { return true }
+    if (strEquals(word, "and")) { return true }
+    if (strEquals(word, "or")) { return true }
 
-    if (str_equals(word, "true") == 1) { return true }
-    if (str_equals(word, "false") == 1) { return true }
+    if (strEquals(word, "true")) { return true }
+    if (strEquals(word, "false")) { return true }
 
-    if (str_equals(word, "break") == 1) { return true }
-    if (str_equals(word, "continue") == 1) { return true }
-    if (str_equals(word, "return") == 1) { return true }
-    if (str_equals(word, "throw") == 1) { return true }
+    if (strEquals(word, "break")) { return true }
+    if (strEquals(word, "continue")) { return true }
+    if (strEquals(word, "return")) { return true }
+    if (strEquals(word, "throw")) { return true }
 
-    if (str_equals(word, "while") == 1) { return true }
-    if (str_equals(word, "loop") == 1) { return true }
-    if (str_equals(word, "for") == 1) { return true }
-    if (str_equals(word, "in") == 1) { return true }
+    if (strEquals(word, "while")) { return true }
+    if (strEquals(word, "loop")) { return true }
+    if (strEquals(word, "for")) { return true }
+    if (strEquals(word, "in")) { return true }
 
-    if (str_equals(word, "let") == 1) { return true }
-    if (str_equals(word, "struct") == 1) { return true }
-    if (str_equals(word, "impl") == 1) { return true }
-    if (str_equals(word, "enum") == 1) { return true }
-    if (str_equals(word, "trait") == 1) { return true }
-    if (str_equals(word, "fn") == 1) { return true }
-    if (str_equals(word, "extern") == 1) { return true }
+    if (strEquals(word, "let")) { return true }
+    if (strEquals(word, "struct")) { return true }
+    if (strEquals(word, "impl")) { return true }
+    if (strEquals(word, "enum")) { return true }
+    if (strEquals(word, "trait")) { return true }
+    if (strEquals(word, "fn")) { return true }
+    if (strEquals(word, "extern")) { return true }
 
-    if (str_equals(word, "mut") == 1) { return true }
-    if (str_equals(word, "as") == 1) { return true }
+    if (strEquals(word, "mut")) { return true }
+    if (strEquals(word, "as")) { return true }
 
     // Parameter conventions: ownership and borrows.
-    if (str_equals(word, "inout") == 1) { return true }
-    if (str_equals(word, "sink") == 1) { return true }
+    if (strEquals(word, "inout")) { return true }
+    if (strEquals(word, "sink")) { return true }
 
     // SPEC 5.2: pins an arena at this scope. Unlike the FFI contract names, which
     // are contextual, this one opens a statement and so has to be a real keyword.
-    if (str_equals(word, "region") == 1) { return true }
+    if (strEquals(word, "region")) { return true }
 
     // REQUIREMENTS 4. The absent reference. A real keyword rather than a
     // contextual name, unlike `unique` and `pin`: those are annotations, and
     // SPEC 5 requires that deleting one leave a working program. `none` is a
     // *value* -- deleting it leaves a hole -- so the obligation does not apply
     // and a keyword is the honest spelling.
-    if (str_equals(word, "none") == 1) { return true }
+    if (strEquals(word, "none")) { return true }
 
     return false
 }
 
 fn isBoolean(word: String) -> Bool {
-    if (str_equals(word, "true") == 1) { return true }
-    if (str_equals(word, "false") == 1) { return true }
+    if (strEquals(word, "true")) { return true }
+    if (strEquals(word, "false")) { return true }
     return false
 }

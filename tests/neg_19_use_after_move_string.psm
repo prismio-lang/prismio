@@ -2,10 +2,10 @@
 // Strings are affine as of AIF Level 4, so binding one to a second name transfers
 // ownership -- and the scope exit frees it exactly once, through the new name.
 import std.io
-extern fn str_concat(s1: String, s2: String) -> String
+import std.string
 
 fn main() -> Int {
-    let a = str_concat("ab", "cd")
+    let a = strConcat("ab", "cd")
     let b = a
     return __builtin_string_len(a)
 }

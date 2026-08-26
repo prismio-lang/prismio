@@ -567,6 +567,13 @@ typedef struct {
     const char* slot;
     int is_global;
     int is_mutable;
+    // A boxed list may release an overwritten element only while the compiler
+    // still has exclusive knowledge of the handle. This positive fact starts
+    // on a local list_new binding and is cleared permanently when an element is
+    // borrowed, a Slice is made, or the handle crosses an arbitrary call.
+    // Keeping it on the scoped binding (rather than in a name set) makes
+    // shadowing and block exit preserve the conservative direction.
+    int is_list_exclusive;
     // AIF Level 2: this binding's initialiser allocated a value whose escape
     // bottoms at the scope holding the binding, so the scope's exits are where
     // it is freed. Set by codegen from the tier; nothing here decides policy.
@@ -775,6 +782,7 @@ static void add_binding(const char* name, const char* type, int is_global) {
     b->type = ir_intern(type);
     b->is_global = is_global;
     b->is_mutable = 0;
+    b->is_list_exclusive = 0;
     b->is_droppable = 0;
     b->drop_kind = 0;
     b->owns_slot = 0;
@@ -839,6 +847,21 @@ void ir_mark_mutable(const char* name) {
 int ir_var_is_mutable(const char* name) {
     int i = find_binding(name);
     return i >= 0 ? var_bindings[i].is_mutable : 1; // unknown names error elsewhere
+}
+
+void ir_mark_list_exclusive(const char* name) {
+    int i = find_binding(name);
+    if (i >= 0) var_bindings[i].is_list_exclusive = 1;
+}
+
+void ir_unmark_list_exclusive(const char* name) {
+    int i = find_binding(name);
+    if (i >= 0) var_bindings[i].is_list_exclusive = 0;
+}
+
+int ir_is_list_exclusive(const char* name) {
+    int i = find_binding(name);
+    return i >= 0 ? var_bindings[i].is_list_exclusive : 0;
 }
 
 void ir_clear_var_types(void) {

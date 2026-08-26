@@ -1,11 +1,9 @@
 import std.io
 import ums.model.project
 import ums.model.diagnostic
+import std.string
 
 extern fn join_path(directory: String borrow, child: String borrow) -> String produce(free)
-extern fn str_char_at(value: String, index: Int) -> Char
-extern fn str_concat(left: String, right: String) -> String
-extern fn str_clone(value: String borrow) -> String produce(free)
 
 struct UmsBuildPlan {
     stateRoot: String,
@@ -16,7 +14,7 @@ fn umsBuildProfileValid(profile: String) -> Bool {
     if (__builtin_string_len(profile) == 0) { return false }
     let mut i = 0
     while (i < __builtin_string_len(profile)) {
-        let current = str_char_at(profile, i)
+        let current = strCharAt(profile, i)
         if (umsIsAlnum(current) == false and current != '-' and current != '_') {
             return false
         }
@@ -29,8 +27,8 @@ fn umsBuildPlanCreate(project: UmsProjectModel,
                       diagnostics: List<UmsDiagnostic>) -> UmsBuildPlan {
     if (umsBuildProfileValid(project.build.profile) == false) {
         umsDiagnosticAdd(diagnostics, "UMS3001", project.manifestPath, 0, 0, 0,
-            str_concat(str_concat("invalid build profile '", project.build.profile), "'"))
-        return UmsBuildPlan { stateRoot: str_clone(""), artifactRoot: str_clone("") }
+            strConcat(strConcat("invalid build profile '", project.build.profile), "'"))
+        return UmsBuildPlan { stateRoot: strClone(""), artifactRoot: strClone("") }
     }
 
     let stateRoot = join_path(project.root, project.build.stateDirectory)
@@ -41,8 +39,8 @@ fn umsBuildPlanCreate(project: UmsProjectModel,
         let target = list_get(project.targets, i)
         let planned = UmsTarget {
             kind: target.kind,
-            name: str_clone(target.name),
-            entry: str_clone(target.entry),
+            name: strClone(target.name),
+            entry: strClone(target.entry),
             sourcePath: join_path(project.root, target.entry),
             outputPath: join_path(profileRoot, target.name),
             line: target.line,

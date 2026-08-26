@@ -1,0 +1,66 @@
+// G9 -- parallel bands. The concurrency shape, which this corpus did not have.
+//
+// Six single-threaded programs meant every cross-language number this project
+// recorded came from one thread, so no concurrency claim in either direction was
+// supported by anything. This is the missing axis.
+//
+// A per-frame parallel reduction: partition the step, run the partitions, join
+// at the frame boundary. It is the only shape Prismio's model admits without
+// argument -- tasks are isolated, so a band shares nothing with its siblings and
+// the join is the single edge between them.
+//
+// **The band is built at the spawn site and that is load-bearing.** Written as a
+// `band(frame, i, steps)` helper it reads better and leaks: the value is then
+// allocated in the callee, its escape is already Caller when INFERENCE 4.1's
+// E-SPAWN-J looks at it, and a rule that only raises cannot bottom it back at
+// the spawning scope. Written here the site is in this frame, the proved join
+// bounds it, and all four spawn arguments land **T0/stack** -- the spawn
+// allocates nothing at all. `aif/evidence/xlang/prismio/g9_helper_leak.psm` is
+// the reproduction of the other form.
+//
+// The kernel is 32-bit integer arithmetic because Prismio's `Int` is 32 bits and
+// wraps; a band's chain is serial, so nothing here vectorises.
+
+import std.io
+
+struct Band {
+    seed: Int,
+    steps: Int
+}
+
+fn simulate(b: Band) -> Int {
+    let mut s = b.seed
+    let mut acc = 0
+    let mut i = 0
+    while (i < b.steps) {
+        s = s * 1103515245 + 12345
+        acc = acc + ((s / 65536) & 32767)
+        i = i + 1
+    }
+    return acc
+}
+
+fn main() -> Int {
+    let steps = 24000
+
+    let mut total = 0
+    let mut frame = 0
+    while (frame < 60) {
+        let w0 = spawn simulate(Band { seed: frame * 7919 + 1, steps: steps })
+        let w1 = spawn simulate(Band { seed: frame * 7919 + 104730, steps: steps })
+        let w2 = spawn simulate(Band { seed: frame * 7919 + 209459, steps: steps })
+        let w3 = spawn simulate(Band { seed: frame * 7919 + 314188, steps: steps })
+
+        let r0 = join w0
+        let r1 = join w1
+        let r2 = join w2
+        let r3 = join w3
+
+        total = total + r0 + r1 + r2 + r3
+        frame = frame + 1
+    }
+
+    print("total: ")
+    println(total)
+    return 0
+}
