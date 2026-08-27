@@ -187,7 +187,6 @@
   "185": "run_check_command_test",
   "186": "test_runner.py",
   "187": "2026-08-19 (payload enums) — `Option`/`Result` are in; exhaustiveness is the hole, and REQUIREMENTS 18 now gates two things",
-  "188": "aif_records",
   "189": "call_edge_push",
   "190": "run_cli_test",
   "191": "run_aif_layout_test",
