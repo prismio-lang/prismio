@@ -128,14 +128,38 @@ then this change is a large net win with one program paying for it.
 
 ## 5 · What this opens up
 
-**Vectorization is still absent.** The loop is now call-free but the arithmetic
-is scalar `fmul`/`fadd` on one component at a time — 0 NEON instructions in
-`system_movement`. Removing the call barrier was necessary and is clearly not
-sufficient. The next question is whether LLVM can prove the component lists do
-not overlap: `w.positions` and `w.velocities` arrive as opaque pointers with no
-aliasing information, and **AIF already computes an aliasing lattice per site**.
-Feeding that to LLVM as `noalias` is the obvious next step and it is a fact the
-compiler already owns.
+**Vectorization is still absent**, and the cause has since been measured. The
+loop is now call-free but the arithmetic is scalar `fmul`/`fadd` — 0 NEON in
+`system_movement`. Removing the call barrier was necessary and not sufficient.
+
+*This section first said the next step was `noalias` on the component arrays,
+from AIF's aliasing lattice. **That was wrong and is corrected here rather than
+left standing.*** It was priced and killed: `restrict` on the two arrays is worth
+**1.11×**, and both arms vectorize without it. The model that produced that
+answer omitted the List header indirection, which is the whole question.
+
+With a faithful model:
+
+| arm | time | NEON |
+|---|---:|---:|
+| header reloaded per element (what we emit) | 20.52 ms | 2 |
+| bounds check + `elem_size` branch removed | 10.37 ms | 2 |
+| header loads hoisted, flat indexed loop | **7.79 ms** | **6** |
+
+The **branches are the bigger half at 1.98×** and removing them alone does not
+vectorize; hoisting the header is a further 1.33× and is what unlocks it. The
+blocking fact is that the element store may alias the List header — true of any
+`RtList*` as far as LLVM can see, and false in reality, since the header and its
+`data` block are separate allocations. Saying so needs scoped alias metadata
+across the curation boundary, not an aliasing answer AIF already has.
+
+**The `elem_size` branch looks free and is not.** `inlineOpName` picks
+`list_get_inline` only where the element size is a compile-time constant, so the
+runtime's reload-and-branch is waste at those sites. But `list_push_inline`
+*lazily stamps* an empty list and falls back to boxed otherwise, so the static
+size is not a guarantee about the value — an unstamped list would take the boxed
+path while codegen assumed the flat one, which is a wrong-address read rather
+than a leak. See `TODO.md`.
 
 **The other two `_inline` ops.** Outlining their `static` reachers, exactly as
 `list_push_grow` did, would let `list_set_inline` and `list_push_inline` be
