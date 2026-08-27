@@ -1328,143 +1328,26 @@ checkbox, or the two drift and only one of them gets read.)*
       `bootstrap/prismio-seed.ll` all move together, and the seed must be refreshed in the same
       step or a fresh checkout fails to *link*. Deliberately not folded into the 2026-08-29 session,
       which had already changed the drop path twice.
-- [ ] **Four C string functions survive only as an FFI test surface — surveyed 2026-08-29, and
-      deliberately not migrated yet.** The measured inventory, because the recorded one was off in
-      both directions:
+- [ ] **"Four C string functions survive only as an FFI test surface" — the premise is wrong, and
+      the corrected inventory is below (2026-08-29).** Three of the four are **live benchmark
+      subjects**, not dead code kept alive by fixtures:
 
-      | function | lines in `lang_runtime.c` | declaring files | call sites |
-      |---|---:|---:|---:|
-      | `str_substring` | 22 | 2 | 3 |
-      | `str_concat` | 10 | 11 | ~50 |
-      | `int_to_str` | 5 | 8 | ~14 |
-      | `str_equals` | 3 | 7 | ~10 |
+      | function | status | evidence |
+      |---|---|---|
+      | `str_slice` | **live** | measured in `g7.psm`'s `tokenize`, inside the timed region |
+      | `str_equals` | **live** | `g7.psm:157`, in that same timed loop |
+      | `str_substring` | **live** | `g7_substring.psm` — the benchmark's whole point |
+      | `str_concat` | removable | `g7`'s `buildSource` **setup** only, plus fixtures |
+      | `int_to_str` | removable | down to **one** fixture after this session |
 
-      **40 lines of 2,056, across 16 fixtures and roughly 80 call sites.** `str_slice` (17 more) is
-      *not* in this list: `g7.psm` measures it against Rust, so it is a live benchmark subject and
-      not dead code. None of the four is referenced anywhere else in the runtime — only in comments.
+      `g7`/`g7_substring` are BENCHMARKS §3.2's B2, the string axis of the corpus — the only
+      cross-language programs that touch strings at all. Deleting what they measure is not cleanup.
 
-      **Why it is not done.** The trade is 80 call sites across every AIF and tier fixture, plus
-      their hardcoded manifest expectations in `tests/test_runner.py` and their expected output,
-      against deleting 40 lines of C. Those fixtures are the regression net for the whole ownership
-      analysis, and 2026-08-29 changed the drop path twice — perturbing all of them in the same
-      session would weaken the evidence for those changes more than the deletion is worth. It is a
-      good change to make first in a session, not last.
-
-      **The design when it is done.** The fixtures need three FFI contracts, not five string
-      functions: `produce(free)` (an extern that allocates and hands over), `borrow` (reads,
-      retains nothing) and `alias` (returns a pointer it does not own). A purpose-built surface is
-      four trivial functions covering those, named so nothing mistakes them for a string API. The
-      alternative worth pricing first is declaring the *live* runtime functions `std.string` already
-      uses — `str_with_capacity` is already `produce(free)` — which would need no new C at all.
-
----
-
-## Public docs — what to check in `../docs/content`
-
-The site is Velite + Next.js at `/Users/vibrant/Desktop/Projects/Prismio/docs`. Pages are
-auto-discovered by `**/*.md`; **frontmatter is schema-enforced** (`title`, `description` 20–180
-chars, `status` ∈ `implemented|experimental|draft|coming-soon`, `version`, `lastUpdated` ISO date,
-`tags`, `related`). A malformed page fails the build.
-
-Per milestone, check:
-
-| Milestone | Pages that likely need an edit |
-|---|---|
-| M1 | `compiler/overview.md`, `compiler/cli.md` (if flags or build stages change), `roadmap.md` |
-| M2 | `guides/memory-and-aif.md`, `compiler/aif.md`, `specification/memory-model.md`, `glossary.md` |
-| M3 | `language/annotations.md`, `language/lifetimes.md`, `errors/unnamed-region.md`, `errors/region-budget-exceeded.md`, `guides/memory-and-aif.md` |
-| M4 | `language/arrays-and-lists.md`, `language/generics.md`, `language/types.md`, `specification/memory-model.md` |
-| M5 | `compiler/overview.md` — only if the allocator becomes user-visible |
-
-**Always:** bump `lastUpdated`, and correct `roadmap.md` if a row's status changed. Do not let a
-`status:` field claim more than the suite proves — the repo has a documented history of exactly
-that rot ("this line read 76/76 for six sessions after it stopped being true").
-
----
-
-## Concepts
-
-Definitions for the terms the milestones use, so a task does not have to be decoded from a paper.
-
-#### Cross-module inlining
-Making a function defined in one compilation unit inlinable at a call site in another. Rust
-serialises MIR for generic and `#[inline]` functions into the rlib and inlines **before** LLVM;
-Swift's `@inlinable` exports the body into the module interface. The general lesson: **inline at
-your own IR level, before the backend.**
-
-#### Whole-program compilation
-Compiling the entire program as one unit so every optimisation is interprocedural. MLton does
-defunctorisation, monomorphisation, inlining, unboxing and argument flattening this way. Maximal
-version of M1; Prismio is closer to it than it looks, being self-hosting.
-
-#### Summary-based LTO
-ThinLTO's design: instead of merging every module, attach a compact **summary** to each bitcode
-module, do a fast serial whole-program analysis over summaries only, then import just the functions
-that matter. The answer to "won't merging wreck compile time".
-
-#### Reuse analysis
-Pairing a value that is about to die with a constructor of the same size in the same branch, and
-**reusing the block** rather than freeing and re-allocating. Origin: *Counting Immutable Beans*
-(Lean 4). This is the mechanism that attacks high allocation ratios where a workload contains its
-dead-value/same-size-constructor shape; the current corpus does not.
-
-#### Reuse specialisation
-The stronger form: when the reused block *is* the matched one, the constructor becomes an in-place
-field update rather than a copy. This is what makes reuse worth a large factor rather than a small
-one.
-
-#### FBIP (functional but in-place)
-The programming style reuse analysis enables: write an algorithm in a value-semantics style and
-have it execute as in-place mutation. Perceus's framing — *"much like tail-call optimization
-enables writing loops with regular function calls"*.
-
-#### Borrow inference
-Automatically marking parameters as borrowed so reference-count operations can be cancelled.
-**Caveat, and it is load-bearing:** the automatic version was judged **not safe for space**, and
-Koka deliberately does not do it — it borrows only for built-in primitives. Decide explicitly.
-
-#### Non-lexical regions
-A region whose extent ends at the **last use** of the values in it, rather than at the close of the
-syntactic scope, computed by flow-sensitive dataflow. Directly addresses the recorded blocker
-*"the arena is lexical and allocation is not"*.
-
-#### Region polymorphism
-Region **parameters** on functions, so a callee allocates into a region the caller supplies —
-Tofte–Talpin. This is the mechanism behind the `CallerRegion` item: it is how a caller's region
-reaches a callee's allocations.
-
-#### Sized allocation
-Attaching a size to a region at creation, so fragmentation and layout are statically analysable
-(Spegion). Useful for a systems language that wants predictable memory, not just safe memory.
-
-#### Data views
-A named alternative layout over the same logical data, with the compiler converting between them at
-declared points. The PPAM/arXiv 2502.16517 framing is **semi-manual** — the programmer names the
-layout, the compiler does the work — which is more defensible than a fully automatic search.
-
-#### Unboxed / flat layout
-Storing a value's fields directly inside its container rather than behind a pointer. OCaml flattens
-unboxed products into the enclosing block; Valhalla flattens value classes into fields and arrays.
-**Valhalla's hard-won limit: polymorphic variables cannot be flattened.**
-
-#### Monomorphisation and flattening
-Duplicating generic code per concrete type to erase polymorphism, which then permits good
-representations (MLton, Rust). Prismio already monomorphises, which is why M1.3 and M4.2 compound.
-
-#### Free-list sharding
-mimalloc's core trick: several page-local free lists per page rather than one global list, which
-buys locality and a very short fast path, and avoids contention.
-
----
-
-## Reading order
-
-1. [Perceus](https://xnning.github.io/papers/perceus.pdf) (PLDI 2021) — reframes the memory model
-   from *classify* to *reuse*, the axis that has never moved.
-2. [Spegion](https://arxiv.org/pdf/2506.02182) (2025) — the named blocker, current state of the art.
-3. [ThinLTO](https://llvm.org/devmtg/2016-11/Slides/Amini-Johnson-ThinLTO.pdf) (CGO 2017) — M1.
-
-Then [the region retrospective](https://link.springer.com/article/10.1023/B:LISP.0000029446.78563.a4)
-for what goes wrong, and [PPAM data views](https://arxiv.org/html/2502.16517v1) before any further
-layout work. Full annotated list with links:
-[`docs/ARCHITECTURE-DIRECTION.md`](docs/ARCHITECTURE-DIRECTION.md).
+      **So the reachable prize is 15 lines of 2,056** (`str_concat` 10, `int_to_str` 5), not the 40
+      claimed, and it costs migrating a benchmark's setup plus the remaining fixture sites.
+      **Done this session**: the 12 incidental `print(int_to_str(x))` diagnostics became native
+      `print(x)` — no coverage lost, they were never FFI coverage — and two dead declarations were
+      removed from `test_56`/`test_57`. `int_to_str` now has one genuine user,
+      `test_45_aif_affine_collections`.
+      **What is left is a judgement call, not a task**: whether 15 lines justifies migrating a
+      benchmark's setup. Recorded rather than taken.
