@@ -1,8 +1,30 @@
 // An owned call result passed straight into another call has no owner.
 //
-// **Not named `test_*.psm`, so the runner does not execute it.** It is the
-// reproduction for a known limitation, and the two loops below differ by exactly
-// one `let`.
+// **Closed 2026-08-29. This file is now a regression guard, and the ledger it
+// asserts is in `expected_leaks` in tests/test_runner.py under this file's own
+// name** -- it is still not named `test_*.psm`, because what has to be checked
+// is the allocation ledger and not the exit status. The two loops below differ
+// by exactly one `let`, which is what makes the comparison mean anything.
+//
+// Codegen now asks aif_owns_call_result_at_node in **argument position** as well
+// as at a binding, and releases the temporary once the enclosing call returns --
+// the caller is the last owner, because a Prismio parameter is a borrow. Three
+// conditions gate it, and each was a reachable hazard: the callee is a known
+// Prismio function (an extern's result is its FFI contract's business), it does
+// not return one of its parameters (or the result aliases the temporary), and
+// the result carries no pointer (which also covers a returned *view*, whose
+// provenance the set intersection cannot see). `spawn` is excluded structurally
+// -- it lowers through its own path in generateExpression -- which is required
+// rather than incidental, because a spawned task may still be running.
+//
+// **What the numbers were, and are:**
+//
+//     before   92 allocated, 52 released, 40 leaked, 0 violation(s)
+//     after    92 allocated, 92 released,  0 leaked, 0 violation(s)
+//
+// Both halves printed 3010520 throughout, so the difference was ownership and
+// never arithmetic. The paragraphs below describe the defect as it stood and are
+// kept because the reasoning is what the guard is for.
 //
 // `aif_owns_call_result_at_node` answers "does this frame own what the call
 // returned", and codegen asks it at a **binding** -- `VARIABLE_DECL` and
@@ -15,22 +37,27 @@
 // "0 of 4 call sites lie inside a region -- so no arena would serve it either
 // way" -- there is no second owner and the value leaks.
 //
-// Under `--verify`, built with the compiler of 2026-08-26, this file runs both
-// halves and reports **92 allocated, 52 released, 40 leaked** -- every leaked
-// allocation belonging to the unbound half, and both halves printing the same
-// answer (3010520), so the difference is ownership and not arithmetic. Measured
-// separately at 20 iterations each: bound **27/27/0**, unbound **107/27/80**.
+// Under `--verify`, built with the compiler of 2026-08-26, this file ran both
+// halves and reported **92 allocated, 52 released, 40 leaked** -- every leaked
+// allocation belonging to the unbound half. Measured separately at 20 iterations
+// each: bound **27/27/0**, unbound **107/27/80**.
 //
 // **This is not a `spawn` defect**, which is how it was first written up on
 // 2026-08-26 before being measured properly. The same file with `spawn`/`join`
 // around the calls leaks *identically* -- 107/27/80 either way. `spawn` was
 // simply the first thing that happened to be looking.
 //
-// **The fix needs a guard, not just a drop.** Releasing every owned temporary
-// argument is a use-after-free wherever the callee retains it -- `list_push` is
-// the obvious case, and its FFI contract already says `RETAIN_IN_BASE`. A
-// Prismio callee needs the same question answered from the escape facts before
-// any drop is emitted here. See TODO.
+// **The fix needs a guard, not just a drop** -- and the guard turned out to be
+// mostly already there. Releasing every owned temporary argument is a
+// use-after-free wherever the callee retains it, `list_push` being the obvious
+// case; but a callee that retains has already raised `in_container` or
+// `site_in_released_field` on the site, and aif_owns_call_result_at_node
+// declines on both, so `list_push(l, band(...))` gets no release here. The
+// half that was *not* there is a callee handing a parameter back through its
+// own return, which is aif_fn_may_return_param -- see
+// tests/test_85_passthrough_escape.psm, where the same gap at a *binding*
+// segfaulted. A Prismio callee cannot retain a by-value parameter at all: sema
+// rejects it with "cannot move out of borrowed value".
 
 import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> Int

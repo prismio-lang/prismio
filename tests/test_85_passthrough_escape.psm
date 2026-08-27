@@ -1,0 +1,88 @@
+// A binding that escapes through a *callee's return value* must not be dropped
+// at the caller's scope exit.
+//
+// `aif_owns_call_result_at_node` says the caller owns what a known callee
+// allocated and handed over, and codegen drops that binding at the scope exit.
+// The escape lattice cannot supply the guard here -- a value allocated in a
+// callee is already at Caller, so E says nothing -- which is why src/ir/expr.psm
+// carries the *syntactic* `nodeReturnsName` instead.
+//
+// `nodeReturnsName` only sees `return t`. It does not see `t` leaving through a
+// call that hands a parameter back:
+//
+//     let t = band(1)          // owned call result -> droppable
+//     let x = passthru(t)      // x aliases t's allocation
+//     return x                 // the allocation outlives this frame
+//
+// The drop still fires at the scope exit, so the caller reads freed memory.
+// This is a **use-after-free, not a leak**, and `--verify` does not report it:
+// the ledger balanced at 3 allocated / 3 released / 0 leaked / 0 violations
+// while `main` read 0 and then 6 out of a field whose value is 7919.
+//
+// `aif_fn_may_return_param` is the fact that closes it, and the guard is in
+// `nodeEscapesThroughCall` beside `nodeReturnsName`. Observed failing against
+// `build/nostr-4`, which is what makes this a discriminator rather than a
+// description.
+
+import std.io
+
+struct Band {
+    seed: Int,
+    steps: Int
+}
+
+fn band(i: Int) -> Band {
+    return Band { seed: i * 7919, steps: 32 }
+}
+
+// Hands its parameter straight back. The caller's `t` is still alive after this
+// returns, and nothing in the escape facts says so.
+fn passthru(b: Band) -> Band {
+    return b
+}
+
+fn escaping() -> Band {
+    let t = band(1)
+    let x = passthru(t)
+    return x
+}
+
+// One level further, through a binding the callee also does not own.
+fn escapingNested() -> Band {
+    let t = band(2)
+    let x = passthru(passthru(t))
+    return x
+}
+
+fn fail(what: String) -> Int {
+    print("FAIL: ")
+    println(what)
+    return 1
+}
+
+fn main() -> Int {
+    let a = escaping()
+    // Allocate across the read: a freed block that is never reused can still
+    // hold the right bytes, and a test that passes on that proves nothing.
+    let mut churn: List<Int> = list_new()
+    let mut i = 0
+    while (i < 64) {
+        list_push(churn, i * 3)
+        i = i + 1
+    }
+    if (a.seed != 7919) { return fail("escaping(): seed read after free") }
+    if (a.steps != 32) { return fail("escaping(): steps read after free") }
+
+    let b = escapingNested()
+    let mut churn2: List<Int> = list_new()
+    let mut j = 0
+    while (j < 64) {
+        list_push(churn2, j * 5)
+        j = j + 1
+    }
+    if (b.seed != 15838) { return fail("escapingNested(): seed read after free") }
+    if (b.steps != 32) { return fail("escapingNested(): steps read after free") }
+
+    println("PASS: passthrough escape")
+    return 0
+}

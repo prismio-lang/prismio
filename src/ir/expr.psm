@@ -227,6 +227,180 @@ fn chainReturnsName(head: Ptr, name: String) -> Bool {
     return false
 }
 
+// Whether `name`'s allocation leaves this frame through some *other* value.
+//
+// The second half of nodeReturnsName, and the reason that one alone was not
+// enough. Both exist because E cannot answer for a callee-allocated value: it is
+// already Caller, so `return` raises nothing and the escape fact stays silent.
+// nodeReturnsName supplies the syntactic guard for `return t`; this supplies it
+// for the same allocation leaving through somebody else's return --
+//
+//     let t = band(1)          // droppable by aif_owns_call_result_at_node
+//     let x = passthru(t)      // x aliases t's allocation
+//     return x                 // and the drop at this scope's exit frees it
+//
+// which segfaulted rather than leaked (tests/test_85_passthrough_escape.psm).
+// The container and global routes out of the frame need nothing here:
+// `retain_in` raises `in_container` on the site and aif_owns_call_result_at_node
+// already declines on it.
+//
+// **Driven from the `return`, not from the argument**, and the difference is
+// precision rather than taste. "Is `name` ever passed to a callee that may hand
+// a parameter back" is the cheaper question and it is the wrong one: it declines
+// `let same = identity(items)` in test_47_aif_containers, where the alias never
+// leaves the frame and `items` is this scope's to drop. Asking which values
+// reach a `return` keeps that drop and still refuses the one above.
+fn nodeEscapesThroughCall(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+
+    if (n.kind == NodeKind.RETURN_STATEMENT) {
+        if (nodeExists(n.child1)) {
+            if (irValueAliasesName(n.child1, name, 0)) { return true }
+        }
+    }
+
+    if (chainEscapesThroughCall(n.child1, name)) { return true }
+    if (chainEscapesThroughCall(n.child2, name)) { return true }
+    return chainEscapesThroughCall(n.child3, name)
+}
+
+fn chainEscapesThroughCall(head: Ptr, name: String) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (nodeEscapesThroughCall(p, name)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+// Whether the value `exprPtr` denotes may be the allocation `name` holds.
+//
+// Two expression kinds can carry it and the rest cannot. An identifier is either
+// `name` or a binding that may have been given it; a call hands a parameter back
+// only where aif_fn_may_return_param says so. Everything else -- arithmetic, a
+// field read, a slice, a literal -- either yields a different allocation or
+// yields a view, and views are the value set's own business (SPEC 8.4) rather
+// than this walk's.
+//
+// `hops` bounds the chase through bindings, and running out answers **true**:
+// the cap is a limit on how much this is willing to prove, so it has to fail
+// towards the leak. Eight is far past anything in the tree; the deepest real
+// chain is two.
+fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
+    if (nodeIsNull(exprPtr)) { return false }
+    if (hops > 8) { return true }
+    let e = ptr_to_node(exprPtr)
+
+    if (e.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (strEquals(e.s1, name)) { return true }
+        return chainBindingAliasesName(irFunctionBody, e.s1, name, hops + 1)
+    }
+
+    if (e.kind == NodeKind.CALL_EXPR) {
+        // s2 is the mangled symbol sema resolved the call to, which is the
+        // identity aif_fn_lookup is keyed on. An extern is not one of those and
+        // the predicate answers no for it -- see the comment on
+        // aif_fn_may_return_param for why widening there is untrue and costly.
+        if (aif_fn_may_return_param(e.s2) == 0) { return false }
+        let mut aPtr = e.child2
+        while (nodeExists(aPtr)) {
+            if (irValueAliasesName(aPtr, name, hops + 1)) { return true }
+            aPtr = ptr_to_node(aPtr).next
+        }
+        return false
+    }
+
+    return false
+}
+
+// Whether any value ever written into `boundName` may be `name`'s allocation.
+//
+// Both the declaration and every assignment, because a binding reassigned in a
+// loop -- `out = identity(t)` -- carries the alias just as its `let` would.
+fn nodeBindingAliasesName(nodePtr: Ptr, boundName: String, name: String, hops: Int) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+
+    if (n.kind == NodeKind.VARIABLE_DECL and strEquals(n.s1, boundName)) {
+        if (irValueAliasesName(n.child2, name, hops)) { return true }
+    }
+
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)) {
+        let target = ptr_to_node(n.child1)
+        if (target.kind == NodeKind.IDENTIFIER_EXPR and strEquals(target.s1, boundName)) {
+            if (irValueAliasesName(n.child2, name, hops)) { return true }
+        }
+    }
+
+    if (chainBindingAliasesName(n.child1, boundName, name, hops)) { return true }
+    if (chainBindingAliasesName(n.child2, boundName, name, hops)) { return true }
+    return chainBindingAliasesName(n.child3, boundName, name, hops)
+}
+
+fn chainBindingAliasesName(head: Ptr, boundName: String, name: String, hops: Int) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (nodeBindingAliasesName(p, boundName, name, hops)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+// An owned call result consumed directly as an argument, which is the one shape
+// with no binding to hang a drop on.
+//
+// `aif_owns_call_result_at_node` answers the ownership question wherever it is
+// asked, and until this existed codegen only asked it at a **binding** --
+// VARIABLE_DECL and assignment, in src/ir/stmt.psm. `simulate(band(...))` never
+// binds, so nothing asked and nothing dropped: one `let` was the whole
+// difference between 27/27/0 and 107/27/80 on
+// tests/owned_temporary_argument.psm.
+//
+// The same predicate is the guard as well as the trigger. A callee that retains
+// the value has already raised `in_container` or `site_in_released_field` on the
+// site, and this declines on both -- which is why `list_push(l, band(...))` gets
+// no release here even though it is exactly the shape that would double-free.
+fn irArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
+    if (argNode.kind != NodeKind.CALL_EXPR) { return false }
+    return aif_owns_call_result_at_node(node_to_ptr(argNode)) != AIF_ELEM_NONE
+}
+
+fn irOwnedTemporaryKind(argNode: ASTNode) -> Int {
+    let owned = aif_owns_call_result_at_node(node_to_ptr(argNode))
+    if (nodeGetType(argNode).kind == TypeKind.DATAVIEW) { return IR_DROP_DATAVIEW }
+    if (owned == AIF_ELEM_LIST) { return IR_DROP_LIST }
+    if (owned == AIF_ELEM_TYPED) { return IR_DROP_TYPED }
+    return IR_DROP_OBJECT
+}
+
+// Released after the enclosing call returns, never before it: the callee borrows
+// the argument for the duration of the call, which is Swift's `@guaranteed`
+// convention and the one Prismio has -- a parameter is a borrow, and sema
+// refuses to let a callee move one into a container ("cannot move out of
+// borrowed value"). So the caller is the last owner and this is its release
+// point.
+fn generateOwnedTemporaryReleases(vals: List<String>, kinds: List<Int>, types: List<String>) {
+    let mut i = 0
+    while (i < list_len(vals)) {
+        let value: String = list_get(vals, i)
+        let kind: Int = list_get(kinds, i)
+        let declType: String = list_get(types, i)
+        if (kind == IR_DROP_LIST) {
+            ir_free_list(value)
+        } else if (kind == IR_DROP_DATAVIEW) {
+            ir_free_data_view(value)
+        } else if (kind == IR_DROP_TYPED) {
+            ir_free_typed(value, releaseFnName(structTypeName(declType)))
+        } else {
+            ir_free_object(value)
+        }
+        i = i + 1
+    }
+}
+
 // Whether `name` is ever the whole initialiser of another binding -- `let u = t`.
 //
 // Asked only of a task handle. Every other droppable binding gets this for free:
@@ -1400,12 +1574,28 @@ fn generateExpression(expr: ASTNode) -> String {
         // so a scalar has to reach the slot as one -- without this the call
         // disagrees with its own declaration and the module fails verification.
         let elemArg = listElementArgIndex(funcName)
+
+        // The owned temporaries this call is about to consume, released once it
+        // returns. Collected here because this is the only point where the
+        // generated value and the argument node are both in hand.
+        let mut ownedTempVals: List<String> = list_new()
+        let mut ownedTempKinds: List<Int> = list_new()
+        let mut ownedTempTypes: List<String> = list_new()
+
         let mut argPtr = expr.child2
         let mut argIndex = 0
         while (nodeExists(argPtr)) {
             let argNode = ptr_to_node(argPtr)
             let argVal = generateExpression(argNode)
             let argStore = storageType(getExprType(argNode))
+            // Cloned because `argVal` is affine and the argument itself still
+            // has to consume it below -- the same reason the two branches under
+            // this one each name it exactly once.
+            if (irArgumentIsOwnedTemporary(argNode)) {
+                list_push(ownedTempVals, strClone(argVal))
+                list_push(ownedTempKinds, irOwnedTemporaryKind(argNode))
+                list_push(ownedTempTypes, getExprType(argNode))
+            }
             // Crossing into C: a String is `{ptr, i64}` here and `const char*`
             // there, so the pointer half goes and the length stays. The buffer is
             // NUL-terminated (FFI 7.1), which is what keeps this a field read
@@ -1457,8 +1647,41 @@ fn generateExpression(expr: ASTNode) -> String {
         }
 
         let mut retType = storageType(getExprType(expr))
+
+        // Whether the temporaries above may be released once this call returns.
+        //
+        // Three conditions, and each one is a hazard that was reachable:
+        //
+        //  * **A known Prismio callee.** An extern's result is described by its
+        //    FFI contract and `alias` hands an argument back; aif_fn_may_return_param
+        //    answers no for a symbol it does not know, so widening here would be
+        //    reading that answer as a fact when it is an abstention.
+        //  * **The callee does not return one of its parameters.** Otherwise the
+        //    result aliases the temporary and freeing it here is a use-after-free
+        //    in the expression that still reads it -- the same defect as
+        //    tests/test_85_passthrough_escape.psm, one scope earlier.
+        //  * **The result carries no pointer.** A scalar cannot alias the
+        //    argument at all, which closes the case the fact above can miss: a
+        //    callee returning a *view* of a parameter carries provenance rather
+        //    than the parameter's sites (SPEC 8.4), so the set intersection is
+        //    silent about it.
+        //
+        // `spawn` needs no clause and gets none: SPEC's spawn lowers through its
+        // own path in this function, which emits its arguments itself and never
+        // reaches here. That matters -- a spawned task may still be running, so
+        // this release point would be wrong for it, and
+        // aif/evidence/xlang/prismio/g9_helper_leak.psm is exactly that shape.
+        let resultCarriesPointer = strEquals(retType, "ptr")
+            or strStartsWith(retType, "struct:")
+        let releaseTemps = isForeign == false
+            and resultCarriesPointer == false
+            and aif_fn_may_return_param(callName) == 0
+
         if (strEquals(retType, "void")) {
             ir_call_end("void", callName)
+            if (releaseTemps) {
+                generateOwnedTemporaryReleases(ownedTempVals, ownedTempKinds, ownedTempTypes)
+            }
             return ""
         }
 
@@ -1513,6 +1736,14 @@ fn generateExpression(expr: ASTNode) -> String {
         let mut tempId = ir_call_end(retType, callName)
         if (arenaPlaced) { ir_arena_hint_end() }
         let result = ir_get_temp_name(tempId)
+
+        // After the call and before anything reads `result`, which is the whole
+        // of the ordering requirement: the callee borrowed these for the call's
+        // duration and `releaseTemps` has already established that none of them
+        // is what came back.
+        if (releaseTemps) {
+            generateOwnedTemporaryReleases(ownedTempVals, ownedTempKinds, ownedTempTypes)
+        }
 
         // AIF item 3. A container is told what it owns at construction, because
         // at teardown its elements are bare pointers and reading a header in

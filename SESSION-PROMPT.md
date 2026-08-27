@@ -12,42 +12,48 @@ The rule that decides which side anything falls on:
 > **If getting it wrong produces a miscompile, it belongs to the compiler.**
 > **If getting it wrong produces a link error or a missing feature, it does not.**
 
-**Current verified compiler: `build/nostr-4`.** Suite **172/172**, fixed point, 18-source AIF
-differential. M5.1, boxed `OBJECT` replacement, the cold-compile regression, the concurrency corpus
-gap, the task-handle leak, the `Int`-width question and the C string layer are all closed. Do not
+**Current verified compiler: `build/ot-2`.** Suite **173/173**, fixed point, 18-source AIF
+differential, and **86 programs under `--verify` with 0 violations**. M5.1, boxed `OBJECT`
+replacement, the cold-compile regression, the concurrency corpus gap, the task-handle leak, the
+`Int`-width question, the C string layer, the pass-through escape use-after-free and the
+argument-position release are all closed. Do not
 run the suite concurrently with benchmarks: several runner checks and the object cache use fixed
 paths.
 
-## Start here — two ownership guards, and neither may simply be removed
+## Start here — one ownership guard is left, and it may not simply be removed
 
-Both are reproduced by a fixture in `tests/` that is deliberately not named `test_*` (so the runner
-does not execute it), and both differ from a clean program by one line.
+**Two of the three closed on 2026-08-29** (see the top of `NEXT_SESSION.md` and the two
+`RESULTS-*.md` files it links). What is left is the second return.
 
-1. **`tests/owned_temporary_argument.psm` — an owned call result used directly as an argument has
-   no owner.** `aif_owns_call_result_at_node` is asked at a *binding*; a temporary is never bound.
-   **Bound 27/27/0, unbound 107/27/80.** An automatic region usually reclaims the value in bulk;
-   `prismio aif --why` names the exact moment it cannot ("0 of 4 call sites lie inside a region")
-   and the repair it wants ("have the caller allocate and pass it in — restores T1, no runtime
-   cost"). *Recorded first as a `spawn` defect, which was wrong: removing the spawn leaks
-   identically.*
-   **The guard it needs**: releasing every owned temporary is a use-after-free wherever the callee
-   retains it. `list_push`'s FFI contract already answers `RETAIN_IN_BASE`; a Prismio callee needs
-   the same question answered from the escape facts *before* any drop is emitted.
+**`tests/owned_return_depth2.psm` — ownership does not survive a second return.**
+`if (sites[s].fn != c->fn) return AIF_ELEM_NONE;` in `aif_support.c`. Depth 1 is **6/6/0**; one
+more level of call depth gives **12/7/5**. It needs the transitive fact — the site escaped to
+Caller through every intermediate frame and no intermediate frame owns it — which is a
+fixed-point change, not a predicate change. `tests/test_72_reassigned_ownership.psm` is
+deliberately still on the C `str_concat` because of this, and its header says so. When it is
+fixed, migrate that file and check the ledger returns to 29/27/2.
 
-2. **`tests/owned_return_depth2.psm` — ownership does not survive a second return.**
-   `if (sites[s].fn != c->fn) return AIF_ELEM_NONE;` in `aif_support.c`. Depth 1 is **6/6/0**; one
-   more level of call depth gives **12/7/5**. It needs the transitive fact — the site escaped to
-   Caller through every intermediate frame and no intermediate frame owns it — which is a
-   fixed-point change, not a predicate change.
+**The guard is not arbitrary: it prevents a double free, which is a worse category than the leak
+it causes.** Enumerate the existing owners before adding any free — that warning is in the tree
+because an earlier attempt collided with three.
 
-**Neither guard is arbitrary. Both prevent double frees, which is a worse category than the leak
-they cause.** `tests/test_72_reassigned_ownership.psm` is deliberately still on the C `str_concat`
-because of (2), and its header says so. Enumerate the existing owners before adding any free — that
-warning is in the tree because an earlier attempt collided with three.
+**Two things the last session learned the hard way, and both cost a wrong turn:**
+
+- **`--verify`'s `violations` does not mean *all* corruption.** A read after free is not a double
+  free, so the ledger balances at 0 violations while the program segfaults. That is how the
+  pass-through escape had gone unrecorded.
+- **Ask sema before building an analysis.** The recorded requirement for "a Prismio callee needs
+  the `RETAIN_IN_BASE` question answered from the escape facts" was wrong: the language already
+  rejects moving a by-value parameter into a container. A three-line probe answered it.
+
+**Two follow-ups the argument-position release deliberately left open**, both checkboxes in
+`TODO.md`: a `spawn`ed call's temporary (the release point has to be the **join**, and
+`g9_helper_leak.psm` is the fixture), and the release being withheld whenever the enclosing call
+returns a pointer.
 
 **The ranked list from here:**
 
-1. The two ownership guards above.
+1. The remaining ownership guard above, and the two follow-ups it left.
 2. **Concurrency has a thread-pool-shaped gap.** Hand-tuned Rust is **1.44×** faster on `g9`
    because it starts four workers once; `spawn` is one `pthread_create` per task and the language
    cannot express a reusable worker. Largest measured concurrency prize, and a language question.

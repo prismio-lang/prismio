@@ -330,6 +330,19 @@ their current correctness and performance evidence is recorded.
   rather than from a search. The PPAM "semi-manual + data views" framing is the defensible one.
 - **Assuming automatic borrow inference is safe.** Koka deliberately does not do it; the space-safety
   objection is documented.
+- **Reaching for an analysis before asking the type system.** 2026-08-29: the recorded requirement
+  for the argument-position release was "a Prismio callee needs the `RETAIN_IN_BASE` question
+  answered from the escape facts before any drop is emitted". It does not — sema already rejects
+  moving a by-value parameter into a container (*"cannot move out of borrowed value"*), because a
+  parameter **is** a borrow. Prismio's convention is Swift's `@guaranteed`: the caller keeps the
+  value across the call and releases after. A three-line probe settled what a fixed-point change
+  was budgeted for. This is the same lesson as HANDOFF's *"reach for the input before the
+  mechanism"*, one layer down.
+- **Reading `--verify`'s `violations` as *all* corruption.** It is the number that means a double
+  free or a release of something never handed out — and a **read** after free is neither, so the
+  ledger balances at 0 while the program segfaults. A use-after-free on the binding path had gone
+  unrecorded for exactly this reason. See
+  [`RESULTS-passthrough-escape.md`](../aif/evidence/RESULTS-passthrough-escape.md).
 
 ---
 

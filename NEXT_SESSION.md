@@ -1,3 +1,52 @@
+# Handoff — 2026-08-29
+
+**Current compiler: `build/ot-2`. Suite 173/173, fixed point, AIF differential 18/18,
+86 programs under `--verify` with 0 violations.**
+
+Two ownership items closed, and the first of them was not on the list.
+
+1. **A binding that escapes through a callee's *return* was being freed under its caller.**
+   Not a leak — a **use-after-free**, and `--verify` reports `0 violation(s)` while it segfaults,
+   because the allocation is released exactly once and simply in the wrong frame. Found while
+   trying to widen the same drop path for item 2 below, which is why item 2 was not safe first.
+   `nodeReturnsName` saw `return t` and not `let x = passthru(t); return x`.
+   `aif_fn_may_return_param` is the missing fact (`pt[RET(f)] ∩ pt[PARAM(f,i)]`);
+   `nodeEscapesThroughCall` is the guard, **driven from the `return`, not from the argument** —
+   the cheaper direction costs a correct drop in `test_47_aif_containers`.
+   Discriminator `tests/test_85_passthrough_escape.psm`, observed at **exit 139 (SIGSEGV)**.
+   IR byte-identical on 127 of 128 programs.
+   [`RESULTS-passthrough-escape.md`](aif/evidence/RESULTS-passthrough-escape.md).
+
+2. **An owned call result consumed directly as an argument now has an owner.**
+   Codegen asks `aif_owns_call_result_at_node` in argument position and releases the temporary
+   once the enclosing call returns — the caller is the last owner, because a Prismio parameter is
+   a borrow (Swift's `@guaranteed`). **92/52/40 → 92/92/0**, both halves still printing 3010520;
+   five other fixtures improved, none regressed.
+   [`RESULTS-owned-temporary-argument.md`](aif/evidence/RESULTS-owned-temporary-argument.md).
+
+**Two recorded beliefs were wrong and are corrected in the tree, not just here:**
+
+- *"A Prismio callee needs the `RETAIN_IN_BASE` question answered from the escape facts before any
+  drop is emitted."* It does not. **Sema already rejects it** — `list_push(dst, b)` on a by-value
+  parameter is *"cannot move out of borrowed value"*. Parameters are borrows, so the retention half
+  is the type system's, not the analysis's. The field-store route that sema *does* allow is already
+  declined by `site_in_released_field`.
+- *"`--verify`'s `violations` is what corruption looks like from outside."* True but incomplete: a
+  **read** after free is not a double free, so the ledger balances and reports 0 while the program
+  crashes. `violations` means corruption; it does not mean all corruption.
+
+**Nothing is committed.** The `PRISMIO_INLINE_RUNTIME` remote three-platform gate is still blocked
+on push authorisation, and three discriminating checks are waiting on it.
+
+**What is still open on this path**, all in `TODO.md` as checkboxes: a `spawn`ed call's temporary
+(needs a join-time release; `g9_helper_leak.psm` is the fixture and its IR was deliberately left
+byte-identical), the argument release when the enclosing call returns a pointer, the same escape
+through an `extern` declared `alias`, and ownership surviving a second return.
+
+Everything below is retained history.
+
+---
+
 # Handoff — 2026-08-26, third session of the day
 
 **Current compiler: `build/nostr-4`. Suite 172/172, fixed point, AIF differential 18/18.**

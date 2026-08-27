@@ -995,25 +995,65 @@ checkbox, or the two drift and only one of them gets read.)*
       **frees 23 → 8,019, RSS 2.1 → 1.5 MB (1.17× → 0.83× of Rust), loop flat at 1.002×.**
       `run_task_release_test` asserts the release is emitted for a proved join and **withheld** for
       a copied handle and an unprovable one; it fails against the pre-fix compiler.
-- [ ] **An owned call result passed straight into another call has no owner.** *(Recorded on
-      2026-08-26 as a `spawn` defect; that was wrong and the correction is the useful part —
-      the same program leaks **identically, 107/27/80, with and without `spawn`**. `spawn` was
-      simply the first thing looking.)*
-      `aif_owns_call_result_at_node` answers the ownership question, and codegen asks it at a
-      **binding** (`VARIABLE_DECL` and assignment, `src/ir/stmt.psm`). A result consumed directly as
-      an argument is never bound, so nothing asks and nothing drops. One `let` is the whole
-      difference: **bound 27/27/0, unbound 107/27/80.**
-      An automatic region normally hides this by reclaiming the value in bulk; when call-site
-      bracketing declines, `prismio aif --why` says so outright — *"0 of 4 call sites lie inside a
-      region, so no arena would serve it either way"* — and names the repair it wants
-      (*"have the caller allocate and pass it in — restores T1, no runtime cost"*), which is exactly
-      what `g9_bands.psm` does and `g9_helper_leak.psm` does not.
-      Reproductions: `tests/owned_temporary_argument.psm` (the discriminator) and
-      `aif/evidence/xlang/prismio/g9_helper_leak.psm`.
-      **The fix needs a guard, not just a drop.** Releasing every owned temporary argument is a
-      use-after-free wherever the callee retains it — `list_push` is the obvious case and its FFI
-      contract already answers `RETAIN_IN_BASE`. A Prismio callee needs the same question answered
-      from the escape facts *before* any drop is emitted. Enumerate the existing owners first.
+- [x] **A binding that escapes through a callee's *return* was freed under its caller — fixed
+      2026-08-29.** Not a leak: a **use-after-free**, and `--verify` reports `0 violation(s)` while
+      it segfaults, because the allocation is released exactly once and simply in the wrong frame.
+      `aif_owns_call_result_at_node` makes a callee-allocated value droppable and E cannot guard it
+      (a returned value is already `Caller`), so the guard was the syntactic `nodeReturnsName` —
+      which sees `return t` and not `let x = passthru(t); return x`.
+      `aif_fn_may_return_param` is the missing fact, read off `pt[RET(f)] ∩ pt[PARAM(f,i)]`;
+      `nodeEscapesThroughCall` is the guard, and it is **driven from the `return`, not from the
+      argument**, because the cheaper direction declines `let same = identity(items)` in
+      `test_47_aif_containers` and costs a correct drop.
+      Discriminator `tests/test_85_passthrough_escape.psm`, **observed at exit 139 (SIGSEGV)**
+      against `build/nostr-4`. Suite **173/173**, differential 18/18, fixed point, IR
+      **byte-identical on 127 of 128** programs and executables byte-identical on all seven corpus
+      programs; corpus median **1.000×**, compile time 418 → 417 ms.
+      **One guard this was told to build does not exist and does not need to**: a Prismio callee
+      cannot retain a by-value parameter, because sema rejects it — *"cannot move out of borrowed
+      value"*. The retention half is the type system's, not the analysis's.
+      See [`RESULTS-passthrough-escape.md`](aif/evidence/RESULTS-passthrough-escape.md).
+- [ ] **The same escape, through an `extern` declared `alias`, is still open.**
+      `let t = f(); let x = <extern alias>(t); return x` frees `t` at the scope exit.
+      `aif_fn_may_return_param` deliberately answers *no* for a symbol it does not know, because
+      "unknown" there means extern and answering yes declines the drop at every `print(value)` in
+      `std/io.psm` — measured, and it costs three suite fixtures. The answer for an extern lives in
+      `aifFfiAliasOf` (`src/aif/contracts.psm`), which is a hardcoded table whose only entry is
+      `expect`, so closing this is a frontend change. Same shape as the fixed item above; narrower,
+      because it needs a declared `alias` to reach.
+- [x] **An owned call result consumed directly as an argument now has an owner — 2026-08-29.**
+      Codegen asks `aif_owns_call_result_at_node` in **argument position** as well as at a binding,
+      and releases the temporary once the enclosing call returns — the caller is the last owner,
+      because a Prismio parameter is a borrow (Swift's `@guaranteed`). The discriminator moves
+      **92/52/40 → 92/92/0** with both halves still printing 3010520; five other fixtures improved
+      and none regressed. **86 programs under `--verify`, 0 violations.** Suite **173/173**,
+      differential 18/18, fixed point, corpus median **0.999×**, compile time flat (421 → 417 ms),
+      Rust standing unmoved (g9 0.90×). Asserted through `expected_leaks` rather than exit status,
+      and **observed failing** at "40 leaked, expected 0" against the pre-fix compiler.
+      **Three conditions gate the release**, each a reachable hazard: a known Prismio callee, a
+      callee that does not return one of its parameters ([[aif_fn_may_return_param]], from the item
+      above), and a result carrying no pointer — which covers a returned *view*, whose provenance
+      the set intersection cannot see. **`spawn` is excluded structurally** and must be: a spawned
+      task may still be running, and `SPAWN_EXPR` lowers through its own codegen path.
+      **The retention guard this item asked for does not exist and is not needed** — sema rejects
+      moving a by-value parameter into a container, and the field-store route is already declined by
+      `site_in_released_field`. See
+      [`RESULTS-owned-temporary-argument.md`](aif/evidence/RESULTS-owned-temporary-argument.md).
+      Still open, and recorded there: `spawn` (needs a join-time release, `g9_helper_leak.psm` is
+      the fixture), and a pointer-carrying enclosing return.
+- [ ] **A `spawn`ed call's owned temporary argument still has no owner.** The argument-position
+      release above is withheld for `spawn` because a spawned task may still be running when the
+      `spawn` returns, so the release point has to be the **join**, not the call. The premise is
+      already there — INFERENCE 4.1's E-SPAWN-J is what licensed the task-handle release at the
+      scope exit — so this is the same shape a second time: release at a point that runs once, after
+      every join. Fixture: `aif/evidence/xlang/prismio/g9_helper_leak.psm`, which leaks on purpose
+      and whose IR this change deliberately left byte-identical.
+- [ ] **The argument-position release is withheld when the enclosing call returns a pointer.**
+      A blunt third condition: `strConcat(a, band(...))` gets no release even though `strConcat`
+      demonstrably does not hand back its parameter. It is there because
+      `aif_fn_may_return_param` intersects *sites* and a callee returning a **view** of a parameter
+      carries provenance instead (SPEC 8.4), so the intersection is silent about it. Sharpening
+      means teaching the predicate about view provenance — not relaxing the condition.
 - [ ] **Ownership of a callee-allocated value does not survive a second return.**
       `aif_owns_call_result_at_node` requires the returned site to have been allocated in the callee
       itself (`if (sites[s].fn != c->fn) return AIF_ELEM_NONE;`). The guard is not arbitrary — a

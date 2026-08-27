@@ -1,7 +1,7 @@
 # Handoff — continuing the Prismio work
 
 Read `COMPILER_AUDIT.md` (defects, all closed) and `V1_GAP_ANALYSIS.md` (capability inventory
-against the v1 bar, with a status box at the top) before starting. Current as of **2026-08-26**.
+against the v1 bar, with a status box at the top) before starting. Current as of **2026-08-29**.
 Don't re-derive what's in them.
 
 ---
@@ -12,9 +12,12 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
   IR for `src/main.psm` is byte-identical to the warm build's. Current verified compiler is
-  **`build/nostr-4`**, with `build/n3.ll` / `build/n4.ll` at a fixed point; suite
-  **172/172** and AIF differential **18/18**, the 18th source being the corpus's new concurrent
-  program `g9_bands.psm`. The last good before the task-handle release is `build/cold-bc-2`, and
+  **`build/ot-2`**, at a fixed point with `build/ot-1`; suite **173/173** and AIF differential
+  **18/18**, the 18th source being the corpus's concurrent program `g9_bands.psm`. **86 programs
+  run under `--verify` with 0 violations**, which is the check that matters for the two ownership
+  changes of 2026-08-29 — see the session entry at the top of `NEXT_SESSION.md`. The last good
+  before the argument-position release is **`build/pt-6`**, and before the pass-through escape
+  guard **`build/nostr-4`** (suite 172/172 on the 172-test tree). The last good before the task-handle release is `build/cold-bc-2`, and
   before the cold-compile work `build/m5-exclusive-3`. `build/m4-dataview-c-12` was the last good
   through M4, with `build/m4c-final-a.ll` / `build/m4c-final-b.ll` at a fixed point. M4 is complete. M4.3 supplies real consuming AoS↔SoA conversion,
   checked handle/index element descriptors, direct column reads and mutable round trip. The last good before

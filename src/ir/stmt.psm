@@ -168,7 +168,8 @@ fn generateStatement(stmt: ASTNode) {
                 let owned = aif_owns_call_result_at_node(stmt.child2)
                 if (owned != AIF_ELEM_NONE
                         and chainAssignsName(irFunctionBody, varName) == false
-                    and chainReturnsName(irFunctionBody, varName) == false) {
+                    and chainReturnsName(irFunctionBody, varName) == false
+                    and chainEscapesThroughCall(irFunctionBody, varName) == false) {
                     if (nodeGetType(ptr_to_node(stmt.child2)).kind == TypeKind.DATAVIEW) {
                         ir_mark_droppable(varName, IR_DROP_DATAVIEW)
                     } else if (owned == AIF_ELEM_LIST) {

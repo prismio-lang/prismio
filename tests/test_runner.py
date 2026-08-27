@@ -4779,6 +4779,20 @@ def run_aif_verify_test():
         # for exactly this shape. The two neg_4x fixtures guard the other half:
         # an observed list and an inline element type are both rejected.
         "test_83_list_set_exclusive": 0,
+        # An owned call result consumed directly as an argument, 2026-08-29.
+        # **Zero, and the file is built so that only ownership can move it**: it
+        # runs the same loop twice, once binding the result to a `let` and once
+        # passing it straight in, and both halves print the same answer. The
+        # bound half was always 27/27/0; the unbound half was 107/27/80, because
+        # codegen only asked aif_owns_call_result_at_node at a binding and a
+        # temporary has none.
+        #
+        # A rise to 40 is the argument-position release going away. A *fall* in
+        # `released` with this at zero would be the arena hiding the question
+        # again -- the samples list and the clock calls in the fixture are there
+        # to make call-site bracketing decline, and without them no arena leaves
+        # anything for this to own.
+        "owned_temporary_argument": 0,
     }
 
     exe = TEST_DIR / "aif_verify_probe.exe"

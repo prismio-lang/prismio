@@ -6540,6 +6540,64 @@ static int fn_returns_partial(int f) {
     return fn_ret_partial ? fn_ret_partial[f] : 1;
 }
 
+// Whether `f` may hand one of its own parameters back through its return value.
+//
+// Swift's parameter convention question, asked in the direction the drop path
+// needs it: an `@guaranteed` parameter leaves the caller owning the argument
+// across the call, and a parameter passed through to the result does not -- the
+// argument outlives the call and the caller's binding is no longer the last
+// owner. Perceus asks the same thing as "borrowed vs owned" parameter inference.
+//
+// The caller's drop path needs it because the escape lattice cannot supply it.
+// A value allocated in a callee is already at Caller (SPEC 5's E is per site,
+// and a site belongs to the function that allocated it), so E says nothing about
+// whether *this* frame still owns it. That is why src/ir/expr.psm carries the
+// syntactic `nodeReturnsName` -- and why that guard alone is not enough: it sees
+// `return t` and not `return passthru(t)`.
+//
+// Read off the converged points-to sets rather than recorded separately, for the
+// same reason `fn_returns_partial` is: the RET and PARAM edges are already there
+// and a second record is a second thing to keep in step.
+//
+// **Site-granular, and conservative in the same direction `in_container` is.**
+// One site serves every call of the allocating function, so two different
+// allocations from one `Band { ... }` literal are one bit here. A false positive
+// therefore costs a leak and never a free, which is the only asymmetry that
+// matters on this path.
+//
+// **A symbol this pass does not know answers no, not yes**, and the reason is
+// that "unknown" here means *extern*, not *unanalysed*. An extern's result is
+// the frontend's contract question -- `alias` is the one contract that hands an
+// argument back, and aifFfiAliasOf in src/aif/contracts.psm is where it is
+// answered -- so widening it here says nothing true and costs a great deal.
+// Answering yes was measured: it declines the drop at every `print(value)` in
+// std/io.psm, because `prismio_rt_print(text)` is an extern declared `borrow`,
+// and it took three suite fixtures with it (split_release, forced_layout,
+// aif_verify) by leaking one String per integer printed.
+//
+// The extern half of this hazard is therefore still open, exactly as wide as it
+// was before this predicate existed: `let t = f(); let x = <extern alias>(t);
+// return x` frees `t` at the scope exit. It is recorded in TODO.md rather than
+// closed here, because closing it is a frontend change and this is not one.
+int aif_fn_may_return_param(const char* symbol) {
+    int f = aif_fn_lookup(symbol);
+    if (f < 0) return 0;
+    int rk = key_find(AIF_KEY_RET, f, 0);
+    if (rk < 0 || rk >= pt_len) return 0;
+    if (!bits_any(&pt[rk])) return 0;
+
+    key_index_build();
+    for (int k = 0; k < key_count && k < pt_len; k++) {
+        KeyNode* kn = key_by_id[k];
+        if (kn == NULL || kn->kind != AIF_KEY_PARAM || kn->a != f) continue;
+        int n = pt[rk].nwords < pt[k].nwords ? pt[rk].nwords : pt[k].nwords;
+        for (int w = 0; w < n; w++) {
+            if (pt[rk].w[w] & pt[k].w[w]) return 1;
+        }
+    }
+    return 0;
+}
+
 int aif_owns_call_result_at_node(const void* node) {
     if (node == NULL) return AIF_ELEM_NONE;
     NodeCall* c = NULL;
