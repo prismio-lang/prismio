@@ -1,0 +1,13 @@
+// expect-error: `Bag` is not a trait, so `T: Bag` cannot be a bound
+struct Bag {
+    n: Int
+}
+
+fn passthrough<T: Bag>(value: T) -> T {
+    return value
+}
+
+fn main() -> Int {
+    let b = Bag { n: 1 }
+    return passthrough(b).n
+}

@@ -195,14 +195,115 @@ fn monoParamAt(params: String, index: Int) -> String {
     return ""
 }
 
+// v0.1 3.3. A parameter list entry is `T` or `T:Ord`; these two split it. The
+// bound rides in the same text as the name because the list is text -- see
+// parseGenericParams for why -- and because a slot on the declaration would have
+// had to be threaded through monoCopyOne, substitution and the mangled name, none
+// of which have any business knowing about bounds.
+fn monoParamName(params: String, index: Int) -> String {
+    let entry = monoParamAt(params, index)
+    let at = strIndexOf(entry, ":")
+    if (at < 0) { return entry }
+    return strSubstring(entry, 0, at)
+}
+
+fn monoParamBound(params: String, index: Int) -> String {
+    let entry = monoParamAt(params, index)
+    let at = strIndexOf(entry, ":")
+    if (at < 0) { return "" }
+    return strSubstring(entry, at + 1, __builtin_string_len(entry) - at - 1)
+}
+
 fn monoParamIndex(params: String, name: String) -> Int {
     let count = monoParamCount(params)
     let mut i = 0
     while (i < count) {
-        if (strEquals(monoParamAt(params, i), name)) { return i }
+        if (strEquals(monoParamName(params, i), name)) { return i }
         i = i + 1
     }
     return -1
+}
+
+// ---------------------------------------------------------
+// Bounds
+// ---------------------------------------------------------
+
+// Whether the module declares `impl <traitName> for <type>`.
+//
+// A walk of the top level rather than a lookup, and deliberately: an IMPL_DECL is
+// not a named top-level declaration, so it is not in the declaration index, and
+// putting it there would mean the merge's duplicate rule started applying to it.
+// Instantiation is rare -- once per (template, argument list) -- while the index
+// is asked a question per identifier, which is what REQUIREMENTS 16 was about.
+//
+// Types are compared by name because an `impl` block's type is always a plain
+// name: a generic `impl` is a parse error, so there is no `Map<K, V>` here to
+// have to structurally match.
+fn monoImplements(module: ASTNode, typeName: String, traitName: String) -> Bool {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, traitName)
+            and strEquals(stmt.s1, typeName)) {
+            return true
+        }
+        p = stmt.next
+    }
+    return false
+}
+
+fn monoHasTrait(module: ASTNode, traitName: String) -> Bool {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.TRAIT_DECL and strEquals(stmt.s1, traitName)) { return true }
+        p = stmt.next
+    }
+    return false
+}
+
+// The bound check, at the instantiation. This is the one place in the compiler
+// where a trait means anything: the concrete type is known here and nowhere
+// earlier, which is exactly why a bound is checkable at all without dispatch.
+//
+// Reported against the use site rather than the template, because the template is
+// not wrong -- `sort<T: Ord>` is a correct declaration, and what failed is the
+// argument this call made of it.
+fn monoCheckBounds(module: ASTNode, at: ASTNode, name: String, params: String, argsPtr: Ptr) {
+    let count = monoParamCount(params)
+    let mut i = 0
+    while (i < count) {
+        let bound = monoParamBound(params, i)
+        if (strEquals(bound, "") == false) {
+            let argPtr = monoChainAt(argsPtr, i)
+            if (nodeExists(argPtr)) {
+                monoCheckOneBound(module, at, name, monoParamName(params, i), bound,
+                                  semaAnnotationType(module, ptr_to_node(argPtr)))
+            }
+        }
+        i = i + 1
+    }
+}
+
+fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param: String,
+                     bound: String, argT: TypeInfo) {
+    // An invalid argument type is the result of an error already reported; a
+    // second one about a bound it cannot possibly satisfy is noise.
+    if (typeIsValid(argT) == false) { return }
+
+    if (monoHasTrait(module, bound) == false) {
+        semaErrorAt(at, strConcat(strConcat(diagQuote(bound), " is not a trait, so `"),
+                                  strConcat(strConcat(param, ": "), strConcat(bound, "` cannot be a bound"))))
+        return
+    }
+
+    if (monoImplements(module, argT.name, bound)) { return }
+
+    semaErrorAt(at, strConcat(strConcat(typeDisplay(argT), " does not implement "),
+                              diagQuote(bound)))
+    diag_note(strConcat(strConcat(diagQuote(name), " requires it: the type parameter is declared "),
+                        strConcat(strConcat(param, ": "), bound)))
+    diag_note(strConcat(strConcat("write `impl ", bound), strConcat(strConcat(" for ", argT.name), " { ... }`")))
 }
 
 fn monoChainLength(ptr: Ptr) -> Int {
@@ -352,6 +453,7 @@ fn monoInstantiateStruct(module: ASTNode, tn: ASTNode) -> String {
         monoArityError(tn, tn.s1, params)
         return ""
     }
+    monoCheckBounds(module, tn, tn.s1, params, tn.child1)
 
     // The mangled name is written straight onto the declaration that will carry
     // it, and every read below is a read of that field.
@@ -542,6 +644,7 @@ fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode) {
             monoArityError(callExpr, template.s1, params)
             return
         }
+        monoCheckBounds(module, callExpr, template.s1, params, explicit.child1)
         callee.s1 = monoInstantiateFunction(module, template, explicit.child1)
         return
     }
@@ -550,10 +653,11 @@ fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode) {
     let solvedArgs = nodeList()
     let mut i = 0
     while (i < count) {
-        let solved = monoSolveTypeParam(module, template, callExpr.child2, monoParamAt(params, i))
+        let solved = monoSolveTypeParam(module, template, callExpr.child2, monoParamName(params, i))
         if (nodeIsNull(node_to_ptr(solved))) { return }
         nodeListPush(solvedArgs, solved)
         i = i + 1
     }
+    monoCheckBounds(module, callExpr, template.s1, params, solvedArgs.head)
     callee.s1 = monoInstantiateFunction(module, template, solvedArgs.head)
 }

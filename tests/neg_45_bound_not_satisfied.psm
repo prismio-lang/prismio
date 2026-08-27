@@ -1,0 +1,25 @@
+// expect-error: Point does not implement `Ord`
+trait Ord {
+    fn cmp(self, other: Self) -> Int
+}
+
+impl Ord for Int {
+    fn cmp(self, other: Int) -> Int {
+        return 0
+    }
+}
+
+struct Point {
+    x: Int
+}
+
+fn maxOf<T: Ord>(a: T, b: T) -> T {
+    if (cmp(a, b) >= 0) { return a }
+    return b
+}
+
+fn main() -> Int {
+    let p = Point { x: 1 }
+    let q = Point { x: 2 }
+    return maxOf(p, q).x
+}

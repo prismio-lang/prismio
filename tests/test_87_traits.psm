@@ -1,0 +1,123 @@
+// v0.1 3.3 -- traits, and the bound that is the whole point of them.
+//
+// A trait here is a **check, not a dispatch mechanism**. Prismio monomorphises
+// before type checking reaches a body, so at the point a bound matters the
+// concrete type is already known: `maxOf<T: Ord>` instantiated at `Int` has a
+// body calling `cmp(Int, Int)`, and ordinary overload resolution finds what
+// `impl Ord for Int` wrote. Nothing is looked up at run time.
+//
+// So what this asserts is that the three parts line up: a bound is enforced at
+// the instantiation, a trait method reaches its `impl` through the overload set,
+// and `Self` in a signature means the implementing type.
+
+import std.io
+import std.string
+
+trait Ord {
+    fn cmp(self, other: Self) -> Int
+}
+
+impl Ord for Int {
+    fn cmp(self, other: Int) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+// The receiver written as `Self` rather than `String`. The parser rewrites it to
+// the implementing type, so this and the block above declare the same shape.
+impl Ord for String {
+    fn cmp(self, other: Self) -> Int {
+        return strCompare(self, other)
+    }
+}
+
+struct Version {
+    major: Int,
+    minor: Int
+}
+
+impl Ord for Version {
+    fn cmp(self, other: Version) -> Int {
+        if (self.major != other.major) { return cmp(self.major, other.major) }
+        return cmp(self.minor, other.minor)
+    }
+}
+
+fn maxOf<T: Ord>(a: T, b: T) -> T {
+    if (cmp(a, b) >= 0) { return a }
+    return b
+}
+
+// Two bounded parameters, to prove the encoding is per-parameter rather than
+// per-declaration. `U` is unbounded on purpose: a list with a bound and one
+// without has to be expressible or the shape is wrong.
+fn pickLarger<T: Ord, U>(a: T, b: T, tag: U) -> T {
+    return maxOf(a, b)
+}
+
+fn sortInPlace<T: Ord>(items: List<T>) {
+    let n = list_len(items)
+    let mut i = 1
+    while (i < n) {
+        let mut j = i
+        while (j > 0 and cmp(list_get(items, j - 1), list_get(items, j)) > 0) {
+            let left = list_get(items, j - 1)
+            let right = list_get(items, j)
+            list_set(items, j - 1, right)
+            list_set(items, j, left)
+            j = j - 1
+        }
+        i = i + 1
+    }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // One template, three instantiations, each resolving `cmp` to a different
+    // `impl`.
+    if (maxOf(3, 9) != 9) { return fail("maxOf at Int") }
+    if (strEquals(maxOf("apple", "pear"), "pear") == false) { return fail("maxOf at String") }
+
+    // A trait on a user struct, and a trait method that calls the trait method
+    // for another type. Asserted through `cmp` rather than through `maxOf`: a
+    // function that returns one of its struct parameters leaks both of them --
+    // the pass-through escape this branch is named for, unrelated to traits and
+    // byte-for-byte the leak `fn pick(a: Version, b: Version) -> Version` had
+    // before any of this. Keeping the fixture clean under `--verify` is what
+    // makes a *future* leak here mean something.
+    let older = Version { major: 1, minor: 9 }
+    let newer = Version { major: 2, minor: 0 }
+    if (cmp(older, newer) >= 0) { return fail("cmp at a user struct") }
+    if (cmp(newer, older) <= 0) { return fail("cmp at a user struct, reversed") }
+    if (cmp(older, older) != 0) { return fail("cmp at a user struct, equal majors") }
+
+    // A bounded and an unbounded parameter on one declaration.
+    if (pickLarger(4, 7, "tag") != 7) { return fail("a bound beside an unbounded parameter") }
+
+    // The bar from v0.1 1: `list.sort()`, written as a bounded generic free
+    // function and reached with method syntax.
+    let mut xs: List<Int> = list_new()
+    list_push(xs, 5)
+    list_push(xs, 1)
+    list_push(xs, 4)
+    xs.sortInPlace()
+    if (list_get(xs, 0) != 1 or list_get(xs, 1) != 4 or list_get(xs, 2) != 5) {
+        return fail("sortInPlace at Int")
+    }
+
+    let mut names: List<String> = list_new()
+    list_push(names, "pear")
+    list_push(names, "apple")
+    sortInPlace(names)
+    if (strEquals(list_get(names, 0), "apple") == false) { return fail("sortInPlace at String") }
+
+    println("test_87 ok")
+    return 0
+}

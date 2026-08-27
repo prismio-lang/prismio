@@ -1,0 +1,10 @@
+// expect-error: unknown trait `Ordered`
+impl Ordered for Int {
+    fn cmp(self, other: Int) -> Int {
+        return 0
+    }
+}
+
+fn main() -> Int {
+    return 0
+}

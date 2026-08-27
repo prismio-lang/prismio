@@ -16,6 +16,7 @@ fn parseDeclaration(p: Parser) -> ASTNode {
     if (parserCheckVal(p, TokenType.KEYWORD, "struct")) { return parseStructDecl(p) }
     if (parserCheckVal(p, TokenType.KEYWORD, "enum")) { return parseEnumDecl(p) }
     if (parserCheckVal(p, TokenType.KEYWORD, "impl")) { return parseImplDecl(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "trait")) { return parseTraitDecl(p) }
     if (parserAtWorkload(p)) { return parseWorkloadDecl(p) }
 
     // Nothing here starts a declaration. Report it, skip to the next thing that
@@ -24,7 +25,7 @@ fn parseDeclaration(p: Parser) -> ASTNode {
     let bad = parserNode(p, NodeKind.ERROR_NODE)
     let current = parserCurrent(p)
     parserError(p, strConcat(strConcat("expected a declaration, found ", parserDescribe(current)),
-                               " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`, `impl`)"))
+                               " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`, `impl`, `trait`)"))
     parserSynchronize(p)
     return bad
 }
@@ -77,10 +78,27 @@ fn parseGenericParams(p: Parser) -> String {
     loop {
         let name = parserCurrent(p)
         parserExpect(p, TokenType.IDENTIFIER, "type parameter name")
+
+        // v0.1 3.3. One bound per parameter: `fn sort<T: Ord>(...)`. Encoded into
+        // the same comma-joined text as `T:Ord` rather than taking a slot of its
+        // own, for the reason the list is text at all -- it is read as a set of
+        // names and never walked as a tree. monoParamName and monoParamBound are
+        // the two readers.
+        //
+        // One, not a list. `T: Ord + Hash` is the shape a later release wants and
+        // this spelling does not preclude it: the encoding already has a
+        // separator to spare and the check is per-bound.
+        let mut bound = ""
+        if (parserMatchVal(p, TokenType.SEPARATOR, ":")) {
+            let boundName = parserCurrent(p)
+            parserExpect(p, TokenType.IDENTIFIER, "a trait name after `:` in a type parameter list")
+            bound = strConcat(":", boundName.value)
+        }
+
         if (strEquals(params, "")) {
-            params = name.value
+            params = strConcat(name.value, bound)
         } else {
-            params = strConcat(strConcat(params, ","), name.value)
+            params = strConcat(strConcat(params, ","), strConcat(name.value, bound))
         }
         if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
     }
@@ -106,6 +124,23 @@ fn parseTypeArgList(p: Parser, node: ASTNode) {
     parserExpectCloseAngle(p, "type argument list")
 }
 
+// `Self` inside an `impl` block is the type the block is for.
+//
+// Resolved here, in the parser, because this is the only place that knows which
+// block an annotation is inside: by the time sema sees the method it is an
+// ordinary top-level function and `Self` is an unknown type name.
+//
+// Inside a `trait` body it is deliberately left alone. There is no type there to
+// resolve it to, and the conformance check substitutes it once per `impl` --
+// which is the only thing a trait signature is ever read for.
+fn parserTypeName(p: Parser, name: Token) -> String {
+    if (strEquals(name.value, "Self") == false) { return name.value }
+    if (nodeExists(p.implType) == false) { return name.value }
+    let owner = ptr_to_node(p.implType)
+    if (owner.kind != NodeKind.IMPL_DECL) { return name.value }
+    return strClone(owner.s1)
+}
+
 fn parseTypeAnnotation(p: Parser) -> ASTNode {
     let typeNode = parserNode(p, NodeKind.TYPE_ANNOTATION)
 
@@ -121,7 +156,7 @@ fn parseTypeAnnotation(p: Parser) -> ASTNode {
 
     let name = parserCurrent(p)
     if (name.type == TokenType.IDENTIFIER or name.type == TokenType.KEYWORD) {
-        typeNode.s1 = name.value
+        typeNode.s1 = parserTypeName(p, name)
         parserAdvance(p)
     } else {
         parserFatal(p, strConcat("expected a type name, found ", parserDescribe(name)))
@@ -316,6 +351,15 @@ fn parseVariableDecl(p: Parser) -> ASTNode {
 // the type; ordinary functions may carry a calling convention and `unique`
 // before the name. Nothing else differs, so both parameter lists come through
 // here.
+// What a bare `self` is typed as. Inside an `impl` block it is the block's type;
+// inside a `trait` it is `Self`, which has no type yet and is substituted once
+// per conforming `impl`.
+fn parserReceiverTypeName(p: Parser) -> String {
+    let owner = ptr_to_node(p.implType)
+    if (owner.kind == NodeKind.TRAIT_DECL) { return "Self" }
+    return strClone(owner.s1)
+}
+
 fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
     let param = parserNode(p, NodeKind.FUNCTION_PARAMETER)
 
@@ -353,10 +397,10 @@ fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
     if (nodeExists(p.implType) and strEquals(param.s1, "self")
         and parserCheckVal(p, TokenType.SEPARATOR, ":") == false) {
         let receiver = parserNodeFrom(NodeKind.TYPE_ANNOTATION, name)
-        receiver.s1 = strClone(ptr_to_node(p.implType).s1)
-        // The span is the `impl` block's type name, not this `self`. A misspelt
-        // type is reported once per method either way, and pointing at `self`
-        // would blame a token that spells nothing wrong.
+        receiver.s1 = parserReceiverTypeName(p)
+        // The span is the block's type name, not this `self`. A misspelt type is
+        // reported once per method either way, and pointing at `self` would blame
+        // a token that spells nothing wrong.
         nodeSpanFrom(receiver, ptr_to_node(p.implType))
         param.child1 = node_to_ptr(receiver)
         param.i3 = 1
@@ -454,12 +498,21 @@ fn parseImplDecl(p: Parser) -> ASTNode {
     parserExpectVal(p, TokenType.KEYWORD, "impl", "impl block")
 
     let implNode = parserNode(p, NodeKind.IMPL_DECL)
-    let target = parserCurrent(p)
-    implNode.s1 = target.value
+    let head = parserCurrent(p)
     parserExpect(p, TokenType.IDENTIFIER, "the type an `impl` block is for")
+    parserRejectGenericImpl(p)
 
-    if (parserCheckVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
-        parserFatal(p, "a generic `impl` block is not supported yet; write the methods as generic free functions")
+    // `impl Ord for Int` -- the trait form. The name is read once and then
+    // placed, rather than assigned twice: a String field assigned over is a
+    // String nothing releases.
+    if (parserMatchVal(p, TokenType.KEYWORD, "for")) {
+        implNode.s2 = head.value
+        let target = parserCurrent(p)
+        implNode.s1 = target.value
+        parserExpect(p, TokenType.IDENTIFIER, "the type after `for` in an `impl` block")
+        parserRejectGenericImpl(p)
+    } else {
+        implNode.s1 = head.value
     }
 
     parserExpectVal(p, TokenType.SEPARATOR, "{", "impl body")
@@ -490,6 +543,12 @@ fn parseImplDecl(p: Parser) -> ASTNode {
     return implNode
 }
 
+fn parserRejectGenericImpl(p: Parser) {
+    if (parserCheckVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
+        parserFatal(p, "a generic `impl` block is not supported yet; write the methods as generic free functions")
+    }
+}
+
 // A bare `self` has to be the *first* parameter, and that is a shape error in the
 // declaration rather than a fact about the program -- so it is diagnosed here,
 // where the parameter list is still a list, and not in sema, where the method is
@@ -511,6 +570,97 @@ fn parseImplCheckReceiver(p: Parser, method: ASTNode) {
         index = index + 1
         paramPtr = param.next
     }
+}
+
+// ---------------------------------------------------------
+// v0.1 3.3 -- `trait`
+// ---------------------------------------------------------
+
+// `trait Ord { fn compare(self, other: Self) -> Int }`
+//
+// **A trait is a check, not a dispatch mechanism.** Prismio monomorphises before
+// type checking reaches a body, so at the point a bound matters the concrete type
+// is already known: `fn sort<T: Ord>(...)` instantiated at `Int` is a function
+// whose body calls `compare(Int, Int)`, and *ordinary overload resolution* finds
+// the method `impl Ord for Int` wrote. Nothing has to be looked up at run time,
+// and nothing here emits code.
+//
+// What the trait declaration is for, then, is exactly two questions: does this
+// type implement that trait (the bound, checked at instantiation in
+// sema/generics.psm), and does this `impl` provide what the trait asked for (the
+// conformance check, in sema/checker.psm). The signatures below are the second
+// question's input and are never compiled.
+//
+// So a TRAIT_DECL stays out of every walk downstream by being a kind none of them
+// name -- the same way a WORKLOAD_DECL does -- and its signatures hang off
+// `child1` rather than being spliced the way an `impl` block's methods are. A
+// method with no body spliced into the module chain is a `define` with no blocks.
+fn parseTraitDecl(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "trait", "trait declaration")
+
+    let traitNode = parserNode(p, NodeKind.TRAIT_DECL)
+    let name = parserCurrent(p)
+    traitNode.s1 = name.value
+    parserExpect(p, TokenType.IDENTIFIER, "trait name")
+
+    if (parserCheckVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
+        parserFatal(p, "a generic `trait` is not supported yet")
+    }
+
+    parserExpectVal(p, TokenType.SEPARATOR, "{", "trait body")
+
+    // Set for the same reason an `impl` block sets it, and read differently: a
+    // bare `self` in a trait signature has no type to take, so parseParameter
+    // gives it `Self` and the conformance check substitutes.
+    p.implType = node_to_ptr(traitNode)
+
+    let signatures = nodeList()
+    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
+        if (parserCheck(p, TokenType.EOF)) {
+            parserFatal(p, "this `trait` is never closed; reached end of file looking for `}`")
+        }
+        if (parserCheckVal(p, TokenType.KEYWORD, "fn") == false) {
+            parserFatal(p, strConcat("a `trait` holds `fn` signatures, found ",
+                                       parserDescribe(parserCurrent(p))))
+        }
+        let signature = parseTraitSignature(p)
+        parseImplCheckReceiver(p, signature)
+        nodeListPush(signatures, signature)
+    }
+    parserExpectVal(p, TokenType.SEPARATOR, "}", "trait body")
+
+    p.implType = ptr_null()
+    traitNode.child1 = signatures.head
+    return traitNode
+}
+
+// A method signature: a FUNCTION with no `child2`. That absence is the whole
+// difference from a definition, and it is what the conformance check reads.
+fn parseTraitSignature(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "fn", "trait method signature")
+
+    let signature = parserNode(p, NodeKind.FUNCTION)
+    let name = parserCurrent(p)
+    signature.s1 = name.value
+    parserExpect(p, TokenType.IDENTIFIER, "method name")
+
+    if (parserCheckVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
+        parserFatal(p, "a generic method in a `trait` is not supported yet")
+    }
+
+    signature.child1 = parseParameterList(p, false)
+    if (parserMatchVal(p, TokenType.ARROW, "->")) {
+        signature.child3 = node_to_ptr(parseTypeAnnotation(p))
+    }
+
+    // Diagnosed rather than accepted-and-ignored. A default method body is a real
+    // feature a later release may want, and silently dropping one now is how a
+    // program compiles while doing something other than what it says.
+    if (parserCheckVal(p, TokenType.SEPARATOR, "{")) {
+        parserFatal(p, "a `trait` method has no body; write the implementation in an `impl` block")
+    }
+
+    return signature
 }
 
 // ---------------------------------------------------------

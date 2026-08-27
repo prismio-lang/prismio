@@ -1,0 +1,14 @@
+// expect-error: `Int` does not implement `Ord`: no `cmp`
+trait Ord {
+    fn cmp(self, other: Self) -> Int
+}
+
+impl Ord for Int {
+    fn unrelated(self) -> Int {
+        return 1
+    }
+}
+
+fn main() -> Int {
+    return 0
+}
