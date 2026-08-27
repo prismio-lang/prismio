@@ -5350,6 +5350,89 @@ def run_runtime_object_from_ir_test():
     return True
 
 
+def run_curated_emits_test():
+    """Every op codegen *emits* for a flat element type must be curated.
+
+    This is the check whose absence cost a whole milestone. M1.1 curated
+    `list_get`; M4.2 added the `_inline` family and taught `inlineOpName` to emit
+    *those* wherever the element type is statically flat, and
+    `PRISMIO_CURATED_OPS` was never updated. So codegen emitted
+    `list_get_inline`, the curated module contained `list_get`, and every
+    flat-element access in the corpus paid a real `bl` into a five-line function
+    -- with the seam that mechanism exists to remove sitting back in the hot
+    loop. Curating it was worth a corpus median of 0.861x.
+
+    Nothing connected the two lists, so nothing noticed. This connects them.
+
+    **A name may be absent only with a reason recorded beside it**, because two
+    of the three genuinely cannot be curated yet: `list_set_inline` and
+    `list_push_inline` reach `static` helpers in lang_runtime.c, which is the
+    closure violation `PRISMIO_CURATED_OPS`' own comment records for `list_push`.
+    The waiver list here is that fact written down where the check can see it --
+    so removing the blocker and forgetting to curate the op still fails.
+    """
+    print(f"\n{BLUE}--- Running curated_emits ---{RESET}")
+
+    expr = (PROJECT_ROOT / "src" / "ir" / "expr.psm").read_text(encoding="utf-8")
+    driver = (PROJECT_ROOT / "runtime" / "build_driver.c").read_text(encoding="utf-8")
+
+    body = re.search(r"fn inlineOpName\(.*?\n\}", expr, re.S)
+    if not body:
+        print(f"{RED}[FAIL] curated emits: could not find inlineOpName in src/ir/expr.psm{RESET}")
+        return False
+    emitted = set(re.findall(r'return "([a-z_0-9]+)"', body.group(0)))
+    emitted.discard("")
+
+    ops = re.search(r"PRISMIO_CURATED_OPS\[\] = \{(.*?)\};", driver, re.S)
+    if not ops:
+        print(f"{RED}[FAIL] curated emits: could not find PRISMIO_CURATED_OPS{RESET}")
+        return False
+    curated = set(re.findall(r'"([a-z_0-9]+)"', ops.group(1)))
+
+    # Absent on purpose. Remove an entry the day its reason stops holding, and
+    # this check then requires the op to be curated.
+    #
+    # **Both were tried, and the reason they are still waived is now a
+    # measurement rather than a blocker (2026-08-29).** The blocker was real and
+    # is removable: curating them needs `list_release_source` and
+    # `list_inline_grow` given external linkage, which was done and made
+    # `run_curated_closure_test` pass at 14 ops. `list_copy_elem` never needed
+    # it -- clang inlines it into both callers before curation.
+    #
+    # It is worth **nothing**: corpus median **0.999x** (range 0.981-1.024x)
+    # for **+3.1% compile time** (415 -> 428 ms on src/main.psm). The prediction
+    # that "g6 and g2 are write-heavy so they would move" was wrong -- they push
+    # in a setup phase, not in the hot loop, and read is what the loops do.
+    # Reverted on the gate's own prize-over-cost rule.
+    #
+    # So: do not re-attempt this expecting a win. Re-attempt it only with a
+    # program whose *hot loop* pushes, and check that program exists first.
+    waived = {
+        "list_set_inline": "curating it measured 0.999x for +3.1% compile time (2026-08-29)",
+        "list_push_inline": "curating it measured 0.999x for +3.1% compile time (2026-08-29)",
+    }
+
+    problems = []
+    for op in sorted(emitted):
+        if op in curated or op in waived:
+            continue
+        problems.append(f"codegen emits {op!r} but PRISMIO_CURATED_OPS does not carry it")
+    for op in sorted(waived):
+        if op in curated:
+            problems.append(f"{op!r} is curated but still listed as waived here; drop the waiver")
+        if op not in emitted:
+            problems.append(f"{op!r} is waived but inlineOpName no longer emits it; drop the waiver")
+
+    if problems:
+        print(f"{RED}[FAIL] curated emits{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+    print(f"{GREEN}[PASS] curated emits: {len(emitted)} op(s) codegen emits, "
+          f"{len(emitted) - len(waived)} curated and {len(waived)} waived with a recorded reason{RESET}")
+    return True
+
+
 def run_curated_closure_test():
     """M1.1's curated inlinable module: the set must be closed over exported symbols.
 
@@ -5695,6 +5778,11 @@ def main():
         failed += 1
 
     if run_curated_closure_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_curated_emits_test():
         passed += 1
     else:
         failed += 1
