@@ -1,0 +1,105 @@
+// v0.1 3.4 -- closures.
+//
+// **A closure is a struct and a function, and the dispatch is overloading.**
+// `|x: Int| x > threshold` lowers to a struct holding the captures, a `call`
+// whose first parameter is that struct, and a struct literal at the use site;
+// `f(x)` inside the generic that received it is rewritten to `call(f, x)`. No
+// function pointer, no vtable, no indirect call.
+//
+// The plan predicted "the ownership work will dominate the syntax work" and it
+// did not, for a reason worth asserting rather than remembering: **a capture is
+// spelled as a struct literal field**, so an owned capture is moved into a field
+// exactly the way any other struct literal moves one, and AIF needed no new
+// escape route. The String-capturing case below is what holds that down -- it is
+// `--verify` clean, and a capture that leaked or double-freed would show there.
+
+import std.io
+import std.string
+import std.list
+import std.ord
+import std.copy
+
+fn applyTwice<F>(f: F, x: Int) -> Int {
+    return f(f(x))
+}
+
+fn zero<F>(f: F) -> Int {
+    return f()
+}
+
+// A closure reached as a method, which it is: `call`'s first parameter is the
+// receiver, so `f.call(x)` and `call(f, x)` and `f(x)` are one call.
+fn viaMethod<F>(f: F, x: Int) -> Int {
+    return f.call(x)
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // No captures, and two distinct closure types from one generic.
+    if (applyTwice(|x: Int| x + 3, 10) != 16) { return fail("applyTwice, +3") }
+    if (applyTwice(|x: Int| x * 2, 3) != 12) { return fail("applyTwice, *2") }
+
+    // No parameters. `||` arrives as one token from the scanner.
+    if (zero(|| 42) != 42) { return fail("zero-parameter closure") }
+
+    // Three spellings of one call.
+    if (viaMethod(|x: Int| x - 1, 5) != 4) { return fail("f.call(x)") }
+
+    // A capture of a copyable local.
+    let threshold = 4
+    let mut xs: List<Int> = list_new()
+    let mut i = 0
+    while (i < 10) {
+        list_push(xs, i)
+        i = i + 1
+    }
+    if (countWhere(xs, |v: Int| v > threshold) != 5) { return fail("captured Int") }
+
+    // A capture of an **owned** local. It is moved into the closure, which is
+    // what makes the ownership question ordinary: the struct literal owns it and
+    // releases it, and `needle` is dead after this line.
+    let mut names: List<String> = list_new()
+    list_push(names, "apple")
+    list_push(names, "apricot")
+    list_push(names, "fig")
+    let needle = strConcat("ap", "")
+    if (countWhere(names, |s: String| strStartsWith(s, needle)) != 2) {
+        return fail("captured String")
+    }
+
+    // The standard library's higher-order half.
+    xs.sort()
+    if (isSorted(xs) == false) { return fail("sort") }
+
+    let big = filter(xs, |v: Int| v > 6)
+    if (list_len(big) != 3) { return fail("filter") }
+
+    let mut doubled: List<Int> = list_new()
+    mapInto(xs, doubled, |v: Int| v * 2)
+    if (list_len(doubled) != 10 or list_get(doubled, 9) != 18) { return fail("mapInto") }
+
+    if (anyOf(xs, |v: Int| v == 7) == false) { return fail("anyOf") }
+    if (allOf(xs, |v: Int| v >= 0) == false) { return fail("allOf") }
+    if (anyOf(xs, |v: Int| v > 100)) { return fail("anyOf, absent") }
+
+    // `sortBy` with a comparator, on a descending order no `impl Ord` provides.
+    let mut ys: List<Int> = list_new()
+    list_push(ys, 3)
+    list_push(ys, 9)
+    list_push(ys, 1)
+    sortBy(ys, |a: Int, b: Int| b - a)
+    if (list_get(ys, 0) != 9 or list_get(ys, 2) != 1) { return fail("sortBy, descending") }
+
+    // A capture used twice in one body, and a body that reads two captures.
+    let low = 2
+    let high = 8
+    if (countWhere(xs, |v: Int| v >= low and v <= high) != 7) { return fail("two captures") }
+
+    println("test_89 ok")
+    return 0
+}

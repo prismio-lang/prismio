@@ -204,7 +204,29 @@ concrete thing traits buy.
   `list.sort()` works. **Re-benchmark `Map` explicitly** — the linear scan is a
   measured cost this is meant to remove.
 
-### 3.4 · Closures
+### 3.4 · Closures — **DONE 2026-08-29**
+
+`|x: Int| x > threshold` lowers to a struct holding the captures, a `call` whose
+first parameter is that struct, and a struct literal at the use site; `f(x)`
+inside the generic that received it is rewritten to `call(f, x)`. **No function
+pointer, no vtable, no indirect call** — the same trick 3.1, 3.2 and 3.3 all used.
+
+**The prediction below was wrong, and the reason is worth keeping.** "AIF has to
+be taught what a capture *is*" — it did not, because *a capture is spelled as a
+struct literal field*. `Closure$N { needle: needle }` moves an owned capture into
+a field exactly the way any other struct literal moves a value into one, and AIF
+already models that. **No change to `aif/` at all.** The lattice did not have to
+learn what a capture is; the lowering arranged for there to be nothing new to
+learn. The syntax work was the larger half.
+
+What it costs is the default: a capture is **by value**, so an owned capture is
+moved and the original binding is dead. Prismio has no way to hold a borrow in a
+struct field, so by-value is the only sound default it can have today.
+
+`std/list.psm` gains `sortBy`, `filter`, `mapInto`, `countWhere`, `anyOf`,
+`allOf`, and `sort` becomes one line over `sortBy`.
+
+**The original plan, kept:**
 
 Needed for `list.sortBy { ... }`, `map`, `filter` — the second half of what
 makes a standard library feel modern.

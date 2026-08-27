@@ -91,6 +91,7 @@ fn nodeKindName(k: NodeKind) -> String {
     else if (k == NodeKind.FUNCTION) { return "FUNCTION" }
     else if (k == NodeKind.STRUCT_DECL) { return "STRUCT_DECL" }
     else if (k == NodeKind.ENUM_DECL) { return "ENUM_DECL" }
+    else if (k == NodeKind.CLOSURE_EXPR) { return "CLOSURE_EXPR" }
     else if (k == NodeKind.TRAIT_DECL) { return "TRAIT_DECL" }
     else if (k == NodeKind.IMPL_DECL) { return "IMPL_DECL" }
     else if (k == NodeKind.BLOCK) { return "BLOCK" }

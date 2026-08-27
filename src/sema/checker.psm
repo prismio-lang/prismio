@@ -348,6 +348,10 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         return typeInvalid()
     }
 
+    if (expr.kind == NodeKind.CLOSURE_EXPR) {
+        return semaLowerClosure(module, expr)
+    }
+
     if (expr.kind == NodeKind.CALL_EXPR) {
         let callee = ptr_to_node(expr.child1)
 
@@ -395,6 +399,31 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                 ptr_to_node(receiverPtr).next = expr.child2
                 expr.child1 = node_to_ptr(methodName)
                 expr.child2 = receiverPtr
+                return semaExpr(module, expr)
+            }
+        }
+
+        // v0.1 3.4. `f(x)` where `f` is a *value* rather than a function: the
+        // closure a generic received. Rewritten to `call(f, x)`, which is the
+        // same rewrite 3.1 does for `x.f(a)` and lands in the same place --
+        // overload resolution over the synthesised `call` functions.
+        //
+        // Gated on the local's type being a *closure* type rather than on there
+        // being no function of that name, and the difference is not cosmetic:
+        // `std/string.psm` declares `compare`, so a sort whose comparator
+        // parameter was called `compare` would have had its call quietly resolved
+        // to the String overload. A closure type's name is compiler-generated and
+        // contains `$`, which no user identifier may, so this fires for a closure
+        // and for nothing else.
+        if (callee.kind == NodeKind.IDENTIFIER_EXPR and ir_has_var_type(callee.s1) == 1) {
+            let calleeT = typeFromSemKey(ir_get_var_type(callee.s1))
+            if (calleeT.kind == TypeKind.STRUCT and strStartsWith(calleeT.name, semaClosurePrefix())) {
+                let receiver = createNode(NodeKind.IDENTIFIER_EXPR)
+                receiver.s1 = strClone(callee.s1)
+                nodeSpanFrom(receiver, callee)
+                receiver.next = expr.child2
+                callee.s1 = "call"
+                expr.child2 = node_to_ptr(receiver)
                 return semaExpr(module, expr)
             }
         }
@@ -1303,6 +1332,269 @@ fn semaAnnotationText(annotationPtr: Ptr) -> String {
     }
     if (annotation.i3 == 1) { return strConcat(annotation.s1, "?") }
     return strClone(annotation.s1)
+}
+
+
+// ---------------------------------------------------------
+// v0.1 3.4 -- closures
+// ---------------------------------------------------------
+
+// How many closures have been lowered. Part of every closure type's name, and
+// the only mutable state this feature needs.
+let mut closureSerial = 0
+
+// The prefix every closure type's name carries. `$` is not a legal identifier
+// character, so no user declaration can collide with one -- which is what lets
+// the call rewrite key on the *type* rather than on the absence of a function of
+// the same name.
+fn semaClosurePrefix() -> String { return strConcat("Closure", monoSeparator()) }
+
+// **A closure is a struct and a function, and the dispatch is overloading.**
+//
+// `|x: Int| x > threshold` becomes
+//
+//     struct Closure$12$0 { threshold: Int }
+//     fn call(self: Closure$12$0, x: Int) -> Bool { return x > self.threshold }
+//     Closure$12$0 { threshold: threshold }        // at the use site
+//
+// and `f(x)` inside a generic that received it is rewritten to `call(f, x)`,
+// which ordinary overload resolution sends to the right `call`. So there is no
+// function pointer, no vtable and no indirect call anywhere: the same trick 3.1,
+// 3.2 and 3.3 all used, one more time.
+//
+// **The prediction in v0.1 3.4 was that the ownership work would dominate the
+// syntax work, and it did not -- because a capture is spelled as a struct literal
+// field.** `Closure$N { needle: needle }` moves an owned capture into the closure
+// exactly the way any other struct literal moves a value into a field, and AIF
+// already models that. There is no new escape route, no new lattice case, and no
+// change to aif/ at all. The lattice did not have to learn what a capture is; the
+// lowering arranged for there to be nothing new to learn.
+//
+// What that costs is the *default*: a capture is **by value**, so an owned
+// capture is moved and the original binding is dead afterwards. Rust spells that
+// `move |...|` and defaults to borrowing; Prismio has no way to hold a borrow in
+// a struct field, so by-value is the only sound default it can have today.
+fn semaClosureName(expr: ASTNode) -> String {
+    // Deterministic, and unique across the copies monomorphisation makes of a
+    // generic body -- which is why the serial is here and the span alone is not
+    // enough. Two instantiations of one template hold two CLOSURE_EXPRs with
+    // identical spans and possibly different capture types.
+    closureSerial = closureSerial + 1
+    return strConcat(semaClosurePrefix(),
+                     strConcat(strFromInt(expr.line),
+                               strConcat(monoSeparator(), strFromInt(closureSerial))))
+}
+
+fn semaClosureNamesParam(paramsPtr: Ptr, name: String) -> Bool {
+    let mut p = paramsPtr
+    while (nodeExists(p)) {
+        let param = ptr_to_node(p)
+        if (strEquals(param.s1, name)) { return true }
+        p = param.next
+    }
+    return false
+}
+
+fn semaClosureHasCapture(captures: NodeList, name: String) -> Bool {
+    let mut p = captures.head
+    while (nodeExists(p)) {
+        let field = ptr_to_node(p)
+        if (strEquals(field.s1, name)) { return true }
+        p = field.next
+    }
+    return false
+}
+
+// A free identifier that names a *local* of the enclosing function. A function
+// name has no variable type, a global is reachable without capturing it, and a
+// closure parameter is bound by the closure itself -- so all three fall out
+// without a special case.
+fn semaClosureIsCapture(name: String, paramsPtr: Ptr, captures: NodeList) -> Bool {
+    if (semaClosureNamesParam(paramsPtr, name)) { return false }
+    if (ir_has_var_type(name) == 0) { return false }
+    if (ir_var_is_global(name) == 1) { return false }
+    return semaClosureHasCapture(captures, name) == false
+}
+
+fn semaCollectCaptures(node: ASTNode, paramsPtr: Ptr, captures: NodeList) {
+    if (node.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (semaClosureIsCapture(node.s1, paramsPtr, captures)) {
+            let field = createNode(NodeKind.STRUCT_FIELD)
+            field.s1 = strClone(node.s1)
+            nodeSpanFrom(field, node)
+            nodeListPush(captures, field)
+        }
+    }
+    semaCollectCapturesChain(node.child1, paramsPtr, captures)
+    semaCollectCapturesChain(node.child2, paramsPtr, captures)
+    semaCollectCapturesChain(node.child3, paramsPtr, captures)
+}
+
+fn semaCollectCapturesChain(ptr: Ptr, paramsPtr: Ptr, captures: NodeList) {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        semaCollectCaptures(node, paramsPtr, captures)
+        p = node.next
+    }
+}
+
+// Every captured identifier in the body becomes `self.<name>`.
+//
+// **In place, by rewriting the kind.** A MEMBER_ACCESS_EXPR carries the member
+// name in `s1` and the object in `child1`, and an IDENTIFIER_EXPR carries its
+// name in `s1` -- so the conversion is one assignment to `kind` and one to
+// `child1`, and the node keeps its `next` link and its span. Building a new node
+// would mean telling whichever slot points at this one to re-point, and those
+// slots belong to eight different kinds.
+fn semaRewriteCaptures(node: ASTNode, captures: NodeList) {
+    if (node.kind == NodeKind.IDENTIFIER_EXPR and semaClosureHasCapture(captures, node.s1)) {
+        let receiver = createNode(NodeKind.IDENTIFIER_EXPR)
+        receiver.s1 = "self"
+        nodeSpanFrom(receiver, node)
+        node.kind = NodeKind.MEMBER_ACCESS_EXPR
+        node.child1 = node_to_ptr(receiver)
+        // The probe below typed this as the enclosing local. It is a field read
+        // now and has to be typed again as one.
+        node.typeInfo = ptr_null()
+        return
+    }
+    semaRewriteCapturesChain(node.child1, captures)
+    semaRewriteCapturesChain(node.child2, captures)
+    semaRewriteCapturesChain(node.child3, captures)
+}
+
+fn semaRewriteCapturesChain(ptr: Ptr, captures: NodeList) {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        semaRewriteCaptures(node, captures)
+        p = node.next
+    }
+}
+
+// The body's type, which is the synthesised `call`'s return type.
+//
+// Typed here rather than left to the synthesised function, because the function
+// needs its return annotation *before* analyzeModule reaches it. The parameters
+// are bound in a scope of their own so the body resolves exactly as it will
+// inside `call`; the captures resolve as the enclosing locals they still are at
+// this point, and a capture and its field have the same type by construction.
+fn semaClosureBodyType(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    ir_scope_push()
+    let mut paramPtr = expr.child1
+    while (nodeExists(paramPtr)) {
+        let param = ptr_to_node(paramPtr)
+        let paramT = semaAnnotationType(module, ptr_to_node(param.child1))
+        ir_set_var_type(param.s1, typeSemKey(paramT))
+        ir_mark_borrowed(param.s1)
+        nodeSetType(param, paramT)
+        paramPtr = param.next
+    }
+    let bodyT = semaExpr(module, ptr_to_node(expr.child2))
+    ir_scope_pop()
+    return bodyT
+}
+
+fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    let captures = nodeList()
+    semaCollectCaptures(ptr_to_node(expr.child2), expr.child1, captures)
+
+    let bodyT = semaClosureBodyType(module, expr)
+    if (typeIsValid(bodyT) == false) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+
+    let name = semaClosureName(expr)
+
+    // The struct, whose fields are the captures at the types they have here.
+    let structDecl = createNode(NodeKind.STRUCT_DECL)
+    structDecl.s1 = strClone(name)
+    nodeSpanFrom(structDecl, expr)
+    let fields = nodeList()
+    let mut capturePtr = captures.head
+    while (nodeExists(capturePtr)) {
+        let capture = ptr_to_node(capturePtr)
+        let field = createNode(NodeKind.STRUCT_FIELD)
+        field.s1 = strClone(capture.s1)
+        nodeSpanFrom(field, capture)
+        field.child1 = node_to_ptr(monoAnnotationFromType(typeFromSemKey(ir_get_var_type(capture.s1))))
+        nodeListPush(fields, field)
+        capturePtr = capture.next
+    }
+    structDecl.child1 = fields.head
+    ir_declare_named_type(structDecl.s1, 1)
+    monoAppendDeclaration(module, structDecl)
+    indexTopLevel(structDecl)
+
+    // The function. `self` first, so that `call(f, x)` and `f.call(x)` are the
+    // same call -- a closure is a method like any other.
+    semaRewriteCaptures(ptr_to_node(expr.child2), captures)
+
+    let callFn = createNode(NodeKind.FUNCTION)
+    callFn.s1 = "call"
+    nodeSpanFrom(callFn, expr)
+
+    let params = nodeList()
+    let selfParam = createNode(NodeKind.FUNCTION_PARAMETER)
+    selfParam.s1 = "self"
+    nodeSpanFrom(selfParam, expr)
+    let selfAnnotation = createNode(NodeKind.TYPE_ANNOTATION)
+    selfAnnotation.s1 = strClone(name)
+    nodeSpanFrom(selfAnnotation, expr)
+    selfParam.child1 = node_to_ptr(selfAnnotation)
+    nodeListPush(params, selfParam)
+
+    let mut closureParam = expr.child1
+    while (nodeExists(closureParam)) {
+        let param = ptr_to_node(closureParam)
+        let following = param.next
+        param.next = ptr_null()
+        nodeListPush(params, param)
+        closureParam = following
+    }
+    callFn.child1 = params.head
+
+    let returnStatement = createNode(NodeKind.RETURN_STATEMENT)
+    nodeSpanFrom(returnStatement, expr)
+    returnStatement.child1 = expr.child2
+    let body = createNode(NodeKind.BLOCK)
+    nodeSpanFrom(body, expr)
+    body.child1 = node_to_ptr(returnStatement)
+    callFn.child2 = node_to_ptr(body)
+    callFn.child3 = node_to_ptr(monoAnnotationFromType(bodyT))
+
+    monoAppendDeclaration(module, callFn)
+    indexTopLevel(callFn)
+    callFn.s2 = semaFunctionSymbol(module, callFn)
+    semaPredeclareFunction(module, callFn)
+
+    // The use site becomes the struct literal that builds the captures. In place,
+    // so a second visit finds a STRUCT_LITERAL_EXPR and lowers nothing twice.
+    let initialisers = nodeList()
+    let mut initPtr = captures.head
+    while (nodeExists(initPtr)) {
+        let capture = ptr_to_node(initPtr)
+        let initialiser = createNode(NodeKind.STRUCT_FIELD)
+        initialiser.s1 = strClone(capture.s1)
+        nodeSpanFrom(initialiser, capture)
+        let value = createNode(NodeKind.IDENTIFIER_EXPR)
+        value.s1 = strClone(capture.s1)
+        nodeSpanFrom(value, capture)
+        initialiser.child1 = node_to_ptr(value)
+        nodeListPush(initialisers, initialiser)
+        initPtr = capture.next
+    }
+
+    expr.kind = NodeKind.STRUCT_LITERAL_EXPR
+    expr.s1 = strClone(name)
+    expr.i2 = 0
+    expr.child1 = initialisers.head
+    expr.child2 = ptr_null()
+    expr.child3 = ptr_null()
+    expr.typeInfo = ptr_null()
+    return semaExpr(module, expr)
 }
 
 fn analyzeModule(module: ASTNode) {

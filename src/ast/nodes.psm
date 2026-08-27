@@ -90,7 +90,18 @@ enum NodeKind {
     // child1 is the List/Slice base, child2 the inclusive start, and child3 the
     // exclusive end. Codegen lowers it to `(handle, offset, length)` -- never an
     // interior pointer -- as SPEC 8.4 requires.
-    SLICE_EXPR
+    SLICE_EXPR,
+
+    // v0.1 3.4. `|a: Int| a + 1`. child1 is the parameter chain, child2 the body
+    // expression. It exists only between the parser and semaExpr: the lowering
+    // rewrites the node **in place** into the STRUCT_LITERAL_EXPR that builds the
+    // closure's captures, so no pass after sema ever sees one. That in-place
+    // rewrite is also what makes the lowering idempotent, which it has to be --
+    // semaExpr runs over an argument more than once.
+    //
+    // Last, for the reason SLICE_EXPR is: adding a kind in the middle renumbers
+    // the ordinals the committed seed and test_41 depend on.
+    CLOSURE_EXPR
 }
 
 // Flat AST Node using String for pointers (type punning)

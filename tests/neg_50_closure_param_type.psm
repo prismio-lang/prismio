@@ -1,0 +1,10 @@
+// expect-error: expected `:` in parameter type
+// A closure's parameter types are written in v0.1. Inferring one means solving it
+// from the callee's signature at the call site, which is a different feature.
+fn applyTwice<F>(f: F, x: Int) -> Int {
+    return f(f(x))
+}
+
+fn main() -> Int {
+    return applyTwice(|x| x + 1, 1)
+}

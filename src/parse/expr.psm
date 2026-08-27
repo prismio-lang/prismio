@@ -299,6 +299,46 @@ fn parseSuffixes(p: Parser, base: ASTNode) -> ASTNode {
     return expr
 }
 
+// v0.1 3.4. `|a: Int, b: Int| a + b`, and `|| 42` for one with no parameters.
+//
+// **Parameter types are written, and the body is an expression.** Both are the
+// smallest form with the right structure rather than a limitation the design
+// needs: an inferred parameter type has to be solved from the callee's signature
+// at the call site, and a block body has to take its type from its `return`
+// statements. Neither changes this syntax when it arrives.
+//
+// `|` at the start of a primary is unambiguous -- a bitwise-or is binary and is
+// consumed by parseExpression's operator loop, so nothing else can begin here
+// with one. `||` arrives as a single token from the scanner, which is why the
+// empty list is a spelling rather than a special case.
+fn parseClosureExpr(p: Parser) -> ASTNode {
+    let node = parserNode(p, NodeKind.CLOSURE_EXPR)
+    let opener = parserCurrent(p)
+    let empty = strEquals(opener.value, "||")
+    parserAdvance(p)
+
+    let params = nodeList()
+    if (empty == false) {
+        if (parserCheckVal(p, TokenType.ARITHMETIC_OPERATOR, "|") == false) {
+            loop {
+                nodeListPush(params, parseParameter(p, false))
+                if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+            }
+        }
+        parserExpectVal(p, TokenType.ARITHMETIC_OPERATOR, "|", "closure parameter list")
+    }
+
+    node.child1 = params.head
+    node.child2 = node_to_ptr(parseExpression(p, 0))
+    return node
+}
+
+fn parserAtClosure(p: Parser) -> Bool {
+    let current = parserCurrent(p)
+    if (current.type != TokenType.ARITHMETIC_OPERATOR) { return false }
+    return strEquals(current.value, "|") or strEquals(current.value, "||")
+}
+
 fn isLiteralToken(t: Token) -> Bool {
     if (t.type == TokenType.NUMBER_LITERAL) { return true }
     if (t.type == TokenType.FLOAT_LITERAL) { return true }
@@ -310,6 +350,8 @@ fn isLiteralToken(t: Token) -> Bool {
 
 fn parsePrimary(p: Parser) -> ASTNode {
     let current = parserCurrent(p)
+
+    if (parserAtClosure(p)) { return parseClosureExpr(p) }
 
     // REQUIREMENTS 4. The absent reference. A keyword rather than an identifier,
     // so it cannot be shadowed by a binding -- `let none = 5` would otherwise
