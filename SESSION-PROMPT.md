@@ -12,10 +12,10 @@ The rule that decides which side anything falls on:
 > **If getting it wrong produces a miscompile, it belongs to the compiler.**
 > **If getting it wrong produces a link error or a missing feature, it does not.**
 
-**Current verified compiler: `build/cur-2`.** Suite **174/174**, fixed point, 18-source AIF
-differential, **87 programs under `--verify` with 0 violations**, and a from-seed bootstrap that
-reproduces it byte-for-byte. **Standing against idiomatic Rust: 0.91x-1.76x**, down from
-0.90x-3.09x — see `RESULTS-curate-list-get-inline.md`, which is also where the three killed
+**Current verified compiler: `build/jit-2`.** Suite **175/175**, fixed point, 18-source AIF
+differential, **87 programs under `--verify` with 0 violations**. **Standing against idiomatic
+Rust: 0.90x-1.81x**, down from 0.90x-3.09x, with the corpus median at **0.860x** for the session
+and *every* program at or below 1.0x. `RESULTS-curate-list-get-inline.md` is also where the killed
 optimisation hypotheses are recorded so they are not re-derived. M5.1, boxed `OBJECT`
 replacement, the cold-compile regression, the concurrency corpus gap, the task-handle leak, the
 `Int`-width question, the C string layer, the pass-through escape use-after-free, the

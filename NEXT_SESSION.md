@@ -1,7 +1,21 @@
 # Handoff — 2026-08-29
 
-**Current compiler: `build/cur-2`. Suite 174/174, fixed point, AIF differential 18/18,
-87 programs under `--verify` with 0 violations, a from-seed bootstrap reproducing it byte-for-byte.**
+**Current compiler: `build/jit-2`. Suite 175/175, fixed point, AIF differential 18/18,
+87 programs under `--verify` with 0 violations.**
+
+**The three-platform matrix reached macOS green and ubuntu green.** Windows is the last one, and
+the failures there (`--target`, `test_76_std_fs`) predate this work — a control at `97ef065`
+carries them. Everything that was red on Linux is closed: the heap corruption (a payload-free enum
+variant allocating uninitialised memory) and `--jit`, which needed `-rdynamic` because the JIT
+resolves externals with a `dlsym` on the running process and ELF does not export an executable's
+symbols by default.
+
+**Session backlog: all six items are closed or closed-with-a-correction.** Two of them turned out
+to rest on wrong premises, and the corrections are the useful part:
+- *"Ownership past a second return needs a fixed-point change"* — it did not. Returning a value
+  already implies not dropping it, so only the parameter-passthrough hazard needed asking.
+- *"Four C string functions survive only as an FFI test surface"* — three of the four are live
+  benchmark subjects inside `g7`'s timed loop. Deleting what a benchmark measures is not cleanup.
 
 **Standing against idiomatic Rust: 0.91x-1.76x, from 0.90x-3.09x. Corpus median 0.856x over the
 session, 25 runs, every checksum agreeing.** Two findings did that, and neither was on the list:

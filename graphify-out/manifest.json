@@ -1,17 +1,17 @@
 {
   "runtime/embedded_sources.h": {
-    "mtime": 1787823702.5250778,
-    "ast_hash": "b51183e1151b845226953eb59158b9b7",
+    "mtime": 1787831762.3032856,
+    "ast_hash": "e9a25a1fb2aa476b591a42fcee04eb1f",
     "semantic_hash": ""
   },
   "runtime/lang_runtime.c": {
-    "mtime": 1787819132.191571,
-    "ast_hash": "477701cf0f7dac70d12319f79f8d2e7b",
+    "mtime": 1787831353.485364,
+    "ast_hash": "880eff056593fbcb3bbb071921de1b6e",
     "semantic_hash": ""
   },
   "tests/test_runner.py": {
-    "mtime": 1787823081.2644405,
-    "ast_hash": "f927e7166b8d0d494d2d6b0e07c481fc",
+    "mtime": 1787830144.3291998,
+    "ast_hash": "35e5757df99e0ee800f8b8ce0b895baf",
     "semantic_hash": ""
   },
   "CONTRIBUTING.md": {
@@ -55,8 +55,8 @@
     "semantic_hash": ""
   },
   "runtime/build_driver.c": {
-    "mtime": 1787823702.435841,
-    "ast_hash": "544567df6b5a0c2532437f193fcc2585",
+    "mtime": 1787831762.1787267,
+    "ast_hash": "24821f5e11e7d20b494a8d89afd66fb9",
     "semantic_hash": ""
   },
   "runtime/diagnostics.c": {
@@ -105,8 +105,8 @@
     "semantic_hash": ""
   },
   "tools/bootstrap.sh": {
-    "mtime": 1787819129.9113996,
-    "ast_hash": "54b92cf834a086319fd7c8c5904c92ff",
+    "mtime": 1787831737.169594,
+    "ast_hash": "2b3dfcbb1aa121ef97ee73e0dd7e9dc7",
     "semantic_hash": ""
   },
   "tools/check_source_lists.py": {
@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1787828181.628382,
-    "ast_hash": "ed42404885eb9a83fe959ef318f7abf3",
+    "mtime": 1787832316.8161745,
+    "ast_hash": "a51534007053e488f43d7ebad09c4dea",
     "semantic_hash": ""
   },
   "PORTING.md": {
@@ -200,8 +200,8 @@
     "semantic_hash": ""
   },
   "runtime/aif_support.c": {
-    "mtime": 1787819132.1862388,
-    "ast_hash": "8d8883aaf5dbeb39f0f316610ed50dbc",
+    "mtime": 1787829575.5361748,
+    "ast_hash": "372dbf88434ee1b63088323f00837f92",
     "semantic_hash": ""
   },
   "tools/aif_differential.py": {
@@ -235,8 +235,8 @@
     "semantic_hash": ""
   },
   "aif/evidence/README.md": {
-    "mtime": 1787825716.6878653,
-    "ast_hash": "c5ea40a197d0925c08e4ee58ccb1fc83",
+    "mtime": 1787830652.9846025,
+    "ast_hash": "5a36ec6b9cee9bd00c606e372f0be824",
     "semantic_hash": ""
   },
   "aif/evidence/RESULTS-L0-tiers.md": {
@@ -635,8 +635,8 @@
     "semantic_hash": ""
   },
   "SESSION-PROMPT.md": {
-    "mtime": 1787828181.6288626,
-    "ast_hash": "2c16cb440a866735c63b0f5911d6d8d9",
+    "mtime": 1787832316.8165183,
+    "ast_hash": "5ef61b8c2dd76b572ce089adbcd62bee",
     "semantic_hash": ""
   },
   "aif/evidence/xlang/results-s10-pass2.json": {
@@ -675,8 +675,8 @@
     "semantic_hash": ""
   },
   "TODO.md": {
-    "mtime": 1787828117.8014631,
-    "ast_hash": "57a7a92b41475454f1c713133b9dc95e",
+    "mtime": 1787832289.382423,
+    "ast_hash": "aae30f59e3239ec62d1b05105d2b1232",
     "semantic_hash": ""
   },
   "aif/evidence/RESULTS-M1-lto.md": {
@@ -750,8 +750,8 @@
     "semantic_hash": ""
   },
   "NEXT_SESSION.md": {
-    "mtime": 1787828181.648128,
-    "ast_hash": "5beaa72f21ac7da6693a7d05a4839152",
+    "mtime": 1787832316.8365111,
+    "ast_hash": "adfe9d0ec235289db1da9d30ae4f4b8c",
     "semantic_hash": ""
   },
   "aif/evidence/xlang/strings/c/strings.c": {
@@ -1105,13 +1105,33 @@
     "semantic_hash": ""
   },
   "aif/evidence/RESULTS-curate-list-get-inline.md": {
-    "mtime": 1787827648.3899915,
-    "ast_hash": "b8f5bb075fb4d4e8963406fcb759eb02",
+    "mtime": 1787832289.3622034,
+    "ast_hash": "8602b43412f6c7458f7ced16c92bc2b8",
     "semantic_hash": ""
   },
   "aif/evidence/RESULTS-enum-zero-value.md": {
     "mtime": 1787823435.970144,
     "ast_hash": "1a476ebf63e14f6d76a5e48166b9a261",
+    "semantic_hash": ""
+  },
+  "aif/evidence/results-curate-write-ops.json": {
+    "mtime": 1787829137.2274354,
+    "ast_hash": "d8b841c54adb29288219c19c8049895a",
+    "semantic_hash": ""
+  },
+  "aif/evidence/results-owned-return-depth2.json": {
+    "mtime": 1787830595.0014372,
+    "ast_hash": "11796acd10c61e1fcb7d846b97e761b3",
+    "semantic_hash": ""
+  },
+  "aif/evidence/results-session-final.json": {
+    "mtime": 1787832230.7938902,
+    "ast_hash": "e6cfa48b4d98343482681a7786c0d1fe",
+    "semantic_hash": ""
+  },
+  "aif/evidence/RESULTS-owned-return-depth2.md": {
+    "mtime": 1787830621.6821096,
+    "ast_hash": "9b9a1b62770b985401f568029cedc38c",
     "semantic_hash": ""
   }
 }

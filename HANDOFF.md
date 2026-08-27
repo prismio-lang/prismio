@@ -12,11 +12,13 @@ Everything below is verified, not asserted — the commands that verify it are i
 
 - **Self-hosts to a fixed point.** Bootstrapping from the committed seed produces a compiler whose
   IR for `src/main.psm` is byte-identical to the warm build's. Current verified compiler is
-  **`build/cur-2`**, at a fixed point with `build/cur-1`; suite **174/174** and AIF differential
+  **`build/jit-2`**, at a fixed point with `build/jit-1`; suite **175/175** and AIF differential
   **18/18**, the 18th source being the corpus's concurrent program `g9_bands.psm`. **86 programs
   run under `--verify` with 0 violations**, which is the check that matters for the two ownership
   changes of 2026-08-29 — see the session entry at the top of `NEXT_SESSION.md`. The last good
-  before curating `list_get_inline` is **`build/zero-2`**, before the enum zero-value fix
+  before `-rdynamic` is **`build/len-2`**, before the String length bound **`build/d2-2`**,
+  before ownership surviving a second return **`build/cur-2`**, before curating
+  `list_get_inline` **`build/zero-2`**, before the enum zero-value fix
   **`build/link-2`**, before `--overflow-checks` **`build/ot-2`**, before the argument-position
   release **`build/pt-6`**, and before the pass-through escape guard **`build/nostr-4`**
   (suite 172/172 on the 172-test tree). The last good before the task-handle release is `build/cold-bc-2`, and

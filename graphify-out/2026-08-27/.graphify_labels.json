@@ -187,6 +187,7 @@
   "185": "run_check_command_test",
   "186": "test_runner.py",
   "187": "2026-08-19 (payload enums) — `Option`/`Result` are in; exhaustiveness is the hole, and REQUIREMENTS 18 now gates two things",
+  "188": "The hot element accessor was never curated",
   "189": "call_edge_push",
   "190": "run_cli_test",
   "191": "run_aif_layout_test",
@@ -245,5 +246,6 @@
   "244": "Session prompt — Prismio, open ownership work",
   "245": "compiler_build_executable",
   "246": "An owned call result consumed directly as an argument now has an owner",
-  "247": "A binding that escapes through a callee's return was freed under its caller"
+  "247": "A binding that escapes through a callee's return was freed under its caller",
+  "248": "A payload-free enum variant allocated uninitialised memory"
 }
