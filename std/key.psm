@@ -1,0 +1,130 @@
+// `Key` -- what a hash table needs of a type.
+//
+// **One trait with two methods, not two traits.** v0.1 admits one bound per type
+// parameter, and a map key needs both hashing and equality, so `Map<K: Key, V>`
+// is the only shape that expresses the requirement today. When bounds become a
+// list, this splits into `Hash + Eq` with no change to any impl below -- the
+// methods are already named for the two halves.
+//
+// **`eq` rather than `==`.** `String ==` compares pointers and sema rejects it,
+// so a map keyed on String cannot be written in terms of the operator at all.
+// That is the concrete reason `std/map.psm` was an association list that refused
+// String keys: without a bound, a generic `K` admitted only the operations that
+// typecheck for every type, which was the operator, which was wrong for the one
+// key type everybody wants.
+//
+// **Three methods, one bound.** v0.1 admits one bound per type parameter, so
+// `Key` carries `copyOf` as well rather than `Map` asking for `Key + Copy`. The
+// impls do not duplicate anything: `copyOf` comes from `impl Copy for <T>` in
+// std/copy.psm and conformance finds it there.
+//
+// **The hash contract**: equal keys must hash equal. Unequal keys need not hash
+// unequally -- that is what the probe's `eq` is for. A `hash` that returns a
+// constant is correct and slow, which is the right failure mode for a trait a
+// user implements by hand.
+
+import std.string
+import std.copy
+
+trait Key {
+    fn hash(self) -> Int
+    fn eq(self, other: Self) -> Bool
+    // A map keeps its keys, and a parameter is a borrow -- so a key that owns
+    // anything has to be duplicated on the way in. Shared with `Copy`: an `impl`
+    // block is a naming construct and conformance is checked by name and
+    // signature over the whole module, so `impl Copy for String` satisfies this
+    // and no type writes `copyOf` twice. See std/copy.psm.
+    fn copyOf(self) -> Self
+}
+
+// MurmurHash3's finalizer. An identity hash is a real hazard here rather than a
+// theoretical one: keys in this compiler are interned ids, which are consecutive
+// small integers, and open addressing with consecutive keys and an identity hash
+// degrades to a linear scan of one long probe chain.
+//
+// Computed in U32 because the mix needs a *logical* right shift and `>>` on a
+// signed Int is arithmetic -- an arithmetic shift feeds sign bits back in and
+// collapses the mix for every negative key. The result is masked to 31 bits so
+// it is non-negative as an Int, which is what lets `hash(k) & mask` be an index
+// without a second correction.
+//
+// No hex literals in the language yet, so the constants are decimal:
+// 2246822507 is 0x85ebca6b and 3266489909 is 0xc2b2ae35.
+fn keyMixInt(value: Int) -> Int {
+    let mut h = value as U32
+    h = h ^ (h >> 16)
+    h = h * 2246822507
+    h = h ^ (h >> 13)
+    h = h * 3266489909
+    h = h ^ (h >> 16)
+    return (h & 2147483647) as Int
+}
+
+// FNV-1a over the bytes. Chosen over anything faster because it is four lines,
+// has no seed to get wrong, and a map keyed on strings in this language is not
+// yet on any measured hot path -- when one appears, this is the one body to
+// replace and every caller is unaffected.
+//
+// 2166136261 is FNV's 32-bit offset basis and 16777619 its prime.
+fn keyHashBytes(s: String) -> Int {
+    let n = __builtin_string_len(s)
+    let mut h = 2166136261 as U32
+    let mut i = 0
+    while (i < n) {
+        h = h ^ ((__builtin_string_byte_at(s, i) as U8) as U32)
+        h = h * 16777619
+        i = i + 1
+    }
+    return (h & 2147483647) as Int
+}
+
+impl Key for Int {
+    fn hash(self) -> Int { return keyMixInt(self) }
+    fn eq(self, other: Self) -> Bool { return self == other }
+}
+
+impl Key for I64 {
+    fn hash(self) -> Int { return keyMixInt((self & 4294967295) as Int) }
+    fn eq(self, other: Self) -> Bool { return self == other }
+}
+
+impl Key for U32 {
+    fn hash(self) -> Int { return keyMixInt(self as Int) }
+    fn eq(self, other: Self) -> Bool { return self == other }
+}
+
+impl Key for U64 {
+    fn hash(self) -> Int { return keyMixInt((self & 4294967295) as Int) }
+    fn eq(self, other: Self) -> Bool { return self == other }
+}
+
+impl Key for Usize {
+    fn hash(self) -> Int { return keyMixInt((self & 4294967295) as Int) }
+    fn eq(self, other: Self) -> Bool { return self == other }
+}
+
+impl Key for Char {
+    fn hash(self) -> Int { return keyMixInt((self as U8) as Int) }
+    fn eq(self, other: Self) -> Bool { return self == other }
+}
+
+impl Key for Bool {
+    fn hash(self) -> Int {
+        if (self) { return keyMixInt(1) }
+        return keyMixInt(0)
+    }
+    fn eq(self, other: Self) -> Bool { return self == other }
+}
+
+// The impl this whole file exists for. `strEquals` is content equality; the
+// operator would compare pointers, which is why a String key was unwritable.
+impl Key for String {
+    fn hash(self) -> Int { return keyHashBytes(self) }
+    fn eq(self, other: Self) -> Bool { return strEquals(self, other) }
+}
+
+// **`Float` deliberately has no impl, and that is a decision.** NaN is not equal
+// to itself, so a NaN key could be inserted and never found again -- a silently
+// wrong answer, which is the one failure mode v0.1's bar names. `Map<Float, V>`
+// therefore fails at the instantiation with "Float does not implement `Key`",
+// which is the diagnostic a user can act on.

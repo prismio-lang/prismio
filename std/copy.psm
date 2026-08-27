@@ -1,0 +1,49 @@
+// `Copy` -- a value that can be duplicated.
+//
+// The trait a generic *container* needs, and the reason it is needed is Prismio's
+// parameter rule rather than anything about copying: **a parameter is a borrow**,
+// so a generic function cannot store its argument. `list_push(m.keys, key)` in a
+// `Map` is "cannot move out of borrowed value `key`", and no amount of `sink`
+// fixes it -- a `sink` parameter stored into a container is a double free that
+// `--verify` catches as "release of a pointer that is not live".
+//
+// So a container that keeps what it is given has to be able to *duplicate* it,
+// and duplicating is per-type: an `Int` copies itself, a `String` needs
+// `strClone`, a struct needs a field-by-field rebuild.
+//
+// **`copyOf` is deliberately shared with `Key`.** Trait conformance here is
+// checked by name and signature against the whole module, not against the block
+// the method was written in -- an `impl` block is a naming construct. So
+// `impl Copy for String` satisfies `Key`'s `copyOf` requirement as well, and a
+// type never writes the same method twice to be both.
+//
+// A `copyOf` that returns `self` is correct only for a type that owns nothing:
+// returning a parameter from a function is a borrow escaping, and for an owned
+// type it is an alias two scopes both believe they own.
+
+import std.string
+
+trait Copy {
+    fn copyOf(self) -> Self
+}
+
+impl Copy for Int    { fn copyOf(self) -> Self { return self } }
+impl Copy for I8     { fn copyOf(self) -> Self { return self } }
+impl Copy for I16    { fn copyOf(self) -> Self { return self } }
+impl Copy for I64    { fn copyOf(self) -> Self { return self } }
+impl Copy for Isize  { fn copyOf(self) -> Self { return self } }
+impl Copy for U8     { fn copyOf(self) -> Self { return self } }
+impl Copy for U16    { fn copyOf(self) -> Self { return self } }
+impl Copy for U32    { fn copyOf(self) -> Self { return self } }
+impl Copy for U64    { fn copyOf(self) -> Self { return self } }
+impl Copy for Usize  { fn copyOf(self) -> Self { return self } }
+impl Copy for Char   { fn copyOf(self) -> Self { return self } }
+impl Copy for Float  { fn copyOf(self) -> Self { return self } }
+impl Copy for Bool   { fn copyOf(self) -> Self { return self } }
+
+// The one that is not the identity, and the reason this trait exists.
+impl Copy for String {
+    fn copyOf(self) -> Self {
+        return strClone(self)
+    }
+}

@@ -269,41 +269,78 @@ fn monoHasTrait(module: ASTNode, traitName: String) -> Bool {
 // Reported against the use site rather than the template, because the template is
 // not wrong -- `sort<T: Ord>` is a correct declaration, and what failed is the
 // argument this call made of it.
-fn monoCheckBounds(module: ASTNode, at: ASTNode, name: String, params: String, argsPtr: Ptr) {
+// Answers whether every bound holds. **A violated bound stops the
+// instantiation**, and that is the other half of not cascading: an instantiated
+// body whose bound was violated is a body full of calls that cannot resolve, and
+// reporting those puts the compiler's own vocabulary and the standard library's
+// line numbers in front of a user who wrote one wrong type argument.
+fn monoCheckBounds(module: ASTNode, at: ASTNode, name: String, params: String, argsPtr: Ptr) -> Bool {
     let count = monoParamCount(params)
+    let mut satisfied = true
     let mut i = 0
     while (i < count) {
         let bound = monoParamBound(params, i)
         if (strEquals(bound, "") == false) {
             let argPtr = monoChainAt(argsPtr, i)
             if (nodeExists(argPtr)) {
-                monoCheckOneBound(module, at, name, monoParamName(params, i), bound,
-                                  semaAnnotationType(module, ptr_to_node(argPtr)))
+                if (monoCheckOneBound(module, at, name, monoParamName(params, i), bound,
+                                      semaAnnotationType(module, ptr_to_node(argPtr))) == false) {
+                    satisfied = false
+                }
             }
         }
         i = i + 1
     }
+    return satisfied
+}
+
+// Which (type, bound) pairs have already been reported.
+//
+// **A bound failure cascades, and the cascade is structural rather than a
+// wording problem.** One `mapNew<Float, Int>()` instantiates `mapNew`, whose body
+// names `Map<K, V>`, which instantiates `Map`, whose every function names
+// `Map<K, V>` again -- so a single mistake in one user expression reported the
+// same fact 25 times, ran into the compiler's error cap, and the cap exits
+// without `diag_finish`'s "aborting due to N previous error(s)". A negative test
+// then cannot tell a rejection from a crash, which is how this was found.
+//
+// A `String` rather than a set because a set would need a runtime symbol, and
+// this holds one short marker per *distinct* violated bound in a whole compile --
+// a program with ten of them has a 60-byte string. It is only ever appended to on
+// a path that has already failed the build.
+let mut monoReportedBounds = ""
+
+fn monoFirstReportOfBound(typeName: String, bound: String) -> Bool {
+    let marker = strConcat(strConcat("|", typeName), strConcat(":", strConcat(bound, "|")))
+    if (strContains(monoReportedBounds, marker)) { return false }
+    monoReportedBounds = strConcat(monoReportedBounds, marker)
+    return true
 }
 
 fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param: String,
-                     bound: String, argT: TypeInfo) {
+                     bound: String, argT: TypeInfo) -> Bool {
     // An invalid argument type is the result of an error already reported; a
-    // second one about a bound it cannot possibly satisfy is noise.
-    if (typeIsValid(argT) == false) { return }
+    // second one about a bound it cannot possibly satisfy is noise. Answered
+    // `false` all the same, so the instantiation still does not happen.
+    if (typeIsValid(argT) == false) { return false }
 
     if (monoHasTrait(module, bound) == false) {
-        semaErrorAt(at, strConcat(strConcat(diagQuote(bound), " is not a trait, so `"),
-                                  strConcat(strConcat(param, ": "), strConcat(bound, "` cannot be a bound"))))
-        return
+        if (monoFirstReportOfBound(argT.name, bound)) {
+            semaErrorAt(at, strConcat(strConcat(diagQuote(bound), " is not a trait, so `"),
+                                      strConcat(strConcat(param, ": "), strConcat(bound, "` cannot be a bound"))))
+        }
+        return false
     }
 
-    if (monoImplements(module, argT.name, bound)) { return }
+    if (monoImplements(module, argT.name, bound)) { return true }
+    if (monoFirstReportOfBound(argT.name, bound) == false) { return false }
 
     semaErrorAt(at, strConcat(strConcat(typeDisplay(argT), " does not implement "),
                               diagQuote(bound)))
     diag_note(strConcat(strConcat(diagQuote(name), " requires it: the type parameter is declared "),
                         strConcat(strConcat(param, ": "), bound)))
     diag_note(strConcat(strConcat("write `impl ", bound), strConcat(strConcat(" for ", argT.name), " { ... }`")))
+    return false
 }
 
 fn monoChainLength(ptr: Ptr) -> Int {
@@ -453,7 +490,7 @@ fn monoInstantiateStruct(module: ASTNode, tn: ASTNode) -> String {
         monoArityError(tn, tn.s1, params)
         return ""
     }
-    monoCheckBounds(module, tn, tn.s1, params, tn.child1)
+    if (monoCheckBounds(module, tn, tn.s1, params, tn.child1) == false) { return "" }
 
     // The mangled name is written straight onto the declaration that will carry
     // it, and every read below is a read of that field.
@@ -644,7 +681,10 @@ fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode) {
             monoArityError(callExpr, template.s1, params)
             return
         }
-        monoCheckBounds(module, callExpr, template.s1, params, explicit.child1)
+        if (monoCheckBounds(module, callExpr, template.s1, params, explicit.child1) == false) {
+            callExpr.i1 = 1
+            return
+        }
         callee.s1 = monoInstantiateFunction(module, template, explicit.child1)
         return
     }
@@ -658,6 +698,9 @@ fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode) {
         nodeListPush(solvedArgs, solved)
         i = i + 1
     }
-    monoCheckBounds(module, callExpr, template.s1, params, solvedArgs.head)
+    if (monoCheckBounds(module, callExpr, template.s1, params, solvedArgs.head) == false) {
+        callExpr.i1 = 1
+        return
+    }
     callee.s1 = monoInstantiateFunction(module, template, solvedArgs.head)
 }

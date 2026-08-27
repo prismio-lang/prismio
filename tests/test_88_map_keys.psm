@@ -1,0 +1,116 @@
+// `Map<K, V>` as a hash table, and the key types the association list could not
+// take.
+//
+// The old `std/map.psm` header said String keys "do not instantiate, and that is
+// the language being consistent rather than this module being weak" -- a generic
+// `K` admitted only the operations that typecheck for every type, which was `==`,
+// and `String ==` compares pointers and is rejected. `K: Key` replaces the
+// operator with `eq`, so this file is the assertion that the prediction in that
+// header came true.
+//
+// `tests/test_65_map.psm` is deliberately *not* changed by this: it exercises the
+// same API against Int keys and still passes untouched, which is what "a hash
+// table without its callers changing" has to mean.
+
+import std.io
+import std.map
+import std.key
+import std.copy
+import std.option
+import std.string
+
+struct Point {
+    x: Int,
+    y: Int
+}
+
+// A user type as a map key. Two methods and the type is admissible -- there is
+// nothing else to register and no table to add it to.
+impl Key for Point {
+    fn hash(self) -> Int {
+        return keyMixInt(self.x * 31 + self.y)
+    }
+    fn eq(self, other: Self) -> Bool {
+        return self.x == other.x and self.y == other.y
+    }
+}
+
+// `Key` requires `copyOf` as well, and this is where a user type supplies it --
+// in an `impl Copy` block, not in the `impl Key` block above. Conformance is
+// checked by name and signature over the whole module, so the two blocks
+// together satisfy `Key` and neither writes the other's method.
+impl Copy for Point {
+    fn copyOf(self) -> Self {
+        return Point { x: self.x, y: self.y }
+    }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // String keys.
+    let names = mapNew<String, Int>()
+    mapSet(names, "alpha", 1)
+    mapSet(names, "beta", 2)
+    mapSet(names, "gamma", 3)
+    if (mapLen(names) != 3) { return fail("three string keys") }
+    if (mapGetOr(names, "beta", 0) != 2) { return fail("string lookup") }
+    if (mapGetOr(names, "delta", 0) != 0) { return fail("absent string key") }
+
+    // Equal content, different pointers. This is the case the old `==` got
+    // wrong: it compared the pointers and answered "absent".
+    let built = strConcat("al", "pha")
+    if (mapGetOr(names, built, 0) != 1) { return fail("a string key built at run time") }
+
+    // Overwrite through a distinct pointer with the same content.
+    if (mapSet(names, strConcat("bet", "a"), 22) == false) {
+        return fail("overwrite through an equal-content key not reported")
+    }
+    if (mapLen(names) != 3) { return fail("overwrite grew the map") }
+    if (mapGetOr(names, "beta", 0) != 22) { return fail("overwrite did not take") }
+
+    // Growth. 8 buckets rehashes at 7, so 200 entries is several rehashes deep
+    // and every key has to survive every one of them.
+    let counts = mapNew<Int, Int>()
+    let mut i = 0
+    while (i < 200) {
+        mapSet(counts, i * 7, i)
+        i = i + 1
+    }
+    if (mapLen(counts) != 200) { return fail("200 inserts") }
+    let mut j = 0
+    while (j < 200) {
+        if (mapGetOr(counts, j * 7, -1) != j) { return fail("a key did not survive rehashing") }
+        j = j + 1
+    }
+    if (mapGetOr(counts, 3, -1) != -1) { return fail("an absent key after rehashing") }
+
+    // Insertion order survives rehashing: mapKeyAt's contract is the order the
+    // keys went in, and rehashing moves slots, not entries.
+    if (mapKeyAt(counts, 0) != 0) { return fail("first key after rehashing") }
+    if (mapKeyAt(counts, 199) != 199 * 7) { return fail("last key after rehashing") }
+    if (mapValueAt(counts, 5) != 5) { return fail("value at position after rehashing") }
+
+    // A user struct as a key.
+    // The value stays scalar: `V` has no bound, so an owned value is a compile
+    // error rather than a leak. See std/map.psm's header for the measurement
+    // behind that.
+    let places = mapNew<Point, Int>()
+    mapSet(places, Point { x: 1, y: 2 }, 12)
+    mapSet(places, Point { x: 3, y: 4 }, 34)
+    if (mapGetOr(places, Point { x: 1, y: 2 }, 0) != 12) { return fail("struct key lookup") }
+    if (mapGetOr(places, Point { x: 3, y: 4 }, 0) != 34) { return fail("second struct key") }
+    if (mapGetOr(places, Point { x: 9, y: 9 }, 0) != 0) { return fail("absent struct key") }
+
+    // mapGet still tells absent from present-and-equal-to-the-fallback.
+    mapSet(counts, 999999, 0)
+    if (optionIsNone(mapGet(counts, 999999))) { return fail("a stored zero read as absent") }
+    if (optionIsSome(mapGet(counts, 999998))) { return fail("a missing key read as present") }
+
+    println("test_88 ok")
+    return 0
+}

@@ -1,0 +1,9 @@
+// expect-error: Float does not implement `Key`
+import std.map
+import std.key
+
+fn main() -> Int {
+    let m = mapNew<Float, Int>()
+    mapSet(m, 1.5, 1)
+    return mapLen(m)
+}

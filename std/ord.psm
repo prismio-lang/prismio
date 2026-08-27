@@ -1,0 +1,137 @@
+// `Ord` -- a total order, and the types that have one.
+//
+// The trait a bounded generic reaches for first: `fn sort<T: Ord>(items: List<T>)`
+// is the whole reason bounds exist, and this is what makes it writable for
+// anything but a single hardcoded element type.
+//
+// **`cmp` returns an Int, not a three-valued enum**, and the reason is that every
+// caller of a comparison immediately branches on the sign. `strCompare` already
+// answers this way, C's `qsort` comparator answers this way, and an enum would
+// mean a `match` at the innermost point of every sort. The contract is the usual
+// one: negative when `self` sorts first, zero when the two are equivalent,
+// positive when `other` sorts first.
+//
+// **A trait is a check, not dispatch.** `cmp(a, b)` inside a bounded generic is
+// resolved by ordinary overload resolution once `T` is concrete, so an `impl` here
+// costs nothing at a call site that does not use it -- and a type this file does
+// not cover is covered by writing `impl Ord for MyType` beside the type, with no
+// change here.
+//
+// **Float's order is not total, and this file does not pretend otherwise.** NaN
+// compares as neither less nor greater, so `cmp` answers 0 for it -- the same
+// answer "equivalent" gets. A sort over data containing NaN therefore has an
+// unspecified order rather than a corrupted one; it will not read out of bounds
+// and it will not loop. A total order over Float needs a NaN-ordering decision
+// this file is not the place to make.
+
+import std.string
+
+trait Ord {
+    fn cmp(self, other: Self) -> Int
+}
+
+impl Ord for Int {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+impl Ord for I8 {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+impl Ord for I16 {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+impl Ord for I64 {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+impl Ord for Isize {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+impl Ord for U8 {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+impl Ord for U16 {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+impl Ord for U32 {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+impl Ord for U64 {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+impl Ord for Usize {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+impl Ord for Char {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+// NaN falls through both tests and answers 0. See the header.
+impl Ord for Float {
+    fn cmp(self, other: Self) -> Int {
+        if (self < other) { return 0 - 1 }
+        if (self > other) { return 1 }
+        return 0
+    }
+}
+
+// Lexicographic by byte, which is what strCompare already does. `String ==`
+// compares pointers and is rejected by sema, so this is the only correct
+// spelling and not a convenience.
+impl Ord for String {
+    fn cmp(self, other: Self) -> Int {
+        return strCompare(self, other)
+    }
+}

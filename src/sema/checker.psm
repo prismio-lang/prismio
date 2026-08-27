@@ -400,6 +400,18 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         }
 
         monoResolveGenericCall(module, expr, callee)
+
+        // A bound on the template this call names is violated, and monoCheckBounds
+        // has said so once. Resolving an overload for it would report the same
+        // mistake a second time in the overload machinery's vocabulary, and
+        // checking its arguments a third. `i1` is free on a CALL_EXPR and the flag
+        // has to live on the node rather than in a local, because semaExpr runs
+        // over a call more than once.
+        if (expr.i1 == 1) {
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+
         let name = callee.s1
 
         if (semaCheckBuiltinCall(module, expr, name, expr.child2)) {
@@ -572,7 +584,14 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             return dataFieldT
         }
         if (objectT.kind != TypeKind.STRUCT) {
-            semaErrorAt(objectNode, strConcat("member access requires a struct value, found ", typeDisplay(objectT)))
+            // An Invalid object is the *result* of an error already reported --
+            // an unresolvable call, a violated bound. Blaming this expression for
+            // it is the same mistake semaExpectAssignable refuses to make, and it
+            // is how one wrong type argument became a screenful.
+            if (typeIsValid(objectT)) {
+                semaErrorAt(objectNode, strConcat("member access requires a struct value, found ",
+                                                    typeDisplay(objectT)))
+            }
             nodeSetType(expr, typeInvalid())
             return typeInvalid()
         }

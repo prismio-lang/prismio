@@ -1,0 +1,162 @@
+// List algorithms that need an order -- which is to say, the ones that could not
+// be written before bounded generics existed.
+//
+// `sort` is the reason this module exists. It is the shape v0.1's bar names
+// (`list.sort()`), and it is unwritable without a bound: a generic function can
+// only use the operations that typecheck for *every* `T` it is instantiated at,
+// and before `T: Ord` that set did not include comparison.
+//
+// Only `sort`, `isSorted` and `binarySearch` take short names. Every helper is
+// `list*`-prefixed for the reason `std/string.psm` gives at length: there is no
+// module namespacing yet, so a short unprefixed name here is claimed for every
+// program that imports this file, and `listPartition` is not a name a caller
+// should have to work around.
+
+import std.ord
+
+// Below this, insertion sort wins: it is O(n^2) but with a tiny constant and no
+// partition bookkeeping. 12 is the conventional cut and is not measured here --
+// the corpus has no sort in it, so tuning the threshold would be tuning against
+// nothing.
+fn listSortCutoff() -> Int { return 12 }
+
+fn listSwap<T>(items: List<T>, i: Int, j: Int) {
+    if (i == j) { return }
+    // Read both, then write both. `list_set` transfers ownership in and releases
+    // nothing, so writing before both are read would leave one slot naming an
+    // element the other slot also names.
+    let a = list_get(items, i)
+    let b = list_get(items, j)
+    list_set(items, i, b)
+    list_set(items, j, a)
+}
+
+fn listOrderPair<T: Ord>(items: List<T>, i: Int, j: Int) {
+    let a = list_get(items, i)
+    let b = list_get(items, j)
+    if (cmp(a, b) > 0) { listSwap(items, i, j) }
+}
+
+fn listInsertionSort<T: Ord>(items: List<T>, low: Int, high: Int) {
+    let mut i = low + 1
+    while (i <= high) {
+        let mut j = i
+        while (j > low) {
+            let left = list_get(items, j - 1)
+            let right = list_get(items, j)
+            if (cmp(left, right) <= 0) { break }
+            listSwap(items, j - 1, j)
+            j = j - 1
+        }
+        i = i + 1
+    }
+}
+
+// Three-way quicksort (Bentley-McIlroy), median-of-three, insertion sort under
+// the cutoff, recursing on the smaller partition and looping on the larger.
+//
+// **Three-way rather than two-way, and that is a correctness property rather
+// than a tuning.** Lomuto's partition on a list of equal elements advances the
+// store index never, returns `low`, and recurses on n-1 -- so sorting 10 000
+// equal values is 50 million comparisons. The Dutch-flag partition puts every
+// equal element in the middle band and both recursive ranges come back empty, so
+// the same input is one linear pass.
+//
+// Recursing on the smaller side and looping on the larger bounds stack depth at
+// O(log n) whatever the input does, which is what keeps an adversarial ordering
+// from being a stack overflow rather than merely slow.
+fn listSortRange<T: Ord>(items: List<T>, low: Int, high: Int) {
+    let mut lo = low
+    let mut hi = high
+    while (lo < hi) {
+        if (hi - lo < listSortCutoff()) {
+            listInsertionSort(items, lo, hi)
+            return
+        }
+
+        // Median of three, parked at `lo`.
+        let mid = lo + (hi - lo) / 2
+        listOrderPair(items, lo, mid)
+        listOrderPair(items, lo, hi)
+        listOrderPair(items, mid, hi)
+        listSwap(items, mid, lo)
+
+        // [lo, lt) < pivot, [lt, i) == pivot, (gt, hi] > pivot.
+        //
+        // The pivot is re-read from `lt` every iteration rather than captured
+        // once, and that is deliberate: the invariant guarantees `[lt, i)` is
+        // non-empty and holds pivot-equal elements, and an inline `List<T>`
+        // stores its elements *in* the array -- so a value captured before the
+        // first swap would name whatever bytes later landed in that slot.
+        let mut lt = lo
+        let mut i = lo + 1
+        let mut gt = hi
+        while (i <= gt) {
+            let pivot = list_get(items, lt)
+            let current = list_get(items, i)
+            let order = cmp(current, pivot)
+            if (order < 0) {
+                listSwap(items, lt, i)
+                lt = lt + 1
+                i = i + 1
+            } else if (order > 0) {
+                listSwap(items, i, gt)
+                gt = gt - 1
+            } else {
+                i = i + 1
+            }
+        }
+
+        if (lt - lo < hi - gt) {
+            listSortRange(items, lo, lt - 1)
+            lo = gt + 1
+        } else {
+            listSortRange(items, gt + 1, hi)
+            hi = lt - 1
+        }
+    }
+}
+
+// v0.1's bar: `items.sort()`.
+//
+// In place, and **not stable** -- equal elements may be reordered. A stable sort
+// needs a scratch buffer and is a different function, not a flag on this one.
+fn sort<T: Ord>(items: List<T>) {
+    listSortRange(items, 0, list_len(items) - 1)
+}
+
+fn isSorted<T: Ord>(items: List<T>) -> Bool {
+    let n = list_len(items)
+    let mut i = 1
+    while (i < n) {
+        let left = list_get(items, i - 1)
+        let right = list_get(items, i)
+        if (cmp(left, right) > 0) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// The index of `needle`, or -1. Requires a sorted list and does not check that
+// it got one -- checking would cost the linear scan the binary search exists to
+// avoid. On an unsorted list the answer is unspecified, not unsafe.
+//
+// `low + (high - low) / 2` rather than `(low + high) / 2`: the second overflows
+// once a list is longer than half the Int range, which is the oldest bug in this
+// algorithm and costs nothing to avoid.
+fn binarySearch<T: Ord>(items: List<T>, needle: T) -> Int {
+    let mut low = 0
+    let mut high = list_len(items) - 1
+    while (low <= high) {
+        let mid = low + (high - low) / 2
+        let at = list_get(items, mid)
+        let order = cmp(at, needle)
+        if (order == 0) { return mid }
+        if (order < 0) {
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
+    }
+    return 0 - 1
+}
