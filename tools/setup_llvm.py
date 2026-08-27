@@ -204,7 +204,15 @@ def candidate_roots() -> list[Path]:
                 (p for p in downloads.glob("clang+llvm-*") if p.is_dir()), reverse=True
             )
     elif sys.platform == "darwin":
+        # The versioned keg first. Homebrew installs `llvm@22` keg-only at
+        # `opt/llvm@22`, and only the *unversioned* `llvm` formula gets
+        # `opt/llvm` -- which tracks whatever major is current and is therefore
+        # the one this pinned check is most likely to reject. Looking for the
+        # major we actually want is both more likely to hit and more likely to
+        # hit something usable.
         roots += [
+            Path(f"/opt/homebrew/opt/llvm@{REQUIRED_MAJOR}"),
+            Path(f"/usr/local/opt/llvm@{REQUIRED_MAJOR}"),
             Path("/opt/homebrew/opt/llvm"),
             Path("/usr/local/opt/llvm"),
             Path("/Library/Developer/CommandLineTools/usr"),

@@ -18,6 +18,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Kept in step with REQUIRED_MAJOR in tools/setup_llvm.py and
+# PRISMIO_LLVM_EXPECTED_MAJOR in the runtime. The C API is stable within a major
+# and not across them, so "some LLVM" is not good enough.
+env:
+  LLVM_MAJOR: "22"
+
 jobs:
   bootstrap:
     strategy:
@@ -39,6 +45,36 @@ jobs:
       # because it costs nothing and a mismatch makes everything below misleading.
       - name: Check the toolchain source lists agree
         run: python tools/check_source_lists.py
+
+      # Install LLVM the way each platform actually ships it, *before* asking
+      # setup_llvm.py for one -- it prefers a usable local install and only
+      # downloads as a fallback.
+      #
+      # The fallback does not work on these two, which the matrix established on
+      # 2026-08-29 rather than anyone assuming it: LLVM 22's `LLVM-<ver>-<OS>-
+      # <ARCH>.tar.xz` extracts fine and then has no `llvm-c/Core.h` or shared
+      # link library, so a downloaded release cannot satisfy the C API
+      # dependency at all. Windows is unaffected -- it uses the
+      # `clang+llvm-<triple>` package, which does carry them.
+      #
+      # This also fixes the *other* half of the same problem: it puts one LLVM
+      # on PATH for both ends of the build, rather than linking the provisioned
+      # LLVM-C and shelling out to whatever `clang` the image happened to ship.
+      - name: Install LLVM (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@${{ env.LLVM_MAJOR }} || brew install llvm
+          echo "$(brew --prefix llvm@${{ env.LLVM_MAJOR }} 2>/dev/null || brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: Install LLVM (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh ${{ env.LLVM_MAJOR }}
+          sudo apt-get install -y "llvm-${{ env.LLVM_MAJOR }}-dev" "libclang-${{ env.LLVM_MAJOR }}-dev"
+          echo "/usr/lib/llvm-${{ env.LLVM_MAJOR }}/bin" >> "$GITHUB_PATH"
 
       # Pinned to one LLVM major; setup_llvm.py rejects anything else rather
       # than adopting it, because the C API is not stable across majors.
@@ -63,6 +99,7 @@ jobs:
       - name: Put the provisioned LLVM on PATH
         shell: bash
         run: python -c "import json;print(json.load(open('third_party/llvm-paths.json'))['bin'])" >> "$GITHUB_PATH"
+
 
       - name: Bootstrap from the seed
         shell: bash
