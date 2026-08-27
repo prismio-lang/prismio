@@ -1250,19 +1250,26 @@ checkbox, or the two drift and only one of them gets read.)*
       `aif_fn_may_return_param` intersects *sites* and a callee returning a **view** of a parameter
       carries provenance instead (SPEC 8.4), so the intersection is silent about it. Sharpening
       means teaching the predicate about view provenance — not relaxing the condition.
-- [ ] **Ownership of a callee-allocated value does not survive a second return.**
-      `aif_owns_call_result_at_node` requires the returned site to have been allocated in the callee
-      itself (`if (sites[s].fn != c->fn) return AIF_ELEM_NONE;`). The guard is not arbitrary — a
-      pass-through leaves the value owned where it was created and freeing it at the caller
-      double-frees — but it also declines the ordinary case where the intermediate frame *returned*
-      the value and kept no claim on it, which is every producer written in Prismio.
-      Invisible while `std.string` was C, because an `extern fn` carries its `produce` contract and
-      answered at depth 1. Reproduction: `tests/owned_return_depth2.psm` — depth 1 is **6/6/0**,
-      adding one level gives **12/7/5**. `tests/test_72_reassigned_ownership.psm` is deliberately
-      left on the C `str_concat` for this reason and its header says so.
-      **Not fixable by dropping the guard**; it needs the transitive fact — the site escaped to
-      Caller through every intermediate frame and no intermediate frame owns it — which is a
-      fixed-point change, not a predicate change.
+- [x] **Ownership survives a second return — 2026-08-29.** `aif_owns_call_result_at_node` required
+      `sites[s].fn == c->fn`, which is one hop and declined every producer written in Prismio the
+      moment a second frame appeared. **12/7/5 → 12/12/0** on `tests/owned_return_depth2.psm`.
+      **It was not a fixed-point change**, which is what this entry and `SESSION-PROMPT.md` both
+      predicted. The two halves come apart: *"no intermediate frame owns it"* needs nothing
+      computed, because **returning a value already implies not dropping it** — `nodeReturnsName`
+      and `nodeEscapesThroughCall` decline every frame on the path. (That second guard is the
+      pass-through fix from earlier the same day; this item was blocked on it and the dependency
+      was invisible until it existed.) And *"escaped through every intermediate frame"* was
+      approximating the hazard the old comment names exactly — a value handed **in** and handed
+      straight back belongs to the caller's argument — which is `fn_may_return_param`, now asked
+      directly. The guard became a disjunction, so nothing safe became unsafe.
+      **`test_47_aif_containers` 2 → 0** (its note said two hops needed INFERENCE 6's contexts; it
+      did not) and **`test_72_reassigned_ownership` is migrated to native `std.string`** at last —
+      48/46/**2**, the same 2 leaks the C version had, against the 48/35/**13** its header recorded
+      for a premature migration.
+      Suite **175/175**, differential 18/18, fixpoint, 87 programs at 0 violations, **ASan clean on
+      all six changed programs**, corpus median 0.993×.
+      See [`RESULTS-owned-return-depth2.md`](aif/evidence/RESULTS-owned-return-depth2.md).
+
 - [x] **The C string layer is gone, 2026-08-26.** 1,093 call sites in `src/`, 109 in `ums/` and 82
       in `tests/` moved off `extern fn str_*` onto native `std.string`; twelve C functions and the
       orphaned `StringArray` deleted (`lang_runtime.c` 2,192 → 2,041 lines), with their AIF

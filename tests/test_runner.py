@@ -4657,7 +4657,15 @@ def run_aif_verify_test():
         # A doubled release here is a violation rather than a missing leak, unlike
         # test_45: these are struct allocations the seam handed out, so releasing
         # one twice is something the accounting can see.
-        "test_47_aif_containers": 2,
+        # **2 -> 0 on 2026-08-29.** The 2 was the result of `forwards()` -- one
+        # list handle and its inline element block -- and this docstring said
+        # "ownership transfer survives one hop, because it requires the returned
+        # site to belong to the callee; two hops needs INFERENCE 6's contexts".
+        # It did not need contexts. The one-hop rule was approximating "a value
+        # handed in and handed straight back is the caller's", and asking
+        # `fn_may_return_param` directly answers that without declining the
+        # ordinary producer. A rise back to 2 is that guard reverting.
+        "test_47_aif_containers": 0,
         # AIF Level 5. The element shared between two containers is released by
         # the second teardown to reach it, so this is zero -- and it was 2 before
         # the count existed, which is the level's whole measurement on this

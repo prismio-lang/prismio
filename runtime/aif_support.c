@@ -6579,8 +6579,7 @@ static int fn_returns_partial(int f) {
 // was before this predicate existed: `let t = f(); let x = <extern alias>(t);
 // return x` frees `t` at the scope exit. It is recorded in TODO.md rather than
 // closed here, because closing it is a frontend change and this is not one.
-int aif_fn_may_return_param(const char* symbol) {
-    int f = aif_fn_lookup(symbol);
+static int fn_may_return_param(int f) {
     if (f < 0) return 0;
     int rk = key_find(AIF_KEY_RET, f, 0);
     if (rk < 0 || rk >= pt_len) return 0;
@@ -6598,6 +6597,10 @@ int aif_fn_may_return_param(const char* symbol) {
     return 0;
 }
 
+int aif_fn_may_return_param(const char* symbol) {
+    return fn_may_return_param(aif_fn_lookup(symbol));
+}
+
 int aif_owns_call_result_at_node(const void* node) {
     if (node == NULL) return AIF_ELEM_NONE;
     NodeCall* c = NULL;
@@ -6612,10 +6615,30 @@ int aif_owns_call_result_at_node(const void* node) {
     for (int s = 0; s < site_count; s++) {
         if (!bits_test(&query_scratch, s)) continue;
         any = 1;
-        // Allocated by the callee, not handed to it. A pass-through leaves the
-        // value owned where it was created, and freeing it here is a double free
-        // through whichever binding owns it there.
-        if (sites[s].fn != c->fn) return AIF_ELEM_NONE;
+        // Allocated below this callee, not handed *to* it.
+        //
+        // This used to require `sites[s].fn == c->fn` outright, which is one
+        // hop: it declined every producer written in Prismio the moment a second
+        // frame appeared between the allocation and the binding
+        // (tests/owned_return_depth2.psm, 6/6/0 at depth 1 and 12/7/5 at
+        // depth 2). It was invisible while `std.string` was C, because an
+        // `extern fn` carries its `produce` contract and answers at depth 1.
+        //
+        // **What made it safe to relax is the pass-through guard, not a new
+        // fixed point.** The hazard the old test named is real -- a value handed
+        // *in* and handed straight back is owned by the caller's argument, and
+        // freeing it here double-frees. That is exactly `fn_may_return_param`,
+        // so it is asked directly instead of being approximated by "the site
+        // belongs to somebody else".
+        //
+        // The other half -- "no intermediate frame owns it" -- needs nothing
+        // computed, because **returning a value already implies not dropping
+        // it**. A frame that binds the value and returns the binding is declined
+        // by `nodeReturnsName`; one that returns it through a further call is
+        // declined by `nodeEscapesThroughCall` (src/ir/expr.psm). So every frame
+        // on the path from the allocation to here has already been refused
+        // ownership of it, and this caller is the first that can hold it.
+        if (sites[s].fn != c->fn && fn_may_return_param(c->fn)) return AIF_ELEM_NONE;
         if (sites[s].in_container) return AIF_ELEM_NONE;
         // A field the type releases is already this value's release point, so
         // the caller must not become a second one. The same exclusion as

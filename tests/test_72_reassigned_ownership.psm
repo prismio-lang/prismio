@@ -1,7 +1,7 @@
 // The accumulator shape, which had no owner at all until AIF Level 4's
 // reassignment half.
 //
-// `let mut out = ""` then `out = str_concat(out, ...)` in a loop is the most
+// `let mut out = ""` then `out = strConcat(out, ...)` in a loop is the most
 // common string idiom there is -- `buildSource` in the g7 benchmark is exactly
 // it -- and every value but the last leaked. Not for want of a free: the drop
 // list refused any reassigned binding, correctly, because the slot could hold a
@@ -35,20 +35,21 @@
 
 import std.io
 
-// **Deliberately still on the C `str_concat`, and not migrated with the rest of
-// the tree in 2026-08.** Its subject is the reassignment/displacement machinery,
-// and reaching that machinery requires the compiler to know the call produces an
+// **Migrated to native `std.string` on 2026-08-29**, which is what it was
+// waiting for. It had been deliberately left on the C `str_concat` since the
+// 2026-08 migration: its subject is the reassignment/displacement machinery, and
+// reaching that machinery requires the compiler to know the call produces an
 // owned value. An `extern fn` says so in its contract; a *native* producer has
-// to be inferred, and `aif_owns_call_result_at_node` only propagates that one
-// frame (`sites[s].fn != c->fn` declines a pass-through, to avoid double-freeing
-// a value an intermediate frame still owns).
+// to be inferred, and `aif_owns_call_result_at_node` propagated that exactly one
+// frame -- `sites[s].fn != c->fn` declined every pass-through, so a migrated
+// copy measured **48 allocated / 35 released / 13 leaked** against 29/27/2 here,
+// i.e. the depth-2 gap rather than the thing this file tests.
 //
-// So a migrated copy of this file measures the depth-2 gap instead of the thing
-// it was written for: 48 allocated / 35 released / **13 leaked**, against 29/27/2
-// here. That gap has its own fixture and its own TODO entry; this file keeps the
-// coverage it was built for.
+// That guard now asks `fn_may_return_param` instead, which is the hazard it was
+// approximating, so ownership survives the second return and the migration
+// measures what it was supposed to.
 
-extern fn str_concat(s1: String, s2: String) -> String
+import std.string
 
 struct Holder {
     name: String
@@ -61,7 +62,7 @@ fn returned_accumulator(n: Int) -> String {
     let mut out = ""
     let mut i = 0
     while (i < n) {
-        out = str_concat(out, "ab")
+        out = strConcat(out, "ab")
         i = i + 1
     }
     return out
@@ -75,7 +76,7 @@ fn local_accumulator(n: Int) -> Int {
     let mut out = ""
     let mut i = 0
     while (i < n) {
-        out = str_concat(out, "xyz")
+        out = strConcat(out, "xyz")
         i = i + 1
     }
     return __builtin_string_len(out)
@@ -89,11 +90,11 @@ fn local_accumulator(n: Int) -> Int {
 // function would exercise nothing. Returning it puts E at Caller, which keeps the
 // site on the heap and on the path under test.
 fn literal_mid_loop(n: Int) -> String {
-    let mut s = str_concat("seed", "ed")
+    let mut s = strConcat("seed", "ed")
     let mut i = 0
     while (i < n) {
         s = "reset"
-        s = str_concat(s, "tail")
+        s = strConcat(s, "tail")
         i = i + 1
     }
     return s
@@ -103,7 +104,7 @@ fn literal_mid_loop(n: Int) -> String {
 // treated as owning its slot -- and the struct has to still hold its field
 // afterwards.
 fn borrow_reassign(h: Holder) -> Int {
-    let mut s = str_concat("own", "ed")
+    let mut s = strConcat("own", "ed")
     let first = __builtin_string_len(s)
     s = h.name
     return first + __builtin_string_len(s) + __builtin_string_len(h.name)
@@ -113,15 +114,15 @@ fn borrow_reassign(h: Holder) -> Int {
 // for the reason literal_mid_loop is. A release that read the wrong slot shows up
 // as a length that is no longer 4.
 fn two_accumulators(n: Int) -> String {
-    let mut a = str_concat("aa", "bb")
-    let mut b = str_concat("cc", "dd")
+    let mut a = strConcat("aa", "bb")
+    let mut b = strConcat("cc", "dd")
     let mut i = 0
     while (i < n) {
-        a = str_concat("ee", "ff")
-        b = str_concat(b, "")
+        a = strConcat("ee", "ff")
+        b = strConcat(b, "")
         i = i + 1
     }
-    return str_concat(a, b)
+    return strConcat(a, b)
 }
 
 // M2.0b. The value comes from a *callee* rather than from an allocation in this
@@ -130,7 +131,7 @@ fn two_accumulators(n: Int) -> String {
 // `aif_owns_call_result_at_node` instead, and the values this loop displaces are
 // this scope's exactly as the extern-allocated ones above are.
 fn makePiece(i: Int) -> String {
-    return str_concat("pie", "ce")
+    return strConcat("pie", "ce")
 }
 
 fn callee_accumulator(n: Int) -> String {
@@ -151,8 +152,8 @@ fn callee_accumulator(n: Int) -> String {
 // pair and the bug disappears.
 fn cloned_literal_keeps_length() -> String {
     let mut s = "inferred"
-    if (__builtin_string_len(s) != 8) { return str_concat("bad", "") }
-    s = str_concat(s, "")
+    if (__builtin_string_len(s) != 8) { return strConcat("bad", "") }
+    s = strConcat(s, "")
     return s
 }
 
@@ -188,7 +189,7 @@ fn main() -> Int {
         failures = failures + 1
     }
 
-    let h = Holder { name: str_concat("fie", "ld") }
+    let h = Holder { name: strConcat("fie", "ld") }
     // 5 for "owned", then 5 twice for "field"
     if (borrow_reassign(h) != 15) {
         println("FAIL borrow_reassign")
