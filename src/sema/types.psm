@@ -313,13 +313,37 @@ fn semaLiteralHasField(expr: ASTNode, name: String) -> Bool {
 // empty literal of that struct -- which semaFillOmittedFields then fills by this
 // same rule, one level down. Everything pointer-shaped takes `none`, which
 // codegen already lowers to `null`.
+//
+// **Inline is a question, not an assumption, and getting it wrong allocates
+// uninitialised memory.** Answering "empty literal" for a *pointer* field emits
+// a struct literal with no fields at all: codegen mallocs a node and stores
+// nothing into it, not even a tag. On this host that reads as zero often enough
+// to pass; on glibc and the Windows heap it is whatever was there before.
+// `test_73_recursive_release` is the case -- `Tree.Leaf`'s unused `Node$0` and
+// `Node$2` slots each got one of these, and `__aif_release_Tree` then walked
+// into them and read garbage as child pointers. SIGSEGV on Linux,
+// STATUS_HEAP_CORRUPTION on Windows, silence here.
+//
+// The rule is fieldTypeFor's, because that is what decides the storage: inline
+// iff the annotation is POD. A self-referential type such as an enum's shadow
+// struct is not, so its fields are pointers -- and the recursive fill this
+// comment promises could not terminate on one anyway, which is why those
+// literals stayed empty rather than being filled with zeros.
+//
+// Read `byDecl` rather than through the struct registry: the registry is filled
+// by codegen and is empty here, so the registry reading answers POD for every
+// struct-typed field during sema. `typeAnnIsPodIn` documents that
+// over-approximation as the unsafe direction for exactly this kind of question.
 fn semaZeroValue(module: ASTNode, annotation: ASTNode) -> ASTNode {
     let t = semaAnnotationType(module, annotation)
 
     if (t.kind == TypeKind.STRUCT) {
-        let lit = createNode(NodeKind.STRUCT_LITERAL_EXPR)
-        lit.s1 = t.name
-        return lit
+        if (typeAnnIsPodIn(module, annotation, 0, true)) {
+            let lit = createNode(NodeKind.STRUCT_LITERAL_EXPR)
+            lit.s1 = t.name
+            return lit
+        }
+        return createNode(NodeKind.NONE_LITERAL_EXPR)
     }
     if (t.kind == TypeKind.FLOAT) {
         let f = createNode(NodeKind.LITERAL_EXPR)

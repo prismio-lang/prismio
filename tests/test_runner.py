@@ -4772,7 +4772,14 @@ def run_aif_verify_test():
         # this fixture rebuilds are consumed through a `sink` and nothing reclaims
         # a destructured block yet. **It should fall when M2.1a-ii lands**, and a
         # rise means something stopped being reclaimed that was.
-        "test_74_reinit_assignment": 504,
+        #
+        # **504 -> 248 on 2026-08-29, and it is fewer allocations rather than
+        # more frees**: 511 allocated / 7 released became 255 allocated / 7
+        # released, with violations 0 in both. A payload-free enum variant used
+        # to fill its unused pointer payload slots with freshly malloc'd,
+        # entirely uninitialised nodes; they are `none` now. Exactly half this
+        # fixture's allocations were those fillers.
+        "test_74_reinit_assignment": 248,
         # Boxed OBJECT replacement through the explicit exclusive capability.
         # The displaced Named owns a String, so zero proves list_set_exclusive
         # invoked the typed element release; ordinary list_set leaves one leak

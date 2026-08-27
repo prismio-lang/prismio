@@ -987,7 +987,22 @@ checkbox, or the two drift and only one of them gets read.)*
             left red is `test_73`'s heap corruption and `--jit`, both pre-existing and both their
             own items below.
             **The parent stays unchecked until a matrix is observed green.**
-- [ ] **`test_73_recursive_release` corrupts the heap, on every platform except this one.**
+- [x] **`test_73_recursive_release` corrupted the heap on every platform except this one — fixed
+      2026-08-29.** A payload-free enum variant filled its unused *pointer* payload slots with
+      freshly `malloc`'d nodes that nothing ever wrote to — not even the tag — and
+      `__aif_release_Tree` then read their contents as child pointers. macOS returns zeroed pages
+      from a fresh `malloc`, so it worked by accident; glibc and the Windows heap do not.
+      `semaZeroValue` answered every `TypeKind.STRUCT` field with an empty struct literal; it now
+      asks `fieldTypeFor`'s question — inline iff the annotation is POD, read **byDecl** — and
+      returns `none` for a pointer field. **Reproduced on this host only under AddressSanitizer**,
+      by building the emitted IR against the runtime by hand; `MallocScribble` and friends were not
+      enough. Also **1.82× on `g8_tree_rebuild`** (246,459 → 135,208 ns) with the checksum
+      unchanged, because half that program's allocations were fillers: 24,572 → 12,284.
+      Suite **174/174**, differential 18/18, fixpoint, corpus median 1.002×, 3 of 129 programs
+      changed IR. See [`RESULTS-enum-zero-value.md`](aif/evidence/RESULTS-enum-zero-value.md).
+      **Still to observe:** the matrix agreeing — this is a fix validated by a sanitizer on the one
+      platform that never failed.
+- [ ] ~~**`test_73_recursive_release` corrupts the heap, on every platform except this one.**~~
       The most serious thing the matrix found, and it **predates the 2026-08-29 work** — a control
       branch at `97ef065` carrying only the CI fixes reproduces it exactly.
 
