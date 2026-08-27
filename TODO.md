@@ -976,6 +976,11 @@ checkbox, or the two drift and only one of them gets read.)*
       to be proved and not assumed.
       **Not attempted** -- a wrong answer here is a memory-safety bug, and it deserves its own
       session rather than the tail of one.
+- [ ] **g1 pays 1.083x for the curated accessor, and it is the same root cause.** 19.19 ms ->
+      20.78 ms with the executable byte-identical in size, so not bloat: g1's loops read **one**
+      list per iteration where g4's read **two**, and inlining trades one call for six header loads
+      and two branches. That wins with two lists and loses with one. Hoisting the header fixes both
+      this and the vectorization item above; there is no separate investigation to do.
 - [ ] **`!invariant.load` on the List header would hoist it, and would be unsound.** The mechanism
       exists -- `ir_mark_data_view_lookup_loads_invariant` does exactly this for the three DataView
       lookups, justified by *"ready DataView metadata does not change before the view is consumed"*.

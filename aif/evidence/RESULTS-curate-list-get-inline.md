@@ -107,8 +107,16 @@ Peak RSS 0.83×–1.00×. Every checksum is unchanged — g4's `entities 1500 / 
 well below the harness's A/A floor. **g3 is level with it at 0.97×**, which is
 close enough to that floor to be called level rather than ahead.
 
-g1 and g9 read 1.039× and 1.013× — g9 is noise; g1's is small but consistent and
-is worth a look, since g1 is the program whose DataView arm runs at 0.28×.
+**g1 regressed, and it is real: 19.19 ms → 20.78 ms, 1.083×.** Attributed rather
+than waved at — the executable is byte-identical in *size*, so it is not code
+bloat. g1's hot loops read **one** list per iteration; g4's read **two**.
+Inlining trades one call for six header loads and two branches, which wins
+clearly with two lists and roughly loses with one.
+
+**So the regression and the remaining prize share a root cause.** Both are the
+List header being reloaded per element because the element store may alias it.
+Hoisting it would take g1's inlined loop below its call-based one as well; until
+then this change is a large net win with one program paying for it.
 
 | gate | result |
 |---|---|
