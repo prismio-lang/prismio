@@ -56,7 +56,20 @@ fn parseExpression(p: Parser, precedence: Int) -> ASTNode {
         // Left associativity: the right operand binds only tighter operators.
         let right = parseExpression(p, operatorPrecedence + 1)
 
-        let binary = parserNode(p, NodeKind.BINARY_EXPR)
+        // From the operator token, not from where the parser is now. The right
+        // operand has been consumed by this point, so `parserCurrent` is the
+        // token *after* the whole expression -- the same off-by-one the compound
+        // assignment in parse/stmt.psm records, and this is the other half of it.
+        //
+        // It stayed invisible because nothing had ever reported a source
+        // position out of a BINARY_EXPR: sema points at operands, and `-g` takes
+        // its locations from statements. `--overflow-checks` is the first thing
+        // that does, and it named the line below the addition that overflowed.
+        //
+        // The operator is the right anchor rather than the left operand's start,
+        // because what the position identifies is the *operation* -- which is
+        // what overflowed, and which is what a reader looks for on the line.
+        let binary = parserNodeFrom(NodeKind.BINARY_EXPR, operatorToken)
         binary.s1 = op
         binary.child1 = node_to_ptr(left)
         binary.child2 = node_to_ptr(right)

@@ -1284,9 +1284,32 @@ fn generateExpression(expr: ASTNode) -> String {
             if (strEquals(op, ">")) { tempId = ir_fcmp_ogt(opType, leftVal, rightVal) }
             if (strEquals(op, ">=")) { tempId = ir_fcmp_oge(opType, leftVal, rightVal) }
         } else {
-            if (strEquals(op, "+")) { tempId = ir_add(opType, leftVal, rightVal) }
-            if (strEquals(op, "-")) { tempId = ir_sub(opType, leftVal, rightVal) }
-            if (strEquals(op, "*")) { tempId = ir_mul(opType, leftVal, rightVal) }
+            // RFC 0560, the debug half. `+ - *` are the three that can overflow;
+            // `/` cannot except at INT_MIN/-1, which is a different trap and is
+            // not this item. Comparisons and bitwise ops never can.
+            //
+            // Gated on the whole-build bit rather than on anything about this
+            // expression, because "check in debug, wrap in release" is a build
+            // mode and not a property of an operand. A checked op is 5.4x-6.0x
+            // the plain one -- it defeats vectorization -- so the default is off
+            // and the flag is what turns it on.
+            let checked = ir_overflow_checks() == 1 and isIntegerStorageKey(opType)
+            if (checked) {
+                let file = diag_file_path(expr.file)
+                if (isUnsigned) {
+                    if (strEquals(op, "+")) { tempId = ir_uadd_checked(opType, leftVal, rightVal, file, expr.line) }
+                    if (strEquals(op, "-")) { tempId = ir_usub_checked(opType, leftVal, rightVal, file, expr.line) }
+                    if (strEquals(op, "*")) { tempId = ir_umul_checked(opType, leftVal, rightVal, file, expr.line) }
+                } else {
+                    if (strEquals(op, "+")) { tempId = ir_add_checked(opType, leftVal, rightVal, file, expr.line) }
+                    if (strEquals(op, "-")) { tempId = ir_sub_checked(opType, leftVal, rightVal, file, expr.line) }
+                    if (strEquals(op, "*")) { tempId = ir_mul_checked(opType, leftVal, rightVal, file, expr.line) }
+                }
+            } else {
+                if (strEquals(op, "+")) { tempId = ir_add(opType, leftVal, rightVal) }
+                if (strEquals(op, "-")) { tempId = ir_sub(opType, leftVal, rightVal) }
+                if (strEquals(op, "*")) { tempId = ir_mul(opType, leftVal, rightVal) }
+            }
             if (strEquals(op, "==")) { tempId = ir_icmp_eq(opType, leftVal, rightVal) }
             if (strEquals(op, "!=")) { tempId = ir_icmp_ne(opType, leftVal, rightVal) }
             if (isUnsigned) {

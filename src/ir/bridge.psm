@@ -57,6 +57,27 @@ extern fn ir_store_global(type: String, value: String, name: String)
 extern fn ir_add(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_sub(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_mul(type: String, lhs: String, rhs: String) -> Int
+
+// RFC 0560's "check in debug, wrap in release", emitted only under
+// `--overflow-checks`. Each one lowers to llvm.s{add,sub,mul}.with.overflow, a
+// branch, and a `prismio_overflow_trap` the failing arm cannot return from --
+// four LLVM concepts, which is why the whole sequence lives in the backend and
+// this asks for a value.
+//
+// **Never a default**, and the number is measured rather than feared: the
+// checked form is 5.4x-6.0x the plain one, because a branch per operation
+// defeats vectorization outright. See the note on ir_checked_binop.
+extern fn ir_add_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+extern fn ir_sub_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+extern fn ir_mul_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+extern fn ir_uadd_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+extern fn ir_usub_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+extern fn ir_umul_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+
+// One bit, read by every arithmetic site and decided by none of them.
+extern fn ir_set_overflow_checks(on: Int)
+extern fn ir_overflow_checks() -> Int
+
 extern fn ir_sdiv(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_srem(type: String, lhs: String, rhs: String) -> Int
 extern fn ir_udiv(type: String, lhs: String, rhs: String) -> Int

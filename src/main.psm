@@ -426,8 +426,9 @@ fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNod
 fn printUsage() {
     println("Usage:")
     println("  prismio build [source.psm] [-o output.exe] [-g] [--verify]")
-    println("                [--target <triple>] [--sysroot <sdk>]")
+    println("                [--overflow-checks] [--target <triple>] [--sysroot <sdk>]")
     println("  prismio run <source.psm> [-o output.exe] [-g] [--verify] [--jit]")
+    println("                [--overflow-checks]")
     println("  prismio check <source.psm> [--diagnostic-format=json]")
     println("  prismio bootstrap [source.psm] [-o output.exe] [-g]")
     println("  prismio runtime-hash")
@@ -1385,6 +1386,22 @@ fn main() -> Int {
             // SPEC 7.3. Slower and heavier by design: the mode exists to be run
             // by CI, not by users.
             verifyMode = true
+            argIndex = argIndex + 1
+        } else if (strEquals(arg, "--overflow-checks")) {
+            // RFC 0560's model: check in debug, wrap in release. `Int` is signed
+            // 32-bit and wraps -- decided by measurement, RESULTS-int-width.md --
+            // and this is what makes the wrap a diagnostic rather than a silence.
+            //
+            // **Off by default and it can never be otherwise.** A checked
+            // operation is 5.4x-6.0x the plain one, not because the check is
+            // expensive but because a branch per operation defeats vectorization
+            // outright. Rust ties this to `debug-assertions`; Prismio has no
+            // profile concept yet, so it is an explicit flag and the default is
+            // the release answer.
+            //
+            // Set on the backend rather than threaded through codegen, because
+            // every arithmetic site reads it and none of them decides it.
+            ir_set_overflow_checks(1)
             argIndex = argIndex + 1
         } else if (strEquals(arg, "--jit")) {
             // `run` without the clang compile and the link. Off by default and

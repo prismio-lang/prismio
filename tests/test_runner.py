@@ -5127,6 +5127,74 @@ def run_inline_runtime_default_test():
     return True
 
 
+def run_overflow_checks_test():
+    """RFC 0560's model: check in debug, wrap in release.
+
+    `Int` is signed 32-bit and wraps, decided by measurement in
+    RESULTS-int-width.md. `--overflow-checks` is what makes that wrap a
+    diagnostic instead of a silence, and it is off by default because a checked
+    operation is 5.4x-6.0x the plain one -- not because the check is expensive,
+    but because a branch per operation defeats vectorization outright.
+
+    Three facts, and the first two are the discriminating pair. Asserting only
+    that the checked build traps would pass against a compiler that checked
+    *always*, which is the version that must never ship:
+
+      default            wraps to -2147483596, exit 0, and emits no intrinsic
+      --overflow-checks  reports the overflow with the operator and the line
+      default IR         contains no llvm.*.with.overflow at all
+    """
+    print(f"\n{BLUE}--- Running overflow_checks ---{RESET}")
+    src = TEST_DIR / "overflow_checks_probe.psm"
+    exe = TEST_DIR / "overflow_checks_probe.exe"
+    ll = TEST_DIR / "overflow_checks_probe.ll"
+    problems = []
+
+    # 1. The default build wraps and says nothing.
+    built = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(exe)])
+    if built.returncode != 0:
+        problems.append(f"default build exited {built.returncode}")
+    else:
+        got = run_program(exe)
+        if not got[0]:
+            problems.append("default build did not exit 0 -- it must wrap, not trap")
+        elif "-2147483596" not in got[1]:
+            problems.append(f"default build printed {got[1].strip()!r}, expected the wrapped -2147483596")
+
+    # 2. The checked build reports it, naming the operator and the line.
+    built = run_command([str(PRISMIO_EXE), "build", str(src), "--overflow-checks", "-o", str(exe)])
+    if built.returncode != 0:
+        problems.append(f"--overflow-checks build exited {built.returncode}")
+    else:
+        ok, out, err = run_program(exe)
+        both = (out or "") + (err or "")
+        if ok:
+            problems.append("--overflow-checks build exited 0; the overflow was not reported")
+        if "integer overflow" not in both:
+            problems.append(f"no overflow diagnostic in output: {both.strip()[:200]!r}")
+        if "`+`" not in both:
+            problems.append("the diagnostic does not name the operator that overflowed")
+        if "overflow_checks_probe.psm:13" not in both:
+            problems.append(f"the diagnostic does not name the overflowing line (13): {both.strip()[:200]!r}")
+
+    # 3. The default really is inert -- no intrinsic, not merely no trap.
+    emitted = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(ll)])
+    if emitted.returncode == 0 and ll.exists():
+        text = ll.read_text(encoding="utf-8", errors="replace")
+        if "with.overflow" in text:
+            problems.append("the default build emitted an overflow intrinsic; the flag is not off")
+    cleanup_files(exe, ll)
+
+    if problems:
+        print(f"{RED}[FAIL] overflow checks{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+    print(f"{GREEN}[PASS] overflow checks: default wraps and emits no intrinsic; "
+          f"--overflow-checks names the operator and the line{RESET}")
+    return True
+
+
 def run_task_release_test():
     """The task handle has an owner, and only where AIF proved it may.
 
@@ -5610,6 +5678,11 @@ def main():
         failed += 1
 
     if run_task_release_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_overflow_checks_test():
         passed += 1
     else:
         failed += 1

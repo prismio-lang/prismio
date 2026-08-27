@@ -936,8 +936,21 @@ checkbox, or the two drift and only one of them gets read.)*
             this closes the old “silent fallback can look green” hole without a separate workflow.
       - [x] Local gate: fixpoint, fresh-seed agreement, AIF differential 17/17, suite **150/150**,
             and milestone corpus median **0.948×** (range 0.635×–1.000×), RSS flat, checksums equal.
-      - [ ] Observe that new check green on the remote three-platform CI matrix. This requires the
-            working-tree change to be committed/pushed; do not mark the parent complete before it.
+      - [ ] Observe that new check green on the remote three-platform CI matrix. **Pushed and run
+            on 2026-08-29, and the matrix answered: the default is NOT portable as it stands.**
+            Windows built and then failed *every* suite test with
+            `expected memory location (argmem, inaccessiblemem)` while assembling the curated merge.
+            Cause: the compiler links the provisioned LLVM-C but the native build step shells out to
+            a bare `clang` from `PATH`, and on `windows-latest` those were different versions --
+            LLVM 22 writes `memory(..., target_mem0: none, target_mem1: none)` and the image's older
+            clang cannot parse it. macOS and Ubuntu never got that far: `setup_llvm.py` took a
+            **403** from the GitHub API, which is the unauthenticated per-IP rate limit and not a
+            missing release. **A control branch at `97ef065` fails identically**, so both predate
+            the ownership work. Two fixes are in the tree -- `GITHUB_TOKEN` on the provisioning step,
+            and the provisioned LLVM's `bin` prepended to `PATH` -- and the parent stays unchecked
+            until a green matrix is actually observed. The durable fix for the Windows half is
+            arguably in `build_driver.c`, which should take clang from `llvm-paths.json` rather than
+            from `PATH`, so there is one answer to "where is LLVM" as that file already claims.
             **Still blocked on push authorisation as of 2026-08-26**, and every local check that can
             substitute for it is green: suite **170/170** on macOS, fixed point, differential 17/17,
             curated closure, `--target` cross-build and link, packaged-runtime separation. The
@@ -1082,10 +1095,32 @@ checkbox, or the two drift and only one of them gets read.)*
       emitted IR for g1/g3/g4 gives 1.014×/1.006×/1.005×. Rust RFC 0212's density argument is the
       one that holds — 64-bit fields cost **1.330×** in Prismio on a corpus-shaped traversal and
       1.76–2.15× in the C control. See [`RESULTS-int-width.md`](aif/evidence/RESULTS-int-width.md).
-- [ ] **Debug-mode integer overflow checking.** `Int` wraps silently and this session tripped over it
-      three times, including in a 40-line benchmark whose two arms disagreed because one wrapped.
-      Rust's model — check in debug, wrap in release — is the answer; priced with clang's
-      signed-overflow sanitizer at **4.1–4.4×**, so it can only ever be a debug mode.
+- [x] **Debug-mode integer overflow checking — landed 2026-08-29.** `--overflow-checks`, off by
+      default, RFC 0560's "check in debug, wrap in release". Six entry points
+      (`ir_{add,sub,mul}_checked` and the `u` family) lowering to `llvm.s*/u*.with.overflow`, a
+      branch, and `prismio_overflow_trap`, which names the operator and the source position.
+      **Provably inert when off**: emitted IR byte-identical on all 128 programs, and the suite
+      check asserts the *absence of the intrinsic*, not merely the absence of a trap.
+      **The recorded premise did not survive measurement.** "A native `llvm.sadd.with.overflow`
+      lowering should be cheaper than a sanitizer" is **false** — the two are within noise
+      (5.36×–5.95× vs 5.42×–5.72×), because the cost is not the check but the branch, which defeats
+      vectorization outright: the plain loops use 17 NEON registers and both checked forms use none.
+      **And the 4.1–4.4× does not transfer to whole programs**: on the corpus it is
+      **1.00×–1.12×** (g3 0.999×, g6 1.003×, g4 1.009×, g1 1.116×), with checksums agreeing, because
+      those programs are allocation-bound rather than arithmetic-bound. The default stays off on the
+      6× worst case, but "too expensive to consider" is not what the corpus says.
+      See [`RESULTS-overflow-checks.md`](aif/evidence/RESULTS-overflow-checks.md).
+- [x] **A `BINARY_EXPR` carried the position of the token *after* it — fixed 2026-08-29.**
+      `parserNode` was called after the right operand was parsed, so every binary expression in the
+      tree pointed at the next line. Invisible because nothing reported a position out of one: sema
+      points at operands and `-g` takes locations from statements. `--overflow-checks` is the first
+      thing that does, and it named the line below the addition that overflowed. Both constructions
+      now anchor on the **operator token**. Codegen-neutral: **zero** of 128 programs changed IR,
+      which is the evidence that nothing else read it.
+- [ ] **`wrapping_*` / `checked_*` / `saturating_*` intent forms.** Rust's model has three parts and
+      only the check landed. Without the explicit forms, code that *wants* to wrap has no way to say
+      so and traps under `--overflow-checks`. Language surface, not codegen. `/` at `INT_MIN / -1`
+      is also still unchecked — a different trap, and one this deliberately did not fold in.
 - [ ] **`__builtin_string_len` truncates.** `%prismio.str` carries its length in **i64** and the
       builtin returns `Int`, so the read emits `trunc i64 … to i32`. The representation is wider
       than every path that reads it, which is incoherent under either width choice. Also

@@ -228,14 +228,28 @@ def select_asset(version: str) -> tuple[str, str]:
 
     url = GITHUB_RELEASE_API.format(version=version)
     log(f"Querying {url}")
-    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
-                                               "User-Agent": "prismio-setup"})
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "prismio-setup"}
+
+    # Authenticate when a token is available. Unauthenticated calls to the
+    # GitHub API are rate-limited *per IP*, and a CI runner shares its IP with
+    # everything else on that host -- which is why this returned **403** on
+    # ubuntu-latest and macos-latest simultaneously while the same command
+    # worked from a laptop. Nothing here needs the token's permissions; it is
+    # the rate-limit bucket that changes.
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             release = json.load(resp)
     except urllib.error.HTTPError as e:
-        raise SystemExit(f"GitHub API returned {e.code} for LLVM {version}. "
-                         f"Check the version exists, or pass --llvm-dir.")
+        hint = ("Check the version exists, or pass --llvm-dir."
+                if e.code != 403 else
+                "403 is the unauthenticated rate limit, not a missing release: "
+                "set GITHUB_TOKEN, or pass --llvm-dir.")
+        raise SystemExit(f"GitHub API returned {e.code} for LLVM {version}. {hint}")
     except urllib.error.URLError as e:
         raise SystemExit(f"Could not reach GitHub: {e.reason}")
 

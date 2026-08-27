@@ -1445,6 +1445,121 @@ int ir_array_alloca(const char *elem_type, int count) {
 BINOP(ir_add, LLVMBuildAdd)
 BINOP(ir_sub, LLVMBuildSub)
 BINOP(ir_mul, LLVMBuildMul)
+
+// Debug-mode overflow checking, RFC 0560's model: check in debug, wrap in
+// release. `Int` is signed 32-bit and wraps, decided by measurement in
+// RESULTS-int-width.md; this makes the wrap a diagnostic rather than a silence.
+//
+// **Priced before it was built, and the recorded hope did not survive.**
+// TODO said "a native llvm.sadd.with.overflow lowering should be cheaper than a
+// sanitizer, and that is the thing to measure". Measured on this host it is
+// **not cheaper**: the intrinsic form and clang's `-fsanitize=signed-integer-
+// overflow` are within noise of each other, 5.4x-6.0x of plain wrapping
+// arithmetic on both shapes RESULTS-int-width.md used. The cause is not the
+// check -- it is that a branch out of the loop body per operation **defeats
+// vectorization entirely**: the plain loops use 17 NEON registers and both
+// checked forms use none. So this is a debug mode and can never be anything
+// else, which is what the frontend's default-off flag encodes.
+//
+// The whole sequence lives here rather than being assembled by the frontend
+// because it is four LLVM concepts -- an overflow intrinsic, an aggregate
+// extract, a branch, and a fresh continuation block -- and every one of them is
+// backend vocabulary. The frontend asks for a checked add and gets a value.
+static int ir_checked_binop(const char *intrinsic, const char *type,
+                            const char *lhs, const char *rhs,
+                            const char *what, const char *file, int line) {
+    if (block_done()) return intern_value(LLVMGetUndef(type_from_key(type)));
+
+    LLVMTypeRef ity = type_from_key(type);
+    if (LLVMGetTypeKind(ity) != LLVMIntegerTypeKind) {
+        backend_fail("checked arithmetic on a non-integer type", type);
+    }
+
+    // The intrinsic is overloaded on the integer width, so its name carries the
+    // type: llvm.sadd.with.overflow.i32. Built by name because the C API has no
+    // typed constructor for an overloaded intrinsic.
+    char name[64];
+    snprintf(name, sizeof(name), "%s.i%u", intrinsic, LLVMGetIntTypeWidth(ity));
+
+    LLVMTypeRef fields[2] = {ity, LLVMInt1TypeInContext(g_ctx)};
+    LLVMTypeRef pair = LLVMStructTypeInContext(g_ctx, fields, 2, 0);
+    LLVMTypeRef params[2] = {ity, ity};
+    LLVMTypeRef fnty = LLVMFunctionType(pair, params, 2, 0);
+
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, name);
+    if (!fn) fn = LLVMAddFunction(g_module, name, fnty);
+
+    LLVMValueRef args[2] = {resolve_value(lhs, type), resolve_value(rhs, type)};
+    LLVMValueRef agg = LLVMBuildCall2(g_builder, fnty, fn, args, 2, "");
+    LLVMValueRef value = LLVMBuildExtractValue(g_builder, agg, 0, "");
+    LLVMValueRef flag = LLVMBuildExtractValue(g_builder, agg, 1, "");
+
+    int trap = ir_get_label();
+    int cont = ir_get_label();
+    LLVMBuildCondBr(g_builder, flag, block_for(trap), block_for(cont));
+
+    // The trap block ends in `unreachable`, so the continuation dominates every
+    // later use of the value and no phi is needed -- the branch is the whole of
+    // the control flow this adds.
+    LLVMPositionBuilderAtEnd(g_builder, block_for(trap));
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef tparams[3] = {ptr, ptr, i32};
+    LLVMTypeRef tfnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), tparams, 3, 0);
+    LLVMValueRef trapfn = LLVMGetNamedFunction(g_module, "prismio_overflow_trap");
+    if (!trapfn) trapfn = LLVMAddFunction(g_module, "prismio_overflow_trap", tfnty);
+    LLVMValueRef targs[3] = {
+        LLVMBuildGlobalStringPtr(g_builder, what ? what : "", ""),
+        LLVMBuildGlobalStringPtr(g_builder, file ? file : "", ""),
+        LLVMConstInt(i32, (unsigned long long)line, 0),
+    };
+    LLVMBuildCall2(g_builder, tfnty, trapfn, targs, 3, "");
+    LLVMBuildUnreachable(g_builder);
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(cont));
+    return intern_value(value);
+}
+
+int ir_add_checked(const char *type, const char *lhs, const char *rhs,
+                   const char *file, int line) {
+    return ir_checked_binop("llvm.sadd.with.overflow", type, lhs, rhs, "+", file, line);
+}
+
+int ir_sub_checked(const char *type, const char *lhs, const char *rhs,
+                   const char *file, int line) {
+    return ir_checked_binop("llvm.ssub.with.overflow", type, lhs, rhs, "-", file, line);
+}
+
+int ir_mul_checked(const char *type, const char *lhs, const char *rhs,
+                   const char *file, int line) {
+    return ir_checked_binop("llvm.smul.with.overflow", type, lhs, rhs, "*", file, line);
+}
+
+// The unsigned family. Rust checks both signednesses and so does this: an
+// unsigned wrap is the same class of silent defect, and `0 as U32 - 1` is the
+// one a reader is most likely to write by accident.
+int ir_uadd_checked(const char *type, const char *lhs, const char *rhs,
+                    const char *file, int line) {
+    return ir_checked_binop("llvm.uadd.with.overflow", type, lhs, rhs, "+", file, line);
+}
+
+int ir_usub_checked(const char *type, const char *lhs, const char *rhs,
+                    const char *file, int line) {
+    return ir_checked_binop("llvm.usub.with.overflow", type, lhs, rhs, "-", file, line);
+}
+
+int ir_umul_checked(const char *type, const char *lhs, const char *rhs,
+                    const char *file, int line) {
+    return ir_checked_binop("llvm.umul.with.overflow", type, lhs, rhs, "*", file, line);
+}
+
+// Whether this build checks arithmetic. Backend state rather than a parameter
+// threaded through codegen, for the same reason the verify-mode allocator names
+// are: it is one bit that every arithmetic site reads and none of them decides.
+static int g_overflow_checks;
+
+void ir_set_overflow_checks(int on) { g_overflow_checks = on ? 1 : 0; }
+int ir_overflow_checks(void) { return g_overflow_checks; }
 BINOP(ir_sdiv, LLVMBuildSDiv)
 BINOP(ir_udiv, LLVMBuildUDiv)
 BINOP(ir_srem, LLVMBuildSRem)

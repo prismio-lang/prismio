@@ -1444,6 +1444,24 @@ void list_set_inline(void* lp, int index, void* value) {
     list_release_source(l, value);
 }
 
+// The debug-mode overflow check's failure path, RFC 0560's "check in debug".
+//
+// `Int` is signed 32-bit and wraps -- decided by measurement, see
+// RESULTS-int-width.md -- and this is what makes the wrap a diagnostic rather
+// than a silence. Reached only from `--overflow-checks` builds, and only down
+// the `unreachable` arm of a branch the backend emits, so a release build has
+// neither the call nor the branch.
+//
+// Void and non-returning: the caller's block ends in `unreachable`, which is
+// what lets the checked value dominate its uses without a phi.
+void prismio_overflow_trap(const char* op, const char* file, int line) {
+    fprintf(stderr, "runtime error: integer overflow in `%s` at %s:%d\n",
+            op ? op : "?", (file && *file) ? file : "<unknown>", line);
+    fprintf(stderr, "note: Int is signed 32-bit and wraps in release builds; "
+                    "this check is on because the program was built with --overflow-checks\n");
+    exit(1);
+}
+
 // REQUIREMENTS 4. The checked unwrap behind `expect(x)`.
 //
 // A function rather than a branch in codegen, and returning its argument rather

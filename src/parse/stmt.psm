@@ -203,7 +203,11 @@ fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: Token,
         exit(1)
     }
 
-    let combined = parserNode(p, NodeKind.BINARY_EXPR)
+    // Anchored on the operator for the same reason the ordinary binary
+    // expression in parse/expr.psm is: `x += 1` desugars to a BINARY_EXPR whose
+    // position is now asked for by --overflow-checks, and `parserCurrent` here
+    // is already past the operator.
+    let combined = parserNodeFrom(NodeKind.BINARY_EXPR, operatorToken)
     combined.s1 = op
     combined.child1 = node_to_ptr(target)
     combined.child2 = node_to_ptr(parseExpression(p, 0))

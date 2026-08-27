@@ -12,11 +12,17 @@ The rule that decides which side anything falls on:
 > **If getting it wrong produces a miscompile, it belongs to the compiler.**
 > **If getting it wrong produces a link error or a missing feature, it does not.**
 
-**Current verified compiler: `build/ot-2`.** Suite **173/173**, fixed point, 18-source AIF
+**Current verified compiler: `build/ovf-4`.** Suite **174/174**, fixed point, 18-source AIF
 differential, and **86 programs under `--verify` with 0 violations**. M5.1, boxed `OBJECT`
 replacement, the cold-compile regression, the concurrency corpus gap, the task-handle leak, the
-`Int`-width question, the C string layer, the pass-through escape use-after-free and the
-argument-position release are all closed. Do not
+`Int`-width question, the C string layer, the pass-through escape use-after-free, the
+argument-position release and debug-mode overflow checking are all closed.
+
+**The CI matrix has finally run, and it says the `PRISMIO_INLINE_RUNTIME` default is not portable.**
+Read the item in `TODO.md` before touching it: Windows fails every suite test assembling the curated
+merge because the compiler links one LLVM and shells out to another. Two CI fixes are in the tree
+and **the parent item stays unchecked until a green matrix is observed**, not until the fixes look
+right. Do not
 run the suite concurrently with benchmarks: several runner checks and the object cache use fixed
 paths.
 

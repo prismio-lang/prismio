@@ -1,7 +1,36 @@
 # Handoff — 2026-08-29
 
-**Current compiler: `build/ot-2`. Suite 173/173, fixed point, AIF differential 18/18,
-86 programs under `--verify` with 0 violations.**
+**Current compiler: `build/ovf-4`. Suite 174/174, fixed point, AIF differential 18/18,
+86 programs under `--verify` with 0 violations, a from-seed bootstrap reproducing it byte-for-byte.**
+
+Two ownership items, debug-mode overflow checking, a parser defect, and the first real answer from
+the three-platform CI matrix.
+
+**The matrix says the `PRISMIO_INLINE_RUNTIME` default is not portable.** Pushed for the first time
+on 2026-08-29 and all three platforms failed. Windows built and then failed *every* suite test
+assembling the curated merge — `expected memory location (argmem, inaccessiblemem)` — because the
+compiler links the provisioned LLVM-C while the native build step shells out to a bare `clang` from
+`PATH`, and on `windows-latest` those are different versions: LLVM 22 writes
+`memory(..., target_mem0: none, target_mem1: none)` and the image's clang cannot parse it. macOS and
+Ubuntu never got that far, taking a **403** from the GitHub API — the unauthenticated per-IP rate
+limit, not a missing release. **A control branch at `97ef065` fails identically**, so neither
+predates nor was caused by this session's work. Two fixes are in the tree (`GITHUB_TOKEN` on the
+provisioning step; the provisioned LLVM's `bin` prepended to `PATH`) and the parent item stays
+unchecked until a green matrix is *observed*. The durable fix for the Windows half is in
+`build_driver.c`, which should take clang from `llvm-paths.json` rather than `PATH`.
+
+**Debug-mode overflow checking landed**, and the recorded premise did not survive measurement. TODO
+said a native `llvm.sadd.with.overflow` lowering "should be cheaper than a sanitizer": it is not —
+5.36×–5.95× against the sanitizer's 5.42×–5.72×, because the cost is the *branch*, which defeats
+vectorization (17 NEON registers in the plain loops, none in either checked form). And the 4.1–4.4×
+does not transfer to whole programs: on the corpus `--overflow-checks` is **1.00×–1.12×** with
+checksums agreeing. Default stays off on the 6× worst case.
+[`RESULTS-overflow-checks.md`](aif/evidence/RESULTS-overflow-checks.md).
+
+**A parser defect it found:** every `BINARY_EXPR` carried the position of the token *after* it,
+because `parserNode` ran after the right operand was parsed. Invisible until something reported a
+position out of one. Both constructions now anchor on the operator token; zero of 128 programs
+changed IR.
 
 Two ownership items closed, and the first of them was not on the list.
 

@@ -258,8 +258,19 @@ LLVMValueRef LLVMBuildStore(LLVMBuilderRef, LLVMValueRef Val, LLVMValueRef Ptr);
 typedef enum { PRISMIO_LLVM_STRUCT_TYPE_KIND = 5 } PrismioLLVMTypeKindProbe;
 #define LLVMStructTypeKind PRISMIO_LLVM_STRUCT_TYPE_KIND
 #define LLVMPointerTypeKind 12
+// LLVMIntegerTypeKind is 8, from the same append-only enum and stable for the
+// same reason. Read by the checked-arithmetic path, which is overloaded on the
+// integer width and must refuse anything that has none.
+#define LLVMIntegerTypeKind 8
 int LLVMGetTypeKind(LLVMTypeRef Ty);
+unsigned LLVMGetIntTypeWidth(LLVMTypeRef IntegerTy);
 const char *LLVMGetStructName(LLVMTypeRef Ty);
+
+// The anonymous struct the overflow intrinsics return -- `{iN, i1}`. Distinct
+// from LLVMStructTypeInContext's named sibling used for nominal types: this one
+// is structural, which is what the intrinsic signature wants.
+LLVMTypeRef LLVMStructTypeInContext(LLVMContextRef C, LLVMTypeRef *ElementTypes,
+                                    unsigned ElementCount, LLVMBool Packed);
 
 LLVMValueRef LLVMGetUndef(LLVMTypeRef Ty);
 LLVMBool LLVMIsConstant(LLVMValueRef Val);

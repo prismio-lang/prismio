@@ -1,0 +1,18 @@
+// Fixture for run_overflow_checks_test. Not named `test_*.psm`: it is built
+// twice by the runner, once each way, and the *default* build is expected to
+// wrap rather than to succeed at anything.
+import std.io
+
+fn main() -> Int {
+    // 2147483600 + 100 overflows Int, which is signed 32-bit and wraps.
+    // Through a loop and a `mut` so nothing is constant-folded away -- a folded
+    // add is not an add, and the check would have nothing to fire on.
+    let mut x = 2147483600
+    let mut i = 0
+    while (i < 100) {
+        x = x + 1
+        i = i + 1
+    }
+    println(x)
+    return 0
+}

@@ -42,6 +42,19 @@ fn isStructTypeKey(t: String) -> Bool {
     return strStartsWith(t, "struct:")
 }
 
+// A machine integer wide enough to overflow, which is the set the debug-mode
+// overflow check applies to.
+//
+// `i1` is deliberately absent. It is `Bool`, and the only arithmetic that
+// reaches it is a comparison's *result*, never an operand -- so a checked add on
+// one would be an intrinsic that cannot exist (`llvm.sadd.with.overflow.i1`)
+// rather than a check that never fires. Everything else -- `ptr`, `double`,
+// `struct:` -- either has its own path above or cannot take `+`.
+fn isIntegerStorageKey(t: String) -> Bool {
+    return strEquals(t, "i8") or strEquals(t, "i16")
+        or strEquals(t, "i32") or strEquals(t, "i64")
+}
+
 // The fat String is the one key that answers `isStructTypeKey` while *not* being
 // storage reached by GEP: it is a pair in a register, and a field of one holds
 // the pair itself. Every site that branches on `isStructTypeKey` to choose
