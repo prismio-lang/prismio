@@ -1,7 +1,21 @@
 # Handoff — 2026-08-29
 
-**Current compiler: `build/ovf-4`. Suite 174/174, fixed point, AIF differential 18/18,
-86 programs under `--verify` with 0 violations, a from-seed bootstrap reproducing it byte-for-byte.**
+**Current compiler: `build/cur-2`. Suite 174/174, fixed point, AIF differential 18/18,
+87 programs under `--verify` with 0 violations, a from-seed bootstrap reproducing it byte-for-byte.**
+
+**Standing against idiomatic Rust: 0.91x-1.76x, from 0.90x-3.09x. Corpus median 0.856x over the
+session, 25 runs, every checksum agreeing.** Two findings did that, and neither was on the list:
+a payload-free enum variant that allocated uninitialised memory (also the Linux/Windows heap
+corruption), and `list_get_inline` never having been added to the curated inlinable set — so every
+flat-element access in the corpus paid a real call for a whole milestone.
+[`RESULTS-enum-zero-value.md`](aif/evidence/RESULTS-enum-zero-value.md),
+[`RESULTS-curate-list-get-inline.md`](aif/evidence/RESULTS-curate-list-get-inline.md).
+
+**Do not re-derive these — all three were tested and killed:** `noalias` on the component arrays
+(1.11x, and both arms already vectorize), IRCE (worth nothing; the control proved the apparent gain
+was a second `-O2`), and a second `-O2` over the merged module (1.49x on a model, **1.80x slower**
+on real g4). Scoped alias metadata is priced at 1.40x and still does not vectorize, so it is not
+worth building alone. `TODO.md` carries all of it.
 
 Two ownership items, debug-mode overflow checking, a parser defect, and the first real answer from
 the three-platform CI matrix.
