@@ -1,7 +1,7 @@
 // M4.3b paired read microbenchmark -- ordinary inline AoS control.
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 struct ReadParticle {
     px: Float,
@@ -69,7 +69,7 @@ fn main() -> Int {
         let t0 = clock_gettime_nsec_np(4)
         checksum = checksum + sumLife(rows)
         let t1 = clock_gettime_nsec_np(4)
-        list_set(samples, frame, t1 - t0)
+        list_set(samples, frame, (t1 - t0) as Int)
         frame = frame + 1
     }
 

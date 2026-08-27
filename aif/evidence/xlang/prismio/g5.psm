@@ -6,7 +6,7 @@
 // lifecycle runs once at the end, as in the corpus.
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 struct Mesh {
     vertex_count: Int,
@@ -270,7 +270,7 @@ fn main() -> Int {
         let submitted = render_batched(scene)
         let t1 = clock_gettime_nsec_np(4)
         total = total + submitted
-        list_set(samples, frame, t1 - t0)
+        list_set(samples, frame, (t1 - t0) as Int)
         frame = frame + 1
     }
 

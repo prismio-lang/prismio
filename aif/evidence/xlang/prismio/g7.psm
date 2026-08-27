@@ -17,7 +17,7 @@
 // representation half of SPEC 8.4 and is not built.
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 extern fn str_concat(s1: String, s2: String) -> String
 // The length-carrying slice. `str_substring` would strlen the whole source on
@@ -182,7 +182,7 @@ fn main() -> Int {
         let s = tokenize(src, srcLen)
         let t1 = clock_gettime_nsec_np(4)
         checksum = s
-        list_set(samples, it, t1 - t0)
+        list_set(samples, it, (t1 - t0) as Int)
         it = it + 1
     }
 

@@ -18,7 +18,7 @@
 // kept because the difference between it and `g9.psm` is the measurement.
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 struct Band {
     seed: Int,
@@ -75,7 +75,7 @@ fn main() -> Int {
 
         last = r0 + r1 + r2 + r3
         total = total + last
-        list_set(samples, frame, t1 - t0)
+        list_set(samples, frame, (t1 - t0) as Int)
         frame = frame + 1
     }
 

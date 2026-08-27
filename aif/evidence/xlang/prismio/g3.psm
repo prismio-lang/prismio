@@ -6,7 +6,7 @@
 // measures how a retained tree is *traversed*, not how it is allocated.
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 struct Transform {
     px: Float,
@@ -169,7 +169,7 @@ fn main() -> Int {
         visited = propagate(nodes, 0, 0.0, 0.0, 0.0)
         visible = count_visible(nodes, 1000.0)
         let t1 = clock_gettime_nsec_np(4)
-        list_set(samples, frame, t1 - t0)
+        list_set(samples, frame, (t1 - t0) as Int)
         frame = frame + 1
     }
 

@@ -19,6 +19,15 @@ provisioning step; the provisioned LLVM's `bin` prepended to `PATH`) and the par
 unchecked until a green matrix is *observed*. The durable fix for the Windows half is in
 `build_driver.c`, which should take clang from `llvm-paths.json` rather than `PATH`.
 
+**Second matrix run, after those fixes — both worked, and both uncovered the next thing.** Windows
+went from *every test failing* to **168/174**: the PATH fix was right, and the six that remain are
+real Windows gaps now visible for the first time (`--jit` symbol resolution, `--target`, verify
+mode, the zero-analysis equivalence check). macOS and Ubuntu got past the 403 — the token fix
+worked — and then failed on asset *naming*: LLVM 22 publishes
+`LLVM-22.1.8-macOS-ARM64.tar.xz` / `LLVM-22.1.8-Linux-X64.tar.xz` while every pattern in
+`setup_llvm.py` predated the rename and only knew `clang+llvm-<version>-<triple>`, which survives
+for Windows only. Patterns updated; a third run is what would confirm it.
+
 **Debug-mode overflow checking landed**, and the recorded premise did not survive measurement. TODO
 said a native `llvm.sadd.with.overflow` lowering "should be cheaper than a sanitizer": it is not —
 5.36×–5.95× against the sanitizer's 5.42×–5.72×, because the cost is the *branch*, which defeats
@@ -26,6 +35,10 @@ vectorization (17 NEON registers in the plain loops, none in either checked form
 does not transfer to whole programs: on the corpus `--overflow-checks` is **1.00×–1.12×** with
 checksums agreeing. Default stays off on the 6× worst case.
 [`RESULTS-overflow-checks.md`](aif/evidence/RESULTS-overflow-checks.md).
+
+**The benchmark clock is declared honestly.** `clock_gettime_nsec_np` returns `uint64_t` and was
+declared `-> Int` in **20** sources; it worked only because every use takes a difference and frames
+are short. Now `-> I64` with the narrowing after the subtraction. Every corpus checksum unchanged.
 
 **A parser defect it found:** every `BINARY_EXPR` carried the position of the token *after* it,
 because `parserNode` ran after the right operand was parsed. Invisible until something reported a

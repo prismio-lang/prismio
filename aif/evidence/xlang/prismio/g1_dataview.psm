@@ -3,7 +3,7 @@
 // checksums also prove mutation survives the round trip.
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 struct Particle {
     px: Float,
@@ -115,7 +115,7 @@ fn main() -> Int {
         integrate(ps, dt)
         fade(ps, dt)
         let t1 = clock_gettime_nsec_np(4)
-        list_set(samples, frame, t1 - t0)
+        list_set(samples, frame, (t1 - t0) as Int)
         frame = frame + 1
     }
 

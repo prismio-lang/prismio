@@ -15,7 +15,7 @@
 // timing alone.
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 extern fn arena_objects() -> Int
 extern fn arena_regions() -> Int
 
@@ -117,7 +117,7 @@ fn main() -> Int {
             totals.culled = totals.culled + (1000 - drawn)
         }
         let t1 = clock_gettime_nsec_np(4)
-        list_set(samples, frame, t1 - t0)
+        list_set(samples, frame, (t1 - t0) as Int)
         frame = frame + 1
     }
 

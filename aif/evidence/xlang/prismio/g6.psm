@@ -17,7 +17,7 @@
 import std.io
 import g6_engine
 
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 // Per-member gameplay state. Holds an engine handle plus data the engine knows
 // nothing about.
@@ -167,7 +167,7 @@ fn main() -> Int {
 
             total_orders = total_orders + applied_r + applied_b
             total_kills = total_kills + kills
-            list_set(samples, slot, t1 - t0)
+            list_set(samples, slot, (t1 - t0) as Int)
             slot = slot + 1
             tick = tick + 1
         }

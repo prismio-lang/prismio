@@ -65,13 +65,26 @@ GITHUB_RELEASE_API = "https://api.github.com/repos/llvm/llvm-project/releases/ta
 # carry an Ubuntu version that changes, macOS switched to arm64 naming, and so
 # on). Matching on substrings against the actual asset list is durable in a way
 # that reconstructing a filename is not.
+# Two naming schemes, and both are live in the same release.
+#
+# LLVM 22 publishes macOS and Linux as `LLVM-<version>-<OS>-<ARCH>.tar.xz` while
+# Windows kept the older `clang+llvm-<version>-<triple>.tar.xz`. The old names
+# are still listed first-to-match for platforms that have them, because older
+# point releases in the pinned major may only carry those.
+#
+# **This is not hypothetical drift**: on 2026-08-29 the three-platform CI matrix
+# failed on macOS and Ubuntu for exactly this -- the release was fetched fine and
+# then no pattern matched, because every entry here predated the rename.
+#
+# Darwin/x86_64 has no asset in 22.1.x at all. Its old pattern is kept so the
+# failure names a missing asset rather than a missing platform.
 ASSET_PATTERNS = {
     ("Windows", "AMD64"): ["x86_64-pc-windows-msvc"],
     ("Windows", "ARM64"): ["aarch64-pc-windows-msvc", "woa64"],
-    ("Darwin", "arm64"): ["arm64-apple-darwin"],
-    ("Darwin", "x86_64"): ["x86_64-apple-darwin"],
-    ("Linux", "x86_64"): ["x86_64-linux-gnu"],
-    ("Linux", "aarch64"): ["aarch64-linux-gnu"],
+    ("Darwin", "arm64"): ["macOS-ARM64", "arm64-apple-darwin"],
+    ("Darwin", "x86_64"): ["macOS-X64", "x86_64-apple-darwin"],
+    ("Linux", "x86_64"): ["Linux-X64", "x86_64-linux-gnu"],
+    ("Linux", "aarch64"): ["Linux-ARM64", "aarch64-linux-gnu"],
 }
 
 

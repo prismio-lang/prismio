@@ -141,7 +141,22 @@ trap-only assertion and is exactly the version that must not ship:
   answer.
 - **`/` at `INT_MIN / -1`** is unchecked, as above.
 
-## 7 · Sources
+## 7 · Also in this change: the benchmark clock
+
+`clock_gettime_nsec_np` returns `uint64_t` and was declared `-> Int` in **20**
+sources. It worked only because every use takes a *difference* and frames are
+short; a frame over ~2.1 s produced garbage. It is now declared `-> I64`, with
+the narrowing moved to after the subtraction:
+
+```prismio
+list_set(samples, frame, (t1 - t0) as Int)
+```
+
+Every corpus checksum is unchanged — g1 `alive 2000 / beyond 1095` through g9
+`total 1856014121 / last 1579165008` — so this is a declaration fix and not a
+behaviour change.
+
+## 8 · Sources
 
 - [RFC 0560, integer overflow](https://rust-lang.github.io/rfcs/0560-integer-overflow.html) — the check-in-debug/wrap-in-release split, and the argument that overflow checking is analogous to a debug assertion.
 - [rustc codegen options, `-C overflow-checks`](https://doc.rust-lang.org/rustc/codegen-options/index.html) — the flag this one is modelled on, including its independence from debug info.

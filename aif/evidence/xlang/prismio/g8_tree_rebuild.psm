@@ -38,7 +38,7 @@
 // sum(build(10,1)) = 523776 plus 5 x 1023 nodes.
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 enum Tree {
     Leaf,
@@ -91,6 +91,6 @@ fn main() -> Int {
     print("checksum tree ")
     println(checksum)
     print("frame_ns ")
-    println(t1 - t0)
+    println((t1 - t0) as Int)
     return 0
 }

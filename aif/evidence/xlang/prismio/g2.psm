@@ -8,7 +8,7 @@
 // memory model produces a hitch, it produces it here.
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 struct DrawCmd {
     mesh_id: Int,
@@ -109,7 +109,7 @@ fn main() -> Int {
         let t1 = clock_gettime_nsec_np(4)
         totals.submitted = totals.submitted + drawn
         totals.culled = totals.culled + (1000 - drawn)
-        list_set(samples, frame, t1 - t0)
+        list_set(samples, frame, (t1 - t0) as Int)
         frame = frame + 1
     }
 

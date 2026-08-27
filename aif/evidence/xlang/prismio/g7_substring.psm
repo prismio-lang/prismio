@@ -19,7 +19,7 @@
 // own, the way rust/g7_owned.rs prices the copy on its own.
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn str_substring(s: String, start: Int, length: Int) -> String
@@ -179,7 +179,7 @@ fn main() -> Int {
         let s = tokenize(src, srcLen)
         let t1 = clock_gettime_nsec_np(4)
         checksum = s
-        list_set(samples, it, t1 - t0)
+        list_set(samples, it, (t1 - t0) as Int)
         it = it + 1
     }
 

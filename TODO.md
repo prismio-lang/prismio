@@ -951,6 +951,21 @@ checkbox, or the two drift and only one of them gets read.)*
             until a green matrix is actually observed. The durable fix for the Windows half is
             arguably in `build_driver.c`, which should take clang from `llvm-paths.json` rather than
             from `PATH`, so there is one answer to "where is LLVM" as that file already claims.
+            **Second run, after both fixes: both worked.** Windows went from every test failing to
+            **168/174**, and the six that remain are real Windows gaps seen for the first time —
+            `--jit` symbol resolution, `--target`, verify mode, and the zero-analysis equivalence
+            check. macOS and Ubuntu got past the 403 and then failed on asset *naming*: LLVM 22
+            ships `LLVM-22.1.8-macOS-ARM64.tar.xz` and `LLVM-22.1.8-Linux-X64.tar.xz`, while every
+            pattern in `setup_llvm.py` knew only the older `clang+llvm-<version>-<triple>`, which
+            survives for Windows alone. Patterns updated. **A third run is what would confirm it —
+            the parent stays unchecked until a matrix is observed green, and the six Windows
+            failures are their own item below.**
+- [ ] **Six Windows-only suite failures, seen for the first time 2026-08-29.** `168/174` on
+      `windows-latest` once the toolchain mismatch was fixed: two `[FAIL] Execution failed`, plus
+      `--jit` (unresolved `std.io` symbols — `print__Float`, `prismioStdIoSignedInteger__I64` and
+      others — so JIT symbol resolution does not find the merged module's definitions), `--target`,
+      `aif_verify`, and the zero-analysis behavioural-equivalence check. None is reproducible on
+      this host; all need the matrix to iterate against.
             **Still blocked on push authorisation as of 2026-08-26**, and every local check that can
             substitute for it is green: suite **170/170** on macOS, fixed point, differential 17/17,
             curated closure, `--target` cross-build and link, packaged-runtime separation. The
@@ -1121,16 +1136,51 @@ checkbox, or the two drift and only one of them gets read.)*
       only the check landed. Without the explicit forms, code that *wants* to wrap has no way to say
       so and traps under `--overflow-checks`. Language surface, not codegen. `/` at `INT_MIN / -1`
       is also still unchecked — a different trap, and one this deliberately did not fold in.
+- [x] **`clock_gettime_nsec_np` is declared honestly — 2026-08-29.** It returns `uint64_t` and was
+      declared `-> Int` in **20** sources; it worked only because the code takes a difference and
+      frames are short, and a frame over ~2.1 s produced garbage. Now `-> I64`, with the narrowing
+      moved to *after* the subtraction — `list_set(samples, frame, (t1 - t0) as Int)` — which is
+      where it is safe. Every corpus checksum is unchanged (g1 alive 2000/beyond 1095 … g9 total
+      1856014121), suite **174/174**, differential 18/18.
 - [ ] **`__builtin_string_len` truncates.** `%prismio.str` carries its length in **i64** and the
-      builtin returns `Int`, so the read emits `trunc i64 … to i32`. The representation is wider
-      than every path that reads it, which is incoherent under either width choice. Also
-      `clock_gettime_nsec_np` is declared `-> Int` in every benchmark source against a `uint64_t`;
-      it works only because the code takes a difference and frames are short.
-- [ ] **Four C string functions survive only as an FFI test surface.** `str_concat`,
-      `str_substring`, `str_equals` and `int_to_str` remain in `lang_runtime.c` because 13 AIF/tier
-      fixtures declare them to exercise `extern fn` ownership, and `str_slice` because `g7.psm`
-      measures it against Rust. Those fixtures should declare a purpose-built foreign surface
-      instead, so the runtime is not carrying dead code to keep a test alive.
+      builtin returns `Int`, so the read emits `trunc i64 … to i32` (`src/ir/expr.psm`, the
+      `ir_trunc("i64", wide, "i32")` in the builtin's lowering). The representation is wider than
+      every path that reads it, which is incoherent under either width choice.
+      **The coherent answer is a 32-bit length**, and the argument is the one `Int` already settled:
+      every string index is an `Int`, so a string longer than 2^31 cannot be indexed and the width
+      buys nothing. **The cost is what makes this its own item** — it is an ABI change to
+      `%prismio.str`, so `prismio_str` in the runtime, the backend's type construction and
+      `bootstrap/prismio-seed.ll` all move together, and the seed must be refreshed in the same
+      step or a fresh checkout fails to *link*. Deliberately not folded into the 2026-08-29 session,
+      which had already changed the drop path twice.
+- [ ] **Four C string functions survive only as an FFI test surface — surveyed 2026-08-29, and
+      deliberately not migrated yet.** The measured inventory, because the recorded one was off in
+      both directions:
+
+      | function | lines in `lang_runtime.c` | declaring files | call sites |
+      |---|---:|---:|---:|
+      | `str_substring` | 22 | 2 | 3 |
+      | `str_concat` | 10 | 11 | ~50 |
+      | `int_to_str` | 5 | 8 | ~14 |
+      | `str_equals` | 3 | 7 | ~10 |
+
+      **40 lines of 2,056, across 16 fixtures and roughly 80 call sites.** `str_slice` (17 more) is
+      *not* in this list: `g7.psm` measures it against Rust, so it is a live benchmark subject and
+      not dead code. None of the four is referenced anywhere else in the runtime — only in comments.
+
+      **Why it is not done.** The trade is 80 call sites across every AIF and tier fixture, plus
+      their hardcoded manifest expectations in `tests/test_runner.py` and their expected output,
+      against deleting 40 lines of C. Those fixtures are the regression net for the whole ownership
+      analysis, and 2026-08-29 changed the drop path twice — perturbing all of them in the same
+      session would weaken the evidence for those changes more than the deletion is worth. It is a
+      good change to make first in a session, not last.
+
+      **The design when it is done.** The fixtures need three FFI contracts, not five string
+      functions: `produce(free)` (an extern that allocates and hands over), `borrow` (reads,
+      retains nothing) and `alias` (returns a pointer it does not own). A purpose-built surface is
+      four trivial functions covering those, named so nothing mistakes them for a string API. The
+      alternative worth pricing first is declaring the *live* runtime functions `std.string` already
+      uses — `str_with_capacity` is already `produce(free)` — which would need no new C at all.
 
 ---
 

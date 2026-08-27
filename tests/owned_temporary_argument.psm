@@ -60,7 +60,7 @@
 // rejects it with "cannot move out of borrowed value".
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> Int
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 struct Band {
     seed: Int,
@@ -98,7 +98,7 @@ fn drive(bound: Bool) -> Int {
             total = total + simulate(band(frame, 0, 32)) + simulate(band(frame, 1, 32))
         }
         let t1 = clock_gettime_nsec_np(4)
-        list_set(samples, frame, t1 - t0)
+        list_set(samples, frame, (t1 - t0) as Int)
         frame = frame + 1
     }
     return total
