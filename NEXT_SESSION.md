@@ -34,6 +34,24 @@ Windows never hit it because `clang+llvm-<triple>` does carry them. Both now ins
 the build. **Do not mark the parent done on any of this — it is checked by an observed green
 matrix.**
 
+**Where the matrix finished: macOS GREEN, ubuntu 170/174, windows 168/174.** The inline-runtime
+checks themselves pass on all three. What is left red predates this work, and a control branch at
+`97ef065` carrying only the CI fixes proves it — it scores **168/172** with the *same four* Ubuntu
+failures.
+
+**The serious one is `test_73_recursive_release`.** It exits **-11** on Linux and **3221226356
+(`STATUS_HEAP_CORRUPTION`)** on Windows, while passing here at `106 allocated / 106 released /
+0 leaked / 0 violation(s)` and surviving `MallocScribble`/`MallocGuardEdges`. `--debug` passes and
+release does not, so it is the AIF-driven release path — `__aif_release_Tree`, from M2.1a's
+recursive release. The tree is **depth 3**, so it is not stack exhaustion. It takes three of the
+four Ubuntu failures with it. **This host cannot reproduce it; a Linux or Windows runner is the
+only instrument.**
+
+**One matrix failure was mine and is fixed:** `owned_temporary_argument` declared
+`clock_gettime_nsec_np`, which is macOS-only, and the suite builds that fixture everywhere. It now
+uses `abs` — an extern with no contract, which is all the fixture ever needed to make call-site
+bracketing decline — and still discriminates at 92/52/40 against the pre-fix compiler.
+
 **Debug-mode overflow checking landed**, and the recorded premise did not survive measurement. TODO
 said a native `llvm.sadd.with.overflow` lowering "should be cheaper than a sanitizer": it is not —
 5.36×–5.95× against the sanitizer's 5.42×–5.72×, because the cost is the *branch*, which defeats
