@@ -74,7 +74,7 @@ struct Map<K: Key, V> {
 // 8 buckets, which is 6 entries before the first rehash. Small enough that a map
 // used as a scratch lookup costs almost nothing, and a power of two so the mask
 // is right from the start.
-fn mapInitialCapacity() -> Int { return 8 }
+priv fn mapInitialCapacity() -> Int { return 8 }
 
 fn mapNew<K: Key, V>() -> Map<K, V> {
     let k: List<K> = list_new()
@@ -94,7 +94,7 @@ fn mapLen<K: Key, V>(m: Map<K, V>) -> Int {
 
 // The slot `key` occupies, or the first empty slot on its probe chain. Always
 // terminates: the table is grown before it can fill, so an empty slot exists.
-fn mapSlotOf<K: Key, V>(m: Map<K, V>, key: K) -> Int {
+priv fn mapSlotOf<K: Key, V>(m: Map<K, V>, key: K) -> Int {
     let mut at = hash(key) & m.mask
     loop {
         let entry = list_get(m.slots, at)
@@ -118,7 +118,7 @@ fn mapIndexOf<K: Key, V>(m: Map<K, V>, key: K) -> Int {
 // micro-optimisation: assigning a new `List` over `m.slots` releases nothing, so
 // every rehash would leak the old table. Pushing the new half and then clearing
 // the old half reuses the one allocation the map has ever had for this.
-fn mapRehash<K: Key, V>(m: Map<K, V>) {
+priv fn mapRehash<K: Key, V>(m: Map<K, V>) {
     let old = m.mask + 1
     let capacity = old * 2
 

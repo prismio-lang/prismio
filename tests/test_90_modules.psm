@@ -1,0 +1,52 @@
+// v0.1 3.5 -- module namespacing and visibility.
+//
+// `resolveImports` flattens every module into one AST, and every node keeps the
+// `file` id it was parsed with. That surviving id is the whole of what a
+// qualifier needs: `utils.add(2, 4)` resolves among the declarations parsed from
+// `utils.psm` and nowhere else, with no module registry to build or keep in step
+// with the merge.
+//
+// `priv` is opt-in rather than private-by-default, which is the opposite of most
+// languages and the only non-breaking spelling available -- every cross-module
+// call in `src/` and every `std` function is public today.
+
+import std.io
+import std.string
+import utils
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// A local function with the same name as one in `utils`. Unqualified, this one
+// wins for these argument types; qualified, `utils.add` is reachable anyway.
+fn add(a: String, b: String) -> String {
+    return strConcat(a, b)
+}
+
+fn main() -> Int {
+    // Unqualified resolution is unchanged.
+    if (add(2, 4) != 6) { return fail("unqualified add") }
+    if (strEquals(add("a", "b"), "ab") == false) { return fail("unqualified overload") }
+
+    // Module-qualified.
+    if (utils.add(2, 4) != 6) { return fail("utils.add") }
+    if (utils.multiply(4, 7) != 28) { return fail("utils.multiply") }
+
+    // A std module qualifies the same way -- there is nothing special about the
+    // standard library here, only about where a file lives.
+    if (strEquals(string.strTrim("  x  "), "x") == false) { return fail("string.strTrim") }
+    if (string.strLength("abcd") != 4) { return fail("string.strLength") }
+
+    // `priv` is visible inside its own file: `visibleScale` is declared beside
+    // `hiddenScale` and calls it.
+    if (visibleScale(5) != 15) { return fail("a private function called from its own module") }
+
+    // A qualified call still resolves through a chain of them.
+    if (utils.add(utils.multiply(2, 3), 1) != 7) { return fail("nested qualified calls") }
+
+    println("test_90 ok")
+    return 0
+}

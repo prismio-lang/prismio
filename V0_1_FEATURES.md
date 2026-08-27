@@ -237,7 +237,35 @@ makes a standard library feel modern.
   is the item most likely to be underestimated.** Do it after traits, and expect
   the ownership work to dominate the syntax work.
 
-### 3.5 · Module namespacing and visibility
+### 3.5 · Module namespacing and visibility — **PART DONE 2026-08-29**
+
+Landed: `module.name(...)` qualified calls, and `priv fn` for module-private
+functions. The seam was cheaper than the plan expected — **`resolveImports`
+needed no change at all.** Every node already keeps the `file` id it was parsed
+with, which is why diagnostics name the right file, and that surviving id *is*
+the qualifier: `semaFileQualifier(file)` is the path's leaf, and overload
+resolution filters on it. No module registry to build, fill, reset or keep in
+step with the merge. `priv` is one flag on the declaration and one comparison of
+two `file` ids.
+
+`priv` is **opt-in** rather than private-by-default, which is the opposite of most
+languages and the only non-breaking spelling available: every cross-module call in
+`src/` and every `std` function is public today. 22 std internals are now marked.
+
+**NOT done, and the plan's premise for it is wrong.** "With namespacing,
+`string.trim` is available and the `str*` prefix can retire" — the first half is
+true and the second does not follow. `import m` still brings every name in
+*unqualified*, so a `std/string.psm` that renamed `strTrim` to `trim` would claim
+`trim`, `length`, `split`, `contains` and thirty more in the global namespace of
+every importing program. That is **worse** than the prefix, not better. The prefix
+cannot retire until an import stops being unqualified by default, and that is a
+breaking change to every program that exists.
+
+So the 848-call-site rename is not merely deferred, it is **blocked on a decision
+this file has not made**: whether `import m` should stop meaning "and bring
+everything into scope". Making that decision is the real remaining work in 3.5.
+
+**The original plan, kept:**
 
 `resolve_imports` flattens every module into one AST; file identity survives on
 each node's `file` id, which is why diagnostics still name the right file, but

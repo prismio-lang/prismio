@@ -1,0 +1,7 @@
+// expect-error: `hiddenScale` is private to the module that declares it
+import std.io
+import utils
+
+fn main() -> Int {
+    return hiddenScale(2)
+}

@@ -13,7 +13,7 @@ extern fn str_with_capacity(length: Int) -> String produce(free)
 // larger std.string module into every console program. Each formatter allocates
 // in its own frame; delegating through a String-returning wrapper would be an
 // unowned pass-through under the current ownership analysis.
-fn prismioStdIoDigitCount(value: U64) -> Int {
+priv fn prismioStdIoDigitCount(value: U64) -> Int {
     let mut digits = 1
     let mut remaining = value
     while (remaining >= 10) {
@@ -23,7 +23,7 @@ fn prismioStdIoDigitCount(value: U64) -> Int {
     return digits
 }
 
-fn prismioStdIoUnsignedInteger(value: U64) -> String {
+priv fn prismioStdIoUnsignedInteger(value: U64) -> String {
     let digits = prismioStdIoDigitCount(value)
     let out = str_with_capacity(digits)
     let mut remaining = value
@@ -37,7 +37,7 @@ fn prismioStdIoUnsignedInteger(value: U64) -> String {
     return out
 }
 
-fn prismioStdIoSignedInteger(value: I64) -> String {
+priv fn prismioStdIoSignedInteger(value: I64) -> String {
     let negative = value < 0
     let mut magnitude = value as U64
     if (negative) { magnitude = (0 as U64) - (value as U64) }
@@ -59,7 +59,7 @@ fn prismioStdIoSignedInteger(value: I64) -> String {
     return out
 }
 
-fn prismioStdIoChar(value: Char) -> String {
+priv fn prismioStdIoChar(value: Char) -> String {
     if (value == '\0') { return str_with_capacity(0) }
     let out = str_with_capacity(1)
     __builtin_string_put_byte(out, 0, value)

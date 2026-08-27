@@ -373,6 +373,28 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                 }
             }
 
+            // v0.1 3.5. `token.isKeyword(w)` -- a *module*-qualified call.
+            //
+            // Checked before the method rewrite below, and after enum
+            // construction above, because all three spell `a.b(...)`. What tells
+            // them apart is what `a` is: a local of some type is a receiver, an
+            // enum name is a constructor, and a name that is neither but that
+            // some declaration of `b` was parsed under is a module.
+            //
+            // The qualifier is parked on the call's `s1`, where overload
+            // resolution reads it as a filter. It survives the re-entry into
+            // semaExpr and monoCopyOne's copy, which is what makes this
+            // idempotent and instantiation-safe.
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and ir_has_var_type(target.s1) == 0
+                and semaModuleDeclares(target.s1, callee.s1)) {
+                let qualifiedName = createNode(NodeKind.IDENTIFIER_EXPR)
+                qualifiedName.s1 = strClone(callee.s1)
+                nodeSpanFrom(qualifiedName, callee)
+                expr.s1 = strClone(target.s1)
+                expr.child1 = node_to_ptr(qualifiedName)
+                return semaExpr(module, expr)
+            }
+
             // Method call syntax, as a rewrite: `x.f(a)` **is** `f(x, a)`.
             //
             // The parser already accepts the shape -- `text.trim()` reached here
@@ -390,6 +412,19 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // A TYPE_ANNOTATION receiver is skipped: that is `Type.member`, which
             // is a qualified name rather than a value, and rewriting it would
             // turn a bad enum variant into a confusing call to `member`.
+            // A module qualifier whose member does not exist. Reported here
+            // rather than left to fall through, because the fall-through is the
+            // method rewrite -- and `text.nosuch()` becoming `nosuch(text)`
+            // reports "unknown function `nosuch`", which sends the reader to
+            // check their spelling when the answer is their imports.
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and ir_has_var_type(target.s1) == 0
+                and semaQualifierNamesModule(target.s1)) {
+                semaErrorAt(callee, strConcat(strConcat("module ", diagQuote(target.s1)),
+                                              strConcat(" declares no ", diagQuote(callee.s1))))
+                nodeSetType(expr, typeInvalid())
+                return typeInvalid()
+            }
+
             if (target.kind != NodeKind.TYPE_ANNOTATION) {
                 let methodName = createNode(NodeKind.IDENTIFIER_EXPR)
                 methodName.s1 = callee.s1

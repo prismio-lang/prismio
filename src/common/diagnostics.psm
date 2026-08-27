@@ -15,6 +15,10 @@
 import std.string
 extern fn diag_add_file(path: String, content: String) -> Int
 extern fn diag_file_path(file: Int) -> String alias
+// How many files the registry holds. Used by v0.1 3.5's name resolution to ask
+// "is this identifier a module?" without a module table of its own -- the file
+// registry already is one.
+extern fn diag_file_count() -> Int
 
 // A located diagnostic. `len` is the width of the caret run -- the length of the
 // token the node starts at -- and may be 0 for "just point at the column".

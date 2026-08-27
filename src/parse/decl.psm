@@ -9,6 +9,34 @@ import std.string
 import std.option
 
 fn parseDeclaration(p: Parser) -> ASTNode {
+    // v0.1 3.5. `priv fn helper(...)` -- visible only inside the file that
+    // declares it.
+    //
+    // **Contextual, and opt-in**, for the two reasons `workload` gives one screen
+    // down: reserving the word would break a program that uses it as a name, and
+    // an identifier cannot begin a declaration anyway, so `priv fn` is
+    // unambiguous. Opt-in rather than private-by-default because every
+    // cross-module call in `src/` and every `std` function is public today -- a
+    // private default would have made this a rename of the whole tree.
+    if (parserAtPrivate(p)) {
+        let marker = parserCurrent(p)
+        let onFunction = parserPrivateTakesFunction(p)
+        parserAdvance(p)
+        let declaration = parseDeclaration(p)
+        if (onFunction) {
+            declaration.i2 = 1
+        } else {
+            // Rejected rather than accepted and ignored, for the reason a `trait`
+            // default body is: the check lives in overload resolution, so a
+            // marker on a type or a global would be a promise the compiler does
+            // not keep -- which is worse than an error.
+            diag_error_at(marker.file, marker.line, marker.col, marker.len,
+                          "`priv` is only accepted on a function in v0.1")
+            diag_note("a private type or global is not enforced yet, and accepting the marker would promise that it is")
+        }
+        return declaration
+    }
+
     if (parserCheckVal(p, TokenType.KEYWORD, "import")) { return parseImportStatement(p) }
     if (parserCheckVal(p, TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
     if (parserCheckVal(p, TokenType.KEYWORD, "extern")) { return parseExternFnDecl(p) }
@@ -28,6 +56,29 @@ fn parseDeclaration(p: Parser) -> ASTNode {
                                " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`, `impl`, `trait`)"))
     parserSynchronize(p)
     return bad
+}
+
+// `priv` immediately before a declaration keyword. Recognising every kind and
+// rejecting all but `fn` in parseDeclaration keeps the marker consumed either
+// way, so a misplaced one is a single error rather than a cascade.
+fn parserAtPrivate(p: Parser) -> Bool {
+    if (parserCheck(p, TokenType.IDENTIFIER) == false) { return false }
+    let current = parserCurrent(p)
+    if (strEquals(current.value, "priv") == false) { return false }
+
+    let next = parserPeek(p)
+    if (next.type != TokenType.KEYWORD) { return false }
+    if (strEquals(next.value, "fn")) { return true }
+    if (strEquals(next.value, "extern")) { return true }
+    if (strEquals(next.value, "struct")) { return true }
+    if (strEquals(next.value, "enum")) { return true }
+    if (strEquals(next.value, "let")) { return true }
+    return false
+}
+
+fn parserPrivateTakesFunction(p: Parser) -> Bool {
+    let next = parserPeek(p)
+    return strEquals(next.value, "fn") or strEquals(next.value, "extern")
 }
 
 // ---------------------------------------------------------

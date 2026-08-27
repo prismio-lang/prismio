@@ -5,3 +5,13 @@ fn add(a: Int, b: Int) -> Int {
 fn multiply(x: Int, y: Int) -> Int {
     return x * y
 }
+
+// v0.1 3.5. Private to this module: test_90 asserts that a caller in another
+// file cannot reach it, and that `visibleScale` -- which is in this file -- can.
+priv fn hiddenScale(x: Int) -> Int {
+    return x * 3
+}
+
+fn visibleScale(x: Int) -> Int {
+    return hiddenScale(x)
+}

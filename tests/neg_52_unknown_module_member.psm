@@ -1,0 +1,7 @@
+// expect-error: module `utils` declares no `nosuchThing`
+import std.io
+import utils
+
+fn main() -> Int {
+    return utils.nosuchThing(1)
+}
