@@ -973,6 +973,15 @@ checkbox, or the two drift and only one of them gets read.)*
             committed **mode 100644** despite carrying shebangs, and the workflow invokes
             `tools/bootstrap.sh` directly. Nothing had ever reached that line on a Unix runner
             before, which is the whole reason this gate exists. Modes are now 100755.
+            **Fifth run: macOS went fully GREEN** — the first platform ever to pass this matrix.
+            Ubuntu got to the *link* step and failed with `cannot find -lLLVM-C`: apt.llvm.org's
+            `llvm-N-dev` ships `libLLVM.so` and no LLVM-C at all, while Homebrew and the Windows
+            package ship `libLLVM-C.dylib` / `LLVM-C.lib`. `setup_llvm.py` had always recorded which
+            library it validated, in `link_library`; `tools/bootstrap.sh` and `build_driver.c` both
+            read the include and lib *directories* from that file and then hardcoded the library
+            *name*. Both now derive it — drop a leading `lib`, truncate at the first dot — which
+            extends "one answer to where is LLVM" to *which library*, as `build_driver.c` already
+            claimed.
             **The parent stays unchecked until a matrix is observed green**, and the six Windows
             failures are their own item below.
 - [ ] **Six Windows-only suite failures, seen for the first time 2026-08-29.** `168/174` on

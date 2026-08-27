@@ -335,7 +335,26 @@ static int json_string_field(const char* text, const char* key, char* out, int o
     return n > 0;
 }
 
-static int find_llvm_paths(char* include_out, int include_size, char* lib_out, int lib_size) {
+// The `-l` *name* is not a constant, which is why it is an output here rather
+// than a literal at the link site. Homebrew and the Windows package ship
+// `libLLVM-C.dylib` / `LLVM-C.lib`; apt.llvm.org's llvm-N-dev ships `libLLVM.so`
+// and no LLVM-C at all, so `-lLLVM-C` fails to link on Ubuntu. setup_llvm.py
+// already records the library it validated -- `link_out` is that name reduced to
+// what `-l` wants: a leading `lib` dropped, then everything from the first dot.
+//
+// `link_out` may be NULL for callers that only want the directories.
+static void llvm_link_name(const char* file_name, char* out, int out_size) {
+    const char* p = file_name;
+    if (strncmp(p, "lib", 3) == 0) p += 3;
+    int n = 0;
+    while (p[n] && p[n] != '.' && n < out_size - 1) { out[n] = p[n]; n++; }
+    out[n] = '\0';
+    if (n == 0) snprintf(out, out_size, "LLVM-C");
+}
+
+static int find_llvm_paths_ex(char* include_out, int include_size, char* lib_out, int lib_size,
+                              char* link_out, int link_size) {
+    if (link_out && link_size > 0) snprintf(link_out, link_size, "LLVM-C");
     const char* root = getenv("PRISMIO_LLVM_DIR");
     if (root && root[0]) {
         snprintf(include_out, include_size, "%s%cinclude", root, PRISMIO_PATH_SEP);
@@ -374,8 +393,19 @@ static int find_llvm_paths(char* include_out, int include_size, char* lib_out, i
 
     int ok = json_string_field(text, "include", include_out, include_size)
           && json_string_field(text, "lib", lib_out, lib_size);
+    if (ok && link_out && link_size > 0) {
+        char recorded[256];
+        if (json_string_field(text, "link_library", recorded, (int)sizeof(recorded))) {
+            llvm_link_name(recorded, link_out, link_size);
+        }
+    }
     free(text);
     return ok;
+}
+
+// The three-argument form every existing caller wants: directories only.
+static int find_llvm_paths(char* include_out, int include_size, char* lib_out, int lib_size) {
+    return find_llvm_paths_ex(include_out, include_size, lib_out, lib_size, NULL, 0);
 }
 
 static int write_text_file(const char* path, const char* content) {
@@ -1389,8 +1419,10 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
     // in several hundred undefined _LLVM* symbols after a full compile.
     char llvm_include[1024] = "";
     char llvm_lib[1024] = "";
-    if (include_backend && !find_llvm_paths(llvm_include, sizeof(llvm_include),
-                                            llvm_lib, sizeof(llvm_lib))) {
+    char llvm_link[256] = "LLVM-C";
+    if (include_backend && !find_llvm_paths_ex(llvm_include, sizeof(llvm_include),
+                                               llvm_lib, sizeof(llvm_lib),
+                                               llvm_link, sizeof(llvm_link))) {
         fprintf(stderr,
                 "ERROR: no LLVM toolchain configured, and the compiler backend needs one.\n"
                 "       Run: python3 tools/setup_llvm.py\n"
@@ -1556,7 +1588,7 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
             // hundred LLVM calls are undefined symbols, after every object has
             // already been compiled.
             char* q_lib = command_quote_arg(llvm_lib);
-            snprintf(command + written, command_len - written, " -L %s -lLLVM-C", q_lib);
+            snprintf(command + written, command_len - written, " -L %s -l%s", q_lib, llvm_link);
             free(q_lib);
         }
         double t0 = build_trace_ms();

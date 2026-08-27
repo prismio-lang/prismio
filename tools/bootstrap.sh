@@ -141,11 +141,25 @@ cache_entry() {
 # API link library. tools/setup_llvm.py finds or fetches one and records it in
 # third_party/llvm-paths.json; PRISMIO_LLVM_DIR overrides that.
 resolve_llvm() {
+    # LLVM_LINK is the *name* for -l, and it is not a constant. Homebrew and the
+    # Windows package ship `libLLVM-C.dylib` / `LLVM-C.lib`, while apt.llvm.org's
+    # llvm-N-dev ships `libLLVM.so` and no LLVM-C at all -- so a hardcoded
+    # `-lLLVM-C` fails to link on Ubuntu with `cannot find -lLLVM-C`, which is
+    # what the 2026-08-29 CI matrix reported the first time a Unix runner reached
+    # the link step. setup_llvm.py already records which library it validated;
+    # this reads it rather than assuming.
+    LLVM_LINK="LLVM-C"
     if [ -n "${PRISMIO_LLVM_DIR:-}" ]; then
         LLVM_INC="$PRISMIO_LLVM_DIR/include"; LLVM_LIB="$PRISMIO_LLVM_DIR/lib"
     elif [ -f "$REPO/third_party/llvm-paths.json" ]; then
         LLVM_INC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["include"])' "$REPO/third_party/llvm-paths.json")"
         LLVM_LIB="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["lib"])' "$REPO/third_party/llvm-paths.json")"
+        # libLLVM-C.dylib -> LLVM-C, libLLVM.so -> LLVM, LLVM-C.lib -> LLVM-C:
+        # drop a leading `lib`, then everything from the first dot.
+        LLVM_LINK="$(python3 -c 'import json,sys,re
+n = json.load(open(sys.argv[1])).get("link_library") or "libLLVM-C"
+n = re.sub(r"^lib", "", n)
+print(n.split(".")[0])' "$REPO/third_party/llvm-paths.json")"
     else
         die "no LLVM toolchain configured -- run: python3 tools/setup_llvm.py"
     fi
@@ -273,6 +287,6 @@ done
 # 4. Link, including LLVM's C API.
 step "link"
 # shellcheck disable=SC2086
-clang $OBJS -o "$OUT" -L"$LLVM_LIB" -lLLVM-C || die "link"
+clang $OBJS -o "$OUT" -L"$LLVM_LIB" -l"$LLVM_LINK" || die "link"
 
 green "Built $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes)"

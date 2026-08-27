@@ -149,7 +149,7 @@ fn strCompare(a: String, b: String) -> Int {
     let alen = __builtin_string_len(a)
     let blen = __builtin_string_len(b)
     let mut n = alen
-    if (blen < n) { n = blen }
+    if ( blen < n ) { n = blen }
     let mut i = 0
     while (i < n) {
         let av = __builtin_string_byte_at(a, i) as U8 as Int
