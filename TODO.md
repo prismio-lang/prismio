@@ -968,6 +968,11 @@ checkbox, or the two drift and only one of them gets read.)*
             `setup_llvm.py` additionally learns the *versioned* Homebrew keg — `llvm@22` is keg-only
             at `opt/llvm@22`, and only the unversioned formula gets `opt/llvm`, which tracks
             whatever major is current and is the one a pinned check is most likely to reject.
+            **Fourth run: both Unix platforms got past provisioning** and then failed at
+            `tools/bootstrap.sh: Permission denied` (exit 126) — the four `tools/*.sh` scripts were
+            committed **mode 100644** despite carrying shebangs, and the workflow invokes
+            `tools/bootstrap.sh` directly. Nothing had ever reached that line on a Unix runner
+            before, which is the whole reason this gate exists. Modes are now 100755.
             **The parent stays unchecked until a matrix is observed green**, and the six Windows
             failures are their own item below.
 - [ ] **Six Windows-only suite failures, seen for the first time 2026-08-29.** `168/174` on
