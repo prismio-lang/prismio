@@ -5,10 +5,11 @@ improvement* plan (measured optimisations, defects); this file is the *language
 surface* plan. They share the gate in §2 and neither supersedes the other.
 
 **The published roadmap disagrees with this file and must be corrected.**
-`../docs/content/roadmap.md` currently ships "Traits and `impl` blocks — Coming
-Soon", "Closures — Coming Soon", "Package manager — Coming Soon". If these are
-v0.1, that table is wrong and users are reading it. Fixing it is part of the
-first task that lands any of them, not a follow-up.
+Corrected for `impl` and traits on 2026-08-29; `../docs/content/roadmap.md` now
+carries "Method call syntax and `impl` blocks — Implemented" and "Traits and
+bounded generics — Implemented", with `language/methods.md` and a rewritten
+`language/traits.md` behind them. Still wrong, and still to be fixed by whichever
+task lands them: "Closures — Coming Soon", "Package manager — Coming Soon".
 
 ---
 
@@ -124,7 +125,21 @@ and dropped. Everything downstream sees an ordinary call.
 still a parse error — the receiver must be a name. Parser gap, worth closing
 with §3.6.
 
-### 3.2 · `impl` blocks
+### 3.2 · `impl` blocks — **DONE 2026-08-29**
+
+Landed as predicted: a naming construct, spliced into the module's declaration
+chain by `parseModule`, with the whole feature in the parser (an IMPL_DECL, a
+`p.implType` that types a bare `self`, and the splice). Nothing downstream
+changed. `std/string.psm` gained a curated 30-method `impl String`; the `str*`
+prefix stays until §3.5. A generic `impl` is rejected rather than mis-parsed.
+
+Also closed here, because `impl String` is unusable without it: §3.1's known
+limit. A postfix `.` on a literal was a parse error because `parsePrimary`
+returned a literal *without offering its suffixes* — nothing was deciding that a
+literal has no members, the question was never asked. `(a + b).x` and
+`[1, 2, 3][1]` were the same gap and work now too.
+
+**The original plan, kept:**
 
 **Cheap now, because §3.1 exists.** A method *is* a free function whose first
 parameter is the receiver, so an `impl` block is a **naming construct**, not a
@@ -148,7 +163,21 @@ impl String {
 - **Update**: `std/string.psm`, `std/map.psm`, `std/io.psm` gain `impl` blocks;
   the docs' language reference gains a page.
 
-### 3.3 · Traits, and bounded generics
+### 3.3 · Traits, and bounded generics — **DONE 2026-08-29**
+
+`trait`, `impl <Trait> for <Type>`, one bound per type parameter, `Self`. A trait
+is a **check, not a dispatch mechanism**: monomorphisation runs before type
+checking reaches a body, so a bound is checked at the instantiation and the trait
+method call is resolved by ordinary overload resolution. No dynamic dispatch, no
+trait objects, no vtables. The bound rides in the type-parameter list's own text
+as `T:Ord`; conformance is checked syntactically against the trait's signatures.
+
+**The `Then:` clause below is NOT done, and is the next task:** `Map` is still a
+linear-scan association list, `std` ships no `sort`, and `Map` has not been
+re-benchmarked. `sort<T: Ord>` is now *writable* — `tests/test_87_traits.psm`
+writes one and calls it as `xs.sortInPlace()` — but nothing in `std` provides it.
+
+**The original plan, kept:**
 
 The first thing that is **not** sugar. Method syntax and overloading already
 cover ad-hoc polymorphism — `std.io` has 28 `print`/`println` overloads. What is
@@ -199,7 +228,21 @@ is prefixed.
   `str*` prefix can retire — but that is the 848-call-site rename, so it should
   happen *once*, deliberately, with byte-identical IR as the check.
 
-### 3.6 · First-class pointers, and the parser gaps
+### 3.6 · First-class pointers, and the parser gaps — **PART DONE 2026-08-29**
+
+The parser gaps are closed (see §3.2). First-class pointers are not: `src/` still
+has **722 `ptr_to_node`/`node_to_ptr`/`ptr_to_token`/`ptr_to_type` call sites**.
+
+Of `V1_GAP_ANALYSIS.md`'s six "central finding" rows, four are resolved and two
+are live. Verified against the tree on 2026-08-29 rather than read off the notes:
+`char_code()`'s 90-branch chain is gone; `str_equals(a, b) == 1` has **0**
+occurrences and `String ==` is a deliberate rejection; self-forward-declaring
+`extern fn` has **0** occurrences out of 488 distinct externs, all of which are
+genuinely foreign; the `while (flag)` idiom is down to **one** site
+(`src/main.psm:162`). What is left is the pointer punning and the hand-built
+linked lists, which are the same row twice.
+
+**The original plan, kept:**
 
 `ASTNode.child1: Ptr` with `ptr_to_node`/`node_to_ptr` is the compiler routing
 around its own missing feature. Also here: postfix `.` on a literal (§3.1), and
@@ -229,9 +272,17 @@ commit.
 - Every such rewrite must keep the program's **checksums identical**. That is
   what makes it a rewrite and not a different benchmark. Report old-vs-new for it
   like any other change.
-- **Add the missing Prismio hand-tuned arms** (§2.2) as the features that make
-  them expressible land. `g9`'s note already says a thread pool is what
-  hand-tuned Rust has and Prismio *cannot express* — when it can, that arm gets
+- **Add the missing Prismio hand-tuned arms** (§2.2) — **DONE 2026-08-29 for six
+  of seven.** g3, g4, g5 and g6 are new ports, g2's existing port was wired (the
+  variant table had no `prismio_tuned` entry, so nothing had ever built it), and
+  g1's arm is aliased to `g1_dataview_tuned.psm` because SoA *is* what a Prismio
+  expert would reach for. Four of the six beat idiomatic Rust, and g1's ceiling
+  is within 3% of Rust's — 4.6 ms against 4.7 ms. **g4 does not move at all**
+  (38.3 → 38.5), which says its 1.76× gap is not layout and a memory-model change
+  will not find it.
+  `g9` stays **absent**: hand-tuned Rust keeps four workers alive across frames
+  over channels, and Prismio has no way to keep a task alive past its join, so
+  the arm is not writable rather than not written. When it is, that arm gets
   written and the 1.45× gap gets re-measured.
 - The files that move together with any language change: `tests/*.psm`,
   `tests/test_runner.py` (hardcoded manifest and leak expectations),
@@ -252,4 +303,7 @@ commit.
 4. `V1_GAP_ANALYSIS.md`'s "central finding" table — the workarounds in the
    compiler's own source — is empty, or every remaining row has a reason.
 5. The five-arm benchmark exists for every corpus program, and the standing
-   against idiomatic Rust is recorded. As of 2026-08-29: **0.90×–1.81×**.
+   against idiomatic Rust is recorded. As of 2026-08-29: **0.92×–1.81×**
+   idiomatic, and the fifth arm now exists for six of seven — hand-tuned Prismio
+   reaches **0.25×–1.42×** of idiomatic Rust, and 0.97×–2.16× of hand-tuned Rust.
+   g9's fifth arm is the one outstanding absence and its reason is recorded.
