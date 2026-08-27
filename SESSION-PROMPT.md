@@ -29,6 +29,20 @@ right. Do not
 run the suite concurrently with benchmarks: several runner checks and the object cache use fixed
 paths.
 
+## The v0.1 feature work is in its own file
+
+[`V0_1_FEATURES.md`](V0_1_FEATURES.md) is the **language surface** plan — method syntax (landed),
+`impl` blocks, traits and bounded generics, closures, module namespacing, first-class pointers, a
+package manager. `TODO.md` stays the *compiler improvement* plan. They share one gate.
+
+Two things in that file are standing instructions rather than tasks, and both are easy to skip:
+
+- **Every task ends with the five-arm benchmark** — old Prismio, new Prismio, Prismio hand-tuned,
+  Rust idiomatic, Rust hand-tuned. The harness supports four of them; the Prismio hand-tuned arm
+  exists for two corpus programs out of nine and filling it in is part of the work.
+- **The corpus moves with the language.** When a feature makes corpus or test code better, rewrite
+  it to use the feature and keep the checksums identical.
+
 ## Start here — one ownership guard is left, and it may not simply be removed
 
 **Two of the three closed on 2026-08-29** (see the top of `NEXT_SESSION.md` and the two

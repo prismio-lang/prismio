@@ -1,4 +1,10 @@
-# TODO — compiler improvement plan, with a measured gate on every milestone
+# TODO — compiler improvement plan
+
+> **Language features live in [`V0_1_FEATURES.md`](V0_1_FEATURES.md), not here.** This file is
+> measured compiler work — optimisations, defects, evidence. That one is the v0.1 language surface:
+> `impl`, traits, closures, namespacing, pointers, the package manager. They share the gate, and
+> that file adds two requirements this one does not have: a **five-arm** benchmark after every task,
+> and a standing instruction to **rewrite the corpus in the new language** as features land., with a measured gate on every milestone
 
 Derived from [`aif/evidence/RESULTS-final.md`](aif/evidence/RESULTS-final.md) (the measurements)
 and [`docs/ARCHITECTURE-DIRECTION.md`](docs/ARCHITECTURE-DIRECTION.md) (the ranking and the
