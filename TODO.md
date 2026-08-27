@@ -982,14 +982,38 @@ checkbox, or the two drift and only one of them gets read.)*
             *name*. Both now derive it — drop a leading `lib`, truncate at the first dot — which
             extends "one answer to where is LLVM" to *which library*, as `build_driver.c` already
             claimed.
-            **The parent stays unchecked until a matrix is observed green**, and the six Windows
-            failures are their own item below.
-- [ ] **Six Windows-only suite failures, seen for the first time 2026-08-29.** `168/174` on
-      `windows-latest` once the toolchain mismatch was fixed: two `[FAIL] Execution failed`, plus
-      `--jit` (unresolved `std.io` symbols — `print__Float`, `prismioStdIoSignedInteger__I64` and
-      others — so JIT symbol resolution does not find the merged module's definitions), `--target`,
-      `aif_verify`, and the zero-analysis behavioural-equivalence check. None is reproducible on
-      this host; all need the matrix to iterate against.
+            **Sixth run: macOS is GREEN and stays green**; ubuntu reached the suite at 170/174 and
+            windows at 168/174. The inline-runtime checks themselves pass on all three — what is
+            left red is `test_73`'s heap corruption and `--jit`, both pre-existing and both their
+            own items below.
+            **The parent stays unchecked until a matrix is observed green.**
+- [ ] **`test_73_recursive_release` corrupts the heap, on every platform except this one.**
+      The most serious thing the matrix found, and it **predates the 2026-08-29 work** — a control
+      branch at `97ef065` carrying only the CI fixes reproduces it exactly.
+
+      | platform | result |
+      |---|---|
+      | ubuntu-latest | exit **-11** (SIGSEGV) |
+      | windows-latest | exit **3221226356** = `STATUS_HEAP_CORRUPTION` |
+      | macOS | passes, `106 allocated / 106 released / 0 leaked / 0 violation(s)` |
+
+      **`--debug` passes and release does not**, so it is the AIF-driven release path —
+      `__aif_release_Tree`, from M2.1a's recursive release for self-referential types. The tree is
+      **depth 3**, so it is not stack exhaustion. macOS's allocator tolerates whatever it does;
+      glibc and the Windows heap do not. It also survives `MallocScribble`/`MallocGuardEdges` here,
+      so this host cannot reproduce it at all — a Linux or Windows runner is the only instrument.
+
+      It takes three of the four Ubuntu failures with it: the execution failure itself, the
+      zero-analysis behavioural-equivalence check (`stdout differs between release and --debug`),
+      and `aif_verify` (`no aif-verify report` — it dies before printing one).
+
+- [ ] **Windows- and Linux-only suite failures, seen for the first time 2026-08-29.** With the
+      toolchain fixed, **ubuntu is 170/174 and windows 168/174**, and the control at `97ef065`
+      scores **168/172** — the same four Ubuntu failures, so all of these predate this work.
+      Beyond `test_73` above: `--jit` on both (unresolved `std.io` symbols — `print__Float`,
+      `prismioStdIoSignedInteger__I64` and others — so JIT symbol resolution does not find the
+      merged module's definitions), and on Windows additionally `--target` and `test_76_std_fs`
+      (exit 1). None reproduces on this host.
             **Still blocked on push authorisation as of 2026-08-26**, and every local check that can
             substitute for it is green: suite **170/170** on macOS, fixed point, differential 17/17,
             curated closure, `--target` cross-build and link, packaged-runtime separation. The

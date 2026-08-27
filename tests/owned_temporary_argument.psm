@@ -60,7 +60,12 @@
 // rejects it with "cannot move out of borrowed value".
 
 import std.io
-extern fn clock_gettime_nsec_np(clk: Int) -> I64
+
+// An extern with no FFI contract, which is what makes call-site bracketing
+// decline -- see the note on `drive` below. `abs` rather than a clock: this file
+// is built by the suite on all three platforms, and `clock_gettime_nsec_np` is
+// macOS-only, so the Linux and Windows runners could not link it.
+extern fn abs(v: Int) -> Int
 
 struct Band {
     seed: Int,
@@ -75,9 +80,10 @@ fn band(f: Int, i: Int, s: Int) -> Band {
     return Band { seed: f * 7919 + i, steps: s }
 }
 
-// The samples list and the clock calls are not decoration: they are what makes
-// call-site bracketing decline, which is what removes the arena that would
-// otherwise hide the whole question.
+// The samples list and the opaque `abs` calls are not decoration: they are what
+// makes call-site bracketing decline, which is what removes the arena that would
+// otherwise hide the whole question. An extern with no contract has unknown
+// provenance, and that is the property being used -- not anything about `abs`.
 fn drive(bound: Bool) -> Int {
     let mut samples: List<Int> = list_new()
     let mut g = 0
@@ -89,7 +95,7 @@ fn drive(bound: Bool) -> Int {
     let mut total = 0
     let mut frame = 0
     while (frame < 20) {
-        let t0 = clock_gettime_nsec_np(4)
+        let t0 = abs(frame)
         if (bound) {
             let b0 = band(frame, 0, 32)
             let b1 = band(frame, 1, 32)
@@ -97,8 +103,8 @@ fn drive(bound: Bool) -> Int {
         } else {
             total = total + simulate(band(frame, 0, 32)) + simulate(band(frame, 1, 32))
         }
-        let t1 = clock_gettime_nsec_np(4)
-        list_set(samples, frame, (t1 - t0) as Int)
+        let t1 = abs(frame + 1)
+        list_set(samples, frame, t1 - t0)
         frame = frame + 1
     }
     return total
