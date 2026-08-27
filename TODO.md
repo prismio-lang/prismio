@@ -957,9 +957,19 @@ checkbox, or the two drift and only one of them gets read.)*
             check. macOS and Ubuntu got past the 403 and then failed on asset *naming*: LLVM 22
             ships `LLVM-22.1.8-macOS-ARM64.tar.xz` and `LLVM-22.1.8-Linux-X64.tar.xz`, while every
             pattern in `setup_llvm.py` knew only the older `clang+llvm-<version>-<triple>`, which
-            survives for Windows alone. Patterns updated. **A third run is what would confirm it —
-            the parent stays unchecked until a matrix is observed green, and the six Windows
-            failures are their own item below.**
+            survives for Windows alone. Patterns updated.
+            **Third run: the patterns were right and the *packaging* is the problem.**
+            `LLVM-22.1.8-Linux-X64.tar.xz` downloaded and extracted, and then
+            `setup_llvm.py` correctly refused it — it ships no `llvm-c/Core.h` and no shared link
+            library, so a downloaded release **cannot satisfy the C API dependency at all** on
+            macOS or Linux. Windows never hit this because it uses `clang+llvm-<triple>`, which does
+            carry them. Both platforms now install LLVM natively before `setup_llvm.py` runs (brew;
+            apt.llvm.org), which also puts one LLVM on PATH for both ends of the build.
+            `setup_llvm.py` additionally learns the *versioned* Homebrew keg — `llvm@22` is keg-only
+            at `opt/llvm@22`, and only the unversioned formula gets `opt/llvm`, which tracks
+            whatever major is current and is the one a pinned check is most likely to reject.
+            **The parent stays unchecked until a matrix is observed green**, and the six Windows
+            failures are their own item below.
 - [ ] **Six Windows-only suite failures, seen for the first time 2026-08-29.** `168/174` on
       `windows-latest` once the toolchain mismatch was fixed: two `[FAIL] Execution failed`, plus
       `--jit` (unresolved `std.io` symbols — `print__Float`, `prismioStdIoSignedInteger__I64` and

@@ -26,7 +26,13 @@ mode, the zero-analysis equivalence check). macOS and Ubuntu got past the 403 �
 worked — and then failed on asset *naming*: LLVM 22 publishes
 `LLVM-22.1.8-macOS-ARM64.tar.xz` / `LLVM-22.1.8-Linux-X64.tar.xz` while every pattern in
 `setup_llvm.py` predated the rename and only knew `clang+llvm-<version>-<triple>`, which survives
-for Windows only. Patterns updated; a third run is what would confirm it.
+for Windows only. Patterns updated — and the third run showed the patterns were right and the *packaging* is the
+problem: `LLVM-22.1.8-Linux-X64.tar.xz` extracts and then carries no `llvm-c/Core.h` and no shared
+link library, so a downloaded release cannot satisfy the C API dependency on macOS or Linux at all.
+Windows never hit it because `clang+llvm-<triple>` does carry them. Both now install LLVM natively
+(brew; apt.llvm.org) before `setup_llvm.py` runs, which also puts one LLVM on PATH for both ends of
+the build. **Do not mark the parent done on any of this — it is checked by an observed green
+matrix.**
 
 **Debug-mode overflow checking landed**, and the recorded premise did not survive measurement. TODO
 said a native `llvm.sadd.with.overflow` lowering "should be cheaper than a sanitizer": it is not —
