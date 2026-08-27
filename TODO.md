@@ -985,11 +985,13 @@ checkbox, or the two drift and only one of them gets read.)*
       to be proved and not assumed.
       **Not attempted** -- a wrong answer here is a memory-safety bug, and it deserves its own
       session rather than the tail of one.
-- [ ] **g1 pays 1.083x for the curated accessor, and it is the same root cause.** 19.19 ms ->
-      20.78 ms with the executable byte-identical in size, so not bloat: g1's loops read **one**
-      list per iteration where g4's read **two**, and inlining trades one call for six header loads
-      and two branches. That wins with two lists and loses with one. Hoisting the header fixes both
-      this and the vectorization item above; there is no separate investigation to do.
+- [x] **g1's 1.083x "regression" was measurement noise — corrected 2026-08-29.** It was recorded
+      here as real and attributed to a mechanism (one list per iteration rather than two, so
+      inlining trades a call for six header loads and two branches). Re-measured at best-of-9 with
+      **byte-identical IR** on both sides, g1 reads 20.14 ms before and 19.69 ms after — the
+      opposite sign — and across the day's runs it lands anywhere in 0.98x-1.08x. The mechanism was
+      fitted to a single sample. Nothing regressed; the final session corpus has **every** program
+      at or below 1.0x (range 0.587x-0.998x).
 - [ ] **Scoped alias metadata: priced at 1.40x, does not vectorize, and NOT worth building on
       this evidence.** The fact — the element store cannot reach the List header, because the header
       and its `data` block are separate allocations — was tested directly by giving the model a
