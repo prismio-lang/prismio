@@ -1,0 +1,14 @@
+// expect-error: a generic `impl` block is not supported yet
+struct Box<T> {
+    value: T
+}
+
+impl Box<Int> {
+    fn get(self) -> Int {
+        return self.value
+    }
+}
+
+fn main() -> Int {
+    return 0
+}

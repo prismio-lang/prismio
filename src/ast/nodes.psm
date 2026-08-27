@@ -109,6 +109,11 @@ struct ASTNode {
     // REQUIREMENTS 4. On a TYPE_ANNOTATION, whether the type was written `T?`.
     // Its own slot rather than a bit in i2, because i1 and i2 already mean
     // "array" and "list" and a nullable list is both.
+    //
+    // On a FUNCTION_PARAMETER it means something unrelated -- v0.1 3.2's "this
+    // was written as a bare `self` in an `impl` block" -- and the two cannot
+    // collide because no node is both kinds. On a FUNCTION it is codegen's
+    // "needs a task thunk" (ir/module.psm), for the same reason.
     i3: Int,
     child1: Ptr, // ASTNode
     child2: Ptr, // ASTNode

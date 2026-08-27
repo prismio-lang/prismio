@@ -320,12 +320,22 @@ fn parsePrimary(p: Parser) -> ASTNode {
         return noneLiteral
     }
 
+    // v0.1 3.6. Through parseSuffixes, so that `"a,b".contains(",")` parses.
+    //
+    // It did not, and the reason was here rather than anywhere near the method
+    // call rewrite: a literal was the one primary that returned without offering
+    // its suffixes, so the `.` was left for the enclosing production and reported
+    // as "expected `)` in function call, found `.`". Nothing was deciding that a
+    // literal has no members -- the question was never asked.
+    //
+    // `0..n` is unaffected: `..` lexes as RANGE, which is not the SEPARATOR `.`
+    // parseSuffixes matches on.
     if (isLiteralToken(current)) {
         let literal = parserNode(p, NodeKind.LITERAL_EXPR)
         literal.i1 = current.type
         literal.s1 = current.value
         parserAdvance(p)
-        return literal
+        return parseSuffixes(p, literal)
     }
 
     if (current.type == TokenType.IDENTIFIER) {
@@ -434,14 +444,16 @@ fn parsePrimary(p: Parser) -> ASTNode {
         return parseSuffixes(p, identifier)
     }
 
+    // The same gap as the literal above, and closed the same way: `(a + b).x`
+    // and `[1, 2].length()` are expressions whose suffixes nobody was offering.
     if (parserMatchVal(p, TokenType.SEPARATOR, "(")) {
         let inner = parseExpression(p, 0)
         parserExpectVal(p, TokenType.SEPARATOR, ")", "parenthesized expression")
-        return inner
+        return parseSuffixes(p, inner)
     }
 
     if (parserMatchVal(p, TokenType.SEPARATOR, "[")) {
-        return parseArrayLiteral(p)
+        return parseSuffixes(p, parseArrayLiteral(p))
     }
 
     parserFatal(p, strConcat(strConcat("expected an expression, found ", parserDescribe(current)),

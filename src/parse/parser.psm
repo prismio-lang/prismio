@@ -22,13 +22,20 @@ extern fn exit(code: Int)
 // `for i in 0..n { ... }` reads the body as a block rather than `n { ... }` as a
 // struct literal. It was a module-level global until it became clear it is
 // simply parser state, and parser state belongs on the parser.
+//
+// `implType` is the IMPL_DECL whose body is being read, or null outside one. It
+// is the whole of what an `impl` block adds to the parser: a bare `self`
+// parameter takes its type from here, and nothing else in the grammar changes.
+// A `Ptr` rather than the type's name because `Ptr` is copyable -- a `String`
+// field would be moved out of the parser by the first method that read it.
 struct Parser {
     current: Ptr, // Token pointer
-    allowStructLit: Int
+    allowStructLit: Int,
+    implType: Ptr // ASTNode (IMPL_DECL), or null
 }
 
 fn parserCreate(tokens: Token) -> Parser {
-    return Parser { current: token_to_ptr(tokens), allowStructLit: 1 }
+    return Parser { current: token_to_ptr(tokens), allowStructLit: 1, implType: ptr_null() }
 }
 
 fn parserCurrent(p: Parser) -> Token {
@@ -247,10 +254,37 @@ fn parseModule(p: Parser) -> ASTNode {
         if (parserCheck(p, TokenType.EOF)) { break }
 
         let stmt = parseDeclaration(p)
-        // A placeholder from recovery. Dropping it here is what keeps every later
-        // pass free of the question -- nothing downstream has to know that
-        // recovery exists.
-        if (stmt.kind != NodeKind.ERROR_NODE) {
+
+        // An `impl` block's methods are spliced into the module's own chain, and
+        // that splice is the whole lowering: a method is a free function whose
+        // first parameter is the receiver, so every pass downstream keys on
+        // `== NodeKind.FUNCTION` and needs to know nothing about `impl`.
+        //
+        // The IMPL_DECL itself stays, with its children detached, because it is
+        // the record that this type has these methods -- which is what a trait
+        // bound is checked against. Detaching matters: a node cannot be in two
+        // `next` chains at once, and leaving `child1` pointing at the first
+        // method would make it point into the module chain and run off the end.
+        if (stmt.kind == NodeKind.IMPL_DECL) {
+            let methods = stmt.child1
+            stmt.child1 = ptr_null()
+            nodeListPush(declarations, stmt)
+
+            let mut methodPtr = methods
+            while (nodeExists(methodPtr)) {
+                let method = ptr_to_node(methodPtr)
+                // Read `next` before pushing, for the reason monoCollectTemplates
+                // gives: nodeListPush rewrites the tail's `next`, so the chain
+                // being walked is the chain being rebuilt.
+                let following = method.next
+                method.next = ptr_null()
+                nodeListPush(declarations, method)
+                methodPtr = following
+            }
+        } else if (stmt.kind != NodeKind.ERROR_NODE) {
+            // A placeholder from recovery. Dropping it here is what keeps every
+            // later pass free of the question -- nothing downstream has to know
+            // that recovery exists.
             nodeListPush(declarations, stmt)
         }
     }

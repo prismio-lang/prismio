@@ -1,0 +1,14 @@
+// expect-error: `self` has to be the first parameter of a method
+struct Point {
+    x: Int
+}
+
+impl Point {
+    fn bad(dx: Int, self) -> Int {
+        return self.x + dx
+    }
+}
+
+fn main() -> Int {
+    return 0
+}

@@ -15,6 +15,7 @@ fn parseDeclaration(p: Parser) -> ASTNode {
     if (parserCheckVal(p, TokenType.KEYWORD, "fn")) { return parseFunctionDecl(p) }
     if (parserCheckVal(p, TokenType.KEYWORD, "struct")) { return parseStructDecl(p) }
     if (parserCheckVal(p, TokenType.KEYWORD, "enum")) { return parseEnumDecl(p) }
+    if (parserCheckVal(p, TokenType.KEYWORD, "impl")) { return parseImplDecl(p) }
     if (parserAtWorkload(p)) { return parseWorkloadDecl(p) }
 
     // Nothing here starts a declaration. Report it, skip to the next thing that
@@ -23,7 +24,7 @@ fn parseDeclaration(p: Parser) -> ASTNode {
     let bad = parserNode(p, NodeKind.ERROR_NODE)
     let current = parserCurrent(p)
     parserError(p, strConcat(strConcat("expected a declaration, found ", parserDescribe(current)),
-                               " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`)"))
+                               " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`, `impl`)"))
     parserSynchronize(p)
     return bad
 }
@@ -339,6 +340,29 @@ fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
     let name = parserCurrent(p)
     param.s1 = name.value
     parserExpect(p, TokenType.IDENTIFIER, "parameter name")
+
+    // `self` inside an `impl` block, written without a type. Repeating the
+    // receiver's type on every method is exactly what the block exists to avoid,
+    // so the annotation is synthesised from the block's own type -- and `self`
+    // written *with* a type is an ordinary parameter that falls through below.
+    //
+    // Nothing reserves the word: outside an `impl` block `self` is a name like
+    // any other, and inside one a parameter still has to be first-and-untyped to
+    // mean the receiver. Which position it is in is sema's business, not the
+    // parser's; see semaImplDecl.
+    if (nodeExists(p.implType) and strEquals(param.s1, "self")
+        and parserCheckVal(p, TokenType.SEPARATOR, ":") == false) {
+        let receiver = parserNodeFrom(NodeKind.TYPE_ANNOTATION, name)
+        receiver.s1 = strClone(ptr_to_node(p.implType).s1)
+        // The span is the `impl` block's type name, not this `self`. A misspelt
+        // type is reported once per method either way, and pointing at `self`
+        // would blame a token that spells nothing wrong.
+        nodeSpanFrom(receiver, ptr_to_node(p.implType))
+        param.child1 = node_to_ptr(receiver)
+        param.i3 = 1
+        return param
+    }
+
     parserExpectVal(p, TokenType.SEPARATOR, ":", "parameter type")
     param.child1 = node_to_ptr(parseTypeAnnotation(p))
 
@@ -401,6 +425,92 @@ fn parseFunctionDecl(p: Parser) -> ASTNode {
     fnNode.child2 = node_to_ptr(parseBlock(p))
 
     return fnNode
+}
+
+// ---------------------------------------------------------
+// v0.1 3.2 -- `impl` blocks
+// ---------------------------------------------------------
+
+// `impl Point { fn shifted(self, dx: Int) -> Point { ... } }`
+//
+// **A naming construct, not a second dispatch mechanism.** `x.f(a)` is already
+// rewritten to `f(x, a)` in semaExpr, so a method *is* a free function whose
+// first parameter is the receiver. All an `impl` block adds is somewhere to
+// write one without repeating the receiver's type -- and that is what makes it
+// cheap: parseModule splices the methods straight into the module's declaration
+// chain, and overload resolution, ownership, AIF and codegen see exactly what
+// they saw before this existed.
+//
+// The standard library is the reason it is worth having. `std/string.psm` has 46
+// `str*`-prefixed functions and 848 call sites in `src/` alone; the prefix is
+// there because there is no namespacing. `impl String { fn trim(self) }`
+// delegating to `strTrim` is additive and costs none of that churn.
+//
+// A generic `impl` is rejected rather than mis-parsed. `impl List<T>` would have
+// to instantiate a method per instantiation of the type, which is a second
+// monomorphisation entry point and not v0.1; leaving the syntax an error keeps
+// it available to mean that later.
+fn parseImplDecl(p: Parser) -> ASTNode {
+    parserExpectVal(p, TokenType.KEYWORD, "impl", "impl block")
+
+    let implNode = parserNode(p, NodeKind.IMPL_DECL)
+    let target = parserCurrent(p)
+    implNode.s1 = target.value
+    parserExpect(p, TokenType.IDENTIFIER, "the type an `impl` block is for")
+
+    if (parserCheckVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
+        parserFatal(p, "a generic `impl` block is not supported yet; write the methods as generic free functions")
+    }
+
+    parserExpectVal(p, TokenType.SEPARATOR, "{", "impl body")
+
+    // Set for the body and cleared after it, so a bare `self` is only a receiver
+    // where one can be meant. Not saved and restored, because an `impl` block
+    // holds `fn` declarations and a `fn` body holds no declarations -- there is
+    // no way to nest one.
+    p.implType = node_to_ptr(implNode)
+
+    let methods = nodeList()
+    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
+        if (parserCheck(p, TokenType.EOF)) {
+            parserFatal(p, "this `impl` block is never closed; reached end of file looking for `}`")
+        }
+        if (parserCheckVal(p, TokenType.KEYWORD, "fn") == false) {
+            parserFatal(p, strConcat("an `impl` block holds `fn` declarations, found ",
+                                       parserDescribe(parserCurrent(p))))
+        }
+        let method = parseFunctionDecl(p)
+        parseImplCheckReceiver(p, method)
+        nodeListPush(methods, method)
+    }
+    parserExpectVal(p, TokenType.SEPARATOR, "}", "impl body")
+
+    p.implType = ptr_null()
+    implNode.child1 = methods.head
+    return implNode
+}
+
+// A bare `self` has to be the *first* parameter, and that is a shape error in the
+// declaration rather than a fact about the program -- so it is diagnosed here,
+// where the parameter list is still a list, and not in sema, where the method is
+// already an ordinary function and `self` an ordinary name.
+//
+// The parser accepts one anywhere because position is not a parse question. It
+// matters because `x.f(a)` is `f(x, a)`: a receiver written second is a method
+// no method call can ever reach.
+fn parseImplCheckReceiver(p: Parser, method: ASTNode) {
+    let mut paramPtr = method.child1
+    let mut index = 0
+    while (nodeExists(paramPtr)) {
+        let param = ptr_to_node(paramPtr)
+        if (param.i3 == 1 and index > 0) {
+            diag_error_at(param.file, param.line, param.col, param.len,
+                          "`self` has to be the first parameter of a method")
+            diag_note("`x.f(a)` is `f(x, a)`, so the receiver is argument zero")
+        }
+        index = index + 1
+        paramPtr = param.next
+    }
 }
 
 // ---------------------------------------------------------

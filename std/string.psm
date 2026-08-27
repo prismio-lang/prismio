@@ -1244,3 +1244,77 @@ fn strFromInt(value: Int) -> String {
     }
     return out
 }
+
+// ---------------------------------------------------------------------------
+// v0.1 3.2 -- the method surface
+// ---------------------------------------------------------------------------
+//
+// `text.trim()` rather than `strTrim(text)`. Every one of these delegates to the
+// `str*` function above it and adds nothing: `x.f(a)` is rewritten to `f(x, a)`
+// before overload resolution, so a method here *is* the free function, reached
+// by a second name.
+//
+// **The prefix is not a style choice and this block does not retire it.** There
+// is no namespacing yet (v0.1 3.5), so `strTrim` is what stops this module's 46
+// names from colliding with an application's. Until `string.trim` is spellable,
+// an unprefixed free function called `trim` would claim that name for every
+// program that imports this file -- and the 848 `str*` call sites in `src/`
+// alone are the reason the rename has to happen once, deliberately, rather than
+// as a side effect of adding methods.
+//
+// So the delegation runs this way round on purpose: the `str*` name keeps the
+// implementation, the method is the wrapper, and when 3.5 lands the two swap
+// with no change to any caller of either.
+//
+// Curated rather than exhaustive. Every method here costs a function in every
+// binary that imports this module -- there is no dead-function elimination in
+// the frontend -- so the search internals (`strTwoWayIndexOfFrom`,
+// `strMaximalSuffix`, `strSearchByteRank`) and the digit tables deliberately
+// have no method: they are implementation, not surface.
+impl String {
+    fn length(self) -> Int { return strLength(self) }
+    fn isEmpty(self) -> Bool { return strIsEmpty(self) }
+    fn clone(self) -> String { return strClone(self) }
+
+    fn charAt(self, index: Int) -> Char { return strCharAt(self, index) }
+    fn byteAt(self, index: Int) -> Int { return strByteAt(self, index) }
+    fn substring(self, start: Int, length: Int) -> String {
+        return strSubstring(self, start, length)
+    }
+
+    fn equals(self, other: String) -> Bool { return strEquals(self, other) }
+    fn compare(self, other: String) -> Int { return strCompare(self, other) }
+
+    fn concat(self, other: String) -> String { return strConcat(self, other) }
+    fn repeat(self, times: Int) -> String { return strRepeat(self, times) }
+
+    fn contains(self, needle: String) -> Bool { return strContains(self, needle) }
+    fn startsWith(self, prefix: String) -> Bool { return strStartsWith(self, prefix) }
+    fn endsWith(self, suffix: String) -> Bool { return strEndsWith(self, suffix) }
+    fn indexOf(self, needle: String) -> Int { return strIndexOf(self, needle) }
+    fn lastIndexOf(self, needle: String) -> Int { return strLastIndexOf(self, needle) }
+    fn countOf(self, needle: String) -> Int { return strCountOf(self, needle) }
+
+    fn trim(self) -> String { return strTrim(self) }
+    fn trimStart(self) -> String { return strTrimStart(self) }
+    fn trimEnd(self) -> String { return strTrimEnd(self) }
+    fn padStart(self, width: Int, pad: Char) -> String { return strPadStart(self, width, pad) }
+    fn padEnd(self, width: Int, pad: Char) -> String { return strPadEnd(self, width, pad) }
+
+    fn toUpper(self) -> String { return strToUpper(self) }
+    fn toLower(self) -> String { return strToLower(self) }
+    fn reverse(self) -> String { return strReverse(self) }
+
+    fn replaceFirst(self, old: String, new: String) -> String {
+        return strReplaceFirst(self, old, new)
+    }
+    fn replaceAll(self, old: String, new: String) -> String {
+        return strReplaceAll(self, old, new)
+    }
+
+    fn split(self, sep: Char) -> List<String> { return strSplit(self, sep) }
+    fn splitOn(self, sep: String) -> List<String> { return strSplitOn(self, sep) }
+    fn splitWhitespace(self) -> List<String> { return strSplitWhitespace(self) }
+
+    fn parseInt(self) -> Option<Int> { return strParseInt(self) }
+}
