@@ -243,7 +243,36 @@ char* str_slice(const char* s, int start, int length, int base_len) {
 // FFI, so a result coming *back* from an extern has to be given a length. The
 // native length builtin requires that fat value, which does not exist yet at
 // this point. This dedicated boundary helper takes the raw pointer.
-int prismio_cstr_len(const char* s) { return s ? (int)strlen(s) : 0; }
+// The one place an unbounded C length becomes a Prismio `Int`, and therefore
+// the one place the width question has to be answered rather than assumed.
+//
+// `%prismio.str` carries its length in **i64** while `Int` is signed 32-bit, so
+// `__builtin_string_len` emits `trunc i64 ... to i32`. That was recorded as an
+// incoherence to resolve by narrowing the representation; measured, the trunc
+// costs **nothing** -- 5 of them in g7's whole IR and none surviving into the
+// hot loop's machine code, because taking the low half of a register is free on
+// AArch64. Narrowing `%prismio.str` would be an ABI change across the runtime
+// struct, the backend's type construction and the committed seed, to buy a
+// coherence argument and no measurable byte or cycle.
+//
+// So the invariant is made explicit and **checked** instead: a Prismio String is
+// at most `INT32_MAX` bytes, because every index into one is an `Int` and a
+// longer string could not be indexed anyway. Above that the truncation would
+// hand back a negative or wrapped length, and every bounds check downstream
+// would compare against a lie -- which is a silent wrong-memory read rather than
+// a loud failure. `str_with_capacity` cannot exceed it (its parameter is `int`);
+// this path can, because `strlen` returns `size_t`.
+int prismio_cstr_len(const char* s) {
+    if (!s) return 0;
+    size_t n = strlen(s);
+    if (n > (size_t)INT32_MAX) {
+        fprintf(stderr, "runtime error: string of %zu bytes exceeds the %d-byte maximum\n"
+                        "note: a Prismio String is indexed by Int, which is signed 32-bit\n",
+                n, INT32_MAX);
+        exit(1);
+    }
+    return (int)n;
+}
 
 // The first occurrence of `b` at or after `from`, or -1.
 //

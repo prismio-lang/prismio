@@ -1317,17 +1317,20 @@ checkbox, or the two drift and only one of them gets read.)*
       moved to *after* the subtraction — `list_set(samples, frame, (t1 - t0) as Int)` — which is
       where it is safe. Every corpus checksum is unchanged (g1 alive 2000/beyond 1095 … g9 total
       1856014121), suite **174/174**, differential 18/18.
-- [ ] **`__builtin_string_len` truncates.** `%prismio.str` carries its length in **i64** and the
-      builtin returns `Int`, so the read emits `trunc i64 … to i32` (`src/ir/expr.psm`, the
-      `ir_trunc("i64", wide, "i32")` in the builtin's lowering). The representation is wider than
-      every path that reads it, which is incoherent under either width choice.
-      **The coherent answer is a 32-bit length**, and the argument is the one `Int` already settled:
-      every string index is an `Int`, so a string longer than 2^31 cannot be indexed and the width
-      buys nothing. **The cost is what makes this its own item** — it is an ABI change to
-      `%prismio.str`, so `prismio_str` in the runtime, the backend's type construction and
-      `bootstrap/prismio-seed.ll` all move together, and the seed must be refreshed in the same
-      step or a fresh checkout fails to *link*. Deliberately not folded into the 2026-08-29 session,
-      which had already changed the drop path twice.
+- [x] **`__builtin_string_len`'s truncation is now bounded and checked — 2026-08-29, and the ABI
+      change it was thought to need was measured away.** `%prismio.str` carries its length in
+      **i64** while `Int` is signed 32-bit, so the read emits `trunc i64 … to i32`. That was
+      recorded as an incoherence to resolve by narrowing the representation.
+      **The trunc costs nothing**: 5 of them in the whole of g7's IR, none surviving into the hot
+      loop's machine code, because taking the low half of a register is free on AArch64. Narrowing
+      `%prismio.str` is an ABI change across the runtime struct, the backend's type construction
+      and the committed seed — for a coherence argument and no measurable byte or cycle.
+      So the invariant is **made explicit and enforced** instead, at the one place an unbounded C
+      length becomes a Prismio `Int`: `prismio_cstr_len` was `(int)strlen(s)` and now refuses above
+      `INT32_MAX` with a diagnostic. `str_with_capacity` cannot exceed it — its parameter is `int`.
+      Above the bound the old code returned a negative or wrapped length and every bounds check
+      downstream compared against a lie, which is a silent wrong-memory read rather than a loud
+      failure. Suite **175/175**, differential 18/18, fixed point.
 - [ ] **"Four C string functions survive only as an FFI test surface" — the premise is wrong, and
       the corrected inventory is below (2026-08-29).** Three of the four are **live benchmark
       subjects**, not dead code kept alive by fixtures:
