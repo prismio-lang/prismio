@@ -2943,12 +2943,35 @@ def run_target_test():
     wasm_g_ir = wasm_g.read_text(encoding="utf-8", errors="replace")
     cleanup_files(host_ll, wasm_ll, host_g, wasm_g)
 
-    # 1. The host stamps nothing.
-    for marker in ("target triple", "target datalayout"):
-        if marker in host_ir:
-            problems.append(f"a build with no --target emitted `{marker}` -- the "
-                            "implicit host is stamping the module, which moves "
-                            "the IR of every program at once")
+    # 1. The host stamps nothing -- **except the Windows triple, which is
+    #    deliberate and has to be asserted rather than forbidden.**
+    #
+    # On macOS and Linux LLVM's own host triple is a better answer than a guess,
+    # so an implicit-host build emits neither marker and clang fills its default
+    # in. Windows is a real fork -- msvc and mingw are different ABIs and msvc is
+    # the configuration this project verifies -- so ir_module_start pins
+    # `x86_64-pc-windows-msvc` there and has since before this matrix ever ran.
+    #
+    # This check was written on a platform where that branch does not exist and
+    # asserted "stamps nothing" everywhere, so the first green Windows run
+    # reported the pin as a defect. Asserting it from both sides instead: absent
+    # off Windows, present *and correct* on it, so the pin cannot silently
+    # disappear either. The datalayout is never stamped on any host -- only
+    # LLVMSetTarget is called in that branch.
+    if platform.system() == "Windows":
+        if 'target triple = "x86_64-pc-windows-msvc"' not in host_ir:
+            problems.append("a host build on Windows did not pin "
+                            "`x86_64-pc-windows-msvc` -- without it clang may pick "
+                            "the mingw fork, which is a different ABI")
+        if "target datalayout" in host_ir:
+            problems.append("a host build emitted `target datalayout`; only the "
+                            "triple is pinned on Windows")
+    else:
+        for marker in ("target triple", "target datalayout"):
+            if marker in host_ir:
+                problems.append(f"a build with no --target emitted `{marker}` -- the "
+                                "implicit host is stamping the module, which moves "
+                                "the IR of every program at once")
 
     # 2. A named target reaches the module, both halves.
     if 'target triple = "wasm32-unknown-unknown"' not in wasm_ir:
