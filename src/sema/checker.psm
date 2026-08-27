@@ -368,6 +368,35 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                     return semaExpr(module, expr)
                 }
             }
+
+            // Method call syntax, as a rewrite: `x.f(a)` **is** `f(x, a)`.
+            //
+            // The parser already accepts the shape -- `text.trim()` reached here
+            // and failed with "unknown function `trim`", because the receiver was
+            // read off as the *name* and then dropped. Prepending it as argument
+            // zero is the whole feature: overload resolution, ownership, AIF and
+            // codegen then see an ordinary call and need to know nothing.
+            //
+            // The same trick as monomorphisation and payload enums -- put the
+            // feature in the AST, not in five passes -- and it is what makes
+            // `impl` blocks cheap later: a method is a free function whose first
+            // parameter is the receiver, so an `impl` block is a *naming*
+            // construct over this, not a second dispatch mechanism.
+            //
+            // A TYPE_ANNOTATION receiver is skipped: that is `Type.member`, which
+            // is a qualified name rather than a value, and rewriting it would
+            // turn a bad enum variant into a confusing call to `member`.
+            if (target.kind != NodeKind.TYPE_ANNOTATION) {
+                let methodName = createNode(NodeKind.IDENTIFIER_EXPR)
+                methodName.s1 = callee.s1
+                nodeSpanFrom(methodName, callee)
+
+                let receiverPtr = callee.child1
+                ptr_to_node(receiverPtr).next = expr.child2
+                expr.child1 = node_to_ptr(methodName)
+                expr.child2 = receiverPtr
+                return semaExpr(module, expr)
+            }
         }
 
         monoResolveGenericCall(module, expr, callee)
