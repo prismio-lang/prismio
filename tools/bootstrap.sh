@@ -287,6 +287,16 @@ done
 # 4. Link, including LLVM's C API.
 step "link"
 # shellcheck disable=SC2086
-clang $OBJS -o "$OUT" -L"$LLVM_LIB" -l"$LLVM_LINK" || die "link"
+# -rdynamic puts this executable's own symbols in its dynamic symbol table.
+#
+# `--jit` resolves the jitted module's externals with
+# LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess, which is a `dlsym` on
+# the running process -- so the runtime symbols the module calls (`prismio_argv`
+# and friends) have to be *findable* there. On Mach-O they are by default, which
+# is why `--jit` has always passed here; on ELF they are not, and the 2026-08-29
+# CI matrix reported `run --jit` failing on ubuntu with a list of unresolved
+# std.io symbols, which are the dependents of the one runtime symbol it could
+# not find.
+clang $OBJS -o "$OUT" -rdynamic -L"$LLVM_LIB" -l"$LLVM_LINK" || die "link"
 
 green "Built $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes)"

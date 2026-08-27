@@ -1606,7 +1606,20 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
             // hundred LLVM calls are undefined symbols, after every object has
             // already been compiled.
             char* q_lib = command_quote_arg(llvm_lib);
+            // -rdynamic for the same reason tools/bootstrap.sh passes it: the
+            // artifact being produced here is a *compiler*, and `--jit` resolves
+            // the jitted module's externals with a `dlsym` on the running
+            // process. On Mach-O an executable's symbols are visible there by
+            // default; on ELF they are not without this, and `run --jit` fails
+            // with the runtime symbols it could not find. Not passed on Windows,
+            // where it is not a flag clang-cl understands and the JIT's symbol
+            // story is different anyway.
+#ifdef _WIN32
             snprintf(command + written, command_len - written, " -L %s -l%s", q_lib, llvm_link);
+#else
+            snprintf(command + written, command_len - written, " -rdynamic -L %s -l%s",
+                     q_lib, llvm_link);
+#endif
             free(q_lib);
         }
         double t0 = build_trace_ms();

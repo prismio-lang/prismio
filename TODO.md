@@ -1127,20 +1127,18 @@ checkbox, or the two drift and only one of them gets read.)*
       zero-analysis behavioural-equivalence check (`stdout differs between release and --debug`),
       and `aif_verify` (`no aif-verify report` — it dies before printing one).
 
-- [ ] **Windows- and Linux-only suite failures, seen for the first time 2026-08-29.** With the
-      toolchain fixed, **ubuntu is 170/174 and windows 168/174**, and the control at `97ef065`
-      scores **168/172** — the same four Ubuntu failures, so all of these predate this work.
-      Beyond `test_73` above: `--jit` on both (unresolved `std.io` symbols — `print__Float`,
-      `prismioStdIoSignedInteger__I64` and others — so JIT symbol resolution does not find the
-      merged module's definitions), and on Windows additionally `--target` and `test_76_std_fs`
-      (exit 1). None reproduces on this host.
-            **Still blocked on push authorisation as of 2026-08-26**, and every local check that can
-            substitute for it is green: suite **170/170** on macOS, fixed point, differential 17/17,
-            curated closure, `--target` cross-build and link, packaged-runtime separation. The
-            matrix now has a **second** discriminating check to run —
-            `run_runtime_object_from_ir_test`, from the cold-compile work — and it covers the same
-            portability question from the other side: whether this host's clang flags are ones every
-            platform's clang takes.
+- [ ] **Windows- and Linux-only suite failures.** With the toolchain fixed, ubuntu reached
+      **173/174** once the enum zero-value fix landed and windows ~168/174; a control at `97ef065`
+      scores 168/172, so all of these predate this session's work.
+      **`--jit` has a candidate fix awaiting the matrix (2026-08-29).** `ir_jit_run_main` resolves
+      the jitted module's externals with `LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess`,
+      which is a `dlsym` on the running process. On Mach-O an executable's own symbols are visible
+      there by default — which is why `--jit` has always passed on this host — and **on ELF they are
+      not without `-rdynamic`**. That matches the reported failure exactly: the unresolved list is
+      `prismio_argv` plus the `std.io` functions that depend on it. `-rdynamic` is now passed by
+      `tools/bootstrap.sh` and by `build_driver.c`'s compiler link, not on Windows, where clang-cl
+      does not take it and the JIT's symbol story differs. **Unverified until the matrix runs it.**
+      Still open beyond that: `--target` and `test_76_std_fs` on Windows, neither reproducible here.
 - [x] **Reclaim overwritten boxed `OBJECT` list elements through an explicit exclusive operation,
       2026-08-26.** `list_set_exclusive` is admitted only for a locally created boxed-struct List
       whose scoped capability has not been cleared by element access, slicing, or an arbitrary
