@@ -18,7 +18,6 @@
 // does aif/corpus. See COMPILER-AUDIT's Level 2 note.
 
 import std.io
-extern fn int_to_str(n: Int) -> String
 
 struct Wide {
     f01: String, f02: String, f03: String, f04: String, f05: String, f06: String,
@@ -173,9 +172,9 @@ fn check(label: String, got: Int, want: Int) -> Int {
     print("FAIL ")
     print(label)
     print(": expected ")
-    print(int_to_str(want))
+    print(want)
     print(", got ")
-    println(int_to_str(got))
+    println(got)
     return 1
 }
 

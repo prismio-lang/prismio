@@ -11,7 +11,6 @@
 // to tell an arena pointer from a malloc pointer -- the values are identical.
 
 import std.io
-extern fn int_to_str(n: Int) -> String
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn arena_objects() -> Int
 extern fn arena_regions() -> Int
@@ -163,9 +162,9 @@ fn check(label: String, got: Int, want: Int) -> Int {
     print("FAIL ")
     print(label)
     print(": expected ")
-    print(int_to_str(want))
+    print(want)
     print(", got ")
-    println(int_to_str(got))
+    println(got)
     return 1
 }
 

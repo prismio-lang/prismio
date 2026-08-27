@@ -12,7 +12,6 @@
 // exercises the path. This test is the replacement for it.
 
 import std.io
-extern fn int_to_str(n: Int) -> String
 
 struct Point {
     x: Int,
@@ -102,9 +101,9 @@ fn check(label: String, got: Int, want: Int) -> Int {
     print("FAIL ")
     print(label)
     print(": expected ")
-    print(int_to_str(want))
+    print(want)
     print(", got ")
-    println(int_to_str(got))
+    println(got)
     return 1
 }
 

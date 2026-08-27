@@ -31,7 +31,6 @@
 import std.io
 extern fn print(s: String)
 extern fn println(s: String)
-extern fn int_to_str(n: Int) -> String produce(free)
 
 struct Item {
     id: Int,

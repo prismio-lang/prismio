@@ -168,9 +168,9 @@ fn check(label: String, got: Int, want: Int) -> Int {
     print("FAIL ")
     print(label)
     print(": expected ")
-    print(int_to_str(want))
+    print(want)
     print(", got ")
-    println(int_to_str(got))
+    println(got)
     return 1
 }
 
