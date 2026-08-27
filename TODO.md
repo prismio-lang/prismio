@@ -944,12 +944,44 @@ checkbox, or the two drift and only one of them gets read.)*
       how the above stayed invisible for a whole milestone. `inlineOpName` (`src/ir/expr.psm`) knows
       the mapping and `PRISMIO_CURATED_OPS` (`runtime/build_driver.c`) knows the set; a test that
       compares them is cheap and would have caught it the day M4.2 landed.
-- [ ] **The corpus does not vectorize, and the call barrier is no longer the reason.** After
-      curating the accessor, `system_movement` is call-free and still emits **0 NEON instructions**
-      — scalar `fmul`/`fadd`, one component at a time. The likely cause is aliasing: the component
-      lists arrive as opaque pointers and LLVM cannot prove they do not overlap. **AIF already
-      computes an aliasing lattice per site**, so `noalias` is a fact the compiler owns and does not
-      emit. This is the next measured prize and it is a codegen change, not a language one.
+- [ ] **The corpus does not vectorize, and the cause is now measured rather than guessed.**
+      After curating the accessor, `system_movement` is call-free and still emits **0 NEON**.
+      **It is not array aliasing** -- that was the first hypothesis and it was priced and killed:
+      `restrict` on the two component arrays is worth **1.11x** and both arms already vectorize.
+      The faithful model is the one that keeps the *List header* indirection, and it separates
+      cleanly into two costs:
+
+      | arm | time | NEON |
+      |---|---:|---:|
+      | header reloaded per element (what we emit) | 20.52 ms | 2 |
+      | bounds check + `elem_size` branch removed | 10.37 ms | 2 |
+      | header loads hoisted, flat indexed loop | **7.79 ms** | **6** |
+
+      **The two branches are the bigger half at 1.98x, and removing them alone does not
+      vectorize**; hoisting the header is a further 1.33x and is what unlocks it. Together
+      **2.11x-2.63x** on g4's movement shape, which is currently 1.80x of idiomatic Rust.
+
+      **The `elem_size` branch is pure waste and codegen already knows the answer.** `inlineOpName`
+      picks `list_get_inline` *only* where `inlineElemSizeOfList(expr) > 0` -- the element type is
+      statically flat and the size is a compile-time constant -- and then the runtime reloads
+      `l->elem_size` and branches on it anyway. Emitting `data + i * <const>` in codegen removes the
+      load, the branch, **and makes the stride a compile-time constant**, which is the same fact
+      `src/ir/expr.psm` already credits for DataView: *"the row type makes the stride a
+      compile-time LLVM type rather than the runtime column's dynamic byte size. That is what lets
+      a column scan vectorise."*
+      **The hazard to design around first**: a statically-known element size is a property of the
+      *expression's type*, and the runtime stamp (`list_set_elem_inline`) is a property of the
+      *list value*. A list arriving from elsewhere unstamped would take the boxed path at run time
+      while codegen assumed the flat one. That is a wrong-address read, not a leak, so the stamp has
+      to be proved and not assumed.
+      **Not attempted** -- a wrong answer here is a memory-safety bug, and it deserves its own
+      session rather than the tail of one.
+- [ ] **`!invariant.load` on the List header would hoist it, and would be unsound.** The mechanism
+      exists -- `ir_mark_data_view_lookup_loads_invariant` does exactly this for the three DataView
+      lookups, justified by *"ready DataView metadata does not change before the view is consumed"*.
+      A `List`'s `len`, `data` and `elem_size` **do** change: `list_push` and `list_inline_grow`
+      rewrite all three. Marking them invariant would break any loop that both pushes and reads.
+      Recorded so the next reader does not reach for the obvious tool.
 - [x] **Re-measure `RESULTS-final.md`, before ranking anything. Completed and refreshed
       2026-08-25.** The default-off run first established 1.09×–3.41×. After making the curated
       runtime merge the default, two more 25-run passes with matching cross-variant checksums put
