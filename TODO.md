@@ -935,15 +935,24 @@ checkbox, or the two drift and only one of them gets read.)*
       g6 2.87× → 1.77×, g3 now level at 0.97×, g9 still ahead at 0.92×. All checksums unchanged,
       87 programs at 0 violations, suite 174/174, fixed point.
       See [`RESULTS-curate-list-get-inline.md`](aif/evidence/RESULTS-curate-list-get-inline.md).
-- [ ] **`list_set_inline` and `list_push_inline` still are not curated**, and they are the write
-      half of the same win. Both reach `static` helpers in `lang_runtime.c` — `list_copy_elem`,
-      `list_release_source`, `list_inline_grow`, `list_set_elem_inline` — which is the closure
-      violation `PRISMIO_CURATED_OPS`' comment records for `list_push`. They need the outlining
-      treatment `list_push_grow` was given. g6 and g2 are write-heavy and are what would move.
-- [ ] **Nothing checks that the ops codegen emits are the ops the curated set contains.** That is
-      how the above stayed invisible for a whole milestone. `inlineOpName` (`src/ir/expr.psm`) knows
-      the mapping and `PRISMIO_CURATED_OPS` (`runtime/build_driver.c`) knows the set; a test that
-      compares them is cheap and would have caught it the day M4.2 landed.
+- [x] **Curating `list_set_inline` and `list_push_inline` was tried and is worth nothing —
+      2026-08-29.** The blocker was real and removable: giving `list_release_source` and
+      `list_inline_grow` external linkage makes `run_curated_closure_test` pass at 14 ops.
+      (`list_copy_elem` never needed it — clang inlines it into both callers before curation.)
+      Then it measured **0.999× corpus median** (range 0.981–1.024×) for **+3.1% compile time**
+      (415 → 428 ms). **Reverted on the gate's own prize-over-cost rule.**
+      The prediction that *"g6 and g2 are write-heavy so they would move"* was mine and it was
+      wrong: they push in a **setup phase**, not in the hot loop. Read is what the loops do.
+      Recorded as a waiver in `run_curated_emits_test` so the next reader sees the measurement
+      rather than the blocker. Re-attempt only with a program whose *hot loop* pushes — and check
+      such a program exists first.
+- [x] **Nothing checked that the ops codegen emits are the ops the curated set contains — closed
+      2026-08-29.** `run_curated_emits_test` parses `inlineOpName` (`src/ir/expr.psm`) and
+      `PRISMIO_CURATED_OPS` (`runtime/build_driver.c`) and requires every emitted op to be curated
+      **or waived with a recorded reason**. Observed discriminating: with `list_get_inline` removed
+      from the set it reports exactly that name. The waiver half matters as much as the check — it
+      also fails if an op is waived *and* curated, so removing a blocker and updating only one of
+      the two lists is caught from either side.
 - [ ] **The corpus does not vectorize, and the cause is now measured rather than guessed.**
       After curating the accessor, `system_movement` is call-free and still emits **0 NEON**.
       **It is not array aliasing** -- that was the first hypothesis and it was priced and killed:
