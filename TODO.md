@@ -981,6 +981,36 @@ checkbox, or the two drift and only one of them gets read.)*
       list per iteration where g4's read **two**, and inlining trades one call for six header loads
       and two branches. That wins with two lists and loses with one. Hoisting the header fixes both
       this and the vectorization item above; there is no separate investigation to do.
+- [ ] **Scoped alias metadata: priced at 1.40x, does not vectorize, and NOT worth building on
+      this evidence.** The fact — the element store cannot reach the List header, because the header
+      and its `data` block are separate allocations — was tested directly by giving the model a
+      *local copy* of the header, which is an `alloca` the store provably cannot reach and is
+      exactly what the metadata would license:
+
+      | arm | time | NEON |
+      |---|---:|---:|
+      | header reloaded per element (what we emit) | 20.51 ms | 2 |
+      | **aliasing fact given (local header)** | **14.62 ms** | **2** |
+      | bounds + `elem_size` branch removed | 10.42 ms | 2 |
+      | both — header hoisted, flat loop | 7.79 ms | 6 |
+
+      **1.40x, and still scalar.** The branches survive and they are what keeps it from
+      vectorizing, so the metadata buys the smaller half of the prize for machinery that has to
+      span the curation boundary. Revisit only together with the branch half.
+
+- [x] **Three optimisation hypotheses tested and killed, 2026-08-29.** Recorded so nobody spends
+      the day re-deriving them:
+      1. **`noalias` on the component arrays**, from AIF's aliasing lattice — `restrict` is worth
+         **1.11x** and both arms vectorize without it. The wrong question: the arrays were never
+         the problem, the List header is.
+      2. **IRCE** (LLVM's inductive range check elimination, not in the default `-O2`) — the loop's
+         bounds check *is* a range check on an induction variable, so it looked ideal. Worth
+         **nothing**: `O2,irce,O2` measured 14.10 ms and the control `O2,O2` measured **13.82 ms**,
+         so the entire apparent gain was the second `-O2` and IRCE made it slightly worse.
+      3. **A second `-O2` over the merged module** — **1.49x on the model and 1.80x SLOWER on the
+         real g4** (38.5 ms -> 69.4 ms, checksums equal, same executable size). The synthetic model
+         has now mispredicted the real program twice; price pipeline changes on the corpus, never
+         on a model.
 - [ ] **`!invariant.load` on the List header would hoist it, and would be unsound.** The mechanism
       exists -- `ir_mark_data_view_lookup_loads_invariant` does exactly this for the three DataView
       lookups, justified by *"ready DataView metadata does not change before the view is consumed"*.
