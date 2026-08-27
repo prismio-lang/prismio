@@ -1,0 +1,239 @@
+// G6 engine + gameplay -- hand-tuned Prismio.
+//
+// The same two changes hand-tuned Rust makes (rust/g6_tuned.rs), and both remove
+// allocation rather than making it cheaper:
+//
+//  1. The two order buffers are allocated **once**, outside every loop, and
+//     refilled in place per tick. Rust spells that `orders.clear()` into a `Vec`
+//     with inline elements; Prismio's `List` holds records, so clearing and
+//     re-pushing would still allocate one `Order` per member per tick. The
+//     equivalent here is g2_tuned.psm's: pre-fill the buffer once and *mutate*
+//     the elements, carrying the live length beside it. In steady state a tick
+//     allocates nothing.
+//
+//  2. The world and the two squads are reused across scenarios -- reset rather
+//     than rebuilt -- so the 2400 engine records and 800 squad members are
+//     allocated once for the whole run instead of 300 times. `world_reset` in
+//     g6_engine_tuned.psm is the engine-side half.
+//
+// The second one is the interesting one for this comparison and the reason is
+// worth stating: it is not a memory-model transformation at all. No arena and no
+// inference can turn "a fresh World per scenario" into "one World, reset",
+// because that is a statement about what the program means. It is what
+// "hand-tuned -- whatever it takes" licenses and what an inference pass may never
+// do on its own.
+//
+// Same scenario, same tick order, same combat: checksums identical to g6.psm.
+
+import std.io
+import g6_engine_tuned
+
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
+
+struct Member {
+    actor: Int,
+    role: Int,
+    kills: Int
+}
+
+struct Squad {
+    members: List<Member>,
+    team: Int,
+    morale: Int,
+    rally_x: Float,
+    rally_y: Float
+}
+
+struct Order {
+    target: Int,
+    dx: Float,
+    dy: Float,
+    priority: Int
+}
+
+// The per-tick order list, allocated once. `count` is how much of `items` this
+// tick filled; everything past it is last tick's data and is never read.
+struct OrderBuffer {
+    items: List<Order>,
+    count: Int
+}
+
+fn make_order_buffer(capacity: Int) -> OrderBuffer {
+    let mut items: List<Order> = list_new_with_capacity(capacity)
+    let mut i = 0
+    while (i < capacity) {
+        list_push(items, Order { target: 0, dx: 0.0, dy: 0.0, priority: 0 })
+        i = i + 1
+    }
+    return OrderBuffer { items: items, count: 0 }
+}
+
+fn make_squad(team: Int, rx: Float, ry: Float, capacity: Int) -> Squad {
+    let m: List<Member> = list_new_with_capacity(capacity)
+    return Squad {
+        members: m,
+        team: team,
+        morale: 100,
+        rally_x: rx,
+        rally_y: ry
+    }
+}
+
+fn squad_reset(s: Squad) {
+    s.morale = 100
+}
+
+// Reuses a member record when the squad already has one at that index, which is
+// every scenario after the first.
+fn recruit(w: World, s: Squad, count: Int) {
+    let existing = list_len(s.members)
+    let mut i = 0
+    let mut f = 0.0
+    while (i < count) {
+        let h = world_spawn(w, s.rally_x + f, s.rally_y + f, s.team)
+        if (i < existing) {
+            let m = list_get(s.members, i)
+            m.actor = h
+            m.role = 0
+            m.kills = 0
+        } else {
+            list_push(s.members, Member { actor: h, role: 0, kills: 0 })
+        }
+        f = f + 2.0
+        i = i + 1
+    }
+}
+
+// g6.psm's plan_orders, writing into the standing buffer instead of building a
+// new list. The predicate, the arithmetic and the order are unchanged.
+fn plan_orders_into(w: World, s: Squad, buf: OrderBuffer) {
+    let n = list_len(s.members)
+    let mut count = 0
+    let mut i = 0
+    while (i < n) {
+        let mem = list_get(s.members, i)
+        let h = mem.actor
+        let a = world_actor(w, h)
+        if (a.alive) {
+            let t = world_transform(w, h)
+            let o = list_get(buf.items, count)
+            o.target = h
+            o.dx = s.rally_x - t.x
+            o.dy = s.rally_y - t.y
+            o.priority = 1
+            if (a.health < 50) {
+                o.priority = 3
+            }
+            count = count + 1
+        }
+        i = i + 1
+    }
+    buf.count = count
+}
+
+fn apply_orders(w: World, buf: OrderBuffer, speed: Float) -> Int {
+    let n = buf.count
+    let mut applied = 0
+    let mut i = 0
+    while (i < n) {
+        let o = list_get(buf.items, i)
+        world_set_velocity(w, o.target, o.dx * speed, o.dy * speed)
+        applied = applied + 1
+        i = i + 1
+    }
+    return applied
+}
+
+fn resolve_combat(w: World, a: Squad, b: Squad) -> Int {
+    let na = list_len(a.members)
+    let nb = list_len(b.members)
+    let mut kills = 0
+    let mut i = 0
+    while (i < na and i < nb) {
+        let am = list_get(a.members, i)
+        let bm = list_get(b.members, i)
+        let att = world_actor(w, am.actor)
+        if (att.alive) {
+            if (world_damage(w, bm.actor, 7)) {
+                am.kills = am.kills + 1
+                kills = kills + 1
+            }
+        }
+        i = i + 1
+    }
+    if (kills > 0) {
+        b.morale = b.morale - kills
+    }
+    return kills
+}
+
+fn main() -> Int {
+    let scenarios = 300
+    let ticks = 100
+    let squad_size = 400
+    let frames = scenarios * ticks
+
+    let mut samples: List<Int> = list_new_with_capacity(frames)
+    let mut g = 0
+    while (g < frames) {
+        list_push(samples, 0)
+        g = g + 1
+    }
+
+    // Everything the run needs, allocated before the first tick.
+    let w = world_create(squad_size * 2)
+    let red = make_squad(0, 0.0, 0.0, squad_size)
+    let blue = make_squad(1, 100.0, 100.0, squad_size)
+    let red_orders = make_order_buffer(squad_size)
+    let blue_orders = make_order_buffer(squad_size)
+
+    let dt = 0.016
+    let mut total_alive = 0
+    let mut total_orders = 0
+    let mut total_kills = 0
+    let mut slot = 0
+
+    let mut run = 0
+    while (run < scenarios) {
+        world_reset(w)
+        squad_reset(red)
+        squad_reset(blue)
+        recruit(w, red, squad_size)
+        recruit(w, blue, squad_size)
+
+        let mut tick = 0
+        while (tick < ticks) {
+            let t0 = clock_gettime_nsec_np(4)
+            plan_orders_into(w, red, red_orders)
+            plan_orders_into(w, blue, blue_orders)
+            let applied_r = apply_orders(w, red_orders, 1.0)
+            let applied_b = apply_orders(w, blue_orders, 1.0)
+            world_step(w, dt)
+            let kills = resolve_combat(w, red, blue)
+            let t1 = clock_gettime_nsec_np(4)
+
+            total_orders = total_orders + applied_r + applied_b
+            total_kills = total_kills + kills
+            list_set(samples, slot, (t1 - t0) as Int)
+            slot = slot + 1
+            tick = tick + 1
+        }
+        total_alive = total_alive + world_count_alive(w)
+        run = run + 1
+    }
+
+    print("checksum alive ")
+    println(total_alive)
+    print("checksum orders ")
+    println(total_orders)
+    print("checksum kills ")
+    println(total_kills)
+
+    let mut j = 0
+    while (j < frames) {
+        print("frame_ns ")
+        println(list_get(samples, j))
+        j = j + 1
+    }
+    return 0
+}

@@ -1,0 +1,379 @@
+// G5 asset cache -- hand-tuned Prismio.
+//
+// The same tuning hand-tuned Rust applies (rust/g5_tuned.rs), and it is the one
+// arm in this set that no memory model could produce: **`render_batched`
+// rescans all 2000 entities once per material, twelve times, to find the ~167
+// that belong to each.** An entity's material handle never changes after
+// `populate`, so the buckets are computed once and each frame visits every
+// entity exactly once instead of twelve times.
+//
+// The buckets are a counting sort into CSR form -- one `start` array of
+// `mat_count + 1` offsets and one `items` array of entity indices grouped by
+// material -- rather than a list of lists. That keeps the per-material scan
+// sequential over one flat array, which is the point of doing it at all.
+//
+// The per-entity tests are still there and still in the same order. What goes
+// away is the eleven-twelfths of the scan that could only ever fail the
+// `e.material == m` test, which the bucket now answers structurally. Checksums
+// are identical to g5.psm.
+//
+// The dead `let mat = list_get(...)` in g5.psm's material loop is dropped: it is
+// bound and never read, and carrying it forward would be copying a mistake
+// rather than tuning a program.
+import std.io
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
+
+struct Mesh {
+    vertex_count: Int,
+    index_count: Int,
+    bounds_radius: Float,
+    lod_levels: Int,
+    ref_count: Int,
+    resident: Bool
+}
+
+struct Material {
+    shader_id: Int,
+    base_r: Float,
+    base_g: Float,
+    base_b: Float,
+    roughness: Float,
+    metallic: Float,
+    texture: Int,
+    ref_count: Int
+}
+
+struct Texture {
+    width: Int,
+    height: Int,
+    format: Int,
+    mip_levels: Int,
+    bytes: Int,
+    ref_count: Int,
+    resident: Bool
+}
+
+struct AssetCache {
+    meshes: List<Mesh>,
+    materials: List<Material>,
+    textures: List<Texture>,
+    resident_bytes: Int,
+    budget_bytes: Int
+}
+
+// Entities hold handles, not references. Many-to-one by construction.
+struct Entity {
+    mesh: Int,
+    material: Int,
+    x: Float,
+    y: Float,
+    z: Float,
+    visible: Bool
+}
+
+struct Scene {
+    entities: List<Entity>,
+    cache: AssetCache,
+    draw_calls: Int,
+    batches: Int
+}
+
+fn make_cache(budget: Int) -> AssetCache {
+    let m: List<Mesh> = list_new()
+    let mt: List<Material> = list_new()
+    let tx: List<Texture> = list_new()
+    return AssetCache {
+        meshes: m,
+        materials: mt,
+        textures: tx,
+        resident_bytes: 0,
+        budget_bytes: budget
+    }
+}
+
+fn load_texture(cache: AssetCache, w: Int, h: Int) -> Int {
+    let handle = list_len(cache.textures)
+    let bytes = w * h * 4
+    list_push(cache.textures, Texture {
+        width: w,
+        height: h,
+        format: 1,
+        mip_levels: 8,
+        bytes: bytes,
+        ref_count: 0,
+        resident: true
+    })
+    cache.resident_bytes = cache.resident_bytes + bytes
+    return handle
+}
+
+fn load_material(cache: AssetCache, shader: Int, tex: Int, rough: Float) -> Int {
+    let handle = list_len(cache.materials)
+    list_push(cache.materials, Material {
+        shader_id: shader,
+        base_r: 1.0,
+        base_g: 1.0,
+        base_b: 1.0,
+        roughness: rough,
+        metallic: 0.0,
+        texture: tex,
+        ref_count: 0
+    })
+    return handle
+}
+
+fn load_mesh(cache: AssetCache, verts: Int) -> Int {
+    let handle = list_len(cache.meshes)
+    let bytes = verts * 32
+    list_push(cache.meshes, Mesh {
+        vertex_count: verts,
+        index_count: verts * 3,
+        bounds_radius: 1.0,
+        lod_levels: 4,
+        ref_count: 0,
+        resident: true
+    })
+    cache.resident_bytes = cache.resident_bytes + bytes
+    return handle
+}
+
+// Manual reference counting -- the bookkeeping AIF's T3 exists to delete.
+fn acquire(cache: AssetCache, mesh_h: Int, mat_h: Int) {
+    let m = list_get(cache.meshes, mesh_h)
+    m.ref_count = m.ref_count + 1
+    let mt = list_get(cache.materials, mat_h)
+    mt.ref_count = mt.ref_count + 1
+    let t = list_get(cache.textures, mt.texture)
+    t.ref_count = t.ref_count + 1
+}
+
+fn release(cache: AssetCache, mesh_h: Int, mat_h: Int) {
+    let m = list_get(cache.meshes, mesh_h)
+    m.ref_count = m.ref_count - 1
+    if (m.ref_count <= 0) {
+        m.resident = false
+    }
+    let mt = list_get(cache.materials, mat_h)
+    mt.ref_count = mt.ref_count - 1
+    let t = list_get(cache.textures, mt.texture)
+    t.ref_count = t.ref_count - 1
+    if (t.ref_count <= 0) {
+        t.resident = false
+    }
+}
+
+fn build_assets(cache: AssetCache) {
+    let mut i = 0
+    while (i < 8) {
+        load_texture(cache, 512, 512)
+        i = i + 1
+    }
+    let mut j = 0
+    while (j < 12) {
+        load_material(cache, j, j - (j / 8) * 8, 0.5)
+        j = j + 1
+    }
+    let mut k = 0
+    while (k < 20) {
+        load_mesh(cache, 1000 + k * 100)
+        k = k + 1
+    }
+}
+
+// 2000 entities over 20 meshes and 12 materials: every asset is referenced by
+// roughly 100 entities. This is the sharing the tier model has to account for.
+fn populate(scene: Scene, count: Int) {
+    let mut i = 0
+    let mut f = 0.0
+    while (i < count) {
+        let mesh_h = i - (i / 20) * 20
+        let mat_h = i - (i / 12) * 12
+        list_push(scene.entities, Entity {
+            mesh: mesh_h,
+            material: mat_h,
+            x: f,
+            y: f,
+            z: f,
+            visible: true
+        })
+        acquire(scene.cache, mesh_h, mat_h)
+        f = f + 1.0
+        i = i + 1
+    }
+}
+
+// The buckets, computed once. A counting sort by material handle into CSR form:
+// `start[m] .. start[m + 1]` is material m's slice of `items`, and `items` holds
+// entity indices. Built from the data rather than from the knowledge that
+// `populate` assigns `i % 12` -- a tuning that reads the generator instead of the
+// data is not a tuning of this program.
+struct Buckets {
+    start: List<Int>,
+    items: List<Int>
+}
+
+fn build_buckets(scene: Scene) -> Buckets {
+    let n = list_len(scene.entities)
+    let mat_count = list_len(scene.cache.materials)
+
+    // start[m + 1] counts material m, then a prefix sum turns counts into
+    // offsets in place.
+    let mut start: List<Int> = list_new_with_capacity(mat_count + 1)
+    let mut c = 0
+    while (c <= mat_count) {
+        list_push(start, 0)
+        c = c + 1
+    }
+
+    let mut i = 0
+    while (i < n) {
+        let e = list_get(scene.entities, i)
+        list_set(start, e.material + 1, list_get(start, e.material + 1) + 1)
+        i = i + 1
+    }
+
+    let mut m = 0
+    while (m < mat_count) {
+        list_set(start, m + 1, list_get(start, m + 1) + list_get(start, m))
+        m = m + 1
+    }
+
+    let mut cursor: List<Int> = list_new_with_capacity(mat_count)
+    let mut q = 0
+    while (q < mat_count) {
+        list_push(cursor, list_get(start, q))
+        q = q + 1
+    }
+
+    let mut items: List<Int> = list_new_with_capacity(n)
+    let mut z = 0
+    while (z < n) {
+        list_push(items, 0)
+        z = z + 1
+    }
+
+    // Stable: entities land in each bucket in ascending index order, which is
+    // the order the twelve-pass scan visited them in.
+    let mut k = 0
+    while (k < n) {
+        let e = list_get(scene.entities, k)
+        let at = list_get(cursor, e.material)
+        list_set(items, at, k)
+        list_set(cursor, e.material, at + 1)
+        k = k + 1
+    }
+
+    return Buckets { start: start, items: items }
+}
+
+// The frame. One pass over every entity, in material order.
+fn render_bucketed(scene: Scene, buckets: Buckets) -> Int {
+    let mat_count = list_len(scene.cache.materials)
+    let mut submitted = 0
+    let mut batches = 0
+
+    let mut m = 0
+    while (m < mat_count) {
+        let past = list_get(buckets.start, m + 1)
+        let mut batch_size = 0
+        let mut p = list_get(buckets.start, m)
+        while (p < past) {
+            let e = list_get(scene.entities, list_get(buckets.items, p))
+            if (e.visible) {
+                let mesh = list_get(scene.cache.meshes, e.mesh)
+                if (mesh.resident) {
+                    submitted = submitted + 1
+                    batch_size = batch_size + 1
+                }
+            }
+            p = p + 1
+        }
+        if (batch_size > 0) {
+            batches = batches + 1
+        }
+        m = m + 1
+    }
+
+    scene.draw_calls = submitted
+    scene.batches = batches
+    return submitted
+}
+
+// Eviction pass: streams out anything nothing references. The lifecycle a real
+// cache has, and the one manual refcounting exists to drive.
+fn evict_unused(cache: AssetCache) -> Int {
+    let mut evicted = 0
+    let n = list_len(cache.textures)
+    let mut i = 0
+    while (i < n) {
+        let t = list_get(cache.textures, i)
+        if (t.ref_count <= 0 and t.resident) {
+            t.resident = false
+            cache.resident_bytes = cache.resident_bytes - t.bytes
+            evicted = evicted + 1
+        }
+        i = i + 1
+    }
+    return evicted
+}
+
+fn main() -> Int {
+    let frames = 4000
+    let cache = make_cache(64 * 1024 * 1024)
+    build_assets(cache)
+
+    let ents: List<Entity> = list_new_with_capacity(2000)
+    let scene = Scene {
+        entities: ents,
+        cache: cache,
+        draw_calls: 0,
+        batches: 0
+    }
+
+    populate(scene, 2000)
+    let buckets = build_buckets(scene)
+
+    let mut samples: List<Int> = list_new_with_capacity(frames)
+    let mut g = 0
+    while (g < frames) {
+        list_push(samples, 0)
+        g = g + 1
+    }
+
+    let mut frame = 0
+    let mut total = 0
+    while (frame < frames) {
+        let t0 = clock_gettime_nsec_np(4)
+        let submitted = render_bucketed(scene, buckets)
+        let t1 = clock_gettime_nsec_np(4)
+        total = total + submitted
+        list_set(samples, frame, (t1 - t0) as Int)
+        frame = frame + 1
+    }
+
+    let mut i = 0
+    while (i < 500) {
+        let e = list_get(scene.entities, i)
+        release(scene.cache, e.mesh, e.material)
+        e.visible = false
+        i = i + 1
+    }
+    let evicted = evict_unused(scene.cache)
+
+    print("checksum entities ")
+    println(list_len(scene.entities))
+    print("checksum submitted ")
+    println(total)
+    print("checksum batches ")
+    println(scene.batches)
+    print("checksum evicted ")
+    println(evicted)
+
+    let mut j = 0
+    while (j < frames) {
+        print("frame_ns ")
+        println(list_get(samples, j))
+        j = j + 1
+    }
+    return 0
+}

@@ -94,6 +94,22 @@ DYLIB = "allocount.dylib" if sys.platform == "darwin" else "allocount.so"
 
 PROGRAMS = ["g1", "g2", "g3", "g4", "g5", "g6", "g9"]
 
+# Where a program's Prismio hand-tuned arm lives when it is not `<prog>_tuned.psm`.
+#
+# g1's expert version **is** the DataView one: a structure-of-arrays view is
+# something the language offers, so writing an AoS-only "tuned" arm to make the
+# filename pattern come out even would understate Prismio in the one column whose
+# job is to say what Prismio can reach. The DV-tuned row stays as well, because
+# the representation study is what it was recorded for -- the two rows are the
+# same binary and are labelled differently on purpose.
+#
+# **g9 has no entry and no file, and that absence is a result.** Hand-tuned Rust
+# keeps four workers alive across frames and hands them work over channels;
+# Prismio has `spawn` and `join` and no way to keep a task alive past its join, so
+# the arm is not writable rather than not written. When it becomes writable, the
+# 1.45x gap against `g9_tuned.rs` gets re-measured -- see v0.1 FEATURES 4.
+PRISMIO_TUNED_ALIAS = {"g1": "g1_dataview_tuned.psm"}
+
 # (variant key, label, language). Order is the report order.
 #
 # rust-boxed is a diagnostic, not one of the three requested Rust variants: it
@@ -105,6 +121,11 @@ VARIANTS = [
     ("prismio",       "Prismio",         "prismio"),
     ("prismio_dataview", "Prismio DataView", "prismio"),
     ("prismio_dataview_tuned", "Prismio DV tuned", "prismio"),
+    # v0.1 2.2's fifth arm: the same program written the way a Prismio expert
+    # would. Reported next to `rust_tuned` because that is the comparison it
+    # exists to make -- "the ceiling in each language", not "Prismio with a
+    # different representation", which is what the DataView rows are.
+    ("prismio_tuned", "Prismio hand-tuned", "prismio"),
     ("rust_idiomatic", "Rust idiomatic",  "rust"),
     ("rust_arena",    "Rust arena",      "rust"),
     ("rust_tuned",    "Rust hand-tuned", "rust"),
@@ -157,10 +178,16 @@ def targets(compiler):
                     "prismio": "",
                     "prismio_dataview": "_dataview",
                     "prismio_dataview_tuned": "_dataview_tuned",
+                    "prismio_tuned": "_tuned",
                 }[key]
-                src = os.path.join(HERE, "prismio", f"{prog}{suffix}.psm")
-                # DataView is currently a discriminating g1 representation arm,
-                # not a claim that every corpus program has been ported.
+                name = f"{prog}{suffix}.psm"
+                if key == "prismio_tuned":
+                    name = PRISMIO_TUNED_ALIAS.get(prog, name)
+                src = os.path.join(HERE, "prismio", name)
+                # DataView is a discriminating g1 representation arm, not a claim
+                # that every corpus program has been ported. A missing
+                # `prismio_tuned` is the honest absence 2.2 asks for: the column
+                # says nothing rather than repeating the idiomatic number.
                 if not os.path.exists(src):
                     continue
                 cmd = [compiler, "build", src, "-o", exe]

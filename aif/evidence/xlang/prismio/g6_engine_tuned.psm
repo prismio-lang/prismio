@@ -1,0 +1,166 @@
+// G6 engine module -- the hand-tuned arm's engine half.
+//
+// Identical to g6_engine.psm except for entity *reuse*. `world_spawn` writes over
+// the record at the next handle when one already exists, and `world_reset` puts
+// the cursor back to zero, so a run of 300 scenarios allocates its 2400 engine
+// records once instead of once per scenario.
+//
+// A separate module rather than two more functions in g6_engine.psm, because
+// every function in an imported module is emitted into the binary: adding these
+// there would change the *idiomatic* arm's code, and an arm that moves when the
+// other arm is tuned is not a baseline.
+//
+// This is the change the Rust tuned arm calls the interesting one, and the reason
+// is worth repeating: no arena and no inference can turn "a fresh World per
+// scenario" into "one World, reset". That is a statement about what the program
+// means, not about where its objects live -- which is exactly what the
+// hand-tuned arm is for.
+
+struct Transform {
+    x: Float,
+    y: Float,
+    z: Float,
+    yaw: Float
+}
+
+struct Velocity {
+    dx: Float,
+    dy: Float,
+    dz: Float
+}
+
+struct Actor {
+    transform: Int,
+    velocity: Int,
+    health: Int,
+    max_health: Int,
+    team: Int,
+    alive: Bool
+}
+
+struct World {
+    actors: List<Actor>,
+    transforms: List<Transform>,
+    velocities: List<Velocity>,
+    tick: Int,
+    spawned: Int,
+    killed: Int
+}
+
+fn world_create(capacity: Int) -> World {
+    let a: List<Actor> = list_new_with_capacity(capacity)
+    let t: List<Transform> = list_new_with_capacity(capacity)
+    let v: List<Velocity> = list_new_with_capacity(capacity)
+    return World {
+        actors: a,
+        transforms: t,
+        velocities: v,
+        tick: 0,
+        spawned: 0,
+        killed: 0
+    }
+}
+
+// `spawned` is the cursor as well as the count, which is what makes the reuse
+// path free of any extra bookkeeping: the next handle is the number spawned so
+// far, in a fresh world and in a reset one alike.
+fn world_reset(w: World) {
+    w.tick = 0
+    w.spawned = 0
+    w.killed = 0
+}
+
+fn world_spawn(w: World, x: Float, y: Float, team: Int) -> Int {
+    let handle = w.spawned
+    if (handle < list_len(w.actors)) {
+        let t = list_get(w.transforms, handle)
+        t.x = x
+        t.y = y
+        t.z = 0.0
+        t.yaw = 0.0
+        let v = list_get(w.velocities, handle)
+        v.dx = 0.0
+        v.dy = 0.0
+        v.dz = 0.0
+        let a = list_get(w.actors, handle)
+        a.transform = handle
+        a.velocity = handle
+        a.health = 100
+        a.max_health = 100
+        a.team = team
+        a.alive = true
+    } else {
+        list_push(w.transforms, Transform { x: x, y: y, z: 0.0, yaw: 0.0 })
+        list_push(w.velocities, Velocity { dx: 0.0, dy: 0.0, dz: 0.0 })
+        list_push(w.actors, Actor {
+            transform: handle,
+            velocity: handle,
+            health: 100,
+            max_health: 100,
+            team: team,
+            alive: true
+        })
+    }
+    w.spawned = w.spawned + 1
+    return handle
+}
+
+fn world_transform(w: World, h: Int) -> Transform {
+    return list_get(w.transforms, h)
+}
+
+fn world_actor(w: World, h: Int) -> Actor {
+    return list_get(w.actors, h)
+}
+
+fn world_set_velocity(w: World, h: Int, dx: Float, dy: Float) {
+    let v = list_get(w.velocities, h)
+    v.dx = dx
+    v.dy = dy
+}
+
+fn world_damage(w: World, h: Int, amount: Int) -> Bool {
+    let a = list_get(w.actors, h)
+    if (a.alive == false) {
+        return false
+    }
+    a.health = a.health - amount
+    if (a.health <= 0) {
+        a.health = 0
+        a.alive = false
+        w.killed = w.killed + 1
+        return true
+    }
+    return false
+}
+
+fn world_step(w: World, dt: Float) {
+    let n = list_len(w.actors)
+    let mut i = 0
+    while (i < n) {
+        let a = list_get(w.actors, i)
+        if (a.alive) {
+            let t = list_get(w.transforms, a.transform)
+            let v = list_get(w.velocities, a.velocity)
+            t.x = t.x + v.dx * dt
+            t.y = t.y + v.dy * dt
+            t.z = t.z + v.dz * dt
+        }
+        i = i + 1
+    }
+    w.tick = w.tick + 1
+}
+
+fn world_count_alive(w: World) -> Int {
+    let n = list_len(w.actors)
+    let mut alive = 0
+    let mut i = 0
+    while (i < n) {
+        let a = list_get(w.actors, i)
+        if (a.alive) {
+            alive = alive + 1
+        }
+        i = i + 1
+    }
+    return alive
+}

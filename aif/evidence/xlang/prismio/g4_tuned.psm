@@ -1,0 +1,176 @@
+// G4 ECS world -- hand-tuned Prismio.
+//
+// The same tuning hand-tuned Rust applies (rust/g4_tuned.rs): **the four systems
+// are fused into one pass.** Every system is elementwise and no entity reads
+// another entity, so running physics-then-movement-then-regen-then-render for
+// entity i, for each i, computes exactly what running each system over all
+// entities in that order computes. Four streaming passes over five arrays become
+// one, and each entity's five component records are touched while they are still
+// in cache instead of four separate times.
+//
+// The component arrays are reserved up front as well, so spawning does not grow
+// five lists 1500 times.
+//
+// Same world, same systems, same arithmetic in the same order per entity -- so
+// the checksums are identical to g4.psm, which is what makes this a tuning of the
+// program rather than a different program.
+
+import std.io
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
+
+struct Position {
+    x: Float,
+    y: Float,
+    z: Float
+}
+
+struct Velocity {
+    dx: Float,
+    dy: Float,
+    dz: Float
+}
+
+struct Physics {
+    mass: Float,
+    drag: Float,
+    restitution: Float
+}
+
+struct Sprite {
+    texture_id: Int,
+    layer: Int,
+    tint_r: Float,
+    tint_g: Float,
+    tint_b: Float,
+    alpha: Float
+}
+
+struct Health {
+    current: Int,
+    maximum: Int,
+    regen: Float
+}
+
+struct World {
+    positions: List<Position>,
+    velocities: List<Velocity>,
+    physics: List<Physics>,
+    sprites: List<Sprite>,
+    health: List<Health>,
+    entity_count: Int
+}
+
+fn make_world(capacity: Int) -> World {
+    let p: List<Position> = list_new_with_capacity(capacity)
+    let v: List<Velocity> = list_new_with_capacity(capacity)
+    let ph: List<Physics> = list_new_with_capacity(capacity)
+    let s: List<Sprite> = list_new_with_capacity(capacity)
+    let h: List<Health> = list_new_with_capacity(capacity)
+    return World {
+        positions: p,
+        velocities: v,
+        physics: ph,
+        sprites: s,
+        health: h,
+        entity_count: 0
+    }
+}
+
+fn spawn(w: World, seed: Float) {
+    list_push(w.positions, Position { x: seed, y: seed, z: 0.0 })
+    list_push(w.velocities, Velocity { dx: 1.0, dy: 0.5, dz: 0.0 })
+    list_push(w.physics, Physics { mass: 1.0, drag: 0.01, restitution: 0.5 })
+    list_push(w.sprites, Sprite {
+        texture_id: 1,
+        layer: 0,
+        tint_r: 1.0,
+        tint_g: 1.0,
+        tint_b: 1.0,
+        alpha: 1.0
+    })
+    list_push(w.health, Health { current: 100, maximum: 100, regen: 0.1 })
+    w.entity_count = w.entity_count + 1
+}
+
+// The four systems, fused. Read this against g4.psm's four loops: the bodies are
+// copied across unchanged and the loop is the only thing that merged.
+fn systems_fused(w: World, dt: Float) -> Int {
+    let n = w.entity_count
+    let mut drawn = 0
+    let mut i = 0
+    while (i < n) {
+        // system_physics: writes Velocity, reads Physics.
+        let v = list_get(w.velocities, i)
+        let ph = list_get(w.physics, i)
+        let k = 1.0 - ph.drag * dt
+        v.dx = v.dx * k
+        v.dy = v.dy * k - 9.81 * dt
+        v.dz = v.dz * k
+
+        // system_movement: writes Position, reads the Velocity just written.
+        let p = list_get(w.positions, i)
+        p.x = p.x + v.dx * dt
+        p.y = p.y + v.dy * dt
+        p.z = p.z + v.dz * dt
+
+        // system_regen: writes Health.
+        let h = list_get(w.health, i)
+        if (h.current < h.maximum) {
+            h.current = h.current + 1
+        }
+
+        // system_render: reads the Position just written, and Sprite.
+        let s = list_get(w.sprites, i)
+        if (s.alpha > 0.0 and p.y > 0.0 - 100.0) {
+            drawn = drawn + 1
+        }
+
+        i = i + 1
+    }
+    return drawn
+}
+
+fn main() -> Int {
+    let frames = 10000
+    let w = make_world(1500)
+
+    let mut i = 0
+    let mut seed = 0.0
+    while (i < 1500) {
+        spawn(w, seed)
+        seed = seed + 1.0
+        i = i + 1
+    }
+
+    let mut samples: List<Int> = list_new_with_capacity(frames)
+    let mut g = 0
+    while (g < frames) {
+        list_push(samples, 0)
+        g = g + 1
+    }
+
+    let dt = 0.016
+    let mut frame = 0
+    let mut total_drawn = 0
+    while (frame < frames) {
+        let t0 = clock_gettime_nsec_np(4)
+        let drawn = systems_fused(w, dt)
+        let t1 = clock_gettime_nsec_np(4)
+        total_drawn = total_drawn + drawn
+        list_set(samples, frame, (t1 - t0) as Int)
+        frame = frame + 1
+    }
+
+    print("checksum entities ")
+    println(w.entity_count)
+    print("checksum draws ")
+    println(total_drawn)
+
+    let mut j = 0
+    while (j < frames) {
+        print("frame_ns ")
+        println(list_get(samples, j))
+        j = j + 1
+    }
+    return 0
+}
