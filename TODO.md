@@ -921,6 +921,35 @@ runtimes (Koka, Lean), which is Prismio's workload shape.
 prompt and this one is the plan — anything it tells the next session to do has to exist here as a
 checkbox, or the two drift and only one of them gets read.)*
 
+- [x] **The hot element accessor was never curated — fixed 2026-08-29, and it is the largest
+      single speedup measured on this corpus.** M1.1 curated `list_get`; M4.2 then added the
+      `_inline` family and taught `inlineOpName` to emit *those* wherever the element type is
+      statically flat, and `PRISMIO_CURATED_OPS` was never updated. So codegen emitted
+      `list_get_inline` and the curated module contained `list_get`, and every flat-element access
+      in the corpus paid a real `bl` into a five-line function. g4's movement loop was **two calls
+      per iteration and 2 NEON instructions in the whole program**.
+      Found by disassembling the binary, against a record that attributed g4's gap to
+      *"2.51× representation"* — it was not representation.
+      **Corpus median 0.861×** (g4 0.576×, g6 0.715×, g5 0.754×, g2 0.861×), and the standing
+      against idiomatic Rust moves from **0.90×–3.09×** to **0.92×–1.80×**: g4 3.07× → 1.77×,
+      g6 2.87× → 1.77×, g3 now level at 0.97×, g9 still ahead at 0.92×. All checksums unchanged,
+      87 programs at 0 violations, suite 174/174, fixed point.
+      See [`RESULTS-curate-list-get-inline.md`](aif/evidence/RESULTS-curate-list-get-inline.md).
+- [ ] **`list_set_inline` and `list_push_inline` still are not curated**, and they are the write
+      half of the same win. Both reach `static` helpers in `lang_runtime.c` — `list_copy_elem`,
+      `list_release_source`, `list_inline_grow`, `list_set_elem_inline` — which is the closure
+      violation `PRISMIO_CURATED_OPS`' comment records for `list_push`. They need the outlining
+      treatment `list_push_grow` was given. g6 and g2 are write-heavy and are what would move.
+- [ ] **Nothing checks that the ops codegen emits are the ops the curated set contains.** That is
+      how the above stayed invisible for a whole milestone. `inlineOpName` (`src/ir/expr.psm`) knows
+      the mapping and `PRISMIO_CURATED_OPS` (`runtime/build_driver.c`) knows the set; a test that
+      compares them is cheap and would have caught it the day M4.2 landed.
+- [ ] **The corpus does not vectorize, and the call barrier is no longer the reason.** After
+      curating the accessor, `system_movement` is call-free and still emits **0 NEON instructions**
+      — scalar `fmul`/`fadd`, one component at a time. The likely cause is aliasing: the component
+      lists arrive as opaque pointers and LLVM cannot prove they do not overlap. **AIF already
+      computes an aliasing lattice per site**, so `noalias` is a fact the compiler owns and does not
+      emit. This is the next measured prize and it is a codegen change, not a language one.
 - [x] **Re-measure `RESULTS-final.md`, before ranking anything. Completed and refreshed
       2026-08-25.** The default-off run first established 1.09×–3.41×. After making the curated
       runtime merge the default, two more 25-run passes with matching cross-variant checksums put

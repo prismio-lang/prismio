@@ -874,8 +874,26 @@ static int object_cache_trace(void);
 // Outlining the growth half into `list_push_grow` fixes both at once -- it takes
 // the three statics with it, and it drops the remaining fast path from 227 IR
 // lines to 69. See the comment on list_push_grow in lang_runtime.c.
+// **`list_get_inline` was missing and it is the one codegen actually calls.**
+// M1.1 curated `list_get`; M4.2 then added the `_inline` family and taught
+// `inlineOpName` (src/ir/expr.psm) to emit those instead wherever the element
+// type is statically flat -- and this list was not updated with it. So every
+// corpus program with a flat element list paid a real `bl` per element access,
+// through a five-line function, with the seam this whole mechanism exists to
+// remove sitting right back in the hot loop. g4's movement system was two calls
+// per iteration and no vectorization at all.
+//
+// It satisfies the closure rule trivially: its body references no symbols, only
+// fields of RtList.
+//
+// **Its two siblings do not, and are deliberately absent.** `list_set_inline`
+// reaches `list_copy_elem` and `list_release_source`, and `list_push_inline`
+// reaches those plus `list_inline_grow` and `list_set_elem_inline` -- all
+// `static` in lang_runtime.c, which is the exact failure the note above records
+// for `list_push`. They need the same outlining treatment `list_push_grow` was
+// given before they can be curated.
 static const char* const PRISMIO_CURATED_OPS[] = {
-    "list_get", "list_set", "list_len",
+    "list_get", "list_get_inline", "list_set", "list_len",
     "list_set_elem_owner", "list_set_elem_releaser",
     "rc_retain", "rc_release", "list_push",
     "data_view_check_index", "data_view_column", "data_view_len",
