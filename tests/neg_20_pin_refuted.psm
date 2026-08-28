@@ -4,10 +4,10 @@
 // thing AIF reports. This value is returned, so its escape is Caller and T1 is
 // unreachable; the analysis proved it rather than ran out of budget.
 import std.io
-extern fn str_concat(s1: String, s2: String) -> String
+import std.string
 
 fn escapes() -> String {
-    let pin(T1) s = str_concat("ab", "cd")
+    let pin(T1) s = strConcat("ab", "cd")
     return s
 }
 

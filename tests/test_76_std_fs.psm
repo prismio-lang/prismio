@@ -26,14 +26,26 @@ fn fail(message: String) -> Int {
 fn main() -> Int {
     // --- paths --------------------------------------------------------------
 
-    let joined = joinPath("/a/b", "c.psm")
+    // The directory is built with joinPath rather than written as a literal,
+    // because join_path **normalises separators to the host's** -- including any
+    // the caller embedded. A literal "/a/b" comes back as "\a\b" on Windows, so
+    // `strStartsWith(joined, "/a/b")` failed there while passing everywhere else.
+    // That was a wrong assertion rather than a wrong join: this asks for the
+    // round trip, which is the property that actually has to hold on every host.
+    let dir = joinPath("a", "b")
+    let joined = joinPath(dir, "c.psm")
     if (strContains(joined, "c.psm") == false) {
         return fail("joinPath should end with the file name")
     }
-    if (strStartsWith(joined, "/a/b") == false) {
+    if (strStartsWith(joined, dir) == false) {
         return fail("joinPath should begin with the directory")
     }
+    if (strEquals(directoryOf(joined), dir) == false) {
+        return fail("directoryOf should undo joinPath")
+    }
 
+    // A POSIX separator is understood on every host: get_directory scans for
+    // both '/' and '\\' deliberately, so this stays a literal.
     let parent = directoryOf("/a/b/c.psm")
     if (strEquals(parent, "/a/b") == false) {
         return fail("directoryOf should drop the final component and the separator")

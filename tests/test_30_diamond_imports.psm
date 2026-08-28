@@ -15,6 +15,7 @@
 import std.io
 import diamond_left
 import diamond_right
+import std.string
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -35,7 +36,7 @@ fn main() -> Int {
         return fail("right_value should reach the same shared_double")
     }
 
-    if (str_equals("abcd", "abcd") != 1) {
+    if (strEquals("abcd", "abcd") == false) {
         return fail("extern declared in three modules should collapse to one")
     }
 

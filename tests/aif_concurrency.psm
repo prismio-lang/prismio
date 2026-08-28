@@ -29,6 +29,7 @@
 // test_48's header measures the same cliff for the same reason.
 
 import std.io
+import std.string
 struct Job {
     lo: Int,
     hi: Int
@@ -39,7 +40,6 @@ struct Report {
     total: Int
 }
 
-extern fn str_concat(s1: String, s2: String) -> String
 extern fn cli_arg(index: Int) -> String
 
 // A static root, in the only form this language has one: an FFI callee that

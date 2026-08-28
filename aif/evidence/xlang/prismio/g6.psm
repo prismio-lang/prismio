@@ -14,6 +14,18 @@
 // is deliberately kept out of the frame samples: it is 1 event per 100 ticks and
 // would land squarely on p99, describing the rebuild rather than the frame.
 
+// v0.1 §4: written in the language as it now is. The workload functions are an
+// `impl` block on their receiver and the call sites use method syntax; helpers
+// nothing outside this file calls are `private`. Neither changes what is measured:
+// an `impl` block is a *naming* construct -- `x.f(a)` is the call `f(x, a)` after
+// the checker's rewrite -- and `private` is a resolution-time check. Verified by the
+// emitted __TEXT,__text being byte-identical to the pre-rewrite program, with the
+// checksums unchanged.
+//
+// Declaration order is preserved deliberately. Moving a function into an earlier
+// `impl` block changes emission order and with it the generated code: g5 came back
+// DIFFERS on the first attempt for exactly that reason, with its checksums intact.
+
 import std.io
 import g6_engine
 
@@ -44,7 +56,7 @@ struct Order {
     priority: Int
 }
 
-fn make_squad(team: Int, rx: Float, ry: Float) -> Squad {
+private fn make_squad(team: Int, rx: Float, ry: Float) -> Squad {
     let m: List<Member> = list_new()
     return Squad {
         members: m,
@@ -56,76 +68,79 @@ fn make_squad(team: Int, rx: Float, ry: Float) -> Squad {
 }
 
 // Gameplay creates entities through the engine and keeps only handles.
-fn recruit(w: World, s: Squad, count: Int) {
-    let mut i = 0
-    let mut f = 0.0
-    while (i < count) {
-        let h = world_spawn(w, s.rally_x + f, s.rally_y + f, s.team)
-        list_push(s.members, Member { actor: h, role: 0, kills: 0 })
-        f = f + 2.0
-        i = i + 1
-    }
-}
-
-// Per-tick transient allocation: build an order list, consume it, discard it.
-// Nothing here outlives the tick.
-fn plan_orders(w: World, s: Squad) -> List<Order> {
-    let mut orders: List<Order> = list_new()
-    let n = list_len(s.members)
-    let mut i = 0
-    while (i < n) {
-        let mem = list_get(s.members, i)
-        let h = mem.actor
-        let a = world_actor(w, h)
-        if (a.alive) {
-            let t = world_transform(w, h)
-            let dx = s.rally_x - t.x
-            let dy = s.rally_y - t.y
-            let mut pri = 1
-            if (a.health < 50) {
-                pri = 3
-            }
-            list_push(orders, Order { target: h, dx: dx, dy: dy, priority: pri })
+impl World {
+    fn recruit(self, s: Squad, count: Int) {
+        let mut i = 0
+        let mut f = 0.0
+        while (i < count) {
+            let h = world_spawn(self, s.rally_x + f, s.rally_y + f, s.team)
+            list_push(s.members, Member { actor: h, role: 0, kills: 0 })
+            f = f + 2.0
+            i = i + 1
         }
-        i = i + 1
     }
-    return orders
-}
 
-fn apply_orders(w: World, orders: List<Order>, speed: Float) -> Int {
-    let n = list_len(orders)
-    let mut applied = 0
-    let mut i = 0
-    while (i < n) {
-        let o = list_get(orders, i)
-        world_set_velocity(w, o.target, o.dx * speed, o.dy * speed)
-        applied = applied + 1
-        i = i + 1
-    }
-    return applied
-}
-
-fn resolve_combat(w: World, a: Squad, b: Squad) -> Int {
-    let na = list_len(a.members)
-    let nb = list_len(b.members)
-    let mut kills = 0
-    let mut i = 0
-    while (i < na and i < nb) {
-        let am = list_get(a.members, i)
-        let bm = list_get(b.members, i)
-        let att = world_actor(w, am.actor)
-        if (att.alive) {
-            if (world_damage(w, bm.actor, 7)) {
-                am.kills = am.kills + 1
-                kills = kills + 1
+    // Per-tick transient allocation: build an order list, consume it, discard it.
+    // Nothing here outlives the tick.
+    fn plan_orders(self, s: Squad) -> List<Order> {
+        let mut orders: List<Order> = list_new()
+        let n = list_len(s.members)
+        let mut i = 0
+        while (i < n) {
+            let mem = list_get(s.members, i)
+            let h = mem.actor
+            let a = world_actor(self, h)
+            if (a.alive) {
+                let t = world_transform(self, h)
+                let dx = s.rally_x - t.x
+                let dy = s.rally_y - t.y
+                let mut pri = 1
+                if (a.health < 50) {
+                    pri = 3
+                }
+                list_push(orders, Order { target: h, dx: dx, dy: dy, priority: pri })
             }
+            i = i + 1
         }
-        i = i + 1
+        return orders
     }
-    if (kills > 0) {
-        b.morale = b.morale - kills
+
+    fn apply_orders(self, orders: List<Order>, speed: Float) -> Int {
+        let n = list_len(orders)
+        let mut applied = 0
+        let mut i = 0
+        while (i < n) {
+            let o = list_get(orders, i)
+            world_set_velocity(self, o.target, o.dx * speed, o.dy * speed)
+            applied = applied + 1
+            i = i + 1
+        }
+        return applied
     }
-    return kills
+
+    fn resolve_combat(self, a: Squad, b: Squad) -> Int {
+        let na = list_len(a.members)
+        let nb = list_len(b.members)
+        let mut kills = 0
+        let mut i = 0
+        while (i < na and i < nb) {
+            let am = list_get(a.members, i)
+            let bm = list_get(b.members, i)
+            let att = world_actor(self, am.actor)
+            if (att.alive) {
+                if (world_damage(self, bm.actor, 7)) {
+                    am.kills = am.kills + 1
+                    kills = kills + 1
+                }
+            }
+            i = i + 1
+        }
+        if (kills > 0) {
+            b.morale = b.morale - kills
+        }
+        return kills
+    }
+
 }
 
 fn main() -> Int {
@@ -151,18 +166,18 @@ fn main() -> Int {
         let w = world_create()
         let red = make_squad(0, 0.0, 0.0)
         let blue = make_squad(1, 100.0, 100.0)
-        recruit(w, red, 400)
-        recruit(w, blue, 400)
+        w.recruit(red, 400)
+        w.recruit(blue, 400)
 
         let mut tick = 0
         while (tick < ticks) {
             let t0 = clock_gettime_nsec_np(4)
-            let red_orders = plan_orders(w, red)
-            let blue_orders = plan_orders(w, blue)
-            let applied_r = apply_orders(w, red_orders, 1.0)
-            let applied_b = apply_orders(w, blue_orders, 1.0)
+            let red_orders = w.plan_orders(red)
+            let blue_orders = w.plan_orders(blue)
+            let applied_r = w.apply_orders(red_orders, 1.0)
+            let applied_b = w.apply_orders(blue_orders, 1.0)
             world_step(w, dt)
-            let kills = resolve_combat(w, red, blue)
+            let kills = w.resolve_combat(red, blue)
             let t1 = clock_gettime_nsec_np(4)
 
             total_orders = total_orders + applied_r + applied_b

@@ -19,7 +19,7 @@
 // paths which must NOT free still do not.
 
 import std.io
-extern fn str_concat(s1: String, s2: String) -> String
+import std.string
 
 struct Item {
     value: Int

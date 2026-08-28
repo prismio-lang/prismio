@@ -1,6 +1,6 @@
 import diamond_shared
+import std.string
 
-extern fn str_equals(a: String borrow, b: String borrow) -> Int
 
 fn right_value(x: Int) -> Int {
     return shared_double(x) + 2

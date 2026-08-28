@@ -18,17 +18,20 @@
 // length the caller already has. The pair prices the superlinear term on its
 // own, the way rust/g7_owned.rs prices the copy on its own.
 
+// **Now identical to g7.psm.** Both called C -- this one `str_substring`, g7
+// `str_slice` -- and the pair existed to price those two against each other. On
+// the native `strSubstring` they are one program. Kept for now so the change is
+// visible in review rather than as a deletion.
+//
 import std.io
+import std.string
 extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
-extern fn str_concat(s1: String, s2: String) -> String
-extern fn str_substring(s: String, start: Int, length: Int) -> String
 // The byte builtin, not str_char_at: the latter calls strlen on every read, which
 // makes any scan quadratic. src/lexer/scanner.psm holds the length in the
 // Lexer struct and bound-checks against it for exactly this reason, and a
 // benchmark that used str_char_at would be measuring strlen -- 22.8 ms per
 // pass over 21 KB, against 0.6 ms once the length is carried.
-extern fn str_equals(s1: String, s2: String) -> Int
 
 // Token kinds, as small integers -- the checksum mixes them in, so a port that
 // classified differently could not agree.
@@ -69,15 +72,15 @@ fn buildSource(lines: Int) -> String {
     let mut i = 0
     while (i < lines) {
         let n = i % 97
-        out = str_concat(out, "let value_")
-        out = str_concat(out, intToStr(n))
-        out = str_concat(out, " = alpha_")
-        out = str_concat(out, intToStr(n))
-        out = str_concat(out, " + beta * ")
-        out = str_concat(out, intToStr(n * 3))
-        out = str_concat(out, " - gamma_")
-        out = str_concat(out, intToStr(n))
-        out = str_concat(out, " / 7 ;\n")
+        out = strConcat(out, "let value_")
+        out = strConcat(out, intToStr(n))
+        out = strConcat(out, " = alpha_")
+        out = strConcat(out, intToStr(n))
+        out = strConcat(out, " + beta * ")
+        out = strConcat(out, intToStr(n * 3))
+        out = strConcat(out, " - gamma_")
+        out = strConcat(out, intToStr(n))
+        out = strConcat(out, " / 7 ;\n")
         i = i + 1
     }
     return out
@@ -89,16 +92,16 @@ fn intToStr(n: Int) -> String {
     let mut v = n
     while (v > 0) {
         let d = v % 10
-        if (d == 0) { digits = str_concat("0", digits) }
-        if (d == 1) { digits = str_concat("1", digits) }
-        if (d == 2) { digits = str_concat("2", digits) }
-        if (d == 3) { digits = str_concat("3", digits) }
-        if (d == 4) { digits = str_concat("4", digits) }
-        if (d == 5) { digits = str_concat("5", digits) }
-        if (d == 6) { digits = str_concat("6", digits) }
-        if (d == 7) { digits = str_concat("7", digits) }
-        if (d == 8) { digits = str_concat("8", digits) }
-        if (d == 9) { digits = str_concat("9", digits) }
+        if (d == 0) { digits = strConcat("0", digits) }
+        if (d == 1) { digits = strConcat("1", digits) }
+        if (d == 2) { digits = strConcat("2", digits) }
+        if (d == 3) { digits = strConcat("3", digits) }
+        if (d == 4) { digits = strConcat("4", digits) }
+        if (d == 5) { digits = strConcat("5", digits) }
+        if (d == 6) { digits = strConcat("6", digits) }
+        if (d == 7) { digits = strConcat("7", digits) }
+        if (d == 8) { digits = strConcat("8", digits) }
+        if (d == 9) { digits = strConcat("9", digits) }
         v = v / 10
     }
     return digits
@@ -149,9 +152,9 @@ fn tokenize(src: String, srcLen: Int) -> Int {
 
             // The line this benchmark exists for. One allocation and one copy
             // per token; `&src[start..pos]` in the Rust port.
-            let text = str_substring(src, start, pos - start)
+            let text = strSubstring(src, start, pos - start)
 
-            if (str_equals(text, "let") == 1) { keywords = keywords + 1 }
+            if (strEquals(text, "let")) { keywords = keywords + 1 }
             sum = sum + kind * (pos - start)
             count = count + 1
         }

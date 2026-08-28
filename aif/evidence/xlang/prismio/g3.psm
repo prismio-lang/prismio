@@ -5,6 +5,17 @@
 // propagation over it, so this program allocates nothing per frame -- it
 // measures how a retained tree is *traversed*, not how it is allocated.
 
+// v0.1 §4: written in the language as it now is -- method-call syntax at the call
+// sites, and `private` on the helpers, since nothing outside this file calls them.
+// Neither changes what is measured: `x.f(a)` *is* the call `f(x, a)` after the
+// checker's rewrite, and `private` is a resolution-time check. Verified by the
+// emitted __TEXT,__text being byte-identical to the pre-rewrite program, with the
+// checksums unchanged.
+//
+// The receivers here are `List<...>`, so an `impl` block is not available: a
+// generic `impl` is rejected with "write the methods as generic free functions",
+// which is exactly what these are.
+
 import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
@@ -47,7 +58,7 @@ fn unit_bounds() -> Bounds {
     }
 }
 
-fn make_node(parent: Int, ox: Float) -> Node {
+private fn make_node(parent: Int, ox: Float) -> Node {
     let mut t = identity_transform()
     t.px = ox
     return Node {
@@ -63,7 +74,7 @@ fn make_node(parent: Int, ox: Float) -> Node {
 
 // Links `child` under `parent` by walking the sibling chain. Pure index work --
 // no reference is created, so nothing here can raise an aliasing fact.
-fn link_child(nodes: List<Node>, parent_idx: Int, child_idx: Int) {
+private fn link_child(nodes: List<Node>, parent_idx: Int, child_idx: Int) {
     let p = list_get(nodes, parent_idx)
     if (p.first_child < 0) {
         p.first_child = child_idx
@@ -82,7 +93,7 @@ fn link_child(nodes: List<Node>, parent_idx: Int, child_idx: Int) {
     }
 }
 
-fn build_hierarchy(breadth: Int, depth: Int) -> List<Node> {
+private fn build_hierarchy(breadth: Int, depth: Int) -> List<Node> {
     let mut nodes: List<Node> = list_new()
     list_push(nodes, make_node(0 - 1, 0.0))
 
@@ -100,7 +111,7 @@ fn build_hierarchy(breadth: Int, depth: Int) -> List<Node> {
             while (b < breadth) {
                 let child_idx = list_len(nodes)
                 list_push(nodes, make_node(parent_idx, ox))
-                link_child(nodes, parent_idx, child_idx)
+                nodes.link_child(parent_idx, child_idx)
                 ox = ox + 1.0
                 b = b + 1
             }
@@ -114,7 +125,7 @@ fn build_hierarchy(breadth: Int, depth: Int) -> List<Node> {
 }
 
 // Depth-first world-transform propagation over the index hierarchy.
-fn propagate(nodes: List<Node>, idx: Int, ox: Float, oy: Float, oz: Float) -> Int {
+private fn propagate(nodes: List<Node>, idx: Int, ox: Float, oy: Float, oz: Float) -> Int {
     let n = list_get(nodes, idx)
     n.world.px = n.local.px + ox
     n.world.py = n.local.py + oy
@@ -128,7 +139,7 @@ fn propagate(nodes: List<Node>, idx: Int, ox: Float, oy: Float, oz: Float) -> In
     let mut visited = 1
     let mut c = n.first_child
     while (c >= 0) {
-        visited = visited + propagate(nodes, c, wx, wy, wz)
+        visited = visited + nodes.propagate(c, wx, wy, wz)
         let cn = list_get(nodes, c)
         c = cn.next_sibling
     }
@@ -136,7 +147,7 @@ fn propagate(nodes: List<Node>, idx: Int, ox: Float, oy: Float, oz: Float) -> In
 }
 
 // Reads 6 of 19 scalar fields -- the hot/cold split case for the layout model.
-fn count_visible(nodes: List<Node>, limit: Float) -> Int {
+private fn count_visible(nodes: List<Node>, limit: Float) -> Int {
     let total = list_len(nodes)
     let mut visible = 0
     let mut i = 0
@@ -166,8 +177,8 @@ fn main() -> Int {
     let mut frame = 0
     while (frame < frames) {
         let t0 = clock_gettime_nsec_np(4)
-        visited = propagate(nodes, 0, 0.0, 0.0, 0.0)
-        visible = count_visible(nodes, 1000.0)
+        visited = nodes.propagate(0, 0.0, 0.0, 0.0)
+        visible = nodes.count_visible(1000.0)
         let t1 = clock_gettime_nsec_np(4)
         list_set(samples, frame, (t1 - t0) as Int)
         frame = frame + 1

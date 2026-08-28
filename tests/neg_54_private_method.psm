@@ -1,0 +1,8 @@
+// expect-error: `doubled` is private to the file that declares it
+import std.io
+import visibility.alpha
+
+fn main() -> Int {
+    let c = Counter { n: 2 }
+    return c.doubled()
+}

@@ -7,6 +7,17 @@
 // command list and ~501 DrawCmd objects and throws all of it away, so if a
 // memory model produces a hitch, it produces it here.
 
+// v0.1 §4: written in the language as it now is -- method-call syntax at the call
+// sites, and `private` on the helpers, since nothing outside this file calls them.
+// Neither changes what is measured: `x.f(a)` *is* the call `f(x, a)` after the
+// checker's rewrite, and `private` is a resolution-time check. Verified by the
+// emitted __TEXT,__text being byte-identical to the pre-rewrite program, with the
+// checksums unchanged.
+//
+// The receivers here are `List<...>`, so an `impl` block is not available: a
+// generic `impl` is rejected with "write the methods as generic free functions",
+// which is exactly what these are.
+
 import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
@@ -31,7 +42,7 @@ struct Stats {
     culled: Int
 }
 
-fn build_scene(count: Int) -> List<Renderable> {
+private fn build_scene(count: Int) -> List<Renderable> {
     let mut scene: List<Renderable> = list_new()
     let mut i = 0
     let mut f = 0.0
@@ -52,7 +63,7 @@ fn build_scene(count: Int) -> List<Renderable> {
 
 // Allocates a fresh command list every call. Returns it, so it escapes to the
 // caller -- but only as far as the caller's frame scope.
-fn cull(scene: List<Renderable>, near: Float, far: Float) -> List<DrawCmd> {
+private fn cull(scene: List<Renderable>, near: Float, far: Float) -> List<DrawCmd> {
     let mut cmds: List<DrawCmd> = list_new()
     let n = list_len(scene)
     let mut i = 0
@@ -72,7 +83,7 @@ fn cull(scene: List<Renderable>, near: Float, far: Float) -> List<DrawCmd> {
 }
 
 // Consumes the batch without retaining anything from it. A borrow, in FFI terms.
-fn submit(cmds: List<DrawCmd>) -> Int {
+private fn submit(cmds: List<DrawCmd>) -> Int {
     let n = list_len(cmds)
     let mut drawn = 0
     let mut i = 0
@@ -104,8 +115,8 @@ fn main() -> Int {
         let t0 = clock_gettime_nsec_np(4)
         // Everything below this line is transient: allocated this frame,
         // dead by the next. The whole body is one implicit region.
-        let cmds = cull(scene, 0.0, 500.0)
-        let drawn = submit(cmds)
+        let cmds = scene.cull(0.0, 500.0)
+        let drawn = cmds.submit()
         let t1 = clock_gettime_nsec_np(4)
         totals.submitted = totals.submitted + drawn
         totals.culled = totals.culled + (1000 - drawn)

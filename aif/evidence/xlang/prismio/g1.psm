@@ -8,6 +8,17 @@
 // measured loop, so list_set inside the loop reallocates nothing and the frame
 // times carry no allocation of the harness's own.
 //
+// v0.1 §4: written in the language as it now is. The workload calls take method
+// syntax -- `ps.integrate(dt)` -- and the helpers are `private`, since nothing
+// outside this file calls them. Neither changes what is measured: a method call
+// *is* the free call `integrate(ps, dt)` after the checker's rewrite, and `private`
+// is a resolution-time check. The proof is that the emitted __TEXT,__text is
+// byte-identical to the pre-rewrite program, and the checksums below are unchanged.
+//
+// An `impl` block is not available for these: the receiver is `List<Particle>`, and
+// a generic `impl` is rejected with "write the methods as generic free functions",
+// which is what these are.
+//
 // clock_gettime_nsec_np(4) is CLOCK_MONOTONIC_RAW. It is declared here rather
 // than added to the runtime because this session is not permitted a compiler
 // change, and an extern declaration is a language feature, not one.
@@ -30,7 +41,7 @@ struct Particle {
     size: Float
 }
 
-fn spawn_particle(f: Float) -> Particle {
+private fn spawn_particle(f: Float) -> Particle {
     return Particle {
         px: f,
         py: f,
@@ -47,7 +58,7 @@ fn spawn_particle(f: Float) -> Particle {
     }
 }
 
-fn build_system(count: Int) -> List<Particle> {
+private fn build_system(count: Int) -> List<Particle> {
     let mut ps: List<Particle> = list_new()
     let mut i = 0
     let mut f = 0.0
@@ -60,7 +71,7 @@ fn build_system(count: Int) -> List<Particle> {
 }
 
 // Touches 6 of 12 fields: position and velocity only.
-fn integrate(ps: List<Particle>, dt: Float) {
+private fn integrate(ps: List<Particle>, dt: Float) {
     let n = list_len(ps)
     let mut i = 0
     while (i < n) {
@@ -73,7 +84,7 @@ fn integrate(ps: List<Particle>, dt: Float) {
 }
 
 // Touches 2 of 12 fields. The strongest SoA case in the corpus.
-fn fade(ps: List<Particle>, dt: Float) {
+private fn fade(ps: List<Particle>, dt: Float) {
     let n = list_len(ps)
     let mut i = 0
     while (i < n) {
@@ -85,7 +96,7 @@ fn fade(ps: List<Particle>, dt: Float) {
 }
 
 // Reads 1 of 12 fields to produce a scalar -- the pure-streaming case.
-fn count_alive(ps: List<Particle>) -> Int {
+private fn count_alive(ps: List<Particle>) -> Int {
     let n = list_len(ps)
     let mut alive = 0
     let mut i = 0
@@ -101,7 +112,7 @@ fn count_alive(ps: List<Particle>) -> Int {
 
 // A digest of the integration, not of the fade: `alive` alone would be the same
 // number whether or not any position was ever updated.
-fn count_beyond(ps: List<Particle>, limit: Float) -> Int {
+private fn count_beyond(ps: List<Particle>, limit: Float) -> Int {
     let n = list_len(ps)
     let mut beyond = 0
     let mut i = 0
@@ -130,17 +141,17 @@ fn main() -> Int {
     let mut frame = 0
     while (frame < frames) {
         let t0 = clock_gettime_nsec_np(4)
-        integrate(ps, dt)
-        fade(ps, dt)
+        ps.integrate(dt)
+        ps.fade(dt)
         let t1 = clock_gettime_nsec_np(4)
         list_set(samples, frame, (t1 - t0) as Int)
         frame = frame + 1
     }
 
     print("checksum alive ")
-    println(count_alive(ps))
+    println(ps.count_alive())
     print("checksum beyond ")
-    println(count_beyond(ps, 1000.5))
+    println(ps.count_beyond(1000.5))
 
     let mut j = 0
     while (j < frames) {

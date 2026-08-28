@@ -7,6 +7,15 @@
 //
 // The expected tiers are asserted in tests/test_runner.py. Editing this file
 // means editing those.
+//
+// **The `str_*` externs here are deliberate and must not be migrated to
+// `std.string`.** They are the instrument, not a leftover. An opaque `extern fn`
+// gives every call site its own allocation site; native `std` routes them all
+// through the one `str_with_capacity` inside `strConcat`, so each function here
+// stops having a site of its own and the per-function tiers this fixture asserts
+// collapse into one shared record. Migrating it reported
+// `tier_one_string__Void#0: no manifest record` -- the site had not moved tier,
+// it had ceased to exist separately.
 
 import std.io
 struct Small {
