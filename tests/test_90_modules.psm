@@ -13,6 +13,8 @@
 import std.io
 import std.string
 import utils
+import visibility.alpha
+import visibility.beta
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -36,16 +38,34 @@ fn main() -> Int {
     if (utils.multiply(4, 7) != 28) { return fail("utils.multiply") }
 
     // A std module qualifies the same way -- there is nothing special about the
-    // standard library here, only about where a file lives.
-    if (strEquals(string.strTrim("  x  "), "x") == false) { return fail("string.strTrim") }
-    if (string.strLength("abcd") != 4) { return fail("string.strLength") }
+    // standard library here, only about the name it was imported by. The full
+    // import path is the qualifier: the leaf alone is ambiguous across
+    // `src/{ir,parse}/expr.psm`, and it is not even stable, because the installed
+    // layout stores `std/string.psm` at `stdlib/string.psm`.
+    if (strEquals(std.string.strTrim("  x  "), "x") == false) { return fail("std.string.strTrim") }
+    if (std.string.strLength("abcd") != 4) { return fail("std.string.strLength") }
 
     // `priv` is visible inside its own file: `visibleScale` is declared beside
     // `hiddenScale` and calls it.
     if (visibleScale(5) != 15) { return fail("a private function called from its own module") }
 
+    // The three visibility levels. `public` is the default made explicit, so it
+    // is reachable from anywhere; `private` is reachable only inside the file
+    // that declares it, which is why this asserts through a wrapper; `internal`
+    // is reachable from a sibling module in the same package and not from here.
+    // neg_53 is the other half of that last one.
+    if (visibilityPublic(21) != 42) { return fail("public") }
+    if (visibilityUsesOwnPrivate(1) != 2) { return fail("private, from inside its own file") }
+    if (visibilityFromSibling(5) != 105) { return fail("internal, from a sibling in its package") }
+
     // A qualified call still resolves through a chain of them.
     if (utils.add(utils.multiply(2, 3), 1) != 7) { return fail("nested qualified calls") }
+
+    // Visibility inside an `impl` block.
+    let counter = Counter { n: 5 }
+    if (counter.value() != 5) { return fail("a public method") }
+    if (counter.quadrupled() != 20) { return fail("a private method used inside its own file") }
+    if (visibilityMethodFromSibling(4) != 12) { return fail("an internal method from a sibling module") }
 
     println("test_90 ok")
     return 0

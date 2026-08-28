@@ -1,0 +1,38 @@
+// v0.1 3.5 -- the three visibility levels, seen from inside their own file.
+//
+// `internal` is the level that only became expressible once a qualifier was an
+// import path: "the same package" is that path without its last segment, and the
+// file leaf it replaced carried no package to compare.
+
+public fn visibilityPublic(x: Int) -> Int { return x * 2 }
+
+private fn visibilityFileOnly(x: Int) -> Int { return x + 1 }
+
+internal fn visibilityPackageOnly(x: Int) -> Int { return x + 100 }
+
+// `private` is visible inside its own file, which is what distinguishes it from
+// being unreachable everywhere.
+fn visibilityUsesOwnPrivate(x: Int) -> Int { return visibilityFileOnly(x) }
+
+// Visibility inside an `impl` block. Before this, the two features did not
+// compose: `impl` is the natural home for the helpers most worth marking
+// `private`, and marking one meant giving up the block. A method *is* a free
+// function whose first parameter is the receiver, so the marker means the same
+// thing here -- the declaring file, or its package.
+struct Counter {
+    n: Int
+}
+
+impl Counter {
+    fn value(self) -> Int { return self.n }
+
+    // Reachable from this file only.
+    private fn doubled(self) -> Int { return self.n * 2 }
+
+    // Reachable from anywhere in the `visibility` package.
+    internal fn tripled(self) -> Int { return self.n * 3 }
+
+    // Uses its own private method, which is what makes `private` different from
+    // unreachable.
+    fn quadrupled(self) -> Int { return self.doubled() + self.doubled() }
+}

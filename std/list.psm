@@ -19,9 +19,9 @@ import std.copy
 // partition bookkeeping. 12 is the conventional cut and is not measured here --
 // the corpus has no sort in it, so tuning the threshold would be tuning against
 // nothing.
-priv fn listSortCutoff() -> Int { return 12 }
+private fn listSortCutoff() -> Int { return 12 }
 
-priv fn listSwap<T>(items: List<T>, i: Int, j: Int) {
+private fn listSwap<T>(items: List<T>, i: Int, j: Int) {
     if (i == j) { return }
     // Read both, then write both. `list_set` transfers ownership in and releases
     // nothing, so writing before both are read would leave one slot naming an
@@ -32,13 +32,13 @@ priv fn listSwap<T>(items: List<T>, i: Int, j: Int) {
     list_set(items, j, a)
 }
 
-priv fn listOrderPair<T, F>(items: List<T>, i: Int, j: Int, order: F) {
+private fn listOrderPair<T, F>(items: List<T>, i: Int, j: Int, order: F) {
     let a = list_get(items, i)
     let b = list_get(items, j)
     if (order(a, b) > 0) { listSwap(items, i, j) }
 }
 
-priv fn listInsertionSort<T, F>(items: List<T>, low: Int, high: Int, order: F) {
+private fn listInsertionSort<T, F>(items: List<T>, low: Int, high: Int, order: F) {
     let mut i = low + 1
     while (i <= high) {
         let mut j = i
@@ -66,7 +66,7 @@ priv fn listInsertionSort<T, F>(items: List<T>, low: Int, high: Int, order: F) {
 // Recursing on the smaller side and looping on the larger bounds stack depth at
 // O(log n) whatever the input does, which is what keeps an adversarial ordering
 // from being a stack overflow rather than merely slow.
-priv fn listSortRange<T, F>(items: List<T>, low: Int, high: Int, order: F) {
+private fn listSortRange<T, F>(items: List<T>, low: Int, high: Int, order: F) {
     let mut lo = low
     let mut hi = high
     while (lo < hi) {

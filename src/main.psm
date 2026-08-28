@@ -103,7 +103,7 @@ let mut mergeTailPtr: Ptr
 // treats them as distinct (and generateModule skips the `declare` when a real
 // `define` exists).
 
-fn sameTopLevelName(a: ASTNode, b: ASTNode) -> Bool {
+private fn sameTopLevelName(a: ASTNode, b: ASTNode) -> Bool {
     if (a.kind != b.kind) { return false }
     if (strEquals(a.s1, b.s1) == false) { return false }
     if (a.kind == NodeKind.FUNCTION) {
@@ -116,7 +116,7 @@ fn sameTopLevelName(a: ASTNode, b: ASTNode) -> Bool {
 // merges, rather than rescanning everything merged so far. The scan was
 // quadratic in the number of declarations and ran before sema -- this compiler's
 // own source merges about 1 500 of them.
-fn hasNamedTopLevel(module: ASTNode, stmt: ASTNode) -> Bool {
+private fn hasNamedTopLevel(module: ASTNode, stmt: ASTNode) -> Bool {
     if (isNamedTopLevel(stmt) == false) {
         return false
     }
@@ -134,14 +134,14 @@ fn hasNamedTopLevel(module: ASTNode, stmt: ASTNode) -> Bool {
     return false
 }
 
-fn parseSource(content: String, file: Int) -> ASTNode {
+private fn parseSource(content: String, file: Int) -> ASTNode {
     let lex = createLexer(content, file)
     let headToken = lexAllTokens(lex)
     let p = parserCreate(headToken)
     return parseModule(p)
 }
 
-fn appendStatement(module: ASTNode, stmt: ASTNode) {
+private fn appendStatement(module: ASTNode, stmt: ASTNode) {
     if (hasNamedTopLevel(module, stmt)) {
         return
     }
@@ -180,7 +180,7 @@ fn appendStatement(module: ASTNode, stmt: ASTNode) {
 //
 // '/' is emitted unconditionally because the frontend has no way to ask what the
 // host's separator is; join_path normalises the joined result.
-fn moduleRelativePath(moduleName: String) -> String {
+private fn moduleRelativePath(moduleName: String) -> String {
     let mut relative = ""
     let mut i = 0
     let length = __builtin_string_len(moduleName)
@@ -200,7 +200,7 @@ fn moduleRelativePath(moduleName: String) -> String {
 // compiled, not against the importing module -- so a module path means the same
 // thing written anywhere in the tree. The `.` case exists because there is
 // nothing to join to.
-fn resolveUnder(baseDir: String, relative: String) -> String {
+private fn resolveUnder(baseDir: String, relative: String) -> String {
     if (strEquals(baseDir, ".")) {
         return relative
     }
@@ -215,26 +215,26 @@ fn resolveUnder(baseDir: String, relative: String) -> String {
 // relative to the entry source exactly as before.
 
 
-fn importBaseDir(baseDir: String, moduleName: String) -> String {
+private fn importBaseDir(baseDir: String, moduleName: String) -> String {
     if (strEquals(moduleName, "ums") or strStartsWith(moduleName, "ums.")) {
         return get_directory(baseDir)
     }
     return baseDir
 }
 
-fn joinImportPath(baseDir: String, moduleName: String) -> String {
+private fn joinImportPath(baseDir: String, moduleName: String) -> String {
     return resolveUnder(importBaseDir(baseDir, moduleName),
                         strConcat(moduleRelativePath(moduleName), ".psm"))
 }
 
-fn joinImportDir(baseDir: String, packageName: String) -> String {
+private fn joinImportDir(baseDir: String, packageName: String) -> String {
     return resolveUnder(importBaseDir(baseDir, packageName), moduleRelativePath(packageName))
 }
 
 // Memo key for an already-resolved module. Paths are wrapped in "|" so that a
 // substring search can never match a partial path (e.g. "src\ir.psm" must not be
 // found inside "src\dir.psm").
-fn importMemoKey(importPath: String) -> String {
+private fn importMemoKey(importPath: String) -> String {
     return strConcat(strConcat("|", importPath), "|")
 }
 
@@ -249,7 +249,7 @@ fn importMemoKey(importPath: String) -> String {
 // forever.
 //
 // `site` is the import that asked, and is only used to place the diagnostic.
-fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
+private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
                       baseDir: String, visited: String) -> String {
     let importPath = resolveImportPath(baseDir, moduleName)
     let key = importMemoKey(importPath)
@@ -272,6 +272,13 @@ fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     // resolves back to its text, long after the merge has erased which module a
     // declaration came from.
     let file = diag_add_file(importPath, content)
+    // ...and the name it was reached by, which the id alone cannot recover: the
+    // installed layout stores `std/string.psm` at `stdlib/string.psm`, so a
+    // qualifier derived from the path would differ between a checkout and an
+    // install. Every module arrives here with its logical path already built --
+    // mergePackageImport composes `pkg.leaf` before calling -- so this one line
+    // covers named and package imports both.
+    diag_set_file_module(file, moduleName)
     return mergeModuleImports(merged, parseSource(content, file), baseDir, seen)
 }
 
@@ -282,7 +289,7 @@ fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
 // directory with no modules in it is an error rather than a no-op, because the
 // only ways to reach it are a typo in the package name and a package that has
 // been emptied, and both are worth hearing about.
-fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
+private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
                         visited: String) -> String {
     let dirPath = joinImportDir(baseDir, site.s1)
     let listing = list_modules(dirPath)
@@ -320,7 +327,7 @@ fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
 // accumulator and resolving each import it carries. `visited` threads the set of
 // already-resolved paths through the recursion and is returned so sibling
 // imports see what earlier ones resolved.
-fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited: String) -> String {
+private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited: String) -> String {
     let mut seen = visited
 
     let mut stmtPtr = module.child1
@@ -352,7 +359,7 @@ fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited
 //
 // `leaf` is the file name, because the installed layout flattens the package:
 // `std/map.psm` in a checkout is `stdlib/map.psm` once installed.
-fn standardModulePath(baseDir: String, leaf: String) -> String {
+private fn standardModulePath(baseDir: String, leaf: String) -> String {
     let besideEntry = join_path(baseDir, strConcat("std/", leaf))
     if (file_exists(besideEntry) == 1) { return besideEntry }
 
@@ -382,7 +389,7 @@ fn standardModulePath(baseDir: String, leaf: String) -> String {
 // Each branch rebuilds the path rather than binding it once. Strings are affine,
 // so a binding tested with file_exists and then returned is named twice; a fresh
 // temporary per use is a str_concat and avoids the question.
-fn resolveImportPath(baseDir: String, moduleName: String) -> String {
+private fn resolveImportPath(baseDir: String, moduleName: String) -> String {
     if (file_exists(joinImportPath(baseDir, moduleName)) == 1) {
         return joinImportPath(baseDir, moduleName)
     }
@@ -399,7 +406,7 @@ fn resolveImportPath(baseDir: String, moduleName: String) -> String {
 // The entry file is marked resolved before the walk begins, so that a package
 // import naming the package it lives in cannot pull it in a second time and
 // duplicate every function it defines.
-fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNode {
+private fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNode {
     let merged = createNode(NodeKind.MODULE)
     // The index and the tail cache describe `merged`, so both start empty with
     // it. analyzeModule and generateModule rebuild the index from the finished
@@ -423,7 +430,7 @@ fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNod
     return merged
 }
 
-fn printUsage() {
+private fn printUsage() {
     println("Usage:")
     println("  prismio build [source.psm] [-o output.exe] [-g] [--verify]")
     println("                [--overflow-checks] [--target <triple>] [--sysroot <sdk>]")
@@ -473,7 +480,7 @@ fn printUsage() {
 // Returns false on a malformed value, and the caller turns that into an error
 // rather than a warning: a mistyped force that carried on would measure the argmin
 // twice and report it as two candidates.
-fn parseForceLayout(flag: String) -> Bool {
+private fn parseForceLayout(flag: String) -> Bool {
     let value = strSubstring(flag, 15, __builtin_string_len(flag) - 15)
     let colon = strIndexOf(value, ":")
     if (colon < 1) { return false }
@@ -497,7 +504,7 @@ fn parseForceLayout(flag: String) -> Bool {
 // A warning rather than an error because the same flag is legitimately passed to a
 // whole corpus by a search script, where most programs do not declare the type
 // being forced. The check that matters is that *nothing* matched silently.
-fn reportForcedLayouts() {
+private fn reportForcedLayouts() {
     let mut i = 0
     while (i < aif_layout_forced_count()) {
         if (aif_layout_force_applied(i) == 0) {
@@ -516,7 +523,7 @@ fn reportForcedLayouts() {
 // program being compiled would silently link a runtime that no longer matches the
 // code in front of you. Content hashes rather than timestamps, so a fresh checkout
 // or a file copy does not read as a change.
-fn checkRuntimeFreshness() {
+private fn checkRuntimeFreshness() {
     let installed = compiler_installed_runtime_hash()
     if (strEquals(installed, "")) {
         return
@@ -559,7 +566,7 @@ fn checkRuntimeFreshness() {
 // compiler uses -- and it silently reported every successful parse as a failure,
 // because a punned pointer compares as a string and an ASTNode begins with its
 // `kind`, of which MODULE is 0. See ast.psm.
-fn analyzedModule(path: String) -> ASTNode {
+private fn analyzedModule(path: String) -> ASTNode {
     let content = read_file(path)
     if (strEquals(content, "") and file_exists(path) == 0) {
         diag_error(strConcat("cannot read ", path))
@@ -594,7 +601,7 @@ fn analyzedModule(path: String) -> ASTNode {
 // Emits the post-sema AST as JSON. Sema has to have run: the dump carries each
 // node's resolved type, and without it the `ty` field would be empty on every
 // node.
-fn dumpAstCommand(path: String) -> Int {
+private fn dumpAstCommand(path: String) -> Int {
     let merged = analyzedModule(path)
     if (diag_error_count() > 0) {
         return 1
@@ -607,7 +614,7 @@ fn dumpAstCommand(path: String) -> Int {
 // The IDE-facing compile boundary: the complete frontend, with no AIF, IR,
 // native toolchain or output file. A successful JSON run still emits a summary,
 // which gives a long-lived client an explicit signal to clear stale diagnostics.
-fn checkCommand(path: String) -> Int {
+private fn checkCommand(path: String) -> Int {
     analyzedModule(path)
     diag_finish()
     if (diag_error_count() > 0) {
@@ -620,7 +627,7 @@ fn checkCommand(path: String) -> Int {
 // Produces no IR and touches no codegen, so it cannot change what `build`
 // generates -- which is the point at this stage: the tier distribution becomes
 // measurable before any of it is risked on the self-host.
-fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: Bool,
+private fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: Bool,
                budget: Int, why: String, layout: Bool) -> Int {
     let merged = analyzedModule(path)
     if (diag_error_count() > 0) {
@@ -679,7 +686,7 @@ fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: 
 // field order, no packing)", which is what a run with no profile loaded already
 // produces -- so the baseline is the absence of an input rather than a second
 // code path that has to be kept in step with the first.
-fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> String {
+private fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> String {
     let count = moduleWorkloadCount(module)
     if (count == 0) { return "" }
 
@@ -796,7 +803,7 @@ fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> 
 // durable artifact; this one exists only so the read cannot race, and it carries
 // this process's pid -- so no later build will ever clean it up and every
 // consumer of the path runWorkloadProfile returns has to.
-fn discardWorkloadProfile(profilePath: String) {
+private fn discardWorkloadProfile(profilePath: String) {
     if (strEquals(profilePath, "") == false) {
         delete_file(profilePath)
     }
@@ -808,7 +815,7 @@ fn discardWorkloadProfile(profilePath: String) {
 // `ir_reset` is the load-bearing one: the driver's generateModule filled the
 // struct registry and named every string global, and the real build's
 // generateModule would then skip the structs it thinks it has already emitted.
-fn endWorkloadPass(verifyMode: Bool) {
+private fn endWorkloadPass(verifyMode: Bool) {
     ir_reset()
     compiler_set_workload_mode(0)
     if (verifyMode) {
@@ -816,7 +823,7 @@ fn endWorkloadPass(verifyMode: Bool) {
     }
 }
 
-fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstrapMode: Bool,
+private fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstrapMode: Bool,
                   verifyMode: Bool, debugMode: Bool, debugInfo: Bool, optimized: Bool,
                   jitMode: Bool) -> Int {
     let mut outFile = ""
@@ -1037,10 +1044,30 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
 // and plans the project; the compiler keeps the one responsibility it already
 // owns: compiling each planned Prismio entry source. Future run/test/clean
 // commands should call the same UMS model instead of growing parallel CLI logic.
-fn buildUmsProject() -> Int {
+private fn buildUmsProject() -> Int {
     let workspace = umsLoadProject(".", "debug")
     if (workspace.valid == false) {
         umsDiagnosticsPrint(workspace.diagnostics)
+        return 1
+    }
+
+    // v0.1 3.7. Dependencies are resolved and recorded before a single target is
+    // compiled, because a build that half-succeeds and then reports an unresolved
+    // dependency has already written artifacts against a tree it could not
+    // describe.
+    //
+    // The lockfile is written **before** the failure check, not after it. A failed
+    // resolve is exactly the case a reader wants the file for -- it records what
+    // was asked for and that it did not resolve, which is the difference between
+    // "the lockfile is stale" and "the fetch has nothing behind it".
+    let resolveDiagnostics = umsDiagnostics()
+    let resolutions = umsResolveDependencies(workspace.project, resolveDiagnostics)
+    if (umsWriteLockfile(workspace.project, resolutions) == false) {
+        println("error: could not write the lockfile")
+        return 1
+    }
+    if (list_len(resolveDiagnostics) > 0) {
+        umsDiagnosticsPrint(resolveDiagnostics)
         return 1
     }
 

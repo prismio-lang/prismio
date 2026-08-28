@@ -163,7 +163,7 @@ fn strCompare(a: String, b: String) -> Int {
 // Copy `count` bytes between already-bounded ranges. Allocation deliberately
 // stays in each public producer: under the current ownership analysis a native
 // function that merely returns another function's allocation is a pass-through.
-priv fn strCopyRangeInto(out: String, outStart: Int, source: String, sourceStart: Int, count: Int) {
+private fn strCopyRangeInto(out: String, outStart: Int, source: String, sourceStart: Int, count: Int) {
     let mut i = 0
     while (i < count) {
         __builtin_string_put_byte(out, outStart + i, __builtin_string_byte_at(source, sourceStart + i))
@@ -283,7 +283,7 @@ fn charDigitValue(c: Char) -> Int {
 
 // Whether `s` matches `needle` starting at `at`. Every search below is written
 // in terms of this one, so the bounds reasoning lives in a single place.
-priv fn strMatchesAtIn(s: String, needle: String, at: Int, slen: Int, nlen: Int) -> Bool {
+private fn strMatchesAtIn(s: String, needle: String, at: Int, slen: Int, nlen: Int) -> Bool {
     if (at < 0) { return false }
     if (at + nlen > slen) { return false }
     let mut i = 0
@@ -320,7 +320,7 @@ fn strEndsWith(s: String, suffix: String) -> Bool {
 // pair search; uppercase shares its lowercase rank because Prismio has one
 // search policy rather than separate corpora. Exact values matter less than the
 // ordering: the two least common needle bytes make the strongest SIMD filter.
-priv fn strSearchByteRank(c: Char) -> Int {
+private fn strSearchByteRank(c: Char) -> Int {
     let mut b = c
     if (charIsUpper(b)) { b = ((b as U8) + 32) as Char }
     if (b == 'a') { return 249 }
@@ -359,7 +359,7 @@ priv fn strSearchByteRank(c: Char) -> Int {
 // factorisation for Two-Way search. The high 32 bits of the result hold the
 // factorisation position and the low 32 bits hold its period. Packing the pair
 // keeps this helper allocation-free until Prismio has stack-only tuple returns.
-priv fn strMaximalSuffix(needle: String, nlen: Int, orderGreater: Bool) -> I64 {
+private fn strMaximalSuffix(needle: String, nlen: Int, orderGreater: Bool) -> I64 {
     let mut left = 0
     let mut right = 1
     let mut offset = 0
@@ -394,7 +394,7 @@ priv fn strMaximalSuffix(needle: String, nlen: Int, orderGreater: Bool) -> I64 {
 // compare the right half forwards and the left half backwards, then shift by a
 // period that cannot hide a match. A 64-bit byteset cheaply rejects tails that
 // occur nowhere in the relevant part of the needle.
-priv fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
+private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
                                    slen: Int, nlen: Int,
                                    pairIndex1: Int, pairByte1: Char,
                                    pairIndex2: Int, pairByte2: Char) -> Int {
@@ -552,7 +552,7 @@ priv fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
 // and leaving the prefilter disabled at run time doubled this pathological
 // case. Keeping the compact Two-Way loop separate restores Rust-std parity and
 // also avoids carrying four unused pair arguments through the hot function.
-priv fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
+private fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
                         slen: Int, nlen: Int) -> Int {
     let suffixLess = strMaximalSuffix(needle, nlen, false)
     let suffixGreater = strMaximalSuffix(needle, nlen, true)
@@ -1105,7 +1105,7 @@ fn strJoin(parts: List<String>, sep: String) -> String {
 // Numbers
 // ---------------------------------------------------------------------------
 
-priv fn strParseIntFrom(s: String, at: Int, acc: Int, negative: Bool, slen: Int) -> Option<Int> {
+private fn strParseIntFrom(s: String, at: Int, acc: Int, negative: Bool, slen: Int) -> Option<Int> {
     if (at >= slen) {
         if (negative) { return Option<Int>.Some(0 - acc) }
         return Option<Int>.Some(acc)
@@ -1144,7 +1144,7 @@ fn strParseInt(s: String) -> Option<Int> {
 // 2.1x Rust rather than the divides inside the fill. The last boundary uses one
 // division because 10^19 is outside signed I64 and cannot be an exact literal
 // until integer-literal typing grows a U64 case.
-priv fn strDigitCount(value: U64) -> Int {
+private fn strDigitCount(value: U64) -> Int {
     if (value < 10) { return 1 }
     if (value < 100) { return 2 }
     if (value < 1000) { return 3 }
@@ -1176,7 +1176,7 @@ priv fn strDigitCount(value: U64) -> Int {
 // stores are one -- so halving the count of them is most of the operation.
 // Rust's integer `Display` is built the same way, and the 2.13x it held over a
 // digit-at-a-time loop was almost entirely this.
-priv fn strTwoDigitTable() -> String {
+private fn strTwoDigitTable() -> String {
     return "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899"
 }
 

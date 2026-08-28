@@ -27,7 +27,7 @@ extern fn cli_arg(index: Int) -> String alias
 extern fn execute_command(command: String borrow) -> Int
 extern fn command_quote_arg(arg: String borrow) -> String produce(free)
 
-priv fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
+private fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
     let mut i = 0
     while (i < length) {
         __builtin_string_put_byte(out, i, __builtin_string_byte_at(source, i))

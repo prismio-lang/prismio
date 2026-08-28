@@ -8,7 +8,7 @@ fn multiply(x: Int, y: Int) -> Int {
 
 // v0.1 3.5. Private to this module: test_90 asserts that a caller in another
 // file cannot reach it, and that `visibleScale` -- which is in this file -- can.
-priv fn hiddenScale(x: Int) -> Int {
+private fn hiddenScale(x: Int) -> Int {
     return x * 3
 }
 

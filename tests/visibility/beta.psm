@@ -1,0 +1,11 @@
+// A sibling in the same package as `alpha`, which is the whole point: an
+// `internal` declaration is reachable from here and not from `tests/`.
+import visibility.alpha
+
+fn visibilityFromSibling(x: Int) -> Int { return visibilityPackageOnly(x) }
+
+// Same package as `alpha`, so an `internal` *method* is reachable here.
+fn visibilityMethodFromSibling(x: Int) -> Int {
+    let c = Counter { n: x }
+    return c.tripled()
+}

@@ -1,0 +1,7 @@
+// expect-error: `visibilityPackageOnly` is internal to the package that declares it
+import std.io
+import visibility.alpha
+
+fn main() -> Int {
+    return visibilityPackageOnly(1)
+}

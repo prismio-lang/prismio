@@ -8,7 +8,7 @@ import common.diagnostics
 import std.string
 import std.option
 
-fn parseDeclaration(p: Parser) -> ASTNode {
+internal fn parseDeclaration(p: Parser) -> ASTNode {
     // v0.1 3.5. `priv fn helper(...)` -- visible only inside the file that
     // declares it.
     //
@@ -18,66 +18,95 @@ fn parseDeclaration(p: Parser) -> ASTNode {
     // unambiguous. Opt-in rather than private-by-default because every
     // cross-module call in `src/` and every `std` function is public today -- a
     // private default would have made this a rename of the whole tree.
-    if (parserAtPrivate(p)) {
-        let marker = parserCurrent(p)
-        let onFunction = parserPrivateTakesFunction(p)
-        parserAdvance(p)
+    let visibility = p.visibilityLevel()
+    if (visibility >= 0) {
+        let marker = p.current()
+        let markerText = strClone(marker.value)
+        let onFunction = p.privateTakesFunction()
+        p.advance()
         let declaration = parseDeclaration(p)
         if (onFunction) {
-            declaration.i2 = 1
+            declaration.i2 = visibility
         } else {
             // Rejected rather than accepted and ignored, for the reason a `trait`
             // default body is: the check lives in overload resolution, so a
             // marker on a type or a global would be a promise the compiler does
             // not keep -- which is worse than an error.
             diag_error_at(marker.file, marker.line, marker.col, marker.len,
-                          "`priv` is only accepted on a function in v0.1")
-            diag_note("a private type or global is not enforced yet, and accepting the marker would promise that it is")
+                          strConcat(strConcat("`", markerText),
+                                    "` is only accepted on a function in v0.1"))
+            diag_note("a visibility marker on a type or a global is not enforced yet, and accepting it would promise that it is")
         }
         return declaration
     }
 
-    if (parserCheckVal(p, TokenType.KEYWORD, "import")) { return parseImportStatement(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "extern")) { return parseExternFnDecl(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "fn")) { return parseFunctionDecl(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "struct")) { return parseStructDecl(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "enum")) { return parseEnumDecl(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "impl")) { return parseImplDecl(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "trait")) { return parseTraitDecl(p) }
-    if (parserAtWorkload(p)) { return parseWorkloadDecl(p) }
+    if (p.checkVal(TokenType.KEYWORD, "import")) { return parseImportStatement(p) }
+    if (p.checkVal(TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
+    if (p.checkVal(TokenType.KEYWORD, "extern")) { return parseExternFnDecl(p) }
+    if (p.checkVal(TokenType.KEYWORD, "fn")) { return parseFunctionDecl(p) }
+    if (p.checkVal(TokenType.KEYWORD, "struct")) { return parseStructDecl(p) }
+    if (p.checkVal(TokenType.KEYWORD, "enum")) { return parseEnumDecl(p) }
+    if (p.checkVal(TokenType.KEYWORD, "impl")) { return parseImplDecl(p) }
+    if (p.checkVal(TokenType.KEYWORD, "trait")) { return parseTraitDecl(p) }
+    if (p.atWorkload()) { return parseWorkloadDecl(p) }
 
     // Nothing here starts a declaration. Report it, skip to the next thing that
     // could, and hand back a placeholder -- so a file with three broken functions
     // reports three errors instead of only the first.
-    let bad = parserNode(p, NodeKind.ERROR_NODE)
-    let current = parserCurrent(p)
-    parserError(p, strConcat(strConcat("expected a declaration, found ", parserDescribe(current)),
+    let bad = p.node(NodeKind.ERROR_NODE)
+    let current = p.current()
+    p.error(strConcat(strConcat("expected a declaration, found ", parserDescribe(current)),
                                " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`, `impl`, `trait`)"))
-    parserSynchronize(p)
+    p.synchronize()
     return bad
 }
 
-// `priv` immediately before a declaration keyword. Recognising every kind and
-// rejecting all but `fn` in parseDeclaration keeps the marker consumed either
-// way, so a misplaced one is a single error rather than a cascade.
-fn parserAtPrivate(p: Parser) -> Bool {
-    if (parserCheck(p, TokenType.IDENTIFIER) == false) { return false }
-    let current = parserCurrent(p)
-    if (strEquals(current.value, "priv") == false) { return false }
+// The visibility a marker before a declaration keyword asks for, or -1 when the
+// token is not a marker at all. The levels are the values stored in `i2`:
+//
+//   0  public    -- everywhere, and the default, so the marker is redundant
+//   1  private   -- the declaring file
+//   2  internal  -- the declaring package
+//
+// Recognising every declaration kind and rejecting all but `fn` in
+// parseDeclaration keeps the marker consumed either way, so a misplaced one is a
+// single error rather than a cascade.
+//
+// These are **contextual**, matched as identifiers rather than reserved as
+// keywords, which is how `priv` has always worked. Reserving them would break
+// any program with a variable named `public` and buy nothing: a marker is only a
+// marker directly before a declaration keyword, and nothing else can appear there.
+//
+// `protected` is deliberately absent. It means "this type and its subtypes", and
+// there is no inheritance here to give it a referent -- Kotlin rejects it at top
+// level for the same reason. Adding it would be a spelling whose only possible
+// outcome is an error.
+private fn visibilityLevel(p: Parser) -> Int {
+    if (p.check(TokenType.IDENTIFIER) == false) { return -1 }
+    let current = p.current()
 
-    let next = parserPeek(p)
-    if (next.type != TokenType.KEYWORD) { return false }
-    if (strEquals(next.value, "fn")) { return true }
-    if (strEquals(next.value, "extern")) { return true }
-    if (strEquals(next.value, "struct")) { return true }
-    if (strEquals(next.value, "enum")) { return true }
-    if (strEquals(next.value, "let")) { return true }
-    return false
+    let mut level = -1
+    // `priv` was the pre-v0.1 spelling and is gone rather than kept as an alias:
+    // v0.1 is unreleased, so nothing outside this tree can be holding it, and two
+    // spellings for one level is surface that would have to be documented,
+    // diagnosed and kept in step forever to save a single rename.
+    if (strEquals(current.value, "private")) { level = 1 }
+    if (strEquals(current.value, "public")) { level = 0 }
+    if (strEquals(current.value, "internal")) { level = 2 }
+    if (level < 0) { return -1 }
+
+    let next = p.peek()
+    if (next.type != TokenType.KEYWORD) { return -1 }
+    if (strEquals(next.value, "fn")) { return level }
+    if (strEquals(next.value, "extern")) { return level }
+    if (strEquals(next.value, "struct")) { return level }
+    if (strEquals(next.value, "enum")) { return level }
+    if (strEquals(next.value, "let")) { return level }
+    return -1
 }
 
-fn parserPrivateTakesFunction(p: Parser) -> Bool {
-    let next = parserPeek(p)
+private fn privateTakesFunction(p: Parser) -> Bool {
+    let next = p.peek()
     return strEquals(next.value, "fn") or strEquals(next.value, "extern")
 }
 
@@ -98,14 +127,14 @@ fn parserPrivateTakesFunction(p: Parser) -> Bool {
 // is what this did until a nested container needed it. Written with the comment
 // above and never exercised, because `List<List<T>>` was unwritable and so nobody
 // had written one.
-fn parserExpectCloseAngle(p: Parser, context: String) {
-    let current = parserCurrent(p)
+private fn expectCloseAngle(p: Parser, context: String) {
+    let current = p.current()
     if (strEquals(current.value, ">>")) {
         current.value = ">"
         current.type = TokenType.RELATIONAL_OPERATOR
         return
     }
-    parserExpectVal(p, TokenType.RELATIONAL_OPERATOR, ">", context)
+    p.expectVal(TokenType.RELATIONAL_OPERATOR, ">", context)
 }
 
 // The type parameters of a generic declaration: `fn map<T, U>(...)`,
@@ -122,13 +151,13 @@ fn parserExpectCloseAngle(p: Parser, context: String) {
 // Comma-joined text rather than a node chain because it is read by
 // substitution as a set of names, never walked as a tree, and FUNCTION has no
 // free child slot -- child1/2/3 are parameters, body and return type.
-fn parseGenericParams(p: Parser) -> String {
-    if (parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<") == false) { return "" }
+private fn parseGenericParams(p: Parser) -> String {
+    if (p.matchVal(TokenType.RELATIONAL_OPERATOR, "<") == false) { return "" }
 
     let mut params = ""
     loop {
-        let name = parserCurrent(p)
-        parserExpect(p, TokenType.IDENTIFIER, "type parameter name")
+        let name = p.current()
+        p.expectToken(TokenType.IDENTIFIER, "type parameter name")
 
         // v0.1 3.3. One bound per parameter: `fn sort<T: Ord>(...)`. Encoded into
         // the same comma-joined text as `T:Ord` rather than taking a slot of its
@@ -140,9 +169,9 @@ fn parseGenericParams(p: Parser) -> String {
         // this spelling does not preclude it: the encoding already has a
         // separator to spare and the check is per-bound.
         let mut bound = ""
-        if (parserMatchVal(p, TokenType.SEPARATOR, ":")) {
-            let boundName = parserCurrent(p)
-            parserExpect(p, TokenType.IDENTIFIER, "a trait name after `:` in a type parameter list")
+        if (p.matchVal(TokenType.SEPARATOR, ":")) {
+            let boundName = p.current()
+            p.expectToken(TokenType.IDENTIFIER, "a trait name after `:` in a type parameter list")
             bound = strConcat(":", boundName.value)
         }
 
@@ -151,9 +180,9 @@ fn parseGenericParams(p: Parser) -> String {
         } else {
             params = strConcat(strConcat(params, ","), strConcat(name.value, bound))
         }
-        if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+        if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
     }
-    parserExpectCloseAngle(p, "type parameter list")
+    p.expectCloseAngle("type parameter list")
     return params
 }
 
@@ -164,15 +193,15 @@ fn parseGenericParams(p: Parser) -> String {
 // Three constructs need it -- a type annotation, a generic struct literal, and a
 // call with explicit type arguments -- and they had better agree on the shape
 // they produce, because sema resolves all three through one path.
-fn parseTypeArgList(p: Parser, node: ASTNode) {
+internal fn parseTypeArgList(p: Parser, node: ASTNode) {
     node.i2 = 1
     let args = nodeList()
     loop {
         nodeListPush(args, parseTypeAnnotation(p))
-        if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+        if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
     }
     node.child1 = args.head
-    parserExpectCloseAngle(p, "type argument list")
+    p.expectCloseAngle("type argument list")
 }
 
 // `Self` inside an `impl` block is the type the block is for.
@@ -184,7 +213,7 @@ fn parseTypeArgList(p: Parser, node: ASTNode) {
 // Inside a `trait` body it is deliberately left alone. There is no type there to
 // resolve it to, and the conformance check substitutes it once per `impl` --
 // which is the only thing a trait signature is ever read for.
-fn parserTypeName(p: Parser, name: Token) -> String {
+private fn typeName(p: Parser, name: Token) -> String {
     if (strEquals(name.value, "Self") == false) { return name.value }
     if (nodeExists(p.implType) == false) { return name.value }
     let owner = ptr_to_node(p.implType)
@@ -192,25 +221,25 @@ fn parserTypeName(p: Parser, name: Token) -> String {
     return strClone(owner.s1)
 }
 
-fn parseTypeAnnotation(p: Parser) -> ASTNode {
-    let typeNode = parserNode(p, NodeKind.TYPE_ANNOTATION)
+internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
+    let typeNode = p.node(NodeKind.TYPE_ANNOTATION)
 
-    if (parserMatchVal(p, TokenType.SEPARATOR, "[")) {
+    if (p.matchVal(TokenType.SEPARATOR, "[")) {
         typeNode.i1 = 1 // is_array
         typeNode.child1 = node_to_ptr(parseTypeAnnotation(p))
-        parserExpectVal(p, TokenType.SEPARATOR, "]", "array type")
+        p.expectVal(TokenType.SEPARATOR, "]", "array type")
         // REQUIREMENTS 4. `[T]?` binds the whole array, matching the suffix below
         // rather than reaching inside the brackets.
-        if (parserMatchVal(p, TokenType.SEPARATOR, "?")) { typeNode.i3 = 1 }
+        if (p.matchVal(TokenType.SEPARATOR, "?")) { typeNode.i3 = 1 }
         return typeNode
     }
 
-    let name = parserCurrent(p)
+    let name = p.current()
     if (name.type == TokenType.IDENTIFIER or name.type == TokenType.KEYWORD) {
-        typeNode.s1 = parserTypeName(p, name)
-        parserAdvance(p)
+        typeNode.s1 = p.typeName(name)
+        p.advance()
     } else {
-        parserFatal(p, strConcat("expected a type name, found ", parserDescribe(name)))
+        p.fatal(strConcat("expected a type name, found ", parserDescribe(name)))
     }
 
     // A type constructor applied to arguments: `List<Int>`, `Map<String, Int>`.
@@ -224,7 +253,7 @@ fn parseTypeAnnotation(p: Parser) -> ASTNode {
     // here, so it is always an argument list, and the name in front of it does
     // not have to be known to the parser -- which is the whole point: `List` was
     // the only generic type because it was the only name this test admitted.
-    if (parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
+    if (p.matchVal(TokenType.RELATIONAL_OPERATOR, "<")) {
         parseTypeArgList(p, typeNode)
     }
 
@@ -232,7 +261,7 @@ fn parseTypeAnnotation(p: Parser) -> ASTNode {
     // the list argument so `List<Node>?` is an optional list rather than a list
     // of optionals; `List<Node?>` spells the other one, because the `?` there is
     // consumed by the recursive call above.
-    if (parserMatchVal(p, TokenType.SEPARATOR, "?")) { typeNode.i3 = 1 }
+    if (p.matchVal(TokenType.SEPARATOR, "?")) { typeNode.i3 = 1 }
 
     return typeNode
 }
@@ -253,13 +282,13 @@ fn parseTypeAnnotation(p: Parser) -> ASTNode {
 // the opposite obligation. `unique` is an annotation only when another identifier
 // follows it, so `let unique = 5` is still a variable called `unique`; `pin` only
 // when a `(` follows.
-fn parserAtAnnotation(p: Parser, name: String) -> Bool {
-    if (parserCheck(p, TokenType.IDENTIFIER) == false) { return false }
+internal fn atAnnotation(p: Parser, name: String) -> Bool {
+    if (p.check(TokenType.IDENTIFIER) == false) { return false }
 
-    let current = parserCurrent(p)
+    let current = p.current()
     if (strEquals(current.value, name) == false) { return false }
 
-    let next = parserPeek(p)
+    let next = p.peek()
     if (strEquals(name, "pin")) {
         return strEquals(next.value, "(")
     }
@@ -269,17 +298,17 @@ fn parserAtAnnotation(p: Parser, name: String) -> Bool {
 // Stored on the declaration's `s2`, which is free on a VARIABLE_DECL, encoded as
 // text so `pin`'s tier travels without needing a second slot. Same idiom as the
 // FFI contracts below, and for the same reason.
-fn parseAifAnnotations(p: Parser, node: ASTNode) {
+private fn parseAifAnnotations(p: Parser, node: ASTNode) {
     loop {
-        if (parserAtAnnotation(p, "unique")) {
-            parserExpect(p, TokenType.IDENTIFIER, "unique annotation")
+        if (p.atAnnotation("unique")) {
+            p.expectToken(TokenType.IDENTIFIER, "unique annotation")
             node.s2 = strConcat(node.s2, "unique ")
-        } else if (parserAtAnnotation(p, "pin")) {
-            parserExpect(p, TokenType.IDENTIFIER, "pin annotation")
-            parserExpectVal(p, TokenType.SEPARATOR, "(", "pin tier")
-            let tier = parserCurrent(p)
-            parserExpect(p, TokenType.IDENTIFIER, "a tier name such as T1")
-            parserExpectVal(p, TokenType.SEPARATOR, ")", "pin tier")
+        } else if (p.atAnnotation("pin")) {
+            p.expectToken(TokenType.IDENTIFIER, "pin annotation")
+            p.expectVal(TokenType.SEPARATOR, "(", "pin tier")
+            let tier = p.current()
+            p.expectToken(TokenType.IDENTIFIER, "a tier name such as T1")
+            p.expectVal(TokenType.SEPARATOR, ")", "pin tier")
             node.s2 = strConcat(node.s2, strConcat(strConcat("pin:", tier.value), " "))
         } else {
             break
@@ -319,7 +348,7 @@ fn parseAifAnnotations(p: Parser, node: ASTNode) {
 // parsed. They drive the fact invalidation of FFI 6, which AIF-1 does not model
 // at all -- there is no static-root invalidation to switch off. They trail the
 // declaration, so adding them later breaks nothing.
-fn isFfiContractName(name: String) -> Bool {
+private fn isFfiContractName(name: String) -> Bool {
     if (strEquals(name, "borrow")) { return true }
     if (strEquals(name, "retain")) { return true }
     if (strEquals(name, "retain_in")) { return true }
@@ -333,7 +362,7 @@ fn isFfiContractName(name: String) -> Bool {
 // Whether the contract takes a parenthesised argument. Checked so that
 // `borrow(3)` is a syntax error where it is written rather than a silently
 // ignored suffix.
-fn ffiContractTakesArgument(name: String) -> Bool {
+private fn ffiContractTakesArgument(name: String) -> Bool {
     if (strEquals(name, "retain_in")) { return true }
     if (strEquals(name, "produce")) { return true }
     return false
@@ -342,25 +371,25 @@ fn ffiContractTakesArgument(name: String) -> Bool {
 // Reads a contract, if one is present, onto the annotation it follows. Whether
 // the contract makes sense in this position -- `alias` on a parameter, `produce`
 // on an argument -- is sema's call, not the parser's.
-fn parseFfiContract(p: Parser, annotation: ASTNode) {
-    let current = parserCurrent(p)
+private fn parseFfiContract(p: Parser, annotation: ASTNode) {
+    let current = p.current()
     if (current.type != TokenType.IDENTIFIER) { return }
     if (isFfiContractName(current.value) == false) { return }
 
     let name = current.value
-    parserAdvance(p)
+    p.advance()
 
     if (ffiContractTakesArgument(name)) {
-        parserExpectVal(p, TokenType.SEPARATOR, "(", "contract argument")
-        let argument = parserCurrent(p)
+        p.expectVal(TokenType.SEPARATOR, "(", "contract argument")
+        let argument = p.current()
         let argumentText = argument.value
-        parserAdvance(p)
-        parserExpectVal(p, TokenType.SEPARATOR, ")", "contract argument")
+        p.advance()
+        p.expectVal(TokenType.SEPARATOR, ")", "contract argument")
         annotation.s2 = strConcat(strConcat(name, ":"), argumentText)
         return
     }
 
-    if (parserCheckVal(p, TokenType.SEPARATOR, "(")) {
+    if (p.checkVal(TokenType.SEPARATOR, "(")) {
         diag_error_at(current.file, current.line, current.col, __builtin_string_len(name),
             strConcat(strConcat("the ", diagQuote(name)), " contract takes no argument"))
         diag_note("only `retain_in(k)` and `produce(free_fn)` are parameterised")
@@ -373,25 +402,25 @@ fn parseFfiContract(p: Parser, annotation: ASTNode) {
 // Declarations
 // ---------------------------------------------------------
 
-fn parseVariableDecl(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "let", "variable declaration")
-    let varNode = parserNode(p, NodeKind.VARIABLE_DECL)
+internal fn parseVariableDecl(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "let", "variable declaration")
+    let varNode = p.node(NodeKind.VARIABLE_DECL)
 
-    if (parserMatchVal(p, TokenType.KEYWORD, "mut")) {
+    if (p.matchVal(TokenType.KEYWORD, "mut")) {
         varNode.i1 = 1 // is_mutable
     }
 
     parseAifAnnotations(p, varNode)
 
-    let name = parserCurrent(p)
+    let name = p.current()
     varNode.s1 = name.value
-    parserExpect(p, TokenType.IDENTIFIER, "variable name")
+    p.expectToken(TokenType.IDENTIFIER, "variable name")
 
-    if (parserMatchVal(p, TokenType.SEPARATOR, ":")) {
+    if (p.matchVal(TokenType.SEPARATOR, ":")) {
         varNode.child1 = node_to_ptr(parseTypeAnnotation(p))
     }
 
-    if (parserMatchVal(p, TokenType.ASSIGNMENT_OPERATOR, "=")) {
+    if (p.matchVal(TokenType.ASSIGNMENT_OPERATOR, "=")) {
         varNode.child2 = node_to_ptr(parseExpression(p, 0))
     }
 
@@ -405,36 +434,36 @@ fn parseVariableDecl(p: Parser) -> ASTNode {
 // What a bare `self` is typed as. Inside an `impl` block it is the block's type;
 // inside a `trait` it is `Self`, which has no type yet and is substituted once
 // per conforming `impl`.
-fn parserReceiverTypeName(p: Parser) -> String {
+private fn receiverTypeName(p: Parser) -> String {
     let owner = ptr_to_node(p.implType)
     if (owner.kind == NodeKind.TRAIT_DECL) { return "Self" }
     return strClone(owner.s1)
 }
 
-fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
-    let param = parserNode(p, NodeKind.FUNCTION_PARAMETER)
+internal fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
+    let param = p.node(NodeKind.FUNCTION_PARAMETER)
 
     if (isExtern == false) {
         // `sink` moves in, `inout` is a mutable borrow. The default is a shared
         // read-only borrow.
-        if (parserMatchVal(p, TokenType.KEYWORD, "sink")) {
+        if (p.matchVal(TokenType.KEYWORD, "sink")) {
             param.s2 = "sink"
-        } else if (parserMatchVal(p, TokenType.KEYWORD, "inout")) {
+        } else if (p.matchVal(TokenType.KEYWORD, "inout")) {
             param.s2 = "inout"
         }
 
         // SPEC 5.1. `s2` is taken by the convention, so the flag goes in `i2`.
         // `pin` is deliberately not accepted here: a pin constrains an allocation
         // site's tier, and a parameter is a binding, not an allocation.
-        if (parserAtAnnotation(p, "unique")) {
-            parserExpect(p, TokenType.IDENTIFIER, "unique annotation")
+        if (p.atAnnotation("unique")) {
+            p.expectToken(TokenType.IDENTIFIER, "unique annotation")
             param.i2 = 1
         }
     }
 
-    let name = parserCurrent(p)
+    let name = p.current()
     param.s1 = name.value
-    parserExpect(p, TokenType.IDENTIFIER, "parameter name")
+    p.expectToken(TokenType.IDENTIFIER, "parameter name")
 
     // `self` inside an `impl` block, written without a type. Repeating the
     // receiver's type on every method is exactly what the block exists to avoid,
@@ -446,9 +475,9 @@ fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
     // mean the receiver. Which position it is in is sema's business, not the
     // parser's; see semaImplDecl.
     if (nodeExists(p.implType) and strEquals(param.s1, "self")
-        and parserCheckVal(p, TokenType.SEPARATOR, ":") == false) {
+        and p.checkVal(TokenType.SEPARATOR, ":") == false) {
         let receiver = parserNodeFrom(NodeKind.TYPE_ANNOTATION, name)
-        receiver.s1 = parserReceiverTypeName(p)
+        receiver.s1 = p.receiverTypeName()
         // The span is the block's type name, not this `self`. A misspelt type is
         // reported once per method either way, and pointing at `self` would blame
         // a token that spells nothing wrong.
@@ -458,7 +487,7 @@ fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
         return param
     }
 
-    parserExpectVal(p, TokenType.SEPARATOR, ":", "parameter type")
+    p.expectVal(TokenType.SEPARATOR, ":", "parameter type")
     param.child1 = node_to_ptr(parseTypeAnnotation(p))
 
     if (isExtern) {
@@ -469,33 +498,33 @@ fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
 }
 
 // The shared `( a: A, b: B )` shape. Returns the head of the parameter chain.
-fn parseParameterList(p: Parser, isExtern: Bool) -> Ptr {
-    parserExpectVal(p, TokenType.SEPARATOR, "(", "params")
+private fn parseParameterList(p: Parser, isExtern: Bool) -> Ptr {
+    p.expectVal(TokenType.SEPARATOR, "(", "params")
 
     let params = nodeList()
-    if (parserCheckVal(p, TokenType.SEPARATOR, ")") == false) {
+    if (p.checkVal(TokenType.SEPARATOR, ")") == false) {
         loop {
             nodeListPush(params, parseParameter(p, isExtern))
-            if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+            if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
         }
     }
 
-    parserExpectVal(p, TokenType.SEPARATOR, ")", "params")
+    p.expectVal(TokenType.SEPARATOR, ")", "params")
     return params.head
 }
 
-fn parseExternFnDecl(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "extern", "extern fn")
-    parserExpectVal(p, TokenType.KEYWORD, "fn", "extern fn")
+private fn parseExternFnDecl(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "extern", "extern fn")
+    p.expectVal(TokenType.KEYWORD, "fn", "extern fn")
 
-    let extNode = parserNode(p, NodeKind.EXTERN_FUNCTION)
-    let name = parserCurrent(p)
+    let extNode = p.node(NodeKind.EXTERN_FUNCTION)
+    let name = p.current()
     extNode.s1 = name.value
-    parserExpect(p, TokenType.IDENTIFIER, "function name")
+    p.expectToken(TokenType.IDENTIFIER, "function name")
 
     extNode.child1 = parseParameterList(p, true)
 
-    if (parserMatchVal(p, TokenType.ARROW, "->")) {
+    if (p.matchVal(TokenType.ARROW, "->")) {
         extNode.child2 = node_to_ptr(parseTypeAnnotation(p))
         parseFfiContract(p, ptr_to_node(extNode.child2))
     }
@@ -503,18 +532,18 @@ fn parseExternFnDecl(p: Parser) -> ASTNode {
     return extNode
 }
 
-fn parseFunctionDecl(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "fn", "function")
+private fn parseFunctionDecl(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "fn", "function")
 
-    let fnNode = parserNode(p, NodeKind.FUNCTION)
-    let name = parserCurrent(p)
+    let fnNode = p.node(NodeKind.FUNCTION)
+    let name = p.current()
     fnNode.s1 = name.value
-    parserExpect(p, TokenType.IDENTIFIER, "function name")
+    p.expectToken(TokenType.IDENTIFIER, "function name")
 
     fnNode.s2 = parseGenericParams(p)
     fnNode.child1 = parseParameterList(p, false)
 
-    if (parserMatchVal(p, TokenType.ARROW, "->")) {
+    if (p.matchVal(TokenType.ARROW, "->")) {
         fnNode.child3 = node_to_ptr(parseTypeAnnotation(p))
     }
     fnNode.child2 = node_to_ptr(parseBlock(p))
@@ -545,28 +574,28 @@ fn parseFunctionDecl(p: Parser) -> ASTNode {
 // to instantiate a method per instantiation of the type, which is a second
 // monomorphisation entry point and not v0.1; leaving the syntax an error keeps
 // it available to mean that later.
-fn parseImplDecl(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "impl", "impl block")
+private fn parseImplDecl(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "impl", "impl block")
 
-    let implNode = parserNode(p, NodeKind.IMPL_DECL)
-    let head = parserCurrent(p)
-    parserExpect(p, TokenType.IDENTIFIER, "the type an `impl` block is for")
-    parserRejectGenericImpl(p)
+    let implNode = p.node(NodeKind.IMPL_DECL)
+    let head = p.current()
+    p.expectToken(TokenType.IDENTIFIER, "the type an `impl` block is for")
+    p.rejectGenericImpl()
 
     // `impl Ord for Int` -- the trait form. The name is read once and then
     // placed, rather than assigned twice: a String field assigned over is a
     // String nothing releases.
-    if (parserMatchVal(p, TokenType.KEYWORD, "for")) {
+    if (p.matchVal(TokenType.KEYWORD, "for")) {
         implNode.s2 = head.value
-        let target = parserCurrent(p)
+        let target = p.current()
         implNode.s1 = target.value
-        parserExpect(p, TokenType.IDENTIFIER, "the type after `for` in an `impl` block")
-        parserRejectGenericImpl(p)
+        p.expectToken(TokenType.IDENTIFIER, "the type after `for` in an `impl` block")
+        p.rejectGenericImpl()
     } else {
         implNode.s1 = head.value
     }
 
-    parserExpectVal(p, TokenType.SEPARATOR, "{", "impl body")
+    p.expectVal(TokenType.SEPARATOR, "{", "impl body")
 
     // Set for the body and cleared after it, so a bare `self` is only a receiver
     // where one can be meant. Not saved and restored, because an `impl` block
@@ -575,28 +604,39 @@ fn parseImplDecl(p: Parser) -> ASTNode {
     p.implType = node_to_ptr(implNode)
 
     let methods = nodeList()
-    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
-        if (parserCheck(p, TokenType.EOF)) {
-            parserFatal(p, "this `impl` block is never closed; reached end of file looking for `}`")
+    while (p.checkVal(TokenType.SEPARATOR, "}") == false) {
+        if (p.check(TokenType.EOF)) {
+            p.fatal("this `impl` block is never closed; reached end of file looking for `}`")
         }
-        if (parserCheckVal(p, TokenType.KEYWORD, "fn") == false) {
-            parserFatal(p, strConcat("an `impl` block holds `fn` declarations, found ",
-                                       parserDescribe(parserCurrent(p))))
+        // A method carries a visibility marker exactly as a top-level `fn` does.
+        // Without this the two features did not compose: `impl` was the natural
+        // home for the helpers most worth marking `private`, and marking them
+        // meant giving up the `impl` block. The marker means the same thing here
+        // -- the declaring file, or its package -- because a method *is* a free
+        // function whose first parameter is the receiver, and it carries the same
+        // `file` id either way.
+        let methodVisibility = p.visibilityLevel()
+        if (methodVisibility >= 0) { p.advance() }
+
+        if (p.checkVal(TokenType.KEYWORD, "fn") == false) {
+            p.fatal(strConcat("an `impl` block holds `fn` declarations, found ",
+                                       parserDescribe(p.current())))
         }
         let method = parseFunctionDecl(p)
+        if (methodVisibility >= 0) { method.i2 = methodVisibility }
         parseImplCheckReceiver(p, method)
         nodeListPush(methods, method)
     }
-    parserExpectVal(p, TokenType.SEPARATOR, "}", "impl body")
+    p.expectVal(TokenType.SEPARATOR, "}", "impl body")
 
     p.implType = ptr_null()
     implNode.child1 = methods.head
     return implNode
 }
 
-fn parserRejectGenericImpl(p: Parser) {
-    if (parserCheckVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
-        parserFatal(p, "a generic `impl` block is not supported yet; write the methods as generic free functions")
+private fn rejectGenericImpl(p: Parser) {
+    if (p.checkVal(TokenType.RELATIONAL_OPERATOR, "<")) {
+        p.fatal("a generic `impl` block is not supported yet; write the methods as generic free functions")
     }
 }
 
@@ -608,7 +648,7 @@ fn parserRejectGenericImpl(p: Parser) {
 // The parser accepts one anywhere because position is not a parse question. It
 // matters because `x.f(a)` is `f(x, a)`: a receiver written second is a method
 // no method call can ever reach.
-fn parseImplCheckReceiver(p: Parser, method: ASTNode) {
+private fn parseImplCheckReceiver(p: Parser, method: ASTNode) {
     let mut paramPtr = method.child1
     let mut index = 0
     while (nodeExists(paramPtr)) {
@@ -646,19 +686,19 @@ fn parseImplCheckReceiver(p: Parser, method: ASTNode) {
 // name -- the same way a WORKLOAD_DECL does -- and its signatures hang off
 // `child1` rather than being spliced the way an `impl` block's methods are. A
 // method with no body spliced into the module chain is a `define` with no blocks.
-fn parseTraitDecl(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "trait", "trait declaration")
+private fn parseTraitDecl(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "trait", "trait declaration")
 
-    let traitNode = parserNode(p, NodeKind.TRAIT_DECL)
-    let name = parserCurrent(p)
+    let traitNode = p.node(NodeKind.TRAIT_DECL)
+    let name = p.current()
     traitNode.s1 = name.value
-    parserExpect(p, TokenType.IDENTIFIER, "trait name")
+    p.expectToken(TokenType.IDENTIFIER, "trait name")
 
-    if (parserCheckVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
-        parserFatal(p, "a generic `trait` is not supported yet")
+    if (p.checkVal(TokenType.RELATIONAL_OPERATOR, "<")) {
+        p.fatal("a generic `trait` is not supported yet")
     }
 
-    parserExpectVal(p, TokenType.SEPARATOR, "{", "trait body")
+    p.expectVal(TokenType.SEPARATOR, "{", "trait body")
 
     // Set for the same reason an `impl` block sets it, and read differently: a
     // bare `self` in a trait signature has no type to take, so parseParameter
@@ -666,19 +706,19 @@ fn parseTraitDecl(p: Parser) -> ASTNode {
     p.implType = node_to_ptr(traitNode)
 
     let signatures = nodeList()
-    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
-        if (parserCheck(p, TokenType.EOF)) {
-            parserFatal(p, "this `trait` is never closed; reached end of file looking for `}`")
+    while (p.checkVal(TokenType.SEPARATOR, "}") == false) {
+        if (p.check(TokenType.EOF)) {
+            p.fatal("this `trait` is never closed; reached end of file looking for `}`")
         }
-        if (parserCheckVal(p, TokenType.KEYWORD, "fn") == false) {
-            parserFatal(p, strConcat("a `trait` holds `fn` signatures, found ",
-                                       parserDescribe(parserCurrent(p))))
+        if (p.checkVal(TokenType.KEYWORD, "fn") == false) {
+            p.fatal(strConcat("a `trait` holds `fn` signatures, found ",
+                                       parserDescribe(p.current())))
         }
         let signature = parseTraitSignature(p)
         parseImplCheckReceiver(p, signature)
         nodeListPush(signatures, signature)
     }
-    parserExpectVal(p, TokenType.SEPARATOR, "}", "trait body")
+    p.expectVal(TokenType.SEPARATOR, "}", "trait body")
 
     p.implType = ptr_null()
     traitNode.child1 = signatures.head
@@ -687,28 +727,28 @@ fn parseTraitDecl(p: Parser) -> ASTNode {
 
 // A method signature: a FUNCTION with no `child2`. That absence is the whole
 // difference from a definition, and it is what the conformance check reads.
-fn parseTraitSignature(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "fn", "trait method signature")
+private fn parseTraitSignature(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "fn", "trait method signature")
 
-    let signature = parserNode(p, NodeKind.FUNCTION)
-    let name = parserCurrent(p)
+    let signature = p.node(NodeKind.FUNCTION)
+    let name = p.current()
     signature.s1 = name.value
-    parserExpect(p, TokenType.IDENTIFIER, "method name")
+    p.expectToken(TokenType.IDENTIFIER, "method name")
 
-    if (parserCheckVal(p, TokenType.RELATIONAL_OPERATOR, "<")) {
-        parserFatal(p, "a generic method in a `trait` is not supported yet")
+    if (p.checkVal(TokenType.RELATIONAL_OPERATOR, "<")) {
+        p.fatal("a generic method in a `trait` is not supported yet")
     }
 
     signature.child1 = parseParameterList(p, false)
-    if (parserMatchVal(p, TokenType.ARROW, "->")) {
+    if (p.matchVal(TokenType.ARROW, "->")) {
         signature.child3 = node_to_ptr(parseTypeAnnotation(p))
     }
 
     // Diagnosed rather than accepted-and-ignored. A default method body is a real
     // feature a later release may want, and silently dropping one now is how a
     // program compiles while doing something other than what it says.
-    if (parserCheckVal(p, TokenType.SEPARATOR, "{")) {
-        parserFatal(p, "a `trait` method has no body; write the implementation in an `impl` block")
+    if (p.checkVal(TokenType.SEPARATOR, "{")) {
+        p.fatal("a `trait` method has no body; write the implementation in an `impl` block")
     }
 
     return signature
@@ -731,11 +771,11 @@ fn parseTraitSignature(p: Parser) -> ASTNode {
 // but *identical*. Reserving the word would break `let workload = 5`, which is a
 // program this language accepts today: a strictly larger change than the feature
 // needs. `unique` and `pin` are contextual for the same reason.
-fn parserAtWorkload(p: Parser) -> Bool {
-    if (parserCheck(p, TokenType.IDENTIFIER) == false) { return false }
-    let current = parserCurrent(p)
+private fn atWorkload(p: Parser) -> Bool {
+    if (p.check(TokenType.IDENTIFIER) == false) { return false }
+    let current = p.current()
     if (strEquals(current.value, "workload") == false) { return false }
-    return parserPeek(p).type == TokenType.IDENTIFIER
+    return p.peek().type == TokenType.IDENTIFIER
 }
 
 // workload NAME {
@@ -753,12 +793,12 @@ fn parserAtWorkload(p: Parser) -> Bool {
 // them in a fixed order and says nothing about repetition; accepting any order
 // costs one loop and rejecting a duplicate is what stops `repeat 1 repeat 200`
 // from silently meaning one of the two.
-fn parseWorkloadDecl(p: Parser) -> ASTNode {
-    parserAdvance(p)                                  // `workload`
-    let node = parserNode(p, NodeKind.WORKLOAD_DECL)
-    let name = parserCurrent(p)
+private fn parseWorkloadDecl(p: Parser) -> ASTNode {
+    p.advance()                                  // `workload`
+    let node = p.node(NodeKind.WORKLOAD_DECL)
+    let name = p.current()
     node.s1 = name.value
-    parserExpect(p, TokenType.IDENTIFIER, "workload name")
+    p.expectToken(TokenType.IDENTIFIER, "workload name")
 
     // `repeat` bounds build-time cost and is a hint (LAYOUT 3.1), so a default of
     // 1 is the honest one: it runs `measure` exactly once and measures something
@@ -766,133 +806,133 @@ fn parseWorkloadDecl(p: Parser) -> ASTNode {
     node.i1 = 1
     let mut sawMeasure = false
 
-    parserExpectVal(p, TokenType.SEPARATOR, "{", "workload body")
-    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
-        if (parserCheck(p, TokenType.EOF)) {
-            parserFatal(p, "this workload is never closed; reached end of file looking for `}`")
+    p.expectVal(TokenType.SEPARATOR, "{", "workload body")
+    while (p.checkVal(TokenType.SEPARATOR, "}") == false) {
+        if (p.check(TokenType.EOF)) {
+            p.fatal("this workload is never closed; reached end of file looking for `}`")
         }
 
-        let clause = parserCurrent(p)
+        let clause = p.current()
         if (strEquals(clause.value, "setup")) {
-            parserAdvance(p)
+            p.advance()
             if (nodeExists(node.child1)) {
-                parserError(p, "duplicate `setup` in this workload")
+                p.error("duplicate `setup` in this workload")
             }
             node.child1 = node_to_ptr(parseBlock(p))
         } else if (strEquals(clause.value, "measure")) {
-            parserAdvance(p)
+            p.advance()
             if (sawMeasure) {
-                parserError(p, "duplicate `measure` in this workload")
+                p.error("duplicate `measure` in this workload")
             }
             sawMeasure = true
             node.child2 = node_to_ptr(parseBlock(p))
         } else if (strEquals(clause.value, "repeat")) {
-            parserAdvance(p)
+            p.advance()
             node.i1 = parseWorkloadCount(p, "repeat")
         } else {
-            parserError(p, strConcat(strConcat("expected `setup`, `measure` or `repeat`, found ",
+            p.error(strConcat(strConcat("expected `setup`, `measure` or `repeat`, found ",
                                                   parserDescribe(clause)),
                                        " in this workload"))
-            parserSynchronize(p)
+            p.synchronize()
             return node
         }
     }
-    parserExpectVal(p, TokenType.SEPARATOR, "}", "workload body")
+    p.expectVal(TokenType.SEPARATOR, "}", "workload body")
 
     // `measure` is the profiled region, so a workload without one names nothing to
     // profile. Diagnosed here rather than in sema because it is a shape error in
     // the declaration, not a fact about the program it profiles.
     if (sawMeasure == false) {
-        parserError(p, "this workload has no `measure` block; there is nothing to profile")
+        p.error("this workload has no `measure` block; there is nothing to profile")
     }
 
     return node
 }
 
-fn parseWorkloadCount(p: Parser, clause: String) -> Int {
-    let tok = parserCurrent(p)
+private fn parseWorkloadCount(p: Parser, clause: String) -> Int {
+    let tok = p.current()
     if (tok.type != TokenType.NUMBER_LITERAL) {
-        parserFatal(p, strConcat(strConcat("expected a count after `", clause), "`"))
+        p.fatal(strConcat(strConcat("expected a count after `", clause), "`"))
     }
     let n = optionOr(strParseInt(tok.value), 0)
-    parserAdvance(p)
+    p.advance()
     // Zero repeats profiles nothing and a negative one is meaningless; both would
     // reach the runner and produce an empty profile that reads as a failed run.
     // Rejecting here keeps W2's fallback meaning "the workload failed", not "the
     // workload was written to do nothing".
     if (n < 1) {
-        parserError(p, strConcat(strConcat("`", clause), "` must be at least 1"))
+        p.error(strConcat(strConcat("`", clause), "` must be at least 1"))
         return 1
     }
     return n
 }
 
-fn parseStructDecl(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "struct", "struct")
+private fn parseStructDecl(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "struct", "struct")
 
-    let structNode = parserNode(p, NodeKind.STRUCT_DECL)
-    let name = parserCurrent(p)
+    let structNode = p.node(NodeKind.STRUCT_DECL)
+    let name = p.current()
     structNode.s1 = name.value
-    parserExpect(p, TokenType.IDENTIFIER, "struct name")
+    p.expectToken(TokenType.IDENTIFIER, "struct name")
 
     structNode.s2 = parseGenericParams(p)
-    parserExpectVal(p, TokenType.SEPARATOR, "{", "struct body")
+    p.expectVal(TokenType.SEPARATOR, "{", "struct body")
 
     let fields = nodeList()
-    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
-        let field = parserNode(p, NodeKind.STRUCT_FIELD)
-        let fieldName = parserCurrent(p)
+    while (p.checkVal(TokenType.SEPARATOR, "}") == false) {
+        let field = p.node(NodeKind.STRUCT_FIELD)
+        let fieldName = p.current()
         field.s1 = fieldName.value
-        parserExpect(p, TokenType.IDENTIFIER, "field name")
-        parserExpectVal(p, TokenType.SEPARATOR, ":", "field type")
+        p.expectToken(TokenType.IDENTIFIER, "field name")
+        p.expectVal(TokenType.SEPARATOR, ":", "field type")
         field.child1 = node_to_ptr(parseTypeAnnotation(p))
         nodeListPush(fields, field)
 
-        parserMatchVal(p, TokenType.SEPARATOR, ",")
+        p.matchVal(TokenType.SEPARATOR, ",")
     }
 
-    parserExpectVal(p, TokenType.SEPARATOR, "}", "struct body")
+    p.expectVal(TokenType.SEPARATOR, "}", "struct body")
     structNode.child1 = fields.head
     return structNode
 }
 
-fn parseEnumDecl(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "enum", "enum")
+private fn parseEnumDecl(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "enum", "enum")
 
-    let enumNode = parserNode(p, NodeKind.ENUM_DECL)
-    let name = parserCurrent(p)
+    let enumNode = p.node(NodeKind.ENUM_DECL)
+    let name = p.current()
     enumNode.s1 = name.value
-    parserExpect(p, TokenType.IDENTIFIER, "enum name")
+    p.expectToken(TokenType.IDENTIFIER, "enum name")
 
     enumNode.s2 = parseGenericParams(p)
-    parserExpectVal(p, TokenType.SEPARATOR, "{", "enum body")
+    p.expectVal(TokenType.SEPARATOR, "{", "enum body")
 
     let variants = nodeList()
-    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
-        let variant = parserNode(p, NodeKind.ENUM_VARIANT)
-        let variantName = parserCurrent(p)
+    while (p.checkVal(TokenType.SEPARATOR, "}") == false) {
+        let variant = p.node(NodeKind.ENUM_VARIANT)
+        let variantName = p.current()
         variant.s1 = variantName.value
-        parserExpect(p, TokenType.IDENTIFIER, "variant name")
+        p.expectToken(TokenType.IDENTIFIER, "variant name")
 
         // `Some(T)` -- a variant that carries values. The payload types hang off
         // child1 as a `next`-chain, the same shape a parameter list has, because
         // that is what a variant constructor is.
-        if (parserMatchVal(p, TokenType.SEPARATOR, "(")) {
+        if (p.matchVal(TokenType.SEPARATOR, "(")) {
             let payload = nodeList()
             loop {
                 nodeListPush(payload, parseTypeAnnotation(p))
-                if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+                if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
             }
             variant.child1 = payload.head
-            parserExpectVal(p, TokenType.SEPARATOR, ")", "variant payload")
+            p.expectVal(TokenType.SEPARATOR, ")", "variant payload")
         }
 
         nodeListPush(variants, variant)
 
-        parserMatchVal(p, TokenType.SEPARATOR, ",")
+        p.matchVal(TokenType.SEPARATOR, ",")
     }
 
-    parserExpectVal(p, TokenType.SEPARATOR, "}", "enum body")
+    p.expectVal(TokenType.SEPARATOR, "}", "enum body")
     enumNode.child1 = variants.head
     return enumNode
 }

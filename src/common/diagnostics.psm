@@ -20,6 +20,18 @@ extern fn diag_file_path(file: Int) -> String alias
 // registry already is one.
 extern fn diag_file_count() -> Int
 
+// The logical import path a file was reached by -- `std.string`, not `string`
+// and not the directory it happens to sit in. Recorded by the merge rather than
+// derived from the path, because `resolveImportPath` flattens `std/` to
+// `stdlib/` on install: a qualifier computed from the path would read
+// `std.string` in a checkout and `stdlib.string` from an installed toolchain.
+// "" for a file the merge never named, which is the entry file.
+//
+// `alias` for the same reason as diag_file_path: the pointer is into the
+// registry's own storage and the runtime frees it in diag_reset.
+extern fn diag_set_file_module(file: Int, module: String)
+extern fn diag_file_module(file: Int) -> String alias
+
 // A located diagnostic. `len` is the width of the caret run -- the length of the
 // token the node starts at -- and may be 0 for "just point at the column".
 extern fn diag_error_at(file: Int, line: Int, col: Int, len: Int, message: String)

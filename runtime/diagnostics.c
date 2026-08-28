@@ -28,9 +28,16 @@
 // further recovery step is another chance to walk a half-built AST.
 #define DIAG_ERROR_LIMIT 25
 
+// `module` is the *logical* import path this file was reached by -- `std.string`
+// for a file the installed layout stores at `stdlib/string.psm`. It is recorded
+// rather than derived because the two disagree: `resolveImportPath` flattens the
+// package on install, so a qualifier computed from `path` would read `std.string`
+// in a checkout and `stdlib.string` from an installed toolchain, and every
+// qualified call would resolve here and fail there.
 typedef struct {
     char* path;
     char* content;
+    char* module;
 } DiagFile;
 
 static DiagFile g_files[DIAG_MAX_FILES];
@@ -85,6 +92,29 @@ int diag_add_file(const char* path, const char* content) {
 const char* diag_file_path(int file) {
     if (file < 0 || file >= g_file_count) return "<unknown>";
     return g_files[file].path;
+}
+
+// The logical module path for a file, recorded by the merge as it resolves each
+// import. Set at most once per file: `diag_add_file` dedupes by path, so a module
+// reached twice through a diamond keeps the spelling it was first reached by,
+// which is the same rule the merge already applies to the declarations themselves.
+//
+// Internal storage, freed by nothing -- the getter is declared `alias` on the
+// Prismio side, exactly as `diag_file_path` is, so plain malloc is right here and
+// `rt_base_alloc` would record an allocation no release ever pairs with.
+void diag_set_file_module(int file, const char* module) {
+    if (file < 0 || file >= g_file_count) return;
+    if (g_files[file].module) return;
+    g_files[file].module = diag_strdup(module);
+}
+
+// "" rather than "<unknown>" for an unrecorded file: the caller treats an empty
+// qualifier as "this file has no module name", which is the honest answer for the
+// entry file, and "<unknown>" would be a qualifier a program could accidentally match.
+const char* diag_file_module(int file) {
+    if (file < 0 || file >= g_file_count) return "";
+    if (!g_files[file].module) return "";
+    return g_files[file].module;
 }
 
 // How many ids diag_add_file has handed out.
@@ -344,8 +374,13 @@ void diag_reset(void) {
     for (int i = 0; i < g_file_count; i++) {
         free(g_files[i].path);
         free(g_files[i].content);
+        free(g_files[i].module);
         g_files[i].path = NULL;
         g_files[i].content = NULL;
+        // Cleared with the rest: diag_set_file_module refuses to overwrite a
+        // recorded name, so a stale one surviving a reset would silently give
+        // every file in the next compile the previous compile's qualifier.
+        g_files[i].module = NULL;
     }
     g_file_count = 0;
     g_error_count = 0;

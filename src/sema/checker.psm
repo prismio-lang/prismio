@@ -17,12 +17,12 @@ import std.string
 // Continuing is only safe because every caller of a checking function treats an
 // invalid type as "already reported" (see semaExpectAssignable) and because
 // the sites that would otherwise walk a null child return early instead.
-fn semaErrorAt(node: ASTNode, message: String) {
+internal fn semaErrorAt(node: ASTNode, message: String) {
     diag_error_at(node.file, node.line, node.col, node.len, message)
 }
 
 // For the few errors that belong to no particular node.
-fn semaError(message: String) {
+private fn semaError(message: String) {
     diag_error(message)
 }
 
@@ -30,7 +30,7 @@ fn semaError(message: String) {
 // and never fails compilation -- the annotation is discarded and the value is
 // inferred normally. The one exception is a pin a converged analysis refutes
 // (SPEC 5.4.1), which is a program error and goes through semaErrorAt.
-fn semaWarningAt(node: ASTNode, message: String) {
+internal fn semaWarningAt(node: ASTNode, message: String) {
     diag_warning_at(node.file, node.line, node.col, node.len, message)
 }
 
@@ -51,7 +51,7 @@ fn semaWarningAt(node: ASTNode, message: String) {
 // there rather than a cast -- calling an i32-returning function through a
 // pointer declared to return something wider leaves the upper half undefined,
 // which is the one class of bug a task runtime must not have.
-fn semaTaskResultAllowed(t: TypeInfo) -> Bool {
+private fn semaTaskResultAllowed(t: TypeInfo) -> Bool {
     if (t.kind == TypeKind.VOID) { return true }
     if (t.kind == TypeKind.INT) { return strEquals(t.name, "Int") }
     if (t.kind == TypeKind.STRUCT) { return true }
@@ -60,14 +60,14 @@ fn semaTaskResultAllowed(t: TypeInfo) -> Bool {
     return t.kind == TypeKind.PTR
 }
 
-fn semaSpawnArgAllowed(t: TypeInfo) -> Bool {
+private fn semaSpawnArgAllowed(t: TypeInfo) -> Bool {
     if (t.kind == TypeKind.STRUCT) { return true }
     if (t.kind == TypeKind.STRING) { return true }
     if (t.kind == TypeKind.LIST) { return true }
     return t.kind == TypeKind.PTR
 }
 
-fn semaTypeErrorAt(node: ASTNode, context: String, expected: TypeInfo, actual: TypeInfo) {
+internal fn semaTypeErrorAt(node: ASTNode, context: String, expected: TypeInfo, actual: TypeInfo) {
     semaErrorAt(node, strConcat(strConcat(context, ": expected "),
                   strConcat(typeDisplay(expected), strConcat(", found ", typeDisplay(actual)))))
 }
@@ -85,7 +85,7 @@ fn semaTypeErrorAt(node: ASTNode, context: String, expected: TypeInfo, actual: T
 // safe. Without this the annotation would be exactly the unsafe-not-slow error
 // FFI 1 warns about, asserted by the programmer and trusted by LLVM with nothing
 // in between.
-fn semaCheckUniqueArgs(expr: ASTNode, fnNode: ASTNode, name: String) {
+private fn semaCheckUniqueArgs(expr: ASTNode, fnNode: ASTNode, name: String) {
     let mut outerArg = expr.child2
     let mut outerParam = fnNode.child1
     while (nodeExists(outerArg) and nodeExists(outerParam)) {
@@ -113,7 +113,33 @@ fn semaCheckUniqueArgs(expr: ASTNode, fnNode: ASTNode, name: String) {
     }
 }
 
-fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
+// The dotted name a call's receiver spells, or "" if it does not spell one.
+// `std.string.strTrim(x)` reaches the qualified-call check below with a receiver
+// that is itself a MEMBER_ACCESS -- `std.string` -- rather than the single
+// identifier the leaf-qualifier version could assume.
+//
+// A local anywhere in the chain answers "", which is what keeps `p.state.reset()`
+// a method call: the *root* is what decides, so a receiver rooted in a value is
+// never read as a module however many segments follow it. That is the same
+// ordering rule as the three readings of `a.b(...)` -- a local wins first.
+private fn semaDottedModulePath(node: ASTNode) -> String {
+    if (node.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (ir_has_var_type(node.s1) == 1) { return "" }
+        return strClone(node.s1)
+    }
+    if (node.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let inner = semaDottedModulePath(ptr_to_node(node.child1))
+        if (strEquals(inner, "")) { return "" }
+        // Bound rather than nested: an intermediate passed straight into another
+        // call has its release withheld (TODO.md, argument-position release), so
+        // `strConcat(strConcat(a, b), c)` leaks the inner result.
+        let head = strConcat(inner, ".")
+        return strConcat(head, node.s1)
+    }
+    return ""
+}
+
+internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     if (nodeHasType(expr)) {
         return nodeGetType(expr)
     }
@@ -385,12 +411,13 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // resolution reads it as a filter. It survives the re-entry into
             // semaExpr and monoCopyOne's copy, which is what makes this
             // idempotent and instantiation-safe.
-            if (target.kind == NodeKind.IDENTIFIER_EXPR and ir_has_var_type(target.s1) == 0
-                and semaModuleDeclares(target.s1, callee.s1)) {
+            let modulePath = semaDottedModulePath(target)
+            if (strEquals(modulePath, "") == false
+                and semaModuleDeclares(modulePath, callee.s1)) {
                 let qualifiedName = createNode(NodeKind.IDENTIFIER_EXPR)
                 qualifiedName.s1 = strClone(callee.s1)
                 nodeSpanFrom(qualifiedName, callee)
-                expr.s1 = strClone(target.s1)
+                expr.s1 = strClone(modulePath)
                 expr.child1 = node_to_ptr(qualifiedName)
                 return semaExpr(module, expr)
             }
@@ -417,12 +444,31 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // method rewrite -- and `text.nosuch()` becoming `nosuch(text)`
             // reports "unknown function `nosuch`", which sends the reader to
             // check their spelling when the answer is their imports.
-            if (target.kind == NodeKind.IDENTIFIER_EXPR and ir_has_var_type(target.s1) == 0
-                and semaQualifierNamesModule(target.s1)) {
-                semaErrorAt(callee, strConcat(strConcat("module ", diagQuote(target.s1)),
+            if (strEquals(modulePath, "") == false
+                and semaQualifierNamesModule(modulePath)) {
+                semaErrorAt(callee, strConcat(strConcat("module ", diagQuote(modulePath)),
                                               strConcat(" declares no ", diagQuote(callee.s1))))
                 nodeSetType(expr, typeInvalid())
                 return typeInvalid()
+            }
+
+            // A qualifier that names no module but is spelled like the *leaf* of
+            // one. Qualifiers were file leaves until they became import paths, so
+            // `string.strTrim(x)` is the shape of every call written against the
+            // older spelling -- and the fall-through answer for it is "unknown
+            // identifier `string`", which sends the reader looking for a variable
+            // they never declared instead of at the name of their import.
+            if (strEquals(modulePath, "") == false
+                and semaQualifierNamesModule(modulePath) == false) {
+                let suggestion = semaModuleWithLeaf(modulePath)
+                if (strEquals(suggestion, "") == false) {
+                    semaErrorAt(target, strConcat("no module ", diagQuote(modulePath)))
+                    diag_note(strConcat(strConcat("a module is qualified by its full import path -- did you mean ",
+                                                  diagQuote(suggestion)),
+                                        "?"))
+                    nodeSetType(expr, typeInvalid())
+                    return typeInvalid()
+                }
             }
 
             if (target.kind != NodeKind.TYPE_ANNOTATION) {
@@ -781,7 +827,7 @@ fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     return typeInvalid()
 }
 
-fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
+private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
     if (stmt.kind == NodeKind.VARIABLE_DECL) {
         let mut varT = typeInvalid()
         let hasAnnotation = nodeExists(stmt.child1)
@@ -1051,7 +1097,7 @@ fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
 // A block is a scope: anything declared inside it stops being visible at the
 // closing brace, and a `let` that repeats an outer name shadows it for the rest
 // of the block rather than overwriting it.
-fn semaBlock(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
+internal fn semaBlock(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
     ir_scope_push()
 
     let mut stmtPtr = block.child1
@@ -1073,7 +1119,7 @@ fn semaBlock(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
     ir_scope_pop()
 }
 
-fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
+internal fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
     // Builtins have compiler-owned identity and signatures. Allowing source to
     // declare one would bring back the exact ambiguity the reserved spelling is
     // meant to remove: a name that looks foreign or user-defined but whose call
@@ -1115,7 +1161,7 @@ fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
     ir_set_fn_return_type(symbol, typeSemKey(retT))
 }
 
-fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
+private fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
     let mut varT = typeInvalid()
     if (nodeExists(varNode.child1)) {
         varT = semaAnnotationType(module, ptr_to_node(varNode.child1))
@@ -1155,7 +1201,7 @@ fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
     nodeSetType(varNode, varT)
 }
 
-fn semaFunction(module: ASTNode, fnNode: ASTNode) {
+private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
     ir_clear_local_var_types()
     ir_clear_moved()
     ir_clear_borrowed()
@@ -1220,7 +1266,7 @@ fn semaFunction(module: ASTNode, fnNode: ASTNode) {
 //
 // The cost is that two spellings of one type would not match. Prismio 0.1 has no
 // type aliases, so today there are none.
-fn semaCheckImplBlocks(module: ASTNode) {
+private fn semaCheckImplBlocks(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
@@ -1231,7 +1277,7 @@ fn semaCheckImplBlocks(module: ASTNode) {
     }
 }
 
-fn semaFindTrait(module: ASTNode, name: String) -> ASTNode {
+private fn semaFindTrait(module: ASTNode, name: String) -> ASTNode {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
@@ -1241,7 +1287,7 @@ fn semaFindTrait(module: ASTNode, name: String) -> ASTNode {
     return ptr_to_node(ptr_null())
 }
 
-fn semaCheckConformance(module: ASTNode, implNode: ASTNode) {
+private fn semaCheckConformance(module: ASTNode, implNode: ASTNode) {
     let traitDecl = semaFindTrait(module, implNode.s2)
     if (nodeIsNull(node_to_ptr(traitDecl))) {
         semaErrorAt(implNode, strConcat("unknown trait ", diagQuote(implNode.s2)))
@@ -1266,7 +1312,7 @@ fn semaCheckConformance(module: ASTNode, implNode: ASTNode) {
 // Any declaration of this name whose whole signature agrees. The declaration
 // index answers "which declarations carry this name" without a walk, which is
 // what makes this cheap enough to run per trait method.
-fn semaHasConformingMethod(module: ASTNode, typeName: String, signature: ASTNode) -> Bool {
+private fn semaHasConformingMethod(module: ASTNode, typeName: String, signature: ASTNode) -> Bool {
     let count = ir_decl_count(signature.s1)
     let mut i = 0
     while (i < count) {
@@ -1280,7 +1326,7 @@ fn semaHasConformingMethod(module: ASTNode, typeName: String, signature: ASTNode
     return false
 }
 
-fn semaSignaturesAgree(typeName: String, signature: ASTNode, candidate: ASTNode) -> Bool {
+private fn semaSignaturesAgree(typeName: String, signature: ASTNode, candidate: ASTNode) -> Bool {
     if (semaAnnotationsAgree(typeName, signature.child3, candidate.child3) == false) { return false }
 
     let mut want = signature.child1
@@ -1300,7 +1346,7 @@ fn semaSignaturesAgree(typeName: String, signature: ASTNode, candidate: ASTNode)
 
 // `Self` in the trait's half stands for the implementing type. An absent
 // annotation on both sides is a void return and agrees with itself.
-fn semaAnnotationsAgree(typeName: String, wantPtr: Ptr, havePtr: Ptr) -> Bool {
+private fn semaAnnotationsAgree(typeName: String, wantPtr: Ptr, havePtr: Ptr) -> Bool {
     if (nodeIsNull(wantPtr) and nodeIsNull(havePtr)) { return true }
     if (nodeIsNull(wantPtr) or nodeIsNull(havePtr)) { return false }
 
@@ -1329,7 +1375,7 @@ fn semaAnnotationsAgree(typeName: String, wantPtr: Ptr, havePtr: Ptr) -> Bool {
 // How the trait wrote it, for the note under a conformance error. Reconstructed
 // rather than quoted from source, because the signature and the `impl` that fails
 // to satisfy it are routinely in different files.
-fn semaSignatureText(signature: ASTNode) -> String {
+private fn semaSignatureText(signature: ASTNode) -> String {
     let mut text = strConcat(strConcat("fn ", signature.s1), "(")
     let mut paramPtr = signature.child1
     let mut first = true
@@ -1347,7 +1393,7 @@ fn semaSignatureText(signature: ASTNode) -> String {
     return text
 }
 
-fn semaAnnotationText(annotationPtr: Ptr) -> String {
+private fn semaAnnotationText(annotationPtr: Ptr) -> String {
     if (nodeIsNull(annotationPtr)) { return "" }
     let annotation = ptr_to_node(annotationPtr)
     if (annotation.i1 == 1) {
@@ -1382,7 +1428,7 @@ let mut closureSerial = 0
 // character, so no user declaration can collide with one -- which is what lets
 // the call rewrite key on the *type* rather than on the absence of a function of
 // the same name.
-fn semaClosurePrefix() -> String { return strConcat("Closure", monoSeparator()) }
+private fn semaClosurePrefix() -> String { return strConcat("Closure", monoSeparator()) }
 
 // **A closure is a struct and a function, and the dispatch is overloading.**
 //
@@ -1409,7 +1455,7 @@ fn semaClosurePrefix() -> String { return strConcat("Closure", monoSeparator()) 
 // capture is moved and the original binding is dead afterwards. Rust spells that
 // `move |...|` and defaults to borrowing; Prismio has no way to hold a borrow in
 // a struct field, so by-value is the only sound default it can have today.
-fn semaClosureName(expr: ASTNode) -> String {
+private fn semaClosureName(expr: ASTNode) -> String {
     // Deterministic, and unique across the copies monomorphisation makes of a
     // generic body -- which is why the serial is here and the span alone is not
     // enough. Two instantiations of one template hold two CLOSURE_EXPRs with
@@ -1420,7 +1466,7 @@ fn semaClosureName(expr: ASTNode) -> String {
                                strConcat(monoSeparator(), strFromInt(closureSerial))))
 }
 
-fn semaClosureNamesParam(paramsPtr: Ptr, name: String) -> Bool {
+private fn semaClosureNamesParam(paramsPtr: Ptr, name: String) -> Bool {
     let mut p = paramsPtr
     while (nodeExists(p)) {
         let param = ptr_to_node(p)
@@ -1430,7 +1476,7 @@ fn semaClosureNamesParam(paramsPtr: Ptr, name: String) -> Bool {
     return false
 }
 
-fn semaClosureHasCapture(captures: NodeList, name: String) -> Bool {
+private fn semaClosureHasCapture(captures: NodeList, name: String) -> Bool {
     let mut p = captures.head
     while (nodeExists(p)) {
         let field = ptr_to_node(p)
@@ -1444,14 +1490,14 @@ fn semaClosureHasCapture(captures: NodeList, name: String) -> Bool {
 // name has no variable type, a global is reachable without capturing it, and a
 // closure parameter is bound by the closure itself -- so all three fall out
 // without a special case.
-fn semaClosureIsCapture(name: String, paramsPtr: Ptr, captures: NodeList) -> Bool {
+private fn semaClosureIsCapture(name: String, paramsPtr: Ptr, captures: NodeList) -> Bool {
     if (semaClosureNamesParam(paramsPtr, name)) { return false }
     if (ir_has_var_type(name) == 0) { return false }
     if (ir_var_is_global(name) == 1) { return false }
     return semaClosureHasCapture(captures, name) == false
 }
 
-fn semaCollectCaptures(node: ASTNode, paramsPtr: Ptr, captures: NodeList) {
+private fn semaCollectCaptures(node: ASTNode, paramsPtr: Ptr, captures: NodeList) {
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
         if (semaClosureIsCapture(node.s1, paramsPtr, captures)) {
             let field = createNode(NodeKind.STRUCT_FIELD)
@@ -1465,7 +1511,7 @@ fn semaCollectCaptures(node: ASTNode, paramsPtr: Ptr, captures: NodeList) {
     semaCollectCapturesChain(node.child3, paramsPtr, captures)
 }
 
-fn semaCollectCapturesChain(ptr: Ptr, paramsPtr: Ptr, captures: NodeList) {
+private fn semaCollectCapturesChain(ptr: Ptr, paramsPtr: Ptr, captures: NodeList) {
     let mut p = ptr
     while (nodeExists(p)) {
         let node = ptr_to_node(p)
@@ -1482,7 +1528,7 @@ fn semaCollectCapturesChain(ptr: Ptr, paramsPtr: Ptr, captures: NodeList) {
 // `child1`, and the node keeps its `next` link and its span. Building a new node
 // would mean telling whichever slot points at this one to re-point, and those
 // slots belong to eight different kinds.
-fn semaRewriteCaptures(node: ASTNode, captures: NodeList) {
+private fn semaRewriteCaptures(node: ASTNode, captures: NodeList) {
     if (node.kind == NodeKind.IDENTIFIER_EXPR and semaClosureHasCapture(captures, node.s1)) {
         let receiver = createNode(NodeKind.IDENTIFIER_EXPR)
         receiver.s1 = "self"
@@ -1499,7 +1545,7 @@ fn semaRewriteCaptures(node: ASTNode, captures: NodeList) {
     semaRewriteCapturesChain(node.child3, captures)
 }
 
-fn semaRewriteCapturesChain(ptr: Ptr, captures: NodeList) {
+private fn semaRewriteCapturesChain(ptr: Ptr, captures: NodeList) {
     let mut p = ptr
     while (nodeExists(p)) {
         let node = ptr_to_node(p)
@@ -1515,7 +1561,7 @@ fn semaRewriteCapturesChain(ptr: Ptr, captures: NodeList) {
 // are bound in a scope of their own so the body resolves exactly as it will
 // inside `call`; the captures resolve as the enclosing locals they still are at
 // this point, and a capture and its field have the same type by construction.
-fn semaClosureBodyType(module: ASTNode, expr: ASTNode) -> TypeInfo {
+private fn semaClosureBodyType(module: ASTNode, expr: ASTNode) -> TypeInfo {
     ir_scope_push()
     let mut paramPtr = expr.child1
     while (nodeExists(paramPtr)) {
@@ -1531,7 +1577,7 @@ fn semaClosureBodyType(module: ASTNode, expr: ASTNode) -> TypeInfo {
     return bodyT
 }
 
-fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
+private fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
     let captures = nodeList()
     semaCollectCaptures(ptr_to_node(expr.child2), expr.child1, captures)
 
@@ -1722,7 +1768,7 @@ fn analyzeModule(module: ASTNode) {
 // binding made in `setup` is what `measure` consumes, which is the whole point
 // of the split (LAYOUT 3.1 -- input construction must not pollute the counts).
 // So they share one scope, and the move state carries from one into the other.
-fn semaWorkload(module: ASTNode, node: ASTNode) {
+private fn semaWorkload(module: ASTNode, node: ASTNode) {
     ir_clear_local_var_types()
     ir_clear_moved()
     ir_clear_borrowed()
@@ -1753,7 +1799,7 @@ fn semaWorkload(module: ASTNode, node: ASTNode) {
     ir_scope_pop()
 }
 
-fn semaWorkloadStatements(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
+private fn semaWorkloadStatements(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
     let mut stmtPtr = block.child1
     while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)

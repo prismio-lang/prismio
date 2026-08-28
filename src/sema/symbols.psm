@@ -7,7 +7,7 @@ import ir.bridge
 import common.diagnostics
 import std.string
 
-fn semaMangleType(t: TypeInfo) -> String {
+internal fn semaMangleType(t: TypeInfo) -> String {
     if (t.kind == TypeKind.VOID) { return "Void" }
     if (t.kind == TypeKind.INT) { return t.name }
     if (t.kind == TypeKind.FLOAT) { return "Float" }
@@ -44,7 +44,7 @@ fn semaMangleType(t: TypeInfo) -> String {
     return "Invalid"
 }
 
-fn semaParamSignature(module: ASTNode, paramPtr: Ptr) -> String {
+private fn semaParamSignature(module: ASTNode, paramPtr: Ptr) -> String {
     let mut sig = ""
     let mut curr = paramPtr
     while (nodeExists(curr)) {
@@ -61,7 +61,7 @@ fn semaParamSignature(module: ASTNode, paramPtr: Ptr) -> String {
     return sig
 }
 
-fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
+internal fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
     if (fnNode.kind == NodeKind.EXTERN_FUNCTION) {
         return fnNode.s1
     }
@@ -73,7 +73,7 @@ fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
 
 // Mangles every function's symbol once and stores it on the node, so the
 // duplicate-detection passes can compare strings instead of recomputing.
-fn semaCacheFunctionSymbols(module: ASTNode) {
+internal fn semaCacheFunctionSymbols(module: ASTNode) {
     let mut stmtPtr = module.child1
     while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
@@ -84,7 +84,7 @@ fn semaCacheFunctionSymbols(module: ASTNode) {
     }
 }
 
-fn semaSamePosition(a: ASTNode, b: ASTNode) -> Bool {
+internal fn semaSamePosition(a: ASTNode, b: ASTNode) -> Bool {
     return a.file == b.file and a.line == b.line and a.col == b.col
 }
 
@@ -100,7 +100,7 @@ fn semaSamePosition(a: ASTNode, b: ASTNode) -> Bool {
 // Compares the symbol cached on each node by semaCacheFunctionSymbols() rather
 // than re-mangling: mangling walks a parameter list and reads a type annotation
 // per parameter, and this runs once per function.
-fn semaFirstFunctionWithSymbol(module: ASTNode, fnNode: ASTNode) -> ASTNode {
+internal fn semaFirstFunctionWithSymbol(module: ASTNode, fnNode: ASTNode) -> ASTNode {
     let name = fnNode.s1
     let symbol = fnNode.s2
     let count = ir_decl_count(name)
@@ -117,7 +117,7 @@ fn semaFirstFunctionWithSymbol(module: ASTNode, fnNode: ASTNode) -> ASTNode {
     return createNode(NodeKind.MODULE)
 }
 
-fn semaArgMatchesType(module: ASTNode, argNode: ASTNode, expected: TypeInfo) -> Bool {
+private fn semaArgMatchesType(module: ASTNode, argNode: ASTNode, expected: TypeInfo) -> Bool {
     if (typeIsValid(expected) and expected.kind == TypeKind.INT and semaIsIntLiteral(argNode)) {
         return true
     }
@@ -125,7 +125,7 @@ fn semaArgMatchesType(module: ASTNode, argNode: ASTNode, expected: TypeInfo) -> 
     return semaTypesMatch(expected, actual)
 }
 
-fn semaSignatureMatchesCall(module: ASTNode, fnNode: ASTNode, argPtr: Ptr) -> Bool {
+private fn semaSignatureMatchesCall(module: ASTNode, fnNode: ASTNode, argPtr: Ptr) -> Bool {
     let mut arg = argPtr
     let mut param = fnNode.child1
     while (nodeExists(arg) and nodeExists(param)) {
@@ -147,7 +147,7 @@ fn semaSignatureMatchesCall(module: ASTNode, fnNode: ASTNode, argPtr: Ptr) -> Bo
 // one further rule: prefer the candidate that keeps the literal's default Int
 // type. Casts and typed bindings are not literals here, so they continue to
 // resolve only against their exact declared type.
-fn semaDefaultLiteralScore(module: ASTNode, fnNode: ASTNode, argPtr: Ptr) -> Int {
+private fn semaDefaultLiteralScore(module: ASTNode, fnNode: ASTNode, argPtr: Ptr) -> Int {
     let mut score = 0
     let mut arg = argPtr
     let mut param = fnNode.child1
@@ -167,7 +167,7 @@ fn semaDefaultLiteralScore(module: ASTNode, fnNode: ASTNode, argPtr: Ptr) -> Int
 
 // True when the module contains a real `fn` body for `name`, as opposed to only an
 // `extern fn` declaration of it.
-fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
+private fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
     let count = ir_decl_count(name)
     let mut i = 0
     while (i < count) {
@@ -187,42 +187,64 @@ fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
 // v0.1 3.5 -- modules
 // ---------------------------------------------------------
 
-// The name a module is qualified by: the last path segment of the file a
-// declaration came from, without its extension. `src/lexer/token.psm` is
-// `token`.
+// The name a module is qualified by: the full import path it was reached by.
+// `src/lexer/token.psm` is `lexer.token`, and `std/string.psm` is `std.string`.
 //
-// **Derived from the file rather than recorded in a table**, and that is what
-// makes namespacing cheap here: `resolveImports` flattens every module into one
-// AST, but each node keeps the `file` id it was parsed with -- which is why
-// diagnostics still name the right file, and which turns out to be the whole of
-// what a qualifier needs. There is no module registry to build, fill, reset, or
-// keep in step with the merge.
+// **Recorded by the merge rather than derived from the path.** The leaf alone
+// used to be enough and no longer is, for two independent reasons:
 //
-// Two modules may share a leaf name -- this tree has `src/ir/expr.psm` and
-// `src/parse/expr.psm` -- so `expr.foo(...)` can be genuinely ambiguous.
-// semaFindFunctionOverload reports that as an ambiguity rather than picking one.
-fn semaFileQualifier(file: Int) -> String {
-    let path = diag_file_path(file)
-    let n = __builtin_string_len(path)
+// Leaves collide. This tree has `src/ir/expr.psm` and `src/parse/expr.psm`, and
+// `src/{ir,sema,ast}/types.psm` three ways over -- so `expr.foo(...)` was
+// genuinely ambiguous and the best semaFindFunctionOverload could do was report
+// it. A full path distinguishes them.
+//
+// And the path is not the module. `resolveImportPath` flattens the package on
+// install: `std/string.psm` in a checkout ships as `stdlib/string.psm`. Deriving
+// a *full* qualifier from the file would read `std.string` here and
+// `stdlib.string` from an installed toolchain -- every qualified `std` call
+// resolving in this tree and failing in the shipped compiler, with the whole
+// suite green. Only the import statement knows the logical name, so the merge
+// records it as it resolves each one.
+//
+// "" for the entry file, which no import ever named. That is not a qualifier a
+// call can match, which is correct: nothing imports the entry.
+//
+// Cloned because diag_file_module is an `alias` into the registry's storage and
+// this returns an owned String.
+private fn semaFileQualifier(file: Int) -> String {
+    return strClone(diag_file_module(file))
+}
 
-    let mut start = 0
-    let mut i = 0
-    while (i < n) {
-        let c = strCharAt(path, i)
-        if (c == '/' or c == '\\') { start = i + 1 }
-        i = i + 1
+// The import path of a module whose last segment is `leaf`, or "" if none is.
+//
+// Asked only when a qualifier named no module, so the walk over the registry
+// happens once per mistake rather than once per call -- the same budget as
+// semaQualifierNamesModule, and for the same kind of reason.
+//
+// It exists for one specific wrong answer. A qualifier used to be the file's leaf,
+// so `string.strTrim(x)` was how every program written before this spelled a
+// qualified call. Without this, that program now reports "unknown identifier
+// `string`" and sends its author looking for a variable they never declared.
+internal fn semaModuleWithLeaf(leaf: String) -> String {
+    let count = diag_file_count()
+    let mut file = 0
+    while (file < count) {
+        let qualifier = semaFileQualifier(file)
+        let dot = strLastIndexOf(qualifier, ".")
+        if (dot >= 0) {
+            let tail = strSubstring(qualifier, dot + 1,
+                                    __builtin_string_len(qualifier) - dot - 1)
+            if (strEquals(tail, leaf)) { return qualifier }
+        }
+        file = file + 1
     }
-
-    let mut stop = n
-    if (strEndsWith(path, ".psm")) { stop = n - 4 }
-    if (stop <= start) { return "" }
-    return strSubstring(path, start, stop - start)
+    return ""
 }
 
 // Whether some declaration named `name` came from a module qualified `qualifier`.
 // Asked before a `q.f(x)` is read as a method call, so a module name and a value
 // of the same name cannot be confused: a local is checked for first.
-fn semaModuleDeclares(qualifier: String, name: String) -> Bool {
+internal fn semaModuleDeclares(qualifier: String, name: String) -> Bool {
     let count = ir_decl_count(name)
     let mut i = 0
     while (i < count) {
@@ -241,7 +263,7 @@ fn semaModuleDeclares(qualifier: String, name: String) -> Bool {
 // function `nosuch`" and "module `text` declares no `nosuch`", which is the
 // difference between a reader checking their spelling and a reader checking
 // their imports.
-fn semaQualifierNamesModule(qualifier: String) -> Bool {
+internal fn semaQualifierNamesModule(qualifier: String) -> Bool {
     let count = diag_file_count()
     let mut file = 0
     while (file < count) {
@@ -251,19 +273,39 @@ fn semaQualifierNamesModule(qualifier: String) -> Bool {
     return false
 }
 
-// v0.1 3.5. Whether this declaration is visible from `atFile`.
-//
-// `priv fn` is **opt-in**, which is the opposite of most languages and is the
-// only non-breaking spelling available: every cross-module call in `src/` and
-// every `std` function is public today, and a private default would have made
-// this change a rename of the whole tree rather than a feature. The default can
-// be flipped later with a module-level declaration; nothing here precludes it.
-fn semaDeclVisibleFrom(decl: ASTNode, atFile: Int) -> Bool {
-    if (decl.i2 == 0) { return true }
-    return decl.file == atFile
+// The package a module belongs to: its import path without the last segment.
+// `std.string` is `std`, `ir.expr` is `ir`, and a module imported by a bare name
+// is "" -- the root package, which is also where the entry file sits.
+private fn semaPackageOf(qualifier: String) -> String {
+    let dot = strLastIndexOf(qualifier, ".")
+    if (dot < 0) { return "" }
+    return strSubstring(qualifier, 0, dot)
 }
 
-fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> ASTNode {
+// v0.1 3.5. Whether this declaration is visible from `atFile`.
+//
+// Visibility is **opt-in**: the default is public, which is the opposite of most
+// languages and the only non-breaking spelling available. Every cross-module call
+// in `src/` and every `std` function is public today, so a private default would
+// have made this a rename of the whole tree rather than a feature. The default can
+// be flipped later with a module-level declaration; nothing here precludes it.
+//
+//   0  public    -- everywhere
+//   1  private   -- the declaring file
+//   2  internal  -- the declaring package
+//
+// `internal` is the level that only became expressible once qualifiers became
+// import paths: "the same package" is the qualifier minus its last segment, and
+// the leaf qualifier it replaced carried no package to compare.
+private fn semaDeclVisibleFrom(decl: ASTNode, atFile: Int) -> Bool {
+    if (decl.i2 == 0) { return true }
+    if (decl.i2 == 1) { return decl.file == atFile }
+    let declPackage = semaPackageOf(semaFileQualifier(decl.file))
+    let atPackage = semaPackageOf(semaFileQualifier(atFile))
+    return strEquals(declPackage, atPackage)
+}
+
+internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> ASTNode {
     // Track the winner as a pointer, not an ASTNode binding: `best = stmt` would
     // move the move-only struct out of `stmt`, and the loop still needs `stmt.next`.
     let mut bestPtr: Ptr = ptr_null()
@@ -272,7 +314,10 @@ fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr
     let mut nameSeen = false
     // v0.1 3.5. Set when the call was written `module.f(...)`; empty otherwise.
     let qualifier = call.s1
-    let mut privateSeen = false
+    // The visibility of a declaration that matched by name but was not visible
+    // here: 0 none seen, 1 private, 2 internal. Kept as the level rather than a
+    // flag so the diagnostic can name the marker the author actually wrote.
+    let mut hiddenLevel = 0
 
     // parser.psm, ir.psm and sema.psm all forward-declare their mutually recursive
     // functions with `extern fn` and then define them with `fn` in the same file.
@@ -307,7 +352,7 @@ fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr
         // reader can see is the worst of both.
         if (isCandidate and semaDeclVisibleFrom(stmt, call.file) == false) {
             isCandidate = false
-            privateSeen = true
+            hiddenLevel = stmt.i2
         }
         if (isCandidate) {
             nameSeen = true
@@ -341,9 +386,14 @@ fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr
                                        " accepts these argument types"))
         return createNode(NodeKind.MODULE)
     }
-    if (privateSeen) {
-        semaErrorAt(call, strConcat(diagQuote(name), " is private to the module that declares it"))
-        diag_note("drop `priv` from its declaration to make it part of that module's surface")
+    if (hiddenLevel == 1) {
+        semaErrorAt(call, strConcat(diagQuote(name), " is private to the file that declares it"))
+        diag_note("drop `private` from its declaration, or mark it `internal` to share it within its package")
+        return createNode(NodeKind.MODULE)
+    }
+    if (hiddenLevel == 2) {
+        semaErrorAt(call, strConcat(diagQuote(name), " is internal to the package that declares it"))
+        diag_note("drop `internal` from its declaration to make it part of that package's surface")
         return createNode(NodeKind.MODULE)
     }
     if (strEquals(qualifier, "") == false) {
@@ -356,7 +406,7 @@ fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr
 }
 
 // Argument count for a builtin, counting the linked list of argument nodes.
-fn semaArgCount(argPtr: Ptr) -> Int {
+private fn semaArgCount(argPtr: Ptr) -> Int {
     let mut count = 0
     let mut curr = argPtr
     while (nodeExists(curr)) {
@@ -371,7 +421,7 @@ fn semaArgCount(argPtr: Ptr) -> Int {
 // nodes that are not there. Every one of these checks used to report and then
 // dereference the missing argument anyway, which only survived because
 // semaError exited the process.
-fn semaCheckArity(call: ASTNode, name: String, argPtr: Ptr, expected: Int) -> Bool {
+internal fn semaCheckArity(call: ASTNode, name: String, argPtr: Ptr, expected: Int) -> Bool {
     let actual = semaArgCount(argPtr)
     if (actual == expected) { return true }
 

@@ -1,4 +1,4 @@
-// expect-error: `hiddenScale` is private to the module that declares it
+// expect-error: `hiddenScale` is private to the file that declares it
 import std.io
 import utils
 
