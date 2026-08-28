@@ -18,7 +18,7 @@ import std.string
 // phi primitive, and mem2reg turns this back into one anyway. The slot is named
 // with a dot, which no Prismio identifier can contain, so it can never collide
 // with a user variable.
-fn generateShortCircuit(expr: ASTNode) -> String {
+private fn generateShortCircuit(expr: ASTNode) -> String {
     let isAnd = strEquals(expr.s1, "and")
 
     let slot = strConcat("sc.", strFromInt(irShortCircuitCounter))
@@ -66,7 +66,7 @@ fn generateShortCircuit(expr: ASTNode) -> String {
 // droppable even when every value it receives is owned -- that case leaks today
 // regardless, since there is no drop on reassignment, so the strictness costs
 // nothing that is not already lost.
-fn nodeAssignsName(nodePtr: Ptr, name: String) -> Bool {
+private fn nodeAssignsName(nodePtr: Ptr, name: String) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
 
@@ -84,7 +84,7 @@ fn nodeAssignsName(nodePtr: Ptr, name: String) -> Bool {
     return chainAssignsName(n.child3, name)
 }
 
-fn chainAssignsName(head: Ptr, name: String) -> Bool {
+internal fn chainAssignsName(head: Ptr, name: String) -> Bool {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -106,7 +106,7 @@ fn chainAssignsName(head: Ptr, name: String) -> Bool {
 // A string literal counts because the declaration clones it -- see
 // generateStatement. Without that clause the accumulator idiom `let mut s = ""`
 // is disqualified by its own first line, which is every one of them.
-fn nodeProducesOwnedValue(exprPtr: Ptr) -> Bool {
+internal fn nodeProducesOwnedValue(exprPtr: Ptr) -> Bool {
     if (nodeIsNull(exprPtr)) { return false }
     if (aif_releases_on_overwrite_node(exprPtr) == 1) { return true }
     // M2.0b. A value a *callee* allocated and handed over, which the escape
@@ -125,7 +125,7 @@ fn nodeProducesOwnedValue(exprPtr: Ptr) -> Bool {
         or nodeIsStringLiteralExpr(exprPtr)
 }
 
-fn nodeIsStringLiteralExpr(exprPtr: Ptr) -> Bool {
+internal fn nodeIsStringLiteralExpr(exprPtr: Ptr) -> Bool {
     if (nodeIsNull(exprPtr)) { return false }
     let n = ptr_to_node(exprPtr)
     if (n.kind != NodeKind.LITERAL_EXPR) { return false }
@@ -140,7 +140,7 @@ fn nodeIsStringLiteralExpr(exprPtr: Ptr) -> Bool {
 // A binding reassigned only with owned values can be dropped and can release what
 // it displaces; one that ever receives a borrow -- `s = node.name` -- cannot do
 // either, and the difference is a free of a value the AST still holds.
-fn nodeAssignsUnowned(nodePtr: Ptr, name: String) -> Bool {
+private fn nodeAssignsUnowned(nodePtr: Ptr, name: String) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
 
@@ -158,7 +158,7 @@ fn nodeAssignsUnowned(nodePtr: Ptr, name: String) -> Bool {
     return chainAssignsUnowned(n.child3, name)
 }
 
-fn chainAssignsUnowned(head: Ptr, name: String) -> Bool {
+private fn chainAssignsUnowned(head: Ptr, name: String) -> Bool {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -183,7 +183,7 @@ fn chainAssignsUnowned(head: Ptr, name: String) -> Bool {
 // the straight-line form both, so the shape never reaches codegen. Deleting it is
 // worth more than keeping it, because a guard that cannot fire reads like a
 // hazard that has been handled.
-fn irOwningAccumulator(name: String) -> Bool {
+internal fn irOwningAccumulator(name: String) -> Bool {
     if (chainAssignsName(irFunctionBody, name) == false) { return false }
     return chainAssignsUnowned(irFunctionBody, name) == false
 }
@@ -199,7 +199,7 @@ fn irOwningAccumulator(name: String) -> Bool {
 // Syntactic and blunt for the same reason nodeAssignsName is -- codegen is a
 // forward walk, and a `return` written above the binding's last use still runs
 // after it.
-fn nodeReturnsName(nodePtr: Ptr, name: String) -> Bool {
+private fn nodeReturnsName(nodePtr: Ptr, name: String) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
 
@@ -217,7 +217,7 @@ fn nodeReturnsName(nodePtr: Ptr, name: String) -> Bool {
     return chainReturnsName(n.child3, name)
 }
 
-fn chainReturnsName(head: Ptr, name: String) -> Bool {
+internal fn chainReturnsName(head: Ptr, name: String) -> Bool {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -250,7 +250,7 @@ fn chainReturnsName(head: Ptr, name: String) -> Bool {
 // `let same = identity(items)` in test_47_aif_containers, where the alias never
 // leaves the frame and `items` is this scope's to drop. Asking which values
 // reach a `return` keeps that drop and still refuses the one above.
-fn nodeEscapesThroughCall(nodePtr: Ptr, name: String) -> Bool {
+private fn nodeEscapesThroughCall(nodePtr: Ptr, name: String) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
 
@@ -265,7 +265,7 @@ fn nodeEscapesThroughCall(nodePtr: Ptr, name: String) -> Bool {
     return chainEscapesThroughCall(n.child3, name)
 }
 
-fn chainEscapesThroughCall(head: Ptr, name: String) -> Bool {
+internal fn chainEscapesThroughCall(head: Ptr, name: String) -> Bool {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -288,7 +288,7 @@ fn chainEscapesThroughCall(head: Ptr, name: String) -> Bool {
 // the cap is a limit on how much this is willing to prove, so it has to fail
 // towards the leak. Eight is far past anything in the tree; the deepest real
 // chain is two.
-fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
+private fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
     if (nodeIsNull(exprPtr)) { return false }
     if (hops > 8) { return true }
     let e = ptr_to_node(exprPtr)
@@ -319,7 +319,7 @@ fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
 //
 // Both the declaration and every assignment, because a binding reassigned in a
 // loop -- `out = identity(t)` -- carries the alias just as its `let` would.
-fn nodeBindingAliasesName(nodePtr: Ptr, boundName: String, name: String, hops: Int) -> Bool {
+private fn nodeBindingAliasesName(nodePtr: Ptr, boundName: String, name: String, hops: Int) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
 
@@ -339,7 +339,7 @@ fn nodeBindingAliasesName(nodePtr: Ptr, boundName: String, name: String, hops: I
     return chainBindingAliasesName(n.child3, boundName, name, hops)
 }
 
-fn chainBindingAliasesName(head: Ptr, boundName: String, name: String, hops: Int) -> Bool {
+private fn chainBindingAliasesName(head: Ptr, boundName: String, name: String, hops: Int) -> Bool {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -363,12 +363,12 @@ fn chainBindingAliasesName(head: Ptr, boundName: String, name: String, hops: Int
 // the value has already raised `in_container` or `site_in_released_field` on the
 // site, and this declines on both -- which is why `list_push(l, band(...))` gets
 // no release here even though it is exactly the shape that would double-free.
-fn irArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
+private fn irArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
     if (argNode.kind != NodeKind.CALL_EXPR) { return false }
     return aif_owns_call_result_at_node(node_to_ptr(argNode)) != AIF_ELEM_NONE
 }
 
-fn irOwnedTemporaryKind(argNode: ASTNode) -> Int {
+private fn irOwnedTemporaryKind(argNode: ASTNode) -> Int {
     let owned = aif_owns_call_result_at_node(node_to_ptr(argNode))
     if (nodeGetType(argNode).kind == TypeKind.DATAVIEW) { return IR_DROP_DATAVIEW }
     if (owned == AIF_ELEM_LIST) { return IR_DROP_LIST }
@@ -382,7 +382,7 @@ fn irOwnedTemporaryKind(argNode: ASTNode) -> Int {
 // refuses to let a callee move one into a container ("cannot move out of
 // borrowed value"). So the caller is the last owner and this is its release
 // point.
-fn generateOwnedTemporaryReleases(vals: List<String>, kinds: List<Int>, types: List<String>) {
+private fn generateOwnedTemporaryReleases(vals: List<String>, kinds: List<Int>, types: List<String>) {
     let mut i = 0
     while (i < list_len(vals)) {
         let value: String = list_get(vals, i)
@@ -409,7 +409,7 @@ fn generateOwnedTemporaryReleases(vals: List<String>, kinds: List<Int>, types: L
 // droppable because of the *spawn*, not because of a site, so that reasoning does
 // not reach it and the copy has to be excluded by name. `test_69`'s
 // `result_type_survives_a_binding` is the shape, and it is in the suite.
-fn nodeCopiesName(nodePtr: Ptr, name: String) -> Bool {
+private fn nodeCopiesName(nodePtr: Ptr, name: String) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
 
@@ -425,11 +425,58 @@ fn nodeCopiesName(nodePtr: Ptr, name: String) -> Bool {
     return chainCopiesName(n.child3, name)
 }
 
-fn chainCopiesName(head: Ptr, name: String) -> Bool {
+internal fn chainCopiesName(head: Ptr, name: String) -> Bool {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
         if (nodeCopiesName(p, name)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+// Whether this function body explicitly frees `name` with `drop(name)`.
+//
+// The binding half of what `no_stack` used to answer for the whole site. A site
+// is shared -- every `strConcat` result in the program comes from the one
+// `str_with_capacity` inside it -- so "was this value explicitly dropped" cannot
+// be asked of the site without answering for every other binding that shares it.
+// It is asked of the name instead, in the same shape as chainAssignsName and
+// chainReturnsName above, and for the same reason: the drop list is keyed by name
+// within one function body, so a name is exactly the granularity available here.
+//
+// Only a direct `drop(name)` counts. An aliased binding that is dropped under
+// another name keeps its scope release, which is the conservative direction:
+// a missed suppression is a double free and a missed drop is a leak, so this
+// fails towards the leak the way irValueAliasesName's hop cap does.
+private fn nodeDropsName(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+
+    if (n.kind == NodeKind.CALL_EXPR) {
+        let callee = ptr_to_node(n.child1)
+        if (callee.kind == NodeKind.IDENTIFIER_EXPR and strEquals(callee.s1, "drop")) {
+            let mut argPtr = n.child2
+            while (nodeExists(argPtr)) {
+                let arg = ptr_to_node(argPtr)
+                if (arg.kind == NodeKind.IDENTIFIER_EXPR and strEquals(arg.s1, name)) {
+                    return true
+                }
+                argPtr = arg.next
+            }
+        }
+    }
+
+    if (chainDropsName(n.child1, name)) { return true }
+    if (chainDropsName(n.child2, name)) { return true }
+    return chainDropsName(n.child3, name)
+}
+
+internal fn chainDropsName(head: Ptr, name: String) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (nodeDropsName(p, name)) { return true }
         p = n.next
     }
     return false
@@ -463,7 +510,7 @@ fn chainCopiesName(head: Ptr, name: String) -> Bool {
 // ir_struct_field_ptr too and are deliberately NOT instrumented. They are the
 // memory model's own traffic, not the program's, and counting them would let the
 // layout decision be driven by the cost of the layout decision.
-fn irProfileField(structName: String, fieldName: String, isWrite: Bool) {
+internal fn irProfileField(structName: String, fieldName: String, isWrite: Bool) {
     if (irProfileMode == false) { return }
     let tyName = ir_get_temp_name(ir_const_cstring(structName))
     let fName = ir_get_temp_name(ir_const_cstring(fieldName))
@@ -485,7 +532,7 @@ fn irProfileField(structName: String, fieldName: String, isWrite: Bool) {
 // Integer fields only, which is what the table says ("observed value range, for
 // integer fields"). A Float has no bit-packing story here and a pointer's range
 // is an address, which is not a fact about the program.
-fn irProfileRange(structName: String, fieldName: String, fieldType: String, value: String) {
+internal fn irProfileRange(structName: String, fieldName: String, fieldType: String, value: String) {
     if (irProfileMode == false) { return }
     if (irTypeIsProfilableInt(fieldType) == false) { return }
     let tyName = ir_get_temp_name(ir_const_cstring(structName))
@@ -505,14 +552,14 @@ fn irProfileRange(structName: String, fieldName: String, fieldType: String, valu
     ir_call_end("void", "rt_profile_range")
 }
 
-fn irProfileAlloc(structName: String) {
+private fn irProfileAlloc(structName: String) {
     if (irProfileMode == false) { return }
     ir_call_begin()
     ir_call_arg("ptr", ir_get_temp_name(ir_const_cstring(structName)))
     ir_call_end("void", "rt_profile_alloc")
 }
 
-fn irTypeIsProfilableInt(t: String) -> Bool {
+private fn irTypeIsProfilableInt(t: String) -> Bool {
     if (strEquals(t, "i8")) { return true }
     if (strEquals(t, "i16")) { return true }
     if (strEquals(t, "i32")) { return true }
@@ -532,7 +579,7 @@ fn irTypeIsProfilableInt(t: String) -> Bool {
 // type's layout forbids it. One place, so the stamp, the push slot and every
 // access cannot disagree about which types are inline -- a disagreement would
 // read a body as a pointer.
-fn inlineElemSize(typeName: String) -> Int {
+private fn inlineElemSize(typeName: String) -> Int {
     if (strEquals(typeName, "")) { return 0 }
     if (ir_struct_is_flat(typeName) == 0) { return 0 }
     // A counted element cannot be inline: the count lives in a header in front
@@ -552,7 +599,7 @@ fn inlineElemSize(typeName: String) -> Int {
 // pushed value's type instead would be a list that one site thinks is inline and
 // another does not, which is the one way this can corrupt memory rather than
 // merely lose the optimisation.
-fn inlineElemSizeOfList(listExpr: ASTNode) -> Int {
+private fn inlineElemSizeOfList(listExpr: ASTNode) -> Int {
     if (nodeHasType(listExpr) == false) { return 0 }
     let lt = nodeGetType(listExpr)
     if (lt.kind != TypeKind.LIST) { return 0 }
@@ -562,7 +609,7 @@ fn inlineElemSizeOfList(listExpr: ASTNode) -> Int {
     return inlineElemSize(structTypeName(ekey))
 }
 
-fn inlineElemSizeOfSlice(sliceExpr: ASTNode) -> Int {
+private fn inlineElemSizeOfSlice(sliceExpr: ASTNode) -> Int {
     if (nodeHasType(sliceExpr) == false) { return 0 }
     let st = nodeGetType(sliceExpr)
     if (st.kind != TypeKind.SLICE or nodeIsNull(st.child)) { return 0 }
@@ -599,7 +646,7 @@ fn inlineElemSizeOfSlice(sliceExpr: ASTNode) -> Int {
 //
 // `prismio_cstr_len` rather than `__builtin_string_len`, which requires a fat
 // String while this boundary has only the raw pointer.
-fn fatFromPtr(raw: String) -> String {
+internal fn fatFromPtr(raw: String) -> String {
     ir_call_begin()
     ir_call_arg("ptr", raw)
     let len = ir_get_temp_name(ir_call_end("i32", "prismio_cstr_len"))
@@ -612,14 +659,14 @@ fn fatFromPtr(raw: String) -> String {
 // length must not do: `str_with_capacity` returns a buffer whose interior is
 // uninitialised, so a `prismio_cstr_len` on it reads a length out of whatever
 // the allocator last left there.
-fn fatWithLength(raw: String, len: String) -> String {
+private fn fatWithLength(raw: String, len: String) -> String {
     let wide = ir_get_temp_name(ir_sext("i32", len, "i64"))
     let u = ir_get_temp_name(ir_undef("struct:prismio.str"))
     let withPtr = ir_get_temp_name(ir_insert_value("struct:prismio.str", u, raw, "ptr", 0))
     return ir_get_temp_name(ir_insert_value("struct:prismio.str", withPtr, wide, "i64", 1))
 }
 
-fn callIsPrismioFn(funcName: String) -> Bool {
+private fn callIsPrismioFn(funcName: String) -> Bool {
     let n = ir_decl_count(funcName)
     let mut i = 0
     while (i < n) {
@@ -630,7 +677,7 @@ fn callIsPrismioFn(funcName: String) -> Bool {
     return false
 }
 
-fn callIsExtern(funcName: String) -> Bool {
+private fn callIsExtern(funcName: String) -> Bool {
     let n = ir_decl_count(funcName)
     let mut i = 0
     while (i < n) {
@@ -641,7 +688,7 @@ fn callIsExtern(funcName: String) -> Bool {
     return false
 }
 
-fn inlineElemSizeOfCall(expr: ASTNode) -> Int {
+private fn inlineElemSizeOfCall(expr: ASTNode) -> Int {
     if (nodeIsNull(expr.child2)) { return 0 }
     return inlineElemSizeOfList(ptr_to_node(expr.child2))
 }
@@ -652,7 +699,7 @@ fn inlineElemSizeOfCall(expr: ASTNode) -> Int {
 // storage from 1.19x slower than boxing on the frame-loop programs into faster.
 //
 // True when it emitted the call itself.
-fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
+private fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
     if (strEquals(funcName, "list_push") == false) { return false }
     if (nodeIsNull(expr.child2)) { return false }
     let listNode = ptr_to_node(expr.child2)
@@ -678,14 +725,14 @@ fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
 // put it in `list_get` and `list_push` instead measured **1.159x on the corpus
 // with no list inline at all**. See the note on `elem_size` in
 // runtime/lang_runtime.c.
-fn inlineOpName(funcName: String) -> String {
+private fn inlineOpName(funcName: String) -> String {
     if (strEquals(funcName, "list_get")) { return "list_get_inline" }
     if (strEquals(funcName, "list_set")) { return "list_set_inline" }
     if (strEquals(funcName, "list_push")) { return "list_push_inline" }
     return ""
 }
 
-fn generateElemInlineStamp(expr: ASTNode, funcName: String, result: String) {
+private fn generateElemInlineStamp(expr: ASTNode, funcName: String, result: String) {
     if (strEquals(funcName, "list_new") == false
         and strEquals(funcName, "list_new_with_capacity") == false) {
         return
@@ -700,7 +747,7 @@ fn generateElemInlineStamp(expr: ASTNode, funcName: String, result: String) {
     ir_call_end("void", "list_set_elem_inline")
 }
 
-fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: String) {
+private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: String) {
     let mut fieldPtr = expr.child1
     while (nodeExists(fieldPtr)) {
         let field = ptr_to_node(fieldPtr)
@@ -756,7 +803,7 @@ fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: Strin
     }
 }
 
-fn generateExpression(expr: ASTNode) -> String {
+internal fn generateExpression(expr: ASTNode) -> String {
     if (expr.kind == NodeKind.LITERAL_EXPR) {
         if (expr.i1 == TokenType.NUMBER_LITERAL) {
             return expr.s1

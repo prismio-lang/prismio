@@ -1,0 +1,57 @@
+// A List built by a *helper* and then converted to a DataView.
+//
+// `soa(rows)` is an FFI `consume`: the DataView takes the allocation and
+// `data_view_finish` frees it, so this frame must not release it as well.
+//
+// test_80 and test_81 both build their List inline in `main`, which puts the
+// allocation site and the binding in the same function. This one puts them in
+// different functions, which is the shape that shares one site across call sites
+// -- and it is the shape that broke. Separating an explicit `drop` from an
+// ownership *transfer* in the AIF solver was done without this distinction at
+// first, and the released-twice List aborted g1_dataview in `list_release` on
+// memory data_view_finish had already freed. The whole 193-test suite passed.
+import std.io
+
+struct Row {
+    a: Float,
+    b: Float,
+    live: Float
+}
+
+fn buildRows(count: Int) -> List<Row> {
+    let mut rows: List<Row> = list_new()
+    let mut i = 0
+    let mut f = 0.0
+    while (i < count) {
+        list_push(rows, Row { a: f, b: f + 1.0, live: 1.0 })
+        f = f + 1.0
+        i = i + 1
+    }
+    return rows
+}
+
+fn advance(view: DataView<Row>, dt: Float) {
+    let n = data_len(view)
+    let mut i = 0
+    while (i < n) {
+        let r = view[i]
+        r.a = r.a + r.b * dt
+        i = i + 1
+    }
+}
+
+fn main() -> Int {
+    let rows = buildRows(64)
+    let view: DataView<Row> = soa(rows)
+
+    advance(view, 0.5)
+    advance(view, 0.5)
+
+    let materialised = aos(view)
+    if (list_len(materialised) != 64) {
+        println("FAIL: materialising back gave the wrong length")
+        return 1
+    }
+    println("data view from a helper ok")
+    return 0
+}

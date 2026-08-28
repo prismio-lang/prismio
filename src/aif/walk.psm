@@ -16,7 +16,7 @@ import std.string
 // the same idiom dumpast.psm uses.
 // ---------------------------------------------------------------------------
 
-fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
+private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
     if (nodeIsNull(nodePtr)) {
         return aifVsEmpty()
     }
@@ -213,7 +213,7 @@ fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
     return out
 }
 
-fn aifSitesOfChain(head: Ptr, fnId: Int, scope: Int) -> Int {
+private fn aifSitesOfChain(head: Ptr, fnId: Int, scope: Int) -> Int {
     let mut out = aifVsEmpty()
     let mut p = head
     while (nodeExists(p)) {
@@ -228,7 +228,7 @@ fn aifSitesOfChain(head: Ptr, fnId: Int, scope: Int) -> Int {
 // whose body this compilation can see gets real parameter and return edges,
 // while an extern -- or a sealed function, which is the same situation (PIR 5)
 // -- gets its contracts and nothing more.
-fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
+private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     let e = ptr_to_node(callPtr)
     let ty = aifNodeType(e)
 
@@ -311,7 +311,11 @@ fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
             } else if (contract == AIF_FFI_CONSUME) {
                 // The callee frees it, so it must be something a free can take:
                 // never a stack slot, and no longer this frame's to reclaim.
+                // The second constraint is the half `no_stack` cannot carry: a
+                // `drop` sets that flag too, and only a transfer means somebody
+                // else performs the free.
                 aif_con_no_stack(av)
+                aif_con_transferred(av)
                 aif_con_escape_caller(av)
             } else {
                 // FFI 5.1: the callee may read and write during the call but does
@@ -450,7 +454,7 @@ fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
 // Statement walk
 // ---------------------------------------------------------------------------
 
-fn aifIsStatementKind(k: NodeKind) -> Bool {
+private fn aifIsStatementKind(k: NodeKind) -> Bool {
     if (k == NodeKind.BLOCK) { return true }
     if (k == NodeKind.VARIABLE_DECL) { return true }
     if (k == NodeKind.ASSIGNMENT_STATEMENT) { return true }
@@ -484,7 +488,7 @@ fn aifIsStatementKind(k: NodeKind) -> Bool {
 // compiler said something back, and nothing could ever fail. A name is now
 // either a tier or a region, and a region that does not exist or does not serve
 // the value is refuted by aif_check_placement_pins, which is an error.
-fn aifTierFromName(name: String) -> Int {
+private fn aifTierFromName(name: String) -> Int {
     if (strEquals(name, "T0")) { return 0 }
     if (strEquals(name, "T1")) { return 1 }
     if (strEquals(name, "T2")) { return 2 }
@@ -499,7 +503,7 @@ fn aifTierFromName(name: String) -> Int {
     return 0 - 1
 }
 
-fn aifApplyAnnotations(decl: ASTNode, vs: Int) {
+private fn aifApplyAnnotations(decl: ASTNode, vs: Int) {
     if (strEquals(decl.s2, "")) { return }
 
     if (strContains(decl.s2, "unique ")) {
@@ -524,7 +528,7 @@ fn aifApplyAnnotations(decl: ASTNode, vs: Int) {
     }
 }
 
-fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
+private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
     if (nodeIsNull(nodePtr)) { return }
     let n = ptr_to_node(nodePtr)
 
@@ -702,7 +706,7 @@ fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
 // Stops dead at any statement kind, which is what keeps it from wandering out
 // of the expression it was handed and into a nested block's statements. Without
 // that guard `if (c) { join t }` would read as an unconditional join.
-fn aifExprHasJoinOf(ptr: Ptr, name: String) -> Bool {
+private fn aifExprHasJoinOf(ptr: Ptr, name: String) -> Bool {
     if (nodeIsNull(ptr)) { return false }
     let n = ptr_to_node(ptr)
     if (aifIsStatementKind(n.kind)) { return false }
@@ -762,7 +766,7 @@ fn aifExprHasJoinOf(ptr: Ptr, name: String) -> Bool {
 // a task still holds it, which is a use-after-free.
 
 // A join in this statement's own expression -- not in any block it contains.
-fn aifStmtDirectJoin(n: ASTNode, name: String) -> Bool {
+private fn aifStmtDirectJoin(n: ASTNode, name: String) -> Bool {
     if (n.kind == NodeKind.VARIABLE_DECL) { return aifExprHasJoinOf(n.child2, name) }
     if (n.kind == NodeKind.EXPRESSION_STATEMENT) { return aifExprHasJoinOf(n.child1, name) }
     if (n.kind == NodeKind.RETURN_STATEMENT) { return aifExprHasJoinOf(n.child1, name) }
@@ -771,7 +775,7 @@ fn aifStmtDirectJoin(n: ASTNode, name: String) -> Bool {
 }
 
 // The statement chain under a block, or "" when there is no block there.
-fn aifBlockChain(ptr: Ptr) -> Ptr {
+private fn aifBlockChain(ptr: Ptr) -> Ptr {
     if (nodeIsNull(ptr)) { return ptr_null() }
     return ptr_to_node(ptr).child1
 }
@@ -784,7 +788,7 @@ fn aifBlockChain(ptr: Ptr) -> Ptr {
 // scanned, a break is *absorbed* by that loop and control continues in the
 // chain; at the top level it leaves. The old scan could not tell those apart
 // and counted every break as an exit, which its own comment admitted.
-fn aifStmtEscapesUnjoined(n: ASTNode, name: String, inLoop: Bool) -> Bool {
+private fn aifStmtEscapesUnjoined(n: ASTNode, name: String, inLoop: Bool) -> Bool {
     if (n.kind == NodeKind.RETURN_STATEMENT) {
         return aifExprHasJoinOf(n.child1, name) == false
     }
@@ -831,7 +835,7 @@ fn aifStmtEscapesUnjoined(n: ASTNode, name: String, inLoop: Bool) -> Bool {
 }
 
 // Every path through this statement joins.
-fn aifStmtAlwaysJoins(n: ASTNode, name: String, inLoop: Bool) -> Bool {
+private fn aifStmtAlwaysJoins(n: ASTNode, name: String, inLoop: Bool) -> Bool {
     if (aifStmtDirectJoin(n, name)) { return true }
 
     if (n.kind == NodeKind.IF_STATEMENT) {
@@ -865,7 +869,7 @@ fn aifStmtAlwaysJoins(n: ASTNode, name: String, inLoop: Bool) -> Bool {
 
 // Some path through this chain leaves the scope without joining. Statements
 // after one that always joins cannot contribute -- the join already happened.
-fn aifChainEscapesUnjoined(head: Ptr, name: String, inLoop: Bool) -> Bool {
+private fn aifChainEscapesUnjoined(head: Ptr, name: String, inLoop: Bool) -> Bool {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -883,7 +887,7 @@ fn aifChainEscapesUnjoined(head: Ptr, name: String, inLoop: Bool) -> Bool {
 // without joining, and asking "does something later join" first would answer
 // yes and miss it. That shape is tests/aif_concurrency.psm's
 // `unjoined_is_cross_thread`, which is why it still reports CrossThread.
-fn aifChainJoins(head: Ptr, name: String, inLoop: Bool) -> Bool {
+private fn aifChainJoins(head: Ptr, name: String, inLoop: Bool) -> Bool {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -895,13 +899,13 @@ fn aifChainJoins(head: Ptr, name: String, inLoop: Bool) -> Bool {
     return false
 }
 
-fn aifSpawnIsJoined(afterPtr: Ptr, name: String) -> Bool {
+private fn aifSpawnIsJoined(afterPtr: Ptr, name: String) -> Bool {
     // `inLoop` is false at the top: the scope being analysed is the block
     // holding the spawn, and a `break` written directly in it leaves that block.
     return aifChainJoins(afterPtr, name, false)
 }
 
-fn aifWalkChain(head: Ptr, fnId: Int, scope: Int) {
+private fn aifWalkChain(head: Ptr, fnId: Int, scope: Int) {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -932,7 +936,7 @@ fn aifWalkChain(head: Ptr, fnId: Int, scope: Int) {
 
 // A child is either a nested statement, which keeps walking, or an expression,
 // which is evaluated for its allocations.
-fn aifWalkChildren(head: Ptr, fnId: Int, scope: Int) {
+private fn aifWalkChildren(head: Ptr, fnId: Int, scope: Int) {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -945,7 +949,7 @@ fn aifWalkChildren(head: Ptr, fnId: Int, scope: Int) {
     }
 }
 
-fn aifDeclare(module: ASTNode) {
+internal fn aifDeclare(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {
         let d = ptr_to_node(p)
@@ -1014,7 +1018,7 @@ fn aifDeclare(module: ASTNode) {
     }
 }
 
-fn aifBuild(module: ASTNode) {
+internal fn aifBuild(module: ASTNode) {
     // Structs must all exist before any edge is added, because an edge names
     // both ends and fields are declared in whatever order the source has.
     let mut p = module.child1

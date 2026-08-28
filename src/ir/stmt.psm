@@ -9,7 +9,7 @@ import std.string
 // Whether this match is over an enum with payloads. Sema stamps the variant name
 // on every non-wildcard arm of one and on no other kind of match, so one arm
 // settles it.
-fn matchBindsPayload(stmt: ASTNode) -> Bool {
+private fn matchBindsPayload(stmt: ASTNode) -> Bool {
     let mut armPtr = stmt.child2
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
@@ -21,7 +21,7 @@ fn matchBindsPayload(stmt: ASTNode) -> Bool {
 
 // Binds the names a variant pattern introduced, by loading the payload fields
 // this arm's variant occupies.
-fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: String) {
+private fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: String) {
     let pattern = ptr_to_node(arm.child1)
     if (pattern.kind != NodeKind.CALL_EXPR) { return }
 
@@ -59,7 +59,7 @@ fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: String) {
     }
 }
 
-fn generateStatement(stmt: ASTNode) {
+private fn generateStatement(stmt: ASTNode) {
     // The line table, in one place. Every instruction this statement and its
     // subexpressions build inherits this location, including the calls codegen
     // inserts on its own -- an arena bracket, a drop, a release. Column as well
@@ -150,7 +150,13 @@ fn generateStatement(stmt: ASTNode) {
                 and chainCopiesName(irFunctionBody, varName) == false) {
                 ir_mark_droppable(varName, IR_DROP_TASK)
             } else if (aif_frees_at_scope_node(stmt.child2) == 1
-                and chainAssignsName(irFunctionBody, varName) == false) {
+                and chainAssignsName(irFunctionBody, varName) == false
+                and chainDropsName(irFunctionBody, varName) == false) {
+                // `drop(x)` already freed it, so a scope release as well is a
+                // double free. Asked of the binding rather than of the site,
+                // because one site backs every `strConcat` in the program and
+                // answering it there suppressed the release of every other
+                // binding too -- see aif_frees_at_scope_node.
                 ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
             } else if (accumulates and chainReturnsName(irFunctionBody, varName) == false) {
                 // The last value an accumulator holds needs an owner too, and the
@@ -169,6 +175,7 @@ fn generateStatement(stmt: ASTNode) {
                 if (owned != AIF_ELEM_NONE
                         and chainAssignsName(irFunctionBody, varName) == false
                     and chainReturnsName(irFunctionBody, varName) == false
+                    and chainDropsName(irFunctionBody, varName) == false
                     and chainEscapesThroughCall(irFunctionBody, varName) == false) {
                     if (nodeGetType(ptr_to_node(stmt.child2)).kind == TypeKind.DATAVIEW) {
                         ir_mark_droppable(varName, IR_DROP_DATAVIEW)
@@ -563,7 +570,7 @@ fn generateStatement(stmt: ASTNode) {
 // Closes `count` open regions. Emitted at every exit that leaves them, in the
 // same places and for the same reason as the drops -- an arena that is never
 // popped holds its chunks for the rest of the program.
-fn generateRegionExits(count: Int) {
+private fn generateRegionExits(count: Int) {
     let mut i = 0
     while (i < count) {
         ir_region_end()
@@ -574,7 +581,7 @@ fn generateRegionExits(count: Int) {
 // A heap copy of a string literal, so a slot that owns its contents never holds
 // a .rodata pointer. The runtime already reached this conclusion once, in
 // str_substring's out-of-range answer, and for the same reason.
-fn generateStringClone(value: String) -> String {
+private fn generateStringClone(value: String) -> String {
     ir_call_begin()
     ir_call_arg("ptr", value)
     // This handwritten call bypasses CALL_EXPR's general foreign-return path,
@@ -595,13 +602,13 @@ fn generateStringClone(value: String) -> String {
 // seam: `prismio_task_spawn` uses plain calloc, exactly as C_CODE_STYLE requires
 // of a temporary the runtime frees itself, so releasing it through `rt_free`
 // would report a release of a pointer the verify ledger never handed out.
-fn generateTaskRelease(value: String) {
+private fn generateTaskRelease(value: String) {
     ir_call_begin()
     ir_call_arg("ptr", value)
     ir_call_end("void", "prismio_task_release")
 }
 
-fn generateDisplacedRelease(old: String, val: String, kind: Int, declType: String) {
+private fn generateDisplacedRelease(old: String, val: String, kind: Int, declType: String) {
     let differs = ir_get_temp_name(ir_icmp_ne("ptr", old, val))
     let freeLabel = ir_get_label()
     let doneLabel = ir_get_label()
@@ -627,7 +634,7 @@ fn generateDisplacedRelease(old: String, val: String, kind: Int, declType: Strin
     ir_label_numbered(doneLabel)
 }
 
-fn generateScopeDrops(floor: Int) {
+private fn generateScopeDrops(floor: Int) {
     let n = ir_drop_count(floor)
     let mut i = 0
     while (i < n) {
@@ -653,7 +660,7 @@ fn generateScopeDrops(floor: Int) {
     }
 }
 
-fn generateBlock(block: ASTNode) {
+internal fn generateBlock(block: ASTNode) {
     // LAYOUT 7.1. The cost model may have placed an arena here, in which case
     // the block is bracketed exactly as a `region` statement is -- same runtime,
     // same early-exit handling through ir_region_depth. The only difference is

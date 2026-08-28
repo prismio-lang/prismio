@@ -411,6 +411,7 @@ extern fn aif_con_escape_caller(vs: Int)
 extern fn aif_con_return(vs: Int, fnId: Int)
 extern fn aif_con_escape_global(vs: Int)
 extern fn aif_con_no_stack(vs: Int)
+extern fn aif_con_transferred(vs: Int)
 extern fn aif_con_count() -> Int
 
 extern fn aif_set_owned_collections(on: Int)
@@ -523,7 +524,7 @@ let mut aifFfiDefault = 0
 // The empty value set. -1 rather than an allocated empty one, because
 // aif_support.c reads any out-of-range value set as empty and the walk produces
 // a great many of these.
-fn aifVsEmpty() -> Int {
+internal fn aifVsEmpty() -> Int {
     return 0 - 1
 }
 
@@ -533,7 +534,7 @@ fn aifVsEmpty() -> Int {
 
 // The type a node was given by sema, spelled the way diagnostics spell it.
 // Empty for nodes sema does not type -- statements and declarations.
-fn aifNodeType(node: ASTNode) -> String {
+internal fn aifNodeType(node: ASTNode) -> String {
     if (nodeExists(node.typeInfo)) {
         return typeDisplay(ptr_to_type(node.typeInfo))
     }
@@ -543,7 +544,7 @@ fn aifNodeType(node: ASTNode) -> String {
 // `List<Token>` -> `List`. Field keys are per nominal type, so a generic
 // container's fields are shared across its instantiations -- object-insensitive
 // in the type argument as well as in the object (INFERENCE 11.1).
-fn aifBaseType(ty: String) -> String {
+internal fn aifBaseType(ty: String) -> String {
     let at = strIndexOf(ty, "<")
     if (at < 0) {
         return ty
@@ -554,7 +555,7 @@ fn aifBaseType(ty: String) -> String {
 // Does a value of this type participate in the memory model at all? Scalars and
 // enums do not: they are registers, they are copied, and there is nothing to
 // reclaim.
-fn aifIsRef(ty: String) -> Bool {
+internal fn aifIsRef(ty: String) -> Bool {
     if (strEquals(ty, "")) { return false }
     if (strEquals(ty, "Int")) { return false }
     if (strEquals(ty, "I8")) { return false }
@@ -575,7 +576,7 @@ fn aifIsRef(ty: String) -> Bool {
     return true
 }
 
-fn aifKindOf(ty: String) -> Int {
+private fn aifKindOf(ty: String) -> Int {
     if (aif_is_struct(ty) == 1) { return AIF_KIND_STRUCT }
     if (strEquals(ty, "String")) { return AIF_KIND_STRING }
     if (strEquals(aifBaseType(ty), "List")) { return AIF_KIND_LIST }
@@ -589,7 +590,7 @@ fn aifKindOf(ty: String) -> Int {
     return AIF_KIND_OPAQUE
 }
 
-fn aifKindName(kind: Int) -> String {
+internal fn aifKindName(kind: Int) -> String {
     if (kind == AIF_KIND_STRUCT) { return "struct" }
     if (kind == AIF_KIND_STRING) { return "string" }
     if (kind == AIF_KIND_ARRAY) { return "array" }
@@ -611,14 +612,14 @@ fn aifKindName(kind: Int) -> String {
 // `List<Actor>` and `List<Order>` are different sets -- see aif_elem_key in
 // runtime/aif_support.c for why that is sound and for the guard that restores
 // the base-keyed answer where a spelling is not resolved.
-fn aifElemKey(containerType: String) -> Int {
+internal fn aifElemKey(containerType: String) -> Int {
     return aif_elem_key(containerType)
 }
 
 // A Slice<T> resolves through the List<T> handle it carries. Element points-to
 // facts therefore belong to the List key, not to a parallel Slice key that no
 // store ever populates.
-fn aifElementContainerType(ty: String) -> String {
+internal fn aifElementContainerType(ty: String) -> String {
     if (strStartsWith(ty, "Slice<")) {
         return strConcat("List", strSubstring(ty, 5, __builtin_string_len(ty) - 5))
     }
@@ -629,13 +630,13 @@ fn aifElementContainerType(ty: String) -> String {
 // Value-set helpers
 // ---------------------------------------------------------------------------
 
-fn aifVsOfSite(site: Int) -> Int {
+internal fn aifVsOfSite(site: Int) -> Int {
     let v = aif_vs_new()
     aif_vs_site(v, site)
     return v
 }
 
-fn aifVsOfKey(key: Int) -> Int {
+internal fn aifVsOfKey(key: Int) -> Int {
     let v = aif_vs_new()
     aif_vs_key(v, key)
     return v
@@ -644,7 +645,7 @@ fn aifVsOfKey(key: Int) -> Int {
 // The node pointer is what codegen later looks the tier up by, so it is
 // registered here rather than derived: the two passes walk the same tree in the
 // same process, and one node names one site exactly.
-fn aifNewSite(ty: String, fnId: Int, scope: Int, nodePtr: Ptr) -> Int {
+internal fn aifNewSite(ty: String, fnId: Int, scope: Int, nodePtr: Ptr) -> Int {
     let node = ptr_to_node(nodePtr)
     let sid = aif_site_new(ty, aifKindOf(ty), fnId, scope,
                            node.file, node.line, node.col, aif_struct_nfields(ty))

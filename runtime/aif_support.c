@@ -1813,6 +1813,14 @@ typedef struct {
     int E, A, C, T;
     int type_acyclic;   // stamped once, before iteration
     int no_stack;       // explicitly dropped -- see AIF_CON_NO_STACK
+    // Ownership left this frame: an FFI `consume` takes it, and the callee frees
+    // it. Distinct from `no_stack`, which both a `drop` and a transfer set --
+    // "this cannot live in a stack slot" is true of both, but "somebody else
+    // will free it" is only true of a transfer. Conflating them is what made an
+    // explicit `drop` anywhere suppress the release of every other binding that
+    // shared the site; splitting them is what keeps a *consumed* value from
+    // being released here as well as by its consumer.
+    int transferred;
     // Stored into a container by a `retain_in` call. The container owns it from
     // that point on, which is what makes a container teardown a release point --
     // and what takes the value's own binding off the drop list.
@@ -1921,6 +1929,7 @@ int aif_site_new(const char* type, int kind, int fn, int scope,
     s->bytes = 0;
     s->type_acyclic = 1;
     s->no_stack = 0;
+    s->transferred = 0;
     s->in_container = 0;
     s->alias_axiom = 0;
     s->alias_suppressed = 0;
@@ -2241,6 +2250,7 @@ void aif_argv_end(int base) { argv.len = base; }
 #define AIF_CON_ESCAPE_CALLER 7
 #define AIF_CON_ESCAPE_GLOBAL 8
 #define AIF_CON_NO_STACK      9
+#define AIF_CON_TRANSFERRED   24
 // SPEC 5's annotations. Neither is a transfer rule: both are applied once,
 // between the points-to fixed point and the fact loop, because an axiom that
 // arrives mid-iteration would only cut what had not already been raised.
@@ -2364,6 +2374,7 @@ void aif_con_pin_region(int vs, const char* name) {
 // the tier of an allocation at its literal. That wants COMPILER-AUDIT 4.1's node
 // ids. Until then this is the sound direction to be wrong in.
 void aif_con_no_stack(int vs)                   { con_add(AIF_CON_NO_STACK, vs, 0, 0); }
+void aif_con_transferred(int vs)                { con_add(AIF_CON_TRANSFERRED, vs, 0, 0); }
 
 int aif_con_count(void) { return con_count; }
 
@@ -3000,6 +3011,16 @@ int aif_solve(int max_rounds) {
                 // `c` distinguishes a source-level return from other
                 // escape-to-caller constraints such as FFI consume.
                 if (raise_view_owners(k->a, AIF_E_CALLER, k->c ? k->b : -1)) changed = 1;
+
+            } else if (k->kind == AIF_CON_TRANSFERRED) {
+                resolve(k->a, &scratch_val);
+                bits_to_vec(&scratch_val, &vec_val);
+                for (int i = 0; i < vec_val.len; i++) {
+                    if (!sites[vec_val.v[i]].transferred) {
+                        sites[vec_val.v[i]].transferred = 1;
+                        changed = moved(vec_val.v[i]);
+                    }
+                }
 
             } else if (k->kind == AIF_CON_NO_STACK) {
                 resolve(k->a, &scratch_val);
@@ -5684,6 +5705,11 @@ int aif_frees_at_scope_node(const void* node) {
         // An explicit `drop` already frees it; a scope drop as well is a double
         // free. Same flag that bars T0, and for the same reason -- it records
         // that the source, not the model, decides when this value dies.
+        //
+        // Site-level here is right: this clause is reached only for a value
+        // whose E is its own scope, i.e. one allocated in this very function, so
+        // the site and the binding are the same thing. The shared-site problem
+        // is in elem_disposition_of, not here.
         if (s->no_stack) return 0;
         // A container took ownership, so the container's teardown is the release
         // point and this binding is not one. Reachable only when the two share a
@@ -5888,7 +5914,33 @@ static int elem_disposition_of(int id, int tier) {
     // T0 is the frame, and a T3 or T4b site the two predicates above declined has
     // no header to decrement.
     if (tier != AIF_T1 && tier != AIF_T2) return AIF_ELEM_NONE;
-    if (s->no_stack) return AIF_ELEM_NONE;      // an explicit drop already frees it
+    // `no_stack` is deliberately not consulted here, and that is a fix rather
+    // than an omission. It is a property of the *site* -- "this value cannot
+    // live in a stack slot" -- while "has this binding already been freed" is a
+    // property of the *binding*. The two coincided only while `std.string` was
+    // C: an opaque `extern fn str_concat` gave every call site its own
+    // extern-alloc value. Native `std` routes them all through the one
+    // `str_with_capacity` inside `strConcat`, so a single site now backs every
+    // string binding in the program -- and one `drop(x)` anywhere returned
+    // AIF_ELEM_NONE for all of them, cancelling the release of every other
+    // binding and leaking each one. TODO.md carries the reproducer.
+    //
+    // The binding-level question is asked by `chainDropsName` in
+    // src/ir/stmt.psm, beside chainAssignsName and chainReturnsName, which is
+    // where the other per-binding guards already live and the only place a
+    // name is in scope to ask it of.
+    //
+    // aif_frees_at_scope_node keeps its own site-level test: that one is
+    // reached only when E is the site's own scope, where site and binding
+    // coincide.
+    //
+    // A *transfer* is still site-level here and must stay that way. An FFI
+    // `consume` -- which is how a List becomes a DataView -- hands the
+    // allocation to a callee that frees it, so emitting a release here as well
+    // is a use-after-free rather than a leak. Removing this check along with
+    // the `drop` one aborted g1_dataview in `list_release` on memory
+    // `data_view_finish` had already freed.
+    if (s->transferred) return AIF_ELEM_NONE;
     if (s->kind == AIF_K_LIST) return AIF_ELEM_LIST;
     // Struct-field ownership. Handing a struct with owned fields to the plain
     // deallocator frees the object and leaks everything it owns -- which is g3's
