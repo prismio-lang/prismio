@@ -1,176 +1,149 @@
-# Next session — finishing v0.1
+# Next session — the blocked parts of v0.1
 
-`V0_1_FEATURES.md` is the plan and it is current: every landed item carries a
-**DONE 2026-08-29** marker with what actually happened, including two places
-where the plan's own prediction turned out wrong. Read it before planning.
+Everything small is done. What is left is four things that are *blocked or big*,
+not unwritten, plus one decision.
 
-The last-good compiler is **`build/ns4`**. Gate with it, not with an older one.
+The last-good compiler is **`build/final2`**. Gate with it.
+Work is on branch **`v0.1/modules-visibility-and-package-manifest`**, six commits,
+pushed. `main` does not have any of it yet.
 
----
-
-## 0 · Debt from the last session, do this first
-
-**The five-arm benchmark was not run for `977fab6` (module namespacing).** The
-session was stopped before it. Nothing else is outstanding on that commit.
-
-```bash
-python3 tools/milestone_bench.py --old build/cl3 --new build/ns4 \
-    --runs 25 --label "modules" --json aif/evidence/results-modules.json
-python3 aif/evidence/xlang/bench.py --compiler build/ns4 --runs 25 \
-    --json aif/evidence/xlang/results-modules.json
-```
-
-**The IR-identity check cannot be run for that commit and will not tell you
-anything.** `build/cl3` cannot build any program that imports `std`, because
-`std/` now uses `priv`. That is expected, not a regression — do not spend time
-on it.
-
-**Expect `g5` to read 1.14–1.28x "REGRESSED" and ignore it.** It is a harness
-artifact, proven three ways in `630dc17`: g5's emitted IR *and its machine code*
-are byte-identical across the two arms (50 differing bytes — the `LC_UUID` and
-the embedded output path), and **swapping the arms keeps the penalty on whichever
-binary sits in the "new" slot**. Fixing `milestone_bench.py`'s positional bias is
-a real task nobody has taken; until then, do not chase g5.
+`V0_1_FEATURES.md` is current and carries the evidence for every claim below.
+**Read it before planning** — three of this session's findings contradicted the
+previous brief, so check the tree rather than the notes.
 
 ---
 
-## 1 · What is left in `V0_1_FEATURES.md`
+## 0 · Nothing is outstanding from last session
 
-### 3.5 — the half that is blocked on a decision, not on work
+No debt, no half-finished task. The suite is **195/195**, the two-generation
+fixpoint is identical, the committed seed builds a compiler whose generation
+matches that fixpoint, and 141 doc snippets pass.
 
-Qualified calls and `priv fn` landed. The `str*` rename did **not**, and the
-plan's premise for it is wrong: `import m` still brings every name in
-*unqualified*, so renaming `strTrim` to `trim` would claim `trim`, `length`,
-`split`, `contains` and thirty more in the global namespace of every importing
-program — worse than the prefix, not better.
+Two things worth knowing before you touch anything:
 
-**The decision to make is whether `import m` should stop meaning "and bring
-everything into scope".** Options, none of them free:
-
-- `import m` becomes qualified-only and `import m.*` brings names in. `import
-  ir.*` already means "every module in that package", so the spelling collides.
-- A second form (`use m`) for qualified-only. More surface.
-- Leave it, and keep the prefix for v0.1. Defensible; say so in the roadmap.
-
-Do not start the 848-call-site rename before this is settled.
-
-`priv` on a type or a global is currently rejected, deliberately — the check
-lives in overload resolution, so accepting the marker elsewhere would promise
-something the compiler does not do. Extending it to `priv struct` means a check in
-`semaAnnotationInner` comparing `tn.file` against the declaration's.
-
-### 3.6 — first-class pointers
-
-The parser gaps are closed. What is left is **722 `ptr_to_node` /
-`node_to_ptr` / `ptr_to_token` / `ptr_to_type` call sites** in `src/`.
-
-Of `V1_GAP_ANALYSIS.md`'s six "central finding" rows, four are already resolved
-and the notes had not said so — verified by counting on 2026-08-29, not by
-reading. `str_equals(a, b) == 1` is at **0** occurrences; a self-forward-declaring
-`extern fn` is at **0** of 488 distinct externs; the `while (flag)` idiom is down
-to **one** site (`src/main.psm:162`). What is live is the pointer punning and the
-hand-built linked lists, which are the same row twice.
-
-### 3.7 — package manager
-
-Untouched. `ums/` exists and `prismio build` with no source discovers `build.ums`,
-so this extends something. Deliberately last and deliberately small: a manifest, a
-lockfile, a local path dependency, a registry-shaped fetch with no registry behind
-it. **The structure is the deliverable; the network is not.**
-
-### 4 — the corpus has not moved with the language
-
-This is a standing instruction that has been half-honoured. The **fifth benchmark
-arm** is done for six of seven programs (g9 is absent and its reason is recorded
-in `bench.py`). What has *not* happened is the other half: **no corpus or test
-program has been rewritten to use `impl`, traits, closures or `sort`.** A corpus
-frozen in the language of 2026-08 stops being a measurement of what a real Prismio
-program looks like the moment the language moves.
-
-Any such rewrite must keep the program's **checksums identical** — that is what
-makes it a rewrite and not a different benchmark — and be reported old-vs-new.
-
-### 5 — what "done" means
-
-Still open: **the three-platform CI matrix observed green.** As of the last
-recorded run: macOS green, Ubuntu green, Windows 172/175. Nobody has looked since
-the suite grew from 175 to 190, so the Windows number is stale in both directions.
+- **The corpus is in CI now** (`run_corpus_test`), and it is not decoration. It
+  builds *and runs* 30 programs. A use-after-free passed 193 tests this session and
+  surfaced only because a benchmark happened to be run; the same check now names
+  four affected programs. If you change the AIF solver, ownership, or codegen,
+  this is the check that will catch you.
+- **`released` and `violations` are the trustworthy `--verify` columns.**
+  `allocated`/`leaked` moved by 27x this session with no behaviour change, because
+  native `std` is visible to the ledger where the C externs were not.
 
 ---
 
-## 2 · The gate, unchanged, after every task
+## 1 · Selective imports — the one that is half-designed
 
-`V0_1_FEATURES.md` §2 is authoritative. The parts most often skipped:
+`import std.string.strTrim` is a syntax error today ("no such file
+`std/string/strTrim.psm`"). It is two parts and only one is small.
 
-- **Two generations, then compare the IR.** A build that links may only have
-  linked because the old compiler built it.
-- **The seed, whenever `src/` or `std/` gains syntax.** New syntax lands in two
-  steps: teach the frontend, `tools/refresh_seed.sh`, *then* use it. Prove it with
-  `bootstrap.sh --seed` → build a generation with that compiler → its IR must
-  match the fixpoint. This has caught nothing yet only because it has been done
-  every time.
+**Part 1, small.** When the full path is not a file, drop the last segment and
+retry; if *that* is a file, the last segment is a selected name. `mergeNamedModule`
+in `src/main.psm` is where the fallback goes. Kotlin resolves the same ambiguity
+the same way, at resolution time rather than in the grammar.
+
+**Part 2, the real work.** Actually filtering what enters scope. It needs a
+per-importing-file record of which names were selected from which module,
+consulted during overload resolution — which is exactly the registry this
+architecture has avoided ("no module registry to build, fill, reset, or keep in
+step with the merge", `src/sema/symbols.psm`).
+
+**Do not ship Part 1 alone.** Without Part 2 the syntax parses and then imports the
+whole module anyway, which is a lie in the language rather than a limitation.
+
+The natural place for Part 2 is beside the visibility check in
+`semaFindFunctionOverload` — it already filters candidates by declaring file, and
+this filters them by importing file. That symmetry is the design.
+
+---
+
+## 2 · 3.6, first-class pointers — blocked on a missing feature
+
+**Not a 757-site rename.** Verified on the tree, not reasoned about:
+
+- a recursive struct field already compiles: `struct Node { next: Node? }`
+- a typed linked list already works end to end
+- but a typed field **owns** what it holds, so two references to one node is
+  `error: use of moved value`
+
+The AST is a shared graph — a node is reachable from `child1`, `next`, the decl
+index and `irFunctionBody` at once. `Ptr` is how it opts *out* of affine ownership,
+not an accident of style. Forcing `ASTNode?` through would make the AST an owned
+graph and double-free it.
+
+What 3.6 needs is a **non-owning typed reference** — a `&T` that can be stored in a
+field. That is language design, and it is larger than the rest of v0.1 together.
+Decide whether v0.1 ships without it before anyone starts.
+
+---
+
+## 3 · Windows — one fix unverified, one blocked
+
+Ubuntu and macOS are green. Windows is red at the test suite.
+
+- **`test_76_std_fs` — fixed, unverified.** It was a wrong assertion, not a wrong
+  `join_path`: the literal `joinPath("/a/b", "c.psm")` comes back `\a\b\c.psm`
+  there, because `join_path` normalises separators to the host's. It now builds its
+  directory with `joinPath` and asserts the round trip. Passes on macOS. **One CI
+  run confirms or refutes it** — that is the cheapest task on this list.
+- **`run --jit` — blocked, needs a Windows host.** The JIT cannot resolve
+  `prismio_argv`, which is a *runtime C* symbol rather than a generated one, so it
+  is not seeing the runtime at all; the `print__*` / `prismioStdIo*` failures follow
+  from that rather than being separate. ORC symbol resolution cannot be developed
+  or verified from macOS.
+
+---
+
+## 4 · A decision, not a task
+
+**`g7_substring.psm` is now byte-identical to `g7.psm`.** Both called C — one
+`str_slice`, the other `str_substring` — and the pair existed only to price those
+two against each other. On the native `strSubstring` they are one program. Keep one
+and delete the other, or give `g7_substring` a new reason to exist. Left undecided
+deliberately so the change is visible in review rather than as a deletion.
+
+---
+
+## 5 · Debt, recorded rather than urgent
+
+`TODO.md` carries both.
+
+- **UMS resolution releases nothing it allocates.** 639 → 637 released while
+  allocations doubled, 0 violations. Not unsoundness; the compiler is short-lived.
+  It matters if a future `prismio add` or watch mode calls it in a loop. The fix is
+  binding the nested `strConcat` intermediates.
+- **A resolved path dependency is not on the import search.** 3.7 resolves and
+  records dependencies; making one importable is the next slice and is documented
+  as not-part-of-0.1 in `../docs/content/package-manager/index.md`.
+
+---
+
+## 6 · The gate
+
+`V0_1_FEATURES.md` §2 is authoritative. The parts most often skipped, and why:
+
+- **Two generations, then compare the IR.** A build that links may only have linked
+  because the old compiler built it.
+- **The seed, whenever `src/` or `std/` gains syntax.** Teach the frontend,
+  `tools/refresh_seed.sh --compiler <c>`, *then* use it. This session needed the
+  three-step dance twice.
+- **Run the corpus, do not just build it.** The DataView failure was at run time.
 - **ASan on every program whose IR changed.** `--verify` balances on a
-  read-after-free and reports `0 violation(s)` while the program segfaults.
-- **`--verify` compared against a baseline, not read on its own.** Build a
-  worktree at the pre-change commit and sweep it; 22 of the tree's programs
-  already leak, so an absolute number tells you nothing.
+  read-after-free and reports `0 violation(s)` while the program aborts.
+- **Compare generated code, not timings.** g5 read 1.261x and 0.692x in one session
+  on byte-identical binaries. If you want to know whether something got slower,
+  diff `__TEXT,__text` first; the timing only means something once the code differs.
 
 ---
 
-## 3 · Things that will bite you, learned the hard way
-
-**`sink` is not an ownership transfer, and sema accepts the double free.**
-`fn keep(out: List<String>, sink s: String) { list_push(out, s) }` compiles;
-`--verify` says "release of a pointer that is not live" and ASan aborts in
-`list_release`. Use `std/copy.psm`'s `Copy { fn copyOf(self) -> Self }` for a
-container that keeps what it is given. **This is a live compiler defect** — sema
-should reject it — and it is not on TODO.md yet.
-
-**A generic container can own its keys but not its values.** `Map<String, Int>`
-is clean; bounding `V: Copy` so `Map<String, String>` compiles works, computes
-right answers, and leaks every value the map holds — because `mapGetOr`, `mapGet`
-and `mapValueAt` all return from the values list and the analysis stops releasing
-a container it has seen escape. Measured and reverted; see `std/map.psm`'s header.
-
-**Chained method calls leak their intermediates.** `a.toUpper().reverse()` leaks
-the intermediate — TODO.md's "argument-position release is withheld when the
-enclosing call returns a pointer". Chaining is the idiom `impl` blocks exist for,
-so that open item is now on the main road. Fixture-writing rule: bind the
-intermediate, so a *future* leak in a fixture means something.
-
-**`test_52_aif_cycle_collector` is a heap-use-after-free.** ASan aborts in
-`cyc_collect_white` (`runtime/lang_runtime.c:1031`), and it is byte-identical at
-the pre-session baseline, so it is old. The cause is visible in the code:
-`cyc_collect_white` frees `x` and *then* recurses into its children, so a cycle
-that reaches `x` again reads its freed header. Bacon–Rajan frees **after** the
-recursion; the children are already copied into `kids` before the free, so
-reordering is a two-line change. Nobody has made it.
-
-**A closure's type name contains `$`.** The call rewrite keys on that rather than
-on "no function of this name exists" — because `std/string.psm` declares
-`compare`, so a sort whose comparator parameter was named `compare` had its call
-quietly resolved to the String overload. If you add a rewrite like it, key on the
-type.
-
-**Diagnostics cascade, and the error cap hides the abort line.** A violated bound
-reported 25 times, hit the cap, and the cap exits without `diag_finish`'s
-"aborting due to N previous error(s)" — so a negative test failed as *"compiler
-failed without reporting a diagnostic"*, which is a rejection indistinguishable
-from a crash. Fixed for bounds three ways (report each pair once, stop
-instantiating, stop blaming a member access for an Invalid it did not cause). **The
-cap itself still swallows the abort line**; any new cascading diagnostic will hit
-the same trap.
-
----
-
-## 4 · Where things are
+## 7 · Where things are
 
 | | |
 |---|---|
-| last-good compiler | `build/ns4` |
-| plan | `V0_1_FEATURES.md` (language surface), `TODO.md` (compiler improvement) |
-| docs | sibling repo at `../docs`, **not** in this tree |
-| docs check | `cd ../docs && PRISMIO=<compiler> node scripts/verify-doc-examples.mjs` — 138 snippets |
-| suite | 190 |
-| new std modules | `std/ord.psm`, `std/key.psm`, `std/copy.psm`, `std/list.psm` |
-| standing vs idiomatic Rust | 0.92x–1.81x; hand-tuned Prismio 0.25x–1.42x |
+| last-good compiler | `build/final2` |
+| branch | `v0.1/modules-visibility-and-package-manifest` (pushed, 6 commits) |
+| suite | 195 |
+| plan | `V0_1_FEATURES.md`; `TODO.md` for compiler debt |
+| docs | sibling repo at `../docs`, **not** in this tree, and **not a git repo** |
+| docs check | `cd ../docs && PRISMIO=<compiler> node scripts/verify-doc-examples.mjs` — 141 snippets |
+| standing vs idiomatic Rust | 0.92x–1.80x, unmoved all session |
