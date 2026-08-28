@@ -33,6 +33,13 @@ import std.string
 extern fn file_exists(path: String borrow) -> Int
 extern fn read_file(path: String borrow) -> String produce(free)
 extern fn delete_file(path: String borrow) -> Int
+// Both return a status rather than a pointer, so neither carries `produce` or
+// `alias`: there is nothing for a deallocator to take. `borrow` on the arguments
+// is the real contract -- the runtime reads them during the call and retains
+// neither.
+extern fn write_file(path: String borrow, content: String borrow) -> Int
+extern fn make_directory(path: String borrow) -> Int
+extern fn directory_exists(path: String borrow) -> Int
 extern fn get_directory(path: String borrow) -> String produce(free)
 extern fn join_path(directory: String borrow, filename: String borrow) -> String produce(free)
 extern fn current_directory() -> String produce(free)
@@ -56,6 +63,26 @@ fn readFile(path: String) -> String {
 fn tryReadFile(path: String) -> Option<String> {
     if (file_exists(path) == 0) { return Option<String>.None }
     return Option<String>.Some(read_file(path))
+}
+
+// Writes `content` over `path`, creating the file if it is absent. The parent
+// directory must exist -- call `makeDirectory` first -- because silently creating
+// one would make a mistyped path succeed.
+fn writeFile(path: String, content: String) -> Bool {
+    return write_file(path, content) == 0
+}
+
+// Creates `path` and every missing parent. A directory that already exists is
+// success, which is what makes this callable unconditionally.
+fn makeDirectory(path: String) -> Bool {
+    return make_directory(path) == 0
+}
+
+// Whether `path` is an existing directory. Distinct from `fileExists`, which
+// opens the path -- and opening a directory succeeds on some hosts and fails on
+// others, so it cannot answer this.
+fn directoryExists(path: String) -> Bool {
+    return directory_exists(path) == 1
 }
 
 // True when the file is gone afterwards. Note the inversion against the C,

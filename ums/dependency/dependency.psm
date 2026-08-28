@@ -6,13 +6,40 @@ enum UmsDependencyScope {
     TEST_IMPLEMENTATION
 }
 
+// `path` is the declared local path of a path dependency, relative to the
+// manifest, and "" for one that names no path. A dependency with no path is a
+// *registry* dependency: it is modelled and locked exactly like a path one, and
+// resolving it is the step that has nothing behind it yet.
+//
+// `resolved` is filled in by umsResolveDependencies and is "" until it is. The
+// two are kept apart rather than one field overwritten, because the lockfile has
+// to record both what was asked for and what it turned into -- that difference is
+// the whole point of writing a lockfile.
 struct UmsDependency {
     scope: UmsDependencyScope,
     name: String,
     constraint: String,
+    path: String,
+    resolved: String,
     line: Int,
     col: Int,
     len: Int
+}
+
+fn umsDependencyIsPath(dependency: UmsDependency) -> Bool {
+    return strLength(dependency.path) > 0
+}
+
+// The scope as it is written in a manifest, which is also how the lockfile
+// spells it -- a lockfile a person cannot read against the manifest that
+// produced it is a file nobody will check.
+fn umsDependencyScopeName(scope: UmsDependencyScope) -> String {
+    if (scope == UmsDependencyScope.IMPLEMENTATION) { return strClone("implementation") }
+    if (scope == UmsDependencyScope.API) { return strClone("api") }
+    if (scope == UmsDependencyScope.TEST_IMPLEMENTATION) {
+        return strClone("testImplementation")
+    }
+    return strClone("unknown")
 }
 
 fn umsDependencyFind(dependencies: List<UmsDependency>, scope: UmsDependencyScope,

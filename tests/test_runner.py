@@ -205,6 +205,92 @@ def run_cli_test():
     return False
 
 
+def run_corpus_test():
+    """Build and *run* every benchmark corpus program.
+
+    These 30 programs were not executed by anything in CI. On 2026-08-30 an AIF
+    solver change emitted a double release for a List consumed into a DataView;
+    `g1_dataview` aborted in `list_release` and the entire suite still passed. The
+    only reason it surfaced was that someone happened to run a benchmark.
+
+    Building is not enough -- the failure was at run time -- so each program is
+    executed and its exit status checked. `g6_engine` and `g6_engine_tuned` are
+    library modules with no `main` and never link; they are skipped by name rather
+    than by tolerating link failures generally.
+    """
+    print(f"\n{BLUE}--- Running corpus ---{RESET}")
+
+    NO_MAIN = {"g6_engine", "g6_engine_tuned"}
+    roots = [PROJECT_ROOT / "aif" / "evidence" / "xlang" / "prismio",
+             PROJECT_ROOT / "aif" / "corpus"]
+    sources = sorted(p for r in roots if r.is_dir() for p in r.glob("*.psm"))
+    if not sources:
+        print(f"{RED}[FAIL] corpus: no programs found{RESET}")
+        return False
+
+    problems = []
+    ran = 0
+    with tempfile.TemporaryDirectory(prefix="prismio-corpus-") as temp_dir:
+        for src in sources:
+            if src.stem in NO_MAIN:
+                continue
+            exe = Path(temp_dir) / (src.stem + (".exe" if os.name == "nt" else ""))
+            built = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(exe)])
+            if built.returncode != 0:
+                problems.append(f"{src.stem}: did not build")
+                continue
+            out = run_command([str(exe)])
+            if out.returncode != 0:
+                problems.append(f"{src.stem}: exited {out.returncode}")
+                continue
+            ran += 1
+
+    if problems:
+        print(f"{RED}[FAIL] corpus: {len(problems)} program(s) failed{RESET}")
+        for line in problems[:12]:
+            print(f"  - {line}")
+        return False
+
+    print(f"{GREEN}[PASS] corpus: {ran} programs build and run{RESET}")
+    return True
+
+
+def run_ums_test():
+    """v0.1 3.7 -- UMS manifest, dependency resolution, and the lockfile.
+
+    `ums/test_ums.psm` has existed since UMS landed and the suite never ran it,
+    so the whole manifest subsystem was unexercised in CI. It runs from the
+    project root because its fixture paths are relative to that.
+    """
+    print(f"\n{BLUE}--- Running ums ---{RESET}")
+
+    source = PROJECT_ROOT / "ums" / "test_ums.psm"
+    if not source.exists():
+        print(f"{RED}[FAIL] ums: {source} is missing{RESET}")
+        return False
+
+    with tempfile.TemporaryDirectory(prefix="prismio-ums-") as temp_dir:
+        exe = Path(temp_dir) / ("ums_test.exe" if os.name == "nt" else "ums_test")
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(exe)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] ums: the test program did not build{RESET}")
+            print(built.stdout or built.stderr)
+            return False
+
+        # subprocess directly rather than run_command: the fixture paths inside
+        # test_ums.psm are relative to the project root, and run_command has no cwd.
+        ran = subprocess.run([str(exe)], capture_output=True, text=True,
+                             cwd=str(PROJECT_ROOT))
+        if ran.returncode != 0 or "PASS:" not in (ran.stdout or ""):
+            print(f"{RED}[FAIL] ums: manifest, resolution or lockfile assertions failed{RESET}")
+            print(ran.stdout or ran.stderr)
+            return False
+
+    print(f"{GREEN}[PASS] ums: manifest lowering, validation, build planning, "
+          f"dependency resolution and the lockfile{RESET}")
+    return True
+
+
 def run_check_command_test():
     """The analysis-only IDE boundary and its versioned JSON Lines output."""
     print(f"\n{BLUE}--- Running cli_check_protocol ---{RESET}")
@@ -5619,6 +5705,16 @@ def main():
         failed += 1
 
     if run_check_command_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_ums_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_corpus_test():
         passed += 1
     else:
         failed += 1

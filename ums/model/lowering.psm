@@ -158,18 +158,32 @@ fn umsLowerDependencies(project: UmsProjectModel, document: UmsAstDocument,
         if (call.kind != UmsAstStatementKind.CALL or scope == UmsDependencyScope.UNKNOWN) {
             umsLowerError(project, diagnostics, call, "UMS2201",
                 strConcat(strConcat("unknown dependency declaration '", call.name), "'"))
-        } else if (list_len(call.arguments) != 2) {
+        } else if (list_len(call.arguments) < 2 or list_len(call.arguments) > 3) {
+            // Two arguments is a registry dependency; a third is the local path
+            // it resolves to instead. Positional rather than named, because the
+            // DSL's calls are positional and a `path =` form would be new grammar
+            // for one argument.
             umsLowerError(project, diagnostics, call, "UMS2202",
                           strConcat(call.name,
-                                     " requires package name and version constraint strings"))
+                                     " requires package name and version constraint strings, and an optional local path"))
         } else {
             let name = list_get(call.arguments, 0)
             let constraint = list_get(call.arguments, 1)
+            let mut declaredPath = strClone("")
+            let mut pathOk = true
+            if (list_len(call.arguments) == 3) {
+                let third = list_get(call.arguments, 2)
+                if (third.kind != UmsAstValueKind.STRING) {
+                    pathOk = false
+                } else {
+                    declaredPath = strClone(third.text)
+                }
+            }
             if (name.kind != UmsAstValueKind.STRING or
-                constraint.kind != UmsAstValueKind.STRING) {
+                constraint.kind != UmsAstValueKind.STRING or pathOk == false) {
                 umsLowerError(project, diagnostics, call, "UMS2202",
                               strConcat(call.name,
-                                         " requires package name and version constraint strings"))
+                                         " requires package name and version constraint strings, and an optional local path"))
             } else if (umsDependencyFind(project.dependencies, scope, name.text) >= 0) {
                 umsLowerError(project, diagnostics, call, "UMS2203",
                     strConcat(strConcat("dependency '", name.text),
@@ -179,6 +193,8 @@ fn umsLowerDependencies(project: UmsProjectModel, document: UmsAstDocument,
                     scope: scope,
                     name: strClone(name.text),
                     constraint: strClone(constraint.text),
+                    path: declaredPath,
+                    resolved: strClone(""),
                     line: call.line,
                     col: call.col,
                     len: call.len

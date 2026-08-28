@@ -38,6 +38,86 @@ int file_exists(const char* path) {
     return 0;
 }
 
+// `file_exists` above opens the path, which is not a directory test: fopen on a
+// directory succeeds on some platforms and fails on others, so it answers a
+// different question than this one asks.
+//
+// Exported rather than static because a package manager has to tell "this path
+// dependency names a real directory" from "it does not", and the only other way
+// to ask was to call make_directory -- which answers by *creating* it, so a
+// mistyped path would silently succeed.
+int directory_exists(const char* path) {
+    if (!path || !path[0]) return 0;
+#ifdef _WIN32
+    DWORD attrs = GetFileAttributesA(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES) return 0;
+    return (attrs & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+#endif
+}
+
+// Creates `path` and every missing parent, and answers 0 for "it exists now".
+//
+// A separate entry point rather than a flag on write_file, because a package
+// manager needs the directory before it has anything to put in it -- and because
+// build_driver.c's ensure_directory_exists, which does the same walk, is static
+// to that file and is compiler infrastructure rather than part of the surface a
+// program can call.
+//
+// An existing directory is success: PRISMIO_MKDIR fails with EEXIST and that is
+// the outcome the caller asked for. Only the final component is reported on, so
+// a parent that already exists never fails the call.
+int make_directory(const char* path) {
+    if (!path || !path[0]) return 1;
+
+    size_t n = strlen(path);
+    char* work = (char*)malloc(n + 1);   // internal temporary; never handed to Prismio
+    if (!work) return 1;
+    memcpy(work, path, n + 1);
+
+    size_t start = 0;
+#ifdef _WIN32
+    // "C:\..." -- do not try to create the drive itself.
+    if (n > 2 && work[1] == ':') start = 3;
+#endif
+    if (work[0] == '/' || work[0] == '\\') start = 1;
+
+    for (size_t i = start; work[i] != '\0'; i++) {
+        if (work[i] == '/' || work[i] == '\\') {
+            char saved = work[i];
+            work[i] = '\0';
+            if (work[0]) PRISMIO_MKDIR(work);
+            work[i] = saved;
+        }
+    }
+    PRISMIO_MKDIR(work);
+    free(work);
+
+    return directory_exists(path) ? 0 : 1;
+}
+
+// Writes `content` over `path`, creating it if absent. 0 on success.
+//
+// Text mode is deliberate on Windows: a lockfile is read back by people and by
+// `read_file`, and "wb" here against a text-mode read elsewhere is how a file
+// grows a \r nobody asked for.
+int write_file(const char* path, const char* content) {
+    if (!path || !path[0]) return 1;
+    if (!content) content = "";
+
+    FILE* file = fopen(path, "w");
+    if (!file) return 1;
+
+    size_t n = strlen(content);
+    size_t written = n ? fwrite(content, 1, n, file) : 0;
+    int closed = fclose(file);
+
+    return (written == n && closed == 0) ? 0 : 1;
+}
+
 // Returns an empty string on failure, never NULL. Prismio has no null String, so
 // every caller checks the result with str_equals(content, "") -- and handing them a
 // NULL turned "file not found" into strcmp(NULL, "") and an access violation. That

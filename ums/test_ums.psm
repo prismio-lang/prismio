@@ -1,6 +1,8 @@
 import std.io
 import ums.ums
 import std.string
+import std.fs
+import std.list
 
 
 fn umsTestFail(message: String) -> Int {
@@ -49,6 +51,61 @@ fn main() -> Int {
         return umsTestFail("invalid manifest should collect useful diagnostics")
     }
 
-    println("PASS: UMS parser, models, validation and build planning")
+    // v0.1 3.7 -- resolution and the lockfile.
+    //
+    // The `valid` fixture declares `implementation("json", "1.2.0")` with no path,
+    // which is a *registry* dependency. There is no registry, so resolving it must
+    // fail -- and must still produce a lockfile row recording the attempt.
+    let registryDiagnostics = umsDiagnostics()
+    let registryResolutions = umsResolveDependencies(workspace.project, registryDiagnostics)
+    if (list_len(registryResolutions) != 1) {
+        return umsTestFail("one dependency should resolve to one resolution")
+    }
+    if (list_get(registryResolutions, 0).ok) {
+        return umsTestFail("a registry dependency must not resolve without a registry")
+    }
+    if (list_len(registryDiagnostics) != 1) {
+        return umsTestFail("an unresolvable dependency should report exactly one diagnostic")
+    }
+    let registryLock = umsLockfileContents(workspace.project, registryResolutions)
+    if (strContains(registryLock, "registry") == false) {
+        return umsTestFail("the lockfile should record the source as registry")
+    }
+    if (strContains(registryLock, "json") == false) {
+        return umsTestFail("the lockfile should name the dependency it could not resolve")
+    }
+
+    // A path dependency naming a directory that exists resolves, and one naming a
+    // directory that does not must fail rather than create it.
+    let good = umsLoadText(
+        "project { name = \"p\" version = \"1.0.0\" prismio = \"1.0\" } targets { executable(\"p\") { entry = \"src/main.psm\" } } dependencies { implementation(\"dep\", \"1.0.0\", \"../localdep\") }",
+        "memory:good", "ums/tests/fixtures/valid", "debug")
+    if (good.valid == false) { return umsTestFail("a path dependency should lower") }
+    let goodDiagnostics = umsDiagnostics()
+    let goodResolutions = umsResolveDependencies(good.project, goodDiagnostics)
+    if (list_len(goodDiagnostics) != 0) {
+        return umsTestFail("an existing path dependency should report nothing")
+    }
+    if (list_get(goodResolutions, 0).ok == false) {
+        return umsTestFail("an existing path dependency should resolve")
+    }
+
+    let bad = umsLoadText(
+        "project { name = \"p\" version = \"1.0.0\" prismio = \"1.0\" } targets { executable(\"p\") { entry = \"src/main.psm\" } } dependencies { implementation(\"dep\", \"1.0.0\", \"../nowhere\") }",
+        "memory:bad", "ums/tests/fixtures/valid", "debug")
+    let badDiagnostics = umsDiagnostics()
+    let badResolutions = umsResolveDependencies(bad.project, badDiagnostics)
+    if (list_len(badDiagnostics) != 1) {
+        return umsTestFail("a missing path dependency should report one diagnostic")
+    }
+    if (list_get(badResolutions, 0).ok) {
+        return umsTestFail("a missing path dependency must not resolve")
+    }
+    // The directory must not have been brought into existence by asking about it.
+    if (directoryExists("ums/tests/fixtures/nowhere")) {
+        return umsTestFail("resolving a missing path dependency created the directory")
+    }
+
+    println("PASS: UMS parser, models, validation, build planning, resolution and lockfile")
     return 0
 }

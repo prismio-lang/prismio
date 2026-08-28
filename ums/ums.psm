@@ -2,3 +2,4 @@
 // Consumers import this module; it owns no compiler stages or CLI policy.
 
 import ums.model.workspace
+import ums.dependency.resolve

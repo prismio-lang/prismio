@@ -1,0 +1,4 @@
+// A local path dependency's sources. Nothing imports it yet -- 3.7 resolves and
+// records dependencies; wiring a resolved path into the import search is the next
+// slice, and this fixture is what that will be tested against.
+fn localDepMarker() -> Int { return 7 }
