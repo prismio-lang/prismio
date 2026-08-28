@@ -1,0 +1,212 @@
+{
+ "meta": {
+  "label": "modules",
+  "old": "build/cl3",
+  "new": "build/ns4",
+  "runs": 25,
+  "tolerance_pct": 10.0,
+  "when": "2026-08-28 08:59:49",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "methodology_note": "Run in a detached worktree at 977fab6^ (f7c70de), NOT in the main tree. build/cl3 cannot parse the post-977fab6 std/ (it uses `priv`), so the --old arm fails on every std-importing corpus program in the main tree. The corpus (aif/evidence/xlang/prismio/) is byte-identical across 977fab6^..977fab6, and std/ differs only by 22 `priv` markers, so the worktree isolates the compiler change on identical source. Both compilers were copied into <worktree>/build/ because the std root is resolved relative to the compiler executable, not the cwd or the source file.",
+  "g5_note": "g5 reads 0.692x IMPROVED and it is not real. cl3 and ns4 emit a byte-identical __TEXT,__text for g5.psm; the built binaries differ in 51 bytes, all of them LC_UUID (16) plus the embedded output path and the signature hash covering it (35). NOTE: this REFUTES the standing explanation in NEXT-SESSION-V0_1.md that the harness penalty follows whichever binary sits in the 'new' slot -- here the 'new' slot got a 31% bonus. g5's timing is unstable in both directions, not positionally biased."
+ },
+ "results": {
+  "g1": {
+   "old_loop_ms": [
+    20.970593,
+    19.177123,
+    22.488953
+   ],
+   "new_loop_ms": [
+    21.739845,
+    19.465455,
+    22.902247
+   ],
+   "ratio": 1.0366824152278382,
+   "old_rss_mb": 1.78125,
+   "new_rss_mb": 1.78125,
+   "rss_ratio": 1.0,
+   "old_exe_bytes": 79496,
+   "new_exe_bytes": 79496,
+   "baselines": {
+    "rust_idiomatic": 17.997044,
+    "rust_tuned": 4.551163
+   },
+   "checksums": [
+    "checksum alive 2000",
+    "checksum beyond 1095"
+   ],
+   "runs": 25
+  },
+  "g2": {
+   "old_loop_ms": [
+    27.087367,
+    26.632729,
+    27.707953
+   ],
+   "new_loop_ms": [
+    26.874021,
+    26.330091,
+    27.029183
+   ],
+   "ratio": 0.9921237822782849,
+   "old_rss_mb": 1.953125,
+   "new_rss_mb": 1.9375,
+   "rss_ratio": 0.992,
+   "old_exe_bytes": 79208,
+   "new_exe_bytes": 79208,
+   "baselines": {
+    "rust_idiomatic": 17.85155,
+    "rust_tuned": 9.917042
+   },
+   "checksums": [
+    "checksum submitted 10020000",
+    "checksum culled 9980000"
+   ],
+   "runs": 25
+  },
+  "g3": {
+   "old_loop_ms": [
+    43.415542,
+    42.970947,
+    44.579617
+   ],
+   "new_loop_ms": [
+    43.465431,
+    42.675204,
+    44.157902
+   ],
+   "ratio": 1.0011491046224874,
+   "old_rss_mb": 2.046875,
+   "new_rss_mb": 2.0625,
+   "rss_ratio": 1.0076335877862594,
+   "old_exe_bytes": 79496,
+   "new_exe_bytes": 79496,
+   "baselines": {
+    "rust_idiomatic": 44.8397,
+    "rust_tuned": 30.034286
+   },
+   "checksums": [
+    "checksum nodes 1365",
+    "checksum visited 1365",
+    "checksum visible 1365"
+   ],
+   "runs": 25
+  },
+  "g4": {
+   "old_loop_ms": [
+    38.714521,
+    37.898333,
+    39.601621
+   ],
+   "new_loop_ms": [
+    39.476923,
+    37.79114,
+    40.309985
+   ],
+   "ratio": 1.0196929209068608,
+   "old_rss_mb": 2.109375,
+   "new_rss_mb": 2.125,
+   "rss_ratio": 1.0074074074074073,
+   "old_exe_bytes": 79480,
+   "new_exe_bytes": 79480,
+   "baselines": {
+    "rust_idiomatic": 21.589888,
+    "rust_tuned": 17.638743
+   },
+   "checksums": [
+    "checksum entities 1500",
+    "checksum draws 1215783"
+   ],
+   "runs": 25
+  },
+  "g5": {
+   "old_loop_ms": [
+    43.459176,
+    33.662728,
+    53.800289
+   ],
+   "new_loop_ms": [
+    30.076167,
+    27.680669,
+    37.323773
+   ],
+   "ratio": 0.6920556201985975,
+   "old_rss_mb": 1.609375,
+   "new_rss_mb": 1.625,
+   "rss_ratio": 1.0097087378640777,
+   "old_exe_bytes": 96632,
+   "new_exe_bytes": 96632,
+   "baselines": {
+    "rust_idiomatic": 29.171253,
+    "rust_tuned": 4.285365
+   },
+   "checksums": [
+    "checksum entities 2000",
+    "checksum submitted 8000000",
+    "checksum batches 12",
+    "checksum evicted 0"
+   ],
+   "runs": 25
+  },
+  "g6": {
+   "old_loop_ms": [
+    98.312277,
+    95.958308,
+    100.998489
+   ],
+   "new_loop_ms": [
+    97.214595,
+    95.508769,
+    99.595899
+   ],
+   "ratio": 0.9888347413619564,
+   "old_rss_mb": 2.359375,
+   "new_rss_mb": 2.328125,
+   "rss_ratio": 0.9867549668874173,
+   "old_exe_bytes": 80264,
+   "new_exe_bytes": 80264,
+   "baselines": {
+    "rust_idiomatic": 54.896891,
+    "rust_tuned": 40.510345
+   },
+   "checksums": [
+    "checksum alive 120000",
+    "checksum orders 13800000",
+    "checksum kills 120000"
+   ],
+   "runs": 25
+  },
+  "g9": {
+   "old_loop_ms": [
+    107.331573,
+    105.473317,
+    111.609484
+   ],
+   "new_loop_ms": [
+    107.38481,
+    105.745555,
+    109.179419
+   ],
+   "ratio": 1.0004960050292004,
+   "old_rss_mb": 1.515625,
+   "new_rss_mb": 1.515625,
+   "rss_ratio": 1.0,
+   "old_exe_bytes": 78936,
+   "new_exe_bytes": 78936,
+   "baselines": {
+    "rust_idiomatic": 112.333795,
+    "rust_tuned": 71.436868
+   },
+   "checksums": [
+    "checksum total 1856014121",
+    "checksum last 1579165008"
+   ],
+   "runs": 25
+  }
+ },
+ "gate": {
+  "passed": true,
+  "failures": []
+ }
+}

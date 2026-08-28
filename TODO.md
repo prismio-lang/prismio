@@ -1360,3 +1360,138 @@ checkbox, or the two drift and only one of them gets read.)*
       `test_45_aif_affine_collections`.
       **What is left is a judgement call, not a task**: whether 15 lines justifies migrating a
       benchmark's setup. Recorded rather than taken.
+---
+
+## Defect · `no_stack` answers two different questions, and one of them wrongly
+
+**Found and FIXED 2026-08-30.** Was latent in the shipped compiler and blocked
+migrating `tests/` off the C string externs.
+
+An explicit `drop` in a function that is **never called** suppresses the automatic
+scope-exit release in a *different* function:
+
+```prismio
+import std.io
+import std.string
+
+fn plain() -> Int {
+    let s = strConcat("ab","cde")
+    return __builtin_string_len(s)          // s must be released at the brace
+}
+
+fn other() -> Int {                          // never called
+    let q = strConcat("uvw","x")
+    let n = __builtin_string_len(q)
+    drop(q)
+    return n
+}
+
+fn main() -> Int { println(plain()) return 0 }
+```
+
+| variant | ledger |
+|---|---|
+| `plain` alone | `2 allocated, 2 released, 0 leaked` |
+| `+ other()` **without** the `drop` | `2 allocated, 2 released, 0 leaked` |
+| `+ other()` **with** `drop(q)` | `2 allocated, 1 released, **1 leaked**` |
+
+Not name-keyed — renaming `s` changes nothing.
+
+**Cause.** With native `std`, every string `strConcat` produces comes from *one*
+allocation site, `str_with_capacity` at `std/string.psm:177`. `aif --summary` shows
+a single `strConcat__String_String#0`; `--why` says "an explicit `drop` frees this
+value" and "the body has more than one call site". `NodeSite` is a many-nodes →
+one-site map, so `plain`'s initialiser node and `other`'s share that site.
+
+`AIF_CON_NO_STACK` (`runtime/aif_support.c:3004`) marks **every site** in the
+resolved value set `no_stack = 1`. That flag then serves two different questions:
+
+1. *Can this site live in a stack slot or an arena?* — **site-level, and correct.**
+   `walk.psm:282` calls it "a codegen constraint rather than a fact".
+2. *Has this binding already been freed, so the scope must not free it again?* —
+   asked at `aif_support.c:5687`, and **binding-level**. Answering it with the site
+   flag makes one `drop` silently cancel the release for every other binding of
+   that site.
+
+The tree already states the intended rule, in `test_45`'s own header: *"droppability
+is a property of a binding"*.
+
+**Why the C externs hid it.** An opaque `extern fn str_concat` produced a per-call
+`extern-alloc` value, so each call site was its own producer and the sites never
+collapsed. Porting to native `std` is what merges them.
+
+**Fix shape.** Split the two questions: keep `site->no_stack` for placement/tier,
+and add a binding-level "explicitly dropped" flag consulted at 5687.
+`aif_frees_at_scope_node` is asked about the *initialiser* node (`stmt.child2`,
+`src/ir/stmt.psm:152`), and `NodeSite` already keys on that node — so the flag
+belongs there. The missing piece is that `aif_con_no_stack(vs)` carries only a value
+set, so `drop(q)` cannot currently name the binding's initialiser node.
+
+### The fix, as landed
+
+Two lines of behaviour, in the two places the two questions belong.
+
+- `runtime/aif_support.c`, `elem_disposition_of`: **stop** consulting `s->no_stack`.
+  That was the clause returning `AIF_ELEM_NONE` for every binding sharing a dropped
+  site, which is what made `aif_owns_call_result_at_node` decline and the release
+  vanish.
+- `src/ir/stmt.psm`: add `chainDropsName(irFunctionBody, varName) == false` to
+  **both** branches that mark a binding droppable — the `aif_frees_at_scope_node`
+  one and the `aif_owns_call_result_at_node` one. New helper in `src/ir/expr.psm`,
+  in the same shape as `chainAssignsName`.
+
+`aif_frees_at_scope_node` **keeps** its own `s->no_stack` test: that clause is
+reached only when `E` is the site's own scope, where site and binding coincide.
+The first attempt removed *that* one instead and changed nothing, because the
+`s->E != s->scope` test above it declines first — the wrong line in the right
+neighbourhood.
+
+FFI `consume` never depended on either clause: it raises E to Caller alongside its
+`no_stack`, so the E test declines it before any of this.
+
+### Gate
+
+| | |
+|---|---|
+| suite | 191/191 |
+| two-generation fixpoint | identical |
+| corpus `__TEXT,__text`, pre vs post | 7/7 identical |
+| `test_45` ported to native `std` | **215 leaked → 2 leaked** (the 2 it documents) |
+| `test_45` unmigrated | `8/6/2`, unchanged |
+| ASan | clean, no double free |
+| doc snippets | 141 |
+
+Compare `released`/`violations`, not `allocated`/`leaked` — the native port
+legitimately allocates 221 where the C one allocated 8, because native `strConcat`
+is visible to the ledger and the C one was not.
+
+---
+
+## Debt · UMS resolution releases nothing it allocates
+
+**Incurred 2026-08-30 by v0.1 3.7.** Not unsoundness -- `violations` is 0 either
+side -- but it is a real regression in allocation hygiene and it was measured, so
+it is written down rather than left for someone to find.
+
+`ums/test_ums.psm` under `--verify`:
+
+| | allocated | released | leaked | violations |
+|---|---|---|---|---|
+| before 3.7 | 1150 | 639 | 511 | 0 |
+| after 3.7 | 2112 | **637** | 1475 | 0 |
+
+`released` is flat while allocations doubled, so `umsResolveDependencies`,
+`umsLockfileContents` and `umsWriteLockfile` release none of the strings they
+build -- and they build a lot of them, since every row is assembled with nested
+`strConcat`. The subsystem already leaked 44% of what it took, so this is a worse
+instance of a standing condition rather than a new class of problem.
+
+**Why it is not a crisis:** the compiler is a short-lived process and every one of
+these dies at exit. **Why it is still debt:** the same code is what a future
+`prismio add` or a watch mode would call in a loop.
+
+**How to approach it:** bind the intermediates rather than nesting the
+`strConcat` calls -- TODO.md's argument-position release is withheld when the
+enclosing call returns a pointer, which is exactly the shape
+`strConcat(strConcat(a, b), c)` has, and every row builder here is written that
+way. Measure with `released`, not `leaked`.
