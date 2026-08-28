@@ -14,7 +14,7 @@ import std.string
 // unconditionally changed every program in the corpus. A written Slice type or
 // a range expression is enough to select the family. Walking `next` here makes
 // one call on the module's first declaration cover every child chain as well.
-fn moduleTreeUsesSlice(nodePtr: Ptr) -> Bool {
+private fn moduleTreeUsesSlice(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let node = ptr_to_node(nodePtr)
     if (node.kind == NodeKind.SLICE_EXPR) { return true }
@@ -27,7 +27,7 @@ fn moduleTreeUsesSlice(nodePtr: Ptr) -> Bool {
     return moduleTreeUsesSlice(node.next)
 }
 
-fn moduleTreeUsesDataView(nodePtr: Ptr) -> Bool {
+private fn moduleTreeUsesDataView(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let node = ptr_to_node(nodePtr)
     if (node.kind == NodeKind.TYPE_ANNOTATION and strEquals(node.s1, "DataView")) {
@@ -46,7 +46,7 @@ fn moduleTreeUsesDataView(nodePtr: Ptr) -> Bool {
     return moduleTreeUsesDataView(node.next)
 }
 
-fn generateFunction(func: ASTNode) {
+private fn generateFunction(func: ASTNode) {
     let funcName = func.s1
     let emittedName = functionSymbolName(func)
     
@@ -168,7 +168,7 @@ fn generateFunction(func: ASTNode) {
     ir_function_end()
 }
 
-fn functionHasStringParam(func: ASTNode) -> Bool {
+internal fn functionHasStringParam(func: ASTNode) -> Bool {
     let mut paramPtr = func.child1
     while (nodeExists(paramPtr)) {
         let param = ptr_to_node(paramPtr)
@@ -180,7 +180,7 @@ fn functionHasStringParam(func: ASTNode) -> Bool {
     return false
 }
 
-fn taskFunctionForCall(call: ASTNode) -> Ptr {
+internal fn taskFunctionForCall(call: ASTNode) -> Ptr {
     let callee = ptr_to_node(call.child1)
     let mut symbol = callee.s1
     if (strEquals(call.s2, "") == false) { symbol = call.s2 }
@@ -199,7 +199,7 @@ fn taskFunctionForCall(call: ASTNode) -> Ptr {
     return ptr_null()
 }
 
-fn taskThunkName(func: ASTNode) -> String {
+internal fn taskThunkName(func: ASTNode) -> String {
     return strConcat(functionSymbolName(func), "__task")
 }
 
@@ -208,7 +208,7 @@ fn taskThunkName(func: ASTNode) -> String {
 // half happened to work until code read the length. The thunk has the runtime's
 // pointer-only signature and makes an ordinary, honestly typed call to the real
 // function, leaving LLVM to implement both ABIs on every target.
-fn generateTaskThunk(func: ASTNode) {
+private fn generateTaskThunk(func: ASTNode) {
     let retType = storageType(getDeclaredReturnType(func, func.child3))
     ir_function_begin(taskThunkName(func), retType)
 
@@ -248,7 +248,7 @@ fn generateTaskThunk(func: ASTNode) {
 }
 
 // Pre-pass: collect string literals
-fn collectStringsExpr(expr: ASTNode) {
+internal fn collectStringsExpr(expr: ASTNode) {
     if (expr.kind == NodeKind.LITERAL_EXPR) {
         if (expr.i1 == TokenType.STRING_LITERAL) {
             let strName = strConcat(".str.s", strFromInt(irStringCounter))
@@ -329,7 +329,7 @@ fn collectStringsExpr(expr: ASTNode) {
     }
 }
 
-fn declareExternFunction(ext: ASTNode) {
+private fn declareExternFunction(ext: ASTNode) {
     let mut retType = getDeclaredReturnType(ext, ext.child2)
     ir_set_fn_return_type(functionSymbolName(ext), retType)
 
@@ -362,7 +362,7 @@ fn declareExternFunction(ext: ASTNode) {
 // The cost is that a workload cannot call a legitimate foreign library. That is
 // the clause's intent read literally: a workload needing a real environment is
 // not reproducible and is therefore not a workload.
-fn irRuntimeProvides(name: String) -> Bool {
+private fn irRuntimeProvides(name: String) -> Bool {
     if (strStartsWith(name, "str_")) { return true }
     if (strStartsWith(name, "list_")) { return true }
     if (strStartsWith(name, "prismio_rt_")) { return true }
@@ -388,7 +388,7 @@ fn irRuntimeProvides(name: String) -> Bool {
 // `ret ptr null` for anything pointer-shaped, because a stubbed producer handing
 // back an integer 0 cast to a pointer is the same null but takes a cast to say
 // so; and a zero of the right width otherwise.
-fn generateExternStub(ext: ASTNode) {
+private fn generateExternStub(ext: ASTNode) {
     let retType = getDeclaredReturnType(ext, ext.child2)
     let retSig = storageType(retType)
 
@@ -435,7 +435,7 @@ fn generateExternStub(ext: ASTNode) {
 // 3.1 the wording forces: "runs once per execution and is excluded". Putting it
 // inside the loop would rebuild the input for every repetition and measure a
 // program nobody wrote.
-fn generateWorkloadDriver(workload: ASTNode, profilePath: String) {
+private fn generateWorkloadDriver(workload: ASTNode, profilePath: String) {
     ir_function_begin("main", "i32")
     ir_function_param("i32", "p_argc")
     ir_function_param("ptr", "p_argv")
@@ -525,7 +525,7 @@ fn moduleWorkloadCount(module: ASTNode) -> Int {
 // Asked once per extern declaration, from a walk over every declaration, so the
 // walk it used to do was the same quadratic REQUIREMENTS 16 names in sema. Same
 // answer, from the index generateModule fills.
-fn moduleHasFunction(module: ASTNode, name: String) -> Bool {
+private fn moduleHasFunction(module: ASTNode, name: String) -> Bool {
     let count = ir_decl_count(name)
     let mut i = 0
     while (i < count) {
@@ -539,7 +539,7 @@ fn moduleHasFunction(module: ASTNode, name: String) -> Bool {
     return false
 }
 
-fn registerEnumDecl(enumNode: ASTNode) {
+private fn registerEnumDecl(enumNode: ASTNode) {
     let mut variantPtr = enumNode.child1
     let mut value = 0
     while (nodeExists(variantPtr)) {
@@ -550,7 +550,7 @@ fn registerEnumDecl(enumNode: ASTNode) {
     }
 }
 
-fn registerStructName(structNode: ASTNode) {
+private fn registerStructName(structNode: ASTNode) {
     ir_register_struct(structNode.s1)
 }
 
@@ -560,7 +560,7 @@ fn registerStructName(structNode: ASTNode) {
 // it is decided from declarations alone -- never from AIF, because a layout that
 // depended on the analysis would differ between `--debug` and a release build,
 // and SPEC 7.2 requires a level to change no observable behaviour.
-fn fieldTypeFor(module: ASTNode, typeNode: ASTNode) -> String {
+private fn fieldTypeFor(module: ASTNode, typeNode: ASTNode) -> String {
     let t = mapTypeNode(typeNode)
     if (isStructTypeKey(t)) {
         if (typeAnnIsPod(module, typeNode, 0)) {
@@ -571,7 +571,7 @@ fn fieldTypeFor(module: ASTNode, typeNode: ASTNode) -> String {
     return fieldStorageType(t)
 }
 
-fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
+private fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
     let firstFieldPtr = structNode.child1
     if (nodeExists(firstFieldPtr)) {
         let firstField = ptr_to_node(firstFieldPtr)
@@ -663,7 +663,7 @@ fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
 //
 // Named rather than numbered so the IR reads, and so two builds of the same
 // program name the same function -- the manifest is diffed and so is the IR.
-fn releaseFnName(typeName: String) -> String {
+internal fn releaseFnName(typeName: String) -> String {
     return strConcat("__aif_release_", typeName)
 }
 
@@ -676,7 +676,7 @@ fn releaseFnName(typeName: String) -> String {
 // The struct's own storage goes through ir_free_object, so the seam still sees
 // it: a verify build's accounting counts this free exactly as it counts a scope
 // drop's, and an arena build routes it the same way.
-fn generateReleaseFn(structNode: ASTNode) {
+private fn generateReleaseFn(structNode: ASTNode) {
     let tname = structNode.s1
     ir_function_begin(releaseFnName(tname), "void")
     ir_function_param("ptr", "p_obj")
@@ -771,11 +771,11 @@ fn generateReleaseFn(structNode: ASTNode) {
 // walking only these still finds every cycle -- and the traversal never *leaves*
 // the skeleton into the string and token graphs hanging off it, which are
 // usually far larger.
-fn cyclicChildrenFnName(typeName: String) -> String {
+internal fn cyclicChildrenFnName(typeName: String) -> String {
     return strConcat("__aif_cyclic_children_", typeName)
 }
 
-fn generateCyclicChildrenFn(structNode: ASTNode) {
+private fn generateCyclicChildrenFn(structNode: ASTNode) {
     let tname = structNode.s1
     ir_function_begin(cyclicChildrenFnName(tname), "void")
     ir_function_param("ptr", "p_obj")
@@ -801,7 +801,7 @@ fn generateCyclicChildrenFn(structNode: ASTNode) {
     ir_function_end()
 }
 
-fn nthStructField(structNode: ASTNode, want: Int) -> ASTNode {
+private fn nthStructField(structNode: ASTNode, want: Int) -> ASTNode {
     let mut seen = 0
     let mut p = structNode.child1
     while (nodeExists(p)) {
@@ -815,7 +815,7 @@ fn nthStructField(structNode: ASTNode, want: Int) -> ASTNode {
     return ptr_to_node(ptr_null())
 }
 
-fn irFieldCountOf(structNode: ASTNode) -> Int {
+private fn irFieldCountOf(structNode: ASTNode) -> Int {
     let mut n = 0
     let mut p = structNode.child1
     while (nodeExists(p)) {
@@ -848,19 +848,19 @@ fn findStructField(structNode: ASTNode, name: String) -> ASTNode {
 //
 // The helpers below take a possibly-empty child pointer so each kind reads as a
 // plain list of the children it owns, rather than repeating the emptiness check.
-fn collectStringsChildExpr(child: Ptr) {
+private fn collectStringsChildExpr(child: Ptr) {
     if (nodeExists(child)) {
         collectStringsExpr(ptr_to_node(child))
     }
 }
 
-fn collectStringsChildBlock(child: Ptr) {
+private fn collectStringsChildBlock(child: Ptr) {
     if (nodeExists(child)) {
         collectStringsBlock(ptr_to_node(child))
     }
 }
 
-fn collectStringsStmt(stmt: ASTNode) {
+private fn collectStringsStmt(stmt: ASTNode) {
     if (stmt.kind == NodeKind.VARIABLE_DECL) {
         collectStringsChildExpr(stmt.child2)
     }
@@ -917,7 +917,7 @@ fn collectStringsStmt(stmt: ASTNode) {
     }
 }
 
-fn collectStringsBlock(block: ASTNode) {
+private fn collectStringsBlock(block: ASTNode) {
     let mut sPtr = block.child1
     while (nodeExists(sPtr)) {
         let s = ptr_to_node(sPtr)
@@ -926,7 +926,7 @@ fn collectStringsBlock(block: ASTNode) {
     }
 }
 
-fn collectStringsFunction(func: ASTNode) {
+private fn collectStringsFunction(func: ASTNode) {
     if (nodeExists(func.child2)) {
         collectStringsBlock(ptr_to_node(func.child2))
     }

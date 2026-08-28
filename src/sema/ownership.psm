@@ -21,7 +21,7 @@ import std.option
 // This is also what keeps it sound rather than merely quiet. A borrowed binding's
 // initialiser registers no allocation site, so aif_frees_at_scope_node never
 // admits it and nothing frees a value it does not own.
-fn semaBindingIsBorrow(node: ASTNode) -> Bool {
+internal fn semaBindingIsBorrow(node: ASTNode) -> Bool {
     if (node.kind == NodeKind.MEMBER_ACCESS_EXPR) { return true }
     if (node.kind == NodeKind.INDEX_EXPR) { return true }
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
@@ -36,7 +36,7 @@ fn semaBindingIsBorrow(node: ASTNode) -> Bool {
 // A borrowed operand is reborrowed instead -- the caller marks the new binding
 // borrowed in turn. Consuming one is still an error; that goes through
 // semaConsumeOperand.
-fn semaMoveOperand(node: ASTNode) {
+internal fn semaMoveOperand(node: ASTNode) {
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
         if (typeIsMoveOnly(nodeGetType(node))) {
             if (ir_is_borrowed(node.s1) == 1) { return }
@@ -63,7 +63,7 @@ fn semaMoveOperand(node: ASTNode) {
 // life here, so a borrow cannot supply one -- the owner would be left with a
 // dangling binding. This is the check semaMoveOperand used to make for every
 // caller, kept for the two that still need it.
-fn semaConsumeOperand(node: ASTNode) {
+internal fn semaConsumeOperand(node: ASTNode) {
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
         if (typeIsMoveOnly(nodeGetType(node))) {
             if (ir_is_borrowed(node.s1) == 1) {
@@ -77,7 +77,7 @@ fn semaConsumeOperand(node: ASTNode) {
 
 // Type-check a value against an expected type, allowing a bare integer literal to
 // take on any sized integer type (so `let x: U8 = 200` and `f(200)` type-check).
-fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo, context: String) -> TypeInfo {
+internal fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo, context: String) -> TypeInfo {
     if (typeIsValid(expected) and expected.kind == TypeKind.INT and semaIsIntLiteral(valNode)) {
         nodeSetType(valNode, expected)
         return expected
@@ -134,7 +134,7 @@ fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo, context
 // parameter; the analysis would read a contract that means nothing and quietly
 // apply a default instead. So the declaration is the only place these can be
 // rejected, and they are rejected here rather than warned about.
-fn semaContractName(encoded: String) -> String {
+private fn semaContractName(encoded: String) -> String {
     let at = strIndexOf(encoded, ":")
     if (at < 0) {
         return encoded
@@ -142,7 +142,7 @@ fn semaContractName(encoded: String) -> String {
     return strSubstring(encoded, 0, at)
 }
 
-fn semaContractArgument(encoded: String) -> String {
+private fn semaContractArgument(encoded: String) -> String {
     let at = strIndexOf(encoded, ":")
     if (at < 0) {
         return ""
@@ -150,7 +150,7 @@ fn semaContractArgument(encoded: String) -> String {
     return strSubstring(encoded, at + 1, __builtin_string_len(encoded) - at - 1)
 }
 
-fn semaIsParameterContract(name: String) -> Bool {
+private fn semaIsParameterContract(name: String) -> Bool {
     if (strEquals(name, "borrow")) { return true }
     if (strEquals(name, "retain")) { return true }
     if (strEquals(name, "retain_in")) { return true }
@@ -164,15 +164,15 @@ fn semaIsParameterContract(name: String) -> Bool {
 // but this compiler has no such copy yet. Reject the boundary instead of
 // passing the private `{ handle, offset, length }` aggregate as though it were
 // a stable foreign ABI.
-fn semaExternTypeIsSlice(annotation: ASTNode) -> Bool {
+private fn semaExternTypeIsSlice(annotation: ASTNode) -> Bool {
     return annotation.i2 == 1 and strEquals(annotation.s1, "Slice")
 }
 
-fn semaExternTypeIsDataView(annotation: ASTNode) -> Bool {
+private fn semaExternTypeIsDataView(annotation: ASTNode) -> Bool {
     return annotation.i2 == 1 and strEquals(annotation.s1, "DataView")
 }
 
-fn semaCheckExternContracts(extNode: ASTNode) {
+internal fn semaCheckExternContracts(extNode: ASTNode) {
     // Counted first: `retain_in(k)` names another parameter by index, so the
     // arity has to be known before any of them can be checked.
     let mut arity = 0

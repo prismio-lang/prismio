@@ -16,7 +16,7 @@ import std.string
 // same reason: one free slot, and an argument to carry.
 // ---------------------------------------------------------------------------
 
-fn semaAnnotationHas(encoded: String, name: String) -> Bool {
+private fn semaAnnotationHas(encoded: String, name: String) -> Bool {
     return strContains(encoded, strConcat(name, " "))
 }
 
@@ -40,7 +40,7 @@ fn semaAnnotationHas(encoded: String, name: String) -> Bool {
 //
 // `unique` stays here. It is an axiom about a *type*, which is exactly what this
 // pass knows and AIF would have to be handed.
-fn semaCheckAnnotations(stmt: ASTNode, varT: TypeInfo) {
+internal fn semaCheckAnnotations(stmt: ASTNode, varT: TypeInfo) {
     let encoded = stmt.s2
     if (strEquals(encoded, "")) { return }
 
@@ -58,15 +58,15 @@ fn semaCheckAnnotations(stmt: ASTNode, varT: TypeInfo) {
 // checking runs, rather than by walking the module. The `module` parameter is
 // kept so the many call sites read the same as before -- and because the
 // registry is a cache of exactly what a walk of `module` would have found.
-fn semaHasStruct(module: ASTNode, name: String) -> Bool {
+internal fn semaHasStruct(module: ASTNode, name: String) -> Bool {
     return ir_named_type_kind(name) == 1
 }
 
-fn semaHasEnum(module: ASTNode, name: String) -> Bool {
+internal fn semaHasEnum(module: ASTNode, name: String) -> Bool {
     return ir_named_type_kind(name) == 2
 }
 
-fn semaRegisterNamedTypes(module: ASTNode) {
+internal fn semaRegisterNamedTypes(module: ASTNode) {
     ir_reset_named_types()
     let mut stmtPtr = module.child1
     while (nodeExists(stmtPtr)) {
@@ -77,7 +77,7 @@ fn semaRegisterNamedTypes(module: ASTNode) {
     }
 }
 
-fn semaAnnotationType(module: ASTNode, tn: ASTNode) -> TypeInfo {
+internal fn semaAnnotationType(module: ASTNode, tn: ASTNode) -> TypeInfo {
     // REQUIREMENTS 4. `T?` wraps whatever the rest of the annotation says, so
     // the suffix is peeled here once rather than in each branch below.
     if (tn.i3 == 1) {
@@ -95,7 +95,7 @@ fn semaAnnotationType(module: ASTNode, tn: ASTNode) -> TypeInfo {
     return semaAnnotationInner(module, tn)
 }
 
-fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
+private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     if (tn.i1 == 1) {
         if (nodeExists(tn.child1)) {
             return typeArray(semaAnnotationType(module, ptr_to_node(tn.child1)))
@@ -172,7 +172,7 @@ fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     return typeInvalid()
 }
 
-fn semaDeclaredReturnType(module: ASTNode, retChild: Ptr) -> TypeInfo {
+internal fn semaDeclaredReturnType(module: ASTNode, retChild: Ptr) -> TypeInfo {
     if (nodeExists(retChild)) {
         return semaAnnotationType(module, ptr_to_node(retChild))
     }
@@ -187,13 +187,13 @@ fn semaDeclaredReturnType(module: ASTNode, retChild: Ptr) -> TypeInfo {
 // Both directions are the intended, pervasive spelling, so treat Enum and Int as
 // interchangeable. Only the default 32-bit `Int` qualifies — a sized integer such
 // as I64 still has to match exactly.
-fn semaEnumMatchesInt(a: TypeInfo, b: TypeInfo) -> Bool {
+private fn semaEnumMatchesInt(a: TypeInfo, b: TypeInfo) -> Bool {
     if (a.kind != TypeKind.ENUM) { return false }
     if (b.kind != TypeKind.INT) { return false }
     return strEquals(b.name, "Int")
 }
 
-fn semaTypesMatch(expected: TypeInfo, actual: TypeInfo) -> Bool {
+internal fn semaTypesMatch(expected: TypeInfo, actual: TypeInfo) -> Bool {
     if (typeEquals(expected, actual)) { return true }
     if (semaEnumMatchesInt(expected, actual)) { return true }
     if (semaEnumMatchesInt(actual, expected)) { return true }
@@ -207,7 +207,7 @@ fn semaTypesMatch(expected: TypeInfo, actual: TypeInfo) -> Bool {
     return false
 }
 
-fn semaExpectAssignable(node: ASTNode, context: String, expected: TypeInfo, actual: TypeInfo) {
+internal fn semaExpectAssignable(node: ASTNode, context: String, expected: TypeInfo, actual: TypeInfo) {
     // An invalid type is the *result* of an error already reported. Checking
     // against it would blame this expression for a mistake made somewhere else,
     // which is how one real error turns into a screenful of noise now that sema
@@ -220,7 +220,7 @@ fn semaExpectAssignable(node: ASTNode, context: String, expected: TypeInfo, actu
     }
 }
 
-fn semaIsIntLiteral(e: ASTNode) -> Bool {
+internal fn semaIsIntLiteral(e: ASTNode) -> Bool {
     return e.kind == NodeKind.LITERAL_EXPR and e.i1 == TokenType.NUMBER_LITERAL
 }
 
@@ -229,7 +229,7 @@ fn semaIsIntLiteral(e: ASTNode) -> Bool {
 // gives: a field read is per-identifier and the walk was per-module. The inner
 // loop over fields or variants is unchanged -- it is bounded by the declaration,
 // not by the program.
-fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: String, fieldName: String) -> TypeInfo {
+internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: String, fieldName: String) -> TypeInfo {
     let count = ir_decl_count(structName)
     let mut i = 0
     while (i < count) {
@@ -252,7 +252,7 @@ fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: String, fie
     return typeInvalid()
 }
 
-fn semaEnumHasVariant(module: ASTNode, enumName: String, variantName: String) -> Bool {
+internal fn semaEnumHasVariant(module: ASTNode, enumName: String, variantName: String) -> Bool {
     let count = ir_decl_count(enumName)
     let mut i = 0
     while (i < count) {
@@ -272,21 +272,21 @@ fn semaEnumHasVariant(module: ASTNode, enumName: String, variantName: String) ->
     return false
 }
 
-fn semaListElementType(lt: TypeInfo) -> TypeInfo {
+internal fn semaListElementType(lt: TypeInfo) -> TypeInfo {
     if (lt.kind == TypeKind.LIST and nodeExists(lt.child)) {
         return ptr_to_type(lt.child)
     }
     return typeInvalid()
 }
 
-fn semaSliceElementType(st: TypeInfo) -> TypeInfo {
+internal fn semaSliceElementType(st: TypeInfo) -> TypeInfo {
     if (st.kind == TypeKind.SLICE and nodeExists(st.child)) {
         return ptr_to_type(st.child)
     }
     return typeInvalid()
 }
 
-fn semaDataViewElementType(vt: TypeInfo) -> TypeInfo {
+internal fn semaDataViewElementType(vt: TypeInfo) -> TypeInfo {
     if (vt.kind == TypeKind.DATAVIEW and nodeExists(vt.child)) {
         return ptr_to_type(vt.child)
     }
@@ -297,7 +297,7 @@ fn semaDataViewElementType(vt: TypeInfo) -> TypeInfo {
 // Struct literals that leave fields out
 // ---------------------------------------------------------------------------
 
-fn semaLiteralHasField(expr: ASTNode, name: String) -> Bool {
+private fn semaLiteralHasField(expr: ASTNode, name: String) -> Bool {
     let mut p = expr.child1
     while (nodeExists(p)) {
         let field = ptr_to_node(p)
@@ -334,7 +334,7 @@ fn semaLiteralHasField(expr: ASTNode, name: String) -> Bool {
 // by codegen and is empty here, so the registry reading answers POD for every
 // struct-typed field during sema. `typeAnnIsPodIn` documents that
 // over-approximation as the unsafe direction for exactly this kind of question.
-fn semaZeroValue(module: ASTNode, annotation: ASTNode) -> ASTNode {
+private fn semaZeroValue(module: ASTNode, annotation: ASTNode) -> ASTNode {
     let t = semaAnnotationType(module, annotation)
 
     if (t.kind == TypeKind.STRUCT) {
@@ -391,7 +391,7 @@ fn semaZeroValue(module: ASTNode, annotation: ASTNode) -> ASTNode {
 // property of a *binding*, and a value returned or pushed into a nodeList is
 // moved instead of dropped. This is the third bug of that exact shape in this
 // session; see monoCopyOne in sema/generics.psm for the first.
-fn semaOmittedField(module: ASTNode, expr: ASTNode, field: ASTNode) -> ASTNode {
+private fn semaOmittedField(module: ASTNode, expr: ASTNode, field: ASTNode) -> ASTNode {
     let synth = createNode(NodeKind.STRUCT_FIELD)
     synth.s1 = field.s1
     nodeSpanFrom(synth, expr)
@@ -399,7 +399,7 @@ fn semaOmittedField(module: ASTNode, expr: ASTNode, field: ASTNode) -> ASTNode {
     return synth
 }
 
-fn semaFillOmittedFields(module: ASTNode, expr: ASTNode, structName: String) {
+internal fn semaFillOmittedFields(module: ASTNode, expr: ASTNode, structName: String) {
     if (expr.i1 == 1) { return }
     expr.i1 = 1
 

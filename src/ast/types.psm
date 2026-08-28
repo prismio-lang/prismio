@@ -62,7 +62,7 @@ struct TypeInfo {
 extern fn ptr_to_type(ptr: Ptr) -> TypeInfo alias
 extern fn type_to_ptr(t: TypeInfo borrow) -> Ptr alias
 
-fn typeMake(kind: TypeKind, name: String, llvm: String) -> TypeInfo {
+private fn typeMake(kind: TypeKind, name: String, llvm: String) -> TypeInfo {
     return TypeInfo {
         kind: kind,
         name: name,
@@ -457,14 +457,14 @@ fn typeSemKey(t: TypeInfo) -> String {
     return "Invalid"
 }
 
-fn typeStorageKey(t: TypeInfo) -> String {
+private fn typeStorageKey(t: TypeInfo) -> String {
     let key = typeIrKey(t)
     if (strEquals(key, "ptrptr")) { return "ptr" }
     if (strStartsWith(key, "struct:")) { return "ptr" }
     return key
 }
 
-fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
+private fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
     if (tn.i1 == 1) {
         if (nodeExists(tn.child1)) {
             return typeArray(typeFromAnnotation(ptr_to_node(tn.child1)))
@@ -522,7 +522,7 @@ fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
     return typeStruct(tn.s1)
 }
 
-fn typeFromIrKey(key: String) -> TypeInfo {
+private fn typeFromIrKey(key: String) -> TypeInfo {
     if (strEquals(key, "i32")) { return typeInt() }
     if (strEquals(key, "double")) { return typeFloat() }
     if (strEquals(key, "i1")) { return typeBool() }
@@ -716,7 +716,7 @@ fn typeAnnIsPod(module: ASTNode, ann: ASTNode, depth: Int) -> Bool {
     return typeAnnIsPodIn(module, ann, depth, false)
 }
 
-fn structDeclIsPod(module: ASTNode, name: String, depth: Int) -> Bool {
+private fn structDeclIsPod(module: ASTNode, name: String, depth: Int) -> Bool {
     return structDeclIsPodIn(module, name, depth, false)
 }
 

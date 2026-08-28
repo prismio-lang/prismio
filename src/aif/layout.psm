@@ -41,7 +41,7 @@ import std.string
 // Base-named for the reason aifBaseType exists: a container made by
 // `list_new()` types as `List<Invalid>` and an annotated field as `List<Node>`,
 // so comparing the spellings would reject every container field there is.
-fn aifFieldTypeName(field: ASTNode) -> String {
+internal fn aifFieldTypeName(field: ASTNode) -> String {
     if (nodeExists(field.child1) == false) { return "" }
     let ann = ptr_to_node(field.child1)
     if (ann.i2 == 1) { return "List" }
@@ -49,7 +49,7 @@ fn aifFieldTypeName(field: ASTNode) -> String {
     return aifBaseType(ann.s1)
 }
 
-fn aifTypeBytes(ann: ASTNode) -> Int {
+internal fn aifTypeBytes(ann: ASTNode) -> Int {
     // `[T]` and `List<T>` are both a pointer to elements held elsewhere, so they
     // are pointer-width and not eight. These two read `8` until 2026-08-23 while
     // the String/Ptr case three lines below already asked the target -- the same
@@ -93,7 +93,7 @@ fn aifTypeBytes(ann: ASTNode) -> Int {
 //
 // aif_struct_size is read back rather than recomputed, which is why
 // aifComputeSizes has to size a nested struct before its container.
-fn aifStructFieldBytes(module: ASTNode, ann: ASTNode) -> Int {
+private fn aifStructFieldBytes(module: ASTNode, ann: ASTNode) -> Int {
     if (typeAnnIsPod(module, ann, 0)) {
         if (ir_is_struct_type_name(ann.s1) == 1) {
             let inner = aif_struct_size(ann.s1)
@@ -106,7 +106,7 @@ fn aifStructFieldBytes(module: ASTNode, ann: ASTNode) -> Int {
 // A struct aligns to its widest scalar, not to its size: three i32 inline is 12
 // bytes aligned to 4, and the next field lands at 12. Using the size as the
 // alignment would put it at 16 and disagree with what LLVM lays out.
-fn aifTypeAlign(module: ASTNode, ann: ASTNode) -> Int {
+private fn aifTypeAlign(module: ASTNode, ann: ASTNode) -> Int {
     if (typeAnnIsPod(module, ann, 0)) {
         if (ir_is_struct_type_name(ann.s1) == 1) {
             let decl = findStructDeclNamed(module, ann.s1)
@@ -130,7 +130,7 @@ fn aifTypeAlign(module: ASTNode, ann: ASTNode) -> Int {
     return aifTypeBytes(ann)
 }
 
-fn aifAlignUp(offset: Int, align: Int) -> Int {
+private fn aifAlignUp(offset: Int, align: Int) -> Int {
     let slack = offset % align
     if (slack == 0) { return offset }
     return offset + align - slack
@@ -140,7 +140,7 @@ fn aifAlignUp(offset: Int, align: Int) -> Int {
 // emit rather than in declaration order. That is the whole measurable effect of
 // the search on this compiler: sorting by descending width removes interior
 // padding, and the size it removes feeds Theta_stack, which is what decides T0.
-fn aifComputeStructSize(decl: ASTNode, module: ASTNode) {
+private fn aifComputeStructSize(decl: ASTNode, module: ASTNode) {
     let mut offset = 0
     let mut maxAlign = 1
 
@@ -179,7 +179,7 @@ fn aifComputeStructSize(decl: ASTNode, module: ASTNode) {
 
 // `[T]` and `List<T>` both hang T off child1, so descending finds the type the
 // field actually refers to; the annotation's own name is `` or `List`.
-fn aifAnnotationLeafName(ann: ASTNode) -> String {
+private fn aifAnnotationLeafName(ann: ASTNode) -> String {
     let mut name = ann.s1
     let mut childPtr = ann.child1
     while (nodeExists(childPtr)) {
@@ -190,7 +190,7 @@ fn aifAnnotationLeafName(ann: ASTNode) -> String {
     return name
 }
 
-fn aifRegisterTypeEdges(decl: ASTNode) {
+internal fn aifRegisterTypeEdges(decl: ASTNode) {
     let mut fPtr = decl.child1
     while (nodeExists(fPtr)) {
         let f = ptr_to_node(fPtr)
@@ -220,7 +220,7 @@ fn aifRegisterTypeEdges(decl: ASTNode) {
 // followed first, exactly as generateStructDecl follows them to order
 // LLVMStructSetBody -- the two walks have to agree, and they agree because both
 // ask typeAnnIsPod which edges exist.
-fn aifComputeSizesOf(module: ASTNode, d: ASTNode) {
+private fn aifComputeSizesOf(module: ASTNode, d: ASTNode) {
     if (aif_struct_size(d.s1) > 0) { return }
     let mut dp = d.child1
     while (nodeExists(dp)) {
@@ -245,7 +245,7 @@ fn aifComputeSizesOf(module: ASTNode, d: ASTNode) {
     aifComputeStructSize(d, module)
 }
 
-fn aifComputeSizes(module: ASTNode) {
+internal fn aifComputeSizes(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {
         let d = ptr_to_node(p)
@@ -282,7 +282,7 @@ fn aifComputeSizes(module: ASTNode) {
 // than recursing, so `structDeclIsPod` can only answer true more often. More true
 // means more vetoes means fewer splits, which is the safe direction, and it is
 // the only direction the imprecision can go.
-fn aifFieldIsInlineStruct(module: ASTNode, ann: ASTNode) -> Bool {
+private fn aifFieldIsInlineStruct(module: ASTNode, ann: ASTNode) -> Bool {
     if (ann.i1 == 1) { return false }
     if (ann.i2 == 1) { return false }
     if (ann.i3 == 1) { return false }
@@ -300,7 +300,7 @@ fn aifFieldIsInlineStruct(module: ASTNode, ann: ASTNode) -> Bool {
 // and a caller then frees a value the field still points at. `byDecl` recurses
 // through the AST the way codegen's `fieldTypeFor` recurses through the filled
 // registry, so the two agree in both phases -- see `typeAnnIsPodIn`.
-fn aifFieldIsInlineExact(module: ASTNode, ann: ASTNode) -> Bool {
+internal fn aifFieldIsInlineExact(module: ASTNode, ann: ASTNode) -> Bool {
     if (ann.i1 == 1) { return false }
     if (ann.i2 == 1) { return false }
     if (ann.i3 == 1) { return false }
@@ -310,7 +310,7 @@ fn aifFieldIsInlineExact(module: ASTNode, ann: ASTNode) -> Bool {
     return typeAnnIsPodIn(module, ann, 0, true)
 }
 
-fn aifLayoutVetoInline(module: ASTNode) {
+internal fn aifLayoutVetoInline(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {
         let d = ptr_to_node(p)
@@ -357,7 +357,7 @@ fn aifLayoutVetoInline(module: ASTNode) {
 // would turn one source field into a separate allocation behind a link, which
 // is neither a flat row nor safe to byte-copy. Veto exactly the struct named by
 // an explicit `soa` boundary before the layout selector runs.
-fn aifLayoutVetoDataViews(nodePtr: Ptr) {
+internal fn aifLayoutVetoDataViews(nodePtr: Ptr) {
     if (nodeIsNull(nodePtr)) { return }
     let node = ptr_to_node(nodePtr)
     if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)

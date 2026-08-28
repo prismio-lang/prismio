@@ -9,17 +9,17 @@ import std.option
 
 extern fn exit(code: Int)
 
-fn parseBlock(p: Parser) -> ASTNode {
-    let open = parserCurrent(p)
-    parserExpectVal(p, TokenType.SEPARATOR, "{", "block")
-    let blockNode = parserNode(p, NodeKind.BLOCK)
+internal fn parseBlock(p: Parser) -> ASTNode {
+    let open = p.current()
+    p.expectVal(TokenType.SEPARATOR, "{", "block")
+    let blockNode = p.node(NodeKind.BLOCK)
 
     let statements = nodeList()
-    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
+    while (p.checkVal(TokenType.SEPARATOR, "}") == false) {
         // Without this the loop spins at EOF until some inner parser happens to
         // fail, and blames whatever it was looking at instead of the brace that
         // was never closed.
-        if (parserCheck(p, TokenType.EOF)) {
+        if (p.check(TokenType.EOF)) {
             diag_error_at(open.file, open.line, open.col, open.len,
                           "this block is never closed; reached end of file looking for `}`")
             diag_finish()
@@ -33,26 +33,26 @@ fn parseBlock(p: Parser) -> ASTNode {
     // pop and region exit -- all emitted after the last statement -- inherited
     // that statement's line. i1/i2 are otherwise unused on a BLOCK; i3 is not
     // taken here because the file cannot differ from the block's own.
-    let close = parserCurrent(p)
-    parserExpectVal(p, TokenType.SEPARATOR, "}", "block")
+    let close = p.current()
+    p.expectVal(TokenType.SEPARATOR, "}", "block")
     blockNode.child1 = statements.head
     blockNode.i1 = close.line
     blockNode.i2 = close.col
     return blockNode
 }
 
-fn parseIfStatement(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "if", "if statement")
-    let ifNode = parserNode(p, NodeKind.IF_STATEMENT)
+private fn parseIfStatement(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "if", "if statement")
+    let ifNode = p.node(NodeKind.IF_STATEMENT)
 
-    parserExpectVal(p, TokenType.SEPARATOR, "(", "if condition")
+    p.expectVal(TokenType.SEPARATOR, "(", "if condition")
     ifNode.child1 = node_to_ptr(parseExpression(p, 0))
-    parserExpectVal(p, TokenType.SEPARATOR, ")", "if condition")
+    p.expectVal(TokenType.SEPARATOR, ")", "if condition")
 
     ifNode.child2 = node_to_ptr(parseBlock(p))
 
-    if (parserMatchVal(p, TokenType.KEYWORD, "else")) {
-        if (parserCheckVal(p, TokenType.KEYWORD, "if")) {
+    if (p.matchVal(TokenType.KEYWORD, "else")) {
+        if (p.checkVal(TokenType.KEYWORD, "if")) {
             ifNode.child3 = node_to_ptr(parseIfStatement(p))
         } else {
             ifNode.child3 = node_to_ptr(parseBlock(p))
@@ -62,21 +62,21 @@ fn parseIfStatement(p: Parser) -> ASTNode {
     return ifNode
 }
 
-fn parseWhileStatement(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "while", "while statement")
-    let whileNode = parserNode(p, NodeKind.WHILE_STATEMENT)
+private fn parseWhileStatement(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "while", "while statement")
+    let whileNode = p.node(NodeKind.WHILE_STATEMENT)
 
-    parserExpectVal(p, TokenType.SEPARATOR, "(", "while condition")
+    p.expectVal(TokenType.SEPARATOR, "(", "while condition")
     whileNode.child1 = node_to_ptr(parseExpression(p, 0))
-    parserExpectVal(p, TokenType.SEPARATOR, ")", "while condition")
+    p.expectVal(TokenType.SEPARATOR, ")", "while condition")
 
     whileNode.child2 = node_to_ptr(parseBlock(p))
     return whileNode
 }
 
-fn parseLoopStatement(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "loop", "loop statement")
-    let loopNode = parserNode(p, NodeKind.LOOP_STATEMENT)
+private fn parseLoopStatement(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "loop", "loop statement")
+    let loopNode = p.node(NodeKind.LOOP_STATEMENT)
     loopNode.child1 = node_to_ptr(parseBlock(p))
     return loopNode
 }
@@ -84,16 +84,16 @@ fn parseLoopStatement(p: Parser) -> ASTNode {
 // `region <name> { ... }` (SPEC 5.2). The name is a label, not a binding: it
 // identifies the arena in the manifest so that a reader can tell which `region`
 // in the source a `region:parse` placement refers to.
-fn parseRegionStatement(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "region", "region statement")
+private fn parseRegionStatement(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "region", "region statement")
 
-    let regionNode = parserNode(p, NodeKind.REGION_STATEMENT)
-    let name = parserCurrent(p)
+    let regionNode = p.node(NodeKind.REGION_STATEMENT)
+    let name = p.current()
     if (name.type == TokenType.IDENTIFIER) {
         regionNode.s1 = name.value
-        parserAdvance(p)
+        p.advance()
     } else {
-        parserFatal(p, strConcat("expected a name for the region, found ",
+        p.fatal(strConcat("expected a name for the region, found ",
                                    parserDescribe(name)))
     }
 
@@ -105,36 +105,36 @@ fn parseRegionStatement(p: Parser) -> ASTNode {
     //
     // Contextual, like every other use of `pin`: only an annotation when a `(`
     // follows, so a region may still be called `pin`.
-    if (parserAtAnnotation(p, "pin")) {
-        parserAdvance(p)
-        parserExpectVal(p, TokenType.SEPARATOR, "(", "region budget")
-        let cap = parserCurrent(p)
+    if (p.atAnnotation("pin")) {
+        p.advance()
+        p.expectVal(TokenType.SEPARATOR, "(", "region budget")
+        let cap = p.current()
         if (cap.type != TokenType.NUMBER_LITERAL) {
-            parserFatal(p, strConcat("expected a byte budget, found ", parserDescribe(cap)))
+            p.fatal(strConcat("expected a byte budget, found ", parserDescribe(cap)))
         }
         regionNode.i1 = optionOr(strParseInt(cap.value), 0)
-        parserAdvance(p)
-        parserExpectVal(p, TokenType.SEPARATOR, ")", "region budget")
+        p.advance()
+        p.expectVal(TokenType.SEPARATOR, ")", "region budget")
     }
 
     regionNode.child1 = node_to_ptr(parseBlock(p))
     return regionNode
 }
 
-fn parseForStatement(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "for", "for statement")
-    let forNode = parserNode(p, NodeKind.FOR_STATEMENT)
+private fn parseForStatement(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "for", "for statement")
+    let forNode = p.node(NodeKind.FOR_STATEMENT)
 
-    let name = parserCurrent(p)
+    let name = p.current()
     forNode.s1 = name.value
-    parserExpect(p, TokenType.IDENTIFIER, "for loop variable")
-    parserExpectVal(p, TokenType.KEYWORD, "in", "for ... in")
+    p.expectToken(TokenType.IDENTIFIER, "for loop variable")
+    p.expectVal(TokenType.KEYWORD, "in", "for ... in")
 
     // Otherwise `for i in 0..n { ... }` reads `n { ... }` as a struct literal and
     // swallows the body.
     p.allowStructLit = 0
     forNode.child1 = node_to_ptr(parseExpression(p, 0))
-    parserExpectVal(p, TokenType.RANGE, "..", "for range")
+    p.expectVal(TokenType.RANGE, "..", "for range")
     forNode.child2 = node_to_ptr(parseExpression(p, 0))
     p.allowStructLit = 1
 
@@ -142,41 +142,41 @@ fn parseForStatement(p: Parser) -> ASTNode {
     return forNode
 }
 
-fn parseMatchArm(p: Parser) -> ASTNode {
-    let arm = parserNode(p, NodeKind.MATCH_ARM)
-    if (parserMatchVal(p, TokenType.IDENTIFIER, "_")) {
+private fn parseMatchArm(p: Parser) -> ASTNode {
+    let arm = p.node(NodeKind.MATCH_ARM)
+    if (p.matchVal(TokenType.IDENTIFIER, "_")) {
         arm.s1 = "_"
     } else {
         arm.child1 = node_to_ptr(parseExpression(p, 0))
     }
-    parserExpectVal(p, TokenType.FAT_ARROW, "=>", "match arm")
+    p.expectVal(TokenType.FAT_ARROW, "=>", "match arm")
     arm.child2 = node_to_ptr(parseBlock(p))
     return arm
 }
 
-fn parseMatchStatement(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "match", "match statement")
-    let matchNode = parserNode(p, NodeKind.MATCH_STATEMENT)
+private fn parseMatchStatement(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "match", "match statement")
+    let matchNode = p.node(NodeKind.MATCH_STATEMENT)
 
-    parserExpectVal(p, TokenType.SEPARATOR, "(", "match scrutinee")
+    p.expectVal(TokenType.SEPARATOR, "(", "match scrutinee")
     matchNode.child1 = node_to_ptr(parseExpression(p, 0))
-    parserExpectVal(p, TokenType.SEPARATOR, ")", "match scrutinee")
+    p.expectVal(TokenType.SEPARATOR, ")", "match scrutinee")
 
-    parserExpectVal(p, TokenType.SEPARATOR, "{", "match body")
+    p.expectVal(TokenType.SEPARATOR, "{", "match body")
     let arms = nodeList()
-    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
+    while (p.checkVal(TokenType.SEPARATOR, "}") == false) {
         nodeListPush(arms, parseMatchArm(p))
-        parserMatchVal(p, TokenType.SEPARATOR, ",")
+        p.matchVal(TokenType.SEPARATOR, ",")
     }
-    parserExpectVal(p, TokenType.SEPARATOR, "}", "match body")
+    p.expectVal(TokenType.SEPARATOR, "}", "match body")
 
     matchNode.child2 = arms.head
     return matchNode
 }
 
-fn parseReturnStatement(p: Parser) -> ASTNode {
-    let retNode = parserNode(p, NodeKind.RETURN_STATEMENT)
-    let next = parserCurrent(p)
+private fn parseReturnStatement(p: Parser) -> ASTNode {
+    let retNode = p.node(NodeKind.RETURN_STATEMENT)
+    let next = p.current()
     if (next.type != TokenType.SEPARATOR or strEquals(next.value, "}") == false) {
         retNode.child1 = node_to_ptr(parseExpression(p, 0))
     }
@@ -189,10 +189,10 @@ fn parseReturnStatement(p: Parser) -> ASTNode {
 // twice, so a target with a subexpression -- `a[i()] += 1`, or `f().field += 1`
 // -- would evaluate that subexpression twice. Rejecting those is better than
 // silently doing it, and the workaround is to write the assignment out in full.
-fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: Token,
+private fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: Token,
                             first: Token) -> ASTNode {
     let op = strSubstring(operatorToken.value, 0, 1)
-    parserAdvance(p)
+    p.advance()
 
     if (target.kind != NodeKind.IDENTIFIER_EXPR) {
         diag_error_at(target.file, target.line, target.col, target.len,
@@ -224,33 +224,33 @@ fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: Token,
     return compound
 }
 
-fn parseStatement(p: Parser) -> ASTNode {
-    if (parserCheckVal(p, TokenType.KEYWORD, "if")) { return parseIfStatement(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "while")) { return parseWhileStatement(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "loop")) { return parseLoopStatement(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "match")) { return parseMatchStatement(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "for")) { return parseForStatement(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "region")) { return parseRegionStatement(p) }
-    if (parserCheckVal(p, TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
+private fn parseStatement(p: Parser) -> ASTNode {
+    if (p.checkVal(TokenType.KEYWORD, "if")) { return parseIfStatement(p) }
+    if (p.checkVal(TokenType.KEYWORD, "while")) { return parseWhileStatement(p) }
+    if (p.checkVal(TokenType.KEYWORD, "loop")) { return parseLoopStatement(p) }
+    if (p.checkVal(TokenType.KEYWORD, "match")) { return parseMatchStatement(p) }
+    if (p.checkVal(TokenType.KEYWORD, "for")) { return parseForStatement(p) }
+    if (p.checkVal(TokenType.KEYWORD, "region")) { return parseRegionStatement(p) }
+    if (p.checkVal(TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
 
     // Held before anything is consumed: every node built below is built *after*
     // its own text has been parsed, so `parserCurrent` is by then the token that
     // follows the statement.
-    let first = parserCurrent(p)
+    let first = p.current()
 
-    if (parserMatchVal(p, TokenType.KEYWORD, "break")) {
+    if (p.matchVal(TokenType.KEYWORD, "break")) {
         return parserNodeFrom(NodeKind.BREAK_STATEMENT, first)
     }
-    if (parserMatchVal(p, TokenType.KEYWORD, "continue")) {
+    if (p.matchVal(TokenType.KEYWORD, "continue")) {
         return parserNodeFrom(NodeKind.CONTINUE_STATEMENT, first)
     }
-    if (parserMatchVal(p, TokenType.KEYWORD, "return")) {
+    if (p.matchVal(TokenType.KEYWORD, "return")) {
         return parseReturnStatement(p)
     }
 
     let expr = parseExpression(p, 0)
 
-    if (parserMatchVal(p, TokenType.ASSIGNMENT_OPERATOR, "=")) {
+    if (p.matchVal(TokenType.ASSIGNMENT_OPERATOR, "=")) {
         // `parserMatchVal` has consumed the `=`, so the parser is sitting on the
         // first token of the right-hand side. Stamping that put the statement's
         // span on the value rather than on the target -- right line, wrong
@@ -261,7 +261,7 @@ fn parseStatement(p: Parser) -> ASTNode {
         return assignment
     }
 
-    let operatorToken = parserCurrent(p)
+    let operatorToken = p.current()
     if (operatorToken.type == TokenType.ASSIGNMENT_OPERATOR and __builtin_string_len(operatorToken.value) == 2) {
         return parseCompoundAssignment(p, expr, operatorToken, first)
     }

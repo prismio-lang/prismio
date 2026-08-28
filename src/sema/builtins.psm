@@ -7,7 +7,7 @@ import ir.bridge
 import common.diagnostics
 import std.string
 
-fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
+internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (strEquals(name, "drop")) { return typeVoid() }
 
     // String's irreducible representation operations. These are compiler
@@ -73,7 +73,7 @@ fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     return typeInvalid()
 }
 
-fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
+internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     // drop(x): deterministic, safe free. Consumes (moves) an owned value, so
     // use-after-drop and double-drop are caught by move tracking.
     if (strEquals(name, "drop")) {

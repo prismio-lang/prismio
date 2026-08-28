@@ -17,7 +17,7 @@ import std.string
 // as much, and both Rust and Go corrected it. Prismio has no compatibility reason
 // to inherit it, and the ordering below makes the natural reading the correct one.
 // Everything else follows C.
-fn getOperatorPrecedence(t: Token) -> Int {
+private fn getOperatorPrecedence(t: Token) -> Int {
     if (strEquals(t.value, "or")) { return 1 }
     if (strEquals(t.value, "and")) { return 2 }
     if (t.type == TokenType.KEYWORD) { return 0 }
@@ -34,24 +34,24 @@ fn getOperatorPrecedence(t: Token) -> Int {
     return 0
 }
 
-fn isBinaryOperator(t: Token) -> Bool {
+private fn isBinaryOperator(t: Token) -> Bool {
     if (t.type == TokenType.ARITHMETIC_OPERATOR) { return true }
     if (t.type == TokenType.RELATIONAL_OPERATOR) { return true }
     return strEquals(t.value, "and") or strEquals(t.value, "or")
 }
 
-fn parseExpression(p: Parser, precedence: Int) -> ASTNode {
+internal fn parseExpression(p: Parser, precedence: Int) -> ASTNode {
     let mut left = parseUnary(p)
 
     loop {
-        let operatorToken = parserCurrent(p)
+        let operatorToken = p.current()
         if (isBinaryOperator(operatorToken) == false) { break }
 
         let operatorPrecedence = getOperatorPrecedence(operatorToken)
         if (operatorPrecedence == 0 or operatorPrecedence < precedence) { break }
 
         let op = operatorToken.value
-        parserAdvance(p)
+        p.advance()
 
         // Left associativity: the right operand binds only tighter operators.
         let right = parseExpression(p, operatorPrecedence + 1)
@@ -86,7 +86,7 @@ fn parseExpression(p: Parser, precedence: Int) -> ASTNode {
 //
 // Guarded on the leading '-' so `--5` stays a negation of the literal -5 instead
 // of folding into the nonsense literal "--5".
-fn foldNegativeLiteral(operand: ASTNode, minus: Token) -> Bool {
+private fn foldNegativeLiteral(operand: ASTNode, minus: Token) -> Bool {
     if (operand.kind != NodeKind.LITERAL_EXPR) { return false }
 
     let isNumber = operand.i1 == TokenType.NUMBER_LITERAL or operand.i1 == TokenType.FLOAT_LITERAL
@@ -105,8 +105,8 @@ fn foldNegativeLiteral(operand: ASTNode, minus: Token) -> Bool {
 // Prefix operators bind tighter than any binary operator, so they sit between
 // parseExpression and parsePrimary. Recursing into parseUnary rather than
 // parsePrimary is what makes `--x` and `!!b` parse.
-fn parseUnary(p: Parser) -> ASTNode {
-    let current = parserCurrent(p)
+private fn parseUnary(p: Parser) -> ASTNode {
+    let current = p.current()
 
     let isNegate = current.type == TokenType.ARITHMETIC_OPERATOR and strEquals(current.value, "-")
     let isNot = current.type == TokenType.NEGATION and strEquals(current.value, "!")
@@ -117,14 +117,14 @@ fn parseUnary(p: Parser) -> ASTNode {
     }
 
     let op = current.value
-    parserAdvance(p)
+    p.advance()
     let operand = parseUnary(p)
 
     if (strEquals(op, "-") and foldNegativeLiteral(operand, current)) {
         return operand
     }
 
-    let unary = parserNode(p, NodeKind.UNARY_EXPR)
+    let unary = p.node(NodeKind.UNARY_EXPR)
     unary.s1 = op
     unary.child1 = node_to_ptr(operand)
     return unary
@@ -133,11 +133,11 @@ fn parseUnary(p: Parser) -> ASTNode {
 // `expr as Type`. Binds tighter than any binary operator and looser than a prefix
 // operator, so `-x as I64` negates first and `a + b as I64` converts only b.
 // Looping allows `x as I64 as Float` to chain left to right.
-fn parsePostfix(p: Parser) -> ASTNode {
+private fn parsePostfix(p: Parser) -> ASTNode {
     let mut expr = parsePrimary(p)
 
-    while (parserMatchVal(p, TokenType.KEYWORD, "as")) {
-        let cast = parserNode(p, NodeKind.CAST_EXPR)
+    while (p.matchVal(TokenType.KEYWORD, "as")) {
+        let cast = p.node(NodeKind.CAST_EXPR)
         cast.child1 = node_to_ptr(expr)
         cast.child2 = node_to_ptr(parseTypeAnnotation(p))
         expr = cast
@@ -157,7 +157,7 @@ fn parsePostfix(p: Parser) -> ASTNode {
 // Scanning cannot decide the general case and does not try. It admits only the
 // tokens a type argument list can contain, so anything else -- an operator, a
 // literal, a call -- settles it as a comparison immediately.
-fn parserLooksLikeTypeArgs(p: Parser, opener: String) -> Bool {
+private fn looksLikeTypeArgs(p: Parser, opener: String) -> Bool {
     let mut tok = ptr_to_token(p.current).tokNext
     if (nodeIsNull(tok)) { return false }
     if (strEquals(ptr_to_token(tok).value, "<") == false) { return false }
@@ -195,47 +195,47 @@ fn parserLooksLikeTypeArgs(p: Parser, opener: String) -> Bool {
 
 // The cursor is on the `{`. Both callers have consumed the name already -- the
 // generic one had to consume an argument list between the two.
-fn parseStructLiteral(p: Parser, name: Token) -> ASTNode {
-    let structLit = parserNode(p, NodeKind.STRUCT_LITERAL_EXPR)
+private fn parseStructLiteral(p: Parser, name: Token) -> ASTNode {
+    let structLit = p.node(NodeKind.STRUCT_LITERAL_EXPR)
     structLit.s1 = name.value
-    parserExpectVal(p, TokenType.SEPARATOR, "{", "struct literal")
+    p.expectVal(TokenType.SEPARATOR, "{", "struct literal")
 
     let fields = nodeList()
-    while (parserCheckVal(p, TokenType.SEPARATOR, "}") == false) {
-        let field = parserNode(p, NodeKind.STRUCT_FIELD)
-        let fieldName = parserCurrent(p)
+    while (p.checkVal(TokenType.SEPARATOR, "}") == false) {
+        let field = p.node(NodeKind.STRUCT_FIELD)
+        let fieldName = p.current()
         field.s1 = fieldName.value
-        parserExpect(p, TokenType.IDENTIFIER, "struct literal field")
-        parserExpectVal(p, TokenType.SEPARATOR, ":", "struct literal")
+        p.expectToken(TokenType.IDENTIFIER, "struct literal field")
+        p.expectVal(TokenType.SEPARATOR, ":", "struct literal")
         field.child1 = node_to_ptr(parseExpression(p, 0))
         nodeListPush(fields, field)
 
-        parserMatchVal(p, TokenType.SEPARATOR, ",")
+        p.matchVal(TokenType.SEPARATOR, ",")
     }
 
-    parserExpectVal(p, TokenType.SEPARATOR, "}", "struct literal")
+    p.expectVal(TokenType.SEPARATOR, "}", "struct literal")
     structLit.child1 = fields.head
     return structLit
 }
 
-fn parseArrayLiteral(p: Parser) -> ASTNode {
-    let arrayLit = parserNode(p, NodeKind.ARRAY_LITERAL_EXPR)
+private fn parseArrayLiteral(p: Parser) -> ASTNode {
+    let arrayLit = p.node(NodeKind.ARRAY_LITERAL_EXPR)
 
     let elements = nodeList()
-    if (parserCheckVal(p, TokenType.SEPARATOR, "]") == false) {
+    if (p.checkVal(TokenType.SEPARATOR, "]") == false) {
         loop {
             nodeListPush(elements, parseExpression(p, 0))
-            if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+            if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
         }
     }
 
-    parserExpectVal(p, TokenType.SEPARATOR, "]", "array literal")
+    p.expectVal(TokenType.SEPARATOR, "]", "array literal")
     arrayLit.child1 = elements.head
     return arrayLit
 }
 
-fn parseCall(p: Parser, callee: ASTNode) -> ASTNode {
-    let call = parserNode(p, NodeKind.CALL_EXPR)
+private fn parseCall(p: Parser, callee: ASTNode) -> ASTNode {
+    let call = p.node(NodeKind.CALL_EXPR)
     // Point the call at its callee rather than at the first argument, so
     // "expects 1 argument, found 2" underlines the name of the thing being
     // called.
@@ -243,53 +243,53 @@ fn parseCall(p: Parser, callee: ASTNode) -> ASTNode {
     call.child1 = node_to_ptr(callee)
 
     let arguments = nodeList()
-    if (parserCheckVal(p, TokenType.SEPARATOR, ")") == false) {
+    if (p.checkVal(TokenType.SEPARATOR, ")") == false) {
         loop {
             nodeListPush(arguments, parseExpression(p, 0))
-            if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+            if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
         }
     }
 
-    parserExpectVal(p, TokenType.SEPARATOR, ")", "function call")
+    p.expectVal(TokenType.SEPARATOR, ")", "function call")
     call.child2 = arguments.head
     return call
 }
 
 // The suffixes that bind tightest, applied left to right: `f(x)[i].field`.
-fn parseSuffixes(p: Parser, base: ASTNode) -> ASTNode {
+private fn parseSuffixes(p: Parser, base: ASTNode) -> ASTNode {
     let mut expr = base
 
     loop {
-        if (parserMatchVal(p, TokenType.SEPARATOR, "(")) {
+        if (p.matchVal(TokenType.SEPARATOR, "(")) {
             expr = parseCall(p, expr)
-        } else if (parserMatchVal(p, TokenType.SEPARATOR, "[")) {
+        } else if (p.matchVal(TokenType.SEPARATOR, "[")) {
             // The RANGE token is not a binary operator, so parsing the first
             // bound stops immediately before `..`. That makes one production
             // cover both `a[i]` and SPEC 8.4's `a[start..end]` without making
             // range a general expression operator.
             let first = parseExpression(p, 0)
-            if (parserMatch(p, TokenType.RANGE)) {
-                let slice = parserNode(p, NodeKind.SLICE_EXPR)
+            if (p.matchToken(TokenType.RANGE)) {
+                let slice = p.node(NodeKind.SLICE_EXPR)
                 nodeSpanFrom(slice, expr)
                 slice.child1 = node_to_ptr(expr)
                 slice.child2 = node_to_ptr(first)
                 slice.child3 = node_to_ptr(parseExpression(p, 0))
-                parserExpectVal(p, TokenType.SEPARATOR, "]", "slice range")
+                p.expectVal(TokenType.SEPARATOR, "]", "slice range")
                 expr = slice
             } else {
-                let index = parserNode(p, NodeKind.INDEX_EXPR)
+                let index = p.node(NodeKind.INDEX_EXPR)
                 nodeSpanFrom(index, expr)
                 index.child1 = node_to_ptr(expr)
                 index.child2 = node_to_ptr(first)
-                parserExpectVal(p, TokenType.SEPARATOR, "]", "array index")
+                p.expectVal(TokenType.SEPARATOR, "]", "array index")
                 expr = index
             }
-        } else if (parserMatchVal(p, TokenType.SEPARATOR, ".")) {
-            let member = parserNode(p, NodeKind.MEMBER_ACCESS_EXPR)
+        } else if (p.matchVal(TokenType.SEPARATOR, ".")) {
+            let member = p.node(NodeKind.MEMBER_ACCESS_EXPR)
             member.child1 = node_to_ptr(expr)
-            let name = parserCurrent(p)
+            let name = p.current()
             member.s1 = name.value
-            parserExpect(p, TokenType.IDENTIFIER, "member name")
+            p.expectToken(TokenType.IDENTIFIER, "member name")
             expr = member
         } else {
             break
@@ -311,21 +311,21 @@ fn parseSuffixes(p: Parser, base: ASTNode) -> ASTNode {
 // consumed by parseExpression's operator loop, so nothing else can begin here
 // with one. `||` arrives as a single token from the scanner, which is why the
 // empty list is a spelling rather than a special case.
-fn parseClosureExpr(p: Parser) -> ASTNode {
-    let node = parserNode(p, NodeKind.CLOSURE_EXPR)
-    let opener = parserCurrent(p)
+private fn parseClosureExpr(p: Parser) -> ASTNode {
+    let node = p.node(NodeKind.CLOSURE_EXPR)
+    let opener = p.current()
     let empty = strEquals(opener.value, "||")
-    parserAdvance(p)
+    p.advance()
 
     let params = nodeList()
     if (empty == false) {
-        if (parserCheckVal(p, TokenType.ARITHMETIC_OPERATOR, "|") == false) {
+        if (p.checkVal(TokenType.ARITHMETIC_OPERATOR, "|") == false) {
             loop {
                 nodeListPush(params, parseParameter(p, false))
-                if (parserMatchVal(p, TokenType.SEPARATOR, ",") == false) { break }
+                if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
             }
         }
-        parserExpectVal(p, TokenType.ARITHMETIC_OPERATOR, "|", "closure parameter list")
+        p.expectVal(TokenType.ARITHMETIC_OPERATOR, "|", "closure parameter list")
     }
 
     node.child1 = params.head
@@ -333,13 +333,13 @@ fn parseClosureExpr(p: Parser) -> ASTNode {
     return node
 }
 
-fn parserAtClosure(p: Parser) -> Bool {
-    let current = parserCurrent(p)
+private fn atClosure(p: Parser) -> Bool {
+    let current = p.current()
     if (current.type != TokenType.ARITHMETIC_OPERATOR) { return false }
     return strEquals(current.value, "|") or strEquals(current.value, "||")
 }
 
-fn isLiteralToken(t: Token) -> Bool {
+private fn isLiteralToken(t: Token) -> Bool {
     if (t.type == TokenType.NUMBER_LITERAL) { return true }
     if (t.type == TokenType.FLOAT_LITERAL) { return true }
     if (t.type == TokenType.STRING_LITERAL) { return true }
@@ -348,17 +348,17 @@ fn isLiteralToken(t: Token) -> Bool {
     return false
 }
 
-fn parsePrimary(p: Parser) -> ASTNode {
-    let current = parserCurrent(p)
+private fn parsePrimary(p: Parser) -> ASTNode {
+    let current = p.current()
 
-    if (parserAtClosure(p)) { return parseClosureExpr(p) }
+    if (p.atClosure()) { return parseClosureExpr(p) }
 
     // REQUIREMENTS 4. The absent reference. A keyword rather than an identifier,
     // so it cannot be shadowed by a binding -- `let none = 5` would otherwise
     // make the literal mean something else halfway down a file.
     if (current.type == TokenType.KEYWORD and strEquals(current.value, "none")) {
-        let noneLiteral = parserNode(p, NodeKind.NONE_LITERAL_EXPR)
-        parserAdvance(p)
+        let noneLiteral = p.node(NodeKind.NONE_LITERAL_EXPR)
+        p.advance()
         return noneLiteral
     }
 
@@ -373,15 +373,15 @@ fn parsePrimary(p: Parser) -> ASTNode {
     // `0..n` is unaffected: `..` lexes as RANGE, which is not the SEPARATOR `.`
     // parseSuffixes matches on.
     if (isLiteralToken(current)) {
-        let literal = parserNode(p, NodeKind.LITERAL_EXPR)
+        let literal = p.node(NodeKind.LITERAL_EXPR)
         literal.i1 = current.type
         literal.s1 = current.value
-        parserAdvance(p)
+        p.advance()
         return parseSuffixes(p, literal)
     }
 
     if (current.type == TokenType.IDENTIFIER) {
-        let next = parserPeek(p)
+        let next = p.peek()
 
         // REQUIREMENTS 15. `spawn f(a)` and `join t`.
         //
@@ -401,8 +401,8 @@ fn parsePrimary(p: Parser) -> ASTNode {
         // all. No existing spelling is claimed.
         if (next.type == TokenType.IDENTIFIER) {
             if (strEquals(current.value, "spawn")) {
-                let spawnNode = parserNode(p, NodeKind.SPAWN_EXPR)
-                parserAdvance(p)
+                let spawnNode = p.node(NodeKind.SPAWN_EXPR)
+                p.advance()
                 let callee = parsePrimary(p)
                 if (callee.kind != NodeKind.CALL_EXPR) {
                     diag_error_at(spawnNode.file, spawnNode.line, spawnNode.col, spawnNode.len,
@@ -412,8 +412,8 @@ fn parsePrimary(p: Parser) -> ASTNode {
                 return spawnNode
             }
             if (strEquals(current.value, "join")) {
-                let joinNode = parserNode(p, NodeKind.JOIN_EXPR)
-                parserAdvance(p)
+                let joinNode = p.node(NodeKind.JOIN_EXPR)
+                p.advance()
                 joinNode.child1 = node_to_ptr(parsePrimary(p))
                 return joinNode
             }
@@ -421,7 +421,7 @@ fn parsePrimary(p: Parser) -> ASTNode {
 
         let opensStruct = next.type == TokenType.SEPARATOR and strEquals(next.value, "{")
         if (opensStruct and p.allowStructLit == 1) {
-            parserAdvance(p)
+            p.advance()
             return parseStructLiteral(p, current)
         }
 
@@ -429,11 +429,11 @@ fn parsePrimary(p: Parser) -> ASTNode {
         // TYPE_ANNOTATION on child2, where sema resolves them the same way it
         // resolves the annotation in `let b: Box<Int>` -- so the literal and the
         // annotation cannot disagree about which instantiation they mean.
-        if (p.allowStructLit == 1 and parserLooksLikeTypeArgs(p, "{")) {
-            parserAdvance(p)
-            let named = parserNode(p, NodeKind.TYPE_ANNOTATION)
+        if (p.allowStructLit == 1 and p.looksLikeTypeArgs("{")) {
+            p.advance()
+            let named = p.node(NodeKind.TYPE_ANNOTATION)
             named.s1 = current.value
-            parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<")
+            p.matchVal(TokenType.RELATIONAL_OPERATOR, "<")
             parseTypeArgList(p, named)
 
             let structLit = parseStructLiteral(p, current)
@@ -456,49 +456,49 @@ fn parsePrimary(p: Parser) -> ASTNode {
         //
         // The scan settles this against `a < b . c` on the first `.`, which is
         // not a token a type argument list may contain.
-        if (parserLooksLikeTypeArgs(p, ".")) {
-            parserAdvance(p)
-            let qualifier = parserNode(p, NodeKind.TYPE_ANNOTATION)
+        if (p.looksLikeTypeArgs(".")) {
+            p.advance()
+            let qualifier = p.node(NodeKind.TYPE_ANNOTATION)
             qualifier.s1 = current.value
-            parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<")
+            p.matchVal(TokenType.RELATIONAL_OPERATOR, "<")
             parseTypeArgList(p, qualifier)
             return parseSuffixes(p, qualifier)
         }
 
-        if (parserLooksLikeTypeArgs(p, "(")) {
-            parserAdvance(p)
-            let named = parserNode(p, NodeKind.TYPE_ANNOTATION)
+        if (p.looksLikeTypeArgs("(")) {
+            p.advance()
+            let named = p.node(NodeKind.TYPE_ANNOTATION)
             named.s1 = current.value
-            parserMatchVal(p, TokenType.RELATIONAL_OPERATOR, "<")
+            p.matchVal(TokenType.RELATIONAL_OPERATOR, "<")
             parseTypeArgList(p, named)
 
-            let identifier = parserNode(p, NodeKind.IDENTIFIER_EXPR)
+            let identifier = p.node(NodeKind.IDENTIFIER_EXPR)
             identifier.s1 = current.value
-            parserExpectVal(p, TokenType.SEPARATOR, "(", "call")
+            p.expectVal(TokenType.SEPARATOR, "(", "call")
             let call = parseCall(p, identifier)
             call.child3 = node_to_ptr(named)
             return parseSuffixes(p, call)
         }
 
-        let identifier = parserNode(p, NodeKind.IDENTIFIER_EXPR)
+        let identifier = p.node(NodeKind.IDENTIFIER_EXPR)
         identifier.s1 = current.value
-        parserAdvance(p)
+        p.advance()
         return parseSuffixes(p, identifier)
     }
 
     // The same gap as the literal above, and closed the same way: `(a + b).x`
     // and `[1, 2].length()` are expressions whose suffixes nobody was offering.
-    if (parserMatchVal(p, TokenType.SEPARATOR, "(")) {
+    if (p.matchVal(TokenType.SEPARATOR, "(")) {
         let inner = parseExpression(p, 0)
-        parserExpectVal(p, TokenType.SEPARATOR, ")", "parenthesized expression")
+        p.expectVal(TokenType.SEPARATOR, ")", "parenthesized expression")
         return parseSuffixes(p, inner)
     }
 
-    if (parserMatchVal(p, TokenType.SEPARATOR, "[")) {
+    if (p.matchVal(TokenType.SEPARATOR, "[")) {
         return parseSuffixes(p, parseArrayLiteral(p))
     }
 
-    parserFatal(p, strConcat(strConcat("expected an expression, found ", parserDescribe(current)),
+    p.fatal(strConcat(strConcat("expected an expression, found ", parserDescribe(current)),
                                strConcat(" (a ", strConcat(typeToString(current.type), ")"))))
-    return parserNode(p, NodeKind.ERROR_NODE)
+    return p.node(NodeKind.ERROR_NODE)
 }

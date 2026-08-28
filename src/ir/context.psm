@@ -190,6 +190,6 @@ extern fn exit(code: Int)
 // The integer the backend sizes an allocation and indexes an array GEP with:
 // pointer width, in LLVM spelling. A target property, read from the target
 // record -- see src/ir/target.psm.
-fn irPtrIntType() -> String {
+internal fn irPtrIntType() -> String {
     return targetPtrIntType(targetCurrent())
 }

@@ -73,7 +73,7 @@ fn typeToString(t: TokenType) -> String {
 // A linear scan rather than a lookup table: the set is small, this runs once per
 // identifier, and building a table would mean str_concat calls that allocate on
 // the hottest path in the scanner.
-fn isKeyword(word: String) -> Bool {
+internal fn isKeyword(word: String) -> Bool {
     if (strEquals(word, "import")) { return true }
 
     if (strEquals(word, "match")) { return true }
@@ -124,7 +124,7 @@ fn isKeyword(word: String) -> Bool {
     return false
 }
 
-fn isBoolean(word: String) -> Bool {
+internal fn isBoolean(word: String) -> Bool {
     if (strEquals(word, "true")) { return true }
     if (strEquals(word, "false")) { return true }
     return false

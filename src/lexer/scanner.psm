@@ -51,7 +51,7 @@ fn createLexer(input: String, file: Int) -> Lexer {
 // is where the token began, which is what makes `len` the token's real source
 // width -- including the quotes of a string literal and any escape that decoded
 // to a shorter value.
-fn lexerToken(lex: Lexer, t: TokenType, value: String, startLine: Int, startCol: Int, startPos: Int) -> Token {
+private fn lexerToken(lex: Lexer, t: TokenType, value: String, startLine: Int, startCol: Int, startPos: Int) -> Token {
     return Token {
         type: t,
         value: value,
@@ -67,36 +67,36 @@ fn lexerToken(lex: Lexer, t: TokenType, value: String, startLine: Int, startCol:
 // has no way to resynchronise -- it cannot know what the malformed text was meant
 // to be -- so this is the one place in the frontend that still stops at the first
 // error rather than recovering.
-fn lexerFatal(lex: Lexer, line: Int, col: Int, message: String) {
+private fn lexerFatal(lex: Lexer, line: Int, col: Int, message: String) {
     diag_error_at(lex.file, line, col, 1, message)
     diag_finish()
     exit(1)
 }
 
-fn lexerPeek(lex: Lexer, offset: Int) -> Char {
+private fn lexerPeek(lex: Lexer, offset: Int) -> Char {
     let at = lex.pos + offset
     if (at < 0 or at > lex.length) { return '\0' }
     return __builtin_string_byte_at(lex.input, at)
 }
 
-fn lexerCurrent(lex: Lexer) -> Char {
+private fn lexerCurrent(lex: Lexer) -> Char {
     if (lex.pos < 0 or lex.pos > lex.length) { return '\0' }
     return __builtin_string_byte_at(lex.input, lex.pos)
 }
 
-fn lexerAdvance(lex: Lexer) {
+private fn lexerAdvance(lex: Lexer) {
     lex.pos = lex.pos + 1
     lex.col = lex.col + 1
 }
 
 // A newline inside a token still has to move the line counter, or every
 // diagnostic after it points at the wrong line.
-fn lexerNewline(lex: Lexer) {
+private fn lexerNewline(lex: Lexer) {
     lex.line = lex.line + 1
     lex.col = 0
 }
 
-fn lexerSkipWhitespace(lex: Lexer) {
+private fn lexerSkipWhitespace(lex: Lexer) {
     loop {
         if (isSpace(lexerCurrent(lex))) {
             if (lexerCurrent(lex) == '\n') { lexerNewline(lex) }
@@ -123,7 +123,7 @@ fn lexerSkipWhitespace(lex: Lexer) {
 // `baseCol` is the column of the first character inside the quotes, so an
 // offending escape can be pointed at exactly rather than blamed on the literal as
 // a whole.
-fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) -> String {
+private fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) -> String {
     let mut out = ""
     let mut i = 0
     let n = __builtin_string_len(raw)
@@ -164,7 +164,7 @@ fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) -> Strin
     return out
 }
 
-fn lexIdentifier(lex: Lexer) -> Token {
+private fn lexIdentifier(lex: Lexer) -> Token {
     let line = lex.line
     let col = lex.col
     let start = lex.pos
@@ -185,7 +185,7 @@ fn lexIdentifier(lex: Lexer) -> Token {
 
 // A '.' only continues the number when a digit follows it, so `0..n` scans as
 // `0`, `..`, `n` rather than as the float `0.` followed by `.n`.
-fn lexNumber(lex: Lexer) -> Token {
+private fn lexNumber(lex: Lexer) -> Token {
     let line = lex.line
     let col = lex.col
     let start = lex.pos
@@ -214,7 +214,7 @@ fn lexNumber(lex: Lexer) -> Token {
 // an escaped quote does not end the literal. Escapes are then decoded only if the
 // literal actually contains one, which keeps the common case on the cheap
 // str_slice path instead of concatenating per character.
-fn lexString(lex: Lexer) -> Token {
+private fn lexString(lex: Lexer) -> Token {
     let line = lex.line
     let col = lex.col
     let start = lex.pos
@@ -253,7 +253,7 @@ fn lexString(lex: Lexer) -> Token {
 
 // The value is stored as the character's numeric code, not as its text, so that
 // everything downstream treats a Char as the integer it lowers to.
-fn lexChar(lex: Lexer) -> Token {
+private fn lexChar(lex: Lexer) -> Token {
     let line = lex.line
     let col = lex.col
     let start = lex.pos
@@ -287,7 +287,7 @@ fn lexChar(lex: Lexer) -> Token {
 // Whether `first` followed by `second` is a two-character operator. Shifts are
 // included: `>>` also closes two nested generic arguments, which the parser
 // splits back apart when it expects a single '>'.
-fn isTwoCharOperator(first: Char, second: Char) -> Bool {
+private fn isTwoCharOperator(first: Char, second: Char) -> Bool {
     if (first == '=' and second == '=') { return true }
     if (first == '!' and second == '=') { return true }
     if (first == '<' and second == '=') { return true }
@@ -308,7 +308,7 @@ fn isTwoCharOperator(first: Char, second: Char) -> Bool {
     return false
 }
 
-fn twoCharOperatorType(value: String) -> TokenType {
+private fn twoCharOperatorType(value: String) -> TokenType {
     if (strEquals(value, "==") or strEquals(value, "!=")
         or strEquals(value, "<=") or strEquals(value, ">=")) {
         return TokenType.RELATIONAL_OPERATOR
@@ -325,14 +325,14 @@ fn twoCharOperatorType(value: String) -> TokenType {
     return TokenType.ARITHMETIC_OPERATOR
 }
 
-fn oneCharOperatorType(c: Char) -> TokenType {
+private fn oneCharOperatorType(c: Char) -> TokenType {
     if (c == '<' or c == '>') { return TokenType.RELATIONAL_OPERATOR }
     if (c == '=') { return TokenType.ASSIGNMENT_OPERATOR }
     if (c == '!') { return TokenType.NEGATION }
     return TokenType.ARITHMETIC_OPERATOR
 }
 
-fn lexOperator(lex: Lexer) -> Token {
+private fn lexOperator(lex: Lexer) -> Token {
     let line = lex.line
     let col = lex.col
     let start = lex.pos
@@ -352,7 +352,7 @@ fn lexOperator(lex: Lexer) -> Token {
     return lexerToken(lex, type, value, line, col, start)
 }
 
-fn lexSeparator(lex: Lexer) -> Token {
+private fn lexSeparator(lex: Lexer) -> Token {
     let line = lex.line
     let col = lex.col
     let start = lex.pos
@@ -362,7 +362,7 @@ fn lexSeparator(lex: Lexer) -> Token {
     return lexerToken(lex, TokenType.SEPARATOR, value, line, col, start)
 }
 
-fn lexRange(lex: Lexer) -> Token {
+private fn lexRange(lex: Lexer) -> Token {
     let line = lex.line
     let col = lex.col
     let start = lex.pos
@@ -375,7 +375,7 @@ fn lexRange(lex: Lexer) -> Token {
 // This used to produce an UNKNOWN token and carry on, which meant a stray
 // character surfaced much later as "Unknown declaration" pointing at something
 // entirely innocent. Say what was actually wrong, where.
-fn lexUnexpected(lex: Lexer, c: Char) -> Token {
+private fn lexUnexpected(lex: Lexer, c: Char) -> Token {
     let line = lex.line
     let col = lex.col
     let start = lex.pos
@@ -385,7 +385,7 @@ fn lexUnexpected(lex: Lexer, c: Char) -> Token {
     return lexerToken(lex, TokenType.UNKNOWN, "?", line, col, start)
 }
 
-fn lexerNextToken(lex: Lexer) -> Token {
+private fn lexerNextToken(lex: Lexer) -> Token {
     lexerSkipWhitespace(lex)
 
     if (lex.pos >= lex.length) {

@@ -6,7 +6,7 @@ import common.text
 import common.diagnostics
 import std.string
 
-fn mapType(t: String) -> String {
+private fn mapType(t: String) -> String {
     if (strEquals(t, "Int")) { return "i32" }
     if (strEquals(t, "Float")) { return "double" }
     if (strEquals(t, "Bool")) { return "i1" }
@@ -34,11 +34,11 @@ fn mapType(t: String) -> String {
     return "i32"
 }
 
-fn structTypeKey(name: String) -> String {
+private fn structTypeKey(name: String) -> String {
     return strConcat("struct:", name)
 }
 
-fn isStructTypeKey(t: String) -> Bool {
+internal fn isStructTypeKey(t: String) -> Bool {
     return strStartsWith(t, "struct:")
 }
 
@@ -50,7 +50,7 @@ fn isStructTypeKey(t: String) -> Bool {
 // one would be an intrinsic that cannot exist (`llvm.sadd.with.overflow.i1`)
 // rather than a check that never fires. Everything else -- `ptr`, `double`,
 // `struct:` -- either has its own path above or cannot take `+`.
-fn isIntegerStorageKey(t: String) -> Bool {
+internal fn isIntegerStorageKey(t: String) -> Bool {
     return strEquals(t, "i8") or strEquals(t, "i16")
         or strEquals(t, "i32") or strEquals(t, "i64")
 }
@@ -62,37 +62,37 @@ fn isIntegerStorageKey(t: String) -> Bool {
 // bytes out of the literal's character data -- `@.str.sN` is `[2 x i8]`, not a
 // pair -- so the field receives whatever follows it in .rodata as its pointer.
 // That reads as a plain segfault at the first use, a long way from here.
-fn isFatStringKey(t: String) -> Bool {
+internal fn isFatStringKey(t: String) -> Bool {
     return strEquals(t, "struct:prismio.str")
 }
 
 // Built-in aggregates live in registers and fields by value. User structs use
 // the same `struct:` key for their pointee type, so every storage decision must
 // distinguish these two before treating a struct key as an address.
-fn isSliceKey(t: String) -> Bool {
+private fn isSliceKey(t: String) -> Bool {
     return strEquals(t, "struct:prismio.slice")
 }
 
-fn isDataElementKey(t: String) -> Bool {
+private fn isDataElementKey(t: String) -> Bool {
     return strEquals(t, "struct:prismio.data_element")
 }
 
-fn isValueStructKey(t: String) -> Bool {
+internal fn isValueStructKey(t: String) -> Bool {
     return isFatStringKey(t) or isSliceKey(t) or isDataElementKey(t)
 }
 
-fn structTypeName(t: String) -> String {
+internal fn structTypeName(t: String) -> String {
     return strSubstring(t, 7, __builtin_string_len(t) - 7)
 }
 
-fn llvmTypeName(t: String) -> String {
+private fn llvmTypeName(t: String) -> String {
     if (isStructTypeKey(t)) {
         return strConcat("%", structTypeName(t))
     }
     return t
 }
 
-fn mapTypeNode(tn: ASTNode) -> String {
+internal fn mapTypeNode(tn: ASTNode) -> String {
     // REQUIREMENTS 4. `T?` is one pointer and is deliberately *not* keyed as
     // `struct:T`: an optional slot must not reach ir_struct_field_ptr without an
     // unwrap, and an opaque key is what keeps that a type error rather than a
@@ -121,7 +121,7 @@ fn mapTypeNode(tn: ASTNode) -> String {
     return mapType(tn.s1)
 }
 
-fn storageType(t: String) -> String {
+internal fn storageType(t: String) -> String {
     if (strEquals(t, "ptrptr")) { return "ptr" }
     // The fat String is a value, not a heap object reached by pointer, so it is
     // the one struct key that must survive this collapse.
@@ -133,7 +133,7 @@ fn storageType(t: String) -> String {
 // What C sees. Identical to `storageType` except that a String flattens to the
 // pointer half, because the buffer is NUL-terminated and the length is Prismio's
 // bookkeeping rather than part of the ABI.
-fn ffiType(t: String) -> String {
+internal fn ffiType(t: String) -> String {
     if (strEquals(t, "struct:prismio.str")) { return "ptr" }
     return storageType(t)
 }
@@ -154,7 +154,7 @@ fn ffiType(t: String) -> String {
 // `T?` is not a containment edge -- mapTypeNode returns `ptr` for it before this
 // is reached. That is what gives the language a reference edge to spell a
 // recursive type with, and therefore what lets containment be required acyclic.
-fn fieldStorageType(t: String) -> String {
+internal fn fieldStorageType(t: String) -> String {
     if (strEquals(t, "ptrptr")) { return "ptr" }
     // A String field embeds the pair. Storing only the pointer would be one word
     // instead of two, but `ir_register_struct_field` records the *storage* type,
@@ -165,7 +165,7 @@ fn fieldStorageType(t: String) -> String {
     return t
 }
 
-fn countListNodes(firstPtr: Ptr) -> Int {
+internal fn countListNodes(firstPtr: Ptr) -> Int {
     let mut count = 0
     let mut curr = firstPtr
     while (nodeExists(curr)) {
@@ -176,14 +176,14 @@ fn countListNodes(firstPtr: Ptr) -> Int {
     return count
 }
 
-fn functionSymbolName(func: ASTNode) -> String {
+internal fn functionSymbolName(func: ASTNode) -> String {
     if (strEquals(func.s2, "") == false) {
         return func.s2
     }
     return func.s1
 }
 
-fn getDeclaredReturnType(node: ASTNode, retChild: Ptr) -> String {
+internal fn getDeclaredReturnType(node: ASTNode, retChild: Ptr) -> String {
     if (nodeExists(retChild)) {
         let retNode = ptr_to_node(retChild)
         return mapTypeNode(retNode)
@@ -191,7 +191,7 @@ fn getDeclaredReturnType(node: ASTNode, retChild: Ptr) -> String {
     return "void"
 }
 
-fn getExprType(expr: ASTNode) -> String {
+internal fn getExprType(expr: ASTNode) -> String {
     if (nodeHasType(expr)) {
         return typeIrKey(nodeGetType(expr))
     }
@@ -286,7 +286,7 @@ fn getExprType(expr: ASTNode) -> String {
 // The integer family widens to pointer width and reinterprets. A `Float` is 64
 // bits of payload rather than a number to convert, so it bitcasts first -- an
 // `fptosi` here would round 0.5 to 0 and store that.
-fn scalarBitsOf(t: String) -> Int {
+private fn scalarBitsOf(t: String) -> Int {
     if (strEquals(t, "i1")) { return 1 }
     if (strEquals(t, "i8")) { return 8 }
     if (strEquals(t, "i16")) { return 16 }
@@ -296,7 +296,7 @@ fn scalarBitsOf(t: String) -> Int {
     return 0
 }
 
-fn scalarToSlot(storeType: String, value: String) -> String {
+internal fn scalarToSlot(storeType: String, value: String) -> String {
     if (strEquals(storeType, "ptr")) { return value }
     // A String in a container slot is its pointer. The length is not stored --
     // it is recovered on the way out, from the NUL the buffer always carries
@@ -320,7 +320,7 @@ fn scalarToSlot(storeType: String, value: String) -> String {
     return ir_get_temp_name(ir_int_to_ptr(pi, widened))
 }
 
-fn slotToScalar(storeType: String, value: String) -> String {
+internal fn slotToScalar(storeType: String, value: String) -> String {
     if (strEquals(storeType, "ptr")) { return value }
     let pi = irPtrIntType()
 
@@ -339,14 +339,14 @@ fn slotToScalar(storeType: String, value: String) -> String {
 // Which argument of a container call carries the element, or -1. The element is
 // the one that has to cross into a pointer-sized slot; the list handle and the
 // index are already the widths the runtime declares.
-fn listElementArgIndex(funcName: String) -> Int {
+internal fn listElementArgIndex(funcName: String) -> Int {
     if (strEquals(funcName, "list_push")) { return 1 }
     if (strEquals(funcName, "list_set")) { return 2 }
     if (strEquals(funcName, "list_set_exclusive")) { return 2 }
     return -1
 }
 
-fn dropKindOf(expr: ASTNode) -> Int {
+internal fn dropKindOf(expr: ASTNode) -> Int {
     if (nodeGetType(expr).kind == TypeKind.LIST) { return IR_DROP_LIST }
     if (nodeGetType(expr).kind == TypeKind.DATAVIEW) { return IR_DROP_DATAVIEW }
     // Struct-field ownership. Freeing the object alone would leak every field it

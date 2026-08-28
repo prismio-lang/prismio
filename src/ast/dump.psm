@@ -20,7 +20,7 @@ import common.diagnostics
 import std.string
 
 
-fn hexDigit(v: Int) -> String {
+private fn hexDigit(v: Int) -> String {
     if (v == 0) { return "0" }
     else if (v == 1) { return "1" }
     else if (v == 2) { return "2" }
@@ -42,7 +42,7 @@ fn hexDigit(v: Int) -> String {
 // Bytes, not characters: emitting one byte at a time reproduces the original
 // UTF-8 sequence unchanged, so non-ASCII in a string literal or an identifier
 // survives without needing to be decoded first.
-fn jsonString(s: String) {
+private fn jsonString(s: String) {
     print("\"")
     let n = __builtin_string_len(s)
     let mut i = 0
@@ -66,14 +66,14 @@ fn jsonString(s: String) {
     print("\"")
 }
 
-fn jsonFieldStr(name: String, value: String) {
+private fn jsonFieldStr(name: String, value: String) {
     print("\"")
     print(name)
     print("\":")
     jsonString(value)
 }
 
-fn jsonFieldInt(name: String, value: Int) {
+private fn jsonFieldInt(name: String, value: Int) {
     print("\"")
     print(name)
     print("\":")
@@ -83,7 +83,7 @@ fn jsonFieldInt(name: String, value: Int) {
 // Names rather than ordinals, so the consumer never depends on the declaration
 // order of NodeKind in ast.psm. Adding a kind without adding it here yields
 // "UNKNOWN", which the consumer rejects loudly rather than silently misreading.
-fn nodeKindName(k: NodeKind) -> String {
+private fn nodeKindName(k: NodeKind) -> String {
     if (k == NodeKind.MODULE) { return "MODULE" }
     else if (k == NodeKind.IMPORT_STATEMENT) { return "IMPORT_STATEMENT" }
     else if (k == NodeKind.EXTERN_FUNCTION) { return "EXTERN_FUNCTION" }
@@ -134,7 +134,7 @@ fn nodeKindName(k: NodeKind) -> String {
     return "UNKNOWN"
 }
 
-fn dumpChain(head: Ptr) {
+private fn dumpChain(head: Ptr) {
     print("[")
     let mut p = head
     let mut first = true
@@ -148,7 +148,7 @@ fn dumpChain(head: Ptr) {
     print("]")
 }
 
-fn dumpNode(ptr: Ptr) {
+private fn dumpNode(ptr: Ptr) {
     let n = ptr_to_node(ptr)
 
     print("{")
@@ -191,7 +191,7 @@ fn dumpNode(ptr: Ptr) {
 // Probing rather than counting: the registry has no size accessor. An
 // unregistered id reports "<unknown>" rather than an empty string, so both are
 // treated as the end. 4096 is far past any real import graph.
-fn dumpFileTable() {
+private fn dumpFileTable() {
     print("[")
     let mut i = 0
     let mut first = true

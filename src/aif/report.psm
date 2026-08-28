@@ -11,7 +11,7 @@ import std.string
 // Reporting
 // ---------------------------------------------------------------------------
 
-fn aifTierName(tier: Int) -> String {
+private fn aifTierName(tier: Int) -> String {
     if (tier == 0) { return "T0" }
     if (tier == 1) { return "T1" }
     if (tier == 2) { return "T2" }
@@ -30,13 +30,13 @@ fn aifTierName(tier: Int) -> String {
 // encloses it and the value cannot outlive it, otherwise the implicit region of
 // its own scope, which has no arena and is served by the heap.
 // INFERENCE 2.3's lattice, for the manifest's `thread` column.
-fn aifThreadName(t: Int) -> String {
+private fn aifThreadName(t: Int) -> String {
     if (t == 0) { return "Isolated" }
     if (t == 1) { return "Transferred" }
     return "CrossThread"
 }
 
-fn aifPlacement(tier: Int, site: Int) -> String {
+private fn aifPlacement(tier: Int, site: Int) -> String {
     if (tier == 0) { return "stack" }
 
     // SPEC 5.2.1.1. Asked before the tier ladder, because an arena can now serve
@@ -95,7 +95,7 @@ fn aifPlacement(tier: Int, site: Int) -> String {
     return "rc-atomic"
 }
 
-fn aifCountTier(tier: Int) -> Int {
+private fn aifCountTier(tier: Int) -> Int {
     let mut n = 0
     let mut i = 0
     let total = aif_site_count()
@@ -106,7 +106,7 @@ fn aifCountTier(tier: Int) -> Int {
     return n
 }
 
-fn aifCountKind(kind: Int) -> Int {
+private fn aifCountKind(kind: Int) -> Int {
     let mut n = 0
     let mut i = 0
     let total = aif_site_count()
@@ -117,7 +117,7 @@ fn aifCountKind(kind: Int) -> Int {
     return n
 }
 
-fn aifCountKindTier(kind: Int, tier: Int) -> Int {
+private fn aifCountKindTier(kind: Int, tier: Int) -> Int {
     let mut n = 0
     let mut i = 0
     let total = aif_site_count()
@@ -142,7 +142,7 @@ fn aifCountKindTier(kind: Int, tier: Int) -> Int {
 //
 // Every caller prints something after this on the same line, so the guaranteed
 // space never becomes trailing whitespace at end of line.
-fn aifPad(s: String, width: Int) -> String {
+private fn aifPad(s: String, width: Int) -> String {
     let mut n = __builtin_string_len(s)
     // Already at or past the column: one space, so the fields stay separable.
     // Tested before the loop, because after it `n >= width` always holds and
@@ -156,12 +156,12 @@ fn aifPad(s: String, width: Int) -> String {
     return out
 }
 
-fn aifKv(key: String, value: String) {
+private fn aifKv(key: String, value: String) {
     print(aifPad(key, 12))
     println(value)
 }
 
-fn aifSitePosition(site: Int) -> String {
+private fn aifSitePosition(site: Int) -> String {
     let path = diag_file_path(aif_site_file(site))
     return strConcat(strConcat(path, ":"), strConcat(strFromInt(aif_site_line(site)),
            strConcat(":", strFromInt(aif_site_col(site)))))
@@ -171,7 +171,7 @@ fn aifSitePosition(site: Int) -> String {
 // than by source position is what keeps a diff readable: an edit shows up on the
 // function it changed, and adding a line at the top of a file does not rewrite
 // every record below it.
-fn aifSymbolOf(site: Int) -> String {
+private fn aifSymbolOf(site: Int) -> String {
     let owner = aif_site_fn(site)
     let mut base = "<module>"
     if (owner >= 0) { base = aif_fn_symbol(owner) }
@@ -180,7 +180,7 @@ fn aifSymbolOf(site: Int) -> String {
 
 // SPEC 6.2. Line-oriented UTF-8, records sorted byte-wise ascending by symbol --
 // the sort is normative, because an unstable order makes every diff useless.
-fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converged: Bool) {
+private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converged: Bool) {
     let total = aif_site_count()
 
     println("aif-manifest 1")
@@ -345,7 +345,7 @@ fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converg
 //
 // Printed only when something was bracketed, so every program that brackets
 // nothing keeps a byte-identical manifest.
-fn aifEmitBrackets() {
+private fn aifEmitBrackets() {
     let n = aif_bracket_count()
     if (n == 0) { return }
 
@@ -390,7 +390,7 @@ fn aifEmitBrackets() {
 // visible so it is not measured and thrown away. What it would be worth on this
 // corpus is in RESULTS-layout.md: an upper bound of 9.4% of struct bytes,
 // assuming every narrowing were free and legal.
-fn aifEmitPackingAdvice(module: ASTNode) {
+private fn aifEmitPackingAdvice(module: ASTNode) {
     if (aif_profile_is_measured() == 0) { return }
 
     let mut shown = 0
@@ -442,7 +442,7 @@ fn aifEmitPackingAdvice(module: ASTNode) {
     }
 }
 
-fn aifEmitKindRow(kind: Int) {
+private fn aifEmitKindRow(kind: Int) {
     let n = aifCountKind(kind)
     if (n == 0) { return }
     print("  ")
@@ -460,7 +460,7 @@ fn aifEmitKindRow(kind: Int) {
 // against aif/prototype/aif.py, so it reports the same quantities under the same
 // names -- including the exclusions, because a site the model declines to count
 // is exactly the kind of difference that would otherwise hide a real one.
-fn aifEmitSummary(sourcePath: String, converged: Bool) {
+private fn aifEmitSummary(sourcePath: String, converged: Bool) {
     let total = aif_site_count()
     let mut denom = total
     if (denom == 0) { denom = 1 }
@@ -600,7 +600,7 @@ fn aifEmitSummary(sourcePath: String, converged: Bool) {
 //
 // Nothing here decides anything. It reads the converged facts and the call
 // graph, and prints. The binary is byte-identical with and without it.
-fn aifEmitBracketing() {
+private fn aifEmitBracketing() {
     let fnCount = aif_fn_count()
     let mut ok = 0
     let mut sole = 0
@@ -854,7 +854,7 @@ fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
 // Cost is stated in the units a reader can act on -- a copy, a declaration, or
 // nothing -- rather than in cycles, which would be a modelled number pretending
 // to be a measured one.
-fn aifRepairFor(rule: Int) -> String {
+private fn aifRepairFor(rule: Int) -> String {
     if (strEquals(aif_rule_name(rule), "E-STATIC")) {
         return "make the destination region-scoped instead of static     restores T1, no runtime cost"
     }
@@ -888,7 +888,7 @@ fn aifRepairFor(rule: Int) -> String {
 // had explained the previous failure. The mask comes from the gate itself, so
 // this cannot drift from what codegen does, and it lists **every** obstacle
 // rather than the first: the first one is reliably the wrong thing to act on.
-fn aifArenaBlockerText(bit: Int) -> String {
+private fn aifArenaBlockerText(bit: Int) -> String {
     if (bit == AIF_ARENA_B_NOT_T1) {
         return "the tier is not T1 -- see the cause above"
     }
@@ -910,14 +910,14 @@ fn aifArenaBlockerText(bit: Int) -> String {
     return "the value outlives the enclosing region"
 }
 
-fn aifEmitBlocker(mask: Int, bit: Int, shown: Int) -> Int {
+private fn aifEmitBlocker(mask: Int, bit: Int, shown: Int) -> Int {
     if (mask / bit % 2 == 0) { return shown }
     if (shown == 0) { print("      because  ") } else { print("      and      ") }
     println(aifArenaBlockerText(bit))
     return shown + 1
 }
 
-fn aifEmitPlacement(site: Int) {
+private fn aifEmitPlacement(site: Int) {
     println("")
     println("  placement")
 
@@ -974,7 +974,7 @@ fn aifEmitPlacement(site: Int) {
     }
 }
 
-fn aifBracketBlockerText(bit: Int) -> String {
+private fn aifBracketBlockerText(bit: Int) -> String {
     if (bit == AIF_BR_B_GLOBAL) {
         return "something the extent allocates escapes to static storage"
     }
@@ -993,7 +993,7 @@ fn aifBracketBlockerText(bit: Int) -> String {
     return "the body is reachable from outside the bracket, so it would serve two placement regimes"
 }
 
-fn aifEmitBracketBlocker(mask: Int, bit: Int, shown: Int) -> Int {
+private fn aifEmitBracketBlocker(mask: Int, bit: Int, shown: Int) -> Int {
     if (mask / bit % 2 == 0) { return shown }
     if (shown == 0) { print("        because  ") } else { print("        and      ") }
     println(aifBracketBlockerText(bit))
@@ -1011,7 +1011,7 @@ fn aifEmitBracketBlocker(mask: Int, bit: Int, shown: Int) -> Int {
 // Reports every failing obligation, not the first -- the same discipline as the
 // placement mask above, and for the same reason: three sessions acted on a
 // gate's first clause while two more clauses rejected the same site.
-fn aifEmitBracketing(site: Int) {
+internal fn aifEmitBracketing(site: Int) {
     let f = aif_site_fn(site)
     if (f < 0) { return }
 
@@ -1074,7 +1074,7 @@ fn aifEmitBracketing(site: Int) {
     }
 }
 
-fn aifEmitCause(site: Int, converged: Bool) {
+private fn aifEmitCause(site: Int, converged: Bool) {
     let domain = aif_cause_domain_for(site)
     let n = aif_cause_build(site, domain)
 
@@ -1216,7 +1216,7 @@ fn aifReportPins() -> Int {
 // Is any `region` in this program named `name`? Only for the diagnostic: it is
 // what separates "you misspelled the region" from "the placement went away", and
 // those two call for opposite repairs.
-fn aifRegionExists(name: String) -> Bool {
+private fn aifRegionExists(name: String) -> Bool {
     let n = aif_budget_count()
     let mut s = 0
     while (s < n) {
@@ -1238,7 +1238,7 @@ fn aifRegionExists(name: String) -> Bool {
 // The verdict comes from aif_check_placement_pins, which reads
 // aif_region_name_at_site -- the one arena gate. Nothing here re-decides
 // placement; this only phrases the answer that gate already gave.
-fn aifReportPlacementPin(i: Int) -> Int {
+private fn aifReportPlacementPin(i: Int) -> Int {
     let verdict = aif_site_pin_region_verdict(i)
     if (verdict == AIF_PIN_NONE) { return 0 }
     if (verdict == AIF_PIN_HONOURED) { return 0 }
@@ -1394,7 +1394,7 @@ fn aifReportInertRegions() {
 // 69 where layout_repr.c measures 87. It ranks correctly and it overstates, and
 // both halves of that are worth knowing before trusting a number from it.
 // ---------------------------------------------------------------------------
-fn aifEmitLayout(module: ASTNode, sourcePath: String) {
+private fn aifEmitLayout(module: ASTNode, sourcePath: String) {
     println("aif-layout 1")
     aifKv("source", sourcePath)
     aifKv("profile", aif_profile_source())
@@ -1461,7 +1461,7 @@ fn aifEmitLayout(module: ASTNode, sourcePath: String) {
     }
 }
 
-fn aifAnalyze(module: ASTNode, sourcePath: String, version: String,
+private fn aifAnalyze(module: ASTNode, sourcePath: String, version: String,
                ownedCollections: Bool, summary: Bool, thetaFields: Bool,
                budget: Int) {
     aifAnalyzeProfiled(module, sourcePath, version, ownedCollections, summary,

@@ -52,14 +52,14 @@ fn irSetDebugInfo(enabled: Bool, producer: String, mainPath: String, isOptimized
 // span of their own, and LLVM requires every call in a function that has debug
 // info to carry *some* location. The last real statement is where that code came
 // from, so that is where it is attributed.
-fn debugAt(node: ASTNode) {
+internal fn debugAt(node: ASTNode) {
     if (irDebugInfo == false) { return }
     ir_debug_location(node.file, node.line, node.col)
 }
 
 // A source function. The mangled symbol goes in as the linkage name so a
 // debugger can match a frame by either spelling.
-fn debugOpenFunction(func: ASTNode, symbol: String) {
+internal fn debugOpenFunction(func: ASTNode, symbol: String) {
     if (irDebugInfo == false) { return }
     ir_debug_function_begin(func.s1, symbol, func.file, func.line)
 }
@@ -68,17 +68,17 @@ fn debugOpenFunction(func: ASTNode, symbol: String) {
 // `main` starts with the real argc/argv the program never named. The backend
 // checks the count against what LLVM built and falls back to storage types if
 // the two disagree, so an omission here degrades rather than misreports.
-fn debugSignature(retKey: String, retName: String) {
+internal fn debugSignature(retKey: String, retName: String) {
     if (irDebugInfo == false) { return }
     ir_debug_signature(retKey, retName)
 }
 
-fn debugSignatureParam(typeKey: String, typeName: String) {
+internal fn debugSignatureParam(typeKey: String, typeName: String) {
     if (irDebugInfo == false) { return }
     ir_debug_signature_param(typeKey, typeName)
 }
 
-fn debugCloseFunction() {
+internal fn debugCloseFunction() {
     if (irDebugInfo == false) { return }
     ir_debug_function_end()
 }
@@ -87,12 +87,12 @@ fn debugCloseFunction() {
 // name is visible to the debugger over the same span it is visible to the
 // compiler -- including the shadowing case, where two `let x` in sibling blocks
 // have separate slots and must not be reported as one variable.
-fn debugPushScope(node: ASTNode) {
+internal fn debugPushScope(node: ASTNode) {
     if (irDebugInfo == false) { return }
     ir_debug_scope_push(node.file, node.line, node.col)
 }
 
-fn debugPopScope() {
+internal fn debugPopScope() {
     if (irDebugInfo == false) { return }
     ir_debug_scope_pop()
 }
@@ -110,7 +110,7 @@ fn debugPopScope() {
 // `T?` and every struct to `ptr`, so without a name every one of them is an
 // anonymous address in the debugger. With it, a String prints its characters and
 // a struct pointer prints its fields.
-fn debugTypeName(annotation: Ptr, initializer: Ptr) -> String {
+internal fn debugTypeName(annotation: Ptr, initializer: Ptr) -> String {
     if (nodeExists(annotation)) {
         let typeNode = ptr_to_node(annotation)
         // An array or a list annotation names its *element* in s1, and reporting
@@ -163,7 +163,7 @@ fn debugTypeName(annotation: Ptr, initializer: Ptr) -> String {
 // This is line attribution only. It does not change variable liveness -- LLVM
 // derives a DW_TAG_lexical_block's low_pc/high_pc from the instructions in the
 // scope, not from the DILexicalBlock's line.
-fn debugAtBlockEnd(block: ASTNode) {
+internal fn debugAtBlockEnd(block: ASTNode) {
     if (irDebugInfo == false) { return }
     if (block.i1 <= 0) { return }
     ir_debug_location(block.file, block.i1, block.i2)
@@ -174,7 +174,7 @@ fn debugAtBlockEnd(block: ASTNode) {
 // `argNo` is 0 for a local and the 1-based position for a parameter; DWARF keeps
 // the two apart so a debugger can print a frame's arguments without printing its
 // locals.
-fn debugLocal(name: String, slot: String, typeKey: String, typeName: String,
+internal fn debugLocal(name: String, slot: String, typeKey: String, typeName: String,
                node: ASTNode, argNo: Int) {
     if (irDebugInfo == false) { return }
     ir_debug_local(name, slot, typeKey, typeName, node.file, node.line, argNo)
@@ -183,17 +183,17 @@ fn debugLocal(name: String, slot: String, typeKey: String, typeName: String,
 // A module-level global. The span is the declaration's own, not a statement's:
 // a global is not executed anywhere, so there is no line a debugger would stop
 // on -- the line is where the name was written.
-fn debugGlobal(name: String, typeKey: String, typeName: String, node: ASTNode) {
+internal fn debugGlobal(name: String, typeKey: String, typeName: String, node: ASTNode) {
     if (irDebugInfo == false) { return }
     ir_debug_global(name, typeKey, typeName, node.file, node.line)
 }
 
-fn debugFieldType(owner: String, field: String, typeNode: Ptr) {
+internal fn debugFieldType(owner: String, field: String, typeNode: Ptr) {
     if (irDebugInfo == false) { return }
     ir_debug_field_type(owner, field, debugTypeName(typeNode, ptr_null()))
 }
 
-fn debugStruct(structNode: ASTNode) {
+internal fn debugStruct(structNode: ASTNode) {
     if (irDebugInfo == false) { return }
     ir_debug_struct(structNode.s1, structNode.file, structNode.line)
 }
@@ -201,7 +201,7 @@ fn debugStruct(structNode: ASTNode) {
 // An enum, described by its variants. Emitted from the same pass as the structs
 // and for the same reason -- an enum a program only compares against is still
 // one a debugger should be able to name.
-fn debugEnum(enumNode: ASTNode) {
+internal fn debugEnum(enumNode: ASTNode) {
     if (irDebugInfo == false) { return }
     ir_debug_enum(enumNode.s1, enumNode.file, enumNode.line)
 }
@@ -214,14 +214,14 @@ fn debugEnum(enumNode: ASTNode) {
 // a debugger uses it to warn that a variable may have been folded away, and
 // telling it "no" while running -O2 is the kind of small lie this file exists to
 // avoid.
-fn debugBeginModule() {
+internal fn debugBeginModule() {
     if (irDebugInfo == false) { return }
     let mut opt = 0
     if (irDebugOptimized) { opt = 1 }
     ir_debug_begin(irDebugProducer, irDebugMainPath, opt)
 }
 
-fn debugEndModule() {
+internal fn debugEndModule() {
     if (irDebugInfo == false) { return }
     ir_debug_end()
 }

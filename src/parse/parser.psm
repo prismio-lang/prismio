@@ -37,258 +37,261 @@ struct Parser {
 fn parserCreate(tokens: Token) -> Parser {
     return Parser { current: token_to_ptr(tokens), allowStructLit: 1, implType: ptr_null() }
 }
+impl Parser {
 
-fn parserCurrent(p: Parser) -> Token {
-    return ptr_to_token(p.current)
-}
-
-fn parserPeek(p: Parser) -> Token {
-    let current = ptr_to_token(p.current)
-    return ptr_to_token(current.tokNext)
-}
-
-fn parserAdvance(p: Parser) {
-    let current = ptr_to_token(p.current)
-    if (current.type != TokenType.EOF) {
-        p.current = current.tokNext
+    internal fn current(self) -> Token {
+        return ptr_to_token(self.current)
     }
-}
 
-fn parserCheck(p: Parser, t: TokenType) -> Bool {
-    let current = parserCurrent(p)
-    return current.type == t
-}
-
-fn parserCheckVal(p: Parser, t: TokenType, val: String) -> Bool {
-    let current = parserCurrent(p)
-    return current.type == t and strEquals(current.value, val)
-}
-
-fn parserMatch(p: Parser, t: TokenType) -> Bool {
-    if (parserCheck(p, t)) {
-        parserAdvance(p)
-        return true
+    internal fn peek(self) -> Token {
+        let current = ptr_to_token(self.current)
+        return ptr_to_token(current.tokNext)
     }
-    return false
-}
 
-fn parserMatchVal(p: Parser, t: TokenType, val: String) -> Bool {
-    if (parserCheckVal(p, t, val)) {
-        parserAdvance(p)
-        return true
-    }
-    return false
-}
-
-// Creates a node already stamped with the position of the token the parser is
-// sitting on. Every node the parser builds comes from here rather than from
-// createNode(), so a node without a span means "synthesised", not "forgotten".
-// The same, from a token the caller kept rather than the one the parser is
-// looking at now. A statement whose node is built *after* its body is parsed --
-// an expression statement, `break`, `continue` -- is looking at the token that
-// follows it by then, which is the next statement's first token, or the closing
-// brace. Stamping that is an off-by-one in the line table and an underline in
-// the wrong place in a diagnostic.
-fn parserNodeFrom(kind: NodeKind, tok: Token) -> ASTNode {
-    let node = createNode(kind)
-    node.line = tok.line
-    node.col = tok.col
-    node.len = tok.len
-    node.file = tok.file
-    return node
-}
-
-fn parserNode(p: Parser, kind: NodeKind) -> ASTNode {
-    let node = createNode(kind)
-    let tok = parserCurrent(p)
-    node.line = tok.line
-    node.col = tok.col
-    node.len = tok.len
-    node.file = tok.file
-    return node
-}
-
-// Reports against the token the parser is looking at -- which is the token that
-// was *unexpected*, and so the one worth underlining.
-fn parserError(p: Parser, message: String) {
-    let tok = parserCurrent(p)
-    diag_error_at(tok.file, tok.line, tok.col, tok.len, message)
-}
-
-// How the offending token reads in a message. EOF has no source text, so name it
-// rather than quoting the empty string.
-fn parserDescribe(tok: Token) -> String {
-    if (tok.type == TokenType.EOF) {
-        return "end of file"
-    }
-    return diagQuote(tok.value)
-}
-
-// A parse error the parser cannot recover from locally. Reports, then stops:
-// continuing past a malformed type or parameter list means handing sema an AST
-// whose shape does not match what its callers assume, and a crash there is a
-// worse experience than one honest error.
-fn parserFatal(p: Parser, message: String) {
-    parserError(p, message)
-    diag_finish()
-    exit(1)
-}
-
-fn parserExpect(p: Parser, t: TokenType, context: String) {
-    if (parserCheck(p, t) == false) {
-        let tok = parserCurrent(p)
-        parserFatal(p, strConcat(strConcat(strConcat("expected ", typeToString(t)),
-                     strConcat(" in ", context)),
-                     strConcat(", found ", parserDescribe(tok))))
-    }
-    parserAdvance(p)
-}
-
-fn parserExpectVal(p: Parser, t: TokenType, val: String, context: String) {
-    if (parserCheckVal(p, t, val) == false) {
-        let tok = parserCurrent(p)
-        parserFatal(p, strConcat(strConcat(strConcat("expected ", diagQuote(val)),
-                     strConcat(" in ", context)),
-                     strConcat(", found ", parserDescribe(tok))))
-    }
-    parserAdvance(p)
-}
-
-// Whether this keyword can only begin a construct, and so is a safe place for
-// recovery to resume.
-fn startsConstruct(word: String) -> Bool {
-    if (strEquals(word, "fn")) { return true }
-    if (strEquals(word, "let")) { return true }
-    if (strEquals(word, "struct")) { return true }
-    if (strEquals(word, "enum")) { return true }
-    if (strEquals(word, "extern")) { return true }
-    if (strEquals(word, "import")) { return true }
-    if (strEquals(word, "impl")) { return true }
-    if (strEquals(word, "trait")) { return true }
-    if (strEquals(word, "if")) { return true }
-    if (strEquals(word, "while")) { return true }
-    if (strEquals(word, "for")) { return true }
-    if (strEquals(word, "loop")) { return true }
-    if (strEquals(word, "match")) { return true }
-    if (strEquals(word, "return")) { return true }
-    if (strEquals(word, "region")) { return true }
-    return false
-}
-
-// Drops tokens until something that plausibly begins a new declaration or
-// statement, so one syntax error does not turn the rest of the file into noise.
-//
-// Prismio has no statement terminator, so the anchors are the keywords above plus
-// '}', which can only end a construct. Two properties matter: it always consumes
-// at least one token (otherwise the parser loops forever on the token it could
-// not handle), and it stops *before* the anchor so the caller resumes by parsing
-// it normally.
-fn parserSynchronize(p: Parser) {
-    parserAdvance(p)
-
-    loop {
-        let tok = parserCurrent(p)
-        if (tok.type == TokenType.EOF) { break }
-        if (tok.type == TokenType.SEPARATOR and strEquals(tok.value, "}")) { break }
-        if (tok.type == TokenType.KEYWORD and startsConstruct(tok.value)) { break }
-        parserAdvance(p)
-    }
-}
-
-// One segment of a dotted module path. A keyword is accepted as well as an
-// identifier: `import ir.match` is a reasonable module name, and in this position
-// there is nothing for a keyword to be ambiguous with.
-fn parseModuleSegment(p: Parser) -> String {
-    let segment = parserCurrent(p)
-    if (segment.type != TokenType.IDENTIFIER and segment.type != TokenType.KEYWORD) {
-        parserFatal(p, strConcat("expected a module name after `import`, found ",
-                                   parserDescribe(segment)))
-    }
-    parserAdvance(p)
-    return segment.value
-}
-
-// `import ir.expr` names the module in src/ir/expr.psm; `import ir.*` names every
-// module directly inside src/ir/, and sets `i1`.
-//
-// Dotted rather than slashed because a module name is an identifier path, not a
-// file path: mapping it onto a directory is joinImportPath's business, and
-// keeping the separator out of the token stream means no operator has to change
-// meaning inside an import. The name is stored as written, dots and all, so a
-// diagnostic quotes what the programmer typed rather than a resolved path.
-//
-// The wildcard is only ever a whole final segment, so `import ir.ex*` is a syntax
-// error rather than a prefix match. Matching on partial names would make the set
-// of modules a program depends on a function of what the directory happens to
-// contain, which is exactly what a reader cannot see from the import.
-fn parseImportStatement(p: Parser) -> ASTNode {
-    parserExpectVal(p, TokenType.KEYWORD, "import", "import statement")
-
-    let importNode = parserNode(p, NodeKind.IMPORT_STATEMENT)
-    let first = parserCurrent(p)
-    importNode.s1 = parseModuleSegment(p)
-
-    // The node's span starts at the first segment and has to be stretched over
-    // the rest, or a diagnostic about `import lexer.token` underlines `lexer`.
-    let mut endCol = first.col + first.len
-
-    while (parserMatchVal(p, TokenType.SEPARATOR, ".")) {
-        let segment = parserCurrent(p)
-        endCol = segment.col + segment.len
-        if (parserMatchVal(p, TokenType.ARITHMETIC_OPERATOR, "*")) {
-            importNode.i1 = 1
-            break
+    internal fn advance(self) {
+        let current = ptr_to_token(self.current)
+        if (current.type != TokenType.EOF) {
+            self.current = current.tokNext
         }
-        importNode.s1 = strConcat(strConcat(importNode.s1, "."), parseModuleSegment(p))
     }
 
-    importNode.len = endCol - importNode.col
-    return importNode
-}
+    internal fn check(self, t: TokenType) -> Bool {
+        let current = self.current()
+        return current.type == t
+    }
 
-fn parseModule(p: Parser) -> ASTNode {
-    let module = parserNode(p, NodeKind.MODULE)
-    let declarations = nodeList()
+    internal fn checkVal(self, t: TokenType, val: String) -> Bool {
+        let current = self.current()
+        return current.type == t and strEquals(current.value, val)
+    }
 
-    loop {
-        if (parserCheck(p, TokenType.EOF)) { break }
+    internal fn matchToken(self, t: TokenType) -> Bool {
+        if (self.check(t)) {
+            self.advance()
+            return true
+        }
+        return false
+    }
 
-        let stmt = parseDeclaration(p)
+    internal fn matchVal(self, t: TokenType, val: String) -> Bool {
+        if (self.checkVal(t, val)) {
+            self.advance()
+            return true
+        }
+        return false
+    }
 
-        // An `impl` block's methods are spliced into the module's own chain, and
-        // that splice is the whole lowering: a method is a free function whose
-        // first parameter is the receiver, so every pass downstream keys on
-        // `== NodeKind.FUNCTION` and needs to know nothing about `impl`.
-        //
-        // The IMPL_DECL itself stays, with its children detached, because it is
-        // the record that this type has these methods -- which is what a trait
-        // bound is checked against. Detaching matters: a node cannot be in two
-        // `next` chains at once, and leaving `child1` pointing at the first
-        // method would make it point into the module chain and run off the end.
-        if (stmt.kind == NodeKind.IMPL_DECL) {
-            let methods = stmt.child1
-            stmt.child1 = ptr_null()
-            nodeListPush(declarations, stmt)
+    // Creates a node already stamped with the position of the token the parser is
+    // sitting on. Every node the parser builds comes from here rather than from
+    // createNode(), so a node without a span means "synthesised", not "forgotten".
+    // The same, from a token the caller kept rather than the one the parser is
+    // looking at now. A statement whose node is built *after* its body is parsed --
+    // an expression statement, `break`, `continue` -- is looking at the token that
+    // follows it by then, which is the next statement's first token, or the closing
+    // brace. Stamping that is an off-by-one in the line table and an underline in
+    // the wrong place in a diagnostic.
+    internal fn parserNodeFrom(kind: NodeKind, tok: Token) -> ASTNode {
+        let node = createNode(kind)
+        node.line = tok.line
+        node.col = tok.col
+        node.len = tok.len
+        node.file = tok.file
+        return node
+    }
 
-            let mut methodPtr = methods
-            while (nodeExists(methodPtr)) {
-                let method = ptr_to_node(methodPtr)
-                // Read `next` before pushing, for the reason monoCollectTemplates
-                // gives: nodeListPush rewrites the tail's `next`, so the chain
-                // being walked is the chain being rebuilt.
-                let following = method.next
-                method.next = ptr_null()
-                nodeListPush(declarations, method)
-                methodPtr = following
+    internal fn node(self, kind: NodeKind) -> ASTNode {
+        let node = createNode(kind)
+        let tok = self.current()
+        node.line = tok.line
+        node.col = tok.col
+        node.len = tok.len
+        node.file = tok.file
+        return node
+    }
+
+    // Reports against the token the parser is looking at -- which is the token that
+    // was *unexpected*, and so the one worth underlining.
+    internal fn error(self, message: String) {
+        let tok = self.current()
+        diag_error_at(tok.file, tok.line, tok.col, tok.len, message)
+    }
+
+    // How the offending token reads in a message. EOF has no source text, so name it
+    // rather than quoting the empty string.
+    internal fn parserDescribe(tok: Token) -> String {
+        if (tok.type == TokenType.EOF) {
+            return "end of file"
+        }
+        return diagQuote(tok.value)
+    }
+
+    // A parse error the parser cannot recover from locally. Reports, then stops:
+    // continuing past a malformed type or parameter list means handing sema an AST
+    // whose shape does not match what its callers assume, and a crash there is a
+    // worse experience than one honest error.
+    internal fn fatal(self, message: String) {
+        self.error(message)
+        diag_finish()
+        exit(1)
+    }
+
+    internal fn expectToken(self, t: TokenType, context: String) {
+        if (self.check(t) == false) {
+            let tok = self.current()
+            self.fatal(strConcat(strConcat(strConcat("expected ", typeToString(t)),
+                         strConcat(" in ", context)),
+                         strConcat(", found ", parserDescribe(tok))))
+        }
+        self.advance()
+    }
+
+    internal fn expectVal(self, t: TokenType, val: String, context: String) {
+        if (self.checkVal(t, val) == false) {
+            let tok = self.current()
+            self.fatal(strConcat(strConcat(strConcat("expected ", diagQuote(val)),
+                         strConcat(" in ", context)),
+                         strConcat(", found ", parserDescribe(tok))))
+        }
+        self.advance()
+    }
+
+    // Whether this keyword can only begin a construct, and so is a safe place for
+    // recovery to resume.
+    private fn startsConstruct(word: String) -> Bool {
+        if (strEquals(word, "fn")) { return true }
+        if (strEquals(word, "let")) { return true }
+        if (strEquals(word, "struct")) { return true }
+        if (strEquals(word, "enum")) { return true }
+        if (strEquals(word, "extern")) { return true }
+        if (strEquals(word, "import")) { return true }
+        if (strEquals(word, "impl")) { return true }
+        if (strEquals(word, "trait")) { return true }
+        if (strEquals(word, "if")) { return true }
+        if (strEquals(word, "while")) { return true }
+        if (strEquals(word, "for")) { return true }
+        if (strEquals(word, "loop")) { return true }
+        if (strEquals(word, "match")) { return true }
+        if (strEquals(word, "return")) { return true }
+        if (strEquals(word, "region")) { return true }
+        return false
+    }
+
+    // Drops tokens until something that plausibly begins a new declaration or
+    // statement, so one syntax error does not turn the rest of the file into noise.
+    //
+    // Prismio has no statement terminator, so the anchors are the keywords above plus
+    // '}', which can only end a construct. Two properties matter: it always consumes
+    // at least one token (otherwise the parser loops forever on the token it could
+    // not handle), and it stops *before* the anchor so the caller resumes by parsing
+    // it normally.
+    internal fn synchronize(self) {
+        self.advance()
+
+        loop {
+            let tok = self.current()
+            if (tok.type == TokenType.EOF) { break }
+            if (tok.type == TokenType.SEPARATOR and strEquals(tok.value, "}")) { break }
+            if (tok.type == TokenType.KEYWORD and startsConstruct(tok.value)) { break }
+            self.advance()
+        }
+    }
+
+    // One segment of a dotted module path. A keyword is accepted as well as an
+    // identifier: `import ir.match` is a reasonable module name, and in this position
+    // there is nothing for a keyword to be ambiguous with.
+    private fn parseModuleSegment(self) -> String {
+        let segment = self.current()
+        if (segment.type != TokenType.IDENTIFIER and segment.type != TokenType.KEYWORD) {
+            self.fatal(strConcat("expected a module name after `import`, found ",
+                                       parserDescribe(segment)))
+        }
+        self.advance()
+        return segment.value
+    }
+
+    // `import ir.expr` names the module in src/ir/expr.psm; `import ir.*` names every
+    // module directly inside src/ir/, and sets `i1`.
+    //
+    // Dotted rather than slashed because a module name is an identifier path, not a
+    // file path: mapping it onto a directory is joinImportPath's business, and
+    // keeping the separator out of the token stream means no operator has to change
+    // meaning inside an import. The name is stored as written, dots and all, so a
+    // diagnostic quotes what the programmer typed rather than a resolved path.
+    //
+    // The wildcard is only ever a whole final segment, so `import ir.ex*` is a syntax
+    // error rather than a prefix match. Matching on partial names would make the set
+    // of modules a program depends on a function of what the directory happens to
+    // contain, which is exactly what a reader cannot see from the import.
+    internal fn parseImportStatement(self) -> ASTNode {
+        self.expectVal(TokenType.KEYWORD, "import", "import statement")
+
+        let importNode = self.node(NodeKind.IMPORT_STATEMENT)
+        let first = self.current()
+        importNode.s1 = parseModuleSegment(self)
+
+        // The node's span starts at the first segment and has to be stretched over
+        // the rest, or a diagnostic about `import lexer.token` underlines `lexer`.
+        let mut endCol = first.col + first.len
+
+        while (self.matchVal(TokenType.SEPARATOR, ".")) {
+            let segment = self.current()
+            endCol = segment.col + segment.len
+            if (self.matchVal(TokenType.ARITHMETIC_OPERATOR, "*")) {
+                importNode.i1 = 1
+                break
             }
-        } else if (stmt.kind != NodeKind.ERROR_NODE) {
-            // A placeholder from recovery. Dropping it here is what keeps every
-            // later pass free of the question -- nothing downstream has to know
-            // that recovery exists.
-            nodeListPush(declarations, stmt)
+            importNode.s1 = strConcat(strConcat(importNode.s1, "."), parseModuleSegment(self))
         }
+
+        importNode.len = endCol - importNode.col
+        return importNode
     }
 
-    module.child1 = declarations.head
-    return module
+    fn parseModule(self) -> ASTNode {
+        let module = self.node(NodeKind.MODULE)
+        let declarations = nodeList()
+
+        loop {
+            if (self.check(TokenType.EOF)) { break }
+
+            let stmt = parseDeclaration(self)
+
+            // An `impl` block's methods are spliced into the module's own chain, and
+            // that splice is the whole lowering: a method is a free function whose
+            // first parameter is the receiver, so every pass downstream keys on
+            // `== NodeKind.FUNCTION` and needs to know nothing about `impl`.
+            //
+            // The IMPL_DECL itself stays, with its children detached, because it is
+            // the record that this type has these methods -- which is what a trait
+            // bound is checked against. Detaching matters: a node cannot be in two
+            // `next` chains at once, and leaving `child1` pointing at the first
+            // method would make it point into the module chain and run off the end.
+            if (stmt.kind == NodeKind.IMPL_DECL) {
+                let methods = stmt.child1
+                stmt.child1 = ptr_null()
+                nodeListPush(declarations, stmt)
+
+                let mut methodPtr = methods
+                while (nodeExists(methodPtr)) {
+                    let method = ptr_to_node(methodPtr)
+                    // Read `next` before pushing, for the reason monoCollectTemplates
+                    // gives: nodeListPush rewrites the tail's `next`, so the chain
+                    // being walked is the chain being rebuilt.
+                    let following = method.next
+                    method.next = ptr_null()
+                    nodeListPush(declarations, method)
+                    methodPtr = following
+                }
+            } else if (stmt.kind != NodeKind.ERROR_NODE) {
+                // A placeholder from recovery. Dropping it here is what keeps every
+                // later pass free of the question -- nothing downstream has to know
+                // that recovery exists.
+                nodeListPush(declarations, stmt)
+            }
+        }
+
+        module.child1 = declarations.head
+        return module
+    }
+
 }

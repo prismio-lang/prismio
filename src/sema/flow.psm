@@ -28,7 +28,7 @@ extern fn exit(code: Int)
 // the programmer knows is unreachable, which is an annoyance; the opposite
 // error would let a function fall off its end, which is a miscompile.
 
-fn semaBlockHasBreak(block: ASTNode) -> Bool {
+private fn semaBlockHasBreak(block: ASTNode) -> Bool {
     let mut stmtPtr = block.child1
     while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
@@ -70,7 +70,7 @@ fn semaBlockHasBreak(block: ASTNode) -> Bool {
 // A whole `if` / `else if` / `else` chain. Recurses through the chain rather
 // than being inlined into the walk above, which had the same eight lines written
 // out twice -- once for the statement and once for the else-if that follows it.
-fn semaIfHasBreak(stmt: ASTNode) -> Bool {
+private fn semaIfHasBreak(stmt: ASTNode) -> Bool {
     if (semaBlockHasBreak(ptr_to_node(stmt.child2))) { return true }
     if (nodeIsNull(stmt.child3)) { return false }
 
@@ -82,7 +82,7 @@ fn semaIfHasBreak(stmt: ASTNode) -> Bool {
 }
 
 // True when control cannot continue past this statement.
-fn semaStmtDiverges(stmt: ASTNode) -> Bool {
+internal fn semaStmtDiverges(stmt: ASTNode) -> Bool {
     if (stmt.kind == NodeKind.RETURN_STATEMENT) { return true }
     if (stmt.kind == NodeKind.BREAK_STATEMENT) { return true }
     if (stmt.kind == NodeKind.CONTINUE_STATEMENT) { return true }
@@ -109,7 +109,7 @@ fn semaStmtDiverges(stmt: ASTNode) -> Bool {
     return false
 }
 
-fn semaBlockDiverges(block: ASTNode) -> Bool {
+internal fn semaBlockDiverges(block: ASTNode) -> Bool {
     let mut stmtPtr = block.child1
     while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)

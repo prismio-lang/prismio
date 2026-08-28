@@ -26,7 +26,7 @@ import std.option
 // Decodes what an `extern` declaration said, if it said anything.
 // Returns -1 when there is no declared contract, so the caller can fall through
 // to the runtime table and then to the default.
-fn aifDeclaredContract(name: String, index: Int) -> Int {
+private fn aifDeclaredContract(name: String, index: Int) -> Int {
     let text = aif_extern_contract(name, index)
     if (strEquals(text, "")) { return 0 - 1 }
 
@@ -50,7 +50,7 @@ fn aifDeclaredContract(name: String, index: Int) -> Int {
 // before LLVM. Their effects therefore belong here, separately from the foreign
 // runtime table below: all three inspect or modify storage only for the duration
 // of the operation and retain nothing.
-fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
+private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     if (strEquals(name, "__builtin_string_len")) { return AIF_FFI_BORROW }
     if (strEquals(name, "__builtin_string_byte_at")) { return AIF_FFI_BORROW }
     if (strEquals(name, "__builtin_string_put_byte")) { return AIF_FFI_BORROW }
@@ -78,7 +78,7 @@ fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
 // It should shrink as declarations gain contracts, and the entry that matters is
 // `list_push`: without it every element pushed into a list appears never to
 // escape, which is optimistic and therefore unsound.
-fn aifRuntimeContract(name: String, index: Int) -> Int {
+private fn aifRuntimeContract(name: String, index: Int) -> Int {
     if (strEquals(name, "list_push")) {
         if (index == 1) { return AIF_FFI_RETAIN_IN_BASE + 0 }
         return AIF_FFI_BORROW
@@ -119,7 +119,7 @@ fn aifRuntimeContract(name: String, index: Int) -> Int {
 }
 
 // Declared contract, compiler builtin, runtime table, then FFI 5.1's default.
-fn aifFfiContract(name: String, index: Int) -> Int {
+internal fn aifFfiContract(name: String, index: Int) -> Int {
     let declared = aifDeclaredContract(name, index)
     if (declared >= 0) {
         return declared
@@ -148,7 +148,7 @@ fn aifFfiContract(name: String, index: Int) -> Int {
 // A declaration counts only when it is **complete** -- every parameter and the
 // return. A partial one leaves undescribed exactly the argument nobody thought
 // about, which is the one that retains.
-fn aifCallIsSummarised(name: String, argc: Int) -> Bool {
+internal fn aifCallIsSummarised(name: String, argc: Int) -> Bool {
     if (aifCompilerBuiltinContract(name, 0) != AIF_FFI_UNKNOWN) { return true }
     if (aifRuntimeContract(name, 0) != AIF_FFI_UNKNOWN) { return true }
     if (aifFfiProduces(name)) { return true }
@@ -172,7 +172,7 @@ fn aifCallIsSummarised(name: String, argc: Int) -> Bool {
 // the element, so A-CONTAIN never saw the sharing and the second container was
 // told its elements were lists when they were structs. Elements go through
 // aifElemKey now, which is what makes that sentence true.
-fn aifFfiAliasOf(name: String) -> Int {
+internal fn aifFfiAliasOf(name: String) -> Int {
     // REQUIREMENTS 4. `expect(x)` is the identity on a pointer -- it checks and
     // hands back the same one -- so its result is argument 0's sites. Without
     // this it reads as an opaque extern return: a fresh site, escape raised to
@@ -185,7 +185,7 @@ fn aifFfiAliasOf(name: String) -> Int {
 // Which argument's element field a call reads, or -1. The counterpart of
 // `retain_in(k)` on the way out: one says a value was stored into the container
 // at k, this says the result came back out of it.
-fn aifFfiReadsElement(name: String) -> Int {
+internal fn aifFfiReadsElement(name: String) -> Int {
     if (strEquals(name, "list_get")) { return 0 }
     return 0 - 1
 }
@@ -193,7 +193,7 @@ fn aifFfiReadsElement(name: String) -> Int {
 // The static type of a call's k-th argument. Walking the argument list again is
 // safe only because reading a type creates nothing; evaluating one creates sites,
 // which is why the values go through the argv stack instead.
-fn aifArgTypeAt(call: ASTNode, index: Int) -> String {
+internal fn aifArgTypeAt(call: ASTNode, index: Int) -> String {
     let mut i = 0
     let mut aPtr = call.child2
     while (nodeExists(aPtr)) {
@@ -209,18 +209,18 @@ fn aifArgTypeAt(call: ASTNode, index: Int) -> String {
 // borrows from an argument or from static storage rather than being a fresh
 // allocation, so it must not be modelled as one; `produce` says the caller owns
 // it, which is exactly what the undeclared case cannot assume.
-fn aifDeclaredReturnIsProduce(name: String) -> Bool {
+internal fn aifDeclaredReturnIsProduce(name: String) -> Bool {
     return strStartsWith(aif_extern_contract(name, 0 - 1), "produce")
 }
 
-fn aifDeclaredReturnIsAlias(name: String) -> Bool {
+internal fn aifDeclaredReturnIsAlias(name: String) -> Bool {
     return strEquals(aif_extern_contract(name, 0 - 1), "alias")
 }
 
 // FFI 5.2 `produce`: a fresh owned value the caller must release. Anything
 // undeclared has unknown provenance -- it may already be shared and may already
 // outlive this frame -- and is handled by the `opaque` constraint instead.
-fn aifFfiProduces(name: String) -> Bool {
+internal fn aifFfiProduces(name: String) -> Bool {
     if (strEquals(name, "list_new")) { return true }
     if (strEquals(name, "list_new_with_capacity")) { return true }
     if (strEquals(name, "soa")) { return true }
