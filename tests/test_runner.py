@@ -228,11 +228,23 @@ def run_corpus_test():
         print(f"{RED}[FAIL] corpus: no programs found{RESET}")
         return False
 
+    # `clock_gettime_nsec_np` is an Apple libc symbol. 23 of the 33 corpus
+    # programs declare it to timestamp their measured loop, so those cannot link
+    # anywhere but macOS -- this check ran all of them and turned a green Ubuntu
+    # red. Skipped by *reading the source* for the symbol rather than by a list of
+    # names, so a program that stops using it is covered again automatically, and
+    # one that starts is skipped rather than failing the build.
+    darwin_only = sys.platform != "darwin"
+
     problems = []
     ran = 0
+    skipped_platform = 0
     with tempfile.TemporaryDirectory(prefix="prismio-corpus-") as temp_dir:
         for src in sources:
             if src.stem in NO_MAIN:
+                continue
+            if darwin_only and "clock_gettime_nsec_np" in src.read_text(encoding="utf-8"):
+                skipped_platform += 1
                 continue
             exe = Path(temp_dir) / (src.stem + (".exe" if os.name == "nt" else ""))
             built = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(exe)])
@@ -251,7 +263,8 @@ def run_corpus_test():
             print(f"  - {line}")
         return False
 
-    print(f"{GREEN}[PASS] corpus: {ran} programs build and run{RESET}")
+    note = f", {skipped_platform} skipped (macOS-only clock)" if skipped_platform else ""
+    print(f"{GREEN}[PASS] corpus: {ran} programs build and run{note}{RESET}")
     return True
 
 

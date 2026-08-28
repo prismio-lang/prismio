@@ -19,7 +19,11 @@
 // paths which must NOT free still do not.
 
 import std.io
-import std.string
+// Deliberately an extern rather than `std.string`, like aif_tiers and the other
+// AIF fixtures: an opaque extern gives this file its own allocation sites, and
+// the oracle differential asserts a per-site round count. Native `strConcat`
+// shares one site across every caller and moved the fixpoint 5 -> 6 rounds.
+extern fn str_concat(s1: String, s2: String) -> String
 
 struct Item {
     value: Int
