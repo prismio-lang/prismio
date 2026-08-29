@@ -44,7 +44,7 @@
 // value it holds** -- 4 of 14 allocations, rising to 8 of 18 when the lookups
 // also answer with copies. The values list is returned from by `mapGetOr`,
 // `mapGet` and `mapValueAt`, the analysis sees it escape, and it declines to
-// release the container. That is the pass-through escape TODO.md tracks, not
+// release the container. That is the pass-through escape KNOWN_ISSUES.md tracks, not
 // something this file can fix, and a standard-library container that leaks its
 // contents is worse than one that says it cannot hold them.
 //

@@ -5,8 +5,8 @@ Rust idiomatic, Rust hand-tuned -- for every corpus program, in one JSON.
     python3 tools/five_arm_bench.py --old build/tbaa3 --new build/rc \
         --runs 25 --label "M6 slice 2" --json aif/evidence/xlang/results-m6.json
 
-V0_1_FEATURES.md 2.2 asks for a five-arm measurement after every task, and until
-now each one was produced by a scratch script that was not kept -- so
+The v0.1 bar asked for a five-arm measurement after every task, and until now
+each one was produced by a scratch script that was not kept -- so
 `results-m6-slice2-final-all-five-arm.json` records a "balanced base orders x
 cyclic rotations" schedule that nothing in the tree can reproduce. This is that
 schedule, written down.
@@ -21,7 +21,7 @@ rounds, so over `runs` rounds every arm occupies every position an equal number
 of times. Position bias is then in the noise of all five arms rather than in one.
 
 It does not control binary layout, and nothing here can -- see the g5 note in
-HANDOFF.md. A per-function mnemonic diff is what settles a single-program result,
+KNOWN_ISSUES.md. A per-function mnemonic diff is what settles a single-program result,
 before any number below is interpreted.
 
 Checksums are asserted equal across all five arms before any timing is reported:

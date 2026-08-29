@@ -5957,7 +5957,7 @@ static int elem_disposition_of(int id, int tier) {
     // `str_with_capacity` inside `strConcat`, so a single site now backs every
     // string binding in the program -- and one `drop(x)` anywhere returned
     // AIF_ELEM_NONE for all of them, cancelling the release of every other
-    // binding and leaking each one. TODO.md carries the reproducer.
+    // binding and leaking each one. KNOWN_ISSUES.md carries the shape.
     //
     // The binding-level question is asked by `chainDropsName` in
     // src/ir/stmt.psm, beside chainAssignsName and chainReturnsName, which is
@@ -6663,7 +6663,7 @@ static int fn_returns_partial(int f) {
 //
 // The extern half of this hazard is therefore still open, exactly as wide as it
 // was before this predicate existed: `let t = f(); let x = <extern alias>(t);
-// return x` frees `t` at the scope exit. It is recorded in TODO.md rather than
+// return x` frees `t` at the scope exit. It is recorded in KNOWN_ISSUES.md rather than
 // closed here, because closing it is a frontend change and this is not one.
 static int fn_may_return_param(int f) {
     if (f < 0) return 0;

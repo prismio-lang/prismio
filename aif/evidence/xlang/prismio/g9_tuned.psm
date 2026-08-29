@@ -6,7 +6,7 @@
 // tuned program does not do that. Hand-tuned Rust keeps four workers alive across
 // every frame and hands them work over `mpsc` channels; Prismio had `spawn` and
 // `join` and no way to keep a task alive past its join, so the arm was **not
-// writable**. V0_1_FEATURES.md 4 recorded that and said the 1.45x gap would be
+// writable**. The v0.1 plan recorded that and said the 1.45x gap would be
 // re-measured when it became writable. This is that program.
 //
 // The architecture is `g9_tuned.rs`'s, line for line: one job channel per worker,

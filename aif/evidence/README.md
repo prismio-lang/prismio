@@ -8,6 +8,15 @@ because nothing has measured them.
 
 ## Measured
 
+
+> **A note on citations to `TODO.md` and `V0_1_FEATURES.md`.** The files below are
+> dated records, kept as written. Several cite the working measurement log
+> (`TODO.md`) and the v0.1 language plan (`V0_1_FEATURES.md`), both of which were
+> removed at the 0.1.0 release — they were session scaffolding, and what survived
+> them is here, in `KNOWN_ISSUES.md`, and in `git log`, whose commit messages carry
+> their own evidence. A citation to either is a pointer into history, not a broken
+> link to something that should exist.
+
 | Document | Establishes |
 |---|---|
 | [RESULTS-L0-tiers.md](RESULTS-L0-tiers.md) | Tier distribution over six programs. **100% T0–T2 with affine collections**; the entire residue traces to one language decision. Also: FFI defaults worth 33 points; handles appear to eliminate T3. |

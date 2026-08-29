@@ -857,7 +857,8 @@ void ir_store(const char *type, const char *value, const char *ptr_name) {
 // handle, its `len`, its `elem_size` and its `data` on every element of every
 // list, because an untagged `store double` may -- as far as LLVM knows -- clobber
 // any of them. It cannot hoist, and it cannot vectorise. The reproduction in
-// TODO.md M6 prices type-based aliasing alone at 1.73x on that loop, which is
+// M6 priced type-based aliasing alone at 1.73x on that loop -- see
+// aif/evidence/RESULTS-M6-struct-path-tbaa.md -- which is
 // more than g4's whole 1.80x gap against idiomatic Rust.
 //
 // **The tree is clang's, node for node, and that is the load-bearing part.** An
@@ -904,7 +905,7 @@ static LLVMValueRef scalar_tbaa_tag(const char *name) {
 //
 // **`ptr` is one class, not one per pointee, and that is what makes it safe
 // here.** `src/` reads a node handle as a different node through `Ptr` --
-// V1_GAP_ANALYSIS.md's live row -- and clang's own tree already puts every
+// the live gap this language still has -- and clang's own tree already puts every
 // pointer under a single "any pointer", so punning stays inside one class and
 // cannot produce a wrong NoAlias. A per-pointee tree would break the compiler
 // silently; this one cannot.

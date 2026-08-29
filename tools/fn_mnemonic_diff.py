@@ -4,8 +4,8 @@
     python3 tools/fn_mnemonic_diff.py old new          # what changed
     python3 tools/fn_mnemonic_diff.py --text old new cull   # and how
 
-**Read this before believing a timing.** V0_1_FEATURES.md 2.2 requires it, and
-the reason is on record twice. Both benchmark harnesses have reported a g5
+**Read this before believing a timing.** The release bar requires it, and the
+reason is on record twice. Both benchmark harnesses have reported a g5
 regression that was not real -- an A/A calibration of one binary against itself
 spans 1.93x on that program -- and M6 slice 2's g2 regression *was* real and was
 one function out of 187. Neither question is answerable from a number; both are

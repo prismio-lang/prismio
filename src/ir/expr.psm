@@ -990,7 +990,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // interior pointer SPEC 11 item 5 forbids escaping is created, and it
         // does escape: references are raw `ptr`, so nothing downstream can tell
         // this apart from an address the allocator returned. Handles are the fix
-        // and are not built -- see the note in HANDOFF.md.
+        // and are not built -- see KNOWN_ISSUES.md.
         // A String field is a value, not storage reached by GEP, so it loads
         // like a scalar even though its key names a struct.
         if (isValueStructKey(fieldType)) {

@@ -6,30 +6,30 @@ would be tagged.** A tag is the one artifact that cannot be corrected quietly.
 
 ## 0 · The commit
 
-The RC is **`main`'s head at push time**, and the three commits that make it up
-are `63a5bcf` (the work), `8bc9245` (this file) and `489884e` (the handoff). Only
-the first touches the compiler:
+The RC is **`main`'s head at push time**. Only the v0.1 work commit touches the
+compiler; everything after it is documentation and repository cleanup. Check it:
 
 ```bash
-git diff --stat 63a5bcf HEAD -- src/ runtime/ std/ bootstrap/ tests/   # empty
+git log --oneline -1                                    # the commit CI will run on
+bash tools/release_gate.sh --rc build/v0.1-rc           # must be green on it
 ```
 
-Verified: a clean checkout of `63a5bcf`, bootstrapped once, emits
-**byte-identical compiler IR** to the frozen `build/v0.1-rc`, and nothing since
-has touched a compiler source. The tag reproduces the RC rather than sitting
-beside it. `../docs` is at `1abc716`.
+Verified: a clean checkout of the RC commit, bootstrapped once, emits
+**byte-identical compiler IR** to the frozen `build/v0.1-rc`. The tag reproduces
+the RC rather than sitting beside it.
 
-**Re-check that `git diff --stat` before tagging.** If it is not empty, the tree
-has moved since the gate ran and the gate has to run again — which is the whole
-reason the hash is written down here instead of remembered.
+**Re-run the gate on the commit you are about to tag.** It takes minutes and it
+is the only thing that makes the tag mean what the release notes say it means.
 
 ## 1 · The local gate — done
 
 ```bash
-bash tools/release_gate.sh --old build/tbaa3 --rc build/v0.1-rc
+bash tools/release_gate.sh --rc build/v0.1-rc
 ```
 
-Fourteen checks, all green. Suite 202/202, two-generation byte-identical
+Fourteen checks, all green. `--old <compiler>` adds a per-function mnemonic diff
+against a previous build; it is optional, and `build/` holds only the RC now —
+any baseline you want is a `tools/bootstrap.sh` away from the commit that had it. Suite 202/202, two-generation byte-identical
 fixpoint, differential 19/19, corpus 30/30 built and run, `--verify` 0 leaked /
 0 violations, ASan and TSan clean, packaged toolchain separation verified.
 Evidence: `aif/evidence/RESULTS-v01-release-candidate.md`.
@@ -74,8 +74,13 @@ trusting the others.
 macOS arm64, built from `63a5bcf`:
 
 ```
-d63a9349f1f9b521c616922b7dc0c56c05f0a2156bf9bc49a080d662a12cb98e  prismio-0.1.0-arm64-apple-darwin.tar.gz
+59ceb3638e4174de8e340b90d83b0fda1516454c5fcb067ed89198ae11933e80  prismio-0.1.0-arm64-apple-darwin.tar.gz
 ```
+
+**`POST_INSTALL.txt` is not dead weight.** Nothing in this repository reads it —
+the Windows `.exe` installer, which lives outside this tree, displays it after a
+successful install. A grep for it inside the repo finds nothing, which is exactly
+why this sentence exists.
 
 **Signing.** This project does not sign artifacts today and the release notes do
 not claim it does. The checksum is the integrity story; if signing is added it

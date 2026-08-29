@@ -3,7 +3,7 @@
 The runtime channel has existed since REQUIREMENTS 15 and had no type, no
 ownership contract and no wrapper. `RUNTIME.md` listed `chan_new` and its six
 siblings under *"not yet wrapped … `extern fn` at your own risk"*, and
-`V0_1_FEATURES.md` §4 recorded the consequence: g9's hand-tuned arm was **not
+The v0.1 plan recorded the consequence: g9's hand-tuned arm was **not
 writable**, because Prismio had no way to keep a task alive past its join.
 
 This closes both. There is no executor, no future and no `await`: a send blocks
@@ -125,7 +125,7 @@ after it. The per-frame cost is four sends and four receives instead of four
 | Rust hand-tuned | 71.270 | 0.62x |
 
 **Prismio hand-tuned against Rust hand-tuned is 1.15x**, and that is the number
-V0_1_FEATURES.md §4 said would be re-measured. The 1.45x it replaces was
+the v0.1 plan said would be re-measured. The 1.45x it replaces was
 Prismio's *idiomatic* arm against Rust's tuned one — the only comparison
 available while the arm could not be written. Prismio's own tuning is worth
 **0.80x**, against the 0.62x Rust's is worth on the same program.

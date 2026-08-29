@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # The complete v0.1 release-candidate gate, in one command.
 #
-#   bash tools/release_gate.sh --old build/tbaa3 --rc build/v0.1-rc
+#   bash tools/release_gate.sh --rc build/v0.1-rc
+#   bash tools/release_gate.sh --rc build/v0.1-rc --old build/<baseline>
 #
-# Every check the six-task closure list names, in the order a failure is cheapest
+# `--old` is optional and adds one thing: a per-function mnemonic diff against a
+# previous compiler. Every *gating* check runs without it.
+#
+# Every check the release bar names, in the order a failure is cheapest
 # to diagnose: correctness before performance, and generated code before timings.
 # It prints one line per check and exits non-zero on the first failure, because a
 # gate that continues past a red step is a gate somebody reads the end of.
 #
 # It does **not** run the benchmarks. Those are tools/milestone_bench.py and
-# tools/five_arm_bench.py, they take half an hour, and V0_1_FEATURES.md 2.2
-# requires reading a per-function mnemonic diff before believing any number one
-# of them prints -- which is a human step, not a step this can assert.
+# tools/five_arm_bench.py, they take half an hour, and the release bar requires
+# reading a per-function mnemonic diff before believing any number one of them
+# prints -- which is a human step, not a step this can assert.
 
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -129,7 +133,7 @@ if [ -n "$OLD" ]; then
     # Mnemonics, not `.ll` text. Alias metadata changes the IR of nearly every
     # program without changing one instruction, so a textual diff here reports
     # 21 "moved" programs and says nothing about any of them. This is the diff
-    # V0_1_FEATURES.md 2.2 actually asks to read before a timing is believed.
+    # the release bar actually asks to read before a timing is believed.
     step "per-function mnemonic diff vs $OLD"
     printf '\n'
     for prog in g1 g2 g3 g4 g5 g6 g9; do

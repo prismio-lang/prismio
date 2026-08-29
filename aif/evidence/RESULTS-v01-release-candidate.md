@@ -42,7 +42,7 @@ because each read as a compiler defect:
 - **A textual `.ll` diff against the old compiler** reported 21 of 24 programs
   "moved". Alias metadata changes nearly every program's IR without changing one
   instruction. The gate now runs `tools/fn_mnemonic_diff.py`, which is the diff
-  V0_1_FEATURES.md §2.2 actually asks to read.
+  the release bar actually asks to read.
 
 ## Per-function mnemonic diff, RC against `build/tbaa3`
 

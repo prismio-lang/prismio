@@ -131,7 +131,8 @@ private fn semaDottedModulePath(node: ASTNode) -> String {
         let inner = semaDottedModulePath(ptr_to_node(node.child1))
         if (strEquals(inner, "")) { return "" }
         // Bound rather than nested: an intermediate passed straight into another
-        // call has its release withheld (TODO.md, argument-position release), so
+        // call has its release withheld (KNOWN_ISSUES.md, argument-position
+        // release), so
         // `strConcat(strConcat(a, b), c)` leaks the inner result.
         let head = strConcat(inner, ".")
         return strConcat(head, node.s1)

@@ -102,7 +102,7 @@ fn main() -> Int {
     if (optionOr("42".parseInt(), 0) != 42) { return fail("String.parseInt") }
     // Bound for the same reason, and this one is worth naming: the intermediate
     // of a *chain* is an owned temporary passed straight into the next call, and
-    // TODO.md's "argument-position release is withheld when the enclosing call
+    // KNOWN_ISSUES.md's "argument-position release is withheld when the enclosing call
     // returns a pointer" is exactly that shape. Chaining is the idiom `impl`
     // blocks exist for, so that open item is now on the main road rather than a
     // side street -- but it predates this change and the leak is byte-for-byte

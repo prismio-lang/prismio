@@ -76,3 +76,8 @@ aif/evidence/xlang/vendor/
 # Release artifacts. Built by tools/release.sh on each platform and attached
 # to the release; reproducible from the tagged commit, so not committed.
 dist/
+
+# The graphify knowledge graph. Generated from the tree by `graphify update .`,
+# 936 files and two 70k-line JSON blobs that change wholesale on every run --
+# a build product of the sources, not a source. Kept on disk, out of the repo.
+graphify-out/
