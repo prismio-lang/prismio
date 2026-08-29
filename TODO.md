@@ -1467,6 +1467,41 @@ is visible to the ledger and the C one was not.
 
 ---
 
+## Debt · a compiler self-hosted on Windows has no export table
+
+**Incurred 2026-08-30, by the fix that made the CI matrix green.** Narrow, and
+written down rather than done because it cannot be verified from here.
+
+`run --jit` needs the compiler's own runtime symbols to be reachable through a
+process search, and on COFF that means the executable must be linked with an
+export table -- there is no `-rdynamic`. `tools/bootstrap.ps1` now builds one by
+running `llvm-nm --defined-only --extern-only --format=posix` over
+`lang_runtime.obj` and `program_support.obj` and passing `-Wl,/EXPORT:<name>`
+for each defined T/D/B/R symbol. 191 of them, and CI is green with it.
+
+`runtime/build_driver.c`'s link does not, so a compiler produced by
+`prismio build src/main.psm` **on Windows** has the JIT failure this fixed:
+`Symbols not found: [ ... ]` naming the runtime, and the module's own functions
+listed as failing to materialize. Everything else about such a compiler works.
+
+**Why it is recorded and not written.** The code is `#ifdef _WIN32`, so this host
+cannot compile it, let alone run it -- and CI bootstraps Windows through
+`bootstrap.ps1`, so it would not exercise the new path either. Writing it here
+would be adding C that nothing checks, which is worse than a recorded gap.
+
+**The recipe, already proven.** Two parsing details cost a CI round each and are
+not obvious: `nm` interleaves a `<file>:` header line per object, so the line has
+to be matched as `<name> <type>` rather than split on whitespace, and only
+`T/D/B/R` should be taken so a weak or comdat symbol is skipped. Objects are
+`objs[i]` for the entries with `prismio_toolchain_files[i].runtime` set; the
+flags append to the `include_backend` branch beside the `-rdynamic` the same
+block already passes on ELF. **Verify by building a compiler that way on
+Windows and running its `run --jit`** -- and note the second half of the fix,
+`ir_jit_run_main` defining `malloc`/`free`, is already in and is not
+platform-specific.
+
+---
+
 ## Debt · UMS resolution releases nothing it allocates
 
 **Incurred 2026-08-30 by v0.1 3.7.** Not unsoundness -- `violations` is 0 either
