@@ -247,7 +247,5 @@
   "245": "compiler_build_executable",
   "246": "An owned call result consumed directly as an argument now has an owner",
   "247": "A binding that escapes through a callee's return was freed under its caller",
-  "248": "A payload-free enum variant allocated uninitialised memory",
-  "249": "ir_jit_run_main",
-  "250": "aif_records"
+  "248": "A payload-free enum variant allocated uninitialised memory"
 }
