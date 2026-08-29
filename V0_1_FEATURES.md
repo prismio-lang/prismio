@@ -266,7 +266,39 @@ makes a standard library feel modern.
   is the item most likely to be underestimated.** Do it after traits, and expect
   the ownership work to dominate the syntax work.
 
-### 3.5 · Module namespacing and visibility — **PART DONE 2026-08-29, extended 2026-08-30**
+### 3.5 · Module namespacing and visibility — **DONE 2026-08-30**
+
+**2026-08-30 — selective imports land, which was the last piece.**
+`import std.string.strTrim` takes the name and not the module. Both halves: the
+resolution that accepts the syntax, and the filter that makes it mean something
+-- shipping the first alone would have parsed the syntax and then imported the
+whole module, which is a lie in the language rather than a limitation.
+
+The filter sits beside the `priv` check in `semaFindFunctionOverload` and is its
+mirror: that one drops a candidate by its *declaring* file, this one by the
+*importing* file. No module registry, because the merge is unchanged -- what a
+selection changes is visibility, and visibility was already a filter over the
+overload set.
+
+Two things that are not obvious and are load-bearing. **Resolution decides, not
+the grammar**: `std.string.strTrim` stays a module path until the filesystem
+says otherwise, so the full path is tried first and the last segment becomes a
+selected name only when the parent turns out to be the file -- which meant no
+parser change and so no seed refresh. And **the record is keyed by (importing
+file, module)**, because a module is merged once however many files import it;
+keyed by module alone, one file's selection would hide names from another file
+that imported it wholesale. `tests/selective/wholesale.psm` holds that case.
+
+Inert for anything that does not use it: absence of a record means the whole
+module, so it is one integer compare per call site, and five programs across
+`tests/` and `aif/corpus/` compile to byte-identical IR before and after.
+
+Guarded by `test_94_selective_imports.psm` and `neg_55_unselected_name.psm`. The
+negative test was vacuous as first written -- it named a function that does not
+exist -- and now names one that test_94 calls successfully through the wholesale
+module.
+
+**Earlier: PART DONE 2026-08-29, extended 2026-08-30**
 
 **2026-08-30 — the qualifier is now the import path, and there are three
 visibility levels.**
@@ -391,6 +423,44 @@ occurrences and `String ==` is a deliberate rejection; self-forward-declaring
 genuinely foreign; the `while (flag)` idiom is down to **one** site
 (`src/main.psm:162`). What is left is the pointer punning and the hand-built
 linked lists, which are the same row twice.
+
+#### The decision this is waiting on, with what each answer costs
+
+Measured on the tree 2026-08-30, because "757 occurrences" is the wrong number to
+decide on -- it counts the casts and not the reason they exist. `Ptr` appears
+**745 times across 29 of `src/`'s 33 files**: 545 `ptr_to_node(`, 447
+`nodeExists`/`nodeIsNull`, and **17 struct fields**. Those 17 are the feature;
+the other 728 are consequences.
+
+Re-verified here rather than taken from the notes, and both hold: a recursive
+typed field compiles, and two fields naming one node is `error: use of moved
+value` at the second mention.
+
+**A -- ship v0.1 without it.** 3.6 stays PART DONE: the parser gaps, which were
+the real work in this row, are closed. `V1_GAP_ANALYSIS.md` keeps one live
+"central finding" row, honestly labelled. Costs nothing that is not already
+true today.
+
+**B -- design `&T` for v0.1.** A non-owning typed reference storable in a field.
+The representation is free (it is a machine pointer, same as `Ptr`); the
+*discipline* is not. A `&T` in a struct field can outlive what it names, and
+nothing in the language today can say it does not -- so B is not one feature but
+two, the reference and the lifetime rule that makes it honest. **A `&T` that can
+dangle is worse than `Ptr`, which at least says out loud that it is unmanaged.**
+This is the "larger than the rest of v0.1 put together" estimate, and it is that
+size because of the second half.
+
+**C -- `Ptr<T>`: typed, still unmanaged.** Copyable, outside affine ownership,
+no lifetime checking -- exactly today's semantics with the punning removed. It
+deletes the 545 casts and turns node/token/type confusion into a compile error,
+which is most of what `V1_GAP_ANALYSIS.md` is actually complaining about, at a
+fraction of B's design cost and with no safety claim it cannot check.
+
+**Recommended: A now, C as the first v0.2 item, B only if the language commits
+to a borrow discipline.** A and C are the same decision seen twice -- C is what
+3.6 turns into once it stops being blocked on B -- and neither of them blocks
+shipping. This is a call for the project rather than for whoever picks up the
+work next, which is why it is written down here instead of being taken.
 
 **The original plan, kept:**
 
