@@ -4,7 +4,7 @@ The last brief's four blocked items are closed or decided. What is left is **one
 decision that is the project's to take** and **three things recorded rather than
 done**, each with the reason it was left.
 
-The last-good compiler is **`build/jit2`**. Gate with it.
+The last-good compiler is **`build/tbaa3`**. Gate with it.
 Work is on branch **`windows/jit-symbol-visibility`**, and CI is **green on all
 three platforms** — the first time that has happened.
 
@@ -83,12 +83,30 @@ the message was made to carry the answer.
   (`runtime/aif_support.c:5686`). **Not fixed because the failure on the other
   side of that clause is a double free**, and the values may already have an
   owner — enumerate them first.
-- **A compiler self-hosted on Windows has no export table.** `build_driver.c`'s
-  link needs what `bootstrap.ps1` now does. Recorded because it is `#ifdef
-  _WIN32` code this host cannot compile or run, and CI bootstraps Windows through
-  the script, so it would ship unchecked. The entry carries the proven recipe.
+- ~~A compiler self-hosted on Windows has no export table.~~ **Done.** The way
+  to write `#ifdef _WIN32` code this host cannot run turned out to be a test:
+  `run_bootstrap_command_test` already builds a compiler through that path on all
+  three platforms, so it now asks the compiler it built to `run --jit`, and
+  Windows CI verifies the driver's link the same way it verifies the script's.
 - **A resolved path dependency is still not on the import search.** Unchanged,
   and documented as not-part-of-0.1 in `../docs/content/package-manager/`.
+
+---
+
+## 3b · The performance direction, measured
+
+`TODO.md` **M6** is the new milestone and it is the one with numbers. The
+standing against idiomatic Rust was 0.83x-1.80x, worst at g4, and **g4 was the
+only program where hand tuning bought nothing** -- 0.975x -- which is what makes
+it the compiler's problem rather than the program's.
+
+The cause was that the emitted IR carried **no alias metadata at all**. Slice 1
+landed scalar TBAA and took **~10% off g1, g4 and g6** with nothing worse
+anywhere: g4 1.80x -> 1.58x, g6 1.79x -> 1.62x. A reproduction of the hot loop
+prices the rest of the ladder -- full `noalias` on the element blocks is 5.31x on
+that shape -- and M6 lists the remaining slices in order of prize over risk,
+along with two constraints that are established rather than assumed. Read them
+before starting: one of them kills the obvious next step.
 
 ---
 
@@ -113,9 +131,9 @@ the message was made to carry the answer.
 
 | | |
 |---|---|
-| last-good compiler | `build/jit2` |
+| last-good compiler | `build/tbaa3` |
 | branch | `windows/jit-symbol-visibility`, CI green on all three |
-| suite | 197 |
+| suite | 197, green on all three platforms |
 | plan | `V0_1_FEATURES.md`; `TODO.md` for compiler debt |
 | docs | sibling repo at `../docs`, **is** a git repo, one commit of history |
 | docs check | `cd ../docs && PRISMIO=<compiler> node scripts/verify-doc-examples.mjs` — 145 snippets |
