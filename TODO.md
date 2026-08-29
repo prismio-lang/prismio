@@ -1490,8 +1490,47 @@ instance of a standing condition rather than a new class of problem.
 these dies at exit. **Why it is still debt:** the same code is what a future
 `prismio add` or a watch mode would call in a loop.
 
-**How to approach it:** bind the intermediates rather than nesting the
-`strConcat` calls -- TODO.md's argument-position release is withheld when the
-enclosing call returns a pointer, which is exactly the shape
-`strConcat(strConcat(a, b), c)` has, and every row builder here is written that
-way. Measure with `released`, not `leaked`.
+**That approach was wrong, and was tried. 2026-08-30.** Binding the
+intermediates in `umsResolveDependencies`, `umsLockfileContents` and the row
+builder changes the IR and does not change the ledger: `2112 / 637 / 1475`
+before and after, byte for byte, with the same 65 `__aif_release_` call sites in
+both. Nesting is not what withholds the release, so the edit was reverted.
+
+**What it actually is.** Measured on thirteen reductions, not reasoned about:
+
+```prismio
+fn build() -> String {
+    let mut out = strConcat("a", "b")
+    let piece = strClone("xy")      // <- this leaks
+    println(strLength(piece))
+    out = strConcat(out, "z")
+    return out                      // <- because of this
+}
+```
+
+**A function that returns a reassigned binding loses the scope-exit release of
+its other owned locals.** Not the accumulator's own values -- those *are*
+released, by the aliasing-guarded free in the assignment path, and the generated
+code shows it. It is every *other* local in the same function.
+
+Four things it is not, each ruled out by a pair of programs that differ in one
+line:
+
+- **Not the loop.** The shape above has none; a loop only multiplies the leak by
+  the iteration count.
+- **Not the accumulator alone.** The identical function ending `println(out)`
+  instead of `return out` is `21 / 21 / 0`.
+- **Not returning alone.** A function with no reassigned binding that returns an
+  owned String releases its locals normally.
+- **Not the shared `strConcat` site, and not data flow.** The local above is a
+  `strClone` result with no path into `out`, and it still leaks. A *different*
+  function returning a `strConcat` result poisons nothing.
+
+**Where to look:** `aif_frees_at_scope_node` in `runtime/aif_support.c:5686`,
+whose first substantive clause is `if (s->E != s->scope) return 0`. The AIF
+manifests of the leaking and non-leaking versions are **identical** apart from
+the source path, so whatever differs is this node-level fact and not a tier, a
+placement or a layout. Measure with `released`, not `leaked`.
+
+**Do not fix this by widening the clause without enumerating who else releases
+these values.** The failure mode on the other side is a double free, not a leak.
