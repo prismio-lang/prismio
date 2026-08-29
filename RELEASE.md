@@ -6,12 +6,22 @@ would be tagged.** A tag is the one artifact that cannot be corrected quietly.
 
 ## 0 · The commit
 
-    63a5bcf7fb266dc9a5a069e1df055f1ab32e94ca      prismio
-    1abc716c6e1d763681e45d679e613786eb6daba0      ../docs
+The RC is **`main`'s head at push time**, and the three commits that make it up
+are `63a5bcf` (the work), `8bc9245` (this file) and `489884e` (the handoff). Only
+the first touches the compiler:
 
-Verified: a clean checkout of the compiler commit, bootstrapped once, emits
-**byte-identical compiler IR** to the frozen `build/v0.1-rc`. The RC is
-reproducible from the tag rather than merely adjacent to it.
+```bash
+git diff --stat 63a5bcf HEAD -- src/ runtime/ std/ bootstrap/ tests/   # empty
+```
+
+Verified: a clean checkout of `63a5bcf`, bootstrapped once, emits
+**byte-identical compiler IR** to the frozen `build/v0.1-rc`, and nothing since
+has touched a compiler source. The tag reproduces the RC rather than sitting
+beside it. `../docs` is at `1abc716`.
+
+**Re-check that `git diff --stat` before tagging.** If it is not empty, the tree
+has moved since the gate ran and the gate has to run again — which is the whole
+reason the hash is written down here instead of remembered.
 
 ## 1 · The local gate — done
 
@@ -43,8 +53,8 @@ git push origin main                       # this is the blocked action
 gh run watch --exit-status                 # then: wait for all three
 ```
 
-Do not proceed past this step until all three jobs are green **on
-`63a5bcf`**. If any is red, fix, re-run the local gate, and the commit hash in
+Do not proceed past this step until all three jobs are green **on the exact
+commit you pushed**. If any is red, fix, re-run the local gate, and the commit hash in
 this file changes.
 
 ## 3 · Artifacts and checksums
@@ -94,7 +104,7 @@ Done on macOS arm64: `prismio 0.1.0 / llvm 22.1.8`, output `18`.
 Only after steps 2–4 are green on all three platforms:
 
 ```bash
-git tag -a v0.1.0 -m "Prismio 0.1.0" 63a5bcf
+git tag -a v0.1.0 -m "Prismio 0.1.0"        # on main's head, gate-green
 git push origin v0.1.0
 
 gh release create v0.1.0 \
