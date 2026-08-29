@@ -235,7 +235,45 @@ foreach ($c in $runtimeSources) {
 }
 
 # 4. Link, including LLVM's C API.
-Invoke-Step 'link' 'clang' ($objs + @('-o', $Out, "-L$($llvm.lib)", '-lLLVM-C'))
+#
+# **The export table is this platform's `-rdynamic`, and `run --jit` is what
+# needs it.** tools/bootstrap.sh passes -rdynamic so the compiler's own symbols
+# reach a `dlsym`; ORC resolves a jitted module's externals the same way, through
+# LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess. There is no -rdynamic
+# here -- a COFF executable exports nothing unless it is linked with an export
+# table -- so `GetProcAddress` over the running prismio.exe found none of the
+# runtime a jitted program calls, and Windows was the only platform where
+# `run --jit` failed. It reported `Symbols not found: [ cli_arg_count,
+# str_with_capacity, list_new, list_push, list_release, prismio_rt_print,
+# prismio_rt_print_float, prismio_rt_println, prismio_rt_println_float ]`.
+#
+# **Read out of the objects rather than written down.** A list of runtime symbols
+# maintained here would be a second copy of the runtime's surface and would drift
+# from it silently; the objects about to be linked are that surface. Only the two
+# files that go into every compiled program are asked -- the C_CODE_STYLE.md split
+# -- because a jitted user program cannot call the backend.
+$runtimeObjs = @($objs | Where-Object { (Split-Path -Leaf $_) -match '(lang_runtime|program_support)' })
+$exportArgs = @()
+$nm = Join-Path $llvm.bin 'llvm-nm.exe'
+if ((Test-Path $nm) -and $runtimeObjs.Count -gt 0) {
+    # Matched on `<name> <type> ...` rather than split on whitespace: with more
+    # than one object nm interleaves `<file>:` header lines, and a split would
+    # turn each one into `/EXPORT:lang_runtime.obj:` and fail the link. Only the
+    # defined text and data types are taken; a weak or comdat symbol is skipped
+    # rather than exported.
+    $names = @(& $nm '--defined-only' '--extern-only' '--format=posix' $runtimeObjs |
+               ForEach-Object { if ($_ -match '^(\S+)\s+[TDBR]\s') { $Matches[1] } } |
+               Where-Object { $_ -notmatch '^[.$]' } |
+               Sort-Object -Unique)
+    $exportArgs = @($names | ForEach-Object { "-Wl,/EXPORT:$_" })
+    Write-Host "[exports] $($names.Count) runtime symbol(s) into the export table" -ForegroundColor DarkGray
+} else {
+    # Not fatal: everything except `run --jit` works without it, and saying so
+    # beats failing a build for a flag one test needs.
+    Write-Host '[exports] llvm-nm not found -- run --jit will not resolve the runtime' -ForegroundColor Yellow
+}
+
+Invoke-Step 'link' 'clang' ($objs + @('-o', $Out, "-L$($llvm.lib)", '-lLLVM-C') + $exportArgs)
 
 # On Windows the compiler needs LLVM-C.dll beside it at runtime; copying beats
 # asking every user to put the LLVM bin directory on PATH.
