@@ -836,19 +836,93 @@ void ir_store(const char *type, const char *value, const char *ptr_name) {
     if (block_done()) return;
     LLVMBuildStore(g_builder, resolve_value(value, type), ptr);
 }
+// M6, first slice. **A `double` access is the one Prismio scalar that nothing
+// ever reads back as another type**, so it is the only one tagged here.
+//
+// The measurement this exists for: `system_movement` in g4 reloads the list
+// handle, its `len`, its `elem_size` and its `data` on every element of every
+// list, because an untagged `store double` may -- as far as LLVM knows -- clobber
+// any of them. It cannot hoist, and it cannot vectorise. The reproduction in
+// TODO.md M6 prices type-based aliasing alone at 1.73x on that loop, which is
+// more than g4's whole 1.80x gap against idiomatic Rust.
+//
+// **The tree is clang's, node for node, and that is the load-bearing part.** An
+// access with no tag may alias anything, and two tags under *different* roots
+// are may-alias too -- so tagging one side of a pairing is not a partial win but
+// no win at all. The list header is read by `list_get_inline`, which is C
+// compiled by clang and tagged `!{"int", "omnipotent char", "Simple C/C++
+// TBAA"}`; these have to hang off that same root to be comparable with it.
+//
+// Deliberately not `int`, `long long` or `any pointer` yet. Prismio's `Ptr` is
+// punned -- `src/` reads one node handle as another, which is
+// V1_GAP_ANALYSIS.md's live row -- and the fat String is a `{ptr, i64}` the
+// runtime also writes field-wise, so those need the tree designed rather than
+// widened. Doubles need neither.
+static LLVMValueRef scalar_tbaa_tag(const char *name) {
+    LLVMMetadataRef root_name = LLVMMDStringInContext2(
+        g_ctx, "Simple C/C++ TBAA", strlen("Simple C/C++ TBAA"));
+    LLVMMetadataRef root = LLVMMDNodeInContext2(g_ctx, &root_name, 1);
+
+    LLVMMetadataRef zero = LLVMValueAsMetadata(
+        LLVMConstInt(LLVMInt64TypeInContext(g_ctx), 0, 0));
+
+    LLVMMetadataRef char_name = LLVMMDStringInContext2(
+        g_ctx, "omnipotent char", strlen("omnipotent char"));
+    LLVMMetadataRef char_ops[3] = { char_name, root, zero };
+    LLVMMetadataRef omni = LLVMMDNodeInContext2(g_ctx, char_ops, 3);
+
+    LLVMMetadataRef leaf_name = LLVMMDStringInContext2(g_ctx, name, strlen(name));
+    LLVMMetadataRef leaf_ops[3] = { leaf_name, omni, zero };
+    LLVMMetadataRef leaf = LLVMMDNodeInContext2(g_ctx, leaf_ops, 3);
+
+    LLVMMetadataRef tag_ops[3] = { leaf, leaf, zero };
+    return LLVMMetadataAsValue(g_ctx, LLVMMDNodeInContext2(g_ctx, tag_ops, 3));
+}
+
+// The leaf a type key belongs under, or NULL for one that is left untagged.
+//
+// **`ptr` is one class, not one per pointee, and that is what makes it safe
+// here.** `src/` reads a node handle as a different node through `Ptr` --
+// V1_GAP_ANALYSIS.md's live row -- and clang's own tree already puts every
+// pointer under a single "any pointer", so punning stays inside one class and
+// cannot produce a wrong NoAlias. A per-pointee tree would break the compiler
+// silently; this one cannot.
+//
+// The narrow scalars (`i1`, `i8`, `i16`) and every aggregate stay untagged,
+// which is the conservative answer: an untagged access may alias anything.
+static const char *tbaa_leaf_for(const char *type) {
+    if (!type) return NULL;
+    if (strcmp(type, "double") == 0) return "double";
+    if (strcmp(type, "ptr") == 0 || strcmp(type, "ptrptr") == 0) return "any pointer";
+    if (strcmp(type, "i32") == 0) return "int";
+    if (strcmp(type, "i64") == 0) return "long long";
+    return NULL;
+}
+
+static void tag_scalar(LLVMValueRef inst, const char *type) {
+    const char *leaf = tbaa_leaf_for(type);
+    if (!leaf) return;
+    unsigned kind = LLVMGetMDKindIDInContext(g_ctx, "tbaa", strlen("tbaa"));
+    LLVMSetMetadata(inst, kind, scalar_tbaa_tag(leaf));
+}
+
 
 // Load/store through a pointer *value* rather than a named local. Struct fields
 // and array elements are addresses produced by a GEP, so they have no name to
 // look up -- the text backend reached them by emitting `store ... ptr %tN`
 // directly, which is one of the things ir_append was being used for.
 int ir_load_ptr(const char *type, const char *ptr_value) {
-    return intern_value(
-        LLVMBuildLoad2(g_builder, type_from_key(type), resolve_value(ptr_value, "ptr"), ""));
+    LLVMValueRef load = LLVMBuildLoad2(g_builder, type_from_key(type),
+                                       resolve_value(ptr_value, "ptr"), "");
+    tag_scalar(load, type);
+    return intern_value(load);
 }
 
 void ir_store_ptr(const char *type, const char *value, const char *ptr_value) {
     if (block_done()) return;
-    LLVMBuildStore(g_builder, resolve_value(value, type), resolve_value(ptr_value, "ptr"));
+    LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
+                                        resolve_value(ptr_value, "ptr"));
+    tag_scalar(store, type);
 }
 
 // M4.3c. Different top-level DataView fields occupy different allocations.

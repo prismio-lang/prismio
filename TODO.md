@@ -1665,13 +1665,44 @@ conservative tree must keep in a single class.
 
 **Order, by prize over risk:**
 
-1. **TBAA on struct fields and list elements, sharing clang's root.** The 1.73x
-   lever. Risk is a silent miscompile, so the tree must put every `Ptr` access in
-   one class — `src/` puns node handles through `Ptr` today, which is
-   `V1_GAP_ANALYSIS.md`'s live row and the reason 3.6 is still open.
-2. **`noalias` derived from AIF**, once TBAA is in and measured. The rest of the
+1. ~~**TBAA on struct fields and list elements, sharing clang's root.**~~
+   **DONE 2026-08-30, slice 1.** Scalar tags only -- `double`, `any pointer`,
+   `int`, `long long` -- hung off clang's own root, attached in `ir_load_ptr` and
+   `ir_store_ptr`. **~10% on g1, g4 and g6, nothing worse anywhere**, measured
+   below. `Ptr` is one class exactly as clang's tree has it, so the punning in
+   `src/` cannot produce a wrong NoAlias; the narrow scalars and every aggregate
+   stay untagged, which is the conservative answer.
+
+   The first attempt tagged only `double` and changed **nothing** -- the loop was
+   byte-identical -- because `self.positions` is a `ptr` load and an untagged
+   access may alias anything. That is the "both sides must be tagged" constraint
+   arriving in practice: the win needed the pointer loads too.
+
+   | | g1 | g4 | g5 | g6 |
+   |---|---|---|---|---|
+   | median of 21 | 0.901x | 0.901x | 0.903x | 0.918x |
+   | min of 21 | 0.928x | **0.875x** | 0.999x | **0.903x** |
+
+   Standing against idiomatic Rust: **g4 1.80x -> 1.58x, g6 1.79x -> 1.62x,
+   g1 1.17x -> 1.08x.**
+
+   **Both benchmark harnesses reported a g5 regression that is not real** --
+   1.38x from `bench.py`, 1.157x from `milestone_bench.py`'s interleaved A/B.
+   Only **2 of g5's 198 functions changed**, both a single instruction *shorter*,
+   and `render_batched` and `list_get_inline` are byte-identical; a layout
+   perturbation under the *old* compiler moved it 1.002x. Measuring the two
+   binaries directly, interleaved, 21 runs: 1.009x, with the minimum favouring
+   the new one. This is the g5 flakiness already on record -- 1.261x and 0.692x
+   in one session on byte-identical binaries. **Diff the functions before
+   believing either harness on this program.**
+
+2. **TBAA on struct fields**, as struct-path tags rather than scalar leaves, so
+   two `double` fields of the same struct stop aliasing each other. Slice 1
+   cannot separate `p.x` from `p.y`; DataView columns already get this and
+   ordinary structs do not.
+3. **`noalias` derived from AIF**, once the above is measured. The rest of the
    5.31x.
-3. **Call-site specialisation**, last, and only after constraint 1 above is
+4. **Call-site specialisation**, last, and only after constraint 1 above is
    closed — it is the smallest prize (1.19x on top of TBAA) and the only one that
    can corrupt memory.
 
