@@ -73,8 +73,8 @@ one regressed program is layout luck, two is a pattern.**
 **Every milestone must leave the documentation true.** Check these and update whatever the change
 touched, in the same session:
 
-- [ ] `HANDOFF.md` — session entry, "Current state" bullets, last-good compiler
-- [ ] `SESSION-PROMPT.md` — re-rank the candidate list; it is the *live* prompt and goes stale first
+- [ ] `HANDOFF.md` — the standing table and the last-good compiler; keep it *small*, it replaced
+      nine files that had drifted apart
 - [ ] `aif/evidence/RESULTS-*.md` — the measurement writeup for this milestone
       (M1: [`RESULTS-M1-lto.md`](aif/evidence/RESULTS-M1-lto.md))
 - [ ] `docs/ARCHITECTURE-DIRECTION.md` — if a measurement changes the ranking or kills an approach
@@ -923,9 +923,10 @@ runtimes (Koka, Lean), which is Prismio's workload shape.
 
 ## Standing items, not milestones
 
-*(The first two were promoted here from `SESSION-PROMPT.md` on 2026-08-28. That file is the live
-prompt and this one is the plan — anything it tells the next session to do has to exist here as a
-checkbox, or the two drift and only one of them gets read.)*
+*(The first two were promoted here from a since-deleted `SESSION-PROMPT.md` on 2026-08-28,
+because anything that tells the next session what to do has to exist here as a checkbox — the
+alternative is two documents that drift apart and only one of them gets read. That is now the
+rule rather than an observation: this file is the plan, and `HANDOFF.md` points at it.)*
 
 - [x] **The hot element accessor was never curated — fixed 2026-08-29, and it is the largest
       single speedup measured on this corpus.** M1.1 curated `list_get`; M4.2 then added the
@@ -1259,7 +1260,7 @@ checkbox, or the two drift and only one of them gets read.)*
 - [x] **Ownership survives a second return — 2026-08-29.** `aif_owns_call_result_at_node` required
       `sites[s].fn == c->fn`, which is one hop and declined every producer written in Prismio the
       moment a second frame appeared. **12/7/5 → 12/12/0** on `tests/owned_return_depth2.psm`.
-      **It was not a fixed-point change**, which is what this entry and `SESSION-PROMPT.md` both
+      **It was not a fixed-point change**, which is what this entry and the then-live session prompt both
       predicted. The two halves come apart: *"no intermediate frame owns it"* needs nothing
       computed, because **returning a value already implies not dropping it** — `nodeReturnsName`
       and `nodeEscapesThroughCall` decline every frame on the path. (That second guard is the

@@ -1,6 +1,6 @@
 # Prismio — v1 Readiness: What Exists, What's Missing
 
-Date: 2026-07-30. Companion to `COMPILER_AUDIT.md` (which catalogues *defects*). This document
+Date: 2026-07-30. Written as the companion to a `COMPILER_AUDIT.md` that catalogued *defects* and has since been deleted -- it graded a compiler with 36 tests, no CI and unparsed `impl`, and every line of it was overtaken; `git log` has it. This document
 answers a different question: **measured against what a serious self-hosted compiler needs to
 call itself v1, which capabilities exist and which don't** — independent of what any
 documentation claims.
