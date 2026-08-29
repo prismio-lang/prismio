@@ -150,13 +150,13 @@
     "semantic_hash": ""
   },
   ".github/workflows/ci.yml": {
-    "mtime": 1787940686.8805294,
-    "ast_hash": "921e5caacf28b3b4c5c1ccdbbfa535a6",
+    "mtime": 1788002824.109144,
+    "ast_hash": "6322598e4cc194283e2a0247d98bc9a7",
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1788001308.9263523,
-    "ast_hash": "6a1068c689e6ae0c44de00d4754e22e6",
+    "mtime": 1788003120.2329047,
+    "ast_hash": "25f7a5d5825f70d25db3f9020e590f30",
     "semantic_hash": ""
   },
   "PORTING.md": {
@@ -215,8 +215,8 @@
     "semantic_hash": ""
   },
   "aif/evidence/README.md": {
-    "mtime": 1788001381.3159316,
-    "ast_hash": "3db762b6f5862ed2b4446da8e3e0016b",
+    "mtime": 1788002780.2629497,
+    "ast_hash": "553da45faa558d6f5c5975ce71d465ab",
     "semantic_hash": ""
   },
   "aif/evidence/RESULTS-L0-tiers.md": {
@@ -635,8 +635,8 @@
     "semantic_hash": ""
   },
   "aif/evidence/xlang/milestone.json": {
-    "mtime": 1787997548.4825752,
-    "ast_hash": "909da17cbecaaf75fd3909f226bd2db9",
+    "mtime": 1788002722.117122,
+    "ast_hash": "58cfa20bf4079f2733385ba2e1cf7501",
     "semantic_hash": ""
   },
   "tools/milestone_bench.py": {
@@ -645,8 +645,8 @@
     "semantic_hash": ""
   },
   "TODO.md": {
-    "mtime": 1788001468.6605597,
-    "ast_hash": "2d0011e1465072e8a6ba0a1608905af9",
+    "mtime": 1788003120.2126424,
+    "ast_hash": "8b8237f9e89952dc6886b4e679c1c103",
     "semantic_hash": ""
   },
   "aif/evidence/RESULTS-M1-lto.md": {
@@ -1252,6 +1252,46 @@
   "aif/evidence/RESULTS-v01-channels.md": {
     "mtime": 1788000680.32096,
     "ast_hash": "94fb32d38fb4837932b2ab74317d1544",
+    "semantic_hash": ""
+  },
+  "aif/evidence/xlang/results-v01-rc-ab.json": {
+    "mtime": 1788002691.066568,
+    "ast_hash": "b37a002adfc6bb95260a5d7bffd53524",
+    "semantic_hash": ""
+  },
+  "aif/evidence/xlang/results-v01-rc-five-arm.json": {
+    "mtime": 1788002662.098461,
+    "ast_hash": "24167e930e313b758c53d6f6bac2cb45",
+    "semantic_hash": ""
+  },
+  "tools/fn_mnemonic_diff.py": {
+    "mtime": 1788002275.0779104,
+    "ast_hash": "073454093c420440dff965c115280ff8",
+    "semantic_hash": ""
+  },
+  "tools/release.sh": {
+    "mtime": 1788002903.2844486,
+    "ast_hash": "3bf9ece3e5840e35d430250c3824a4de",
+    "semantic_hash": ""
+  },
+  "tools/release_gate.sh": {
+    "mtime": 1788002260.6494522,
+    "ast_hash": "335b91520c38416103f87b8d9e5d1d5c",
+    "semantic_hash": ""
+  },
+  "CHANGELOG.md": {
+    "mtime": 1788002939.1217427,
+    "ast_hash": "7b2ad8c97fdacc83191512496f8f7b45",
+    "semantic_hash": ""
+  },
+  "RELEASE.md": {
+    "mtime": 1788003092.5581794,
+    "ast_hash": "8e08150118f26b3a57562aa5de562933",
+    "semantic_hash": ""
+  },
+  "aif/evidence/RESULTS-v01-release-candidate.md": {
+    "mtime": 1788002759.151259,
+    "ast_hash": "0dbb9ea482dfef2fc6411ae23ba2b195",
     "semantic_hash": ""
   }
 }

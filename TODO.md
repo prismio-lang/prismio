@@ -141,17 +141,31 @@ post-v0.1; that decision is closed in `V0_1_FEATURES.md` §3.6.
       with g9's hand-tuned arm present for the first time. Evidence:
       `aif/evidence/RESULTS-v01-release-candidate.md`.
 
-- [ ] **6 · Prove the exact RC on three platforms and rehearse publication.** Run
-      the macOS, Ubuntu, and Windows CI matrix on the exact commit from task 5,
-      including bootstrap, package/build/install paths, source-list/fixpoint/suite,
-      differential/seed/corpus checks, and Windows JIT. Prepare the version,
-      changelog/release notes, distributable artifacts, and checksums (plus signing
-      where the project uses it); install and smoke-test the artifacts in clean
-      environments. Tag or publish only after those exact artifacts are green.
+- [ ] **6 · Prove the exact RC on three platforms and rehearse publication.**
+      **Everything local is done; the matrix itself is the one thing outstanding,
+      and it needs authorisation to push.** `RELEASE.md` is the procedure.
 
-      **Exit:** all three platform runs are observed green for the release commit;
-      clean-install smoke tests pass; artifacts, checksums, release notes, and the
-      publish command/rehearsal are ready. At that point v0.1 is publish-ready.
+      Done: the CI workflow now packages, runs `verify_separation`, and
+      **smoke-tests the packaged toolchain in a clean directory outside the
+      checkout** on all three platforms — before this commit nothing in CI
+      exercised the thing a user installs, and an uninstalled compiler falls back
+      to the runtime embedded in its own binary, silently, so a packaging mistake
+      looked like success. `CHANGELOG.md` is written. `tools/release.sh` builds
+      the artifact and its SHA-256 and **refuses a compiler that is not a
+      fixpoint**. The macOS arm64 artifact is built, unpacked outside the
+      checkout, and smoke-tested against `sort`, an annotated `Map<Int, Int>` and
+      a `Channel<T>` round trip. A clean checkout of the RC commit bootstraps to
+      byte-identical compiler IR, so the tag reproduces the RC rather than sitting
+      next to it.
+
+      **Blocked on:** `git push origin main`, which is what starts the matrix.
+      Nothing is tagged or published until all three jobs are observed green on
+      that exact commit — and the tag and `gh release create` are a second
+      authorisation after that, not a consequence of the first.
+
+      **Exit:** all three platform runs observed green for the release commit;
+      clean-install smoke tests pass on each; artifacts, checksums, release notes
+      and the publish command are ready. At that point v0.1 is publish-ready.
 
 ---
 

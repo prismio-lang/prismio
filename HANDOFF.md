@@ -59,11 +59,21 @@ tuned-against-tuned, replacing a 1.45x that compared unlike arms.
 
 ## What is live
 
-**Six tasks stood between here and a publishable v0.1; the first five are
-closed.** The authoritative, ordered checklist is still the first section of
-`TODO.md`. What remains is **task 6 alone**: run the macOS/Ubuntu/Windows matrix
-on the exact RC commit, then publish the artifacts already staged for it. Do not
-create a seventh feature task.
+**Six tasks stood between here and a publishable v0.1. Five are closed, and the
+sixth is down to one keystroke somebody has to authorise.**
+
+`git push origin main` starts the three-platform matrix on the RC commit.
+Nothing is tagged until all three are observed green on it, and the tag plus
+`gh release create` are a second decision after that. `RELEASE.md` is the whole
+procedure with the checksums this host produced. Do not create a seventh feature
+task.
+
+Everything else task 6 asked for is done: CI now packages, verifies the
+runtime/backend separation, and smoke-tests the *installed* toolchain outside the
+checkout on all three platforms; `tools/release.sh` builds the artifact and its
+SHA-256 and refuses a compiler that is not a fixpoint; and a clean checkout of
+the RC commit bootstraps to byte-identical compiler IR, so the tag will reproduce
+the RC rather than sit beside it.
 
 **The v0.1 pointer decision is closed.** `V0_1_FEATURES.md` §3.6 selects A: v0.1
 ships without a non-owning typed reference. C (`Ptr<T>`: typed, still unmanaged)
