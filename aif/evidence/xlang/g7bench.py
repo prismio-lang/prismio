@@ -33,8 +33,10 @@ REPO = HERE.parent.parent.parent
 PROGRAMS = [
     ("Rust idiomatic    &str slice, no copy", "rust", "g7_idiomatic.rs"),
     ("Rust owned        copy per token", "rust", "g7_owned.rs"),
-    ("Prismio           str_slice", "prismio", "g7.psm"),
-    ("Prismio           str_substring", "prismio", "g7_substring.psm"),
+    # One Prismio arm, not two. The second was g7_substring.psm, and it compiled
+    # to byte-identical IR once both were on the native `strSubstring` -- see the
+    # header of g7.psm for why the distinction it priced stopped existing.
+    ("Prismio           strSubstring", "prismio", "g7.psm"),
 ]
 
 

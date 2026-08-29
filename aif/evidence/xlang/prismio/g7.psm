@@ -12,7 +12,7 @@
 // third port, g7_owned.rs, makes Rust allocate a String per token instead, so
 // the copy can be priced on its own rather than mixed in with the backend gap.
 //
-// Nothing here is a view: `str_slice` still allocates and copies. Deleting
+// Nothing here is a view: `strSubstring` still allocates and copies. Deleting
 // that needs the value to *be* (base, offset, length), which is the
 // representation half of SPEC 8.4 and is not built.
 
@@ -24,18 +24,24 @@
 // `__builtin_string_len` and `str_with_capacity`. Checksums are unchanged
 // (tokens 427914, bytes 21282), so this is a rewrite and not a different program.
 //
-// **`g7_substring.psm` is now byte-identical to this file.** The pair existed only
-// to price C's `str_slice` against C's `str_substring`; with both on the native
-// function there is one program, not two. Consolidating them is a decision left
-// open rather than taken here.
+// **There used to be a g7_substring.psm beside this file, and it is gone.** The
+// pair existed to price C's `str_slice`, which took the length the caller already
+// had, against C's `str_substring`, which strlen'd the whole source to bound the
+// range -- once per token, over 21 KB, which is where the 21.5x this file used to
+// quote came from. That difference was a property of a `char*`, not of the
+// program: once a String carries its own length, bounding a range is a field read
+// and the two calls are the same call. Both files ended up on `strSubstring` and
+// compiled to byte-identical IR, so the second one was measuring nothing.
+//
+// The knowledge it carried is kept here rather than in a duplicate program: **the
+// superlinear term this benchmark was built to expose no longer exists in the
+// language.** What is left to price is the allocation and the copy, which
+// rust/g7_owned.rs already does on its own.
 //
 import std.io
 import std.string
 extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
-// The length-carrying slice. `str_substring` would strlen the whole source on
-// every call -- see g7_substring.psm, which is this program with that one
-// substitution and runs 21.5x slower on the same input.
 // The byte builtin, not str_char_at: the latter calls strlen on every read, which
 // makes any scan quadratic. src/lexer/scanner.psm holds the length in the
 // Lexer struct and bound-checks against it for exactly this reason, and a
