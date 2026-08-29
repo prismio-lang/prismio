@@ -327,6 +327,12 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
     // applies the same rule when deciding whether to emit a `declare`.
     let definitionExists = semaHasFunctionDefinition(module, name)
 
+    // v0.1 3.5, selective imports. Asked once here rather than once per
+    // candidate: it is an integer compare against an empty table for every
+    // program that does not use the syntax, which is every program written
+    // before it existed, and it keeps semaFileQualifier's clone off the loop.
+    let selective = ir_select_active(call.file) == 1
+
     // REQUIREMENTS 16. This used to walk every top-level declaration in the
     // module, once per call site -- the compiler's dominant cost, and quadratic.
     // The index holds the declarations carrying this name, in source order, so
@@ -345,6 +351,27 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         if (isCandidate and strEquals(qualifier, "") == false
             and strEquals(semaFileQualifier(stmt.file), qualifier) == false) {
             isCandidate = false
+        }
+        // v0.1 3.5. The importing file's half of the filter above. `import
+        // std.string.strTrim` takes one name from that module, so every other
+        // name in it is out of scope *here* -- and the merge cannot say so,
+        // because it puts every imported declaration into one flat module.
+        //
+        // Filtered rather than noted, unlike `priv` below. A name the file did
+        // not select is not hidden from it, it was never brought in, and
+        // "unknown function" is the honest diagnostic: the fix is to add it to
+        // the import, not to change a marker in someone else's file.
+        //
+        // A file with no selection from the declaring module imported it
+        // wholesale, and ir_select_any answers 0 -- which is what makes this
+        // inert for a program that does not use the syntax rather than merely
+        // cheap.
+        if (isCandidate and selective) {
+            let declModule = semaFileQualifier(stmt.file)
+            if (ir_select_any(call.file, declModule) == 1
+                    and ir_select_has(call.file, declModule, name) == 0) {
+                isCandidate = false
+            }
         }
         // v0.1 3.5. A `priv` declaration is invisible outside its own file. Noted
         // rather than silently skipped, so the diagnostic can say *private*

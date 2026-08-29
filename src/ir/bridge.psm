@@ -314,6 +314,18 @@ extern fn ir_index_decl(name: String, node: Ptr)
 extern fn ir_decl_count(name: String) -> Int
 extern fn ir_decl_at(name: String, index: Int) -> Ptr
 
+// Selective imports (v0.1 3.5): which names a file took from a module, when it
+// took some rather than all. Recorded by the merge, which is the only place that
+// knows a logical module name, and read by overload resolution. A file with no
+// record for a module imported it wholesale, so absence means "everything" --
+// `ir_select_active` is the guard that keeps the lookup off the hot path for
+// every program that does not use the syntax.
+extern fn ir_select_record(file: Int, module: String, name: String)
+extern fn ir_select_active(file: Int) -> Int
+extern fn ir_select_any(file: Int, module: String) -> Int
+extern fn ir_select_has(file: Int, module: String, name: String) -> Int
+extern fn ir_reset_selections()
+
 // A function's return type, keyed by its mangled symbol. Its own table rather
 // than a "$fn$" binding: those were permanent, so every identifier lookup in
 // every function body scanned past one per function in the module.

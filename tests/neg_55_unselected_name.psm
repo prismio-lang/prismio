@@ -1,0 +1,25 @@
+// expect-error: unknown function `strToUpper`
+// v0.1 3.5 -- a name the file did not select is not in scope in that file.
+//
+// The merge puts every imported declaration into one flat module, so nothing
+// about the merged AST distinguishes a selected name from an unselected one.
+// The filter is in overload resolution, beside the `priv` check, and it is the
+// mirror of it: that one drops a candidate by its *declaring* file, this one by
+// the *importing* file.
+//
+// **Unknown rather than hidden, deliberately.** `priv` reports "private",
+// because the name was brought in and then refused. This name was never brought
+// in at all, and the fix is to add it to the import rather than to change a
+// marker in someone else's file.
+//
+// `strToUpper` does exist -- test_94 calls it through a module that imported
+// `std.string` wholesale. Without that, this test would pass whether or not the
+// filter worked.
+import std.io
+import std.string.strTrim
+
+fn main() -> Int {
+    println(strTrim("  ok  "))
+    println(strToUpper("shout"))
+    return 0
+}

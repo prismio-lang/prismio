@@ -1,0 +1,40 @@
+// v0.1 3.5 -- selective imports.
+//
+// `import std.string.strTrim` brings one name into scope rather than the module.
+// Two things have to be true for that to be a feature and not a syntax:
+//
+//   1. the selected name resolves, and
+//   2. a name from the same module that was *not* selected does not.
+//
+// (2) is a compile error, so it lives in neg_55_unselected_name.psm; this file
+// is (1), plus the case that makes the record's shape necessary.
+//
+// **Resolution decides, not the grammar.** `std.string.strTrim` is a module path
+// until the filesystem says otherwise -- `std/string/strTrim.psm` would make it
+// one -- so the full path is tried first and the last segment is only a selected
+// name when the parent turns out to be the file. Kotlin settles the same
+// ambiguity in the same place.
+import std.io
+import std.string.strTrim
+import std.string.strEquals
+import selective.wholesale
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // Both selected names resolve, and two selections from one module coexist.
+    if (strEquals(strTrim("  hi  "), "hi") == false) { return fail("strTrim") }
+
+    // selective/wholesale.psm imported the whole of `std.string`, so this file's
+    // selection does not reach into it. `strToUpper` also being callable
+    // somewhere is what keeps neg_55 from passing vacuously: without it, that
+    // test would pass just as well if the name did not exist at all.
+    if (strEquals(shoutUpper("ok"), "OK") == false) { return fail("wholesale helper") }
+
+    println("test_94 ok")
+    return 0
+}

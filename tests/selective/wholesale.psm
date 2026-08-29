@@ -1,0 +1,12 @@
+// The other half of test_94: a module that imports `std.string` **wholesale**
+// while the file importing this one selected two names from that same module.
+//
+// This is the case the record is keyed by (importing file, module) to get right.
+// A selection keyed by module alone would hide `strToUpper` here, in a file that
+// asked for the whole module and did nothing wrong -- and the module is merged
+// once for both files, so there is no second copy to keep them apart.
+import std.string
+
+fn shoutUpper(s: String) -> String {
+    return strToUpper(s)
+}

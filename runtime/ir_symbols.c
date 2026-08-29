@@ -272,6 +272,92 @@ const char* ir_decl_at(const char* name, int index) {
     return e->nodes[index];
 }
 
+// Selective imports -- which names a file took from a module (v0.1 3.5).
+//
+// `import std.string.strTrim` brings one name into scope, not the module. The
+// merge is unchanged: every imported declaration still lands in one flat module,
+// because the alternative is a second lookup path for a language that has one.
+// What a selection changes is *visibility*, and visibility is already a filter
+// over the overload set -- semaFindFunctionOverload drops a candidate whose
+// declaring file does not match a qualifier, and this drops one whose declaring
+// module the importing file took only some names from. The symmetry is the
+// design: that filter reads the declaring file, this one reads the importing
+// file.
+//
+// **Keyed by (importing file, module), not by module.** Two files may import the
+// same module differently -- one wholesale, one selectively -- and the module is
+// merged once for both. A record keyed by module alone would let one file's
+// selection hide names from the other, which is a compile error in a file that
+// did nothing.
+//
+// **Absence means "everything", and that is what keeps this free.** A file with
+// no record for a module imported it wholesale, so the filter declines to filter
+// -- which is every file in every program written before this existed. The
+// count check below makes the whole mechanism one integer compare when no
+// program uses it.
+
+typedef struct {
+    int file;
+    const char* module;
+    const char* name;
+} Selection;
+
+static Selection* selections = NULL;
+static int selection_count = 0;
+static int selection_capacity = 0;
+
+void ir_select_record(int file, const char* module, const char* name) {
+    if (selection_count == selection_capacity) {
+        int next = selection_capacity ? selection_capacity * 2 : 16;
+        selections = (Selection*)xrealloc(selections, (size_t)next * sizeof(Selection),
+                                          "the selective-import table");
+        selection_capacity = next;
+    }
+    selections[selection_count].file = file;
+    selections[selection_count].module = ir_intern(module);
+    selections[selection_count].name = ir_intern(name);
+    selection_count++;
+}
+
+// Whether `file` took *some* names from `module` rather than all of them.
+int ir_select_any(int file, const char* module) {
+    if (selection_count == 0) return 0;
+    const char* interned = ir_intern(module);
+    for (int i = 0; i < selection_count; i++) {
+        if (selections[i].file == file && selections[i].module == interned) return 1;
+    }
+    return 0;
+}
+
+// Whether `file` made any selection at all, asked once per call site so the
+// per-candidate work below is never reached by a program that does not use the
+// syntax. Takes no module name, so it costs no interning.
+int ir_select_active(int file) {
+    if (selection_count == 0) return 0;
+    for (int i = 0; i < selection_count; i++) {
+        if (selections[i].file == file) return 1;
+    }
+    return 0;
+}
+
+int ir_select_has(int file, const char* module, const char* name) {
+    if (selection_count == 0) return 0;
+    const char* interned_module = ir_intern(module);
+    const char* interned_name = ir_intern(name);
+    for (int i = 0; i < selection_count; i++) {
+        if (selections[i].file == file
+                && selections[i].module == interned_module
+                && selections[i].name == interned_name) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void ir_reset_selections(void) {
+    selection_count = 0;
+}
+
 // Function return types, by mangled symbol
 // This was a binding in the table below, under a "$fn$" key that could not
 // collide with a variable name. That made every one of them permanent -- they

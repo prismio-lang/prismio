@@ -252,6 +252,30 @@ private fn importMemoKey(importPath: String) -> String {
 private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
                       baseDir: String, visited: String) -> String {
     let importPath = resolveImportPath(baseDir, moduleName)
+
+    // v0.1 3.5, selective imports. `import std.string.strTrim` names a *name*
+    // and not a module, and nothing but resolution can tell the two apart --
+    // `std.string` could equally hold a `strTrim.psm`, and then the same text
+    // means the module. So the full path is tried first and this is the
+    // fallback, which is where Kotlin settles the same ambiguity and for the
+    // same reason: a grammar cannot see the filesystem.
+    //
+    // The record goes in before the memo check below, not after. A module is
+    // merged once however many files import it, so a second file selecting from
+    // an already-merged module would otherwise take everything.
+    if (file_exists(importPath) == 0) {
+        let cut = strLastIndexOf(moduleName, ".")
+        if (cut > 0) {
+            let parent = strSubstring(moduleName, 0, cut)
+            if (file_exists(resolveImportPath(baseDir, parent)) == 1) {
+                ir_select_record(site.file, parent,
+                    strSubstring(moduleName, cut + 1,
+                                 __builtin_string_len(moduleName) - cut - 1))
+                return mergeNamedModule(merged, site, parent, baseDir, visited)
+            }
+        }
+    }
+
     let key = importMemoKey(importPath)
     if (strContains(visited, key)) {
         return visited
@@ -412,6 +436,10 @@ private fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -
     // it. analyzeModule and generateModule rebuild the index from the finished
     // module; this fill is the merge's own, and it is the same one walk.
     ir_reset_decl_index()
+    // Selections are recorded by the merge below and read by sema, so this is
+    // the one point where the previous run's are gone and this run's are not
+    // yet made.
+    ir_reset_selections()
     mergeTailPtr = ptr_null()
     // No prelude. `std.io` is an ordinary import, so a program that names no I/O
     // carries none -- which is what lets a target with no stdout link at all.
