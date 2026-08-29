@@ -3046,6 +3046,45 @@ static int jit_failed(const char *what, LLVMErrorRef err) {
     return 1;
 }
 
+// Whether this process's own symbols are reachable through the generator the
+// JIT resolves against, which is not the same question on every platform and is
+// the whole of why `run --jit` fails on Windows and nowhere else. A Mach-O
+// executable exports its symbols to a `dlsym` by default; an ELF one does when
+// it was linked `-rdynamic`, which tools/bootstrap.sh and build_driver.c both
+// pass for exactly this reason; a COFF executable exports nothing at all unless
+// it was linked with an export table, so `GetProcAddress` over the running .exe
+// finds none of the runtime a jitted module calls.
+// **What ORC reports when that happens names the module's own functions**, not
+// the runtime ones it could not find -- `print__U64`, `println__String` and the
+// rest fail to materialize because their dependencies did -- which reads as a
+// codegen fault rather than a link one. So the question is asked directly here
+// instead of inferred from that list: one lookup of a symbol every generation of
+// this compiler links, reported only when something downstream actually fails.
+static int jit_process_symbols_visible(LLVMOrcLLJITRef jit) {
+    LLVMOrcExecutorAddress address = 0;
+    LLVMErrorRef err = LLVMOrcLLJITLookup(jit, &address, "prismio_rt_println");
+    if (err) {
+        LLVMConsumeError(err);
+        return 0;
+    }
+    return address != 0;
+}
+
+// jit_failed, plus what the symbol list means when the process turned out to be
+// opaque. The note follows the error rather than replacing it: the list is still
+// the evidence, and this says how to read it.
+static int jit_failed_unresolved(const char *what, LLVMErrorRef err, int visible) {
+    int status = jit_failed(what, err);
+    if (!visible) {
+        fprintf(stderr,
+                "note: --jit: this process exports none of its own symbols, so the "
+                "runtime a jitted module calls cannot be resolved out of it. The "
+                "symbols named above are the module's own; they failed because "
+                "their dependencies did.\n");
+    }
+    return status;
+}
+
 // M1.1 -- the curated inlinable module, in process
 // build_driver.c owns the decision to merge and the caching; this file owns the
 // LLVM. That split is the same one everywhere else here: the driver drives
@@ -3362,19 +3401,26 @@ int ir_jit_run_main(const char *program_name) {
     }
     LLVMOrcJITDylibAddGenerator(jd, generator);
 
+    // Asked before the module goes in, while a lookup is still answering for
+    // the generator alone rather than for a materialization that has already
+    // failed.
+    int process_visible = jit_process_symbols_visible(jit);
+
     err = LLVMOrcLLJITAddLLVMIRModule(jit, jd, tsm);
     if (err) {
         // The module is consumed even on failure; disposing it here would be a
         // double free.
         LLVMOrcDisposeLLJIT(jit);
-        return jit_failed("could not add the module to the JIT", err);
+        return jit_failed_unresolved("could not add the module to the JIT", err,
+                                     process_visible);
     }
 
     LLVMOrcExecutorAddress entry_address = 0;
     err = LLVMOrcLLJITLookup(jit, &entry_address, "main");
     if (err) {
         LLVMOrcDisposeLLJIT(jit);
-        return jit_failed("could not find `main` in the jitted module", err);
+        return jit_failed_unresolved("could not find `main` in the jitted module",
+                                     err, process_visible);
     }
 
     // **The two prismio_argc are not the same variable, and this is the bug this

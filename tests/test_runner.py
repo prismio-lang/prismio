@@ -50,6 +50,24 @@ def run_command(cmd, capture=True):
     return subprocess.run(cmd)
 
 
+def elide_middle(text, head=700, tail=300):
+    """Keep both ends of a diagnostic rather than one of them.
+
+    Truncating to the last N characters keeps the wrong half. An ORC failure
+    reads `Symbols not found: [ ... ] Failed to materialize symbols: { (main,
+    { ... }) }`: the first clause is the cause and the second is a list of every
+    symbol in the module, so the tail is the part that carries no information.
+    The Windows job's report of the `--jit` failure began mid-symbol-name,
+    which is what a tail slice of a message like that looks like.
+    """
+    text = (text or "").strip()
+    if len(text) <= head + tail:
+        return text
+    return (text[:head]
+            + f"\n  [... {len(text) - head - tail} characters elided ...]\n"
+            + text[-tail:])
+
+
 def cleanup_files(*files):
     for file in files:
         if os.path.exists(file):
@@ -3447,11 +3465,11 @@ def run_jit_test():
 
         if jit.returncode != 0:
             problems.append("`run --jit` failed: "
-                            + ((jit.stdout or "") + (jit.stderr or "")).strip()[-400:])
+                            + elide_middle((jit.stdout or "") + (jit.stderr or "")))
         elif native.returncode != 0:
             problems.append("the non-JIT `run` failed, so there is nothing to "
                             "compare against: "
-                            + ((native.stdout or "") + (native.stderr or "")).strip()[-300:])
+                            + elide_middle((native.stdout or "") + (native.stderr or "")))
         else:
             # The native path prints `Built <path>` first; the JIT has nothing to
             # report because it wrote nothing. Compare what the program said.
