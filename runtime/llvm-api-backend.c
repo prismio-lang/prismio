@@ -3401,6 +3401,43 @@ int ir_jit_run_main(const char *program_name) {
     }
     LLVMOrcJITDylibAddGenerator(jd, generator);
 
+    // **Both ends of an allocation have to be the same allocator, and resolving
+    // them by name does not make them one.** A jitted module calls `malloc` and
+    // `free` directly -- codegen emits them for every owned String -- while the
+    // functions that hand it those strings, `str_with_capacity` and the rest,
+    // are the compiler's own and allocate through the compiler's C runtime. The
+    // generator above resolves the module's two by searching the process, and
+    // what it finds is whichever loaded module exports them first.
+    //
+    // On Windows that is not the same heap. `run --jit` got as far as printing
+    // and then died with STATUS_HEAP_CORRUPTION (0xC0000374), which is what a
+    // block allocated by one CRT and released by another looks like -- the
+    // failure prismio_runtime.h's `rt_base_alloc`/`rt_free` seam exists to
+    // prevent everywhere else, arriving through the one door that had no seam.
+    //
+    // Defined rather than searched for, so the module gets the addresses this
+    // process itself calls. Not a table of the runtime's surface -- it is the
+    // two halves of the allocator, which is the pairing the whole ownership
+    // model is written against. A definition takes precedence over a generator,
+    // so this wins wherever the search would have differed and agrees with it
+    // where it would not.
+    LLVMOrcCSymbolMapPair allocator[2];
+    allocator[0].Name = LLVMOrcLLJITMangleAndIntern(jit, "malloc");
+    allocator[0].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)(void *)&malloc;
+    allocator[1].Name = LLVMOrcLLJITMangleAndIntern(jit, "free");
+    allocator[1].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)(void *)&free;
+    for (int i = 0; i < 2; i++) {
+        allocator[i].Sym.Flags.GenericFlags =
+            LLVMJITSymbolGenericFlagsExported | LLVMJITSymbolGenericFlagsCallable;
+        allocator[i].Sym.Flags.TargetFlags = 0;
+    }
+    err = LLVMOrcJITDylibDefine(jd, LLVMOrcAbsoluteSymbols(allocator, 2));
+    if (err) {
+        LLVMOrcDisposeThreadSafeModule(tsm);
+        LLVMOrcDisposeLLJIT(jit);
+        return jit_failed("could not define the allocator for the jitted module", err);
+    }
+
     // Asked before the module goes in, while a lookup is still answering for
     // the generator alone rather than for a materialization that has already
     // failed.
