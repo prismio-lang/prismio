@@ -1717,6 +1717,28 @@ def run_bootstrap_command_test():
                                 "from the one running this suite -- it linked, and it is not "
                                 "the same compiler")
 
+            # **A compiler that links and cannot JIT is the disagreement this
+            # test exists to make loud.** Two places know how to link a compiler
+            # -- this command and tools/bootstrap.{sh,ps1} -- and on Windows they
+            # need different things for ORC to reach the runtime: a COFF
+            # executable exports nothing, so the script builds an export table
+            # from the objects and the driver had to learn to do the same. The IR
+            # comparison above cannot see that, because such a compiler compiles
+            # correctly and fails only when asked to *run* something.
+            #
+            # The same fixture, so no second program has to be kept in step, and
+            # a string-heavy one at that: `--jit` resolves the runtime out of the
+            # compiler process, so every allocation crosses the seam and every
+            # release has to come back to the same allocator. It must be run from
+            # the repo, because a compiler in a temp directory resolves `std/`
+            # relative to the source it is given.
+            j = run_command([str(built), "run", str(fixture), "--jit"])
+            if j.returncode != 0 or "PASS: strings" not in (j.stdout or ""):
+                problems.append(
+                    f"the compiler `prismio bootstrap` built cannot `run --jit` "
+                    f"(exit {j.returncode}): "
+                    + elide_middle((j.stdout or "") + (j.stderr or "")))
+
             if sys.platform == "darwin":
                 if not Path(str(built) + ".dSYM").is_dir():
                     problems.append("`bootstrap -g` produced no .dSYM: on Mach-O the "

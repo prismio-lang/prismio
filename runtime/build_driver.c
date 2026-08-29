@@ -1358,6 +1358,112 @@ static char* object_cache_temp_path(const char* entry) {
 // *bootstrapping* compiler was built, so using them would silently link the previous
 // generation's runtime into the new one and make edits to runtime/*.c invisible --
 // the exact staleness chain this refactor exists to break.
+#ifdef _WIN32
+// The Windows half of `-rdynamic`, for a compiler this driver links itself.
+//
+// `run --jit` resolves a jitted module's externals by searching this process,
+// and a COFF executable exports nothing unless it was linked with an export
+// table -- so without one, a compiler built here finds none of the runtime it
+// carries and reports `Symbols not found: [ cli_arg_count, list_new, ... ]`.
+// There is no flag: `-rdynamic` is not something clang-cl understands, which is
+// why the ELF branch below has one and this does not.
+//
+// **Read out of the objects rather than written down here.** A list of runtime
+// symbols kept in this file would be a second copy of the runtime's surface and
+// would drift from it silently. The objects about to be linked *are* that
+// surface. Only the two that go into every compiled program are asked -- the
+// split C_CODE_STYLE.md draws -- because a jitted user program cannot call the
+// backend.
+//
+// Two parsing details, both of which cost a CI round in tools/bootstrap.ps1
+// before they were understood. nm interleaves a `<file>:` header line per
+// object, so a whitespace split would produce `/EXPORT:lang_runtime.obj:` and
+// fail the link; the line is matched as `<name> <type>` instead, and a header
+// line has no type field so it falls out. And only the defined text and data
+// types are taken, so a weak or comdat symbol is skipped rather than exported.
+//
+// Best-effort: everything except `run --jit` works without an export table, so a
+// missing llvm-nm says so and the link proceeds. Returns a malloc'd string of
+// flags to append, or NULL.
+static char* windows_runtime_export_flags(char** objs, const char* exe_file) {
+    char* list_path = compiler_temp_path(exe_file, "exports.txt");
+    if (!list_path) return NULL;
+
+    size_t command_size = strlen(list_path) + 128;
+    int any = 0;
+    for (int i = 0; i < PRISMIO_TOOLCHAIN_FILE_COUNT; i++) {
+        if (!prismio_toolchain_files[i].runtime || !objs[i]) continue;
+        command_size += strlen(objs[i]) + 8;
+        any = 1;
+    }
+    if (!any) { free(list_path); return NULL; }
+
+    char* command = (char*)malloc(command_size);
+    if (!command) { free(list_path); return NULL; }
+    int written = snprintf(command, command_size,
+                           "llvm-nm --defined-only --extern-only --format=posix");
+    for (int i = 0; i < PRISMIO_TOOLCHAIN_FILE_COUNT; i++) {
+        if (!prismio_toolchain_files[i].runtime || !objs[i]) continue;
+        char* quoted = command_quote_arg(objs[i]);
+        written += snprintf(command + written, command_size - written, " %s", quoted);
+        free(quoted);
+    }
+    char* q_list = command_quote_arg(list_path);
+    snprintf(command + written, command_size - written, " > %s", q_list);
+    free(q_list);
+
+    int failed = run_build_command(command);
+    free(command);
+
+    char* text = failed ? NULL : read_file(list_path);
+    delete_file(list_path);
+    free(list_path);
+    if (!text) {
+        fprintf(stderr,
+                "NOTE: llvm-nm did not run, so this compiler is linked without an\n"
+                "      export table and its `run --jit` will not resolve the runtime.\n"
+                "      Every other command works without one.\n");
+        return NULL;
+    }
+
+    // A name can be shorter than the flag that carries it, so the output length
+    // is not an upper bound on the flags -- three times it is.
+    size_t flags_size = strlen(text) * 3 + 64;
+    char* flags = (char*)malloc(flags_size);
+    if (!flags) { free(text); return NULL; }
+    flags[0] = '\0';
+
+    size_t used = 0;
+    int count = 0;
+    char* line = text;
+    while (*line) {
+        char* end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) : strlen(line);
+
+        size_t name_len = 0;
+        while (name_len < len && line[name_len] != ' ' && line[name_len] != '\t') name_len++;
+        size_t type_at = name_len;
+        while (type_at < len && (line[type_at] == ' ' || line[type_at] == '\t')) type_at++;
+
+        int typed = type_at < len && strchr("TDBR", line[type_at]) != NULL
+                    && (type_at + 1 >= len
+                        || line[type_at + 1] == ' ' || line[type_at + 1] == '\t');
+        if (name_len > 0 && typed && line[0] != '.' && line[0] != '$') {
+            used += (size_t)snprintf(flags + used, flags_size - used,
+                                     " -Wl,/EXPORT:%.*s", (int)name_len, line);
+            count++;
+        }
+
+        if (!end) break;
+        line = end + 1;
+    }
+    free(text);
+
+    if (count == 0) { free(flags); return NULL; }
+    return flags;
+}
+#endif
+
 static int build_from_toolchain_sources(const char* program_obj, const char* exe_file,
                                         int include_backend, int force_filesystem) {
     char source_paths[PRISMIO_TOOLCHAIN_FILE_COUNT][1024];
@@ -1615,7 +1721,28 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
             // where it is not a flag clang-cl understands and the JIT's symbol
             // story is different anyway.
 #ifdef _WIN32
-            snprintf(command + written, command_len - written, " -L %s -l%s", q_lib, llvm_link);
+            // See windows_runtime_export_flags: this is the -rdynamic below,
+            // spelled the only way COFF allows. `command` is grown to fit --
+            // 191 exports is several kilobytes and command_len was sized for a
+            // link line without them.
+            char* exports = windows_runtime_export_flags(objs, exe_file);
+            if (exports) {
+                int needed = written + (int)strlen(exports) + (int)strlen(q_lib)
+                             + (int)strlen(llvm_link) + 64;
+                if (needed > command_len) {
+                    char* grown = (char*)realloc(command, (size_t)needed);
+                    if (grown) {
+                        command = grown;
+                        command_len = needed;
+                    } else {
+                        free(exports);
+                        exports = NULL;
+                    }
+                }
+            }
+            snprintf(command + written, command_len - written, "%s -L %s -l%s",
+                     exports ? exports : "", q_lib, llvm_link);
+            free(exports);
 #else
             snprintf(command + written, command_len - written, " -rdynamic -L %s -l%s",
                      q_lib, llvm_link);
