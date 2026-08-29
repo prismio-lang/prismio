@@ -3464,7 +3464,13 @@ def run_jit_test():
         native = run_command([str(PRISMIO_EXE), "run", str(prog), "-o", str(exe)])
 
         if jit.returncode != 0:
-            problems.append("`run --jit` failed: "
+            # The exit code is part of the evidence and not a detail. A jitted
+            # program that prints and *then* fails has resolved its symbols and
+            # died afterwards, which is a different bug from one that never ran
+            # -- and on Windows the code says which: 3221225477 is an access
+            # violation, 3221226356 is heap corruption, and a small number is
+            # the program's own `return`.
+            problems.append(f"`run --jit` exited {jit.returncode}: "
                             + elide_middle((jit.stdout or "") + (jit.stderr or "")))
         elif native.returncode != 0:
             problems.append("the non-JIT `run` failed, so there is nothing to "
