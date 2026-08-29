@@ -120,6 +120,10 @@ violations.
 | `std/process.psm` | `import std.process` | arguments, subprocesses |
 | `std/map.psm` | `import std.map` | `Map<K, V>` |
 | `std/option.psm` | `import std.option` | `Option<T>`, `Result<T, E>` |
+| `std/list.psm` | `import std.list` | `sort`, `sortBy`, `filter`, `binarySearch` |
+| `std/key.psm` | `import std.key` | the `Key` bound `Map` needs |
+| `std/ord.psm` | `import std.ord` | the `Ord` bound `sort` needs |
+| `std/copy.psm` | `import std.copy` | the `Copy` bound |
 
 **There is no prelude.** `std.io` is an ordinary import: a program that prints
 nothing carries no I/O, which is what lets a target with no stdout link at all.
@@ -233,13 +237,70 @@ Compiler-internal, for the self-hosted frontend only: `ptr_to_node`,
 everything in `ir_symbols.c`, `aif_support.c`, `diagnostics.c`,
 `build_driver.c`, `llvm-api-backend.c`.
 
-### Not yet wrapped
+### Not user-facing, second group: reached through syntax
 
-`chan_new`, `chan_send`, `chan_recv`, `chan_close`, `chan_share`, `chan_len`,
-`chan_free`, and the `prismio_task_*` family. Tasks are reached through the
-`spawn` / `join` keywords rather than through these symbols; channels have no
-module yet and no ownership contract written down. Until they do, they are
-`extern fn` at your own risk.
+The `prismio_task_*` family. Tasks are reached through the `spawn` / `join`
+keywords rather than through these symbols, so there is nothing to wrap.
+
+The `chan_*` family is **no longer in this group.** It is `Channel<T>`, in §4.
+
+---
+
+## 4.1 · `Channel<T>` — the one runtime object with source-level syntax
+
+v0.1's concurrency addition. Seven compiler builtins in the same category as
+`list_get` and `list_push`: sema owns their types, codegen emits the existing C
+call by name, and there is no `std` module to import because there is no wrapper
+to write. `Channel<T>` itself is a type the compiler builds in, exactly as
+`Task<R>` is.
+
+| | | |
+|---|---|---|
+| `chan_new(capacity)` | `Channel<T>` | `T` comes from the annotation, as `list_new`'s does |
+| `chan_send(c, v)` | `Int` | 1 delivered, 0 dropped because closed. **Moves `v`** |
+| `chan_recv(c)` | `T?` | blocks; `none` once closed *and* drained |
+| `chan_share(c)` | `Channel<T>` | a second endpoint — not a second owner |
+| `chan_close(c)` | `Void` | wakes every blocked sender and receiver |
+| `chan_len(c)` | `Int` | messages queued |
+| `chan_free(c)` | `Void` | after `chan_close`, after every `join` |
+
+**`T` must be reference-shaped.** One `void*` travels per message, and the
+receive answers `T?`, which REQUIREMENTS 4 defines for references only.
+`Channel<Int>` is refused; send a one-field struct.
+
+The four rules, which are also the four things that go wrong:
+
+1. **A send moves.** The receiver takes the message out and owns it, so naming it
+   again in the sender names memory another thread may already have freed. The
+   move checker refuses it — `tests/neg_56_channel_send_moves.psm`.
+2. **`chan_share` is the duplication, spelled out loud.** Every handle the
+   language can name is affine, so `spawn worker(c)` *moves* the endpoint; share
+   it to keep one. It hands back the same endpoint, and only the one `chan_new`
+   returned is freed.
+3. **A receive after close drains, then answers `none` for ever.** That is what
+   ends a worker loop without a sentinel message.
+4. **Destruction is close, then join, then free.** The join is the edge that
+   makes the free safe, and the same edge that keeps element counts non-atomic.
+
+```prismio
+fn worker(jobs: Channel<Job>, results: Channel<Answer>) -> Int {
+    let mut handled = 0
+    loop {
+        let taken = chan_recv(jobs)
+        if (taken == none) { break }
+        let job = expect(taken)
+        chan_send(results, Answer { value: run(job) })
+        handled = handled + 1
+    }
+    return handled
+}
+```
+
+There is **no executor, no future and no `await`**. A send blocks while the
+channel is full and a receive blocks until a message arrives or the channel
+closes; that is the whole surface, and it is what keeps a worker pool alive
+across frames. `aif/evidence/xlang/prismio/g9_tuned.psm` is the worked example
+and `aif/evidence/RESULTS-v01-channels.md` is the measurement.
 
 ---
 

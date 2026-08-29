@@ -29,6 +29,14 @@ void  aif_verify_arm(void);
 #include <emmintrin.h>
 #endif
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+// For the threading primitives the `--verify` ledger locks with. The two
+// rt_base_alloc/rt_free macros above are already defined, and the header's guard
+// lets that stand rather than fighting over which one wins.
+#include "prismio_runtime.h"
+
 // AIF Level 4, second half: `region` absorbs collections too.
 //
 // COMPILER-AUDIT scheduled Level 4 after Level 3 so that regions would already
@@ -657,6 +665,30 @@ static AifLive* aif_live[AIF_VERIFY_BUCKETS];
 static long aif_allocs, aif_releases, aif_violations;
 static int aif_report_armed;
 
+// v0.1's channels let two tasks allocate and release at once, and this table is
+// a chain of `malloc`ed nodes: unlocked, two threads unlinking from the same
+// bucket lose one of them, and a lost node reads as a leak that is not there.
+// Measured before this lock, on `g9_tuned.psm`: three runs of one binary read
+// 17909/18002, 17909/18008 and 17863/18004 allocated against released, always
+// with 0 leaked and 0 violations. Both invariants held and neither count did.
+//
+// The lock is only in a `--verify` build, so it costs a released program nothing;
+// pthread_mutex_init is not needed for a static PTHREAD_MUTEX_INITIALIZER and
+// Windows wants a one-time InitializeCriticalSection, which is what the guarded
+// arm below is for.
+#ifdef _WIN32
+static PRISMIO_MUTEX_T aif_ledger_lock;
+static int aif_ledger_ready;
+static void aif_ledger_enter(void) {
+    if (!aif_ledger_ready) { PRISMIO_MUTEX_INIT(&aif_ledger_lock); aif_ledger_ready = 1; }
+    PRISMIO_MUTEX_LOCK(&aif_ledger_lock);
+}
+#else
+static PRISMIO_MUTEX_T aif_ledger_lock = PTHREAD_MUTEX_INITIALIZER;
+static void aif_ledger_enter(void) { PRISMIO_MUTEX_LOCK(&aif_ledger_lock); }
+#endif
+static void aif_ledger_leave(void) { PRISMIO_MUTEX_UNLOCK(&aif_ledger_lock); }
+
 static unsigned aif_live_hash(const void* p) {
     uintptr_t v = (uintptr_t)p;
     v ^= v >> 33;
@@ -703,8 +735,9 @@ void* aif_verify_alloc(size_t size) {
     void* p = malloc(size);
     if (!p) return NULL;
 
-    aif_allocs++;
     AifLive* n = (AifLive*)malloc(sizeof(AifLive));
+    aif_ledger_enter();
+    aif_allocs++;
     if (n) {
         n->p = p;
         n->size = size;
@@ -713,12 +746,14 @@ void* aif_verify_alloc(size_t size) {
         n->next = aif_live[b];
         aif_live[b] = n;
     }
+    aif_ledger_leave();
     return p;
 }
 
 void aif_verify_release(void* p) {
     if (!p) return;
 
+    aif_ledger_enter();
     unsigned b = aif_live_hash(p);
     AifLive** link = &aif_live[b];
     while (*link && (*link)->p != p) link = &(*link)->next;
@@ -726,17 +761,23 @@ void aif_verify_release(void* p) {
     if (!*link) {
         // Either released twice, or never came from here. Both mean a fact was
         // wrong: the value was freed on a path the analysis did not account for.
-        fprintf(stderr, "aif-verify: release of a pointer that is not live (%p)\n", p);
         aif_violations++;
+        aif_ledger_leave();
+        fprintf(stderr, "aif-verify: release of a pointer that is not live (%p)\n", p);
         return;
     }
 
     AifLive* n = *link;
     *link = n->next;
+    aif_releases++;
+    aif_ledger_leave();
+
+    // Outside the lock: the poison and the two frees touch only this unlinked
+    // node and the block it names, which no other thread can reach now that it
+    // is off the chain.
     memset(p, AIF_VERIFY_POISON, n->size);
     free(n);
     free(p);
-    aif_releases++;
 }
 
 // Growable list (List<T> for reference elements) — backs Prismio's List<T>.

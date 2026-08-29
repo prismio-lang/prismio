@@ -72,3 +72,7 @@ package.tar.xz
 # Cross-language benchmark artifacts (aif/evidence/xlang)
 aif/evidence/xlang/build/
 aif/evidence/xlang/vendor/
+
+# Release artifacts. Built by tools/release.sh on each platform and attached
+# to the release; reproducible from the tagged commit, so not committed.
+dist/

@@ -9,6 +9,21 @@ struct Counter {
     enabled: Bool
 }
 
+struct Vector {
+    x: Float,
+    y: Float
+}
+
+struct Punned {
+    x: Float,
+    y: Float
+}
+
+// The declaration is the proof that this type may cross the raw Ptr seam. It
+// is intentionally not called; the struct-path gate checks that its ordinary
+// field accesses stay on conservative scalar tags.
+extern fn punned_to_ptr(value: Punned borrow) -> Ptr alias
+
 fn fail(message: String) -> Int {
     print("FAIL: ")
     println(message)
@@ -38,6 +53,18 @@ fn main() -> Int {
 
     if (counter.value != 3) {
         return fail("second struct should keep independent field layout")
+    }
+
+    let vector = Vector { x: 1.5, y: 2.5 }
+    vector.x = vector.x + vector.y
+    if (vector.x != 4.0 or vector.y != 2.5) {
+        return fail("same-typed fields should keep independent values")
+    }
+
+    let punned = Punned { x: 3.0, y: 5.0 }
+    punned.x = punned.x + punned.y
+    if (punned.x != 8.0) {
+        return fail("raw-pointer-capable structs should keep correct values")
     }
 
     println("PASS: structs")

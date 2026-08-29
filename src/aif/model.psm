@@ -401,6 +401,7 @@ extern fn aif_con_arg(key: Int, vs: Int)
 extern fn aif_con_store(key: Int, vs: Int, owners: Int)
 extern fn aif_con_live_in(vs: Int, scope: Int, fnId: Int)
 extern fn aif_con_opaque(vs: Int)
+extern fn aif_con_foreign(vs: Int)
 extern fn aif_con_retain_in(vs: Int, holder: Int)
 extern fn aif_con_borrow(vs: Int)
 extern fn aif_con_escape_caller(vs: Int)
@@ -645,8 +646,25 @@ internal fn aifVsOfKey(key: Int) -> Int {
 // The node pointer is what codegen later looks the tier up by, so it is
 // registered here rather than derived: the two passes walk the same tree in the
 // same process, and one node names one site exactly.
-internal fn aifNewSite(ty: String, fnId: Int, scope: Int, nodePtr: Ptr) -> Int {
+// REQUIREMENTS 4. A site whose static type is `T?` allocates a `T`: optionality
+// is a state of the slot, not a different kind of allocation, which is exactly
+// what typeIsMoveOnly already says on the type side. Without this the site's kind
+// is `opaque` -- `aif_is_struct("Job?")` is 0 -- so nothing releases it and every
+// value that reaches a binding through an optional leaks.
+//
+// Inert on everything that existed before v0.1's channels: a `Node?` field is
+// filled from a `Node` literal, so no site had an optional type until `chan_recv`
+// became the first call whose *return* is one. Verified by the AIF manifests over
+// tests/ and aif/corpus/ being unchanged across this edit.
+private fn aifSiteType(ty: String) -> String {
+    let n = __builtin_string_len(ty)
+    if (n > 1 and strEndsWith(ty, "?")) { return strSubstring(ty, 0, n - 1) }
+    return ty
+}
+
+internal fn aifNewSite(rawTy: String, fnId: Int, scope: Int, nodePtr: Ptr) -> Int {
     let node = ptr_to_node(nodePtr)
+    let ty = aifSiteType(rawTy)
     let sid = aif_site_new(ty, aifKindOf(ty), fnId, scope,
                            node.file, node.line, node.col, aif_struct_nfields(ty))
     aif_site_note_node(sid, nodePtr)

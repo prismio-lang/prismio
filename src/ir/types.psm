@@ -93,6 +93,19 @@ private fn llvmTypeName(t: String) -> String {
 }
 
 internal fn mapTypeNode(tn: ASTNode) -> String {
+    // Sema resolved this annotation and left the answer on the node, so use it
+    // rather than re-deriving one from the syntax. The two disagree on a generic
+    // *struct* annotation -- the arm below answers `ptr` for anything with type
+    // arguments, which was written for `List<T>` -- and the disagreement emits a
+    // release call with an empty type name. See semaAnnotationType.
+    //
+    // Every case below is reproduced exactly by typeIrKey, so this is the same
+    // mapping asked of the resolved type instead of the written one. They are
+    // kept as the fallback for a node sema never reached.
+    if (nodeExists(tn.typeInfo)) {
+        let resolved = typeIrKey(ptr_to_type(tn.typeInfo))
+        if (strEquals(resolved, "") == false) { return resolved }
+    }
     // REQUIREMENTS 4. `T?` is one pointer and is deliberately *not* keyed as
     // `struct:T`: an optional slot must not reach ir_struct_field_ptr without an
     // unwrap, and an opaque key is what keeps that a type error rather than a

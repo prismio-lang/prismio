@@ -234,6 +234,15 @@ def main():
         # the oracle's obligation-2 test removed, this source reports
         # `br-param: compiler=1 oracle=0`.
         sources.append(Path("tests/test_59_bracket_summary.psm"))
+        # v0.1 concurrency, and the same argument a third time: `chan_send`,
+        # `chan_recv` and their five siblings are builtins, so their contracts
+        # live only in the two fallback tables and nothing above calls one.
+        # `chan_recv` is also the only producing return that hands over an
+        # allocation made on another thread, which is a fact -- `foreign` --
+        # neither T0 nor arena placement may ignore. Verified discriminating:
+        # with the oracle's `foreign` handling removed, this source reports
+        # `T0: compiler=0 oracle=2`.
+        sources.append(Path("tests/test_96_channels.psm"))
 
     dumps = {}
     failures = []

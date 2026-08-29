@@ -109,11 +109,40 @@ FFI_CONTRACTS = {
     '__builtin_string_put_byte': {0: 'borrow'},
     'print':          {0: 'borrow'},
     'println':        {0: 'borrow'},
+    # v0.1 concurrency. `chan_send` **consumes** its message rather than
+    # retaining it into the endpoint, which is where this differs from
+    # `list_push`: a list releases its elements at teardown and a channel does
+    # not -- the receiver takes the message out and owns it from then on.
+    'chan_send':      {0: 'borrow', 1: 'consume'},
+    'chan_new':       {0: 'borrow'},
+    'chan_recv':      {0: 'borrow'},
+    'chan_share':     {0: 'borrow'},
+    'chan_close':     {0: 'borrow'},
+    'chan_len':       {0: 'borrow'},
+    'chan_free':      {0: 'borrow'},
 }
+
+# Produced returns that allocate nothing here: the block was made by another
+# thread and is already live, so it can be neither a frame slot nor arena-served.
+# Kept in step with aifFfiTransfersExisting in src/aif/contracts.psm.
+FFI_RETURNS_EXISTING = {'chan_recv'}
+
+# Calls whose return is a channel endpoint -- a runtime object with no site.
+# Kept in step with the chan_new/chan_share arm in src/aif/walk.psm.
+FFI_RETURNS_ENDPOINT = {'chan_new', 'chan_share'}
 
 # Externs whose return value aliases an argument rather than allocating
 # (FFI 5.2 `alias`). Modelled by returning the argument's own sites.
-FFI_RETURNS_ALIAS_OF = {}
+#
+# REQUIREMENTS 4's checked unwrap is the only entry, and it was missing until
+# v0.1's channels put an `expect` in a differential source: `expect(x)` is the
+# identity on a pointer, so without this the oracle reads it as an opaque extern
+# return -- a fresh site, escape raised to Caller, and the unwrapped value stops
+# being reclaimable by whatever owned the optional. `aifFfiAliasOf` in
+# src/aif/contracts.psm has said so since optionals landed; this is the half that
+# nothing had exercised. Verified discriminating: removed, tests/test_96_channels
+# reports `opaque-ret: compiler=0 oracle=4`.
+FFI_RETURNS_ALIAS_OF = {'expect': 0}
 
 # Externs that read an element back out of a container: name -> argument index.
 #
@@ -150,6 +179,11 @@ FFI_RETURNS_PRODUCE = {
     'str_concat', 'str_substring', 'str_slice',
     'int_to_str',
     'read_file', 'get_directory', 'join_path',
+    # What comes out of a channel was allocated by the sending task and is this
+    # frame's from here on -- `read_file`'s shape with the allocation on another
+    # thread instead of in libc. See FFI_RETURNS_EXISTING for the half that is
+    # *not* like read_file.
+    'chan_recv',
 }
 
 # A builtin is the one kind of runtime function this table is load-bearing for.
@@ -441,6 +475,10 @@ class Engine:
         self.pt = defaultdict(set)        # ('var', fn, name) | ('field', ty, f)
                                           # | ('ret', fn) | ('param', fn, i) -> {site}
         self.no_stack = set()             # sites an explicit drop() forbids T0 for
+        # Sites whose allocation happened somewhere else entirely -- a produced
+        # return that hands over an already-live block. Distinct from no_stack:
+        # this forbids T0 without claiming somebody else performs the free.
+        self.foreign = set()
         # site -> {container sites holding it}. Separate from `holders`, which
         # counts *keys* -- named locations the move checker governs. A container
         # element is neither: list_push is a call, so nothing about it is a move,
@@ -690,6 +728,14 @@ class Engine:
                 if elem_of < len(argvals) and self.m.is_ref(ty):
                     element = vs_view_of(element, argvals[elem_of])
                 return element
+            # v0.1 concurrency. A channel endpoint is a runtime object this
+            # compilation did not allocate, so like a task handle it contributes
+            # no site: nothing to place, count or release, and `chan_free` is
+            # where it goes. `chan_share` hands back the same endpoint, which is
+            # what makes it a second reference and not a second owner. Mirrors
+            # the same arm in src/aif/walk.psm.
+            if plain in FFI_RETURNS_ENDPOINT:
+                return VS_EMPTY
             alias_of = FFI_RETURNS_ALIAS_OF.get(plain)
             if alias_of is not None and alias_of < len(argvals):
                 return argvals[alias_of]         # FFI 5.2 `alias`
@@ -721,6 +767,8 @@ class Engine:
                 sid = self.new_site(ty, fn, scope, e)
                 produces = (plain in FFI_RETURNS_PRODUCE
                             or ret_contract.startswith('produce'))
+                if plain in FFI_RETURNS_EXISTING:
+                    self.constraints.append(('foreign', vs_sites(sid)))
                 if not produces:
                     # Undeclared return: provenance unknown. It may already be
                     # shared and may already outlive this frame, so it cannot be
@@ -1282,6 +1330,12 @@ class Engine:
                     if self.raise_view_owners(c[1], CALLER, None):
                         changed = True
 
+                elif kind == 'foreign':
+                    for s_ in self.resolve(c[1]):
+                        if s_ not in self.foreign:
+                            self.foreign.add(s_)
+                            changed = self.moved(s_)
+
                 elif kind == 'no_stack':
                     for s in self.resolve(c[1]):
                         if s not in self.no_stack:
@@ -1471,7 +1525,8 @@ def tier_of(model, eng, sid):
     # other T0 conjunct satisfied.
     if (E == ('R', site.scope) and A <= BORROWED
             and site.kind == 'struct' and site.nfields <= THETA_STACK_FIELDS
-            and sid not in eng.no_stack and not eng.container_of[sid]):
+            and sid not in eng.no_stack and sid not in eng.foreign
+            and not eng.container_of[sid]):
         return 'T0'
     # Neither this clause nor T0's tests T, which is SPEC 4.2 read literally: a
     # value whose escape bottoms inside a region never left it, and E-SPAWN-J is

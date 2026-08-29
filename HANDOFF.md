@@ -4,8 +4,10 @@ One file. Nine others said versions of this and disagreed with each other; they 
 in git history if you need them, and `git log` is better than all of them because
 every commit message here carries its own evidence.
 
-**Last-good compiler: `build/tbaa3`.** Gate with it.
-**CI is green on all three platforms**, 197/197. `main` is the only branch.
+**Release candidate: `build/v0.1-rc`.** 202/202 locally, two-generation fixpoint.
+**Last compiler observed green on all three platforms: `build/tbaa3`.** CI has
+not run on the RC — that is task 6, and it is the last thing between here and a
+publishable v0.1. `main` is the only branch.
 
 ---
 
@@ -14,13 +16,28 @@ every commit message here carries its own evidence.
 | | |
 |---|---|
 | self-hosting | yes, two generations to a byte-identical fixpoint |
-| suite | 197, plus a corpus check that *runs* 30 programs |
-| platforms | macOS, Ubuntu, Windows — all green |
-| standing vs idiomatic Rust | **0.83x–1.62x** over the seven corpus programs |
+| suite | **202** locally, plus a corpus check that *runs* 30 of 33 programs |
+| platforms | macOS, Ubuntu, Windows — last **committed** matrix green; the RC is unproven |
+| RC vs idiomatic Rust | **0.72x–1.59x** over the seven corpus programs |
 | docs | sibling git repo at `../docs`, 145 compiler-checked snippets |
 
-The standing moved on 2026-08-30: g4 1.80x → 1.58x and g6 1.79x → 1.62x, from
-giving the IR alias metadata it had never carried. See `TODO.md` M6.
+Standing against idiomatic Rust, 25 runs per arm, checksums equal:
+
+| | g1 | g2 | g3 | g4 | g5 | g6 | g9 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Prismio | 1.09x | 1.51x | **0.98x** | 1.55x | 1.28x | 1.59x | **0.90x** |
+| Prismio hand-tuned | 0.25x | 0.68x | 0.78x | 0.96x | 0.28x | 1.22x | **0.72x** |
+
+M6 slice 2 ships for field reads and assignments and is **declined for struct
+literal initialisers**, which is where its whole g2 regression was: the merge it
+enabled is a 0.76x win when the optimiser can see the destination and a 2.74x
+loss against `list_push_slot`. g4 keeps 0.963x and g6 0.993x; g2 is back to
+mnemonic-identical. `aif/evidence/RESULTS-M6-struct-path-tbaa.md`.
+
+v0.1 concurrency is a blocking typed `Channel<T>` — seven builtins, no executor,
+no `async`. g9 has a hand-tuned arm for the first time and it is **1.15x**
+tuned-against-tuned, replacing a 1.45x that compared unlike arms.
+`aif/evidence/RESULTS-v01-channels.md`.
 
 ---
 
@@ -42,18 +59,23 @@ giving the IR alias metadata it had never carried. See `TODO.md` M6.
 
 ## What is live
 
-**One decision, and it is the project's to take.** `V0_1_FEATURES.md` §3.6: does
-v0.1 ship without a non-owning typed reference? Three answers are costed there,
-with the measurement the decision needs — `Ptr` appears 745 times across 29 of
-`src/`'s 33 files, and **17 of those are struct fields**. The 17 are the feature;
-the other 728 are consequences. Recommended A now, C (`Ptr<T>`: typed, still
-unmanaged) as the first v0.2 item, B only on a borrow discipline. Nothing is
-blocked on it.
+**Six tasks stood between here and a publishable v0.1; the first five are
+closed.** The authoritative, ordered checklist is still the first section of
+`TODO.md`. What remains is **task 6 alone**: run the macOS/Ubuntu/Windows matrix
+on the exact RC commit, then publish the artifacts already staged for it. Do not
+create a seventh feature task.
 
-**One milestone with numbers.** `TODO.md` M6. Slice 1 landed ~10% on g1/g4/g6.
-Slices 2–4 are ranked there by prize over risk, and **two constraints in that
-entry are established rather than assumed** — one of them kills the obvious next
-step, so read them before starting.
+**The v0.1 pointer decision is closed.** `V0_1_FEATURES.md` §3.6 selects A: v0.1
+ships without a non-owning typed reference. C (`Ptr<T>`: typed, still unmanaged)
+is the first v0.2 pointer item; B (`&T` in stored fields) waits for a borrow
+discipline. The measured reason remains there: `Ptr` appears 745 times across 29
+of `src/`'s 33 files, but only 17 struct fields are the missing feature.
+
+**Concurrency is landed, not planned.** `Channel<T>` is seven compiler builtins
+typed the way `Task<R>` is; `chan_recv` answers `T?`, which is what ends a worker
+loop without a sentinel. `async`/`await`, futures and an executor are v0.2+ work:
+they improve composition and suspension, and g9's worker-pool protocol did not
+need them.
 
 **Three debts, each with the reason it was left.** All in `TODO.md`: the UMS
 leak (the recorded fix moves the ledger by zero; the real shape is eight lines

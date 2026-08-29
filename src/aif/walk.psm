@@ -398,6 +398,15 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     if (aliasOf >= 0 and aliasOf < argc) {
         return aliased
     }
+    // v0.1 concurrency. A channel endpoint is a runtime object this compilation
+    // did not allocate, so like a task handle it contributes no site: there is
+    // nothing to place, count or release, and `chan_free` is where it goes.
+    // `chan_share` hands back the same endpoint, which is what makes it a second
+    // *reference* and not a second owner.
+    if (strEquals(plain, "chan_new") or strEquals(plain, "chan_share")) {
+        return aifVsEmpty()
+    }
+
     if (aifIsRef(ty)) {
         // FFI 5.2 `alias`: the return is not an allocation -- it borrows from an
         // argument or from static storage. Modelling it as a fresh site would
@@ -438,6 +447,12 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
         let sid = aifNewSite(ty, fnId, scope, callPtr)
         let mut produces = aifFfiProduces(plain)
         if (aifDeclaredReturnIsProduce(plain)) { produces = true }
+        // A return that hands over an allocation made somewhere else entirely
+        // owns nothing this frame can place: not a stack slot, not an arena
+        // chunk. See aifFfiTransfersExisting for why this is narrower than
+        // `produces` -- an ordinary producer allocates through `rt_alloc`, which
+        // an enclosing region really does serve.
+        if (aifFfiTransfersExisting(plain)) { aif_con_foreign(aifVsOfSite(sid)) }
         if (produces == false) {
             // Undeclared return: provenance unknown. It may already be shared
             // and may already outlive this frame, so it cannot be modelled as a

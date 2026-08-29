@@ -77,7 +77,30 @@ internal fn semaRegisterNamedTypes(module: ASTNode) {
     }
 }
 
+// The resolved type is **stamped onto the annotation node**, and that is not
+// bookkeeping: codegen's `mapTypeNode` otherwise re-derives a key from the raw
+// syntax, and the two answers disagree for exactly one shape.
+//
+// `let b: Bag<Int> = ...` where `Bag<T>` owns a released field: sema resolves the
+// annotation to the monomorphised struct `Bag$Int`, while mapTypeNode sees "a
+// name with type arguments" and answers `ptr`, because that arm was written for
+// `List<T>` and every user generic falls into it too. The drop kind is then taken
+// from the *initialiser* (typed release) and the type name from the
+// *declaration* (`ptr`), so codegen emits a call to `__aif_release_` -- a symbol
+// with an empty type name that nothing defines, and the program fails to link
+// with `Undefined symbols: ___aif_release_`.
+//
+// It reproduces on `let m: Map<Int, Int> = mapNew<Int, Int>()`, which is how the
+// documentation spells it, and it predates v0.1's channels -- `build/tbaa3` fails
+// the same way. `tests/test_65_map.psm` missed it by writing `let m = mapNew<...>`
+// with no annotation, which is the one form that works.
 internal fn semaAnnotationType(module: ASTNode, tn: ASTNode) -> TypeInfo {
+    let resolved = semaAnnotationTypeOf(module, tn)
+    nodeSetType(tn, resolved)
+    return resolved
+}
+
+private fn semaAnnotationTypeOf(module: ASTNode, tn: ASTNode) -> TypeInfo {
     // REQUIREMENTS 4. `T?` wraps whatever the rest of the annotation says, so
     // the suffix is peeled here once rather than in each branch below.
     if (tn.i3 == 1) {
@@ -126,6 +149,17 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
                 return typeList(semaAnnotationType(module, ptr_to_node(tn.child1)))
             }
             return typeList(typeInvalid())
+        }
+        // v0.1 concurrency. Built in for the same reason `Task<R>` is: it has a
+        // runtime and no struct to instantiate, and falling through to
+        // monoInstantiateStruct would resolve it to Invalid -- which matches
+        // everything, so a `Channel<Job>` annotation would accept a
+        // `Channel<Result>`.
+        if (strEquals(tn.s1, "Channel")) {
+            if (nodeExists(tn.child1)) {
+                return typeChannel(semaAnnotationType(module, ptr_to_node(tn.child1)))
+            }
+            return typeChannel(typeInvalid())
         }
         if (strEquals(tn.s1, "Slice")) {
             if (nodeExists(tn.child1)) {

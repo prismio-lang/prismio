@@ -160,3 +160,85 @@ jobs:
           grep -q '^target ' bootstrap/prismio-seed.ll && {
             echo "seed carries a target directive; it must stay target-neutral"; exit 1; }
           echo "seed is target-neutral"
+
+      # Everything above proves the compiler in `build/`. **Nothing above proves
+      # the thing a user installs**, and the two differ in the way that matters:
+      # an uninstalled compiler falls back to the runtime sources embedded in its
+      # own binary, silently, so a packaging mistake looks like success. That is
+      # the fallback `verify_separation` exists to catch, and it had never run on
+      # Windows or Linux -- packaging was a local step before v0.1.
+      - name: Package the toolchain
+        shell: bash
+        run: |
+          set -e
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -File tools/package.ps1 -Compiler "build/gen2$EXT" -Out dist/Prismio
+          else
+            tools/package.sh --compiler "build/gen2$EXT" --out dist/Prismio
+          fi
+
+      # The separation this asserts is not cosmetic: a compiled program links
+      # runtime.a only, so no `ir_*` backend symbol may reach a user binary. It
+      # also proves the installed libraries are the ones actually used rather
+      # than the embedded fallback.
+      - name: Verify the packaged toolchain
+        shell: bash
+        run: |
+          set -e
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -File tools/verify_separation.ps1 -Dist dist/Prismio
+          else
+            tools/verify_separation.sh --dist dist/Prismio
+          fi
+
+      # A *clean* environment: the packaged compiler, moved away from the
+      # checkout, building a program that is not in the checkout either. This is
+      # the smoke test a release artifact has to pass, and running it from the
+      # repository root would let the tree supply what the package forgot.
+      - name: Smoke-test the package outside the checkout
+        shell: bash
+        run: |
+          set -e
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          CLEAN="$(mktemp -d)"
+          cp -R dist/Prismio "$CLEAN/toolchain"
+          cat > "$CLEAN/smoke.psm" <<'PSM'
+          import std.io
+          import std.list
+          import std.map
+          import std.option
+
+          struct Note { id: Int }
+
+          fn main() -> Int {
+              let mut ids: List<Int> = list_new()
+              list_push(ids, 3)
+              list_push(ids, 1)
+              list_push(ids, 2)
+              ids.sort()
+
+              let m: Map<Int, Int> = mapNew<Int, Int>()
+              mapSet(m, list_get(ids, 0), 10)
+
+              let c: Channel<Note> = chan_new(2)
+              chan_send(c, Note { id: 7 })
+              chan_close(c)
+              let taken = chan_recv(c)
+              let mut got = 0
+              if (taken != none) {
+                  let note = expect(taken)
+                  got = note.id
+              }
+              chan_free(c)
+
+              println(list_get(ids, 0) + mapGetOr(m, 1, 0) + got)
+              return 0
+          }
+          PSM
+          cd "$CLEAN"
+          "./toolchain/bin/prismio$EXT" build smoke.psm -o smoke$EXT \
+            || "./toolchain/prismio$EXT" build smoke.psm -o smoke$EXT
+          OUT="$(./smoke$EXT)"
+          echo "smoke output: $OUT"
+          [ "$OUT" = "18" ] || { echo "expected 18"; exit 1; }

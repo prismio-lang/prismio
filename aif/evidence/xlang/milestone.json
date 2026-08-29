@@ -1,35 +1,37 @@
 {
   "meta": {
-    "label": "",
-    "old": "build/cold-bc-2",
-    "new": "build/cold-bc-2",
+    "label": "g5 A/A floor, RC gate",
+    "old": "build/tbaa3",
+    "new": "build/v0.1-rc",
     "runs": 25,
     "tolerance_pct": 10.0,
-    "when": "2026-08-26 12:20:11",
+    "when": "2026-08-29 16:55:22",
     "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
   },
   "results": {
-    "g9": {
+    "g5": {
       "old_loop_ms": [
-        106.1045,
-        102.124369,
-        114.781056
+        33.080817,
+        28.078889,
+        53.762411
       ],
       "new_loop_ms": [
-        106.228526,
-        102.586954,
-        108.047285
+        41.867632,
+        28.68126,
+        54.466042
       ],
-      "ratio": 1.0011689042406307,
-      "old_rss_mb": 2.140625,
-      "new_rss_mb": 2.140625,
-      "rss_ratio": 1.0,
-      "old_exe_bytes": 79576,
-      "new_exe_bytes": 79576,
+      "ratio": 1.265616626094815,
+      "old_rss_mb": 1.625,
+      "new_rss_mb": 1.609375,
+      "rss_ratio": 0.9903846153846154,
+      "old_exe_bytes": 96856,
+      "new_exe_bytes": 96856,
       "baselines": {},
       "checksums": [
-        "checksum total 1856014121",
-        "checksum last 1579165008"
+        "checksum entities 2000",
+        "checksum submitted 8000000",
+        "checksum batches 12",
+        "checksum evicted 0"
       ],
       "runs": 25
     }

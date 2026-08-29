@@ -1,0 +1,159 @@
+// G9 parallel bands -- Prismio, hand-tuned.
+//
+// **This arm did not exist until v0.1's channels did**, and its absence was a
+// recorded result rather than an omission: `g9_idiomatic.rs`'s peer is `g9.psm`,
+// which pays one `pthread_create`/`pthread_join` pair per band per frame, and a
+// tuned program does not do that. Hand-tuned Rust keeps four workers alive across
+// every frame and hands them work over `mpsc` channels; Prismio had `spawn` and
+// `join` and no way to keep a task alive past its join, so the arm was **not
+// writable**. V0_1_FEATURES.md 4 recorded that and said the 1.45x gap would be
+// re-measured when it became writable. This is that program.
+//
+// The architecture is `g9_tuned.rs`'s, line for line: one job channel per worker,
+// one shared result channel because the four results are summed and their order
+// carries no information, workers created once before the loop and joined once
+// after it. The per-frame cost is four sends and four receives instead of four
+// thread creations.
+//
+// The kernel, the constants and the checksums are `g9.psm`'s unchanged. Int is 32
+// bits and wraps here, in the Rust ports, and in the sum -- which is why the
+// order the four results arrive in cannot change the answer.
+
+import std.io
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
+
+struct Band {
+    seed: Int,
+    steps: Int
+}
+
+// The result travels back as a struct because a channel carries one reference per
+// message: `Channel<Int>` is refused, since a scalar has no representation to
+// send and `T?` -- which is how a receive reports a closed channel -- is defined
+// for references only.
+struct Tally {
+    value: Int
+}
+
+// Verbatim from g9.psm. Serial by construction: `s` carries across the
+// iteration, so the loop cannot be split, reassociated or vectorised in any of
+// the three languages, and the only parallelism available is between bands.
+fn simulate(b: Band) -> Int {
+    let mut s = b.seed
+    let mut acc = 0
+    let mut i = 0
+    while (i < b.steps) {
+        s = s * 1103515245 + 12345
+        acc = acc + ((s / 65536) & 32767)
+        i = i + 1
+    }
+    return acc
+}
+
+// One persistent worker. It ends when its job channel is closed and drained,
+// which is what `chan_recv`'s `T?` return is for -- no sentinel message, and no
+// second channel to ask whether there is more work.
+fn worker(jobs: Channel<Band>, results: Channel<Tally>) -> Int {
+    let mut handled = 0
+    loop {
+        let taken = chan_recv(jobs)
+        if (taken == none) { break }
+        let band = expect(taken)
+        chan_send(results, Tally { value: simulate(band) })
+        handled = handled + 1
+    }
+    return handled
+}
+
+fn main() -> Int {
+    let frames = 2000
+    let steps = 24000
+
+    let mut samples: List<Int> = list_new()
+    let mut g = 0
+    while (g < frames) {
+        list_push(samples, 0)
+        g = g + 1
+    }
+
+    // One inbox per worker, so a frame's four jobs cannot all queue in front of
+    // one of them, and one shared outbox, because the four results are summed.
+    let j0: Channel<Band> = chan_new(2)
+    let j1: Channel<Band> = chan_new(2)
+    let j2: Channel<Band> = chan_new(2)
+    let j3: Channel<Band> = chan_new(2)
+    let results: Channel<Tally> = chan_new(8)
+
+    // `chan_share` is the syntactically identifiable duplication SPEC 11 item 10
+    // requires: without it `spawn worker(j0, ...)` would move the endpoint away
+    // and this frame could not send through it again.
+    let w0 = spawn worker(chan_share(j0), chan_share(results))
+    let w1 = spawn worker(chan_share(j1), chan_share(results))
+    let w2 = spawn worker(chan_share(j2), chan_share(results))
+    let w3 = spawn worker(chan_share(j3), chan_share(results))
+
+    let mut total = 0
+    let mut last = 0
+    let mut frame = 0
+    while (frame < frames) {
+        let t0 = clock_gettime_nsec_np(4)
+
+        chan_send(j0, Band { seed: frame * 7919 + 1, steps: steps })
+        chan_send(j1, Band { seed: frame * 7919 + 104730, steps: steps })
+        chan_send(j2, Band { seed: frame * 7919 + 209459, steps: steps })
+        chan_send(j3, Band { seed: frame * 7919 + 314188, steps: steps })
+
+        let mut sum = 0
+        let mut got = 0
+        while (got < 4) {
+            let taken = chan_recv(results)
+            if (taken == none) { break }
+            let tally = expect(taken)
+            sum = sum + tally.value
+            got = got + 1
+        }
+
+        let t1 = clock_gettime_nsec_np(4)
+
+        last = sum
+        total = total + last
+        list_set(samples, frame, (t1 - t0) as Int)
+        frame = frame + 1
+    }
+
+    // Rule 4: close, then join, then free. Closing the job channels is what ends
+    // the four receive loops; the joins are the synchronisation edge that makes
+    // the frees safe, and they are also what keeps every count non-atomic.
+    chan_close(j0)
+    chan_close(j1)
+    chan_close(j2)
+    chan_close(j3)
+    let h0 = join w0
+    let h1 = join w1
+    let h2 = join w2
+    let h3 = join w3
+    chan_close(results)
+    chan_free(j0)
+    chan_free(j1)
+    chan_free(j2)
+    chan_free(j3)
+    chan_free(results)
+
+    if (h0 + h1 + h2 + h3 != frames * 4) {
+        println("FAIL: the workers did not handle every job")
+        return 1
+    }
+
+    print("checksum total ")
+    println(total)
+    print("checksum last ")
+    println(last)
+
+    let mut j = 0
+    while (j < frames) {
+        print("frame_ns ")
+        println(list_get(samples, j))
+        j = j + 1
+    }
+    return 0
+}

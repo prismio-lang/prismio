@@ -57,6 +57,27 @@ documentation claims.
 > **Still not done:** methods / `impl` blocks, closures, slices, module namespacing and
 > visibility, and first-class pointers. Cross-compilation landed 2026-08-21 (`--target`,
 > `--sysroot`, a per-triple runtime archive) and has been proven against one non-host target.
+
+> ## Status — 2026-08-29, v0.1
+>
+> The two boxes above are kept as written; this one supersedes both.
+>
+> **Everything the 2026-08-20 box listed as "still not done" has landed except
+> first-class pointers**, which is a decision rather than a gap:
+> `V0_1_FEATURES.md` §3.6 selects A — v0.1 ships without a non-owning typed
+> reference, and `Ptr<T>` is the first v0.2 pointer item. Method-call syntax,
+> `impl` blocks, traits with one bound per parameter, closures, slices, module
+> namespacing and `private`/`internal` visibility, and the UMS package manager are
+> all in.
+>
+> **Concurrency now has a typed source surface**, not just the runtime one the box
+> above describes: a blocking `Channel<T>` — seven compiler builtins, `chan_recv`
+> answering `T?`, no executor and no `async`. See `RUNTIME.md` §4.1.
+>
+> The release candidate is `build/v0.1-rc`: suite 202, two-generation byte-identical
+> fixpoint, AIF differential 19/19, 30 corpus programs built *and run*. Standing
+> against idiomatic Rust over the seven benchmark programs is **0.90×–1.59×**.
+> The three-platform matrix has not yet run on it.
 >
 > **The superlinear compile time in the box below no longer reproduces.** Measured 2026-08-20:
 > 733 B → 29 ms, 3 KB → 21 ms, 60 KB → 72 ms, i.e. 82× the input for ~2.5× the time. The fixed
@@ -324,6 +345,11 @@ Closures and function pointers · traits/interfaces · tuples and multiple retur
 ### Tier 3 — post-v1.
 
 Package manager · concurrency · macros/metaprogramming · doc generator.
+
+**Two of these four arrived early.** UMS is in (`V0_1_FEATURES.md` §3.7) and
+concurrency has both the runtime and a typed `Channel<T>` surface. The ranking is
+left as written — it is a record of what was expected, and being wrong about two
+of four is the useful part of keeping it.
 
 ---
 

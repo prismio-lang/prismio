@@ -44,9 +44,11 @@ private fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: St
         if (isValueStructKey(fieldType)) {
             // Built-in aggregates are values like scalars, despite their keys
             // naming structs -- see the same test in expr.psm's field read.
-            payloadVal = ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
+            payloadVal = ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),
+                                                             structName, fieldIndex))
         } else if (isStructTypeKey(fieldType) == false) {
-            payloadVal = ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
+            payloadVal = ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),
+                                                             structName, fieldIndex))
         }
 
         ir_set_var_type(name.s1, fieldType)
@@ -287,7 +289,8 @@ private fn generateStatement(stmt: ASTNode) {
             // of a value into the slot it already occupies does not free it
             // between the two.
             if (aif_field_is_counted(structName, targetNode.s1) == 1) {
-                let old = ir_get_temp_name(ir_load_ptr("ptr", ir_get_temp_name(slot)))
+                let old = ir_get_temp_name(ir_struct_load_ptr("ptr", ir_get_temp_name(slot),
+                                                              structName, fieldIndex))
                 ir_call_begin()
                 ir_call_arg("ptr", val)
                 ir_call_end("void", "cyc_retain")
@@ -302,7 +305,8 @@ private fn generateStatement(stmt: ASTNode) {
             if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
                 ir_copy_struct(structTypeName(fieldType), ir_get_temp_name(slot), val)
             } else {
-                ir_store_ptr(fieldType, val, ir_get_temp_name(slot))
+                ir_struct_store_ptr(fieldType, val, ir_get_temp_name(slot),
+                                    structName, fieldIndex)
             }
         }
     }
@@ -504,7 +508,8 @@ private fn generateStatement(stmt: ASTNode) {
         let payloadMatch = matchBindsPayload(stmt)
         if (payloadMatch) {
             let tagSlot = ir_struct_field_ptr(structTypeName(scrutType), stmt.s1, 0)
-            stmt.s2 = ir_get_temp_name(ir_load_ptr("i32", ir_get_temp_name(tagSlot)))
+            stmt.s2 = ir_get_temp_name(ir_struct_load_ptr("i32", ir_get_temp_name(tagSlot),
+                                                          structTypeName(scrutType), 0))
         } else {
             stmt.s2 = stmt.s1
         }

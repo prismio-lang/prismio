@@ -210,6 +210,34 @@ fn typeTaskResult(t: TypeInfo) -> TypeInfo {
     return typeInvalid()
 }
 
+// v0.1 concurrency. A blocking typed channel endpoint, carrying the type its
+// `chan_recv` yields.
+//
+// PTR-kinded and named, for exactly the reason `typeTask` above is: the endpoint
+// is an opaque word the runtime allocated, every PTR arm in sema, AIF and codegen
+// already handles it correctly, and a TypeKind of its own would have to be added
+// to all of them to arrive at the same behaviour. The name and the `child` carry
+// the one thing a bare `Ptr` cannot -- what may be sent through it and what comes
+// back out.
+//
+// **The element type must be reference-shaped.** The runtime moves one `void*`
+// per message and `chan_recv` answers `T?`, which REQUIREMENTS 4 defines only for
+// a reference. `Channel<Int>` is refused in sema rather than boxed silently.
+fn typeChannel(elem: TypeInfo) -> TypeInfo {
+    let mut t = typeMake(TypeKind.PTR, strConcat("Channel<", strConcat(elem.name, ">")), "ptr")
+    t.child = type_to_ptr(elem)
+    return t
+}
+
+fn typeIsChannel(t: TypeInfo) -> Bool {
+    return t.kind == TypeKind.PTR and strStartsWith(t.name, "Channel<")
+}
+
+fn typeChannelElem(t: TypeInfo) -> TypeInfo {
+    if (typeIsChannel(t) and nodeExists(t.child)) { return ptr_to_type(t.child) }
+    return typeInvalid()
+}
+
 fn typeOptionalInner(t: TypeInfo) -> TypeInfo {
     if (t.kind == TypeKind.OPTIONAL and nodeExists(t.child)) {
         return ptr_to_type(t.child)
@@ -351,6 +379,20 @@ fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
         if (nodeIsNull(a.child) or nodeIsNull(b.child)) { return true }
         return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
     }
+    // Same rule, same reason: two endpoints are the same type only when they
+    // carry the same message. Without this `let c: Channel<Job> = chan_new(4)`
+    // would accept a `Channel<Result>` through PTR's unconditional `true`.
+    if (typeIsChannel(a) or typeIsChannel(b)) {
+        if (typeIsChannel(a) == false or typeIsChannel(b) == false) { return false }
+        if (nodeIsNull(a.child) or nodeIsNull(b.child)) { return true }
+        let ac = ptr_to_type(a.child)
+        let bc = ptr_to_type(b.child)
+        // `chan_new` has nothing to read an element type from, so it answers
+        // `Channel<Invalid>` and the annotation supplies it -- the same shape
+        // `list_new` uses, and the reason this is not the Task clause verbatim.
+        if (typeIsValid(ac) == false or typeIsValid(bc) == false) { return true }
+        return typeEquals(ac, bc)
+    }
     if (a.kind == TypeKind.OPTIONAL) {
         // A bare `none` carries no inner type, so it matches any optional. That
         // is what lets `none` be written wherever a `T?` is wanted without an
@@ -413,6 +455,12 @@ fn typeSemKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.PTR) {
         if (typeIsTask(t) and nodeExists(t.child)) {
             return strConcat("task:", typeSemKey(ptr_to_type(t.child)))
+        }
+        // Same hole, same fix: a channel endpoint that came back as a bare `Ptr`
+        // would make `chan_send(c, v)` report "expects a Channel, found Ptr" one
+        // statement after the binding that gave it its type.
+        if (typeIsChannel(t) and nodeExists(t.child)) {
+            return strConcat("chan:", typeSemKey(ptr_to_type(t.child)))
         }
         return "Ptr"
     }
@@ -489,6 +537,12 @@ private fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
             return typeList(typeFromAnnotation(ptr_to_node(tn.child1)))
         }
         return typeList(typeInvalid())
+    }
+    if (tn.i2 == 1 and strEquals(tn.s1, "Channel")) {
+        if (nodeExists(tn.child1)) {
+            return typeChannel(typeFromAnnotation(ptr_to_node(tn.child1)))
+        }
+        return typeChannel(typeInvalid())
     }
 
     if (strEquals(tn.s1, "Int")) { return typeInt() }
@@ -567,6 +621,9 @@ fn typeFromSemKey(key: String) -> TypeInfo {
     }
     if (strStartsWith(key, "list:")) {
         return typeList(typeFromSemKey(strSubstring(key, 5, __builtin_string_len(key) - 5)))
+    }
+    if (strStartsWith(key, "chan:")) {
+        return typeChannel(typeFromSemKey(strSubstring(key, 5, __builtin_string_len(key) - 5)))
     }
     if (strStartsWith(key, "slice:")) {
         return typeSlice(typeFromSemKey(strSubstring(key, 6, __builtin_string_len(key) - 6)))

@@ -1,0 +1,61 @@
+// A generic struct written as a *type annotation* on a binding.
+//
+// `let m: Map<Int, Int> = mapNew<Int, Int>()` did not link. Sema resolved the
+// annotation to the monomorphised `Map$Int$Int`, while codegen's `mapTypeNode`
+// answered `ptr` -- its "a name with type arguments" arm was written for
+// `List<T>` and every user generic fell into it too. The drop kind then came from
+// the initialiser (a typed release) and the type name from the declaration
+// (`ptr`), so the emitted call was `__aif_release_` with an empty type name and
+// the program failed with `Undefined symbols: ___aif_release_`.
+//
+// It needs a generic whose instantiation **owns something a release reclaims**:
+// `Box<Int>` links either way, because nothing is generated for it to call.
+// `test_65_map.psm` missed it by writing `let m = mapNew<...>()` with no
+// annotation, which is the one form that worked.
+//
+// Sema now stamps the resolved type on the annotation node and codegen reads it,
+// so the two cannot disagree about a written type again.
+
+import std.io
+import std.map
+import std.key
+import std.option
+
+struct Bag<T> {
+    items: List<T>
+}
+
+fn bagOf<T>() -> Bag<T> {
+    let items: List<T> = list_new()
+    return Bag<T> { items: items }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // The shape that did not link, twice: once on a std generic and once on one
+    // declared here, because the fix is in the annotation path and not in `Map`.
+    let m: Map<Int, Int> = mapNew<Int, Int>()
+    mapSet(m, 7, 42)
+    if (mapGetOr(m, 7, 0) != 42) { return fail("annotated Map lost its entry") }
+    if (mapLen(m) != 1) { return fail("annotated Map lost its length") }
+
+    let bag: Bag<Int> = bagOf<Int>()
+    list_push(bag.items, 3)
+    list_push(bag.items, 4)
+    if (list_len(bag.items) != 2) { return fail("annotated Bag lost its elements") }
+    if (list_get(bag.items, 1) != 4) { return fail("annotated Bag reordered its elements") }
+
+    // The annotation-free form has always worked; keeping it here says the fix
+    // did not trade one shape for the other.
+    let n = mapNew<Int, Int>()
+    mapSet(n, 1, 2)
+    if (mapGetOr(n, 1, 0) != 2) { return fail("unannotated Map regressed") }
+
+    println("PASS: generic annotation")
+    return 0
+}

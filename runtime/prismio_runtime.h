@@ -123,4 +123,46 @@ int  rt_profile_dump(const char* path, const char* workload, int runs);
 // link to whatever libc exports. Warns once per symbol and returns 0.
 long long rt_workload_stub(const char* name);
 
+
+// The threading primitives, in the header because two runtime sources need them.
+//
+// They were local to program_support.c, which owned the only user -- the channel
+// and its condition variables. `--verify`'s live-pointer table is the second:
+// v0.1's channels let two tasks allocate at once, and an unlocked ledger then
+// races its own hash chains. Measured on `g9_tuned.psm` before the lock: three
+// runs of one binary read 17909/18002, 17909/18008 and 17863/18004 allocated
+// against released, with 0 leaked and 0 violations each time. The invariants held
+// and the counts did not, which is the shape of a data race and not of a leak.
+//
+// One spelling, per C_CODE_STYLE.md's rule for a constant shared across the seam.
+#ifdef _WIN32
+#define PRISMIO_THREAD_T           HANDLE
+#define PRISMIO_MUTEX_T            CRITICAL_SECTION
+#define PRISMIO_COND_T             CONDITION_VARIABLE
+#define PRISMIO_MUTEX_INIT(m)      InitializeCriticalSection(m)
+#define PRISMIO_MUTEX_DESTROY(m)   DeleteCriticalSection(m)
+#define PRISMIO_MUTEX_LOCK(m)      EnterCriticalSection(m)
+#define PRISMIO_MUTEX_UNLOCK(m)    LeaveCriticalSection(m)
+#define PRISMIO_COND_INIT(c)       InitializeConditionVariable(c)
+#define PRISMIO_COND_DESTROY(c)    ((void)(c))
+#define PRISMIO_COND_WAIT(c, m)    SleepConditionVariableCS(c, m, INFINITE)
+#define PRISMIO_COND_SIGNAL(c)     WakeConditionVariable(c)
+#define PRISMIO_COND_BROADCAST(c)  WakeAllConditionVariable(c)
+#else
+#include <pthread.h>
+#define PRISMIO_THREAD_T           pthread_t
+#define PRISMIO_MUTEX_T            pthread_mutex_t
+#define PRISMIO_COND_T             pthread_cond_t
+#define PRISMIO_MUTEX_INIT(m)      pthread_mutex_init(m, NULL)
+#define PRISMIO_MUTEX_DESTROY(m)   pthread_mutex_destroy(m)
+#define PRISMIO_MUTEX_LOCK(m)      pthread_mutex_lock(m)
+#define PRISMIO_MUTEX_UNLOCK(m)    pthread_mutex_unlock(m)
+#define PRISMIO_COND_INIT(c)       pthread_cond_init(c, NULL)
+#define PRISMIO_COND_DESTROY(c)    pthread_cond_destroy(c)
+#define PRISMIO_COND_WAIT(c, m)    pthread_cond_wait(c, m)
+#define PRISMIO_COND_SIGNAL(c)     pthread_cond_signal(c)
+#define PRISMIO_COND_BROADCAST(c)  pthread_cond_broadcast(c)
+#endif
+
+
 #endif

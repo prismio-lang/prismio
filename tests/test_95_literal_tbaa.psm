@@ -1,0 +1,45 @@
+// M6 slice 2. Two structs that differ only in how they are written, so the gate
+// test can tell the deliberate decline apart from the feature simply being off.
+//
+// `Assigned` is built and then assigned through, so its stores must carry struct
+// paths -- that is the positive control, and without it a check on `Initialised`
+// would pass with the whole slice removed. `Initialised` is only ever built by a
+// literal and read, so its *loads* must carry paths while none of its stores may:
+// tagging an initialiser lets LLVM merge the initialising stores into one wide
+// store, which costs 1.68x on g2.
+// See aif/evidence/RESULTS-M6-struct-path-tbaa.md.
+
+import std.io
+
+struct Assigned {
+    depth: Float,
+    weight: Float
+}
+
+struct Initialised {
+    depth: Float,
+    weight: Float
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut assigned = Assigned { depth: 1.5, weight: 2.5 }
+    assigned.depth = assigned.depth + assigned.weight
+    assigned.weight = assigned.depth + 1.0
+    if (assigned.depth != 4.0 or assigned.weight != 5.0) {
+        return fail("field assignment through a struct path changed a value")
+    }
+
+    let initialised = Initialised { depth: 3.0, weight: 4.0 }
+    if (initialised.depth + initialised.weight != 7.0) {
+        return fail("literal initialisation through scalar tags changed a value")
+    }
+
+    println("PASS: literal tbaa")
+    return 0
+}

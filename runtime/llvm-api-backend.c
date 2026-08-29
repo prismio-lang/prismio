@@ -248,6 +248,9 @@ typedef struct {
     LLVMTypeRef type;
     LLVMTypeRef cold;   // NULL unless split
     int hot_count;      // 0 unless split
+    int field_count;
+    int path_tbaa;
+    char field_keys[64][NAME_LEN];
 } StructType;
 
 static StructType g_structs[256];
@@ -265,12 +268,15 @@ static StructType *struct_entry(const char *name) {
     g_structs[g_struct_count].type = ty;
     g_structs[g_struct_count].cold = NULL;
     g_structs[g_struct_count].hot_count = 0;
+    g_structs[g_struct_count].field_count = 0;
+    g_structs[g_struct_count].path_tbaa = 1;
     return &g_structs[g_struct_count++];
 }
 
 static LLVMTypeRef named_struct(const char *name) { return struct_entry(name)->type; }
 
 static LLVMTypeRef g_struct_fields[64];
+static char g_struct_field_keys[64][NAME_LEN];
 static int g_struct_field_count;
 static char g_struct_building[NAME_LEN];
 static int g_struct_split;
@@ -286,7 +292,10 @@ void ir_struct_type_begin(const char *name) {
 
 void ir_struct_type_field(const char *field_type) {
     if (g_struct_field_count >= 64) backend_fail("too many struct fields", g_struct_building);
-    g_struct_fields[g_struct_field_count++] = type_from_key(field_type);
+    g_struct_fields[g_struct_field_count] = type_from_key(field_type);
+    strncpy(g_struct_field_keys[g_struct_field_count], field_type, NAME_LEN - 1);
+    g_struct_field_keys[g_struct_field_count][NAME_LEN - 1] = '\0';
+    g_struct_field_count++;
 }
 
 // How many of the fields just declared stay in the hot record. 0, or a count
@@ -298,6 +307,11 @@ void ir_struct_type_end(void) {
     StructType *s = struct_entry(g_struct_building);
     int hc = g_struct_split;
     g_struct_split = 0;
+    s->field_count = g_struct_field_count;
+    for (int i = 0; i < g_struct_field_count; i++) {
+        strncpy(s->field_keys[i], g_struct_field_keys[i], NAME_LEN - 1);
+        s->field_keys[i][NAME_LEN - 1] = '\0';
+    }
 
     if (hc <= 0 || hc >= g_struct_field_count) {
         s->hot_count = 0;
@@ -836,8 +850,8 @@ void ir_store(const char *type, const char *value, const char *ptr_name) {
     if (block_done()) return;
     LLVMBuildStore(g_builder, resolve_value(value, type), ptr);
 }
-// M6, first slice. **A `double` access is the one Prismio scalar that nothing
-// ever reads back as another type**, so it is the only one tagged here.
+// M6, first slice. Scalar accesses carry the same four leaves clang emits:
+// `double`, `any pointer`, `int`, and `long long`.
 //
 // The measurement this exists for: `system_movement` in g4 reloads the list
 // handle, its `len`, its `elem_size` and its `data` on every element of every
@@ -853,29 +867,36 @@ void ir_store(const char *type, const char *value, const char *ptr_name) {
 // compiled by clang and tagged `!{"int", "omnipotent char", "Simple C/C++
 // TBAA"}`; these have to hang off that same root to be comparable with it.
 //
-// Deliberately not `int`, `long long` or `any pointer` yet. Prismio's `Ptr` is
-// punned -- `src/` reads one node handle as another, which is
-// V1_GAP_ANALYSIS.md's live row -- and the fat String is a `{ptr, i64}` the
-// runtime also writes field-wise, so those need the tree designed rather than
-// widened. Doubles need neither.
-static LLVMValueRef scalar_tbaa_tag(const char *name) {
+static LLVMMetadataRef tbaa_root(void) {
     LLVMMetadataRef root_name = LLVMMDStringInContext2(
         g_ctx, "Simple C/C++ TBAA", strlen("Simple C/C++ TBAA"));
-    LLVMMetadataRef root = LLVMMDNodeInContext2(g_ctx, &root_name, 1);
+    return LLVMMDNodeInContext2(g_ctx, &root_name, 1);
+}
 
+static LLVMMetadataRef tbaa_offset(unsigned long long offset) {
+    return LLVMValueAsMetadata(
+        LLVMConstInt(LLVMInt64TypeInContext(g_ctx), offset, 0));
+}
+
+static LLVMMetadataRef tbaa_omni(void) {
     LLVMMetadataRef zero = LLVMValueAsMetadata(
         LLVMConstInt(LLVMInt64TypeInContext(g_ctx), 0, 0));
-
     LLVMMetadataRef char_name = LLVMMDStringInContext2(
         g_ctx, "omnipotent char", strlen("omnipotent char"));
-    LLVMMetadataRef char_ops[3] = { char_name, root, zero };
-    LLVMMetadataRef omni = LLVMMDNodeInContext2(g_ctx, char_ops, 3);
+    LLVMMetadataRef char_ops[3] = { char_name, tbaa_root(), zero };
+    return LLVMMDNodeInContext2(g_ctx, char_ops, 3);
+}
 
+static LLVMMetadataRef tbaa_leaf(const char *name) {
+    LLVMMetadataRef zero = tbaa_offset(0);
     LLVMMetadataRef leaf_name = LLVMMDStringInContext2(g_ctx, name, strlen(name));
-    LLVMMetadataRef leaf_ops[3] = { leaf_name, omni, zero };
-    LLVMMetadataRef leaf = LLVMMDNodeInContext2(g_ctx, leaf_ops, 3);
+    LLVMMetadataRef leaf_ops[3] = { leaf_name, tbaa_omni(), zero };
+    return LLVMMDNodeInContext2(g_ctx, leaf_ops, 3);
+}
 
-    LLVMMetadataRef tag_ops[3] = { leaf, leaf, zero };
+static LLVMValueRef scalar_tbaa_tag(const char *name) {
+    LLVMMetadataRef leaf = tbaa_leaf(name);
+    LLVMMetadataRef tag_ops[3] = { leaf, leaf, tbaa_offset(0) };
     return LLVMMetadataAsValue(g_ctx, LLVMMDNodeInContext2(g_ctx, tag_ops, 3));
 }
 
@@ -906,6 +927,96 @@ static void tag_scalar(LLVMValueRef inst, const char *type) {
     LLVMSetMetadata(inst, kind, scalar_tbaa_tag(leaf));
 }
 
+// M6, second slice. A scalar leaf says that a `double` cannot alias a pointer;
+// a struct path additionally says that `p.x` cannot alias `p.y` when both are
+// doubles. The base node is built from the LLVM record that field access really
+// selected, and every offset comes from that record's target data layout.
+// Declaration order cannot enter here: LAYOUT 7 may reorder fields before the
+// body is set, and LAYOUT 6 may put the tail in a separate cold record.
+static LLVMValueRef struct_record_tbaa_tag(const StructType *s, int cold,
+                                            unsigned record_index,
+                                            const char *access_type) {
+    const char *access_name = tbaa_leaf_for(access_type);
+    if (!access_name || !s || !s->path_tbaa
+        || record_index >= (unsigned)s->field_count + 1) return NULL;
+
+    LLVMTypeRef record = cold ? s->cold : s->type;
+    int first = cold ? s->hot_count : 0;
+    int count = cold ? s->field_count - s->hot_count : s->field_count;
+    if (!cold && s->hot_count > 0) count = s->hot_count + 1;
+    if (!record || record_index >= (unsigned)count) return NULL;
+
+    const char *declared = NULL;
+    if (!cold && s->hot_count > 0 && record_index == (unsigned)s->hot_count) {
+        declared = "ptr";
+    } else {
+        declared = s->field_keys[first + (int)record_index];
+    }
+    const char *declared_name = tbaa_leaf_for(declared);
+    if (!declared_name || strcmp(declared_name, access_name) != 0) return NULL;
+
+    char base_name[NAME_LEN + 32];
+    snprintf(base_name, sizeof(base_name), "Prismio struct %s%s", s->name,
+             cold ? ".cold" : (s->hot_count > 0 ? ".hot" : ""));
+    LLVMMetadataRef base_ops[1 + 2 * 65];
+    base_ops[0] = LLVMMDStringInContext2(g_ctx, base_name, strlen(base_name));
+    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(g_module);
+    for (int i = 0; i < count; i++) {
+        const char *key = (!cold && s->hot_count > 0 && i == s->hot_count)
+            ? "ptr" : s->field_keys[first + i];
+        const char *name = tbaa_leaf_for(key);
+        base_ops[1 + 2 * i] = name ? tbaa_leaf(name) : tbaa_omni();
+        base_ops[2 + 2 * i] = tbaa_offset(
+            LLVMOffsetOfElement(layout, record, (unsigned)i));
+    }
+    LLVMMetadataRef base = LLVMMDNodeInContext2(g_ctx, base_ops,
+                                                (size_t)(1 + 2 * count));
+    LLVMMetadataRef tag_ops[3] = {
+        base,
+        tbaa_leaf(access_name),
+        tbaa_offset(LLVMOffsetOfElement(layout, record, record_index)),
+    };
+    return LLVMMetadataAsValue(g_ctx, LLVMMDNodeInContext2(g_ctx, tag_ops, 3));
+}
+
+static LLVMValueRef struct_field_tbaa_tag(const StructType *s, int field_index,
+                                           const char *access_type) {
+    if (!s || field_index < 0 || field_index >= s->field_count) return NULL;
+    int cold = s->hot_count > 0 && field_index >= s->hot_count;
+    unsigned record_index = cold ? (unsigned)(field_index - s->hot_count)
+                                 : (unsigned)field_index;
+    return struct_record_tbaa_tag(s, cold, record_index, access_type);
+}
+
+static void tag_struct_field(LLVMValueRef inst, const char *struct_name,
+                             int field_index, const char *type) {
+    LLVMValueRef tag = struct_field_tbaa_tag(struct_entry(struct_name), field_index, type);
+    if (!tag) {
+        tag_scalar(inst, type);
+        return;
+    }
+    unsigned kind = LLVMGetMDKindIDInContext(g_ctx, "tbaa", strlen("tbaa"));
+    LLVMSetMetadata(inst, kind, tag);
+}
+
+static void tag_struct_record(LLVMValueRef inst, const StructType *s, int cold,
+                              unsigned record_index, const char *type) {
+    LLVMValueRef tag = struct_record_tbaa_tag(s, cold, record_index, type);
+    if (!tag) return;
+    unsigned kind = LLVMGetMDKindIDInContext(g_ctx, "tbaa", strlen("tbaa"));
+    LLVMSetMetadata(inst, kind, tag);
+}
+
+// Raw `Ptr` is Prismio's explicit type-punning escape hatch. A struct that an
+// extern converts to or from `Ptr` cannot use a distinct struct base: doing so
+// would give LLVM C-style strict-aliasing permission across two names for the
+// same bytes. The frontend marks those signatures before emitting any access;
+// their fields retain slice 1's scalar tags instead.
+void ir_struct_disable_path_tbaa(const char *struct_name) {
+    if (!struct_name || !*struct_name) return;
+    struct_entry(struct_name)->path_tbaa = 0;
+}
+
 
 // Load/store through a pointer *value* rather than a named local. Struct fields
 // and array elements are addresses produced by a GEP, so they have no name to
@@ -923,6 +1034,22 @@ void ir_store_ptr(const char *type, const char *value, const char *ptr_value) {
     LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
                                         resolve_value(ptr_value, "ptr"));
     tag_scalar(store, type);
+}
+
+int ir_struct_load_ptr(const char *type, const char *ptr_value,
+                       const char *struct_name, int field_index) {
+    LLVMValueRef load = LLVMBuildLoad2(g_builder, type_from_key(type),
+                                       resolve_value(ptr_value, "ptr"), "");
+    tag_struct_field(load, struct_name, field_index, type);
+    return intern_value(load);
+}
+
+void ir_struct_store_ptr(const char *type, const char *value, const char *ptr_value,
+                         const char *struct_name, int field_index) {
+    if (block_done()) return;
+    LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
+                                        resolve_value(ptr_value, "ptr"));
+    tag_struct_field(store, struct_name, field_index, type);
 }
 
 // M4.3c. Different top-level DataView fields occupy different allocations.
@@ -1051,7 +1178,8 @@ int ir_alloc_stack(const char *struct_name) {
         LLVMValueRef cold = LLVMBuildAlloca(g_alloca_builder, s->cold, "");
         LLVMValueRef slot = LLVMBuildStructGEP2(g_alloca_builder, sty, hot,
                                                 (unsigned)s->hot_count, "");
-        LLVMBuildStore(g_alloca_builder, cold, slot);
+        LLVMValueRef store = LLVMBuildStore(g_alloca_builder, cold, slot);
+        tag_struct_record(store, s, 0, (unsigned)s->hot_count, "ptr");
     }
     return intern_value(hot);
 }
@@ -1087,7 +1215,8 @@ static void attach_cold(const StructType *s, LLVMValueRef hot, const char *alloc
     LLVMValueRef cold = LLVMBuildCall2(g_builder, alloc_ty, fn, args, 1, "");
     LLVMValueRef slot = LLVMBuildStructGEP2(g_builder, s->type, hot,
                                             (unsigned)s->hot_count, "");
-    LLVMBuildStore(g_builder, cold, slot);
+    LLVMValueRef store = LLVMBuildStore(g_builder, cold, slot);
+    tag_struct_record(store, s, 0, (unsigned)s->hot_count, "ptr");
 }
 
 int ir_alloc_object(const char *struct_name) {
@@ -1280,6 +1409,7 @@ void ir_free_cold(const char *struct_name, const char *value) {
     LLVMValueRef slot = LLVMBuildStructGEP2(g_builder, s->type, obj,
                                             (unsigned)s->hot_count, "");
     LLVMValueRef cold = LLVMBuildLoad2(g_builder, ptr, slot, "");
+    tag_struct_record(cold, s, 0, (unsigned)s->hot_count, "ptr");
 
     LLVMTypeRef free_ty = LLVMFunctionType(voidty, &ptr, 1, 0);
     LLVMValueRef free_fn = LLVMGetNamedFunction(g_module, g_free_fn);
@@ -1387,6 +1517,7 @@ int ir_struct_field_ptr(const char *struct_name, const char *object, int field_i
         LLVMValueRef link = LLVMBuildStructGEP2(g_builder, s->type, obj,
                                                 (unsigned)s->hot_count, "");
         LLVMValueRef cold = LLVMBuildLoad2(g_builder, ptr, link, "");
+        tag_struct_record(cold, s, 0, (unsigned)s->hot_count, "ptr");
         return intern_value(LLVMBuildStructGEP2(g_builder, s->cold, cold,
                                                 (unsigned)(field_index - s->hot_count), ""));
     }

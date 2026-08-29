@@ -413,34 +413,8 @@ char* cli_arg(int index) {
 // three-argument function pointer happens to work on every ABI anyone ships and
 // is still undefined; the switch below costs four lines and is defined.
 
-#ifdef _WIN32
-#define PRISMIO_THREAD_T           HANDLE
-#define PRISMIO_MUTEX_T            CRITICAL_SECTION
-#define PRISMIO_COND_T             CONDITION_VARIABLE
-#define PRISMIO_MUTEX_INIT(m)      InitializeCriticalSection(m)
-#define PRISMIO_MUTEX_DESTROY(m)   DeleteCriticalSection(m)
-#define PRISMIO_MUTEX_LOCK(m)      EnterCriticalSection(m)
-#define PRISMIO_MUTEX_UNLOCK(m)    LeaveCriticalSection(m)
-#define PRISMIO_COND_INIT(c)       InitializeConditionVariable(c)
-#define PRISMIO_COND_DESTROY(c)    ((void)(c))
-#define PRISMIO_COND_WAIT(c, m)    SleepConditionVariableCS(c, m, INFINITE)
-#define PRISMIO_COND_SIGNAL(c)     WakeConditionVariable(c)
-#define PRISMIO_COND_BROADCAST(c)  WakeAllConditionVariable(c)
-#else
-#include <pthread.h>
-#define PRISMIO_THREAD_T           pthread_t
-#define PRISMIO_MUTEX_T            pthread_mutex_t
-#define PRISMIO_COND_T             pthread_cond_t
-#define PRISMIO_MUTEX_INIT(m)      pthread_mutex_init(m, NULL)
-#define PRISMIO_MUTEX_DESTROY(m)   pthread_mutex_destroy(m)
-#define PRISMIO_MUTEX_LOCK(m)      pthread_mutex_lock(m)
-#define PRISMIO_MUTEX_UNLOCK(m)    pthread_mutex_unlock(m)
-#define PRISMIO_COND_INIT(c)       pthread_cond_init(c, NULL)
-#define PRISMIO_COND_DESTROY(c)    pthread_cond_destroy(c)
-#define PRISMIO_COND_WAIT(c, m)    pthread_cond_wait(c, m)
-#define PRISMIO_COND_SIGNAL(c)     pthread_cond_signal(c)
-#define PRISMIO_COND_BROADCAST(c)  pthread_cond_broadcast(c)
-#endif
+// The threading primitives moved to prismio_runtime.h when `--verify`'s ledger
+// became the second user; see the note there.
 
 // A task's result comes back through `join`, so the runtime has to call the
 // spawned function through a pointer of its *real* type. Twelve typedefs --

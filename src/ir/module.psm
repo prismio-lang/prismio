@@ -571,6 +571,50 @@ private fn fieldTypeFor(module: ASTNode, typeNode: ASTNode) -> String {
     return fieldStorageType(t)
 }
 
+private fn externSignatureHasRawPtr(func: ASTNode) -> Bool {
+    // EXTERN_FUNCTION stores its return annotation in child2 (an ordinary
+    // FUNCTION uses child3 because child2 is its body).
+    if (nodeExists(func.child2)) {
+        if (strEquals(mapTypeNode(ptr_to_node(func.child2)), "ptr")) { return true }
+    }
+    let mut paramPtr = func.child1
+    while (nodeExists(paramPtr)) {
+        let param = ptr_to_node(paramPtr)
+        if (strEquals(mapTypeNode(ptr_to_node(param.child1)), "ptr")) { return true }
+        paramPtr = param.next
+    }
+    return false
+}
+
+private fn disableStructPathForAnnotation(typePtr: Ptr) {
+    if (nodeIsNull(typePtr)) { return }
+    let key = mapTypeNode(ptr_to_node(typePtr))
+    if (isStructTypeKey(key) and isValueStructKey(key) == false) {
+        ir_struct_disable_path_tbaa(structTypeName(key))
+    }
+}
+
+// `Ptr` is the language's explicit type-punning escape hatch. If an extern
+// signature converts a named struct to or from it, a distinct struct TBAA base
+// would turn that unmanaged promise into C strict aliasing and could miscompile
+// two typed views of the same bytes. Those structs keep scalar tags only.
+private fn registerRawPtrStructs(module: ASTNode) {
+    let mut stmtPtr = module.child1
+    while (nodeExists(stmtPtr)) {
+        let stmt = ptr_to_node(stmtPtr)
+        if (stmt.kind == NodeKind.EXTERN_FUNCTION and externSignatureHasRawPtr(stmt)) {
+            disableStructPathForAnnotation(stmt.child2)
+            let mut paramPtr = stmt.child1
+            while (nodeExists(paramPtr)) {
+                let param = ptr_to_node(paramPtr)
+                disableStructPathForAnnotation(param.child1)
+                paramPtr = param.next
+            }
+        }
+        stmtPtr = stmt.next
+    }
+}
+
 private fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
     let firstFieldPtr = structNode.child1
     if (nodeExists(firstFieldPtr)) {
@@ -711,7 +755,7 @@ private fn generateReleaseFn(structNode: ASTNode) {
             if (disp != AIF_ELEM_NONE) {
                 let idx = ir_get_struct_field_index(tname, field.s1)
                 let slot = ir_struct_field_ptr(tname, "%p_obj", idx)
-                let loaded = ir_load_ptr("ptr", ir_get_temp_name(slot))
+                let loaded = ir_struct_load_ptr("ptr", ir_get_temp_name(slot), tname, idx)
                 let value = ir_get_temp_name(loaded)
                 if (disp == AIF_ELEM_LIST) {
                     ir_free_list(value)
@@ -790,7 +834,7 @@ private fn generateCyclicChildrenFn(structNode: ASTNode) {
             if (aif_field_is_cyclic(tname, field.s1) == 1) {
                 let idx = ir_get_struct_field_index(tname, field.s1)
                 let slot = ir_struct_field_ptr(tname, "%p_obj", idx)
-                let loaded = ir_load_ptr("ptr", ir_get_temp_name(slot))
+                let loaded = ir_struct_load_ptr("ptr", ir_get_temp_name(slot), tname, idx)
                 ir_call_indirect_ptr("%p_visit", ir_get_temp_name(loaded))
             }
         }
@@ -978,6 +1022,8 @@ fn generateModule(module: ASTNode) {
         }
         typeStmtPtr = typeStmt.next
     }
+
+    registerRawPtrStructs(module)
 
     let mut structStmtPtr = module.child1
     while (nodeExists(structStmtPtr)) {

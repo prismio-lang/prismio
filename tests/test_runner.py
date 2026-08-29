@@ -226,15 +226,18 @@ def run_cli_test():
 def run_corpus_test():
     """Build and *run* every benchmark corpus program.
 
-    These 30 programs were not executed by anything in CI. On 2026-08-30 an AIF
-    solver change emitted a double release for a List consumed into a DataView;
-    `g1_dataview` aborted in `list_release` and the entire suite still passed. The
-    only reason it surfaced was that someone happened to run a benchmark.
+    These were not executed by anything in CI. On 2026-08-30 an AIF solver change
+    emitted a double release for a List consumed into a DataView; `g1_dataview`
+    aborted in `list_release` and the entire suite still passed. The only reason
+    it surfaced was that someone happened to run a benchmark.
 
     Building is not enough -- the failure was at run time -- so each program is
     executed and its exit status checked. `g6_engine` and `g6_engine_tuned` are
     library modules with no `main` and never link; they are skipped by name rather
-    than by tolerating link failures generally.
+    than by tolerating link failures generally. That is **three files, not two**:
+    `g6_engine.psm` exists in both roots. 33 sources, 3 skipped, 30 run -- and the
+    count is printed rather than asserted, because a corpus that grows should not
+    need a test edit to stay green.
     """
     print(f"\n{BLUE}--- Running corpus ---{RESET}")
 
@@ -2590,6 +2593,119 @@ def run_data_view_gate_test():
 
     print(f"{GREEN}[PASS] DataView emits disjoint columns, round-trips mutations "
           f"through padding-aware rows, and releases cleanly{RESET}")
+    return True
+
+
+def run_struct_path_tbaa_test():
+    """M6 slice 2: ordinary fields carry their selected record and byte offset.
+
+    Both halves are asserted, because the second one is a performance fix that a
+    later reader would otherwise delete as an inconsistency: a field *read* or
+    *assignment* carries a struct path, and a struct *literal's* initialiser
+    deliberately does not. Tagging initialisers lets LLVM merge them into one
+    wide store, which costs 1.68x on g2 -- see
+    aif/evidence/RESULTS-M6-struct-path-tbaa.md.
+    """
+    print(f"\n{BLUE}--- Running struct_path_tbaa ---{RESET}")
+    problems = []
+
+    def check_path(ir, name, base_offsets, access_offsets):
+        base = re.search(
+            rf'^!(\d+) = !\{{!"{re.escape(name)}"([^\n]*)$', ir, re.MULTILINE)
+        if not base:
+            problems.append(f"{name} has no struct-path base node")
+            return
+        got_base = [int(n) for n in re.findall(r'i64 (\d+)', base.group(2))]
+        if got_base != base_offsets:
+            problems.append(f"{name} describes offsets {got_base}, expected {base_offsets}")
+
+        base_id = base.group(1)
+        tags = {}
+        for tag in re.finditer(
+                rf'^!(\d+) = !\{{!{base_id}, !\d+, i64 (\d+)\}}$', ir, re.MULTILINE):
+            tags[int(tag.group(1))] = int(tag.group(2))
+        used = {
+            offset for tag_id, offset in tags.items()
+            if re.search(rf'^(?!\!).*!tbaa !{tag_id}\b', ir, re.MULTILINE)
+        }
+        missing = sorted(set(access_offsets) - used)
+        if missing:
+            problems.append(f"{name} has no field access tagged at offset(s) {missing}")
+
+    with tempfile.TemporaryDirectory(prefix="prismio-struct-tbaa-") as tmp:
+        ordinary = Path(tmp) / "ordinary.ll"
+        built = run_command([str(PRISMIO_EXE), "build",
+                             str(TEST_DIR / "test_04_structs.psm"),
+                             "-o", str(ordinary)])
+        if built.returncode != 0:
+            problems.append(f"ordinary struct IR build failed: {built.stdout or built.stderr}")
+        else:
+            ir = ordinary.read_text(encoding="utf-8", errors="replace")
+            check_path(ir, "Prismio struct Vector", [0, 8], [0, 8])
+            if '"Prismio struct Punned"' in ir:
+                problems.append("a struct exposed through raw Ptr received a distinct TBAA base")
+
+        split = Path(tmp) / "split.ll"
+        built = run_command([str(PRISMIO_EXE), "build",
+                             str(TEST_DIR / "test_62_split_release.psm"),
+                             "--force-layout=Body:4", "-o", str(split)])
+        if built.returncode != 0:
+            problems.append(f"split struct IR build failed: {built.stdout or built.stderr}")
+        else:
+            ir = split.read_text(encoding="utf-8", errors="replace")
+            check_path(ir, "Prismio struct Body.hot",
+                       [0, 8, 16, 24, 32], [0, 8, 16, 24, 32])
+            check_path(ir, "Prismio struct Body.cold",
+                       [0, 8, 16, 24, 32, 36, 40, 44],
+                       [0, 8, 16, 24, 32, 36, 40, 44])
+
+        literal = Path(tmp) / "literal.ll"
+        built = run_command([str(PRISMIO_EXE), "build",
+                             str(TEST_DIR / "test_95_literal_tbaa.psm"),
+                             "-o", str(literal)])
+        if built.returncode != 0:
+            problems.append(f"literal IR build failed: {built.stdout or built.stderr}")
+        else:
+            ir = literal.read_text(encoding="utf-8", errors="replace")
+
+            def tagged(struct, opcode):
+                base = re.search(rf'^!(\d+) = !\{{!"Prismio struct {struct}"',
+                                 ir, re.MULTILINE)
+                if not base:
+                    return None
+                paths = {m.group(1) for m in re.finditer(
+                    rf'^!(\d+) = !\{{!{base.group(1)}, !\d+, i64 \d+\}}$',
+                    ir, re.MULTILINE)}
+                body = ir[ir.index("define"):]
+                return [ln for ln in body.splitlines()
+                        if re.match(rf'\s*(%\S+ = )?{opcode} ', ln)
+                        and any(f"!tbaa !{p}" in ln for p in paths)]
+
+            # positive control: without it, the check below passes with the slice
+            # deleted rather than declined.
+            assigned = tagged("Assigned", "store")
+            if assigned is None:
+                problems.append("Assigned has no struct-path base at all")
+            elif not assigned:
+                problems.append("no field assignment carries a struct path")
+            initialised = tagged("Initialised", "load")
+            if not initialised:
+                problems.append("no field read of a literal-built struct carries a "
+                                "struct path, so the decline below proves nothing")
+            declined = tagged("Initialised", "store") or []
+            if declined:
+                problems.append(f"{len(declined)} struct-literal initialiser(s) carry a "
+                                f"struct path; that merge costs 1.68x on g2")
+
+    if problems:
+        print(f"{RED}[FAIL] ordinary struct-path alias metadata is incomplete{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+
+    print(f"{GREEN}[PASS] ordinary, reordered and split field accesses carry "
+          f"target-layout struct paths; literal initialisers and raw-Ptr-exposed "
+          f"structs stay conservative{RESET}")
     return True
 
 
@@ -5889,6 +6005,11 @@ def main():
         failed += 1
 
     if run_data_view_gate_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_struct_path_tbaa_test():
         passed += 1
     else:
         failed += 1

@@ -185,6 +185,7 @@ extern fn ir_struct_type_field(fieldType: String)
 // here, because ir_struct_field_ptr is the single choke point for field access.
 extern fn ir_struct_type_split(hotCount: Int)
 extern fn ir_struct_type_end()
+extern fn ir_struct_disable_path_tbaa(structName: String)
 extern fn ir_alloc_object(structName: String) -> Int
 
 // The T0 half of the seam. aif/implementation/COMPILER-AUDIT.md 3 explains why
@@ -286,6 +287,8 @@ extern fn ir_global_str_var(name: String, strGlobal: String, length: Int)
 
 extern fn ir_load_ptr(type: String, ptrValue: String) -> Int
 extern fn ir_store_ptr(type: String, value: String, ptrValue: String)
+extern fn ir_struct_load_ptr(type: String, ptrValue: String, structName: String, fieldIndex: Int) -> Int
+extern fn ir_struct_store_ptr(type: String, value: String, ptrValue: String, structName: String, fieldIndex: Int)
 extern fn ir_data_load_ptr(type: String, ptrValue: String, structName: String, fieldIndex: Int) -> Int
 extern fn ir_data_store_ptr(type: String, value: String, ptrValue: String, structName: String, fieldIndex: Int)
 extern fn ir_copy_struct(structName: String, dest: String, src: String)

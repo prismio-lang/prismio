@@ -1,0 +1,155 @@
+// v0.1 concurrency -- the blocking typed `Channel<T>`, and its four rules.
+//
+// The runtime channel has existed since REQUIREMENTS 15 and had no type, no
+// ownership contract and no wrapper: RUNTIME.md listed `chan_new` and its six
+// siblings under "not yet wrapped ... `extern fn` at your own risk". This is
+// that contract, and each rule below is a check rather than a sentence.
+//
+// **What this is not.** There is no executor, no future and no `await`. A send
+// blocks while the channel is full and a receive blocks until a message arrives
+// or the channel closes; that is the whole surface, and it is enough to keep a
+// worker pool alive across frames, which is what v0.1 needed it for.
+
+import std.io
+
+struct Job {
+    seed: Int,
+    steps: Int
+}
+
+struct Answer {
+    value: Int
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn step(seed: Int, steps: Int) -> Int {
+    let mut s = seed
+    let mut acc = 0
+    let mut i = 0
+    while (i < steps) {
+        s = s * 1103515245 + 12345
+        acc = acc + ((s / 65536) & 32767)
+        i = i + 1
+    }
+    return acc
+}
+
+// Rule 3, receive after close: a receive drains what is queued and then answers
+// `none` for ever. That is what ends a worker loop without a sentinel message,
+// and it is why the return is `T?` rather than `T`.
+fn worker(jobs: Channel<Job>, answers: Channel<Answer>) -> Int {
+    let mut handled = 0
+    loop {
+        let taken = chan_recv(jobs)
+        if (taken == none) { break }
+        let job = expect(taken)
+        chan_send(answers, Answer { value: step(job.seed, job.steps) })
+        handled = handled + 1
+    }
+    return handled
+}
+
+// Rule 1, ownership of a sent value: `chan_send` moves. The negative half is
+// `neg_56_channel_send_moves.psm`, which names the value again and is rejected.
+// The positive half is here -- every message this sends is received, used and
+// released, which `--verify` sees as a balanced ledger.
+//
+// Rule 2, shared endpoint lifetime: `chan_share` is the syntactically visible
+// duplication. It hands back the same endpoint, so the worker and this function
+// are talking through one channel and not two, and only the endpoint `chan_new`
+// returned is freed.
+fn pool_round_trip() -> Int {
+    let jobs: Channel<Job> = chan_new(8)
+    let answers: Channel<Answer> = chan_new(8)
+
+    let w0 = spawn worker(chan_share(jobs), chan_share(answers))
+    let w1 = spawn worker(chan_share(jobs), chan_share(answers))
+
+    let mut sent = 0
+    while (sent < 6) {
+        chan_send(jobs, Job { seed: sent * 7919 + 1, steps: 64 })
+        sent = sent + 1
+    }
+    // Rule 4, destruction: close, then join, then free. The close is what lets
+    // the workers' receive loops end; the join is the synchronisation edge that
+    // makes the free safe.
+    chan_close(jobs)
+
+    let mut total = 0
+    let mut got = 0
+    while (got < 6) {
+        let taken = chan_recv(answers)
+        if (taken == none) { break }
+        let answer = expect(taken)
+        total = total + answer.value
+        got = got + 1
+    }
+
+    let h0 = join w0
+    let h1 = join w1
+    chan_close(answers)
+    chan_free(jobs)
+    chan_free(answers)
+
+    if (h0 + h1 != 6) { return fail("the two workers did not handle six jobs between them") }
+    if (got != 6) { return fail("six sends did not produce six answers") }
+    return total
+}
+
+// The same six jobs, run in this thread. The pool must agree with it exactly:
+// a concurrent answer that is merely close is a wrong answer.
+fn serial_round_trip() -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < 6) {
+        total = total + step(i * 7919 + 1, 64)
+        i = i + 1
+    }
+    return total
+}
+
+fn capacity_and_length() -> Int {
+    let c: Channel<Job> = chan_new(4)
+    if (chan_len(c) != 0) { return fail("a fresh channel is not empty") }
+    chan_send(c, Job { seed: 1, steps: 1 })
+    chan_send(c, Job { seed: 2, steps: 1 })
+    if (chan_len(c) != 2) { return fail("chan_len does not count queued messages") }
+
+    chan_close(c)
+    // Draining a closed channel still yields what was queued before the close.
+    let first = chan_recv(c)
+    let second = chan_recv(c)
+    if (first == none or second == none) {
+        return fail("a closed channel dropped messages queued before the close")
+    }
+    let a = expect(first)
+    let b = expect(second)
+    if (a.seed + b.seed != 3) { return fail("a closed channel reordered or altered its queue") }
+    // ...and then answers `none`, for ever, rather than blocking.
+    if (chan_recv(c) != none) { return fail("a drained closed channel did not answer none") }
+    if (chan_recv(c) != none) { return fail("a drained closed channel answered none only once") }
+    chan_free(c)
+    return 0
+}
+
+fn main() -> Int {
+    if (capacity_and_length() != 0) { return 1 }
+
+    let pooled = pool_round_trip()
+    let serial = serial_round_trip()
+    if (pooled != serial) {
+        print("  pooled ")
+        println(pooled)
+        print("  serial ")
+        println(serial)
+        return fail("the worker pool and the serial loop disagree")
+    }
+
+    println("PASS: channels")
+    return 0
+}

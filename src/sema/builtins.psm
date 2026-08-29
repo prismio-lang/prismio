@@ -34,6 +34,36 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
         return typeInvalid()
     }
 
+    // v0.1 concurrency. The seven blocking channel operations. Their element
+    // type comes from the endpoint argument, exactly as `list_get`'s comes from
+    // the list -- the one exception is `chan_new`, which like `list_new` has
+    // nothing to read it from and takes it from the annotation.
+    if (strEquals(name, "chan_new")) { return typeChannel(typeInvalid()) }
+    if (strEquals(name, "chan_share")) {
+        if (nodeExists(argPtr)) {
+            let ct = nodeGetType(ptr_to_node(argPtr))
+            if (typeIsChannel(ct)) { return ct }
+        }
+        return typeChannel(typeInvalid())
+    }
+    // `T?`, and that is the whole of receive-after-close: a drained closed
+    // channel answers `none`, so a receiving loop ends without a sentinel value
+    // and without a second call to ask whether it should have received.
+    if (strEquals(name, "chan_recv")) {
+        if (nodeExists(argPtr)) {
+            let ct = nodeGetType(ptr_to_node(argPtr))
+            if (typeIsChannel(ct)) { return typeOptional(typeChannelElem(ct)) }
+        }
+        return typeInvalid()
+    }
+    // 1 delivered, 0 dropped because the channel was already closed. `Int`
+    // rather than `Bool` because the C returns `int` and the declaration is
+    // emitted from this type; see the contract note in semaCheckBuiltinCall.
+    if (strEquals(name, "chan_send")) { return typeInt() }
+    if (strEquals(name, "chan_len")) { return typeInt() }
+    if (strEquals(name, "chan_close")) { return typeVoid() }
+    if (strEquals(name, "chan_free")) { return typeVoid() }
+
     if (strEquals(name, "list_new")) { return typeList(typeInvalid()) }
     if (strEquals(name, "list_new_with_capacity")) { return typeList(typeInvalid()) }
     if (strEquals(name, "list_len")) { return typeInt() }
@@ -219,6 +249,69 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         }
         return true
     }
+    // v0.1 concurrency -- the four rules this surface has to state, and where
+    // each one is enforced.
+    //
+    // **Ownership of a sent value.** `chan_send(c, v)` moves `v` into the
+    // channel: the receiving task takes it out and owns it, so the sender must
+    // not name it again. Enforced by semaConsumeOperand below and by
+    // aifRuntimeContract's RETAIN_IN, exactly as `list_push` is.
+    //
+    // **Shared endpoint lifetime.** `chan_share(c)` is the syntactically visible
+    // duplication SPEC 11 item 10 requires. It returns the same endpoint, it does
+    // not copy the channel, and it does not make a second owner -- only the
+    // endpoint `chan_new` returned may be freed.
+    //
+    // **Receive after close.** `chan_recv` drains what is queued and then answers
+    // `none` for ever; the `T?` return is what makes a caller handle it.
+    //
+    // **Destruction.** `chan_free(c)` after `chan_close(c)` and after joining
+    // every task the endpoint was shared with. The join is the synchronisation
+    // edge that makes the free safe, which is the same edge that keeps the
+    // element counts non-atomic.
+    if (strEquals(name, "chan_new")) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        semaCheckValue(module, ptr_to_node(argPtr), typeInt(), "chan_new capacity")
+        return true
+    }
+    if (strEquals(name, "chan_send")) {
+        if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let ct = semaExpr(module, a0)
+        if (typeIsChannel(ct) == false) {
+            semaErrorAt(a0, strConcat("chan_send expects a Channel, found ", typeDisplay(ct)))
+            return true
+        }
+        let valueNode = ptr_to_node(a0.next)
+        semaCheckValue(module, valueNode, typeChannelElem(ct), "chan_send value")
+        // A closed channel drops the message, and a dropped message is the one
+        // value nothing can release -- the sender has moved it and the receiver
+        // never saw it. That is why the contract is "close only after every
+        // sender has been joined", and why the return is worth reading.
+        semaConsumeOperand(valueNode)
+        return true
+    }
+    if (strEquals(name, "chan_recv")) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let ct = semaExpr(module, a0)
+        if (typeIsChannel(ct) == false) {
+            semaErrorAt(a0, strConcat("chan_recv expects a Channel, found ", typeDisplay(ct)))
+        }
+        return true
+    }
+    if (strEquals(name, "chan_share") or strEquals(name, "chan_close")
+        or strEquals(name, "chan_len") or strEquals(name, "chan_free")) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let ct = semaExpr(module, a0)
+        if (typeIsChannel(ct) == false) {
+            semaErrorAt(a0, strConcat(name, strConcat(" expects a Channel, found ",
+                                                      typeDisplay(ct))))
+        }
+        return true
+    }
+
     if (strEquals(name, "list_push")) {
         if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
         let a0 = ptr_to_node(argPtr)

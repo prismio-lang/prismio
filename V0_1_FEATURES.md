@@ -409,7 +409,7 @@ is prefixed.
   `str*` prefix can retire — but that is the 848-call-site rename, so it should
   happen *once*, deliberately, with byte-identical IR as the check.
 
-### 3.6 · First-class pointers, and the parser gaps — **PART DONE 2026-08-29**
+### 3.6 · First-class pointers, and the parser gaps — **PART DONE; V0.1 SCOPE DECIDED**
 
 The parser gaps are closed (see §3.2). First-class pointers are not: `src/` still
 has **757 `ptr_to_node`/`node_to_ptr`/`ptr_to_token`/`ptr_to_type` occurrences**
@@ -424,7 +424,7 @@ genuinely foreign; the `while (flag)` idiom is down to **one** site
 (`src/main.psm:162`). What is left is the pointer punning and the hand-built
 linked lists, which are the same row twice.
 
-#### The decision this is waiting on, with what each answer costs
+#### Decision: v0.1 ships without a non-owning typed reference
 
 Measured on the tree 2026-08-30, because "757 occurrences" is the wrong number to
 decide on -- it counts the casts and not the reason they exist. `Ptr` appears
@@ -436,7 +436,7 @@ Re-verified here rather than taken from the notes, and both hold: a recursive
 typed field compiles, and two fields naming one node is `error: use of moved
 value` at the second mention.
 
-**A -- ship v0.1 without it.** 3.6 stays PART DONE: the parser gaps, which were
+**A -- ship v0.1 without it — SELECTED.** 3.6 stays PART DONE: the parser gaps, which were
 the real work in this row, are closed. `V1_GAP_ANALYSIS.md` keeps one live
 "central finding" row, honestly labelled. Costs nothing that is not already
 true today.
@@ -456,11 +456,11 @@ deletes the 545 casts and turns node/token/type confusion into a compile error,
 which is most of what `V1_GAP_ANALYSIS.md` is actually complaining about, at a
 fraction of B's design cost and with no safety claim it cannot check.
 
-**Recommended: A now, C as the first v0.2 item, B only if the language commits
-to a borrow discipline.** A and C are the same decision seen twice -- C is what
-3.6 turns into once it stops being blocked on B -- and neither of them blocks
-shipping. This is a call for the project rather than for whoever picks up the
-work next, which is why it is written down here instead of being taken.
+**Decision: A for v0.1, C as the first v0.2 pointer item, B only if the language
+commits to a borrow discipline.** A and C are the same direction at two release
+boundaries: v0.1 makes no lifetime promise it cannot enforce; v0.2 can remove the
+545 unchecked casts with typed-but-explicitly-unmanaged `Ptr<T>`. A storable
+`&T` remains out of scope until its lifetime rule can be designed with it.
 
 **The original plan, kept:**
 
@@ -644,7 +644,7 @@ rewritten in the language as it now stands; g9 is unchanged and the reason is be
 | g4 | **`impl World`** + `private` | `World` |
 | g5 | **`impl AssetCache`, `impl Scene`** + `private` | `AssetCache`, `Scene` |
 | g6 | **`impl World`** + `private` | `World` |
-| g9 | unchanged | -- |
+| g9 | unchanged; **`g9_tuned.psm` added** over `Channel<T>` | `Channel<Band>`, `Channel<Tally>` |
 
 **Old-vs-new, reported as the section requires, and stronger than a timing run:**
 every one of the seven emits **byte-identical `__TEXT,__text`** against its
@@ -666,6 +666,8 @@ Three things this turned up that the section's premise did not anticipate:
 - **g9 cannot take method syntax.** Its only workload call is
   `spawn simulate(Band { .. })`, and `spawn` takes a call expression; `spawn b.simulate()`
   is a different construct. Left alone rather than reshaped to suit the rewrite.
+  Its hand-tuned sibling does not spawn per frame at all, and is left alone for
+  the same reason: `chan_send(jobs, Band { .. })` is the shape being measured.
 
 `aif/corpus/*.psm` is untouched -- the xlang ports carry the "verbatim from" note and
 the two would diverge. That is the next slice of this section, not part of it.
@@ -689,10 +691,13 @@ commit.
   is within 3% of Rust's — 4.6 ms against 4.7 ms. **g4 does not move at all**
   (38.3 → 38.5), which says its 1.76× gap is not layout and a memory-model change
   will not find it.
-  `g9` stays **absent**: hand-tuned Rust keeps four workers alive across frames
-  over channels, and Prismio has no way to keep a task alive past its join, so
-  the arm is not writable rather than not written. When it is, that arm gets
-  written and the 1.45× gap gets re-measured.
+  `g9`'s arm was **absent because it was not writable** — hand-tuned Rust keeps
+  four workers alive across frames over channels and Prismio had no way to keep a
+  task alive past its join. **Written 2026-08-29**, once `Channel<T>` landed:
+  `g9_tuned.psm` creates its four workers once and feeds them over channels,
+  same checksums, and measures **82.0 ms against Rust's tuned 71.3 ms — 1.15×**.
+  The 1.45× it replaces compared Prismio's *idiomatic* arm with Rust's tuned one,
+  which was the only comparison available while this one could not be written.
 - The files that move together with any language change: `tests/*.psm`,
   `tests/test_runner.py` (hardcoded manifest and leak expectations),
   `aif/corpus/*.psm`, `aif/evidence/xlang/prismio/*.psm`, `std/*.psm`,
@@ -734,38 +739,24 @@ Suite: **195**.
 
 ## 5 · What "done" means for v0.1
 
-1. Every item in §3 landed in its smallest right-shaped form.
-2. `../docs/content/roadmap.md` reflects reality — no "Coming Soon" on anything
-   shipped, and no "Implemented" on anything the matrix has not run green.
-3. The three-platform CI matrix **observed green**, not merely expected to be.
-   **Observed 2026-08-30** (run 33072047347, the newest on this branch): Ubuntu
-   green, macOS green, **Windows red at "Run the test suite", 173/175**. Every
-   recorded run on this branch is red for the same reason -- the shape the note
-   above described is right, the numbers were stale.
+The language-feature surface is closed in §3. The pointer decision is A in
+§3.6, and v0.1's concurrency addition is a blocking typed `Channel<T>`; a
+non-owning typed pointer, futures, an executor, and `async`/`await` are post-v0.1.
 
-   The two Windows failures, both pre-existing and diagnosed:
+Release completion is defined by the **exactly six**, ordered, authoritative
+checkboxes at the top of [`TODO.md`](TODO.md#v01-publish-closure--exactly-six-tasks):
 
-   - **`test_76_std_fs` -- FIXED 2026-08-30.** A wrong assertion, not a wrong
-     `join_path`. `join_path` normalises separators to the host's, so the literal
-     `joinPath("/a/b", "c.psm")` comes back `\a\b\c.psm` on Windows and
-     `strStartsWith(joined, "/a/b")` is false there while passing everywhere else.
-     The test now builds its directory with `joinPath` and asserts the
-     `joinPath`/`directoryOf` round trip, which is the property that has to hold on
-     every host. The neighbouring `directoryOf("/a/b/c.psm")` literal is kept
-     deliberately: `get_directory` scans for both separators on purpose.
-     Unverifiable on this host -- it passes on macOS and needs a CI run to confirm
-     Windows.
-   - **`run --jit` -- open, and needs a Windows host.** The JIT cannot resolve its
-     symbols there, and the list includes `prismio_argv`, which is a *runtime C*
-     symbol rather than a generated one -- so the JIT is not seeing the runtime on
-     Windows at all, and the generated `print__*` / `prismioStdIo*` failures follow
-     from that rather than being separate. This is ORC symbol-resolution work that
-     cannot be developed or verified from macOS; it wants either a Windows machine
-     or a sequence of CI pushes.
-4. `V1_GAP_ANALYSIS.md`'s "central finding" table — the workarounds in the
-   compiler's own source — is empty, or every remaining row has a reason.
-5. The five-arm benchmark exists for every corpus program, and the standing
-   against idiomatic Rust is recorded. As of 2026-08-29: **0.92×–1.81×**
-   idiomatic, and the fifth arm now exists for six of seven — hand-tuned Prismio
-   reaches **0.25×–1.42×** of idiomatic Rust, and 0.97×–2.16× of hand-tuned Rust.
-   g9's fifth arm is the one outstanding absence and its reason is recorded.
+1. Close M6 slice 2 without the real g2 regression.
+2. Land blocking typed channels and give g9 an honest fifth arm.
+3. Reconcile the repository's internal truth.
+4. Synchronise and compile-check the complete public documentation.
+5. Freeze a fully gated local release candidate and evidence bundle.
+6. Observe that exact candidate green on macOS, Ubuntu, and Windows, then
+   rehearse publication and its artifacts.
+
+**Five of the six are closed.** What remains is task 6: the macOS/Ubuntu/Windows
+matrix on the exact RC commit, and the publication it gates. The release candidate
+is `build/v0.1-rc` — 202/202, two-generation fixpoint, differential 19/19, corpus
+30/30. `build/tbaa3` remains the last compiler *observed* green on all three
+platforms, and stays the baseline every measurement here is taken against until
+the matrix runs on the RC.

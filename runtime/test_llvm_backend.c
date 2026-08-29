@@ -26,6 +26,8 @@ int ir_load(const char *, const char *);
 void ir_store(const char *, const char *, const char *);
 int ir_load_ptr(const char *, const char *);
 void ir_store_ptr(const char *, const char *, const char *);
+int ir_struct_load_ptr(const char *, const char *, const char *, int);
+void ir_struct_store_ptr(const char *, const char *, const char *, const char *, int);
 int ir_add(const char *, const char *, const char *);
 int ir_mul(const char *, const char *, const char *);
 int ir_icmp_slt(const char *, const char *, const char *);
@@ -111,10 +113,10 @@ int main(void) {
     // one back -- this is what a struct literal plus a field access lowers to
     int obj = ir_alloc_object("Point");
     int fx = ir_struct_field_ptr("Point", ir_get_temp_name(obj), 0);
-    ir_store_ptr("i32", "11", ir_get_temp_name(fx));
+    ir_struct_store_ptr("i32", "11", ir_get_temp_name(fx), "Point", 0);
     int fy = ir_struct_field_ptr("Point", ir_get_temp_name(obj), 1);
-    ir_store_ptr("i32", "22", ir_get_temp_name(fy));
-    int read_x = ir_load_ptr("i32", ir_get_temp_name(fx));
+    ir_struct_store_ptr("i32", "22", ir_get_temp_name(fy), "Point", 1);
+    int read_x = ir_struct_load_ptr("i32", ir_get_temp_name(fx), "Point", 0);
     ir_call_begin();
     ir_call_arg("i32", ir_get_temp_name(read_x));
     ir_call_end("void", "println_int");

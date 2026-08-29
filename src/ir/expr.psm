@@ -797,6 +797,22 @@ private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPt
             // establishes the value range every later read observes.
             irProfileField(structName, field.s1, true)
             irProfileRange(structName, field.s1, fieldType, fieldVal)
+            // M6 slice 2 stops here, and the reason is measured. A struct path on
+            // an initialiser tells LLVM these stores cannot alias the fields the
+            // literal is being built *from*, which lets it merge them into one
+            // wide store. That merge is a win when it can see the destination and
+            // a 1.68x loss on g2 when it cannot: every struct literal pushed into
+            // a container is written into a slot handed back by `list_push_slot`,
+            // whose next call reloads the same `RtList` header, and the widened
+            // store costs ~6 cycles per element against that reload.
+            // `aif/evidence/RESULTS-M6-struct-path-tbaa.md` isolates it to that
+            // one interaction -- the same merge measures **0.76x** when the slot
+            // is computed inline -- and names curating `list_push_slot` as the
+            // fix. Until that seam closes, an initialiser keeps slice 1's scalar
+            // tags. Field *reads* and field *assignments* keep their paths, which
+            // is where the whole measured prize is: declining only initialisers
+            // leaves g1, g3, g4, g5, g6 and g9 mnemonic-identical to the full
+            // slice and returns g2 to its baseline exactly.
             ir_store_ptr(fieldType, fieldVal, ir_get_temp_name(slot))
         }
         fieldPtr = field.next
@@ -978,12 +994,14 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // A String field is a value, not storage reached by GEP, so it loads
         // like a scalar even though its key names a struct.
         if (isValueStructKey(fieldType)) {
-            return ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
+            return ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),
+                                                       structName, fieldIndex))
         }
         if (isStructTypeKey(fieldType)) {
             return ir_get_temp_name(slot)
         }
-        return ir_get_temp_name(ir_load_ptr(fieldType, ir_get_temp_name(slot)))
+        return ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),
+                                                   structName, fieldIndex))
     }
 
     if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {

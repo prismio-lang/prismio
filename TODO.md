@@ -15,6 +15,146 @@ One milestone at a time. **Do not start M(n+1) until M(n)'s gate is green.**
 
 ---
 
+## v0.1 publish closure — exactly six tasks
+
+This is the **authoritative remaining-work list for v0.1**. There is no seventh
+release feature hiding elsewhere in this file. Work it in order and check an item
+only when its exit condition is evidenced. `async`/`await` is deliberately not in
+v0.1: the concurrency surface below is a blocking, typed `Channel<T>` over the
+runtime channel operations that already exist. A non-owning typed pointer is also
+post-v0.1; that decision is closed in `V0_1_FEATURES.md` §3.6.
+
+- [x] **1 · Close M6 slice 2, including the real g2 regression.** **DONE.**
+      The regression was one function — `cull`, 53 → 49 instructions — and
+      byte-patching the merged 128-bit store into the *old* binary at unchanged
+      addresses reproduced all of it (1.664x), which removed layout, the
+      allocator, alignment, cold memory and startup as causes. `g2_cull_probe.c`
+      names the mechanism: the merge is a **0.76x win** when the destination is
+      visible and a **2.74x loss** against `list_push_slot`, whose next call
+      reloads the `RtList` header the widened store ran ahead of. Curating
+      `list_push_slot` is the real fix and is v0.2 work. Codegen therefore
+      declines the path tag on **struct literal initialisers** only — the shape
+      that always writes into a slot from that call — and keeps it on field reads
+      and assignments. Candidate frozen as `build/m6-rc`.
+
+      **Exit met:** suite 199/199, fixpoint, 18/18 differential, corpus 30/30,
+      `--verify` and ASan clean; g2 **0.995x** and mnemonic-identical to `tbaa3`;
+      g4 **0.963x** and g6 **0.993x** keep the full slice-2 code — every program
+      but g2 is mnemonic-identical to the undeclined slice. The one number past
+      10% is g5's 1.142x, which is the third false g5 signal on record: its two
+      changed functions are shorter, an A/A of one binary spans 1.93x, and a
+      direct 25-round A/B reads 0.574x the other way. Evidence:
+      `aif/evidence/RESULTS-M6-struct-path-tbaa.md`.
+
+- [x] **2 · Land blocking typed channels and make g9 an honest five-arm case.**
+      **DONE.** `Channel<T>` is seven compiler builtins in `list_get`'s category,
+      typed the way `Task<R>` is — `TypeKind.PTR` with a name and a child, so no
+      switch in sema, AIF or codegen needed a new arm. `chan_recv` answers `T?`,
+      which is what ends a worker loop without a sentinel. The four rules are
+      each a check: `neg_56_channel_send_moves` for the move, `test_96_channels`
+      for the rest, with the positive half beside the negative one.
+
+      Three model changes it needed, each found by a failing check rather than by
+      reading: a send **consumes** rather than retaining (a list releases its
+      elements and a channel does not — modelled as `list_push`, every message
+      leaked); a site typed `T?` allocates a `T`; and a produced return that
+      allocates *nothing here* is neither stack- nor arena-placeable (`foreign`).
+      `--verify`'s own ledger raced under two allocating threads and now takes a
+      lock, which is why its counts are reproducible for the first time.
+
+      **Exit met:** suite **201/201**, fixpoint, differential **19/19** — adding
+      `test_96_channels.psm` to it exposed a real pre-existing oracle gap
+      (`expect`) — corpus 30/30, ASan *and* TSan clean, `--verify` 18013/18013 on
+      the tuned g9. **141 existing programs emit byte-identical IR**, so the
+      feature is additive. g9 has five arms: Prismio 103.0 ms, **Prismio
+      hand-tuned 82.0 ms**, Rust idiomatic 114.5 ms, Rust hand-tuned 71.3 ms,
+      checksums equal — **1.15x tuned-against-tuned**, replacing the 1.45x that
+      compared Prismio's idiomatic arm with Rust's tuned one because the tuned arm
+      could not be written. No executor, futures, `async` or `await`. Evidence:
+      `aif/evidence/RESULTS-v01-channels.md`.
+
+- [x] **3 · Reconcile the repository's internal truth.** **DONE.** One release
+      candidate (`build/v0.1-rc`), one last-good-on-three-platforms compiler
+      (`build/tbaa3`, and it is now labelled as *observed green*, which is the
+      part that was being read as a promise), one suite count (**202**), one
+      standing table (**0.90x–1.59x** against idiomatic Rust). `HANDOFF.md`'s head,
+      `V0_1_FEATURES.md` §4 and §5, this file's gate and M6 section, `RUNTIME.md`
+      (channels moved out of "not yet wrapped" into a new §4.1), `PORTING.md`'s
+      36/36, `V1_GAP_ANALYSIS.md`'s "still not done" list, and the evidence index
+      all now say the same thing. `graphify update .` run: 3121 nodes, 5693 edges.
+
+      **The audit found a real defect, not only stale prose.** Checking the
+      map/sort claim rather than deleting it: `let m: Map<Int, Int> = mapNew<Int,
+      Int>()` — the form the documentation uses — **did not link**, and had not
+      since generics landed. Sema resolved the annotation to `Map$Int$Int` while
+      codegen answered `ptr` for anything with type arguments, so the release call
+      was emitted with an empty type name. Sema now stamps the resolved type on the
+      annotation node and codegen reads it; 143 programs emit byte-identical IR,
+      and `tests/test_97_generic_annotation.psm` is the regression.
+
+      **Exit met:** searches for suite counts, platform status, last-good names,
+      benchmark standings and feature status across `*.md` return one answer each.
+
+- [x] **4 · Synchronise the public documentation.** **DONE.** Ten pages in
+      `../docs` changed. The v0.1 release notes were a 2026-08-09 snapshot listing
+      traits, generics, closures, concurrency, package management and an
+      importable standard library as *not included*; all six had landed. The
+      roadmap said selective imports and `impl <Trait> for <Type>` were absent —
+      both work, and each claim was checked by compiling it rather than by reading
+      the changelog. `language/concurrency` gains `Channel<T>`, its four rules and
+      a compiled worked example; `stdlib/index` goes from "three source modules"
+      to ten and stops saying `String` map keys do not work. `DOCUMENTATION_AUDIT.md`
+      now opens by naming the five of its own findings that have expired, because
+      an audit read as current is worse than no audit.
+
+      Nothing was promised that is not green: `async`/`await`, an executor,
+      atomics, a registry, aliased imports, WebAssembly and the mobile toolchains
+      all stay Coming Soon, and WebAssembly stays *blocked* with the reason.
+
+      **Exit met:** `pnpm check` green — 99 pages audited, **146 compiler-checked
+      snippets** compile with `build/v0.1-rc`, eslint clean — and `pnpm build`
+      prerenders 107 routes. Fixed a false positive in `audit-content.mjs` that
+      read `# prismio lockfile v1` inside a fenced block as a duplicate H1.
+
+- [x] **5 · Run and freeze the complete local release-candidate gate.** **DONE.**
+      `build/v0.1-rc`, and the whole gate is now one command —
+      `bash tools/release_gate.sh --old build/tbaa3 --rc build/v0.1-rc` — because
+      a gate nobody can re-run is a gate that gets skipped. Fourteen checks, all
+      green: source lists, two generations, byte-identical fixpoint, **the frozen
+      binary reproducing that fixpoint**, seed agreement, suite 202/202,
+      differential 19/19, corpus 30/30 built and run, `--verify` 0 leaked /
+      0 violations, curated-runtime off, object-cache off, JIT, cross-target, and
+      the packaged toolchain's separation checks. ASan over nine programs and TSan
+      over the three concurrent ones: 0 reports each.
+
+      Writing the gate exposed two of its own bugs, both of which read as compiler
+      defects: `--target` without `--sysroot` (no C library, so no `stdio.h` — the
+      diagnostic said so), and a textual `.ll` diff calling 21 of 24 programs
+      "moved" because alias metadata changes IR without changing instructions. It
+      now runs `tools/fn_mnemonic_diff.py` instead, which is the diff §2.2 asks for.
+
+      **Exit met.** Corpus median **1.001x**, range 0.945–1.067x, no RSS movement.
+      The only number past 10% is g5's 1.067x, and g5 is now *demonstrated*
+      unmeasurable rather than argued to be: an A/A of `build/tbaa3` against
+      **itself** reports **1.266x REGRESSED**. Its one changed function removes two
+      dependent loads. Five-arm standing **0.88x–1.57x** against idiomatic Rust,
+      with g9's hand-tuned arm present for the first time. Evidence:
+      `aif/evidence/RESULTS-v01-release-candidate.md`.
+
+- [ ] **6 · Prove the exact RC on three platforms and rehearse publication.** Run
+      the macOS, Ubuntu, and Windows CI matrix on the exact commit from task 5,
+      including bootstrap, package/build/install paths, source-list/fixpoint/suite,
+      differential/seed/corpus checks, and Windows JIT. Prepare the version,
+      changelog/release notes, distributable artifacts, and checksums (plus signing
+      where the project uses it); install and smoke-test the artifacts in clean
+      environments. Tag or publish only after those exact artifacts are green.
+
+      **Exit:** all three platform runs are observed green for the release commit;
+      clean-install smoke tests pass; artifacts, checksums, release notes, and the
+      publish command/rehearsal are ready. At that point v0.1 is publish-ready.
+
+---
+
 ## The gate — run this at the end of every milestone, no exceptions
 
 ```bash
@@ -23,7 +163,7 @@ bash tools/bootstrap.sh --compiler build/<lastgood> --out build/<next>
 bash tools/bootstrap.sh --compiler build/<next>     --out build/<next2>
 ./build/<next> build src/main.psm -o build/a.ll && ./build/<next2> build src/main.psm -o build/b.ll
 cmp build/a.ll build/b.ll          # fixpoint: must be identical
-cd tests && PRISMIO=../build/<next2> python3 test_runner.py   # must be 137/137 or higher
+cd tests && PRISMIO=../build/<next2> python3 test_runner.py   # must be 202/202 or higher
 ```
 
 ```bash
@@ -49,7 +189,7 @@ was measured.
 | | requirement |
 |---|---|
 | Fixpoint | `a.ll == b.ll` |
-| Suite | 137/137 or higher, never lower |
+| Suite | 202/202 or higher, never lower |
 | Checksums | all 29 corpus variants identical — `milestone_bench` asserts this before timing |
 | Time | corpus median `new/old` within 3%; **fewer than 2** programs past 10% |
 | RSS | no program past 10% — this axis reversed once with nobody watching |
@@ -1575,14 +1715,19 @@ these values.** The failure mode on the other side is a double free, not a leak.
 
 ## M6 · Alias metadata — the standing gap against Rust, measured
 
-**Measured 2026-08-30 on the five-arm gate.** Standing against idiomatic Rust is
-**0.83x–1.80x** (Prismio ahead on g3 and g9). This session's changes are neutral:
-corpus median new/old **0.997x**, range 0.817–1.036x, gate passed.
+**M6 is closed. Both slices shipped; the standing below is the frozen RC's**,
+measured on `build/v0.1-rc` against `build/tbaa3`, 25 runs per arm, checksums
+equal. The table this replaced was the pre-M6 one and is in git history.
 
 | | g1 | g2 | g3 | g4 | g5 | g6 | g9 |
 |---|---|---|---|---|---|---|---|
-| Prismio / Rust idiomatic | 1.17x | 1.51x | **0.98x** | **1.80x** | 1.05x | **1.79x** | **0.83x** |
-| Prismio tuned / Prismio | 0.22x | 0.53x | 0.80x | **0.98x** | 0.32x | 0.78x | — |
+| Prismio / Rust idiomatic | 1.09x | 1.51x | **0.98x** | 1.55x | 1.28x | 1.59x | **0.90x** |
+| Prismio tuned / Prismio | 0.23x | 0.45x | 0.80x | 0.62x | 0.22x | 0.76x | **0.80x** |
+
+g4 came from 1.80x and g6 from 1.79x across the two slices; g9's tuned column
+exists at all only since `Channel<T>` landed. What follows is the measurement
+that decided the order the two slices were done in, kept because slice 3
+(`noalias` from AIF) is priced by it.
 
 **g4 is the one to read.** It is the worst gap *and* the only program where hand
 tuning buys nothing — 0.975x. `g4_tuned.psm` applies the same fusion
@@ -1697,13 +1842,33 @@ conservative tree must keep in a single class.
    in one session on byte-identical binaries. **Diff the functions before
    believing either harness on this program.**
 
-2. **TBAA on struct fields**, as struct-path tags rather than scalar leaves, so
-   two `double` fields of the same struct stop aliasing each other. Slice 1
-   cannot separate `p.x` from `p.y`; DataView columns already get this and
-   ordinary structs do not.
+2. ~~**TBAA on struct fields**, as struct-path tags rather than scalar leaves.~~
+   **DONE, slice 2.** Ordinary field loads and stores now carry a base record and
+   byte offset under slice 1's clang root. The base is built from the LLVM type
+   codegen actually selected: reordered fields follow their physical index, and
+   a split type gets separate `.hot` and `.cold` bases with offsets read through
+   `LLVMOffsetOfElement`. A struct named beside raw `Ptr` in an extern signature
+   deliberately falls back to scalar tags, preserving `Ptr` as the language's
+   conservative type-punning seam.
+
+   Per-function mnemonic diff before timing: **all 191 g4 functions and all 198
+   g6 functions checked**. g4 changed 3 (`system_movement` 48 → 44 instructions,
+   plus its inlined copy and `system_regen`); g6 changed only `world_step`, 60 →
+   56. Both hot loops now use paired NEON operations. Interleaved 25-run gate:
+   **g4 0.964x, g6 0.997x**, checksums equal. Five-arm standing is now **g4
+   1.52x** and **g6 1.59x** idiomatic Rust; Prismio hand-tuned is 1.01x and
+   1.19x respectively. Full evidence in
+   `aif/evidence/RESULTS-M6-struct-path-tbaa.md`.
 3. **`noalias` derived from AIF**, once the above is measured. The rest of the
-   5.31x.
-4. **Call-site specialisation**, last, and only after constraint 1 above is
+   5.31x. **v0.2**: v0.1 closed with slices 1 and 2 in and this untouched.
+4. **Curate `list_push_slot`.** Not on the original list, and it is here because
+   slice 2 found it: the widened store slice 2 enables is a **0.76x win** where
+   the optimiser can see the destination and a **2.74x loss** against this one
+   out-of-line call, which reloads the `RtList` header the store ran ahead of. It
+   needs `list_push_grow`'s outlining treatment — the same rule `list_push` had
+   to satisfy — and it is what would let struct literal initialisers take their
+   path tag back. **v0.2.**
+5. **Call-site specialisation**, last, and only after constraint 1 above is
    closed — it is the smallest prize (1.19x on top of TBAA) and the only one that
    can corrupt memory.
 

@@ -1,0 +1,26 @@
+// expect-error: use of moved value `job`
+// v0.1 concurrency, rule 1: `chan_send` **moves** the value into the channel.
+//
+// The receiving task takes the message out and owns it from then on, so the
+// sender naming it again is naming memory another thread may already have freed.
+// That is a stronger reason than `list_push`'s: a list at least still exists.
+//
+// The positive half is `tests/test_96_channels.psm`, whose sends are all
+// received, used and released -- without it this file would pass with channels
+// removed from the language entirely.
+
+import std.io
+
+struct Job {
+    seed: Int
+}
+
+fn main() -> Int {
+    let c: Channel<Job> = chan_new(2)
+    let job = Job { seed: 7 }
+    chan_send(c, job)
+    println(job.seed)
+    chan_close(c)
+    chan_free(c)
+    return 0
+}

@@ -1813,6 +1813,12 @@ typedef struct {
     int E, A, C, T;
     int type_acyclic;   // stamped once, before iteration
     int no_stack;       // explicitly dropped -- see AIF_CON_NO_STACK
+    // The allocation is the *callee's*: this is a produced extern return, so
+    // this frame owns the pointer but there is nothing here to place. Distinct
+    // from `no_stack`, which additionally says somebody else performs the free
+    // and therefore bars the scope release -- a produced return needs exactly
+    // the opposite, T0 refused and the release kept. See AIF_CON_FOREIGN.
+    int foreign;
     // Ownership left this frame: an FFI `consume` takes it, and the callee frees
     // it. Distinct from `no_stack`, which both a `drop` and a transfer set --
     // "this cannot live in a stack slot" is true of both, but "somebody else
@@ -1929,6 +1935,7 @@ int aif_site_new(const char* type, int kind, int fn, int scope,
     s->bytes = 0;
     s->type_acyclic = 1;
     s->no_stack = 0;
+    s->foreign = 0;
     s->transferred = 0;
     s->in_container = 0;
     s->alias_axiom = 0;
@@ -2251,6 +2258,7 @@ void aif_argv_end(int base) { argv.len = base; }
 #define AIF_CON_ESCAPE_GLOBAL 8
 #define AIF_CON_NO_STACK      9
 #define AIF_CON_TRANSFERRED   24
+#define AIF_CON_FOREIGN       25
 // SPEC 5's annotations. Neither is a transfer rule: both are applied once,
 // between the points-to fixed point and the fact loop, because an axiom that
 // arrives mid-iteration would only cut what had not already been raised.
@@ -2375,6 +2383,7 @@ void aif_con_pin_region(int vs, const char* name) {
 // ids. Until then this is the sound direction to be wrong in.
 void aif_con_no_stack(int vs)                   { con_add(AIF_CON_NO_STACK, vs, 0, 0); }
 void aif_con_transferred(int vs)                { con_add(AIF_CON_TRANSFERRED, vs, 0, 0); }
+void aif_con_foreign(int vs)                    { con_add(AIF_CON_FOREIGN, vs, 0, 0); }
 
 int aif_con_count(void) { return con_count; }
 
@@ -3022,6 +3031,16 @@ int aif_solve(int max_rounds) {
                     }
                 }
 
+            } else if (k->kind == AIF_CON_FOREIGN) {
+                resolve(k->a, &scratch_val);
+                bits_to_vec(&scratch_val, &vec_val);
+                for (int i = 0; i < vec_val.len; i++) {
+                    if (!sites[vec_val.v[i]].foreign) {
+                        sites[vec_val.v[i]].foreign = 1;
+                        changed = moved(vec_val.v[i]);
+                    }
+                }
+
             } else if (k->kind == AIF_CON_NO_STACK) {
                 resolve(k->a, &scratch_val);
                 bits_to_vec(&scratch_val, &vec_val);
@@ -3375,9 +3394,16 @@ static int derived_tier(const Site* s) {
     // not something a deallocator can take. Reachable whenever the container and
     // the element share a scope, which keeps E at that scope and every other T0
     // conjunct satisfied.
+    // `foreign` joins them for a third reason: T0 says the value lives in this
+    // frame's storage, and a produced extern return has no allocation here to
+    // move there. Without it a struct handed over by a runtime call could reach
+    // T0, and T0 is "no runtime bookkeeping" -- so nothing released it. Only
+    // reachable since `chan_recv` became the first extern return of struct kind;
+    // every earlier producer returns a String, which is not AIF_K_STRUCT and so
+    // was never a T0 candidate.
     if (s->E == s->scope && s->A <= AIF_A_BORROWED
         && s->kind == AIF_K_STRUCT && fits_on_stack(s)
-        && !s->no_stack && !s->in_container) {
+        && !s->no_stack && !s->foreign && !s->in_container) {
         return AIF_T0;
     }
     // Neither the T1 clause nor T0's tests T, and that is SPEC 4.2 read
@@ -3754,6 +3780,10 @@ static int arena_would_serve(int site_id, int cand) {
     Site* s = &sites[site_id];
     if (aif_tier_of(site_id) != AIF_T1) return 0;   // T0 has the frame already
     if (s->no_stack) return 0;                      // an explicit drop frees it
+    // Nothing was allocated here to route into the arena. The pointer is the
+    // callee's heap block; bulk-resetting a region does not reclaim it, so an
+    // arena would take the site off the drop list and free nothing in its place.
+    if (s->foreign) return 0;
     if (s->kind == AIF_K_LIST) return 0;            // grows past its site; see below
     // The container reclaims it, so codegen will not route it here whatever this
     // model decides -- site_arena_scope declines on the same flag. Counting it as
@@ -4107,6 +4137,10 @@ static int site_arena_scope_full(int id, int* blockers) {
     // deallocator can take, and `drop(x)` emits one unconditionally -- the
     // source, not the model, decided when that value dies.
     if (s->no_stack) mask |= AIF_ARENA_B_NO_STACK;
+    // A produced extern return has no allocation here to serve; see
+    // arena_would_serve. Reported under the same blocker because the reason a
+    // reader needs is the same one: this site's storage is not this frame's.
+    if (s->foreign) mask |= AIF_ARENA_B_NO_STACK;
     // The container frees its elements through the deallocator, and a pointer
     // into the middle of an arena chunk is not one it can take.
     if (s->in_container) mask |= AIF_ARENA_B_IN_CONTAINER;

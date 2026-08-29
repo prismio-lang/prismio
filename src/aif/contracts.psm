@@ -96,6 +96,35 @@ private fn aifRuntimeContract(name: String, index: Int) -> Int {
         if (index == 2) { return AIF_FFI_RETAIN_IN_BASE + 0 }
         return AIF_FFI_BORROW
     }
+    // v0.1 concurrency. `chan_send(c, v)` **consumes** `v`, and that is the one
+    // place this differs from `list_push`, which retains into its container.
+    //
+    // The difference is real rather than a modelling preference: a list releases
+    // its elements at teardown, so RETAIN_IN describes it exactly, while a
+    // channel does not -- the message is taken out by `chan_recv` and belongs to
+    // the receiving task from then on. Modelling the send as RETAIN_IN puts every
+    // message under an owner that never releases it: measured, a two-message
+    // program leaked both, with the receiver's copies reported T0/stack.
+    //
+    // CONSUME says the three true things instead. The value is not this frame's
+    // to reclaim (`transferred`), it cannot be a stack slot because another
+    // thread reads it after this scope exits (`no_stack`), and its lifetime is at
+    // least the caller's (`escape_caller`).
+    //
+    // **The endpoint itself contributes no site**, exactly as a task handle does
+    // not -- see the chan_new arm in aifCallSites. It is a runtime object this
+    // compilation did not allocate, so there is nothing to place, count or
+    // release, and `chan_free` is the program saying when it goes.
+    if (strEquals(name, "chan_send")) {
+        if (index == 1) { return AIF_FFI_CONSUME }
+        return AIF_FFI_BORROW
+    }
+    if (strEquals(name, "chan_new")) { return AIF_FFI_BORROW }
+    if (strEquals(name, "chan_recv")) { return AIF_FFI_BORROW }
+    if (strEquals(name, "chan_share")) { return AIF_FFI_BORROW }
+    if (strEquals(name, "chan_close")) { return AIF_FFI_BORROW }
+    if (strEquals(name, "chan_len")) { return AIF_FFI_BORROW }
+    if (strEquals(name, "chan_free")) { return AIF_FFI_BORROW }
     if (strEquals(name, "list_get")) { return AIF_FFI_BORROW }
     if (strEquals(name, "list_len")) { return AIF_FFI_BORROW }
     // The C string layer is native Prismio now, so only the calls that are still
@@ -220,7 +249,25 @@ internal fn aifDeclaredReturnIsAlias(name: String) -> Bool {
 // FFI 5.2 `produce`: a fresh owned value the caller must release. Anything
 // undeclared has unknown provenance -- it may already be shared and may already
 // outlive this frame -- and is handled by the `opaque` constraint instead.
+// A produced return whose allocation did not happen here *at all*.
+//
+// The distinction matters because it is not the same as `produces`. `strConcat`
+// produces, and its allocation goes through `rt_alloc`, which consults the arena
+// hint -- so a region really can serve it, and test_44 counts 209 objects that
+// prove it. `chan_recv` produces and allocates nothing: the block it hands back
+// was made by another thread, at another time, and is already live. Neither a
+// frame slot (T0) nor an arena chunk can be where it lives, and saying otherwise
+// takes the site off the drop list and reclaims nothing in its place.
+internal fn aifFfiTransfersExisting(name: String) -> Bool {
+    return strEquals(name, "chan_recv")
+}
+
 internal fn aifFfiProduces(name: String) -> Bool {
+    // What comes out of a channel was allocated by the sending task and is this
+    // frame's from here on -- the same shape as `read_file`, with the allocation
+    // on another thread instead of in libc. Without this the received value has
+    // no site, nothing releases it, and every message leaks.
+    if (strEquals(name, "chan_recv")) { return true }
     if (strEquals(name, "list_new")) { return true }
     if (strEquals(name, "list_new_with_capacity")) { return true }
     if (strEquals(name, "soa")) { return true }
