@@ -1569,3 +1569,129 @@ placement or a layout. Measure with `released`, not `leaked`.
 
 **Do not fix this by widening the clause without enumerating who else releases
 these values.** The failure mode on the other side is a double free, not a leak.
+
+---
+
+## M6 · Alias metadata — the standing gap against Rust, measured
+
+**Measured 2026-08-30 on the five-arm gate.** Standing against idiomatic Rust is
+**0.83x–1.80x** (Prismio ahead on g3 and g9). This session's changes are neutral:
+corpus median new/old **0.997x**, range 0.817–1.036x, gate passed.
+
+| | g1 | g2 | g3 | g4 | g5 | g6 | g9 |
+|---|---|---|---|---|---|---|---|
+| Prismio / Rust idiomatic | 1.17x | 1.51x | **0.98x** | **1.80x** | 1.05x | **1.79x** | **0.83x** |
+| Prismio tuned / Prismio | 0.22x | 0.53x | 0.80x | **0.98x** | 0.32x | 0.78x | — |
+
+**g4 is the one to read.** It is the worst gap *and* the only program where hand
+tuning buys nothing — 0.975x. `g4_tuned.psm` applies the same fusion
+`rust/g4_tuned.rs` does, which earns Rust 18%, and earns Prismio 2.5%. **A gap a
+Prismio expert cannot write around is the compiler's, not the program's.**
+
+### What the emitted code does
+
+`system_movement` is `p.x = p.x + v.dx * dt` over two lists. Per element, per
+list, the loop reloads the list handle, its `len`, its `elem_size` and its `data`,
+then branches on whether elements are boxed:
+
+```
+ldr   x10, [x0]           ; self.positions -- reloaded every iteration
+ldrsw x11, [x10, #0x8]    ; len
+cmp   x9, x11             ; bounds check
+ldrsw x11, [x10, #0x24]   ; elem_size
+ldr   x10, [x10]          ; data
+cbz   w11, ...            ; is this list boxed?
+madd  x10, x9, x11, x10   ; data + i*elem_size, runtime stride
+```
+
+Nothing is hoisted and nothing vectorises. **The emitted IR carries no alias
+metadata at all** — zero `!tbaa`, zero `noalias`, zero function attributes — so
+every `double` store may, as far as LLVM knows, clobber every list header.
+
+### The three causes, priced
+
+`ecs_probe.c` reproduces the loop, the `RtList` layout and `list_get_inline`
+verbatim. Built `-fno-strict-aliasing` so the C arm has no more alias information
+than Prismio does; **arm A's disassembly then matches the emitted loop
+instruction for instruction**, which is what makes this a reproduction rather
+than a model. 1500 entities x 1000 frames, median of 25, checksums agree.
+
+| arm | ms | vs today |
+|---|---|---|
+| A today: runtime stride, representation branch, no alias info | 2.048 | 1.00x |
+| B static stride, branch resolved at compile time | 1.423 | **1.44x** |
+| C B + alias information on the element blocks | 0.386 | **5.31x** |
+
+Compiled *with* strict aliasing, arm A is 1.186 ms — so **type-based alias
+information alone is worth 1.73x on this shape**, keeping everything else. It is
+the single largest lever, and it is larger than g4's whole 1.80x gap.
+
+### Two constraints that are not obvious, both established rather than assumed
+
+**1. Call-site specialisation (arm B) is unsound as it stands, and the defensive
+branch is load-bearing.** `inlineElemSizeOfList` already computes the exact
+element size at every access and uses it only to pick the *name*
+`list_get_inline`. Emitting the arithmetic with that size as a constant looks
+free — and `RtList`'s own comment invites it: "the element type is a static fact
+at every call site, so the branch belongs at compile time."
+
+It is not a static fact. Probed by making `list_get_inline` abort when
+`elem_size` is 0 and running the whole suite: **`test_55_workload_profile`
+aborts.** It declares its own `extern fn list_new() -> List<Cell>`, so no stamp
+is emitted, while every access site's static type says the elements are inline.
+Only that branch keeps the program correct. **Fix the stamp/access disagreement
+before removing the branch, and re-run that probe as the check.**
+
+**2. Both sides of a pairing must be tagged.** An access with no TBAA tag may
+alias anything, so tagging Prismio's stores buys nothing against the runtime's
+loads unless they share a tree — including a **common root** with the C the
+runtime is compiled from. Tagging one side is not a partial win; it is no win.
+
+### The approach
+
+The mechanism is already in the tree and already measured: `data_view_tbaa_tag`
+in `runtime/llvm-api-backend.c:859` gives each DataView column its own leaf "so
+LLVM can prove that writing `px` does not alias reading `vx` ... expose stable,
+disjoint streams to the loop vectorizer", reached through `ir_data_load_ptr` and
+`ir_data_store_ptr`. **It is applied to exactly one narrow case.** Extending the
+same technique to ordinary struct fields and list elements is the general form,
+and it is standard practice rather than novel: TBAA is what every C and C++
+compiler emits, and `noalias` from ownership is what Rust gets from `&mut`.
+
+Prismio's version can be stronger than either. AIF already proves escape,
+isolation and region confinement — the facts `noalias` wants — and the language
+has no unchecked reinterpretation except `Ptr`, which is the one case a
+conservative tree must keep in a single class.
+
+**Order, by prize over risk:**
+
+1. **TBAA on struct fields and list elements, sharing clang's root.** The 1.73x
+   lever. Risk is a silent miscompile, so the tree must put every `Ptr` access in
+   one class — `src/` puns node handles through `Ptr` today, which is
+   `V1_GAP_ANALYSIS.md`'s live row and the reason 3.6 is still open.
+2. **`noalias` derived from AIF**, once TBAA is in and measured. The rest of the
+   5.31x.
+3. **Call-site specialisation**, last, and only after constraint 1 above is
+   closed — it is the smallest prize (1.19x on top of TBAA) and the only one that
+   can corrupt memory.
+
+**Gate this on g4 and g6**, not on the corpus median: those are the two programs
+where the gap is, and a median over seven programs will hide a win on two.
+
+---
+
+## Debt · a string literal in a curated runtime function breaks the link
+
+**Found 2026-08-30 while probing M6.** Adding `fprintf(stderr, "...")` to
+`list_get_inline` — a function `ir_curate_module` copies into the user's module
+as `available_externally` — made every corpus program fail to link with
+`Undefined symbols: "_.str.16"`. The curator copies the function body and not the
+private string constants it references.
+
+Narrow, and it costs a confusing hour: the failure appears in *user* programs, it
+names a symbol from the user's own module, and it reproduces with a compiler
+built before the edit, because `build_driver.c` compiles `runtime/*.c` from the
+working tree. Anyone adding a diagnostic to a curated function will hit it.
+
+Either copy referenced constants during curation, or refuse to curate a function
+that references one.
