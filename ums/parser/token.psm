@@ -1,4 +1,5 @@
 import std.string
+
 enum UmsTokenKind {
     UNKNOWN,
     IDENTIFIER,
@@ -19,16 +20,25 @@ enum UmsTokenKind {
 struct UmsToken {
     kind: UmsTokenKind,
     value: String,
+    offset: Int,
     line: Int,
     col: Int,
     len: Int
 }
 
-fn umsToken(kind: UmsTokenKind, value: String, line: Int, col: Int, len: Int) -> UmsToken {
-    return UmsToken { kind: kind, value: strClone(value), line: line, col: col, len: len }
+internal fn umsToken(kind: UmsTokenKind, value: String, offset: Int,
+                     line: Int, col: Int, len: Int) -> UmsToken {
+    return UmsToken {
+        kind: kind,
+        value: strClone(value),
+        offset: offset,
+        line: line,
+        col: col,
+        len: len
+    }
 }
 
-fn umsTokenKindName(kind: UmsTokenKind) -> String {
+internal fn umsTokenKindName(kind: UmsTokenKind) -> String {
     if (kind == UmsTokenKind.IDENTIFIER) { return "identifier" }
     if (kind == UmsTokenKind.STRING) { return "string" }
     if (kind == UmsTokenKind.INTEGER) { return "integer" }

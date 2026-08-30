@@ -3,6 +3,7 @@
 
 import ast.nodes
 import ast.types
+import sema.enums
 import common.text
 import common.diagnostics
 import std.string
@@ -144,10 +145,33 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
                 // compiler can act on is field *order*, and order is decided by
                 // how often a field is touched, not by which way.
                 aif_field_access(aifBaseType(objTy), e.s1, aifLoopDepth)
-                // Walked for its own allocations; the value of the access is
-                // the field node, not the object.
-                aifSitesOf(e.child1, fnId, scope)
-                return aifVsOfKey(aif_key_field(aifBaseType(objTy), e.s1))
+                // The value of the access is the field's key, not the object's
+                // sites -- but a *reference*-shaped field is a *view* of the
+                // object it was read out of, exactly as a `List` element is a
+                // view of the List above. Recording that is what lets
+                // `fn_may_return_view_of_param` see a function that returns a
+                // field of a parameter.
+                //
+                // **Without it the caller frees the argument before reading the
+                // result.** `optionOr(maybeName(), "!")` returns the String
+                // inside the Option it was handed; the release for that unbound
+                // temporary was emitted immediately after the call and before
+                // the `println` that reads it, so the value came back empty.
+                // Neither existing fact could see it: the return is not the
+                // parameter (`fn_may_return_param` compares sites, and a field's
+                // sites are not the struct's), and with no view edge here
+                // `key_views` was empty. `--verify` could not see it either --
+                // both releases are ledger-legal, so the run reported
+                // `4 allocated, 4 released, 0 violation(s)` and the wrong answer.
+                //
+                // A scalar field is a copy and gets no edge, which is the same
+                // split the element rule above makes. The value set is fresh per
+                // read (aifVsOfKey allocates one), so the edge belongs to this
+                // access rather than to every read of the field everywhere.
+                let container = aifSitesOf(e.child1, fnId, scope)
+                let field = aifVsOfKey(aif_key_field(aifBaseType(objTy), e.s1))
+                if (aifIsRef(ty)) { aif_vs_view_of(field, container) }
+                return field
             }
         }
         return aifVsEmpty()
@@ -710,9 +734,70 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
         return
     }
 
+    // REQUIREMENTS 18. A payload arm binds names out of the scrutinee's fields,
+    // and codegen lowers each one as exactly that field load
+    // (`generatePayloadBinders` in src/ir/stmt.psm). This walk had **no case for
+    // it at all**: the arms were walked as ordinary statements, so `v` in
+    // `match (o) { Option.Some(v) => { return v } }` was bound to nothing --
+    // no points-to, and no view of `o`.
+    //
+    // That is what let a caller free the argument before reading the result.
+    // `optionOr(maybeName(), "!")` returns the String inside the Option it was
+    // handed, but with `v` bound to nothing the return carried neither `o`'s
+    // sites nor a view of them, so `fn_may_return_param` and
+    // `fn_may_return_view_of_param` both answered a truthful no to the question
+    // codegen was asking. The release for the unbound temporary was emitted
+    // immediately after the call and before the `println` that read its result,
+    // and the value came back empty. `--verify` could not see it: both releases
+    // are ledger-legal, so the run reported `4 allocated, 4 released, 0 leaked,
+    // 0 violation(s)` **and** the wrong answer.
+    //
+    // The scrutinee is evaluated once here, as codegen evaluates it once, and
+    // the arms are then walked exactly as the fall-through below would.
+    if (n.kind == NodeKind.MATCH_STATEMENT) {
+        let scrutinee = aifSitesOf(n.child1, fnId, scope)
+        let scrutType = aifBaseType(aifNodeType(ptr_to_node(n.child1)))
+        let mut armPtr = n.child2
+        while (nodeExists(armPtr)) {
+            let arm = ptr_to_node(armPtr)
+            aifBindPayloadArm(arm, scrutType, scrutinee, fnId, scope)
+            armPtr = arm.next
+        }
+        aifWalkChildren(n.child2, fnId, scope)
+        aifWalkChildren(n.child3, fnId, scope)
+        return
+    }
+
     aifWalkChildren(n.child1, fnId, scope)
     aifWalkChildren(n.child2, fnId, scope)
     aifWalkChildren(n.child3, fnId, scope)
+}
+
+// One payload arm's binders, bound to the fields they read.
+//
+// A reference-shaped payload is a **view** of the scrutinee -- the same split
+// the element and field rules make above, and for the same reason: a reference
+// read out of a container shares the container's lifetime, while a scalar is a
+// copy that has none of it. `arm.s2` is empty on any arm sema did not stamp with
+// a variant, which is every arm of a match that is not over a payload enum.
+private fn aifBindPayloadArm(arm: ASTNode, scrutType: String, scrutinee: Int,
+                             fnId: Int, scope: Int) {
+    if (strEquals(arm.s2, "")) { return }
+    if (nodeIsNull(arm.child1)) { return }
+    let pattern = ptr_to_node(arm.child1)
+    if (pattern.kind != NodeKind.CALL_EXPR) { return }
+
+    let mut binderPtr = pattern.child2
+    let mut index = 0
+    while (nodeExists(binderPtr)) {
+        let binder = ptr_to_node(binderPtr)
+        let field = aifVsOfKey(aif_key_field(scrutType, enumPayloadField(arm.s2, index)))
+        if (aifIsRef(aifNodeType(binder))) { aif_vs_view_of(field, scrutinee) }
+        aif_var_note_scope(fnId, binder.s1, scope)
+        aif_con_bind(aif_key_var(fnId, binder.s1), field)
+        index = index + 1
+        binderPtr = binder.next
+    }
 }
 
 // REQUIREMENTS 15, in service of INFERENCE 4.1's E-SPAWN-J. Does this

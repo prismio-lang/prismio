@@ -55,19 +55,25 @@ let TK_NUMBER = 2
 let TK_OPERATOR = 3
 let TK_PUNCT = 4
 
-fn isDigit(c: Char) -> Bool {
+// The four character predicates below are `tok`-prefixed rather than spelled
+// `isDigit` / `isAlpha`. `std.string`'s `impl Char` now declares those names --
+// a method is a free function whose first parameter is the receiver, so a method
+// name is a global name -- and this file defining `isDigit(Char) -> Bool` next to
+// it is a duplicate definition, not an overload. The bodies are unchanged: this
+// is a benchmark, and `isAlpha` here accepts `_` where the std predicate does not.
+fn tokIsDigit(c: Char) -> Bool {
     return c >= '0' and c <= '9'
 }
 
-fn isAlpha(c: Char) -> Bool {
+fn tokIsIdentStart(c: Char) -> Bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_'
 }
 
-fn isAlnum(c: Char) -> Bool {
-    return isAlpha(c) or isDigit(c)
+fn tokIsIdentPart(c: Char) -> Bool {
+    return tokIsIdentStart(c) or tokIsDigit(c)
 }
 
-fn isSpace(c: Char) -> Bool {
+fn tokIsSpace(c: Char) -> Bool {
     return c == ' ' or c == '\t' or c == '\n'
 }
 
@@ -140,21 +146,21 @@ fn tokenize(src: String, srcLen: Int) -> Int {
     while (pos < srcLen) {
         let c = __builtin_string_byte_at(src, pos)
 
-        if (isSpace(c)) {
+        if (tokIsSpace(c)) {
             pos = pos + 1
         } else {
             let start = pos
             let mut kind = TK_PUNCT
 
-            if (isAlpha(c)) {
+            if (tokIsIdentStart(c)) {
                 kind = TK_IDENT
-                while (pos < srcLen and isAlnum(__builtin_string_byte_at(src, pos))) {
+                while (pos < srcLen and tokIsIdentPart(__builtin_string_byte_at(src, pos))) {
                     pos = pos + 1
                 }
             } else {
-                if (isDigit(c)) {
+                if (tokIsDigit(c)) {
                     kind = TK_NUMBER
-                    while (pos < srcLen and isDigit(__builtin_string_byte_at(src, pos))) {
+                    while (pos < srcLen and tokIsDigit(__builtin_string_byte_at(src, pos))) {
                         pos = pos + 1
                     }
                 } else {

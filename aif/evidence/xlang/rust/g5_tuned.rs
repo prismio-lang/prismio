@@ -16,7 +16,8 @@
 #[path = "harness.rs"]
 mod harness;
 
-const FRAMES: usize = 4000;
+const SAMPLES: usize = 125;
+const RENDERS_PER_SAMPLE: usize = 32;
 const ENTITIES: usize = 2000;
 
 struct Mesh {
@@ -241,15 +242,19 @@ fn main() {
     populate(&mut scene, ENTITIES);
     let buckets = build_buckets(&scene);
 
-    let mut frames = harness::Frames::new(FRAMES);
+    // Preserve 4,000 total renders while timing longer groups. Single-render
+    // G5 samples were too short to distinguish small compiler wins from clock,
+    // scheduling, and rebuilt-binary noise.
+    let mut frames = harness::Frames::new(SAMPLES);
     let mut total: i64 = 0;
 
-    for frame in 0..FRAMES {
+    for sample in 0..SAMPLES {
         let t0 = harness::now_ns();
-        let submitted = render_bucketed(&mut scene, &buckets);
+        for _ in 0..RENDERS_PER_SAMPLE {
+            total += render_bucketed(&mut scene, &buckets);
+        }
         let t1 = harness::now_ns();
-        total += submitted;
-        frames.set(frame, t1 - t0);
+        frames.set(sample, t1 - t0);
     }
 
     for i in 0..500 {

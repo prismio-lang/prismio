@@ -1,0 +1,11 @@
+project {
+    name = "prismio"
+    version = "0.1.0"
+    prismio = "0.1.0"
+}
+
+targets {
+    compiler("prismio") {
+        entry = "src/main.psm"
+    }
+}

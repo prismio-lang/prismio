@@ -18,12 +18,12 @@ import std.string
 // invalid type as "already reported" (see semaExpectAssignable) and because
 // the sites that would otherwise walk a null child return early instead.
 internal fn semaErrorAt(node: ASTNode, message: String) {
-    diag_error_at(node.file, node.line, node.col, node.len, message)
+    diag_error_at_code("P4001", node.file, node.line, node.col, node.len, message)
 }
 
 // For the few errors that belong to no particular node.
 private fn semaError(message: String) {
-    diag_error(message)
+    diag_error_code("P4002", message)
 }
 
 // SPEC 5: being wrong about an annotation is a diagnostic of severity *warning*
@@ -31,7 +31,7 @@ private fn semaError(message: String) {
 // inferred normally. The one exception is a pin a converged analysis refutes
 // (SPEC 5.4.1), which is a program error and goes through semaErrorAt.
 internal fn semaWarningAt(node: ASTNode, message: String) {
-    diag_warning_at(node.file, node.line, node.col, node.len, message)
+    diag_warning_at_code("P4003", node.file, node.line, node.col, node.len, message)
 }
 
 // REQUIREMENTS 15. What may cross a task boundary as an argument.
@@ -138,6 +138,373 @@ private fn semaDottedModulePath(node: ASTNode) -> String {
         return strConcat(head, node.s1)
     }
     return ""
+}
+
+// ---------------------------------------------------------------------------
+// v0.1 3.6 -- the String operators, as desugarings
+//
+// `a == b`, `a + b`, `s[i]`, `s[a..b]` and `s.length` on a String are all
+// rewritten here into the `std.string` call they mean, before anything else in
+// the compiler sees them. Overload resolution, the ownership analysis, AIF and
+// codegen therefore meet an ordinary call and need to know nothing about any of
+// this -- the same trick monomorphisation, payload enums and method syntax all
+// use, and the reason five operators cost one file rather than five passes.
+//
+// **The ownership consequence is the point, not a side effect.** `a + b`
+// allocates. Because the rewrite produces a real call to `strConcat`, the result
+// gets an owner exactly as `strConcat(a, b)` does, and RUNTIME.md 3.1's rule
+// applies to it unchanged: `println(a + b)` leaks and `let j = a + b` does not.
+// An operator lowered straight to IR would have had to re-derive that, and would
+// have got it wrong in a place no ledger points at.
+//
+// **They need `import std.string`.** There is no prelude (RUNTIME.md 2): a
+// program that compares no strings links no string code, which is what lets a
+// target with no stdout link at all. Naming the missing import is a better
+// diagnostic than the "unknown function `strEquals`" the bare rewrite produces,
+// so every entry point below asks first.
+// ---------------------------------------------------------------------------
+
+// Whichever side of a mixed comparison is not the String, so the diagnostic can
+// name the type that actually needs converting.
+private fn typeStringOther(leftT: TypeInfo, rightT: TypeInfo) -> TypeInfo {
+    if (leftT.kind == TypeKind.STRING) { return rightT }
+    return leftT
+}
+
+// Whether the merged module declares a function of this name at all. The
+// declaration index is by name, so this is a lookup and not a walk.
+private fn semaDeclaresFunction(name: String) -> Bool {
+    let count = ir_decl_count(name)
+    let mut i = 0
+    while (i < count) {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.FUNCTION) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// Turn `expr` into a call to `name` over `args`, in place.
+//
+// In place by rewriting the kind, for the reason the payload-enum rewrite is:
+// semaExpr runs over a node more than once -- overload resolution types every
+// argument of every candidate -- and a node that has already become a call is
+// simply re-checked as one. That is what makes every rewrite here idempotent.
+//
+// Every field the old kind used is cleared. A SLICE_EXPR carries a third child
+// and a BINARY_EXPR carries its operator in `s1`, which is where a CALL_EXPR
+// keeps its module qualifier; leaving either behind gives the call a qualifier
+// nobody wrote.
+private fn semaBecomeCall(expr: ASTNode, name: String, args: Ptr) {
+    let callee = createNode(NodeKind.IDENTIFIER_EXPR)
+    callee.s1 = strClone(name)
+    nodeSpanFrom(callee, expr)
+
+    expr.kind = NodeKind.CALL_EXPR
+    expr.s1 = ""
+    expr.i1 = 0
+    expr.child1 = node_to_ptr(callee)
+    expr.child2 = args
+    expr.child3 = ptr_null()
+}
+
+// The operands as a fresh two-element sibling chain. Each is unlinked first:
+// they were children of the node being rewritten, and a stale `next` would splice
+// whatever followed the old node into the argument list.
+private fn semaCallArgs2(a: ASTNode, b: ASTNode) -> Ptr {
+    a.next = ptr_null()
+    b.next = ptr_null()
+    let args = nodeList()
+    nodeListPush(args, a)
+    nodeListPush(args, b)
+    return args.head
+}
+
+private fn semaCallArgs3(a: ASTNode, b: ASTNode, c: ASTNode) -> Ptr {
+    a.next = ptr_null()
+    b.next = ptr_null()
+    c.next = ptr_null()
+    let args = nodeList()
+    nodeListPush(args, a)
+    nodeListPush(args, b)
+    nodeListPush(args, c)
+    return args.head
+}
+
+// Reported once, at the operator, naming the import rather than the function the
+// rewrite was about to call.
+private fn semaStringSugarAvailable(expr: ASTNode, fnName: String, what: String) -> Bool {
+    if (semaDeclaresFunction(fnName)) { return true }
+    semaErrorAt(expr, strConcat(what, " needs `import std.string`"))
+    return false
+}
+
+// `a == b` is `strEquals(a, b)`; `a != b` is its negation; the four orderings are
+// the sign of `strCompare` against zero, compared by the very operator being
+// rewritten -- which is why the ordering case re-enters semaExpr on a node whose
+// operands are now Int, and so cannot come back here.
+private fn semaStringComparison(module: ASTNode, expr: ASTNode, op: String,
+                                leftNode: ASTNode, rightNode: ASTNode) -> TypeInfo {
+    if (strEquals(op, "==")) {
+        semaBecomeCall(expr, "strEquals", semaCallArgs2(leftNode, rightNode))
+        return semaExpr(module, expr)
+    }
+
+    if (strEquals(op, "!=")) {
+        // The call becomes a *new* node and this one becomes the negation, not
+        // the other way round: `expr` is the node the parent already points at.
+        let inner = createNode(NodeKind.CALL_EXPR)
+        nodeSpanFrom(inner, expr)
+        semaBecomeCall(inner, "strEquals", semaCallArgs2(leftNode, rightNode))
+
+        expr.kind = NodeKind.UNARY_EXPR
+        expr.s1 = "!"
+        expr.child1 = node_to_ptr(inner)
+        expr.child2 = ptr_null()
+        expr.child3 = ptr_null()
+        return semaExpr(module, expr)
+    }
+
+    let cmp = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(cmp, expr)
+    semaBecomeCall(cmp, "strCompare", semaCallArgs2(leftNode, rightNode))
+
+    let zero = createNode(NodeKind.LITERAL_EXPR)
+    zero.i1 = TokenType.NUMBER_LITERAL
+    zero.s1 = "0"
+    nodeSpanFrom(zero, expr)
+
+    expr.child1 = node_to_ptr(cmp)
+    expr.child2 = node_to_ptr(zero)
+    expr.child3 = ptr_null()
+    return semaExpr(module, expr)
+}
+
+// Whether every leaf of a `+` spine is a String.
+//
+// Every leaf, not just the leftmost: `"n = " + count` must fall through to the
+// arithmetic arm and be reported as the missing conversion it is, rather than
+// reaching overload resolution as `strConcat("n = ", count)` and coming back as
+// "no overload accepts these argument types". Typing a leaf here is free --
+// semaExpr over an expression is idempotent, which is what the whole rewrite
+// scheme already relies on.
+private fn semaConcatSpineIsString(module: ASTNode, expr: ASTNode) -> Bool {
+    if (expr.kind == NodeKind.BINARY_EXPR and strEquals(expr.s1, "+")) {
+        if (semaConcatSpineIsString(module, ptr_to_node(expr.child1)) == false) { return false }
+        return semaConcatSpineIsString(module, ptr_to_node(expr.child2))
+    }
+    return semaExpr(module, expr).kind == TypeKind.STRING
+}
+
+// `for c in s { ... }` rewritten into the range loop it means.
+//
+//     for $c in 0..strLength(s) { let c = s[$c]   ... }
+//
+// The element read is built as an INDEX_EXPR rather than as a direct call, which
+// is deliberate: `s[$c]` re-enters the indexing arm, so a String gets `strCharAt`
+// from the desugaring above and a `List` gets the existing element path
+// **including `ir_unmark_list_exclusive`** -- the bookkeeping that makes binding
+// an element safe. Emitting `list_get` by hand would have skipped it.
+//
+// **The collection has to be a name.** `for line in text.lines()` is refused, and
+// not to keep this function simple: the loop needs the collection twice -- once
+// for the length, once per element -- and an expression evaluated twice would run
+// `lines()` per iteration. Binding it here instead is not available either,
+// because a `let` needs a statement slot this rewrite does not have, and because
+// binding a *name* would move it and leave `s` unusable after the loop. The
+// caller writing `let parts = text.lines()` first is the same rule RUNTIME.md 3.1
+// already imposes on that call: an owned result nothing names is a leak.
+//
+// The index is named after the loop variable, so nested loops cannot collide
+// without the user's own variables colliding first. `$` is the compiler-generated
+// marker no source identifier may contain.
+private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
+    let source = ptr_to_node(stmt.child1)
+    if (source.kind != NodeKind.IDENTIFIER_EXPR) {
+        semaErrorAt(source, "the collection in a `for ... in` loop must be a name")
+        diag_note("bind it first -- `let parts = text.lines()`, then `for p in parts`")
+        return false
+    }
+
+    let sourceT = semaExpr(module, source)
+    if (typeIsValid(sourceT) == false) { return false }
+
+    let mut lengthFn = "list_len"
+    if (sourceT.kind == TypeKind.STRING) {
+        lengthFn = "strLength"
+        if (semaStringSugarAvailable(stmt, "strLength", "iterating a String") == false) {
+            return false
+        }
+    } else if (sourceT.kind != TypeKind.LIST) {
+        semaErrorAt(source, strConcat("`for ... in` needs a String or a List, found ",
+                                      typeDisplay(sourceT)))
+        diag_note("iterate anything else by index -- `for i in 0..n`")
+        return false
+    }
+
+    let indexName = strConcat("$", stmt.s1)
+
+    // let <var> = <source>[<indexName>], prepended to the body the user wrote.
+    let index = createNode(NodeKind.INDEX_EXPR)
+    nodeSpanFrom(index, source)
+    index.child1 = node_to_ptr(semaNameNode(source, source.s1))
+    index.child2 = node_to_ptr(semaNameNode(source, indexName))
+
+    let bind = createNode(NodeKind.VARIABLE_DECL)
+    nodeSpanFrom(bind, stmt)
+    bind.s1 = stmt.s1
+    bind.child2 = node_to_ptr(index)
+
+    let body = ptr_to_node(stmt.child3)
+    bind.next = body.child1
+    body.child1 = node_to_ptr(bind)
+
+    // The header becomes the range. `stmt.s1` is read into `indexName` above
+    // before it is overwritten here.
+    let length = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(length, source)
+    let lengthArgs = nodeList()
+    nodeListPush(lengthArgs, semaNameNode(source, source.s1))
+    semaBecomeCall(length, lengthFn, lengthArgs.head)
+
+    let zero = createNode(NodeKind.LITERAL_EXPR)
+    zero.i1 = TokenType.NUMBER_LITERAL
+    zero.s1 = "0"
+    nodeSpanFrom(zero, source)
+
+    stmt.s1 = indexName
+    stmt.child1 = node_to_ptr(zero)
+    stmt.child2 = node_to_ptr(length)
+    return true
+}
+
+// A fresh identifier node. Fresh rather than reused: the source appears three
+// times in the rewrite, and one node cannot be in three places in a tree whose
+// siblings are a `next` chain.
+private fn semaNameNode(at: ASTNode, name: String) -> ASTNode {
+    let node = createNode(NodeKind.IDENTIFIER_EXPR)
+    node.s1 = strClone(name)
+    nodeSpanFrom(node, at)
+    return node
+}
+
+// Every leaf of a `+` spine, in source order, as one sibling chain.
+//
+// Both sides are walked, so `a + (b + c)` flattens exactly as `a + b + c` does
+// -- parentheses group, they do not change what is being concatenated. The
+// intermediate BINARY_EXPR nodes are simply abandoned; the AST is arena memory
+// and nothing else points at them once this node has been rewritten.
+private fn semaConcatParts(expr: ASTNode, parts: NodeList) {
+    if (expr.kind == NodeKind.BINARY_EXPR and strEquals(expr.s1, "+")) {
+        semaConcatParts(ptr_to_node(expr.child1), parts)
+        semaConcatParts(ptr_to_node(expr.child2), parts)
+        return
+    }
+    expr.next = ptr_null()
+    nodeListPush(parts, expr)
+}
+
+// `a + b + c` is **one** `strConcat`, not two.
+//
+// Nested `strConcat(strConcat(a, b), c)` allocates an intermediate that nothing
+// names, and RUNTIME.md 3.1 is that a value nothing names is a value nothing
+// frees -- measured at 2 allocated / 1 released, on the released 0.1 compiler
+// too, so it is the language's rule and not a regression. Lowering the chain
+// pairwise would therefore have made the obvious spelling of the obvious
+// operation leak once per `+`, which is not an operator worth having.
+//
+// Flattening removes the intermediate rather than leaking it, and copies each
+// byte once instead of twice. Past six parts there is no overload to call and
+// `strJoin` is the better answer anyway, so that is where it stops -- as an
+// error naming the alternative, never as a silent fallback to the leaking form.
+private fn semaStringConcatChain(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    if (semaStringSugarAvailable(expr, "strConcat", "joining Strings with `+`") == false) {
+        nodeSetType(expr, typeString())
+        return typeString()
+    }
+
+    let parts = nodeList()
+    semaConcatParts(expr, parts)
+
+    let mut count = 0
+    let mut partPtr = parts.head
+    while (nodeExists(partPtr)) {
+        count = count + 1
+        partPtr = ptr_to_node(partPtr).next
+    }
+
+    if (count > 6) {
+        semaErrorAt(expr, "joining more than six Strings with `+` is not supported")
+        diag_note("build a `List<String>` and call `strJoin(parts, \"\")` instead")
+        nodeSetType(expr, typeString())
+        return typeString()
+    }
+
+    semaBecomeCall(expr, "strConcat", parts.head)
+    return semaExpr(module, expr)
+}
+
+// `s.length` -- a property, which is `length(s)` with the parentheses left off.
+//
+// **A property may not allocate, and that is enforced rather than documented.**
+// `s.length` reading as a field is right; `s.trim` reading as a field is a trap,
+// because it allocates and RUNTIME.md 3.1 then requires the result to be bound.
+// So the rewrite is refused when the resolved function returns an owned value,
+// with a message that says to add the parentheses. That rule needs no new
+// keyword, which matters: a `prop` marker could not be used in `std/string.psm`
+// until the committed seed understood it, and CODE_STYLE's two-step would have
+// made this a two-release feature.
+//
+// The return type is read from the *declaration* rather than by typing the
+// rewritten call, so the refusal happens before any node is modified. Rewriting
+// first and complaining afterwards would report once per pass of overload
+// resolution over the enclosing call.
+private fn semaPropertyReturnsOwned(module: ASTNode, name: String) -> Bool {
+    let count = ir_decl_count(name)
+    let mut i = 0
+    while (i < count) {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.FUNCTION and semaParamCount(decl) == 1) {
+            if (nodeIsNull(decl.child3)) { return false }
+            return typeIsMoveOnly(semaAnnotationType(module, ptr_to_node(decl.child3)))
+        }
+        i = i + 1
+    }
+    return false
+}
+
+private fn semaParamCount(decl: ASTNode) -> Int {
+    let mut n = 0
+    let mut paramPtr = decl.child1
+    while (nodeExists(paramPtr)) {
+        n = n + 1
+        paramPtr = ptr_to_node(paramPtr).next
+    }
+    return n
+}
+
+// 0 -- not a property, the caller should carry on and report what it was going to.
+// 1 -- rewritten into a call; re-enter semaExpr.
+// 2 -- refused, **and already reported**. The caller must stop: appending
+//      "no property `trim` on String" to a message that already named the fix is
+//      two errors for one mistake, which is what this three-way answer avoids.
+private fn semaPropertyRewrite(module: ASTNode, expr: ASTNode) -> Int {
+    let name = expr.s1
+    if (semaDeclaresFunction(name) == false) { return 0 }
+
+    if (semaPropertyReturnsOwned(module, name)) {
+        semaErrorAt(expr, strConcat(strConcat("property ", diagQuote(name)),
+                                    " returns an owned value, so it allocates; call it as a method instead"))
+        diag_note("a property must not allocate -- write `()` after the name")
+        return 2
+    }
+
+    let receiver = ptr_to_node(expr.child1)
+    receiver.next = ptr_null()
+    let args = nodeList()
+    nodeListPush(args, receiver)
+    semaBecomeCall(expr, name, args.head)
+    return 1
 }
 
 internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
@@ -254,6 +621,16 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     if (expr.kind == NodeKind.BINARY_EXPR) {
+        // v0.1 3.6. A `+` spine over Strings is flattened here, **before either
+        // operand is typed**, and the ordering is the whole reason this is not
+        // three lines further down: typing the left operand of `a + b + c`
+        // rewrites the inner `+` into its `strConcat` call, after which the spine
+        // is no longer visible and the chain lowers pairwise -- which is the
+        // leaking form. Measured in exactly that shape: 2 allocated, 1 released.
+        if (strEquals(expr.s1, "+") and semaConcatSpineIsString(module, expr)) {
+            return semaStringConcatChain(module, expr)
+        }
+
         let leftNode = ptr_to_node(expr.child1)
         let rightNode = ptr_to_node(expr.child2)
         let mut leftT = semaExpr(module, leftNode)
@@ -349,13 +726,32 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                 return typeBool()
             }
 
-            // String and struct values are pointers, so a comparison would
-            // compare addresses and quietly answer "not equal" for two equal
-            // strings. That was a silent wrong answer with no diagnostic -- and
-            // the reason this compiler is written with strEquals(a, b)
-            // everywhere. Reject it and name the alternative.
+            // v0.1 3.6. Two Strings compare by *content*, via the desugaring
+            // above.
+            //
+            // This was a hard rejection naming `strEquals`, and the rejection was
+            // right for the reason it gave: a String is a pointer, so a raw
+            // comparison compares addresses and quietly answers "not equal" for
+            // two equal strings. What changed is not that the hazard went away
+            // but that the operator now means the call instead of the address --
+            // there is no longer an address comparison to fall into.
+            if (leftT.kind == TypeKind.STRING and rightT.kind == TypeKind.STRING) {
+                let mut cmpFn = "strCompare"
+                if (strEquals(op, "==") or strEquals(op, "!=")) { cmpFn = "strEquals" }
+                if (semaStringSugarAvailable(expr, cmpFn,
+                        strConcat(strConcat("comparing String values with ", diagQuote(op)), "")) == false) {
+                    nodeSetType(expr, typeBool())
+                    return typeBool()
+                }
+                return semaStringComparison(module, expr, op, leftNode, rightNode)
+            }
+            // One side a String and the other not. Never an address comparison,
+            // so it gets its own message rather than the one above: the mistake
+            // is a missing conversion, not a missing `strEquals`.
             if (leftT.kind == TypeKind.STRING or rightT.kind == TypeKind.STRING) {
-                semaErrorAt(expr, "cannot compare String values directly; use `strEquals(a, b)`")
+                semaErrorAt(expr, strConcat(strConcat("cannot compare a String with ",
+                                                      typeDisplay(typeStringOther(leftT, rightT))),
+                                            "; convert one side first"))
                 nodeSetType(expr, typeBool())
                 return typeBool()
             }
@@ -694,14 +1090,40 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             nodeSetType(expr, dataFieldT)
             return dataFieldT
         }
+        // v0.1 3.6. `s.length` -- a property. Tried after a struct's own fields
+        // and before the failure, so a field always wins and no existing program
+        // changes meaning; a struct may still have a property, which is what
+        // makes `point.magnitude` available next to `point.x`.
+        if (objectT.kind != TypeKind.STRUCT or semaStructHasField(objectT.name, expr.s1) == false) {
+            if (typeIsValid(objectT)) {
+                let property = semaPropertyRewrite(module, expr)
+                if (property == 1) { return semaExpr(module, expr) }
+                if (property == 2) {
+                    nodeSetType(expr, typeInvalid())
+                    return typeInvalid()
+                }
+            }
+        }
+
         if (objectT.kind != TypeKind.STRUCT) {
             // An Invalid object is the *result* of an error already reported --
             // an unresolvable call, a violated bound. Blaming this expression for
             // it is the same mistake semaExpectAssignable refuses to make, and it
             // is how one wrong type argument became a screenful.
             if (typeIsValid(objectT)) {
-                semaErrorAt(objectNode, strConcat("member access requires a struct value, found ",
-                                                    typeDisplay(objectT)))
+                // An optional keeps the older wording, because for `T?` the
+                // cause is not a missing property: it is that a `T?` is not a
+                // `T` until it has been unwrapped, which is the entire point of
+                // REQUIREMENTS 4's type. Naming a property here would send the
+                // reader looking for a spelling mistake.
+                if (objectT.kind == TypeKind.OPTIONAL) {
+                    semaErrorAt(objectNode, strConcat("member access requires a struct value, found ",
+                                                      typeDisplay(objectT)))
+                    diag_note("unwrap it first -- `expect(value)`")
+                } else {
+                    semaErrorAt(objectNode, strConcat(strConcat("no property ", diagQuote(expr.s1)),
+                                                      strConcat(" on ", typeDisplay(objectT))))
+                }
             }
             nodeSetType(expr, typeInvalid())
             return typeInvalid()
@@ -737,9 +1159,23 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         let collectionT = semaExpr(module, ptr_to_node(expr.child1))
         let indexT = semaExpr(module, ptr_to_node(expr.child2))
         semaExpectAssignable(ptr_to_node(expr.child2), "collection index", typeInt(), indexT)
+        // v0.1 3.6. `s[i]` is `strCharAt(s, i)`, which answers NUL rather than
+        // trapping out of range -- the bounds check the caller would write is the
+        // one the accessor already does, and a Prismio String cannot contain a
+        // NUL, so the answer is unambiguous. `s.get(i)` is the Option form.
+        if (collectionT.kind == TypeKind.STRING) {
+            if (semaStringSugarAvailable(expr, "strCharAt", "indexing a String") == false) {
+                nodeSetType(expr, typeChar())
+                return typeChar()
+            }
+            semaBecomeCall(expr, "strCharAt",
+                           semaCallArgs2(ptr_to_node(expr.child1), ptr_to_node(expr.child2)))
+            return semaExpr(module, expr)
+        }
+
         if (collectionT.kind != TypeKind.ARRAY and collectionT.kind != TypeKind.LIST
             and collectionT.kind != TypeKind.SLICE and collectionT.kind != TypeKind.DATAVIEW) {
-            semaErrorAt(expr, strConcat("indexing requires an array, List, Slice, or DataView, found ",
+            semaErrorAt(expr, strConcat("indexing requires a String, array, List, Slice, or DataView, found ",
                                          typeDisplay(collectionT)))
             nodeSetType(expr, typeInvalid())
             return typeInvalid()
@@ -767,8 +1203,25 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         semaExpectAssignable(ptr_to_node(expr.child2), "slice start", typeInt(), startT)
         semaExpectAssignable(ptr_to_node(expr.child3), "slice end", typeInt(), endT)
 
+        // v0.1 3.6. `s[a..b]` is `strSlice(s, a, b)` -- half-open, and a fresh
+        // allocation rather than a view. A String slice cannot be a borrow of its
+        // source the way `List` slicing is: a String carries its length beside
+        // its pointer, so a subrange is a different pair, and there is nowhere to
+        // put one that outlives the expression without owning it. That makes this
+        // the one indexing form that allocates, so bind what it gives you.
+        if (baseT.kind == TypeKind.STRING) {
+            if (semaStringSugarAvailable(expr, "strSlice", "slicing a String") == false) {
+                nodeSetType(expr, typeString())
+                return typeString()
+            }
+            semaBecomeCall(expr, "strSlice",
+                           semaCallArgs3(ptr_to_node(expr.child1), ptr_to_node(expr.child2),
+                                         ptr_to_node(expr.child3)))
+            return semaExpr(module, expr)
+        }
+
         if (baseT.kind != TypeKind.LIST and baseT.kind != TypeKind.SLICE) {
-            semaErrorAt(expr, strConcat("slicing requires a List or Slice, found ",
+            semaErrorAt(expr, strConcat("slicing requires a String, List, or Slice, found ",
                                          typeDisplay(baseT)))
             nodeSetType(expr, typeInvalid())
             return typeInvalid()
@@ -1054,6 +1507,12 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
     }
 
     if (stmt.kind == NodeKind.FOR_STATEMENT) {
+        // v0.1 3.6. `for c in s` becomes `for $c in 0..strLength(s) { let c = s[$c] ... }`
+        // right here, so everything below -- and every pass after it -- only ever
+        // sees the range loop it already handled.
+        if (nodeIsNull(stmt.child2)) {
+            if (semaForEachDesugar(module, stmt) == false) { return }
+        }
         let startT = semaExpr(module, ptr_to_node(stmt.child1))
         semaExpectAssignable(ptr_to_node(stmt.child1), "for range start", typeInt(), startT)
         let endT = semaExpr(module, ptr_to_node(stmt.child2))

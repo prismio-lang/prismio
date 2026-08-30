@@ -6,20 +6,19 @@
 import std.string
 import std.option
 
-fn isDigit(c: Char) -> Bool {
-    return c >= '0' and c <= '9'
-}
-
-fn isAlpha(c: Char) -> Bool {
+// **Renamed, and the rename is the point.** These were `isAlpha` and `isAlnum`,
+// which was wrong twice over: `_` is not alphabetic, and `std.string` now spells
+// `isAlpha(Char)` too -- as `impl Char`'s method, whose body is `charIsAlpha` and
+// therefore does *not* accept `_`. Two functions of that name and that signature
+// is an ambiguous overload at best; at worst the scanner silently resolves to the
+// std one and identifiers stop starting with an underscore. The names below say
+// what the scanner actually asks, and cannot collide with a classification.
+fn isIdentStart(c: Char) -> Bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_'
 }
 
-fn isAlnum(c: Char) -> Bool {
-    return isAlpha(c) or isDigit(c)
-}
-
-fn isSpace(c: Char) -> Bool {
-    return c == ' ' or c == '\t' or c == '\n' or c == '\r'
+fn isIdentPart(c: Char) -> Bool {
+    return isIdentStart(c) or isDigit(c)
 }
 
 fn isSeparator(c: Char) -> Bool {

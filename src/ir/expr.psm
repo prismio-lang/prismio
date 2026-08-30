@@ -288,6 +288,20 @@ internal fn chainEscapesThroughCall(head: Ptr, name: String) -> Bool {
 // the cap is a limit on how much this is willing to prove, so it has to fail
 // towards the leak. Eight is far past anything in the tree; the deepest real
 // chain is two.
+// Whether this call's callee is an `extern fn` whose return is declared `alias`.
+//
+// FFI 5.2: `alias` names no argument, so the result may be any of them -- which
+// is exactly the answer irValueAliasesName needs, since it goes on to ask
+// whether any argument carries `name`. Read from the declaration rather than
+// inferred; nothing is assumed about an extern that did not say this.
+private fn irCallReturnsAlias(e: ASTNode) -> Bool {
+    if (strEquals(e.s2, "") == false) {
+        return strEquals(aif_extern_contract(e.s2, 0 - 1), "alias")
+    }
+    if (nodeIsNull(e.child1)) { return false }
+    return strEquals(aif_extern_contract(ptr_to_node(e.child1).s1, 0 - 1), "alias")
+}
+
 private fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
     if (nodeIsNull(exprPtr)) { return false }
     if (hops > 8) { return true }
@@ -303,7 +317,24 @@ private fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
         // identity aif_fn_lookup is keyed on. An extern is not one of those and
         // the predicate answers no for it -- see the comment on
         // aif_fn_may_return_param for why widening there is untrue and costly.
-        if (aif_fn_may_return_param(e.s2) == 0) { return false }
+        //
+        // **A declared `alias` is the exception, and it is not that widening.**
+        // The hazard this whole walk exists for reaches the FFI boundary
+        // unchanged: `let t = make(); let x = <extern alias>(t); return x` freed
+        // `t` at the scope exit and handed the caller the same pointer, which
+        // `--verify` reports as `release of a pointer that is not live`. It is
+        // the shape in the comment above, one callee kind further out.
+        //
+        // The distinction that makes this safe is the one fn_may_return_param
+        // draws: **a declared `alias` is a stated fact about one function, and an
+        // unknown symbol is an abstention about all of them.** Answering yes for
+        // every unknown extern was measured and declines the drop at every
+        // `print(value)` in std/io.psm, because `prismio_rt_print(text)` is
+        // declared `borrow`. Reading the declaration costs nothing anywhere it
+        // was not written.
+        if (aif_fn_may_return_param(e.s2) == 0 and irCallReturnsAlias(e) == false) {
+            return false
+        }
         let mut aPtr = e.child2
         while (nodeExists(aPtr)) {
             if (irValueAliasesName(aPtr, name, hops + 1)) { return true }
@@ -693,6 +724,183 @@ private fn inlineElemSizeOfCall(expr: ASTNode) -> Int {
     return inlineElemSizeOfList(ptr_to_node(expr.child2))
 }
 
+// Whether this subtree's inline-body `list_get`s can all share one hoisted
+// representation guard, and how many there are: -1 declines, otherwise the
+// count. Statically boxed accesses are permitted but not counted: their typed
+// lowering reloads the current header at the use and needs no dynamic stamp.
+//
+// Recursive over child1/child2/child3 through the chain walker, the same shape
+// as nodeAssignsName above. **This must not follow its own `.next`** -- doing
+// that as well as in the chain walker visits the tail of a k-node chain 2^k
+// times, which took test_43_aif_scope_drop.psm from 0.2s to over 90s of
+// 100%-CPU compile before it was caught.
+//
+// **Counts rather than collecting.** A `List` of receivers is the obvious way to
+// write this and it puts two `list_new` sites in the compiler whose escape the
+// analysis cannot bound through the recursion, so they land T3 and the compiler
+// grows an `rc_alloc` -- which `run_aif_rc_test` exists to refuse, because every
+// T3 site in this codebase is an opaque extern return and a refcount header in
+// front of one is memory nobody allocated. Walking twice is cheaper than
+// allocating once here.
+private fn irFlatGuardCount(nodePtr: Ptr) -> Int {
+    if (nodeIsNull(nodePtr)) { return 0 }
+    let n = ptr_to_node(nodePtr)
+
+    let mut found = 0
+    if (n.kind == NodeKind.CALL_EXPR) {
+        let mut fname = ""
+        if (nodeExists(n.child1)) { fname = ptr_to_node(n.child1).s1 }
+        let stride = flatGetStride(n, fname)
+        if (stride > 0) {
+            // The receiver is evaluated a second time in the preheader, so it has
+            // to be something evaluating twice cannot change: a name, or a field
+            // read off one. `w.velocities` is the shape every corpus loop uses.
+            if (irIsPureReceiver(ptr_to_node(n.child2)) == false) { return 0 - 1 }
+            found = 1
+        } else if (isStaticBoxedListGet(n, fname)) {
+            // The typed boxed accessor reloads the current header at its site,
+            // so it needs no representation guard and does not make an
+            // otherwise-flat loop ineligible for its shared guard.
+            found = 0
+        } else {
+            // **Any other call declines the whole loop.** It could push to one of
+            // these lists -- which reallocates the element block -- or free it,
+            // and neither is answerable from the element type. This is what keeps
+            // g2 and g6, whose loops call out, on the runtime path.
+            return 0 - 1
+        }
+    }
+
+    let a = irFlatGuardCountChain(n.child1)
+    if (a < 0) { return 0 - 1 }
+    let b = irFlatGuardCountChain(n.child2)
+    if (b < 0) { return 0 - 1 }
+    let c = irFlatGuardCountChain(n.child3)
+    if (c < 0) { return 0 - 1 }
+    return found + a + b + c
+}
+
+private fn irFlatGuardCountChain(head: Ptr) -> Int {
+    let mut total = 0
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        let one = irFlatGuardCount(node_to_ptr(n))
+        if (one < 0) { return 0 - 1 }
+        total = total + one
+        p = n.next
+    }
+    return total
+}
+
+private fn irIsPureReceiver(recv: ASTNode) -> Bool {
+    if (recv.kind == NodeKind.IDENTIFIER_EXPR) { return true }
+    if (recv.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        if (nodeIsNull(recv.child1)) { return false }
+        return irIsPureReceiver(ptr_to_node(recv.child1))
+    }
+    return false
+}
+
+// The second walk: fold each inline-body receiver's `elem_size == stride`
+// predicate into the slot. The slot is the accumulator, which is what removes
+// the need to hold the receivers anywhere -- mem2reg turns the load/and/store
+// chain back into one `and` tree in the preheader.
+private fn irEmitFlatGuards(nodePtr: Ptr, slot: String) {
+    if (nodeIsNull(nodePtr)) { return }
+    let n = ptr_to_node(nodePtr)
+
+    if (n.kind == NodeKind.CALL_EXPR) {
+        let mut fname = ""
+        if (nodeExists(n.child1)) { fname = ptr_to_node(n.child1).s1 }
+        let stride = flatGetStride(n, fname)
+        if (stride > 0) {
+            let recvNode = ptr_to_node(n.child2)
+            let one = ir_get_temp_name(ir_list_is_flat(
+                generateExpression(recvNode), stride))
+            let prev = ir_get_temp_name(ir_load("i1", slot))
+            ir_store("i1", ir_get_temp_name(ir_and("i1", prev, one)), slot)
+        }
+    }
+
+    irEmitFlatGuardsChain(n.child1, slot)
+    irEmitFlatGuardsChain(n.child2, slot)
+    irEmitFlatGuardsChain(n.child3, slot)
+}
+
+private fn irEmitFlatGuardsChain(head: Ptr, slot: String) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        irEmitFlatGuards(node_to_ptr(n), slot)
+        p = n.next
+    }
+}
+
+// The loop's one flat-List guard, emitted into the preheader, or "" for a loop
+// this declines to serve.
+//
+// **One `i1` for the loop, not one test per site.** LLVM will not clone a loop
+// for 2^n independent invariant conditions; measured on g4_tuned's five-list
+// fused loop it versions on one and leaves the rest per iteration, which cost
+// 0.0022 -> 0.0029 ms/frame. The conjunction is the fact Prismio has and LLVM
+// does not: every receiver in the loop, seen at once.
+//
+// Conservative in one direction only. If the guard is false at run time every
+// site takes `list_get_inline`, which is exactly what they did before.
+internal fn generateLoopFlatGuard(body: ASTNode) -> String {
+    if (irFlatGuardCount(node_to_ptr(body)) <= 0) { return "" }
+
+    let name = strConcat("flatguard.", strFromInt(irLoopFlatGuardCounter))
+    irLoopFlatGuardCounter = irLoopFlatGuardCounter + 1
+    ir_set_var_type(name, "Bool")
+    let slot = ir_get_var_slot(name)
+    ir_alloca("i1", slot)
+    ir_store("i1", "true", slot)
+    irEmitFlatGuards(node_to_ptr(body), slot)
+    return slot
+}
+
+// Whether this is a two-argument `list_get` on a statically known List. The
+// element may still be `Invalid`: such a list can never be stamped inline, so
+// its stable representation is the ordinary pointer-slot form.
+private fn isTypedListGet(expr: ASTNode, funcName: String) -> Bool {
+    if (strEquals(funcName, "list_get") == false) { return false }
+    if (nodeIsNull(expr.child2)) { return false }
+    let listNode = ptr_to_node(expr.child2)
+    if (nodeIsNull(listNode.next)) { return false }
+    if (nodeExists(ptr_to_node(listNode.next).next)) { return false }
+    if (nodeHasType(listNode) == false) { return false }
+    return nodeGetType(listNode).kind == TypeKind.LIST
+}
+
+// A pointer-slot representation selected completely by the static element
+// type. Invalid/inferred-later element types stay on the generic runtime path;
+// they are the case where two call sites might not agree on representation.
+private fn isStaticBoxedListGet(expr: ASTNode, funcName: String) -> Bool {
+    if (isTypedListGet(expr, funcName) == false) { return false }
+    let listNode = ptr_to_node(expr.child2)
+    let lt = nodeGetType(listNode)
+    if (nodeIsNull(lt.child)) { return false }
+    if (ptr_to_type(lt.child).kind == TypeKind.INVALID) { return false }
+    return inlineElemSizeOfList(listNode) == 0
+}
+
+// The static inline-body stride of a `list_get(l, i)` this can serve, or 0 for
+// the pointer-slot representation.
+//
+// Narrow on purpose, and the narrowness is the first slice rather than a
+// simplification to widen later. `list_set` writes through the pointer this
+// already returns, so g4's four systems are covered by the read; a slice, a
+// nested list and a receiver a call in the same loop can reallocate are all
+// still the runtime's, because none of them is answered by the element type
+// alone.
+private fn flatGetStride(expr: ASTNode, funcName: String) -> Int {
+    if (isTypedListGet(expr, funcName) == false) { return 0 }
+    let listNode = ptr_to_node(expr.child2)
+    return inlineElemSizeOfList(listNode)
+}
+
 // M4.2's destination-passing push: `list_push(l, T { ... })` builds the element
 // **in the list**, so the push allocates nothing and copies nothing. Five of the
 // six corpus programs push exactly this shape, and it is what turned inline
@@ -711,6 +919,15 @@ private fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
     if (esize <= 0) { return false }
 
     let listVal = generateExpression(listNode)
+    // **The slot comes from `list_push_slot`, and an inline fast path was tried
+    // and rejected here.** Emitting `if (elem_size == S && len < cap)` plus the
+    // address arithmetic removes the call -- which is what Rust's inlined
+    // `Vec::push` does, and it is worth 0.97x on g2's cull loop, which pushes
+    // ~500 elements into one list. It costs **1.16x on g6**, whose `plan_orders`
+    // builds a fresh short-lived list per squad per frame: almost every push is a
+    // growth, so the check is paid and never wins. Gating on loop depth does not
+    // separate the two -- both pushes are in loops. See
+    // aif/evidence/RESULTS-inline-push-rejected.md.
     ir_call_begin()
     ir_call_arg("ptr", listVal)
     ir_call_arg("i32", strFromInt(esize))
@@ -924,7 +1141,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
         generateStructLiteralFields(expr, structName, memName)
         return memName
     }
-    
+
     if (expr.kind == NodeKind.IDENTIFIER_EXPR) {
         let valType = ir_get_var_type(expr.s1)
         let loadType = storageType(valType)
@@ -1143,7 +1360,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
         let slot = ir_elem_ptr(elemType, arrayVal, indexVal)
         return ir_get_temp_name(ir_load_ptr(elemType, ir_get_temp_name(slot)))
     }
-    
+
     if (expr.kind == NodeKind.CAST_EXPR) {
         let source = ptr_to_node(expr.child1)
         let val = generateExpression(source)
@@ -1278,11 +1495,50 @@ internal fn generateExpression(expr: ASTNode) -> String {
         }
         ir_call_arg("i32", strFromInt(argc))
 
+        // An owned temporary handed straight to `spawn` had no owner at all:
+        // `spawn f(g(x))` leaks what `g` produced, which is 80 of
+        // g9_helper_leak.psm's 107 allocations, one per spawn per frame. The
+        // ordinary call's argument-position release cannot be reused, and the
+        // note above says why -- a spawned task may still be running, so a
+        // release after `prismio_task_spawn` returns would free memory the task
+        // is reading.
+        //
+        // **The release point is the scope exit, and the licence is the one the
+        // task handle already uses.** `i1` is set only when INFERENCE 4.1's
+        // E-SPAWN-J proved the task is joined on every path before this scope
+        // exits, so at the exit the thread has finished and the argument is
+        // dead. A spawn that was not proved joined keeps leaking, which is the
+        // conservative direction -- exactly as `IR_DROP_TASK` in src/ir/stmt.psm
+        // is gated, and for the same failure.
+        //
+        // Spilling to a slot rather than releasing here is what lets the
+        // existing drop list do the work: it is keyed on bindings, and a binding
+        // in a loop body is dropped once per iteration, which is what g9's four
+        // spawns per frame need.
+        let spawnJoined = expr.i1 == 1
         let mut argPtr = call.child2
         let mut emitted = 0
         while (nodeExists(argPtr)) {
             let argNode = ptr_to_node(argPtr)
-            ir_call_arg("ptr", generateExpression(argNode))
+            let argVal = generateExpression(argNode)
+            if (spawnJoined and irArgumentIsOwnedTemporary(argNode)) {
+                let declType = getExprType(argNode)
+                let store = storageType(declType)
+                let name = strConcat("spawnarg.", strFromInt(irSpawnArgCounter))
+                irSpawnArgCounter = irSpawnArgCounter + 1
+                // Same order as an ordinary binding in src/ir/stmt.psm, and it
+                // is load-bearing: the binding is what assigns the slot its
+                // serial, so an alloca made before this one is named `x` where
+                // the drop list will look for `x.N`.
+                ir_set_var_type(name, declType)
+                let slot = ir_get_var_slot(name)
+                ir_alloca(store, slot)
+                ir_store(store, argVal, slot)
+                ir_mark_droppable(name, irOwnedTemporaryKind(argNode))
+                ir_call_arg("ptr", ir_get_temp_name(ir_load(store, slot)))
+            } else {
+                ir_call_arg("ptr", argVal)
+            }
             emitted = emitted + 1
             argPtr = argNode.next
         }
@@ -1411,7 +1667,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
 
         return ir_get_temp_name(tempId)
     }
-    
+
     if (expr.kind == NodeKind.CALL_EXPR) {
         let callee = ptr_to_node(expr.child1)
         let funcName = callee.s1
@@ -1556,6 +1812,46 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // here -- a temporary object per push, memcpy'd in and freed -- and this
         // is the shape five of the six corpus programs push in.
         if (generatePushInPlace(expr, funcName)) { return "" }
+
+        // M4.2, the read end. `list_get` on a flat element type is address
+        // arithmetic from a stride this compiler already knows, so it is emitted
+        // here rather than called for -- see ir_list_flat_elem in
+        // runtime/llvm-api-backend.c for why the guard is `== stride` and why
+        // the boxed arm is still the runtime's.
+        //
+        // The `ptr` test is not belt and braces: a flat, uncounted element type
+        // is a value struct, whose storage type is `ptr`, and every other
+        // element reaches the slot-to-scalar conversion below instead. Making
+        // that a condition rather than an assumption is what keeps a future
+        // flat-but-scalar element from silently taking an address where it
+        // wants a value.
+        // Only inside a loop whose guard was proved, which is what makes this
+        // pay. A single `list_get` outside one is left on `list_get_inline`: the
+        // three blocks this expands into are worth their code only when a loop
+        // amortises them, and emitting them everywhere cost g2 and g6 +58%
+        // compile time and +34% binary for 4.9% and 2.0%.
+        let flatStride = flatGetStride(expr, funcName)
+        if (flatStride == 0 and isStaticBoxedListGet(expr, funcName)
+                and irLoopDepth > 0) {
+            let listNode = ptr_to_node(expr.child2)
+            let listVal = generateExpression(listNode)
+            let indexVal = generateExpression(ptr_to_node(listNode.next))
+            let raw = ir_get_temp_name(ir_list_boxed_elem(listVal, indexVal))
+            let retType = storageType(getExprType(expr))
+            if (isFatStringKey(retType)) { return fatFromPtr(raw) }
+            if (strEquals(retType, "ptr") == false) {
+                return slotToScalar(retType, raw)
+            }
+            return raw
+        }
+        if (flatStride > 0 and strEquals(irLoopFlatGuard, "") == false
+                and strEquals(storageType(getExprType(expr)), "ptr")) {
+            let listNode = ptr_to_node(expr.child2)
+            let listVal = generateExpression(listNode)
+            let indexVal = generateExpression(ptr_to_node(listNode.next))
+            let guard = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
+            return ir_get_temp_name(ir_list_flat_elem(listVal, indexVal, flatStride, guard))
+        }
 
         // Byte length is the pair's second field. This is a reserved compiler
         // builtin, not an extern: its source spelling carries no declaration,
@@ -1708,7 +2004,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
             argPtr = argNode.next
             argIndex = argIndex + 1
         }
-        
+
         let mut callName = funcName
         if (strEquals(expr.s2, "") == false) {
             callName = expr.s2
@@ -1759,11 +2055,17 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // reaches here. That matters -- a spawned task may still be running, so
         // this release point would be wrong for it, and
         // aif/evidence/xlang/prismio/g9_helper_leak.psm is exactly that shape.
-        let resultCarriesPointer = strEquals(retType, "ptr")
-            or strStartsWith(retType, "struct:")
+        // **The third clause used to be the return's kind, and it was far too
+        // wide.** "Any pointer or struct result may alias an argument" withheld
+        // the release from every call that returns anything reference-shaped:
+        // `wrap(make())` returning a fresh `Box` cannot be the `String` it was
+        // handed, and leaked 100 of 100 allocations for it. The kind was standing
+        // in for the case the points-to fact genuinely misses -- a callee
+        // returning a *view* of a parameter, which carries provenance rather than
+        // sites -- and that case now has its own fact, so the stand-in can go.
         let releaseTemps = isForeign == false
-            and resultCarriesPointer == false
             and aif_fn_may_return_param(callName) == 0
+            and aif_fn_may_return_view_of_param(callName) == 0
 
         if (strEquals(retType, "void")) {
             ir_call_end("void", callName)
@@ -1874,6 +2176,6 @@ internal fn generateExpression(expr: ASTNode) -> String {
         generateElemInlineStamp(expr, funcName, result)
         return result
     }
-    
+
     return "0"
 }

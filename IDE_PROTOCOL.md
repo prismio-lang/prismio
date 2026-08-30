@@ -22,10 +22,13 @@ compiler process to close an enclosing array.
 Located and unlocated messages use this schema:
 
 ```json
-{"kind":"diagnostic","schemaVersion":1,"severity":"error","file":"src/main.psm","line":12,"column":5,"length":4,"message":"unknown name `item`"}
+{"kind":"diagnostic","schemaVersion":1,"severity":"error","code":"P4001","file":"src/main.psm","line":12,"column":5,"length":4,"message":"unknown name `item`"}
 ```
 
 - `severity` is `error`, `warning`, or `note`.
+- `code` is the stable `P####` compiler diagnostic identifier for errors and
+  warnings. It is `null` for a secondary `note`. Consumers should key fixes and
+  suppressions on this field rather than on message prose.
 - `file` is the registered source path, or `null` for a command/toolchain error.
 - `line` and `column` are 1-based. They are `0` when the message has no source
   location.
@@ -43,6 +46,12 @@ Consumers must ignore unknown fields and dispatch on `kind` and
 `schemaVersion`. A plugin mapping spans into an editor's UTF-16 document model
 must convert Prismio's UTF-8 byte columns and lengths before constructing text
 ranges.
+
+Human-readable diagnostics carry the same identifier, for example
+`error[P4001]: initializer for count: expected Int, found Bool`. Codes are not
+renumbered when wording changes; new sites receive new codes in their compiler
+area (`P1xxx` CLI/toolchain, `P2xxx` lexer, `P3xxx` parser, `P4xxx` semantic
+analysis, and `P5xxx` allocation inference).
 
 ## Current boundary
 

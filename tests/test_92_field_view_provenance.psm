@@ -1,0 +1,137 @@
+// A value read out of a parameter is a *view* of it, and the caller must not
+// free the argument before reading the result.
+//
+// This guards a use-after-free that `--verify` cannot see. `optionOr(f(), "!")`
+// returns the String inside the Option it was handed; the release for that
+// unbound temporary was emitted immediately after the call and **before** the
+// expression that read its result, so the value came back empty. Both releases
+// were ledger-legal, so the run reported `4 allocated, 4 released, 0 leaked,
+// 0 violation(s)` and the wrong answer -- a balanced ledger proved nothing.
+//
+// Two facts were missing, and either alone leaves the hole open:
+//
+//   * A reference-shaped **field read** recorded no view of the object it was
+//     read from, so a function returning `b.text` looked like it returned
+//     something unrelated to `b` (src/aif/walk.psm, MEMBER_ACCESS_EXPR).
+//   * A payload **arm binder** was bound to nothing at all -- the AIF walk had
+//     no case for MATCH_STATEMENT -- so `v` in `Option.Some(v) => return v`
+//     carried neither the scrutinee's sites nor a view of them. Sema was also
+//     typing the binder's *name* but not its *node*, so the walk could not tell
+//     a reference payload from a scalar one (src/sema/enums.psm).
+//
+// **This asserts values, not the ledger.** Every unbound form below leaks, by
+// the rule RUNTIME.md 3.1 states: an owned result passed straight into a
+// parameter is a value nothing names. Leaking is the conservative direction and
+// is what the released 0.1 compiler did. Reading freed memory is not, and that
+// is what is being guarded.
+
+import std.io
+import std.string
+import std.option
+
+struct Box { text: String }
+
+enum Holder { Empty, Full(String) }
+
+enum Count { Absent, Present(Int) }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn madeText() -> String {
+    let s = str_with_capacity(3)
+    __builtin_string_put_byte(s, 0, 'a')
+    __builtin_string_put_byte(s, 1, 'b')
+    __builtin_string_put_byte(s, 2, 'c')
+    return s
+}
+
+fn makeBox() -> Box {
+    return Box { text: madeText() }
+}
+
+fn makeHolder() -> Holder {
+    return Holder.Full(madeText())
+}
+
+fn makeOption() -> Option<String> {
+    return Option<String>.Some(madeText())
+}
+
+fn makeCount() -> Count {
+    return Count.Present(7)
+}
+
+// Returns a field of its parameter.
+fn boxText(b: Box) -> String {
+    return b.text
+}
+
+// Returns a payload bound out of its parameter, from a concrete enum.
+fn holderText(h: Holder, fallback: String) -> String {
+    match (h) {
+        Holder.Full(v) => { return v }
+        Holder.Empty => { return fallback }
+    }
+    return fallback
+}
+
+// A scalar payload is a copy, not a view. Nothing here should change for it.
+fn countValue(c: Count, fallback: Int) -> Int {
+    match (c) {
+        Count.Present(n) => { return n }
+        Count.Absent => { return fallback }
+    }
+    return fallback
+}
+
+fn main() -> Int {
+    // Bound receivers -- correct before the fix as well, and the control.
+    let heldBox = makeBox()
+    let fromBound = boxText(heldBox)
+    if (strEquals(fromBound, "abc") == false) { return fail("bound struct field") }
+
+    let heldHolder = makeHolder()
+    let holderBound = holderText(heldHolder, "!")
+    if (strEquals(holderBound, "abc") == false) { return fail("bound enum payload") }
+
+    let heldOption = makeOption()
+    let optionBound = optionOr(heldOption, "!")
+    if (strEquals(optionBound, "abc") == false) { return fail("bound Option payload") }
+
+    // Unbound temporaries -- every one of these read freed memory and answered
+    // "" before the view provenance existed.
+    let fromTemp = boxText(makeBox())
+    if (strEquals(fromTemp, "abc") == false) { return fail("struct field of an unbound temporary") }
+
+    let holderTemp = holderText(makeHolder(), "!")
+    if (strEquals(holderTemp, "abc") == false) { return fail("enum payload of an unbound temporary") }
+
+    let optionTemp = optionOr(makeOption(), "!")
+    if (strEquals(optionTemp, "abc") == false) { return fail("Option payload of an unbound temporary") }
+
+    // Passed straight into a call rather than bound at all, which is the exact
+    // shape the defect was reported in.
+    if (strEquals(boxText(makeBox()), "abc") == false) {
+        return fail("struct field passed straight into a call")
+    }
+    if (strEquals(optionOr(makeOption(), "!"), "abc") == false) {
+        return fail("Option payload passed straight into a call")
+    }
+
+    // A scalar payload carries no ownership, so it is unaffected in both forms.
+    let heldCount = makeCount()
+    if (countValue(heldCount, 0) != 7) { return fail("bound scalar payload") }
+    if (countValue(makeCount(), 0) != 7) { return fail("scalar payload of an unbound temporary") }
+
+    // The absent arms still take the fallback rather than a stale payload.
+    let empty = Holder.Empty
+    let emptyText = holderText(empty, "none")
+    if (strEquals(emptyText, "none") == false) { return fail("empty arm fallback") }
+
+    println("test_92 ok")
+    return 0
+}

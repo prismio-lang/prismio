@@ -2,18 +2,18 @@ import std.io
 fn sum_to_n(n: Int) -> Int {
     let mut sum = 0
     let mut i = 1
-    
+
     while (i <= n) {
         sum = sum + i
         i = i + 1
     }
-    
+
     return sum
 }
 fn factorial(n: Int) -> Int {
     let mut result = 1
     let mut i = 1
-    
+
     while (i <= n) {
         result = result * i
         i = i + 1

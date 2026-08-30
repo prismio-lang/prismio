@@ -46,6 +46,11 @@ jobs:
       - name: Check the toolchain source lists agree
         run: python tools/check_source_lists.py
 
+      - name: Check formatting and lint
+        run: |
+          python tools/format_sources.py --check
+          python tools/lint.py
+
       # Install LLVM the way each platform actually ships it, *before* asking
       # setup_llvm.py for one -- it prefers a usable local install and only
       # downloads as a fallback.
@@ -138,6 +143,26 @@ jobs:
           # then proves PRISMIO_INLINE_RUNTIME=0 avoids it. Keep it in this
           # matrix: a successful fail-open build is not portability evidence.
           PRISMIO="../build/gen2$EXT" python test_runner.py
+
+      # The allocation ledger proves Prismio's inferred releases balance; it
+      # cannot detect a balanced release that happens before the last read.
+      # These programs are therefore linked against the runtime with ASan.
+      - name: Run AddressSanitizer smoke suite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: tools/sanitizer_smoke.sh --compiler build/gen2
+
+      # Compare emitted-program performance with the compiler built from the
+      # committed seed. Interleaved A/B runs reduce hosted-runner drift; the
+      # corpus median and repeated per-program regressions are hard failures.
+      - name: Run milestone benchmark gate
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python tools/milestone_bench.py \
+            --old build/gen0 --new build/gen2 --runs 5 --skip-baselines \
+            --tolerance 20 --median-tolerance 10 \
+            --label ci-seed-vs-fixpoint --json build/ci-benchmark.json
 
       # The AIF engine exists twice on purpose: once in the compiler and once as
       # aif/prototype/aif.py, sharing no code. A transfer function that is subtly

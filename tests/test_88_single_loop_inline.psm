@@ -1,0 +1,38 @@
+// The inline policy is deliberately structural, not a spelling convention.
+// `hot` is the only source call in its loop and has one total callsite.  The
+// two crowded helpers share a loop, and `cold` is not called from a loop.
+
+private fn hot(value: Int) -> Int {
+    return value + 1
+}
+
+private fn crowded_a(value: Int) -> Int {
+    return value + 2
+}
+
+private fn crowded_b(value: Int) -> Int {
+    return value + 3
+}
+
+private fn cold(value: Int) -> Int {
+    return value + 4
+}
+
+fn main() -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < 8) {
+        total = total + hot(i)
+        i = i + 1
+    }
+
+    let mut j = 0
+    while (j < 8) {
+        total = total + crowded_a(j)
+        total = total + crowded_b(j)
+        j = j + 1
+    }
+
+    total = total + cold(1)
+    return total - total
+}

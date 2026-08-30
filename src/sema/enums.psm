@@ -432,7 +432,17 @@ private fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, e
         if (name.kind != NodeKind.IDENTIFIER_EXPR) {
             semaErrorAt(name, "a variant pattern binds names, not expressions")
         } else {
-            ir_set_var_type(name.s1, typeSemKey(semaAnnotationType(module, ptr_to_node(payload))))
+            let payloadT = semaAnnotationType(module, ptr_to_node(payload))
+            ir_set_var_type(name.s1, typeSemKey(payloadT))
+            // The *node* is typed as well as the name, and the difference
+            // mattered: a binder had a type in the variable table and none on
+            // the AST, so any pass reading the tree rather than the table saw
+            // nothing. AIF is such a pass -- `aifNodeType` answered "" for the
+            // binder, `aifIsRef("")` is false, and a reference-shaped payload
+            // was therefore not recorded as a view of the scrutinee. That is
+            // half of the use-after-free in KNOWN_ISSUES.md: the caller freed
+            // the Option before reading the String it had just handed back.
+            nodeSetType(name, payloadT)
         }
         payload = ptr_to_node(payload).next
         binder = name.next

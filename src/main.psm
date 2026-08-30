@@ -73,6 +73,14 @@ extern fn compiler_set_workload_mode(on: Int)
 extern fn compiler_runtime_source_hash() -> String produce(free)
 extern fn compiler_installed_runtime_hash() -> String produce(free)
 extern fn delete_file(path: String) -> Int
+
+// The writer half of the filesystem surface, for `init`. Both return 0 for
+// success, which is the C convention here and the opposite of `file_exists`;
+// std/fs.psm normalises that for applications, and this file cannot import it
+// because the two would declare the same symbols twice.
+extern fn write_file(path: String borrow, content: String borrow) -> Int
+extern fn make_directory(path: String borrow) -> Int
+extern fn current_directory() -> String produce(free)
 // A `static char buf[32]` the next call overwrites.
 extern fn ir_llvm_version() -> String alias
 
@@ -285,7 +293,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
 
     let content = read_file(importPath)
     if (strEquals(content, "") and file_exists(importPath) == 0) {
-        diag_error_at(site.file, site.line, site.col, site.len,
+        diag_error_at_code("P1001", site.file, site.line, site.col, site.len,
             strConcat(strConcat("cannot read imported module ", diagQuote(moduleName)),
                        strConcat(": no such file ", importPath)))
         diag_finish()
@@ -319,7 +327,7 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
     let listing = list_modules(dirPath)
 
     if (strEquals(listing, "")) {
-        diag_error_at(site.file, site.line, site.col, site.len,
+        diag_error_at_code("P1002", site.file, site.line, site.col, site.len,
             strConcat(strConcat("package ", diagQuote(site.s1)),
                        strConcat(" contains no modules: ", dirPath)))
         diag_finish()
@@ -460,6 +468,16 @@ private fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -
 
 private fn printUsage() {
     println("Usage:")
+    println("")
+    println("Project commands -- these read build.ums, found at or above the")
+    println("working directory, and write to .prismio/build/<profile>/:")
+    println("  prismio init [name]              start a project here, or in a new directory")
+    println("  prismio build [--release]        build every target")
+    println("  prismio run [--release]          build, then run the executable target")
+    println("  prismio test [--release]         build and run every test target")
+    println("  prismio clean [--release]        remove this profile's build output")
+    println("")
+    println("Single-file commands -- these name a source and need no manifest:")
     println("  prismio build [source.psm] [-o output.exe] [-g] [--verify]")
     println("                [--overflow-checks] [--target <triple>] [--sysroot <sdk>]")
     println("  prismio run <source.psm> [-o output.exe] [-g] [--verify] [--jit]")
@@ -488,7 +506,8 @@ private fn printUsage() {
     println("   runtime-<triple> rather than the host's runtime.")
     println("")
     println("build/run link against the installed Prismio runtime only.")
-    println("build with no source discovers build.ums and delegates the project to UMS.")
+    println("A project command is the same command with no source named: `prismio build`")
+    println("builds the project, `prismio build main.psm` builds one file.")
     println("bootstrap builds the compiler itself from the repository sources,")
     println("linking the compiler backend and the LLVM C API it calls.")
 }
@@ -536,7 +555,7 @@ private fn reportForcedLayouts() {
     let mut i = 0
     while (i < aif_layout_forced_count()) {
         if (aif_layout_force_applied(i) == 0) {
-            diag_warning(strConcat(strConcat(strConcat(
+            diag_warning_code("P1003", strConcat(strConcat(strConcat(
                 "--force-layout did not apply: no candidate of ",
                 diagQuote(aif_layout_forced_type(i))),
                 strConcat(" keeps ", strFromInt(aif_layout_forced_hot(i)))),
@@ -566,7 +585,7 @@ private fn checkRuntimeFreshness() {
         return
     }
 
-    diag_error("the installed Prismio runtime library is stale")
+    diag_error_code("P1004", "the installed Prismio runtime library is stale")
     print("  runtime library was built from sources hashing ")
     println(installed)
     print("  the runtime sources on disk now hash ")
@@ -597,7 +616,7 @@ private fn checkRuntimeFreshness() {
 private fn analyzedModule(path: String) -> ASTNode {
     let content = read_file(path)
     if (strEquals(content, "") and file_exists(path) == 0) {
-        diag_error(strConcat("cannot read ", path))
+        diag_error_code("P1005", strConcat("cannot read ", path))
         return createNode(NodeKind.MODULE)
     }
 
@@ -723,7 +742,7 @@ private fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: B
     // the honest thing is to run the first and say so rather than silently
     // measure one and present it as all of them.
     if (count > 1) {
-        diag_warning("this module declares more than one workload; only the first is measured (profiles are not merged yet)")
+        diag_warning_code("P1006", "this module declares more than one workload; only the first is measured (profiles are not merged yet)")
     }
 
     let wl = findWorkload(module)
@@ -816,7 +835,7 @@ private fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: B
     endWorkloadPass(verifyMode)
 
     if (strEquals(failure, "") == false) {
-        diag_warning(failure)
+        diag_warning_code("P1007", failure)
         return ""
     }
 
@@ -872,7 +891,7 @@ private fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, 
 
     let content = read_file(path)
     if (strEquals(content, "") and file_exists(path) == 0) {
-        diag_error(strConcat("cannot read ", path))
+        diag_error_code("P1008", strConcat("cannot read ", path))
         if (bootstrapMode) {
             println("  bootstrap compiles the Prismio compiler from a source checkout.")
             println("  Run it from the repository root, or give the source path explicitly:")
@@ -1023,14 +1042,14 @@ private fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, 
         // That is also what makes the two comparable in run_jit_test.
         let status = ir_jit_run_main(path)
         if (status != 0) {
-            diag_error(strConcat(path, " exited with a failure status"))
+            diag_error_code("P1009", strConcat(path, " exited with a failure status"))
             return 1
         }
         return 0
     }
 
     if (ir_write_file(outFile) != 0) {
-        diag_error(strConcat("cannot write LLVM IR to ", outFile))
+        diag_error_code("P1010", strConcat("cannot write LLVM IR to ", outFile))
         return 1
     }
 
@@ -1049,7 +1068,7 @@ private fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, 
 
     if (buildFailed != 0) {
         delete_file(outFile)
-        diag_error("the native build step failed (llc/clang); see the output above")
+        diag_error_code("P1011", "the native build step failed (llc/clang); see the output above")
         return 1
     }
 
@@ -1060,7 +1079,7 @@ private fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, 
 
     if (runAfterBuild) {
         if (compiler_run_executable(outputFile) != 0) {
-            diag_error(strConcat(outputFile, " exited with a failure status"))
+            diag_error_code("P1012", strConcat(outputFile, " exited with a failure status"))
             return 1
         }
     }
@@ -1072,8 +1091,238 @@ private fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, 
 // and plans the project; the compiler keeps the one responsibility it already
 // owns: compiling each planned Prismio entry source. Future run/test/clean
 // commands should call the same UMS model instead of growing parallel CLI logic.
-private fn buildUmsProject() -> Int {
-    let workspace = umsLoadProject(".", "debug")
+// The last component of a path, with either separator. `""` when there is none.
+private fn pathLeaf(path: String) -> String {
+    let mut cut = strLastIndexOfChar(path, '/')
+    let back = strLastIndexOfChar(path, '\\')
+    if (back > cut) { cut = back }
+    if (cut < 0) { return strClone(path) }
+    return strSubstring(path, cut + 1, __builtin_string_len(path) - cut - 1)
+}
+
+// `prismio init [name]` -- a project in the current directory, or in a new one.
+//
+// One command rather than Cargo's `new` plus `init`: the only difference between
+// them is whether a directory is created first, and that is what the optional
+// argument says. It leaves the word `new` free, which matters because `new`
+// means *project* everywhere else and would be a trap on anything else.
+//
+// **Nothing is written if anything would be overwritten.** The manifest is
+// checked for first, and its presence ends the command -- re-running `init` in a
+// project is a mistake, not a request to reset it.
+private fn initUmsProject(nameArg: String) -> Int {
+    let mut root = "."
+    let mut name = ""
+    if (strEquals(nameArg, "")) {
+        name = pathLeaf(current_directory())
+    } else {
+        root = strClone(nameArg)
+        name = strClone(nameArg)
+    }
+
+    // Rejected by UMS's own rule rather than a copy of it, so a name this writes
+    // is a name the validator accepts -- the scaffold cannot be born invalid.
+    if (umsValidName(name) == false) {
+        diag_error_code("P1013", strConcat(strConcat("cannot use ", diagQuote(name)), " as a project name"))
+        diag_note("a name may hold letters, digits, `-`, `_` and `.`")
+        diag_note("run `prismio init <name>` to choose one")
+        return 1
+    }
+
+    let manifestPath = join_path(root, "build.ums")
+    if (file_exists(manifestPath) == 1) {
+        diag_error_code("P1014", strConcat(manifestPath, " already exists"))
+        return 1
+    }
+
+    if (make_directory(join_path(root, "src")) != 0) {
+        diag_error_code("P1015", strConcat("could not create ", join_path(root, "src")))
+        return 1
+    }
+
+    let manifest = strConcat("project {\n    name = \"", name)
+    let manifestBody = strConcat(manifest,
+        strConcat("\"\n    version = \"0.1.0\"\n    prismio = \"",
+        strConcat(PRISMIO_VERSION,
+        strConcat("\"\n}\n\ntargets {\n    executable(\"", name))))
+    let manifestText = strConcat(manifestBody, "\") {\n        entry = \"src/main.psm\"\n    }\n}\n")
+    if (write_file(manifestPath, manifestText) != 0) {
+        diag_error_code("P1016", strConcat("could not write ", manifestPath))
+        return 1
+    }
+
+    let entryPath = join_path(join_path(root, "src"), "main.psm")
+    if (file_exists(entryPath) == 0) {
+        if (write_file(entryPath,
+                "import std.io\n\nfn main() -> Int {\n    println(\"Hello, Prismio!\")\n    return 0\n}\n") != 0) {
+            diag_error_code("P1017", strConcat("could not write ", entryPath))
+            return 1
+        }
+    }
+
+    // `.prismio/` is build output, and a project that commits it ships one
+    // machine's binaries. Written only when absent, so an existing ignore file
+    // is never rewritten from under its author.
+    let ignorePath = join_path(root, ".gitignore")
+    if (file_exists(ignorePath) == 0) {
+        if (write_file(ignorePath, ".prismio/\n") != 0) {
+            diag_error_code("P1018", strConcat("could not write ", ignorePath))
+            return 1
+        }
+    }
+
+    print("created ")
+    println(name)
+    print("  ")
+    println(manifestPath)
+    print("  ")
+    println(entryPath)
+    print("  ")
+    println(ignorePath)
+    println("")
+    if (strEquals(nameArg, "")) {
+        println("build it with `prismio run`")
+    } else {
+        print("build it with `cd ")
+        print(nameArg)
+        println(" && prismio run`")
+    }
+    return 0
+}
+
+// `prismio test` -- build every `test(...)` target and run it.
+//
+// **A test passes when it exits 0.** That is the entire protocol, and it is
+// deliberate: Prismio has no assertion library and no test attribute, so
+// inventing a richer contract here would be a promise the language cannot keep.
+// It is also what `tests/test_runner.py` already does for the compiler's own
+// suite, so a project's tests and the compiler's are checked the same way.
+//
+// Every test is built before any is run, and every test runs even after one
+// fails -- a run that stops at the first failure tells you about one test when
+// you asked about all of them.
+private fn testUmsProject(profile: String) -> Int {
+    let workspace = umsLoadProject(".", profile)
+    if (workspace.valid == false) {
+        umsDiagnosticsPrint(workspace.diagnostics)
+        return 1
+    }
+
+    let mut total = 0
+    let mut index = 0
+    while (index < workspace.targetCount()) {
+        let target = workspace.target(index)
+        if (target.kind == UmsTargetKind.TEST) {
+            if (compileSource(target.sourcePath, target.outputPath,
+                              false, false, false, false, false, false, false) != 0) {
+                return 1
+            }
+            total = total + 1
+        }
+        index = index + 1
+    }
+
+    if (total == 0) {
+        println("no test targets declared")
+        diag_note("add `test(\"name\") { entry = \"tests/name.psm\" }` to build.ums")
+        return 0
+    }
+
+    print("running ")
+    print(total)
+    println(" test(s)")
+
+    let mut passed = 0
+    let mut failed = 0
+    index = 0
+    while (index < workspace.targetCount()) {
+        let target = workspace.target(index)
+        if (target.kind == UmsTargetKind.TEST) {
+            if (compiler_run_executable(target.outputPath) == 0) {
+                print("  ok    ")
+                println(target.name)
+                passed = passed + 1
+            } else {
+                print("  FAIL  ")
+                println(target.name)
+                failed = failed + 1
+            }
+        }
+        index = index + 1
+    }
+
+    print(passed)
+    print(" passed, ")
+    print(failed)
+    println(" failed")
+    if (failed > 0) { return 1 }
+    return 0
+}
+
+// The profile a project command was asked for. `--release` is the only one with
+// a spelling of its own; anything else is a flag this command does not take, and
+// is reported as that rather than taken for a source path.
+private fn projectProfile(startIndex: Int) -> String {
+    let mut profile = "debug"
+    let mut i = startIndex
+    while (i < cli_arg_count()) {
+        let flag = cli_arg(i)
+        if (strEquals(flag, "--release")) {
+            profile = "release"
+        } else if (strEquals(flag, "--debug-profile")) {
+            profile = "debug"
+        } else {
+            diag_error_code("P1019", strConcat("unknown argument ", diagQuote(flag)))
+            diag_note("a project command takes `--release`; name a source file to build one file")
+            return ""
+        }
+        i = i + 1
+    }
+    return profile
+}
+
+// Remove what this profile's build wrote.
+//
+// Deletes each planned target's output rather than the profile directory,
+// because the compiler has no recursive delete and `delete_file` is the whole
+// primitive. That is not a shortcut today: a planned target's output is the only
+// thing a project build writes under the profile root, so this is complete. It
+// stops being complete the moment a build emits an intermediate there, and the
+// fix then is a directory primitive rather than a longer list here.
+//
+// The lockfile is deliberately left alone. It records what was resolved, not
+// what was built, and `cargo clean` does not remove `Cargo.lock` either.
+private fn cleanUmsProject(profile: String) -> Int {
+    let workspace = umsLoadProject(".", profile)
+    if (workspace.valid == false) {
+        umsDiagnosticsPrint(workspace.diagnostics)
+        return 1
+    }
+
+    let mut removed = 0
+    let mut index = 0
+    while (index < workspace.targetCount()) {
+        let target = workspace.target(index)
+        if (file_exists(target.outputPath) == 1) {
+            if (delete_file(target.outputPath) == 0) {
+                removed = removed + 1
+            } else {
+                diag_error_code("P1020", strConcat("could not remove ", target.outputPath))
+                return 1
+            }
+        }
+        index = index + 1
+    }
+
+    print("removed ")
+    print(removed)
+    print(" artifact(s) from ")
+    println(profile)
+    return 0
+}
+
+private fn buildUmsProject(profile: String, runAfterBuild: Bool) -> Int {
+    let workspace = umsLoadProject(".", profile)
     if (workspace.valid == false) {
         umsDiagnosticsPrint(workspace.diagnostics)
         return 1
@@ -1089,8 +1338,8 @@ private fn buildUmsProject() -> Int {
     // was asked for and that it did not resolve, which is the difference between
     // "the lockfile is stale" and "the fetch has nothing behind it".
     let resolveDiagnostics = umsDiagnostics()
-    let resolutions = umsResolveDependencies(workspace.project, resolveDiagnostics)
-    if (umsWriteLockfile(workspace.project, resolutions) == false) {
+    let resolutions = workspace.project.resolveDependencies(resolveDiagnostics)
+    if (workspace.project.writeLockfile(resolutions) == false) {
         println("error: could not write the lockfile")
         return 1
     }
@@ -1100,13 +1349,50 @@ private fn buildUmsProject() -> Int {
     }
 
     let mut index = 0
-    while (index < umsWorkspaceTargetCount(workspace)) {
-        let target = umsWorkspaceTarget(workspace, index)
+    let mut executables = 0
+    let mut firstExecutable = 0
+    while (index < workspace.targetCount()) {
+        let target = workspace.target(index)
+        // A test target is not built here, for the reason `cargo build` does not
+        // build tests: the ordinary build is the one a developer runs constantly,
+        // and paying for the test programs every time is a cost with no reader.
+        // `prismio test` builds them.
+        if (target.kind == UmsTargetKind.TEST) {
+            index = index + 1
+            continue
+        }
+        let compilerTarget = target.kind == UmsTargetKind.COMPILER
         if (compileSource(target.sourcePath, target.outputPath,
-                          false, false, false, false, false, false, false) != 0) {
+                          false, compilerTarget, false, false, false, false, false) != 0) {
             return 1
         }
+        if (target.kind == UmsTargetKind.EXECUTABLE or compilerTarget) {
+            if (executables == 0) { firstExecutable = index }
+            executables = executables + 1
+        }
         index = index + 1
+    }
+
+    if (runAfterBuild == false) { return 0 }
+
+    // Every target is built before anything is run, so `run` on a project whose
+    // library target does not compile fails rather than running a stale binary
+    // that happens to be next to it.
+    if (executables == 0) {
+        diag_error_code("P1021", "this project declares no executable target to run")
+        diag_note("add `executable(\"name\") { entry = \"src/main.psm\" }` to build.ums")
+        return 1
+    }
+    if (executables > 1) {
+        diag_error_code("P1022", "this project declares more than one executable target")
+        diag_note("running a chosen target needs a name argument, which `run` does not take yet")
+        return 1
+    }
+
+    let target = workspace.target(firstExecutable)
+    if (compiler_run_executable(target.outputPath) != 0) {
+        diag_error_code("P1023", strConcat(target.outputPath, " exited with a failure status"))
+        return 1
     }
     return 0
 }
@@ -1141,6 +1427,27 @@ fn main() -> Int {
         println(PRISMIO_VERSION)
         print("llvm ")
         println(ir_llvm_version())
+
+        // **Which toolchain is this, and which standard library will it use.**
+        // Not decoration: a compiler developer has several generations in
+        // `build/` and no installed binary is the one they mean, and `std` is
+        // resolved by search rather than by configuration -- so "what am I
+        // compiling against" had no answer short of reading source. `rustc -vV`
+        // and `go env` print exactly this, for exactly this reason.
+        //
+        // The stdlib line reports the path that *would* be used from here, so it
+        // answers for the working directory rather than in the abstract. An
+        // empty answer is printed as such rather than omitted: no standard
+        // library found is the single most useful thing this can tell you.
+        print("compiler ")
+        println(executable_directory())
+        let stdRoot = standardModulePath(".", "string.psm")
+        print("stdlib ")
+        if (strEquals(stdRoot, "")) {
+            println("(none found)")
+        } else {
+            println(get_directory(stdRoot))
+        }
         return 0
     }
 
@@ -1151,7 +1458,7 @@ fn main() -> Int {
     if (strEquals(first, "runtime-hash")) {
         let sourceHash = compiler_runtime_source_hash()
         if (strEquals(sourceHash, "")) {
-            diag_error("cannot find the Prismio runtime sources to hash")
+            diag_error_code("P1024", "cannot find the Prismio runtime sources to hash")
             return 1
         }
         println(sourceHash)
@@ -1160,7 +1467,7 @@ fn main() -> Int {
 
     if (strEquals(first, "check")) {
         if (cli_arg_count() <= 2) {
-            diag_error("missing source file")
+            diag_error_code("P1025", "missing source file")
             printUsage()
             return 1
         }
@@ -1171,7 +1478,7 @@ fn main() -> Int {
             if (strEquals(option, "--diagnostic-format=json")) {
                 diag_set_json_mode(1)
             } else {
-                diag_error(strConcat("unknown argument ", diagQuote(option)))
+                diag_error_code("P1026", strConcat("unknown argument ", diagQuote(option)))
                 printUsage()
                 return 1
             }
@@ -1186,7 +1493,7 @@ fn main() -> Int {
     // the AIF memory-model work, which analyses the real AST out-of-process.
     if (strEquals(first, "dump-ast")) {
         if (cli_arg_count() <= 2) {
-            diag_error("missing source file")
+            diag_error_code("P1027", "missing source file")
             printUsage()
             return 1
         }
@@ -1199,7 +1506,7 @@ fn main() -> Int {
     // is subtly wrong and yields a silently wrong tier rather than a crash.
     if (strEquals(first, "aif")) {
         if (cli_arg_count() <= 2) {
-            diag_error("missing source file")
+            diag_error_code("P1028", "missing source file")
             printUsage()
             return 1
         }
@@ -1230,7 +1537,7 @@ fn main() -> Int {
                 aifLayout = true
             } else if (strStartsWith(flag, "--force-layout=")) {
                 if (parseForceLayout(flag) == false) {
-                    diag_error("--force-layout= takes <Type>:<hot-field-count>, e.g. Particle:8")
+                    diag_error_code("P1029", "--force-layout= takes <Type>:<hot-field-count>, e.g. Particle:8")
                     return 1
                 }
             } else if (strStartsWith(flag, "--why=")) {
@@ -1245,7 +1552,7 @@ fn main() -> Int {
                 // tests/test_43 uses to check that widening only ever raises.
                 aifBudgetArg = optionOr(strParseInt(strSubstring(flag, 9, __builtin_string_len(flag) - 9)), 0)
                 if (aifBudgetArg < 1) {
-                    diag_error("--budget= must be at least 1 round")
+                    diag_error_code("P1030", "--budget= must be at least 1 round")
                     return 1
                 }
             } else if (strEquals(flag, "--theta-fields")) {
@@ -1273,16 +1580,16 @@ fn main() -> Int {
                 // the model could only ever be inspected for the host, while
                 // `prismio build --target` compiled against a different one.
                 if (aifArg + 1 >= cli_arg_count()) {
-                    diag_error("`--target` requires an LLVM target triple (e.g. wasm32-unknown-unknown)")
+                    diag_error_code("P1031", "`--target` requires an LLVM target triple (e.g. wasm32-unknown-unknown)")
                     return 1
                 }
                 if (targetSelect(cli_arg(aifArg + 1)) == false) {
-                    diag_error(strConcat("unknown target triple ", diagQuote(cli_arg(aifArg + 1))))
+                    diag_error_code("P1032", strConcat("unknown target triple ", diagQuote(cli_arg(aifArg + 1))))
                     return 1
                 }
                 aifArg = aifArg + 1
             } else {
-                diag_error(strConcat("unknown argument ", diagQuote(flag)))
+                diag_error_code("P1033", strConcat("unknown argument ", diagQuote(flag)))
                 printUsage()
                 return 1
             }
@@ -1322,7 +1629,7 @@ fn main() -> Int {
             let barg = cli_arg(argIndex)
             if (strEquals(barg, "-o")) {
                 if (argIndex + 1 >= cli_arg_count()) {
-                    diag_error("`-o` requires an output path")
+                    diag_error_code("P1034", "`-o` requires an output path")
                     return 1
                 }
                 outputFile = cli_arg(argIndex + 1)
@@ -1333,7 +1640,7 @@ fn main() -> Int {
                 bootstrapDebugInfo = true
                 argIndex = argIndex + 1
             } else {
-                diag_error(strConcat("unknown argument ", diagQuote(barg)))
+                diag_error_code("P1035", strConcat("unknown argument ", diagQuote(barg)))
                 printUsage()
                 return 1
             }
@@ -1343,43 +1650,72 @@ fn main() -> Int {
                               bootstrapDebugInfo, false, false)
     }
 
-    if (strEquals(first, "build")) {
-        command = "build"
-        runAfterBuild = false
-        argIndex = 3
+    // `build`, `run` and `clean` are each two commands wearing one name: with a
+    // source they act on that file, and with none they act on the project
+    // `build.ums` describes. What tells them apart is whether the next argument
+    // names a source, and a leading `-` is a flag rather than a path -- which is
+    // what lets `prismio build --release` be the project build it reads as.
+    let projectMode = cli_arg_count() <= 2 or strStartsWith(cli_arg(2), "-")
 
-        if (cli_arg_count() <= 2) {
-            return buildUmsProject()
-        }
-
-        path = cli_arg(2)
-        if (strEquals(path, "run") or strEquals(path, "build")) {
-            diag_error("use either `build` or `run`, not both")
+    if (strEquals(first, "init")) {
+        if (cli_arg_count() > 3) {
+            diag_error_code("P1036", "`init` takes at most one name")
             return 1
         }
-    } else {
-        if (strEquals(first, "run")) {
-            command = "run"
-            runAfterBuild = true
-            argIndex = 3
+        if (cli_arg_count() == 3) { return initUmsProject(cli_arg(2)) }
+        return initUmsProject("")
+    }
 
-            if (cli_arg_count() <= 2) {
-                diag_error("missing source file")
-                printUsage()
-                return 1
-            }
+    if (strEquals(first, "test")) {
+        let profile = projectProfile(2)
+        if (strEquals(profile, "")) { return 1 }
+        return testUmsProject(profile)
+    }
 
-            path = cli_arg(2)
-            if (strEquals(path, "run") or strEquals(path, "build")) {
-                diag_error("use either `build` or `run`, not both")
-                return 1
-            }
-        } else {
-            command = "build"
-            runAfterBuild = false
-            path = first
-            argIndex = 2
+    if (strEquals(first, "clean")) {
+        if (projectMode == false) {
+            diag_error_code("P1037", "`clean` acts on the project and takes no source file")
+            return 1
         }
+        let profile = projectProfile(2)
+        if (strEquals(profile, "")) { return 1 }
+        return cleanUmsProject(profile)
+    }
+
+    if (strEquals(first, "build") or strEquals(first, "run")) {
+        if (projectMode) {
+            let profile = projectProfile(2)
+            if (strEquals(profile, "")) { return 1 }
+            return buildUmsProject(profile, strEquals(first, "run"))
+        }
+
+        // `cli_arg(1)` again rather than naming `first` twice: `cli_arg` is
+        // declared `alias`, so a second call is a second borrow of `argv`, where
+        // a second *name* would be a move (CODE_STYLE, affine strings).
+        command = cli_arg(1)
+        runAfterBuild = strEquals(first, "run")
+        argIndex = 3
+        path = cli_arg(2)
+        if (strEquals(path, "run") or strEquals(path, "build")) {
+            diag_error_code("P1038", "use either `build` or `run`, not both")
+            return 1
+        }
+    } else if (strEndsWith(first, ".psm")) {
+        // `prismio foo.psm` has always meant `prismio build foo.psm`, and still
+        // does. Narrowed to a path-shaped argument, because the unnarrowed
+        // version is what turned every mistyped command into a file that could
+        // not be read: `prismio test` reported `cannot read test`, sending the
+        // reader to the filesystem when the answer was the command name.
+        command = "build"
+        runAfterBuild = false
+        path = first
+        argIndex = 2
+    } else {
+        // `first` is moved into `path` by the branch above, so the name is read
+        // again from argv rather than reused here.
+        diag_error_code("P1039", strConcat("unknown command ", diagQuote(cli_arg(1))))
+        diag_note("commands: init, build, run, test, clean, check, aif, dump-ast, bootstrap, runtime-hash")
+        return 1
     }
 
     outputFile = compiler_default_exe_path(path)
@@ -1392,7 +1728,7 @@ fn main() -> Int {
 
         if (strEquals(arg, "-o")) {
             if (argIndex + 1 >= cli_arg_count()) {
-                diag_error("`-o` requires an output path")
+                diag_error_code("P1040", "`-o` requires an output path")
                 return 1
             }
             outputFile = cli_arg(argIndex + 1)
@@ -1402,7 +1738,7 @@ fn main() -> Int {
             // is written; without it the output keeps a load/store per binding.
             let level = optionOr(strParseInt(strSubstring(arg, 2, 1)), 0)
             if (level < 0 or level > 3) {
-                diag_error(strConcat("unknown optimization level ", diagQuote(arg)))
+                diag_error_code("P1041", strConcat("unknown optimization level ", diagQuote(arg)))
                 return 1
             }
             ir_set_opt_level(level)
@@ -1410,14 +1746,14 @@ fn main() -> Int {
             argIndex = argIndex + 1
         } else if (strEquals(arg, "--target")) {
             if (argIndex + 1 >= cli_arg_count()) {
-                diag_error("`--target` requires an LLVM target triple (e.g. x86_64-apple-macos)")
+                diag_error_code("P1042", "`--target` requires an LLVM target triple (e.g. x86_64-apple-macos)")
                 return 1
             }
             // The triple is validated by LLVM rather than checked against a list
             // here: a list would be a second copy of what LLVM knows, and the
             // failure mode of a stale entry is a miscompile.
             if (targetSelect(cli_arg(argIndex + 1)) == false) {
-                diag_error(strConcat("unknown target triple ", diagQuote(cli_arg(argIndex + 1))))
+                diag_error_code("P1043", strConcat("unknown target triple ", diagQuote(cli_arg(argIndex + 1))))
                 return 1
             }
             // A contradiction rather than a combination: the JIT emits code for
@@ -1425,14 +1761,14 @@ fn main() -> Int {
             // Silently running host code for someone who asked for wasm32 is the
             // worst of the three available behaviours.
             if (jitMode) {
-                diag_error("`--jit` and `--target` cannot be combined")
+                diag_error_code("P1044", "`--jit` and `--target` cannot be combined")
                 diag_note("the JIT runs the module in this process, so it can only ever target the host")
                 return 1
             }
             argIndex = argIndex + 2
         } else if (strEquals(arg, "--sysroot")) {
             if (argIndex + 1 >= cli_arg_count()) {
-                diag_error("`--sysroot` requires a path to the target's SDK")
+                diag_error_code("P1045", "`--sysroot` requires a path to the target's SDK")
                 return 1
             }
             compiler_set_sysroot(cli_arg(argIndex + 1))
@@ -1464,12 +1800,12 @@ fn main() -> Int {
             // this adds a way of executing the module, not a way of producing
             // one. See ir_jit_run_main in runtime/llvm-api-backend.c.
             if (strEquals(command, "run") == false) {
-                diag_error("`--jit` is only meaningful with `prismio run`")
+                diag_error_code("P1046", "`--jit` is only meaningful with `prismio run`")
                 diag_note("`build` produces an object; there is nothing to run in this process")
                 return 1
             }
             if (ir_target_is_explicit() == 1) {
-                diag_error("`--jit` and `--target` cannot be combined")
+                diag_error_code("P1047", "`--jit` and `--target` cannot be combined")
                 diag_note("the JIT runs the module in this process, so it can only ever target the host")
                 return 1
             }
@@ -1496,13 +1832,13 @@ fn main() -> Int {
             // LAYOUT 8 selects the measured winner, so the flag has to reach the
             // path that produces something to measure.
             if (parseForceLayout(arg) == false) {
-                diag_error("--force-layout= takes <Type>:<hot-field-count>, e.g. Particle:8")
+                diag_error_code("P1048", "--force-layout= takes <Type>:<hot-field-count>, e.g. Particle:8")
                 return 1
             }
             argIndex = argIndex + 1
         } else {
             if (strEquals(arg, "build") or strEquals(arg, "run")) {
-                diag_error("use either `build` or `run`, not both")
+                diag_error_code("P1049", "use either `build` or `run`, not both")
                 return 1
             }
 
@@ -1513,7 +1849,7 @@ fn main() -> Int {
                 outputFile = cli_arg(argIndex)
                 argIndex = argIndex + 1
             } else {
-                diag_error(strConcat("unknown argument ", diagQuote(arg)))
+                diag_error_code("P1050", strConcat("unknown argument ", diagQuote(arg)))
                 printUsage()
                 return 1
             }

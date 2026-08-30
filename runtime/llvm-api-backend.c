@@ -739,6 +739,20 @@ void ir_function_body_start(void) {
     }
 }
 
+// A source function with exactly one direct callsite, and the sole source call
+// in its nearest loop. The frontend proves both facts before asking for this
+// attribute, so forcing the inline cannot duplicate the body or exhaust one
+// caller's inline budget on several siblings, and it exposes the caller's loop
+// invariants to LLVM's ordinary -O2 pipeline. This is intentionally separate
+// from parameter attributes: the function has to be materialised first.
+void ir_function_always_inline(void) {
+    if (!g_function) return;
+    unsigned kind = LLVMGetEnumAttributeKindForName("alwaysinline", 12);
+    if (!kind) return;
+    LLVMAddAttributeAtIndex(g_function, ~0U,
+                            LLVMCreateEnumAttribute(g_ctx, kind, 0));
+}
+
 void ir_function_end(void) {
     // A function whose last block has no terminator is invalid. The frontend is
     // responsible for the return, but guard anyway so the verifier reports
@@ -1639,6 +1653,298 @@ int ir_array_alloca(const char *elem_type, int count) {
     LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
     LLVMValueRef idx[2] = {LLVMConstInt(i32, 0, 0), LLVMConstInt(i32, 0, 0)};
     return intern_value(LLVMBuildInBoundsGEP2(g_builder, arr, slot, idx, 2, ""));
+}
+
+// The flat-`List` element view: `list_get_inline` with its representation test
+// answered at compile time instead of once per element.
+//
+// Codegen already knows the stride statically -- `inlineElemSizeOfList` in
+// src/ir/expr.psm returns `ir_struct_size` of a flat, uncounted element type --
+// and then throws it away by calling a runtime function that re-derives it from
+// the header on every access. The note on `elem_size` in runtime/lang_runtime.c
+// makes exactly this argument for the *entry point* ("the element type is a
+// static fact at every call site, so the branch belongs at compile time") and
+// splits `list_get` from `list_get_inline` for it. This carries the same
+// argument one step further, to the branch that stayed *inside* the inline
+// entry point.
+//
+// **The static fact is weaker than the dynamic one, and that is why the fallback
+// stays.** Codegen knows the element *type* is inline-eligible; it does not know
+// this *list* is stamped inline, because the stamp is lazy and
+// PRISMIO_INLINE_ELEMS=0 leaves every list boxed. So the guard is
+// `elem_size == stride`, not `!= 0`, and its false arm is a call to the very
+// function this replaces -- whatever that function would have done it still
+// does, and only the case it was going to answer with `data + i * stride` is
+// answered here, with `stride` an immediate.
+//
+// What this buys, measured on g4 before the change: `-O2` with non-trivial
+// unswitching versions `system_movement` on *one* of its two lists and leaves
+// the other's `cbnz w9` in the loop body, and both versions walk a *loaded*
+// stride (`add x12, x12, x11`). LLVM has to rediscover each invariant
+// separately and stops after one; Prismio knows all of them. See
+// aif/evidence/RESULTS-flat-list-view.md.
+static LLVMTypeRef rt_list_header_type(void) {
+    // Mirrors `RtList` in runtime/lang_runtime.c, which is the fourth definition
+    // of that shape and so falls under C_CODE_STYLE's rule for a constant shared
+    // across the seam: `run_list_header_agreement_test` in tests/test_runner.py
+    // compares this field list against the C struct.
+    //
+    // No offset is written down. LLVMBuildStructGEP2 emits a symbolic
+    // `getelementptr %listhdr, ptr, i32 0, i32 N`, so the byte offsets are the
+    // module's data layout's answer and a 32-bit target gets 32-bit offsets --
+    // which hardcoding `elem_size` at 36 would have silently broken for wasm32.
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef fields[7] = {ptr, i32, i32, i32, ptr, i32, i32};
+    return LLVMStructTypeInContext(g_ctx, fields, 7, 0);
+}
+
+#define RT_LIST_FIELD_DATA      0
+#define RT_LIST_FIELD_LEN       1
+#define RT_LIST_FIELD_CAP       2
+#define RT_LIST_FIELD_ELEM_SIZE 6
+
+// One receiver's half of the loop guard: does this list hold `stride`-byte
+// bodies inline? Emitted in the preheader and ANDed with its siblings.
+int ir_list_is_flat(const char *list, int stride) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    if (block_done()) return intern_value(LLVMConstInt(LLVMInt1TypeInContext(g_ctx), 0, 0));
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+    LLVMValueRef size_ptr =
+        LLVMBuildStructGEP2(g_builder, rt_list_header_type(), hdr, RT_LIST_FIELD_ELEM_SIZE, "");
+    LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
+    tag_scalar(elem_size, "i32");
+    return intern_value(LLVMBuildICmp(g_builder, LLVMIntEQ, elem_size,
+                                      LLVMConstInt(i32, (unsigned long long)stride, 0), ""));
+}
+
+// The write end of the flat-`List` view: `list_push_slot` without the call.
+//
+// **Rust inlines the push and Prismio did not, and that is g2's gap.** Rust's
+// `cull` compiles to one function with `Vec::push` inlined; Prismio's compiles
+// to a loop with `bl _list_push_slot` in the body -- about 500 calls a frame
+// over 20000 frames. `list_push_slot` cannot be curated into the caller because
+// it reaches three `static`s through `rt_alloc` (KNOWN_ISSUES has carried that
+// for M6), so the inliner never sees it.
+//
+// It does not have to. The common case needs no allocator at all: when the list
+// is stamped at this stride and has room, a push is an address computation and a
+// length store. Everything else -- the lazy stamp, growth, the arena, the boxed
+// representation -- stays in the runtime call on the slow arm, so this is the
+// same specialisation discipline as ir_list_flat_elem above and the same
+// fallback.
+int ir_list_flat_push(const char *list, int stride) {
+    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    if (block_done()) return intern_value(LLVMConstNull(ptrty));
+
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef listty = rt_list_header_type();
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+
+    LLVMValueRef size_ptr =
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, "");
+    LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
+    tag_scalar(elem_size, "i32");
+    LLVMValueRef len_ptr =
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+    tag_scalar(len, "i32");
+    LLVMValueRef cap_ptr =
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_CAP, "");
+    LLVMValueRef cap = LLVMBuildLoad2(g_builder, i32, cap_ptr, "");
+    tag_scalar(cap, "i32");
+
+    // Stamped at this stride, and room for one more. An unstamped list has
+    // elem_size 0 and fails the first test, so the lazy stamp still happens in
+    // the runtime on the first push exactly as it did.
+    LLVMValueRef is_flat = LLVMBuildICmp(g_builder, LLVMIntEQ, elem_size,
+                                         LLVMConstInt(i32, (unsigned long long)stride, 0), "");
+    LLVMValueRef has_room = LLVMBuildICmp(g_builder, LLVMIntSLT, len, cap, "");
+    LLVMValueRef fast = LLVMBuildAnd(g_builder, is_flat, has_room, "");
+
+    int inplace = ir_get_label();
+    int viacall = ir_get_label();
+    int join = ir_get_label();
+    LLVMBuildCondBr(g_builder, fast, block_for(inplace), block_for(viacall));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(inplace));
+    LLVMValueRef data_ptr =
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+    LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+    tag_scalar(data, "ptr");
+    LLVMValueRef offset = LLVMBuildMul(g_builder, LLVMBuildSExt(g_builder, len, i64, ""),
+                                       LLVMConstInt(i64, (unsigned long long)stride, 0), "");
+    LLVMValueRef slot = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+    LLVMValueRef bumped = LLVMBuildAdd(g_builder, len, LLVMConstInt(i32, 1, 0), "");
+    LLVMValueRef st = LLVMBuildStore(g_builder, bumped, len_ptr);
+    tag_scalar(st, "i32");
+    LLVMBuildBr(g_builder, block_for(join));
+    LLVMBasicBlockRef inplace_end = LLVMGetInsertBlock(g_builder);
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(viacall));
+    LLVMTypeRef params[2] = {ptrty, i32};
+    LLVMTypeRef fnty = LLVMFunctionType(ptrty, params, 2, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "list_push_slot");
+    if (!fn) fn = LLVMAddFunction(g_module, "list_push_slot", fnty);
+    LLVMValueRef args[2] = {hdr, LLVMConstInt(i32, (unsigned long long)stride, 0)};
+    LLVMValueRef slow = LLVMBuildCall2(g_builder, fnty, fn, args, 2, "");
+    LLVMBuildBr(g_builder, block_for(join));
+    LLVMBasicBlockRef viacall_end = LLVMGetInsertBlock(g_builder);
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(join));
+    LLVMValueRef phi = LLVMBuildPhi(g_builder, ptrty, "");
+    LLVMValueRef incoming[2] = {slot, slow};
+    LLVMBasicBlockRef blocks[2] = {inplace_end, viacall_end};
+    LLVMAddIncoming(phi, incoming, blocks, 2);
+    return intern_value(phi);
+}
+
+int ir_list_flat_elem(const char *list, const char *index, int stride,
+                      const char *guard) {
+    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    if (block_done()) return intern_value(LLVMConstNull(ptrty));
+
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef listty = rt_list_header_type();
+
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+    LLVMValueRef idx = resolve_value(index, "i32");
+
+    // Tagged like clang's own loads of the same fields. M6's note is explicit
+    // that a tag under a different root is may-alias, so an untagged load here
+    // would undo the hoisting this optimisation depends on.
+    // **One guard for the whole loop, not one per site**, when codegen could
+    // prove it. Five `list_get`s in one loop are five loop-invariant conditions,
+    // and LLVM will not clone a loop 2^5 ways: it versions on one or two and
+    // leaves the rest in the body. Measured on g4_tuned's fused loop, that is
+    // `systems_fused` at 95 -> 121 instructions and 0.0022 -> 0.0029 ms/frame --
+    // a regression this optimisation caused while making the four *unfused*
+    // loops in g4.psm faster. Prismio can see every receiver in the loop at
+    // once, so it ANDs them in the preheader and hands the one `i1` to every
+    // site; LLVM then versions the loop exactly twice. See generateLoopFlatGuard
+    // in src/ir/stmt.psm for what it declines on.
+    LLVMValueRef is_flat;
+    if (guard && guard[0]) {
+        is_flat = resolve_value(guard, "i1");
+    } else {
+        LLVMValueRef size_ptr =
+            LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, "");
+        LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
+        tag_scalar(elem_size, "i32");
+        is_flat = LLVMBuildICmp(g_builder, LLVMIntEQ, elem_size,
+                                LLVMConstInt(i32, (unsigned long long)stride, 0), "");
+    }
+
+    int flat = ir_get_label();
+    int boxed = ir_get_label();
+    int join = ir_get_label();
+    LLVMBuildCondBr(g_builder, is_flat, block_for(flat), block_for(boxed));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(flat));
+    LLVMValueRef len_ptr =
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+    tag_scalar(len, "i32");
+    // `index < 0 || index >= len` is one unsigned compare: a negative index is a
+    // very large unsigned one, and `len` is never negative. Same answer as
+    // list_get_inline's two signed tests, and the same null on failure.
+    LLVMValueRef in_bounds = LLVMBuildICmp(g_builder, LLVMIntULT, idx, len, "");
+    LLVMValueRef data_ptr =
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+    LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+    tag_scalar(data, "ptr");
+    LLVMValueRef offset = LLVMBuildMul(g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
+                                       LLVMConstInt(i64, (unsigned long long)stride, 0), "");
+    LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+    // **A select, not a branch, and the difference is the whole optimisation.**
+    // Answering the bounds test with a branch to a null-returning edge is what
+    // list_get_inline does and it reads as the more faithful translation, so it
+    // was written that way first. It costs the result: the extra control flow in
+    // this block leaves the *second* list's representation test unhoisted, so
+    // g4's movement loop came back with `cmp w10, #0x18` and a reloaded `data`
+    // per iteration and the constant stride replaced by `madd`. Two straight-line
+    // instructions here buy four versions of a branch-free loop.
+    //
+    // Plain GEP rather than inbounds: an out-of-range index is answered with null
+    // on the line below, and poison in the arm that select discards is a hazard
+    // worth not having for an address the target folds either way.
+    LLVMValueRef flat_val =
+        LLVMBuildSelect(g_builder, in_bounds, addr, LLVMConstNull(ptrty), "");
+    LLVMBuildBr(g_builder, block_for(join));
+    LLVMBasicBlockRef flat_end = LLVMGetInsertBlock(g_builder);
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(boxed));
+    LLVMTypeRef params[2] = {ptrty, i32};
+    LLVMTypeRef fnty = LLVMFunctionType(ptrty, params, 2, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "list_get_inline");
+    if (!fn) fn = LLVMAddFunction(g_module, "list_get_inline", fnty);
+    LLVMValueRef args[2] = {hdr, idx};
+    LLVMValueRef boxed_val = LLVMBuildCall2(g_builder, fnty, fn, args, 2, "");
+    LLVMBuildBr(g_builder, block_for(join));
+    LLVMBasicBlockRef boxed_end = LLVMGetInsertBlock(g_builder);
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(join));
+    LLVMValueRef phi = LLVMBuildPhi(g_builder, ptrty, "");
+    LLVMValueRef incoming[2] = {flat_val, boxed_val};
+    LLVMBasicBlockRef blocks[2] = {flat_end, boxed_end};
+    LLVMAddIncoming(phi, incoming, blocks, 2);
+    return intern_value(phi);
+}
+
+// Emit the typed pointer-slot access in the caller. The frontend selects this
+// only for a known List element type whose representation cannot be stamped
+// inline; Invalid/inferred-later Lists keep the generic runtime accessor.
+// Scalars ride in these slots and use the existing slotToScalar conversion.
+//
+// Bounds stay checked: unlike the flat-body helper, this operation dereferences
+// the computed slot, so an out-of-range GEP cannot be hidden behind a select
+// without performing an invalid load first.
+int ir_list_boxed_elem(const char *list, const char *index) {
+    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    if (block_done()) return intern_value(LLVMConstNull(ptrty));
+
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef listty = rt_list_header_type();
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+    LLVMValueRef idx = resolve_value(index, "i32");
+
+    LLVMValueRef len_ptr = LLVMBuildStructGEP2(
+        g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+    tag_scalar(len, "i32");
+    LLVMValueRef in_bounds = LLVMBuildICmp(g_builder, LLVMIntULT, idx, len, "");
+    int present = ir_get_label();
+    int absent = ir_get_label();
+    int checked = ir_get_label();
+    LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(absent));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(present));
+    LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+        g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+    LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+    tag_scalar(data, "ptr");
+    LLVMValueRef wide_idx = LLVMBuildSExt(g_builder, idx, i64, "");
+    LLVMValueRef slot = LLVMBuildGEP2(g_builder, ptrty, data, &wide_idx, 1, "");
+    LLVMValueRef loaded = LLVMBuildLoad2(g_builder, ptrty, slot, "");
+    tag_scalar(loaded, "ptr");
+    LLVMBuildBr(g_builder, block_for(checked));
+    LLVMBasicBlockRef present_end = LLVMGetInsertBlock(g_builder);
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(absent));
+    LLVMBuildBr(g_builder, block_for(checked));
+    LLVMBasicBlockRef absent_end = LLVMGetInsertBlock(g_builder);
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(checked));
+    LLVMValueRef boxed_val = LLVMBuildPhi(g_builder, ptrty, "");
+    LLVMValueRef checked_values[2] = {loaded, LLVMConstNull(ptrty)};
+    LLVMBasicBlockRef checked_blocks[2] = {present_end, absent_end};
+    LLVMAddIncoming(boxed_val, checked_values, checked_blocks, 2);
+    return intern_value(boxed_val);
 }
 
 #define BINOP(fn_name, builder_call)                                                   \

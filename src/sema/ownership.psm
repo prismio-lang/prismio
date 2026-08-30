@@ -194,13 +194,13 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
             let encoded = annotation.s2
 
             if (semaExternTypeIsSlice(annotation)) {
-                diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
+                diag_error_at_code("P4101", param.file, param.line, param.col, __builtin_string_len(param.s1),
                     strConcat("Slice cannot cross an extern boundary without explicit marshalling: ",
                                diagQuote(param.s1)))
                 diag_note("copy the view into a C-compatible buffer before the call")
             }
             if (semaExternTypeIsDataView(annotation)) {
-                diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
+                diag_error_at_code("P4102", param.file, param.line, param.col, __builtin_string_len(param.s1),
                     strConcat("DataView cannot cross an extern boundary: ", diagQuote(param.s1)))
                 diag_note("materialise ordinary AoS storage with aos(view) before the call")
             }
@@ -209,7 +209,7 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
                 let name = semaContractName(encoded)
 
                 if (semaIsParameterContract(name) == false) {
-                    diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
+                    diag_error_at_code("P4103", param.file, param.line, param.col, __builtin_string_len(param.s1),
                         strConcat(strConcat(diagQuote(name),
                                    " is a return contract and cannot appear on parameter "),
                                    diagQuote(param.s1)))
@@ -217,13 +217,13 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
                 } else if (strEquals(name, "retain_in")) {
                     let target = optionOr(strParseInt(semaContractArgument(encoded)), 0)
                     if (target < 0 or target >= arity) {
-                        diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
+                        diag_error_at_code("P4104", param.file, param.line, param.col, __builtin_string_len(param.s1),
                             strConcat(strConcat("`retain_in` names argument ",
                                        semaContractArgument(encoded)),
                                        strConcat(", but this function takes ", strFromInt(arity))))
                         diag_note("the index is zero-based and names the container this argument is stored into")
                     } else if (target == index) {
-                        diag_error_at(param.file, param.line, param.col, __builtin_string_len(param.s1),
+                        diag_error_at_code("P4105", param.file, param.line, param.col, __builtin_string_len(param.s1),
                             strConcat(strConcat("`retain_in` on ", diagQuote(param.s1)),
                                        " names itself"))
                         diag_note("it names the *other* argument this one is stored into; a value cannot contain itself")
@@ -238,25 +238,25 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
     if (nodeExists(extNode.child2)) {
         let ret = ptr_to_node(extNode.child2)
         if (semaExternTypeIsSlice(ret)) {
-            diag_error_at(extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
+            diag_error_at_code("P4106", extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
                 "Slice cannot cross an extern boundary without explicit marshalling")
             diag_note("return a C-compatible buffer and construct the Slice inside Prismio")
         }
         if (semaExternTypeIsDataView(ret)) {
-            diag_error_at(extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
+            diag_error_at_code("P4107", extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
                 "DataView cannot cross an extern boundary")
             diag_note("return ordinary AoS storage and construct the DataView inside Prismio")
         }
         if (strEquals(ret.s2, "") == false) {
             let name = semaContractName(ret.s2)
             if (strEquals(name, "alias") == false and strEquals(name, "produce") == false) {
-                diag_error_at(extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
+                diag_error_at_code("P4108", extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
                     strConcat(diagQuote(name),
                                " is a parameter contract and cannot appear on a return type"))
                 diag_note("returns take `alias` or `produce(free_fn)`")
             } else if (strEquals(name, "produce")) {
                 if (strEquals(semaContractArgument(ret.s2), "")) {
-                    diag_error_at(extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
+                    diag_error_at_code("P4109", extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
                         "`produce` requires the name of the function that releases the value")
                     diag_note("FFI 5.2: calling `free` on something from a custom allocator is the bug this prevents")
                 }

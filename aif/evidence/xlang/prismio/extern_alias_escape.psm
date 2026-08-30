@@ -1,0 +1,52 @@
+// Extern `alias` pass-through: a use-after-free until 2026-08-30, and now the
+// regression guard for it.
+//
+// `let t = make(); let x = <extern alias>(t); return x` freed `t` at
+// `passthru`'s scope exit and handed the caller the same pointer. `--verify`
+// reported `release of a pointer that is not live`, 1 violation, and `println`
+// printed an empty line because the string was already gone.
+//
+// **It lives in this directory on purpose.** `run_corpus_test` globs it and
+// *runs* it, and the release gate's `--verify` sweep covers the same root -- so
+// a regression is a red suite rather than a comment nobody reads. That is worth
+// stating because it could not live here while it still aborted.
+//
+// **Why, narrowed by three controls.** `return t` with no alias hop was clean;
+// the alias hop with the value used locally and never returned was clean; only
+// the two together failed. So the union in src/aif/walk.psm was firing all
+// along -- `x` really does alias `t` -- and `return x` really did transfer to
+// the caller. What did not happen was `t` losing its local scope drop, so one
+// allocation had two owners.
+//
+// The guard that should have caught it is `irValueAliasesName` in
+// src/ir/expr.psm, whose own comment describes this exact shape one callee kind
+// further in (`let x = passthru(t); return x`, tests/test_85). It asked
+// `aif_fn_may_return_param`, which answers no for an extern -- deliberately,
+// because widening it for *unknown* symbols leaks one String per integer printed
+// through std/io.psm and took three suite fixtures with it. The fix reads the
+// **declared** contract instead: a written `alias` is a stated fact about one
+// function, an unknown symbol is an abstention about all of them.
+//
+// `prismio_expect` is declared under its real symbol rather than through the
+// `expect` builtin, because that builtin is the one name aifFfiAliasOf already
+// special-cases -- so going through it would prove nothing.
+import std.io
+import std.string
+
+extern fn prismio_expect(p: String borrow) -> String alias
+
+fn make() -> String {
+    return strConcat("hello", " world")
+}
+
+fn passthru() -> String {
+    let t = make()
+    let x = prismio_expect(t)
+    return x
+}
+
+fn main() -> Int {
+    let r = passthru()
+    println(r)
+    return 0
+}

@@ -115,7 +115,7 @@ violations.
 | Module | Import | Covers |
 |---|---|---|
 | `std/io.psm` | `import std.io` | `print` / `println` overloads |
-| `std/string.psm` | `import std.string` | strings, characters, parsing |
+| `std/string.psm` | `import std.string` | strings, characters, parsing — **and the String operators** |
 | `std/fs.psm` | `import std.fs` | files, paths, directory listing |
 | `std/process.psm` | `import std.process` | arguments, subprocesses |
 | `std/map.psm` | `import std.map` | `Map<K, V>` |
@@ -129,9 +129,32 @@ violations.
 nothing carries no I/O, which is what lets a target with no stdout link at all.
 See the comment above `resolveImports` in `src/main.psm`.
 
-`std.*` resolves against the compiler's own library rather than relative to the
-importing program, so a local `std/` directory cannot shadow these. A checkout
-resolves to `std/`; an installed toolchain resolves to `stdlib/`.
+This is why `a == b`, `a + b`, `s[i]`, `s[a..b]` and `for c in s` on a String all
+need `import std.string`: each is rewritten in sema into the `std.string` call it
+means, so the operator is only as available as the module. The diagnostic names
+the missing import rather than the function the rewrite was about to call.
+
+`std.*` is compiler-owned rather than resolved relative to the importing
+program's source root, and it is found by **search, in this order**
+(`standardModulePath` in `src/main.psm`):
+
+| | Looked for | Why it is there |
+|---|---|---|
+| 1 | `<entry-dir>/std/<leaf>` | so a checkout of the compiler compiles against **its own** `std/` |
+| 2 | `<entry-dir>/../std/<leaf>` | the same, for an entry one level down such as `src/main.psm` |
+| 3 | `<toolchain>/stdlib/<leaf>` | an installed toolchain — `install` flattens the package |
+| 4 | `<toolchain>/std/<leaf>` | a build tree, where `build/gen2` sits beside `std/` |
+
+**Rules 1 and 2 mean a `std/` directory beside your entry file *does* shadow the
+shipped library.** That is deliberate and load-bearing — it is what makes the
+compiler's own bootstrap use the tree it is being built from rather than whatever
+is installed — but it is a real hazard for an application that happens to have a
+directory of that name, so it is written down here rather than left as a
+surprise.
+
+`prismio --version` prints the compiler directory and the standard library that
+resolves **from the current directory**, which is how to check which one you are
+actually getting.
 
 ---
 
@@ -159,6 +182,38 @@ nothing names it is nothing frees it. Measured on a 13-call program: 70 allocate
 
 The same applies to containers: `strJoin(strSplit(s, ','), "-")` leaks the
 temporary list, and binding it does not.
+
+**It stays a leak when the temporary owns what the callee hands back**, and that
+is a property the analysis has to earn rather than one that comes for free.
+
+```prismio
+let tail = optionOr(s.stripPrefix("Hello, "), "!")   // leaks the Option
+let maybe = s.stripPrefix("Hello, ")                 // does not
+let tail = optionOr(maybe, "!")
+```
+
+`optionOr` returns the String *inside* the Option it was handed. Releasing the
+unbound temporary would release that String while the returned value still points
+at it, so the release is withheld and the Option leaks instead. That is the
+conservative direction, and it is the direction the caller can survive.
+
+The mechanism is view provenance (SPEC 8.4). A reference-shaped value read out of
+a container — a `List` element, a struct field, a payload bound by a match arm —
+is recorded as a *view* of that container, and `aif_fn_may_return_view_of_param`
+is what codegen asks before releasing an argument-position temporary. A scalar
+read is a copy and carries no view, so `Option<Int>` is released normally.
+
+**Both halves of that were once missing, and the result was a dangling read
+rather than a leak** — the temporary was freed between the call and the use of
+its result, and the value came back empty. `--verify` reported
+`4 allocated, 4 released, 0 leaked, 0 violation(s)`: both releases were
+ledger-legal, so a balanced ledger was not evidence. `tests/test_92_field_view_provenance.psm`
+is the guard, and it asserts values rather than the ledger for exactly that
+reason.
+
+**A chain of `+` is exempt, by construction.** `a + b + c` is lowered to a single
+`strConcat(a, b, c)` rather than to nested calls, precisely so that it has no
+unbound intermediate to lose. The pairwise form reads 2 allocated / 1 released.
 
 ### 3.2 Do not bind a container's element
 

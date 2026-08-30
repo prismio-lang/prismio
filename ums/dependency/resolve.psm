@@ -44,128 +44,131 @@ struct UmsResolution {
 // The lockfile's own version, bumped when its shape changes rather than when a
 // dependency does. A reader that does not recognise it should refuse the file
 // instead of guessing at the columns.
-fn umsLockfileVersion() -> String {
+private fn umsLockfileVersion() -> String {
     return strClone("1")
 }
 
-fn umsLockfilePath(project: UmsProjectModel) -> String {
-    let stateDir = joinPath(project.root, project.build.stateDirectory)
-    return joinPath(stateDir, "prismio.lock")
-}
+// Dependency resolution and the lockfile, as methods on the project they belong
+// to. The three that stay public are the surface `src/main.psm` drives:
+// `project.resolveDependencies(diags)` and `project.writeLockfile(resolutions)`.
+impl UmsProjectModel {
 
-// A path dependency resolves against the directory holding `build.ums`, not
-// against the process's working directory. Those differ whenever `prismio build`
-// is run from a descendant, which the discovery walk explicitly supports -- so
-// resolving against the cwd would make the same manifest mean different things
-// depending on where it was invoked.
-private fn umsResolvePath(project: UmsProjectModel, dependency: UmsDependency,
-                          diagnostics: List<UmsDiagnostic>) -> UmsResolution {
-    let candidate = joinPath(project.root, dependency.path)
-    let exists = directoryExists(candidate)
+    private fn lockfilePath(self) -> String {
+        let stateDir = joinPath(self.root, self.build.stateDirectory)
+        return joinPath(stateDir, "prismio.lock")
+    }
 
-    if (exists == false) {
-        umsDiagnosticAdd(diagnostics, "UMS2210", project.manifestPath,
-            dependency.line, dependency.col, dependency.len,
-            strConcat(strConcat(strConcat("path dependency '", dependency.name),
-                                 "' does not name a directory: "), candidate))
+    // A path dependency resolves against the directory holding `build.ums`, not
+    // against the process's working directory. Those differ whenever `prismio build`
+    // is run from a descendant, which the discovery walk explicitly supports -- so
+    // resolving against the cwd would make the same manifest mean different things
+    // depending on where it was invoked.
+    private fn resolvePath(self, dependency: UmsDependency,
+                              diagnostics: List<UmsDiagnostic>) -> UmsResolution {
+        let candidate = joinPath(self.root, dependency.path)
+        let exists = directoryExists(candidate)
+
+        if (exists == false) {
+            umsDiagnosticAdd(diagnostics, "UMS2210", self.manifestPath,
+                dependency.line, dependency.col, dependency.len,
+                strConcat(strConcat(strConcat("path dependency '", dependency.name),
+                                     "' does not name a directory: "), candidate))
+            return UmsResolution {
+                name: strClone(dependency.name),
+                scope: umsDependencyScopeName(dependency.scope),
+                constraint: strClone(dependency.constraint),
+                source: strClone("path"),
+                resolved: strClone(candidate),
+                ok: false
+            }
+        }
+
         return UmsResolution {
             name: strClone(dependency.name),
             scope: umsDependencyScopeName(dependency.scope),
             constraint: strClone(dependency.constraint),
             source: strClone("path"),
             resolved: strClone(candidate),
+            ok: true
+        }
+    }
+
+    // The registry-shaped half. It has the shape of a fetch and performs none: the
+    // point is that everything around it -- the model, the constraint, the lockfile
+    // row, the diagnostic -- is already correct, so standing a registry up later
+    // touches this function and nothing else.
+    private fn fetchRegistry(self, dependency: UmsDependency,
+                                diagnostics: List<UmsDiagnostic>) -> UmsResolution {
+        umsDiagnosticAdd(diagnostics, "UMS2211", self.manifestPath,
+            dependency.line, dependency.col, dependency.len,
+            strConcat(strConcat(strConcat("no registry is configured, so '", dependency.name),
+                                 "' cannot be fetched; give it a local path as a third argument: "),
+                       strConcat(strConcat("implementation(\"", dependency.name), "\", \"...\", \"../path\")")))
+        return UmsResolution {
+            name: strClone(dependency.name),
+            scope: umsDependencyScopeName(dependency.scope),
+            constraint: strClone(dependency.constraint),
+            source: strClone("registry"),
+            resolved: strClone(""),
             ok: false
         }
     }
 
-    return UmsResolution {
-        name: strClone(dependency.name),
-        scope: umsDependencyScopeName(dependency.scope),
-        constraint: strClone(dependency.constraint),
-        source: strClone("path"),
-        resolved: strClone(candidate),
-        ok: true
-    }
-}
-
-// The registry-shaped half. It has the shape of a fetch and performs none: the
-// point is that everything around it -- the model, the constraint, the lockfile
-// row, the diagnostic -- is already correct, so standing a registry up later
-// touches this function and nothing else.
-private fn umsFetchRegistry(project: UmsProjectModel, dependency: UmsDependency,
-                            diagnostics: List<UmsDiagnostic>) -> UmsResolution {
-    umsDiagnosticAdd(diagnostics, "UMS2211", project.manifestPath,
-        dependency.line, dependency.col, dependency.len,
-        strConcat(strConcat(strConcat("no registry is configured, so '", dependency.name),
-                             "' cannot be fetched; give it a local path as a third argument: "),
-                   strConcat(strConcat("implementation(\"", dependency.name), "\", \"...\", \"../path\")")))
-    return UmsResolution {
-        name: strClone(dependency.name),
-        scope: umsDependencyScopeName(dependency.scope),
-        constraint: strClone(dependency.constraint),
-        source: strClone("registry"),
-        resolved: strClone(""),
-        ok: false
-    }
-}
-
-// Resolves every declared dependency, in manifest order, and answers the list.
-// Order is the manifest's rather than sorted, so the lockfile reads against the
-// file that produced it.
-fn umsResolveDependencies(project: UmsProjectModel,
-                          diagnostics: List<UmsDiagnostic>) -> List<UmsResolution> {
-    let resolutions: List<UmsResolution> = list_new()
-    let mut i = 0
-    while (i < list_len(project.dependencies)) {
-        let dependency = list_get(project.dependencies, i)
-        if (umsDependencyIsPath(dependency)) {
-            list_push(resolutions, umsResolvePath(project, dependency, diagnostics))
-        } else {
-            list_push(resolutions, umsFetchRegistry(project, dependency, diagnostics))
+    // Resolves every declared dependency, in manifest order, and answers the list.
+    // Order is the manifest's rather than sorted, so the lockfile reads against the
+    // file that produced it.
+         fn resolveDependencies(self, diagnostics: List<UmsDiagnostic>) -> List<UmsResolution> {
+        let resolutions: List<UmsResolution> = list_new()
+        let mut i = 0
+        while (i < list_len(self.dependencies)) {
+            let dependency = list_get(self.dependencies, i)
+            if (dependency.isPath()) {
+                list_push(resolutions, self.resolvePath(dependency, diagnostics))
+            } else {
+                list_push(resolutions, self.fetchRegistry(dependency, diagnostics))
+            }
+            i = i + 1
         }
-        i = i + 1
+        return resolutions
     }
-    return resolutions
-}
 
-// One row per dependency: scope, name, constraint, where it came from, and what
-// it resolved to. Tab-separated with a header, because the file exists to be
-// diffed in review -- a format that reorders or reflows on write produces a diff
-// nobody can read, which is how a lockfile stops being checked.
-fn umsLockfileContents(project: UmsProjectModel,
-                       resolutions: List<UmsResolution>) -> String {
-    let mut out = strConcat(strConcat("# prismio lockfile v", umsLockfileVersion()),
-                             "\n# generated from ")
-    out = strConcat(out, project.manifestPath)
-    out = strConcat(out, "\n# scope\tname\tconstraint\tsource\tresolved\n")
+    // One row per dependency: scope, name, constraint, where it came from, and what
+    // it resolved to. Tab-separated with a header, because the file exists to be
+    // diffed in review -- a format that reorders or reflows on write produces a diff
+    // nobody can read, which is how a lockfile stops being checked.
+         fn lockfileContents(self, resolutions: List<UmsResolution>) -> String {
+        let mut out = strConcat(strConcat("# prismio lockfile v", umsLockfileVersion()),
+                                 "\n# generated from ")
+        out = strConcat(out, self.manifestPath)
+        out = strConcat(out, "\n# scope\tname\tconstraint\tsource\tresolved\n")
 
-    let mut i = 0
-    while (i < list_len(resolutions)) {
-        let r = list_get(resolutions, i)
-        let mut row = strConcat(r.scope, "\t")
-        row = strConcat(row, strConcat(r.name, "\t"))
-        row = strConcat(row, strConcat(r.constraint, "\t"))
-        row = strConcat(row, strConcat(r.source, "\t"))
-        // An unresolved dependency is written as "-" rather than omitted, so the
-        // row count matches the manifest and a failed fetch is visible in the
-        // diff instead of absent from it.
-        if (r.ok) {
-            row = strConcat(row, r.resolved)
-        } else {
-            row = strConcat(row, "-")
+        let mut i = 0
+        while (i < list_len(resolutions)) {
+            let r = list_get(resolutions, i)
+            let mut row = strConcat(r.scope, "\t")
+            row = strConcat(row, strConcat(r.name, "\t"))
+            row = strConcat(row, strConcat(r.constraint, "\t"))
+            row = strConcat(row, strConcat(r.source, "\t"))
+            // An unresolved dependency is written as "-" rather than omitted, so the
+            // row count matches the manifest and a failed fetch is visible in the
+            // diff instead of absent from it.
+            if (r.ok) {
+                row = strConcat(row, r.resolved)
+            } else {
+                row = strConcat(row, "-")
+            }
+            out = strConcat(out, strConcat(row, "\n"))
+            i = i + 1
         }
-        out = strConcat(out, strConcat(row, "\n"))
-        i = i + 1
+        return out
     }
-    return out
-}
 
-// Writes the lockfile beside the build state, creating `.prismio/` if needed.
-// Answers false only when the write itself failed; an unresolved dependency is
-// recorded rather than suppressed, because the file has to describe the attempt.
-fn umsWriteLockfile(project: UmsProjectModel,
-                    resolutions: List<UmsResolution>) -> Bool {
-    let stateDir = joinPath(project.root, project.build.stateDirectory)
-    if (makeDirectory(stateDir) == false) { return false }
-    return writeFile(umsLockfilePath(project), umsLockfileContents(project, resolutions))
+    // Writes the lockfile beside the build state, creating `.prismio/` if needed.
+    // Answers false only when the write itself failed; an unresolved dependency is
+    // recorded rather than suppressed, because the file has to describe the attempt.
+         fn writeLockfile(self, resolutions: List<UmsResolution>) -> Bool {
+        let stateDir = joinPath(self.root, self.build.stateDirectory)
+        if (makeDirectory(stateDir) == false) { return false }
+        return writeFile(self.lockfilePath(), self.lockfileContents(resolutions))
+    }
 }

@@ -113,7 +113,7 @@ impl Parser {
     // was *unexpected*, and so the one worth underlining.
     internal fn error(self, message: String) {
         let tok = self.current()
-        diag_error_at(tok.file, tok.line, tok.col, tok.len, message)
+        diag_error_at_code("P3201", tok.file, tok.line, tok.col, tok.len, message)
     }
 
     // How the offending token reads in a message. EOF has no source text, so name it

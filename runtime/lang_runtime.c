@@ -1272,11 +1272,23 @@ static void* list_new_cap(int cap) {
     l->elem_release = 0;
     l->arena = rt_arena_slot();
     l->elem_size = 0;
-    l->data = (void**)rt_alloc(sizeof(void*) * (size_t)cap);
+    l->data = cap > 0 ? (void**)rt_alloc(sizeof(void*) * (size_t)cap) : NULL;
     return l;
 }
 
-void* list_new(void) { return list_new_cap(4); }
+// **Nothing is allocated until the first push, which is Rust's `RawVec::NEW`.**
+// `list_new()` used to hand back a four-pointer block, and for the inline
+// representation that block is the wrong width -- `list_set_elem_inline` freed it
+// and allocated a body block in its place on the very first push. So an inline
+// list cost a malloc and a free that were pure waste, plus a third allocation
+// that did the real work.
+//
+// g2 builds one such list per frame for 20000 frames, which is 60000 allocator
+// operations Rust does not perform: `Vec::new` is capacity 0 and a dangling
+// pointer, and only `push` allocates. The growth functions below start at 4 when
+// they find capacity 0, so the sequence a list actually sees is unchanged from
+// its first push onwards.
+void* list_new(void) { return list_new_cap(0); }
 
 // Vec::with_capacity. A hint about size, not a bound: the list still grows by
 // doubling past `n`, so a wrong hint costs memory or a realloc and never
@@ -1404,8 +1416,12 @@ void list_set_elem_inline(void* lp, int elem_size) {
         return;
     }
     l->elem_size = elem_size;
-    // The pointer block `list_new` made is the wrong width for bodies. Replaced
-    // rather than reused, once, at a point where the list is empty.
+    // The pointer block is the wrong width for bodies, so it is replaced rather
+    // than reused, once, at a point where the list is empty. Since `list_new`
+    // stopped making one eagerly this is usually nothing at all: an unallocated
+    // list is stamped and the first push allocates a body block directly, which
+    // is the whole saving.
+    if (!l->data) return;
     if (!l->arena) rt_free(l->data);
     size_t bytes = (size_t)l->cap * (size_t)elem_size;
     l->data = (void**)(l->arena ? arena_alloc_at(l->arena, bytes) : rt_alloc(bytes));
@@ -1423,12 +1439,12 @@ void list_set_elem_inline(void* lp, int elem_size) {
 // against this one on the corpus: two dependent loads and a count-leading-zeros
 // per access, against a load and a multiply-add.
 static void list_inline_grow(RtList* l) {
-    int nc = l->cap * 2;
+    int nc = l->cap ? l->cap * 2 : 4;
     size_t bytes = (size_t)nc * (size_t)l->elem_size;
     unsigned char* nd = l->arena ? (unsigned char*)arena_alloc_at(l->arena, bytes)
                                  : (unsigned char*)rt_alloc(bytes);
-    list_copy_elem(nd, l->data, (size_t)l->len * (size_t)l->elem_size);
-    if (!l->arena) rt_free(l->data);
+    if (l->data) list_copy_elem(nd, l->data, (size_t)l->len * (size_t)l->elem_size);
+    if (l->data && !l->arena) rt_free(l->data);
     l->data = (void**)nd;
     l->cap = nc;
 }
@@ -1497,7 +1513,11 @@ void list_push_inline(void* lp, void* value, int elem_size) {
 // moving block safe.
 void* list_get_inline(void* lp, int index) {
     RtList* l = (RtList*)lp;
-    if (index < 0 || index >= l->len) return 0;
+    // Same ordering as `list_get` above, for the same reason: all three header
+    // fields unconditional, so a loop can keep them in registers.
+    // Same single unsigned compare as `list_get` above, and the same reason the
+    // header is *not* read into locals ahead of it.
+    if ((unsigned)index >= (unsigned)l->len) return 0;
     if (!l->elem_size) return l->data[index];
     return (unsigned char*)l->data + (size_t)index * (size_t)l->elem_size;
 }
@@ -1569,7 +1589,7 @@ void* prismio_expect(void* p) {
 // split and out of the inlined half.
 void list_push_grow(void* lp) {
     RtList* l = (RtList*)lp;
-    int nc = l->cap * 2;
+    int nc = l->cap ? l->cap * 2 : 4;
     // Back into the arena that owns this list, not into whatever the hint
     // says right now: the push is usually outside the bracket that created
     // the list, so rt_alloc here would take the heap and the block below
@@ -1577,7 +1597,7 @@ void list_push_grow(void* lp) {
     void** nd = l->arena ? (void**)arena_alloc_at(l->arena, sizeof(void*) * (size_t)nc)
                          : (void**)rt_alloc(sizeof(void*) * (size_t)nc);
     for (int i = 0; i < l->len; i++) nd[i] = l->data[i];
-    if (!l->arena) rt_free(l->data);
+    if (l->data && !l->arena) rt_free(l->data);
     l->data = nd;
     l->cap = nc;
 }
@@ -1625,7 +1645,7 @@ void list_release(void* lp) {
     // M4.2, fact 3: a flat element owns nothing and was never separately
     // allocated, so the whole of an inline list's teardown is its block. Once
     // per list, unlike the three hot ops, so the branch is affordable here.
-    if (l->elem_size) { rt_free(l->data); rt_free(l); return; }
+    if (l->elem_size) { if (l->data) rt_free(l->data); rt_free(l); return; }
     if (l->elem_own != AIF_ELEM_NONE) {
         for (int i = l->len - 1; i >= 0; i--) {
             void* e = l->data[i];
@@ -1648,13 +1668,27 @@ void list_release(void* lp) {
             else                                  rt_free(e);
         }
     }
-    rt_free(l->data);
+    if (l->data) rt_free(l->data);
     rt_free(l);
 }
 
 void* list_get(void* lp, int index) {
     RtList* l = (RtList*)lp;
-    if (index < 0 || index >= l->len) return 0;
+    // `index < 0 || index >= len` in one unsigned compare: `len` is a count and
+    // never negative, so a negative index is a very large unsigned one and the
+    // two forms agree. One compare instead of two, on the hottest read in the
+    // language.
+    //
+    // **Reading `data` and `len` into locals ahead of this test was tried and
+    // reverted.** The aim was to let LICM hoist the base pointer out of a loop --
+    // it will not hoist a *conditional* load it cannot prove dereferenceable, and
+    // g5_tuned's render loop reloads it per element. It works, and it is not
+    // free: the speculative load costs more elsewhere than the hoist saves.
+    // Measured, tuned arms: g5 0.963x, g3 1.001x, g6 1.000x, **g2 1.021x, g4
+    // 1.029x**, with the natural arms 1.01-1.02x as well. See
+    // aif/evidence/RESULTS-list-header-hoist.md. Hoisting the base belongs in
+    // codegen, which knows the receiver is loop-invariant, not here.
+    if ((unsigned)index >= (unsigned)l->len) return 0;
     return l->data[index];
 }
 

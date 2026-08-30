@@ -10,7 +10,7 @@ struct UmsBuildPlan {
     artifactRoot: String
 }
 
-fn umsBuildProfileValid(profile: String) -> Bool {
+private fn umsBuildProfileValid(profile: String) -> Bool {
     if (__builtin_string_len(profile) == 0) { return false }
     let mut i = 0
     while (i < __builtin_string_len(profile)) {

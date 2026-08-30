@@ -263,7 +263,13 @@ impl AssetCache {
 }
 
 fn main() -> Int {
-    let frames = 4000
+    // G5's old one-render samples were only a few microseconds long, and rebuilt
+    // binaries with identical hot-loop mnemonics moved by much more than the
+    // optimisations being measured. Keep the same 4,000 renders and checksum,
+    // but time them in 125 groups so every clock interval is long enough to be
+    // useful. All language arms use these same two constants.
+    let samples_count = 125
+    let renders_per_sample = 32
     let cache = make_cache(64 * 1024 * 1024)
     cache.build_assets()
 
@@ -277,22 +283,25 @@ fn main() -> Int {
 
     scene.populate(2000)
 
-    let mut samples: List<Int> = list_new()
+    let mut samples: List<Int> = list_new_with_capacity(samples_count)
     let mut g = 0
-    while (g < frames) {
+    while (g < samples_count) {
         list_push(samples, 0)
         g = g + 1
     }
 
-    let mut frame = 0
+    let mut sample = 0
     let mut total = 0
-    while (frame < frames) {
+    while (sample < samples_count) {
         let t0 = clock_gettime_nsec_np(4)
-        let submitted = scene.render_batched()
+        let mut repeat = 0
+        while (repeat < renders_per_sample) {
+            total = total + scene.render_batched()
+            repeat = repeat + 1
+        }
         let t1 = clock_gettime_nsec_np(4)
-        total = total + submitted
-        list_set(samples, frame, (t1 - t0) as Int)
-        frame = frame + 1
+        list_set(samples, sample, (t1 - t0) as Int)
+        sample = sample + 1
     }
 
     let mut i = 0
@@ -314,7 +323,7 @@ fn main() -> Int {
     println(evicted)
 
     let mut j = 0
-    while (j < frames) {
+    while (j < samples_count) {
         print("frame_ns ")
         println(list_get(samples, j))
         j = j + 1

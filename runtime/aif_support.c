@@ -6687,6 +6687,44 @@ int aif_fn_may_return_param(const char* symbol) {
     return fn_may_return_param(aif_fn_lookup(symbol));
 }
 
+// The view half of the question above, and the reason codegen had to fall back
+// on "does the result carry a pointer at all".
+//
+// A callee returning a *view* of a parameter -- an element reference, a slice --
+// carries **provenance** rather than the parameter's sites (SPEC 8.4), so the
+// points-to intersection in fn_may_return_param is silent about it and answers a
+// truthful no to a question that was not quite the one being asked. Codegen
+// closed that hole with the return's kind: any pointer or struct result withheld
+// the argument-position release. That is sound and far too wide -- `wrap(make())`
+// returning a fresh `Box` cannot be the `String` it was handed, and leaked 100
+// of 100 allocations because of it.
+//
+// Asking the provenance directly is the same question one graph over.
+// key_views[rk] holds the sites the return is a view *of*; pt of a PARAM key
+// holds what that parameter points to. An intersection is a return that may view
+// an argument, which is exactly when the caller must not free it.
+static int fn_may_return_view_of_param(int f) {
+    if (f < 0) return 0;
+    int rk = key_find(AIF_KEY_RET, f, 0);
+    if (rk < 0 || rk >= pt_len) return 0;
+    if (!bits_any(&key_views[rk])) return 0;
+
+    key_index_build();
+    for (int k = 0; k < key_count && k < pt_len; k++) {
+        KeyNode* kn = key_by_id[k];
+        if (kn == NULL || kn->kind != AIF_KEY_PARAM || kn->a != f) continue;
+        int n = key_views[rk].nwords < pt[k].nwords ? key_views[rk].nwords : pt[k].nwords;
+        for (int w = 0; w < n; w++) {
+            if (key_views[rk].w[w] & pt[k].w[w]) return 1;
+        }
+    }
+    return 0;
+}
+
+int aif_fn_may_return_view_of_param(const char* symbol) {
+    return fn_may_return_view_of_param(aif_fn_lookup(symbol));
+}
+
 int aif_owns_call_result_at_node(const void* node) {
     if (node == NULL) return AIF_ELEM_NONE;
     NodeCall* c = NULL;

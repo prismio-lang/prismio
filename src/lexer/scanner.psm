@@ -68,7 +68,7 @@ private fn lexerToken(lex: Lexer, t: TokenType, value: String, startLine: Int, s
 // to be -- so this is the one place in the frontend that still stops at the first
 // error rather than recovering.
 private fn lexerFatal(lex: Lexer, line: Int, col: Int, message: String) {
-    diag_error_at(lex.file, line, col, 1, message)
+    diag_error_at_code("P2001", lex.file, line, col, 1, message)
     diag_finish()
     exit(1)
 }
@@ -169,7 +169,7 @@ private fn lexIdentifier(lex: Lexer) -> Token {
     let col = lex.col
     let start = lex.pos
 
-    while (isAlnum(lexerCurrent(lex))) {
+    while (isIdentPart(lexerCurrent(lex))) {
         lexerAdvance(lex)
     }
     let value = strSubstring(lex.input, start, lex.pos - start)
@@ -394,7 +394,7 @@ private fn lexerNextToken(lex: Lexer) -> Token {
 
     let c = lexerCurrent(lex)
 
-    if (isAlpha(c)) { return lexIdentifier(lex) }
+    if (isIdentStart(c)) { return lexIdentifier(lex) }
     if (isDigit(c)) { return lexNumber(lex) }
     if (c == '"') { return lexString(lex) }
     if (c == '\'') { return lexChar(lex) }

@@ -1159,8 +1159,21 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     // equal the one clang computes for the same target, for the host and for
     // wasm32. A warning on every build that everyone learns to scroll past is
     // worth less than one test that fails.
-    snprintf(command, len, "clang %s-Wno-override-module %s -c %s -o %s",
-             target, g_debug_info ? "-O0" : "-O2", q_ir, q_obj);
+    //
+    // Flat List access has one loop-invariant fallback branch: inline bodies
+    // when elem_size is non-zero, boxed pointers otherwise. LLVM 22's ordinary
+    // O2 pipeline hoists the header loads but leaves that branch in every
+    // iteration. Non-trivial unswitching versions the loop once and then
+    // vectorises each version. On the seven-program gate it is neutral at the
+    // median and improves g4 by 11.1%, reproduced at 14.3% in the five-arm run;
+    // g5 is too layout-noisy to claim. Every checksum is unchanged. g4's
+    // program-O2 stage costs about 6 ms more (56 ms to 62 ms). Two executables
+    // grow by 16 KiB, still more than 4x smaller than the Rust controls.
+    snprintf(command, len,
+             "clang %s-Wno-override-module %s -c %s -o %s",
+             target,
+             g_debug_info ? "-O0" : "-O2 -mllvm -enable-nontrivial-unswitch",
+             q_ir, q_obj);
     double t0 = build_trace_ms();
     int result = run_build_command(command);
     build_trace_stage(merged ? "program -O2 (merged)" : "program -O2", t0);

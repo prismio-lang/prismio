@@ -26,14 +26,18 @@ struct UmsDependency {
     len: Int
 }
 
-fn umsDependencyIsPath(dependency: UmsDependency) -> Bool {
-    return strLength(dependency.path) > 0
-}
+// Whether this dependency names a local path rather than a registry entry.
+impl UmsDependency {
 
-// The scope as it is written in a manifest, which is also how the lockfile
-// spells it -- a lockfile a person cannot read against the manifest that
-// produced it is a file nobody will check.
-fn umsDependencyScopeName(scope: UmsDependencyScope) -> String {
+    internal fn isPath(self) -> Bool {
+        return strLength(self.path) > 0
+    }
+
+    // The scope as it is written in a manifest, which is also how the lockfile
+    // spells it -- a lockfile a person cannot read against the manifest that
+    // produced it is a file nobody will check.
+}
+internal fn umsDependencyScopeName(scope: UmsDependencyScope) -> String {
     if (scope == UmsDependencyScope.IMPLEMENTATION) { return strClone("implementation") }
     if (scope == UmsDependencyScope.API) { return strClone("api") }
     if (scope == UmsDependencyScope.TEST_IMPLEMENTATION) {

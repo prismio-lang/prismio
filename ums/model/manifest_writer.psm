@@ -1,0 +1,241 @@
+import std.string
+import ums.dependency.dependency
+import ums.model.diagnostic
+import ums.model.lowering
+import ums.model.validation
+import ums.parser.ast
+import ums.parser.lexer
+import ums.parser.parser
+
+
+// A manifest edit answers with the complete new source, but never rewrites the
+// source it was given. `changed` lets a file-writing caller distinguish a real
+// edit from a refused duplicate or a malformed manifest without comparing two
+// affine strings.
+struct UmsManifestEdit {
+    text: String,
+    changed: Bool
+}
+
+private fn umsManifestUnchanged(source: String) -> UmsManifestEdit {
+    return UmsManifestEdit { text: strClone(source), changed: false }
+}
+
+private fn umsManifestScopeName(scope: UmsDependencyScope) -> String {
+    if (scope == UmsDependencyScope.IMPLEMENTATION) { return strClone("implementation") }
+    if (scope == UmsDependencyScope.API) { return strClone("api") }
+    if (scope == UmsDependencyScope.TEST_IMPLEMENTATION) {
+        return strClone("testImplementation")
+    }
+    return strClone("")
+}
+
+// The lexer decodes these five escapes, so the writer emits exactly that same
+// vocabulary. Keeping the two lists visibly identical is what makes written
+// dependency arguments parse back to the bytes the caller supplied.
+private fn umsManifestEscape(value: String) -> String {
+    let mut escaped = ""
+    let mut i = 0
+    while (i < __builtin_string_len(value)) {
+        let c = strCharAt(value, i)
+        if (c == '\\') { escaped = strConcat(escaped, "\\\\") }
+        else if (c == '"') { escaped = strConcat(escaped, "\\\"") }
+        else if (c == '\n') { escaped = strConcat(escaped, "\\n") }
+        else if (c == '\r') { escaped = strConcat(escaped, "\\r") }
+        else if (c == '\t') { escaped = strConcat(escaped, "\\t") }
+        else { escaped = strConcat(escaped, strFromChar(c)) }
+        i = i + 1
+    }
+    return escaped
+}
+
+private fn umsManifestDependencyText(scope: UmsDependencyScope, name: String,
+                                     constraint: String, localPath: String) -> String {
+    let spelling = umsManifestScopeName(scope)
+    let mut text = strConcat(spelling, "(\"")
+    let escapedName = umsManifestEscape(name)
+    text = strConcat(text, escapedName)
+    text = strConcat(text, "\", \"")
+    let escapedConstraint = umsManifestEscape(constraint)
+    text = strConcat(text, escapedConstraint)
+    if (__builtin_string_len(localPath) > 0) {
+        text = strConcat(text, "\", \"")
+        let escapedPath = umsManifestEscape(localPath)
+        text = strConcat(text, escapedPath)
+    }
+    return strConcat(text, "\")")
+}
+
+private fn umsManifestNewline(source: String) -> String {
+    if (strContains(source, "\r\n")) { return strClone("\r\n") }
+    return strClone("\n")
+}
+
+private fn umsManifestLineStart(source: String, at: Int) -> Int {
+    let mut i = at
+    while (i > 0) {
+        if (strCharAt(source, i - 1) == '\n') { break }
+        i = i - 1
+    }
+    return i
+}
+
+private fn umsManifestOnlyIndent(source: String, start: Int, end: Int) -> Bool {
+    let mut i = start
+    while (i < end) {
+        let c = strCharAt(source, i)
+        if (c != ' ' and c != '\t') { return false }
+        i = i + 1
+    }
+    return true
+}
+
+private fn umsManifestOnlyWhitespace(source: String, start: Int, end: Int) -> Bool {
+    let mut i = start
+    while (i < end) {
+        let c = strCharAt(source, i)
+        if (c != ' ' and c != '\t' and c != '\r' and c != '\n') { return false }
+        i = i + 1
+    }
+    return true
+}
+
+private fn umsManifestIndentAt(source: String, at: Int) -> String {
+    let start = umsManifestLineStart(source, at)
+    if (umsManifestOnlyIndent(source, start, at) == false) { return strClone("") }
+    return strSubstring(source, start, at - start)
+}
+
+private fn umsManifestChildIndent(source: String, document: UmsAstDocument,
+                                  block: UmsAstStatement) -> String {
+    if (list_len(block.children) > 0) {
+        let child = list_get(document.statements, list_get(block.children, 0))
+        let start = umsManifestLineStart(source, child.start)
+        if (umsManifestOnlyIndent(source, start, child.start)) {
+            return strSubstring(source, start, child.start - start)
+        }
+    }
+    let closingIndent = umsManifestIndentAt(source, block.blockClose)
+    return strConcat(closingIndent, "    ")
+}
+
+private fn umsManifestDependencyBlock(document: UmsAstDocument) -> Int {
+    let mut i = 0
+    while (i < list_len(document.roots)) {
+        let index = list_get(document.roots, i)
+        let statement = list_get(document.statements, index)
+        if (statement.kind == UmsAstStatementKind.CALL and
+            strEquals(statement.name, "dependencies")) {
+            return index
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+private fn umsManifestAppendDependencyBlock(source: String,
+                                             declaration: String) -> String {
+    let newline = umsManifestNewline(source)
+    let mut separator = ""
+    let length = __builtin_string_len(source)
+    if (length > 0) {
+        let blankLine = strConcat(newline, newline)
+        if (strEndsWith(source, blankLine) == false) {
+            if (strEndsWith(source, newline)) {
+                separator = strClone(newline)
+            } else {
+                separator = strConcat(newline, newline)
+            }
+        }
+    }
+
+    let mut block = strConcat("dependencies {", newline)
+    block = strConcat(block, "    ")
+    block = strConcat(block, declaration)
+    block = strConcat(block, newline)
+    block = strConcat(block, "}")
+    block = strConcat(block, newline)
+    return strConcat(source, separator, block)
+}
+
+private fn umsManifestInsertDependency(source: String, document: UmsAstDocument,
+                                       block: UmsAstStatement,
+                                       declaration: String) -> String {
+    let closeLine = umsManifestLineStart(source, block.blockClose)
+    if (umsManifestOnlyIndent(source, closeLine, block.blockClose)) {
+        let indent = umsManifestChildIndent(source, document, block)
+        let newline = umsManifestNewline(source)
+        let addition = strConcat(indent, declaration, newline)
+        return strInsert(source, closeLine, addition)
+    }
+
+    let interiorStart = block.blockOpen + 1
+    if (umsManifestOnlyWhitespace(source, interiorStart, block.blockClose)) {
+        if (interiorStart == block.blockClose) {
+            return strInsert(source, block.blockClose,
+                             strConcat(" ", declaration, " "))
+        }
+        return strInsert(source, block.blockClose, strConcat(declaration, " "))
+    }
+
+    let mut contentEnd = block.blockClose
+    while (contentEnd > interiorStart) {
+        let c = strCharAt(source, contentEnd - 1)
+        if (c != ' ' and c != '\t') { break }
+        contentEnd = contentEnd - 1
+    }
+    return strInsert(source, contentEnd, strConcat("; ", declaration))
+}
+
+// Adds one dependency declaration without serializing the manifest around it.
+// Existing comments, whitespace, quoting and declaration order therefore stay
+// byte-for-byte identical. Syntax/lowering errors and duplicates refuse the edit
+// and leave `source` untouched; diagnostics explain why.
+fn umsManifestAddDependency(source: String, manifestPath: String,
+                            scope: UmsDependencyScope, name: String,
+                            constraint: String, localPath: String,
+                            diagnostics: List<UmsDiagnostic>) -> UmsManifestEdit {
+    let scopeName = umsManifestScopeName(scope)
+    if (__builtin_string_len(scopeName) == 0) {
+        umsDiagnosticAdd(diagnostics, "UMS2401", manifestPath, 0, 0, 0,
+                         "cannot write a dependency with an unknown scope")
+        return umsManifestUnchanged(source)
+    }
+    if (umsValidName(name) == false) {
+        umsDiagnosticAdd(diagnostics, "UMS2402", manifestPath, 0, 0, 0,
+            strConcat(strConcat("invalid dependency name '", name), "'"))
+        return umsManifestUnchanged(source)
+    }
+    if (__builtin_string_len(constraint) == 0) {
+        umsDiagnosticAdd(diagnostics, "UMS2403", manifestPath, 0, 0, 0,
+            strConcat(strConcat("dependency '", name), "' has an empty version constraint"))
+        return umsManifestUnchanged(source)
+    }
+
+    let tokens = umsLex(source, manifestPath, diagnostics)
+    let document = umsParse(tokens, manifestPath, diagnostics)
+    let project = umsLowerDocument(document, ".", manifestPath, "debug", diagnostics)
+    if (list_len(diagnostics) > 0) { return umsManifestUnchanged(source) }
+
+    if (umsDependencyFind(project.dependencies, scope, name) >= 0) {
+        umsDiagnosticAdd(diagnostics, "UMS2404", manifestPath, 0, 0, 0,
+            strConcat(strConcat("dependency '", name),
+                      "' is already declared in this scope"))
+        return umsManifestUnchanged(source)
+    }
+
+    let declaration = umsManifestDependencyText(scope, name, constraint, localPath)
+    let blockIndex = umsManifestDependencyBlock(document)
+    if (blockIndex < 0) {
+        return UmsManifestEdit {
+            text: umsManifestAppendDependencyBlock(source, declaration),
+            changed: true
+        }
+    }
+
+    let block = list_get(document.statements, blockIndex)
+    return UmsManifestEdit {
+        text: umsManifestInsertDependency(source, document, block, declaration),
+        changed: true
+    }
+}

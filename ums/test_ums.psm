@@ -23,10 +23,10 @@ fn main() -> Int {
     if (strEquals(workspace.project.metadata.version, "1.0.0") == false) {
         return umsTestFail("project version should be lowered")
     }
-    if (umsWorkspaceTargetCount(workspace) != 1) {
+    if (workspace.targetCount() != 1) {
         return umsTestFail("one target should be planned")
     }
-    let target = umsWorkspaceTarget(workspace, 0)
+    let target = workspace.target(0)
     if (target.kind != UmsTargetKind.EXECUTABLE) {
         return umsTestFail("target kind should be executable")
     }
@@ -40,8 +40,16 @@ fn main() -> Int {
     let multi = umsLoadText(
         "# multiple artifacts\nproject { name = \"multi\" version = \"1.0.0\" prismio = \"1.0\" } targets { executable(\"one\") { entry = \"src/main.psm\" } executable(\"two\") { entry = \"src/main.psm\" } }",
         "memory:multi", "ums/tests/fixtures/valid", "release")
-    if (multi.valid == false or umsWorkspaceTargetCount(multi) != 2) {
+    if (multi.valid == false or multi.targetCount() != 2) {
         return umsTestFail("multiple executable targets should produce one plan each")
+    }
+
+    let compilerProject = umsLoadText(
+        "project { name = \"prismio\" version = \"0.1.0\" prismio = \"0.1\" } targets { compiler(\"prismio\") { entry = \"src/main.psm\" } }",
+        "memory:compiler", ".", "debug")
+    if (compilerProject.valid == false or compilerProject.targetCount() != 1 or
+        compilerProject.target(0).kind != UmsTargetKind.COMPILER) {
+        return umsTestFail("a compiler target should lower and plan as a compiler")
     }
 
     let invalid = umsLoadText(
@@ -57,7 +65,7 @@ fn main() -> Int {
     // which is a *registry* dependency. There is no registry, so resolving it must
     // fail -- and must still produce a lockfile row recording the attempt.
     let registryDiagnostics = umsDiagnostics()
-    let registryResolutions = umsResolveDependencies(workspace.project, registryDiagnostics)
+    let registryResolutions = workspace.project.resolveDependencies(registryDiagnostics)
     if (list_len(registryResolutions) != 1) {
         return umsTestFail("one dependency should resolve to one resolution")
     }
@@ -67,7 +75,7 @@ fn main() -> Int {
     if (list_len(registryDiagnostics) != 1) {
         return umsTestFail("an unresolvable dependency should report exactly one diagnostic")
     }
-    let registryLock = umsLockfileContents(workspace.project, registryResolutions)
+    let registryLock = workspace.project.lockfileContents(registryResolutions)
     if (strContains(registryLock, "registry") == false) {
         return umsTestFail("the lockfile should record the source as registry")
     }
@@ -82,7 +90,7 @@ fn main() -> Int {
         "memory:good", "ums/tests/fixtures/valid", "debug")
     if (good.valid == false) { return umsTestFail("a path dependency should lower") }
     let goodDiagnostics = umsDiagnostics()
-    let goodResolutions = umsResolveDependencies(good.project, goodDiagnostics)
+    let goodResolutions = good.project.resolveDependencies(goodDiagnostics)
     if (list_len(goodDiagnostics) != 0) {
         return umsTestFail("an existing path dependency should report nothing")
     }
@@ -94,7 +102,7 @@ fn main() -> Int {
         "project { name = \"p\" version = \"1.0.0\" prismio = \"1.0\" } targets { executable(\"p\") { entry = \"src/main.psm\" } } dependencies { implementation(\"dep\", \"1.0.0\", \"../nowhere\") }",
         "memory:bad", "ums/tests/fixtures/valid", "debug")
     let badDiagnostics = umsDiagnostics()
-    let badResolutions = umsResolveDependencies(bad.project, badDiagnostics)
+    let badResolutions = bad.project.resolveDependencies(badDiagnostics)
     if (list_len(badDiagnostics) != 1) {
         return umsTestFail("a missing path dependency should report one diagnostic")
     }
@@ -106,6 +114,82 @@ fn main() -> Int {
         return umsTestFail("resolving a missing path dependency created the directory")
     }
 
-    println("PASS: UMS parser, models, validation, build planning, resolution and lockfile")
+    // The manifest writer is a source edit, not a serializer. This CRLF fixture
+    // is deliberately formatted and commented: equality of the complete answer
+    // proves that only the new declaration changed.
+    let commentedSource = "# keep this heading\r\nproject { name = \"app\" version = \"1.0.0\" prismio = \"1.0\" }\r\ntargets { executable(\"app\") { entry = \"src/main.psm\" } }\r\ndependencies {\r\n    # keep this dependency comment\r\n    implementation(\"json\", \"1.2.0\")\r\n}\r\n"
+    let commentedExpected = "# keep this heading\r\nproject { name = \"app\" version = \"1.0.0\" prismio = \"1.0\" }\r\ntargets { executable(\"app\") { entry = \"src/main.psm\" } }\r\ndependencies {\r\n    # keep this dependency comment\r\n    implementation(\"json\", \"1.2.0\")\r\n    api(\"http\", \"^2.0\")\r\n}\r\n"
+    let commentedDiagnostics = umsDiagnostics()
+    let commentedEdit = umsManifestAddDependency(
+        commentedSource, "memory:commented", UmsDependencyScope.API,
+        "http", "^2.0", "", commentedDiagnostics)
+    if (commentedEdit.changed == false or list_len(commentedDiagnostics) != 0) {
+        return umsTestFail("a valid commented manifest should accept an edit")
+    }
+    if (strEquals(commentedEdit.text, commentedExpected) == false) {
+        return umsTestFail("the writer changed formatting or comments around an existing block")
+    }
+
+    // Without a dependency block, one is appended after a blank line. Values
+    // are escaped through the same five-escape vocabulary the lexer decodes.
+    let noDependencies = "project { name = \"app\" version = \"1.0.0\" prismio = \"1.0\" }\n\ntargets { executable(\"app\") { entry = \"src/main.psm\" } }\n# keep the tail\n"
+    let appendedExpected = "project { name = \"app\" version = \"1.0.0\" prismio = \"1.0\" }\n\ntargets { executable(\"app\") { entry = \"src/main.psm\" } }\n# keep the tail\n\ndependencies {\n    testImplementation(\"local\", \"^1.0\\tbeta\", \"..\\\\localdep\")\n}\n"
+    let appendedDiagnostics = umsDiagnostics()
+    let appendedEdit = umsManifestAddDependency(
+        noDependencies, "memory:appended", UmsDependencyScope.TEST_IMPLEMENTATION,
+        "local", "^1.0\tbeta", "..\\localdep", appendedDiagnostics)
+    if (appendedEdit.changed == false or list_len(appendedDiagnostics) != 0) {
+        return umsTestFail("a valid manifest without dependencies should accept an edit")
+    }
+    if (strEquals(appendedEdit.text, appendedExpected) == false) {
+        return umsTestFail("the writer did not append and escape a dependency block exactly")
+    }
+    let appendedWorkspace = umsLoadText(
+        appendedEdit.text, "memory:appended-result", "ums/tests/fixtures/valid", "debug")
+    if (appendedWorkspace.valid == false or
+        list_len(appendedWorkspace.project.dependencies) != 1) {
+        return umsTestFail("the appended manifest should parse and lower again")
+    }
+    let appendedDependency = list_get(appendedWorkspace.project.dependencies, 0)
+    if (strEquals(appendedDependency.constraint, "^1.0\tbeta") == false or
+        strEquals(appendedDependency.path, "..\\localdep") == false) {
+        return umsTestFail("written dependency strings should round-trip through the lexer")
+    }
+
+    // Inline manifests stay inline. A semicolon is the smallest unambiguous
+    // separator between the declaration already there and the one being added.
+    let inlineSource = "project { name = \"app\" version = \"1.0.0\" prismio = \"1.0\" } targets { executable(\"app\") { entry = \"src/main.psm\" } } dependencies { implementation(\"json\", \"1\") }"
+    let inlineExpected = "project { name = \"app\" version = \"1.0.0\" prismio = \"1.0\" } targets { executable(\"app\") { entry = \"src/main.psm\" } } dependencies { implementation(\"json\", \"1\"); api(\"net\", \"2\") }"
+    let inlineDiagnostics = umsDiagnostics()
+    let inlineEdit = umsManifestAddDependency(
+        inlineSource, "memory:inline", UmsDependencyScope.API,
+        "net", "2", "", inlineDiagnostics)
+    if (inlineEdit.changed == false or list_len(inlineDiagnostics) != 0 or
+        strEquals(inlineEdit.text, inlineExpected) == false) {
+        return umsTestFail("an inline dependency block should receive one inline declaration")
+    }
+
+    // A refused edit returns the original source. This is the property a future
+    // CLI command relies on before it opens build.ums for writing.
+    let duplicateDiagnostics = umsDiagnostics()
+    let duplicateEdit = umsManifestAddDependency(
+        inlineSource, "memory:duplicate", UmsDependencyScope.IMPLEMENTATION,
+        "json", "2", "", duplicateDiagnostics)
+    if (duplicateEdit.changed or list_len(duplicateDiagnostics) != 1 or
+        strEquals(duplicateEdit.text, inlineSource) == false) {
+        return umsTestFail("a duplicate dependency should refuse the edit without changing source")
+    }
+
+    let malformedSource = "dependencies {"
+    let malformedDiagnostics = umsDiagnostics()
+    let malformedEdit = umsManifestAddDependency(
+        malformedSource, "memory:malformed", UmsDependencyScope.IMPLEMENTATION,
+        "json", "1", "", malformedDiagnostics)
+    if (malformedEdit.changed or list_len(malformedDiagnostics) == 0 or
+        strEquals(malformedEdit.text, malformedSource) == false) {
+        return umsTestFail("a malformed manifest should refuse the edit without changing source")
+    }
+
+    println("PASS: UMS parser, models, validation, planning, resolution, lockfile and writer")
     return 0
 }

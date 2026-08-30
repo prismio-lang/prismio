@@ -192,7 +192,7 @@ private fn generateStatement(stmt: ASTNode) {
             }
         }
     }
-    
+
     if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) {
         let targetNode = ptr_to_node(stmt.child1)
         if (targetNode.kind == NodeKind.IDENTIFIER_EXPR) {
@@ -310,7 +310,7 @@ private fn generateStatement(stmt: ASTNode) {
             }
         }
     }
-    
+
     if (stmt.kind == NodeKind.RETURN_STATEMENT) {
         // Every scope in the function unwinds at once, so the floor is 0. The
         // returned value is never among them: returning it puts its escape at
@@ -328,34 +328,34 @@ private fn generateStatement(stmt: ASTNode) {
         }
         ir_set_returned()
     }
-    
+
     if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
         if (nodeExists(stmt.child1)) {
             generateExpression(ptr_to_node(stmt.child1))
         }
     }
-    
+
     if (stmt.kind == NodeKind.IF_STATEMENT) {
         let condVal = generateExpression(ptr_to_node(stmt.child1))
-        
+
         let thenLabel = ir_get_label()
         let elseLabel = ir_get_label()
         let endLabel = ir_get_label()
-        
+
         if (nodeExists(stmt.child3)) {
             ir_cond_br_numbered(condVal, thenLabel, elseLabel)
         } else {
             ir_cond_br_numbered(condVal, thenLabel, endLabel)
         }
-        
+
         ir_label_numbered(thenLabel)
         generateBlock(ptr_to_node(stmt.child2))
         if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
         ir_clear_returned()
-        
+
         if (nodeExists(stmt.child3)) {
             ir_label_numbered(elseLabel)
-            
+
             let elseNode = ptr_to_node(stmt.child3)
             if (elseNode.kind == NodeKind.IF_STATEMENT) {
                 generateStatement(elseNode)
@@ -365,14 +365,19 @@ private fn generateStatement(stmt: ASTNode) {
             if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
             ir_clear_returned()
         }
-        
+
         ir_label_numbered(endLabel)
     }
-    
+
     if (stmt.kind == NodeKind.WHILE_STATEMENT) {
         let condLabel = ir_get_label()
         let bodyLabel = ir_get_label()
         let endLabel = ir_get_label()
+
+        // M4.2, the loop half. Emitted here because here is the preheader: the
+        // guard has to dominate the loop and be computed once.
+        let savedGuard = irLoopFlatGuard
+        irLoopFlatGuard = generateLoopFlatGuard(ptr_to_node(stmt.child2))
 
         ir_br_numbered(condLabel)
         ir_label_numbered(condLabel)
@@ -383,13 +388,16 @@ private fn generateStatement(stmt: ASTNode) {
         ir_label_numbered(bodyLabel)
         ir_loop_push(condLabel, endLabel)
         ir_drop_barrier_push()
+        irLoopDepth = irLoopDepth + 1
         generateBlock(ptr_to_node(stmt.child2))
+        irLoopDepth = irLoopDepth - 1
         ir_drop_barrier_pop()
         ir_loop_pop()
 
         if (ir_has_returned() == 0) { ir_br_numbered(condLabel) }
         ir_clear_returned()
 
+        irLoopFlatGuard = savedGuard
         ir_label_numbered(endLabel)
     }
 

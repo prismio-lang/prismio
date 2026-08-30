@@ -325,6 +325,15 @@ LLVMValueRef LLVMBuildBr(LLVMBuilderRef, LLVMBasicBlockRef Dest);
 LLVMValueRef LLVMBuildCondBr(LLVMBuilderRef, LLVMValueRef If, LLVMBasicBlockRef Then,
                              LLVMBasicBlockRef Else);
 LLVMValueRef LLVMBuildUnreachable(LLVMBuilderRef);
+// The flat-`List` element view's two merges (ir_list_flat_elem). `select` picks
+// between an in-range address and null without a branch, and the `phi` joins the
+// flat and boxed arms -- the only phi codegen builds, because every other merge
+// in this backend is a store to an alloca that mem2reg promotes.
+LLVMValueRef LLVMBuildSelect(LLVMBuilderRef, LLVMValueRef If, LLVMValueRef Then,
+                             LLVMValueRef Else, const char *Name);
+LLVMValueRef LLVMBuildPhi(LLVMBuilderRef, LLVMTypeRef Ty, const char *Name);
+void LLVMAddIncoming(LLVMValueRef PhiNode, LLVMValueRef *IncomingValues,
+                     LLVMBasicBlockRef *IncomingBlocks, unsigned Count);
 LLVMValueRef LLVMBuildZExt(LLVMBuilderRef, LLVMValueRef Val, LLVMTypeRef DestTy,
                            const char *Name);
 LLVMValueRef LLVMBuildSExt(LLVMBuilderRef, LLVMValueRef Val, LLVMTypeRef DestTy,

@@ -6,6 +6,10 @@ import std.string
 extern fn file_exists(path: String borrow) -> Int
 extern fn join_path(directory: String borrow, child: String borrow) -> String produce(free)
 
+// Public because `prismio init` derives a project name from a directory and must
+// reject it by the *same* rule this validates it by. A second copy of the rule in
+// the writer is a second thing to keep in step -- the mistake src/ir/stmt.psm
+// names about `enumPayloadField`.
 fn umsValidName(value: String) -> Bool {
     if (__builtin_string_len(value) == 0) { return false }
     let mut i = 0
@@ -19,7 +23,7 @@ fn umsValidName(value: String) -> Bool {
     return true
 }
 
-fn umsValidVersion(value: String, minimumComponents: Int) -> Bool {
+private fn umsValidVersion(value: String, minimumComponents: Int) -> Bool {
     let mut components = 1
     let mut componentDigits = 0
     let mut i = 0
@@ -38,81 +42,88 @@ fn umsValidVersion(value: String, minimumComponents: Int) -> Bool {
     return componentDigits > 0 and components >= minimumComponents
 }
 
-fn umsValidationError(project: UmsProjectModel, diagnostics: List<UmsDiagnostic>,
-                      code: String, message: String) {
-    umsDiagnosticAdd(diagnostics, code, project.manifestPath, 0, 0, 0, message)
-}
+// Validation, as methods on the model it validates. `project.validate(diags)`
+// rather than `umsProjectValidate(project, diags)`: the same call after the
+// checker's rewrite, and the receiver stops being an argument that happens to be
+// first.
+impl UmsProjectModel {
 
-fn umsProjectValidate(project: UmsProjectModel, diagnostics: List<UmsDiagnostic>) {
-    if (__builtin_string_len(project.metadata.name) == 0) {
-        umsValidationError(project, diagnostics, "UMS2301", "project.name is required")
-    } else if (umsValidName(project.metadata.name) == false) {
-        umsValidationError(project, diagnostics, "UMS2302",
-                           "project.name may contain only letters, digits, '.', '_' and '-'")
+    private fn validationError(self, diagnostics: List<UmsDiagnostic>,
+                          code: String, message: String) {
+        umsDiagnosticAdd(diagnostics, code, self.manifestPath, 0, 0, 0, message)
     }
 
-    if (__builtin_string_len(project.metadata.version) == 0) {
-        umsValidationError(project, diagnostics, "UMS2303", "project.version is required")
-    } else if (umsValidVersion(project.metadata.version, 3) == false) {
-        umsValidationError(project, diagnostics, "UMS2304",
-                           "project.version must use semantic version form")
-    }
-
-    if (__builtin_string_len(project.metadata.prismioVersion) == 0) {
-        umsValidationError(project, diagnostics, "UMS2305", "project.prismio is required")
-    } else if (umsValidVersion(project.metadata.prismioVersion, 2) == false) {
-        umsValidationError(project, diagnostics, "UMS2306",
-                           "project.prismio must contain at least major and minor versions")
-    }
-
-    if (list_len(project.targets) == 0) {
-        umsValidationError(project, diagnostics, "UMS2307",
-                           "at least one build target is required")
-    }
-
-    let mut targetIndex = 0
-    while (targetIndex < list_len(project.targets)) {
-        let target = list_get(project.targets, targetIndex)
-        if (umsValidName(target.name) == false) {
-            umsDiagnosticAdd(diagnostics, "UMS2308", project.manifestPath,
-                target.line, target.col, target.len,
-                strConcat(strConcat("invalid target name '", target.name), "'"))
+    internal fn validate(self, diagnostics: List<UmsDiagnostic>) {
+        if (__builtin_string_len(self.metadata.name) == 0) {
+            self.validationError(diagnostics, "UMS2301", "project.name is required")
+        } else if (umsValidName(self.metadata.name) == false) {
+            self.validationError(diagnostics, "UMS2302",
+                               "project.name may contain only letters, digits, '.', '_' and '-'")
         }
-        if (__builtin_string_len(target.entry) == 0) {
-            umsDiagnosticAdd(diagnostics, "UMS2309", project.manifestPath,
-                target.line, target.col, target.len,
-                strConcat(strConcat("target '", target.name), "' requires an entry source"))
-        } else {
-            let sourcePath = join_path(project.root, target.entry)
-            if (file_exists(sourcePath) == 0) {
-                umsDiagnosticAdd(diagnostics, "UMS2310", project.manifestPath,
+
+        if (__builtin_string_len(self.metadata.version) == 0) {
+            self.validationError(diagnostics, "UMS2303", "project.version is required")
+        } else if (umsValidVersion(self.metadata.version, 3) == false) {
+            self.validationError(diagnostics, "UMS2304",
+                               "project.version must use semantic version form")
+        }
+
+        if (__builtin_string_len(self.metadata.prismioVersion) == 0) {
+            self.validationError(diagnostics, "UMS2305", "project.prismio is required")
+        } else if (umsValidVersion(self.metadata.prismioVersion, 2) == false) {
+            self.validationError(diagnostics, "UMS2306",
+                               "project.prismio must contain at least major and minor versions")
+        }
+
+        if (list_len(self.targets) == 0) {
+            self.validationError(diagnostics, "UMS2307",
+                               "at least one build target is required")
+        }
+
+        let mut targetIndex = 0
+        while (targetIndex < list_len(self.targets)) {
+            let target = list_get(self.targets, targetIndex)
+            if (umsValidName(target.name) == false) {
+                umsDiagnosticAdd(diagnostics, "UMS2308", self.manifestPath,
                     target.line, target.col, target.len,
-                    strConcat(strConcat(strConcat("target '", target.name),
-                               "' entry does not exist: "), target.entry))
+                    strConcat(strConcat("invalid target name '", target.name), "'"))
             }
+            if (__builtin_string_len(target.entry) == 0) {
+                umsDiagnosticAdd(diagnostics, "UMS2309", self.manifestPath,
+                    target.line, target.col, target.len,
+                    strConcat(strConcat("target '", target.name), "' requires an entry source"))
+            } else {
+                let sourcePath = join_path(self.root, target.entry)
+                if (file_exists(sourcePath) == 0) {
+                    umsDiagnosticAdd(diagnostics, "UMS2310", self.manifestPath,
+                        target.line, target.col, target.len,
+                        strConcat(strConcat(strConcat("target '", target.name),
+                                   "' entry does not exist: "), target.entry))
+                }
+            }
+            if (target.kind == UmsTargetKind.LIBRARY) {
+                umsDiagnosticAdd(diagnostics, "UMS2313", self.manifestPath,
+                    target.line, target.col, target.len,
+                    "library targets are modeled but artifact emission is not implemented yet")
+            }
+            targetIndex = targetIndex + 1
         }
-        if (target.kind == UmsTargetKind.LIBRARY) {
-            umsDiagnosticAdd(diagnostics, "UMS2313", project.manifestPath,
-                target.line, target.col, target.len,
-                "library targets are modeled but artifact emission is not implemented yet")
-        }
-        targetIndex = targetIndex + 1
-    }
 
-    let mut dependencyIndex = 0
-    while (dependencyIndex < list_len(project.dependencies)) {
-        let dependency = list_get(project.dependencies, dependencyIndex)
-        if (umsValidName(dependency.name) == false) {
-            umsDiagnosticAdd(diagnostics, "UMS2311", project.manifestPath,
-                dependency.line, dependency.col, dependency.len,
-                strConcat(strConcat("invalid dependency name '", dependency.name), "'"))
+        let mut dependencyIndex = 0
+        while (dependencyIndex < list_len(self.dependencies)) {
+            let dependency = list_get(self.dependencies, dependencyIndex)
+            if (umsValidName(dependency.name) == false) {
+                umsDiagnosticAdd(diagnostics, "UMS2311", self.manifestPath,
+                    dependency.line, dependency.col, dependency.len,
+                    strConcat(strConcat("invalid dependency name '", dependency.name), "'"))
+            }
+            if (__builtin_string_len(dependency.constraint) == 0) {
+                umsDiagnosticAdd(diagnostics, "UMS2312", self.manifestPath,
+                    dependency.line, dependency.col, dependency.len,
+                    strConcat(strConcat("dependency '", dependency.name),
+                               "' has an empty version constraint"))
+            }
+            dependencyIndex = dependencyIndex + 1
         }
-        if (__builtin_string_len(dependency.constraint) == 0) {
-            umsDiagnosticAdd(diagnostics, "UMS2312", project.manifestPath,
-                dependency.line, dependency.col, dependency.len,
-                strConcat(strConcat("dependency '", dependency.name),
-                           "' has an empty version constraint"))
-        }
-        dependencyIndex = dependencyIndex + 1
     }
 }

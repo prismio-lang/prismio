@@ -286,6 +286,27 @@ internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: St
     return typeInvalid()
 }
 
+// The same lookup as above without the diagnostic, for a caller that has another
+// thing to try. `semaFindStructFieldType` reports "has no field" itself, which is
+// right when a field is the only possibility and wrong once a property might be.
+internal fn semaStructHasField(structName: String, fieldName: String) -> Bool {
+    let count = ir_decl_count(structName)
+    let mut i = 0
+    while (i < count) {
+        let stmt = ptr_to_node(ir_decl_at(structName, i))
+        if (stmt.kind == NodeKind.STRUCT_DECL) {
+            let mut fieldPtr = stmt.child1
+            while (nodeExists(fieldPtr)) {
+                let field = ptr_to_node(fieldPtr)
+                if (strEquals(field.s1, fieldName)) { return true }
+                fieldPtr = field.next
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
 internal fn semaEnumHasVariant(module: ASTNode, enumName: String, variantName: String) -> Bool {
     let count = ir_decl_count(enumName)
     let mut i = 0

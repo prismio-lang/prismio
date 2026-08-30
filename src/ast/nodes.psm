@@ -121,6 +121,11 @@ struct ASTNode {
     // Its own slot rather than a bit in i2, because i1 and i2 already mean
     // "array" and "list" and a nullable list is both.
     //
+    // On a FUNCTION, i1 is codegen's general single-callsite/loop-inline state.
+    // It is recomputed before every emission and lowers to `alwaysinline` only
+    // when the function is the sole source call in its nearest loop. i2 remains
+    // the declaration's visibility.
+    //
     // On a FUNCTION_PARAMETER it means something unrelated -- v0.1 3.2's "this
     // was written as a bare `self` in an `impl` block" -- and the two cannot
     // collide because no node is both kinds. On a FUNCTION it is codegen's

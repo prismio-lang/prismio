@@ -31,27 +31,31 @@ fn umsDiagnosticAdd(diagnostics: List<UmsDiagnostic>, code: String, path: String
     })
 }
 
-fn umsDiagnosticPrint(diagnostic: UmsDiagnostic) {
-    if (__builtin_string_len(diagnostic.path) > 0) {
-        print(diagnostic.path)
-        if (diagnostic.line > 0) {
-            print(":")
-            print(strFromInt(diagnostic.line))
-            print(":")
-            print(strFromInt(diagnostic.col))
-        }
-        print(": ")
-    }
-    print("error[")
-    print(diagnostic.code)
-    print("]: ")
-    println(diagnostic.message)
-}
+// One diagnostic, rendered. `private` because only umsDiagnosticsPrint below
+// calls it, and the list form is what every caller outside this file wants.
+impl UmsDiagnostic {
 
+    private fn print(self) {
+        if (__builtin_string_len(self.path) > 0) {
+            print(self.path)
+            if (self.line > 0) {
+                print(":")
+                print(strFromInt(self.line))
+                print(":")
+                print(strFromInt(self.col))
+            }
+            print(": ")
+        }
+        print("error[")
+        print(self.code)
+        print("]: ")
+        println(self.message)
+    }
+}
 fn umsDiagnosticsPrint(diagnostics: List<UmsDiagnostic>) {
     let mut i = 0
     while (i < list_len(diagnostics)) {
-        umsDiagnosticPrint(list_get(diagnostics, i))
+        list_get(diagnostics, i).print()
         i = i + 1
     }
 }

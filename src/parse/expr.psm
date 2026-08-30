@@ -405,7 +405,7 @@ private fn parsePrimary(p: Parser) -> ASTNode {
                 p.advance()
                 let callee = parsePrimary(p)
                 if (callee.kind != NodeKind.CALL_EXPR) {
-                    diag_error_at(spawnNode.file, spawnNode.line, spawnNode.col, spawnNode.len,
+                    diag_error_at_code("P3101", spawnNode.file, spawnNode.line, spawnNode.col, spawnNode.len,
                                   "`spawn` needs a call: write `spawn f(args)`, naming the function the task runs")
                 }
                 spawnNode.child1 = node_to_ptr(callee)

@@ -192,10 +192,16 @@ static void diag_json_string(const char* text) {
     fputc('"', stderr);
 }
 
-static void diag_emit_json(const char* severity, int file, int line, int col,
-                           int len, const char* message) {
+static void diag_emit_json(const char* severity, const char* code, int file,
+                           int line, int col, int len, const char* message) {
     fputs("{\"kind\":\"diagnostic\",\"schemaVersion\":1,\"severity\":", stderr);
     diag_json_string(severity);
+    fputs(",\"code\":", stderr);
+    if (code) {
+        diag_json_string(code);
+    } else {
+        fputs("null", stderr);
+    }
     fputs(",\"file\":", stderr);
     if (file >= 0 && file < g_file_count) {
         diag_json_string(g_files[file].path);
@@ -266,53 +272,80 @@ static void diag_render_span(int file, int line, int col, int len) {
     fputc('\n', stderr);
 }
 
-static void diag_emit(const char* severity, int file, int line, int col, int len, const char* message) {
+static void diag_emit(const char* severity, const char* code, int file,
+                      int line, int col, int len, const char* message) {
     if (g_json_mode) {
-        diag_emit_json(severity, file, line, col, len, message);
+        diag_emit_json(severity, code, file, line, col, len, message);
         fflush(stderr);
         return;
     }
 
-    fprintf(stderr, "%s: %s\n", severity, message ? message : "");
+    if (code) {
+        fprintf(stderr, "%s[%s]: %s\n", severity, code, message ? message : "");
+    } else {
+        fprintf(stderr, "%s: %s\n", severity, message ? message : "");
+    }
     diag_render_span(file, line, col, len);
     fflush(stderr);
 }
 
-void diag_error_at(int file, int line, int col, int len, const char* message) {
+void diag_error_at_code(const char* code, int file, int line, int col, int len,
+                        const char* message) {
     g_finished = 0;
     g_error_count++;
 
     if (g_error_count > DIAG_ERROR_LIMIT) {
         if (g_json_mode) {
-            diag_emit_json("error", -1, 0, 0, 0,
+            diag_emit_json("error", "P0001", -1, 0, 0, 0,
                            "too many errors; stopping after 25");
             diag_emit_json_summary();
             exit(1);
         }
-        fprintf(stderr, "error: too many errors; stopping after %d\n", DIAG_ERROR_LIMIT);
+        fprintf(stderr, "error[P0001]: too many errors; stopping after %d\n",
+                DIAG_ERROR_LIMIT);
         fflush(stderr);
         exit(1);
     }
 
-    diag_emit("error", file, line, col, len, message);
+    diag_emit("error", code, file, line, col, len, message);
 }
 
-void diag_error(const char* message) {
-    diag_error_at(-1, 0, 0, 0, message);
+void diag_error_code(const char* code, const char* message) {
+    diag_error_at_code(code, -1, 0, 0, 0, message);
 }
 
-void diag_warning_at(int file, int line, int col, int len, const char* message) {
+void diag_warning_at_code(const char* code, int file, int line, int col, int len,
+                          const char* message) {
     g_finished = 0;
     g_warning_count++;
-    diag_emit("warning", file, line, col, len, message);
+    diag_emit("warning", code, file, line, col, len, message);
 }
 
 // Unlocated, the counterpart of diag_error above and reached the same way -- a
 // file of -1. LAYOUT 3.2's W2 is what needed it: a workload that fails to build
 // or times out has to warn, and the thing that went wrong is a build step rather
 // than a span of source, so there is no honest place to point a caret.
+void diag_warning_code(const char* code, const char* message) {
+    diag_warning_at_code(code, -1, 0, 0, 0, message);
+}
+
+// Compatibility entry points for seed compilers and external users of the C
+// runtime. New frontend call sites use the coded forms above; P0000 makes any
+// remaining legacy caller visible without dropping the machine-readable field.
+void diag_error_at(int file, int line, int col, int len, const char* message) {
+    diag_error_at_code("P0000", file, line, col, len, message);
+}
+
+void diag_error(const char* message) {
+    diag_error_code("P0000", message);
+}
+
+void diag_warning_at(int file, int line, int col, int len, const char* message) {
+    diag_warning_at_code("P0000", file, line, col, len, message);
+}
+
 void diag_warning(const char* message) {
-    diag_warning_at(-1, 0, 0, 0, message);
+    diag_warning_code("P0000", message);
 }
 
 // A secondary span belonging to the diagnostic just reported -- "the first
@@ -320,7 +353,7 @@ void diag_warning(const char* message) {
 // subordinate rather than as a second, unrelated error.
 void diag_note_at(int file, int line, int col, int len, const char* message) {
     if (g_json_mode) {
-        diag_emit("note", file, line, col, len, message);
+        diag_emit("note", NULL, file, line, col, len, message);
         return;
     }
 
@@ -331,7 +364,7 @@ void diag_note_at(int file, int line, int col, int len, const char* message) {
 
 void diag_note(const char* message) {
     if (g_json_mode) {
-        diag_emit("note", -1, 0, 0, 0, message);
+        diag_emit("note", NULL, -1, 0, 0, 0, message);
         return;
     }
 

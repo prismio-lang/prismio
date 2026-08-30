@@ -9,7 +9,8 @@
 // second strong reference and ARC has nothing to count -- the same reason the
 // program produces zero T3 sites in Prismio.
 
-let FRAMES = 4000
+let SAMPLES = 125
+let RENDERS_PER_SAMPLE = 32
 let ENTITIES = 2000
 
 struct Mesh {
@@ -182,15 +183,18 @@ struct G5 {
         let scene = Scene(cache: cache)
         populate(scene, ENTITIES)
 
-        var frames = Frames(FRAMES)
+        // Preserve 4,000 total renders while timing longer groups. The old
+        // single-render G5 intervals were dominated by measurement noise.
+        var frames = Frames(SAMPLES)
         var total = 0
 
-        for frame in 0..<FRAMES {
+        for sample in 0..<SAMPLES {
             let t0 = nowNs()
-            let submitted = renderBatched(scene)
+            for _ in 0..<RENDERS_PER_SAMPLE {
+                total += renderBatched(scene)
+            }
             let t1 = nowNs()
-            total += submitted
-            frames.set(frame, t1 - t0)
+            frames.set(sample, t1 - t0)
         }
 
         for i in 0..<500 {

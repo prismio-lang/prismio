@@ -1,21 +1,26 @@
-// G9 helper-leak diagnostic -- **this program leaks on purpose.**
+// G9 helper-allocation diagnostic.
 //
 // It is g9.psm with the band built by a helper instead of at the spawn site.
 // That one change moves every spawn argument from **T0/stack** to
-// **T2/owned/Transferred**, and nothing drops it: `--verify` reports
-// **80 allocated of 107 leaked** at 20 frames, four per frame, one per spawn.
+// **T2/owned/Transferred**: 107 allocations against g9.psm's 27, four per frame,
+// one per spawn.
 //
-// **Why**: the site is then inside `band()`, so `aif_con_return` has already put
-// its escape at Caller by the time INFERENCE 4.1's E-SPAWN-J looks at it, and
-// `raise_escape` only raises -- it cannot bottom a Caller value back at the
-// spawning scope. The value is heap-allocated, the task owns it by
-// T-SPAWN-MOVE, and no owner is ever emitted. `prismio_task_release` exists in
-// the runtime and **is never called by codegen**, so the task handle leaks too;
-// that one is plain `calloc` and therefore invisible to `--verify`.
+// **It leaked 80 of those 107 until 2026-08-30, and no longer leaks any.** The
+// site is inside `band()`, so `aif_con_return` has already put its escape at
+// Caller by the time INFERENCE 4.1's E-SPAWN-J looks at it, and `raise_escape`
+// only raises -- it cannot bottom a Caller value back at the spawning scope. So
+// the value is heap-allocated and the task owns it by T-SPAWN-MOVE. What was
+// missing was an owner in the *spawning* frame: `SPAWN_EXPR` emits its own
+// arguments and never reached the ordinary call's argument-position release.
+// The temporary is now spilled to a slot and dropped at the scope exit, on the
+// same proved-join licence the task handle uses. See
+// `aif/evidence/RESULTS-spawn-owned-argument.md`.
 //
 // **Not in `bench.PROGRAMS`, and it must not be** -- the same rule
-// `g8_tree_rebuild.psm` is held to. It is the reproduction for the TODO item,
-// kept because the difference between it and `g9.psm` is the measurement.
+// `g8_tree_rebuild.psm` is held to. It is kept because the 27-against-107
+// difference between it and `g9.psm` is still the measurement: building at the
+// spawn site allocates nothing at all, and that is worth being able to show even
+// now that the helper form is merely more expensive rather than unsound.
 
 import std.io
 extern fn clock_gettime_nsec_np(clk: Int) -> I64

@@ -20,7 +20,7 @@ internal fn parseBlock(p: Parser) -> ASTNode {
         // fail, and blames whatever it was looking at instead of the brace that
         // was never closed.
         if (p.check(TokenType.EOF)) {
-            diag_error_at(open.file, open.line, open.col, open.len,
+            diag_error_at_code("P3301", open.file, open.line, open.col, open.len,
                           "this block is never closed; reached end of file looking for `}`")
             diag_finish()
             exit(1)
@@ -134,8 +134,14 @@ private fn parseForStatement(p: Parser) -> ASTNode {
     // swallows the body.
     p.allowStructLit = 0
     forNode.child1 = node_to_ptr(parseExpression(p, 0))
-    p.expectVal(TokenType.RANGE, "..", "for range")
-    forNode.child2 = node_to_ptr(parseExpression(p, 0))
+
+    // v0.1 3.6. `..` is what separates the two loops, and its absence is what
+    // says this is `for c in s` over a collection rather than `for i in 0..n`
+    // over a range. An absent `child2` is the whole marker: no flag, and the two
+    // forms cannot be confused because a range always has both bounds.
+    if (p.matchToken(TokenType.RANGE)) {
+        forNode.child2 = node_to_ptr(parseExpression(p, 0))
+    }
     p.allowStructLit = 1
 
     forNode.child3 = node_to_ptr(parseBlock(p))
@@ -195,7 +201,7 @@ private fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: To
     p.advance()
 
     if (target.kind != NodeKind.IDENTIFIER_EXPR) {
-        diag_error_at(target.file, target.line, target.col, target.len,
+        diag_error_at_code("P3302", target.file, target.line, target.col, target.len,
             strConcat(strConcat("compound assignment ", diagQuote(operatorToken.value)),
                        " requires a plain variable on the left"))
         diag_note("the desugaring names the target twice, so a subexpression here would be evaluated twice; write the assignment out in full instead")

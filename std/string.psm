@@ -180,6 +180,75 @@ fn strConcat(a: String, b: String) -> String {
     return out
 }
 
+// Three to six parts in **one** allocation.
+//
+// These exist because `a + b + c` desugars to one of them rather than to nested
+// `strConcat`, and the difference is not a micro-optimisation. Nested concat
+// allocates an intermediate that nothing names, and RUNTIME.md 3.1's rule is
+// that a value nothing names is a value nothing frees: measured, the two-call
+// form reads 2 allocated / 1 released, and it does so on the released 0.1
+// compiler as well, so it is the language's rule rather than a regression.
+// Flattening the chain removes the intermediate instead of leaking it, and as a
+// side effect copies the bytes once instead of twice.
+//
+// Six is where it stops because `strJoin` is the right answer past that, and a
+// seventh overload is a table nobody reads.
+fn strConcat(a: String, b: String, c: String) -> String {
+    let alen = __builtin_string_len(a)
+    let blen = __builtin_string_len(b)
+    let clen = __builtin_string_len(c)
+    let out = str_with_capacity(alen + blen + clen)
+    strCopyRangeInto(out, 0, a, 0, alen)
+    strCopyRangeInto(out, alen, b, 0, blen)
+    strCopyRangeInto(out, alen + blen, c, 0, clen)
+    return out
+}
+
+fn strConcat(a: String, b: String, c: String, d: String) -> String {
+    let alen = __builtin_string_len(a)
+    let blen = __builtin_string_len(b)
+    let clen = __builtin_string_len(c)
+    let dlen = __builtin_string_len(d)
+    let out = str_with_capacity(alen + blen + clen + dlen)
+    strCopyRangeInto(out, 0, a, 0, alen)
+    strCopyRangeInto(out, alen, b, 0, blen)
+    strCopyRangeInto(out, alen + blen, c, 0, clen)
+    strCopyRangeInto(out, alen + blen + clen, d, 0, dlen)
+    return out
+}
+
+fn strConcat(a: String, b: String, c: String, d: String, e: String) -> String {
+    let alen = __builtin_string_len(a)
+    let blen = __builtin_string_len(b)
+    let clen = __builtin_string_len(c)
+    let dlen = __builtin_string_len(d)
+    let elen = __builtin_string_len(e)
+    let out = str_with_capacity(alen + blen + clen + dlen + elen)
+    strCopyRangeInto(out, 0, a, 0, alen)
+    strCopyRangeInto(out, alen, b, 0, blen)
+    strCopyRangeInto(out, alen + blen, c, 0, clen)
+    strCopyRangeInto(out, alen + blen + clen, d, 0, dlen)
+    strCopyRangeInto(out, alen + blen + clen + dlen, e, 0, elen)
+    return out
+}
+
+fn strConcat(a: String, b: String, c: String, d: String, e: String, f: String) -> String {
+    let alen = __builtin_string_len(a)
+    let blen = __builtin_string_len(b)
+    let clen = __builtin_string_len(c)
+    let dlen = __builtin_string_len(d)
+    let elen = __builtin_string_len(e)
+    let flen = __builtin_string_len(f)
+    let out = str_with_capacity(alen + blen + clen + dlen + elen + flen)
+    strCopyRangeInto(out, 0, a, 0, alen)
+    strCopyRangeInto(out, alen, b, 0, blen)
+    strCopyRangeInto(out, alen + blen, c, 0, clen)
+    strCopyRangeInto(out, alen + blen + clen, d, 0, dlen)
+    strCopyRangeInto(out, alen + blen + clen + dlen, e, 0, elen)
+    strCopyRangeInto(out, alen + blen + clen + dlen + elen, f, 0, flen)
+    return out
+}
+
 // `length` bytes from `start`. A range reaching past the end is clamped rather
 // than refused.
 fn strSubstring(s: String, start: Int, length: Int) -> String {
@@ -1246,6 +1315,463 @@ fn strFromInt(value: Int) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Predicates and checked access
+//
+// The `Option`-returning forms here are **additions, not replacements**.
+// `strIndexOf` still answers -1 and `strCharAt` still answers NUL, because a
+// sentinel costs a register where `Option` costs a tagged struct and an
+// allocation (see the representation note in std/option.psm), and because the
+// compiler reads them that way at 848 call sites. What these add is the spelling
+// for a caller who would rather be *made* to handle the absent case --
+// REQUIREMENTS 14's argument, offered rather than imposed.
+// ---------------------------------------------------------------------------
+
+// Empty, or nothing but the four space bytes. Distinct from `strIsEmpty`, which
+// is a length test: "   " is blank and is not empty.
+fn strIsBlank(s: String) -> Bool {
+    let slen = __builtin_string_len(s)
+    let mut i = 0
+    while (i < slen) {
+        if (charIsSpace(__builtin_string_byte_at(s, i)) == false) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// ASCII-folded equality. Not a Unicode case fold: `charToLower` maps A-Z and
+// nothing else, so this answers the question a flag or a header name asks and
+// not the one a natural-language comparison does.
+fn strEqualsIgnoreCase(a: String, b: String) -> Bool {
+    let alen = __builtin_string_len(a)
+    if (alen != __builtin_string_len(b)) { return false }
+    let mut i = 0
+    while (i < alen) {
+        let ca = charToLower(__builtin_string_byte_at(a, i))
+        let cb = charToLower(__builtin_string_byte_at(b, i))
+        if (ca != cb) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+fn strGet(s: String, index: Int) -> Option<Char> {
+    if (index < 0 or index >= __builtin_string_len(s)) { return Option<Char>.None }
+    return Option<Char>.Some(__builtin_string_byte_at(s, index))
+}
+
+// NUL on an empty string, for the same reason `strCharAt` answers NUL out of
+// range: a Prismio String cannot contain one, so the answer is unambiguous.
+fn strFirst(s: String) -> Char {
+    if (__builtin_string_len(s) == 0) { return '\0' }
+    return __builtin_string_byte_at(s, 0)
+}
+
+fn strLast(s: String) -> Char {
+    let slen = __builtin_string_len(s)
+    if (slen == 0) { return '\0' }
+    return __builtin_string_byte_at(s, slen - 1)
+}
+
+fn strFind(s: String, needle: String) -> Option<Int> {
+    let at = strIndexOf(s, needle)
+    if (at < 0) { return Option<Int>.None }
+    return Option<Int>.Some(at)
+}
+
+fn strFindFrom(s: String, needle: String, from: Int) -> Option<Int> {
+    let at = strIndexOfFrom(s, needle, from)
+    if (at < 0) { return Option<Int>.None }
+    return Option<Int>.Some(at)
+}
+
+// ---------------------------------------------------------------------------
+// Single-byte search
+//
+// A separate family rather than `strIndexOf(s, strFromChar(c))`, because that
+// spelling allocates a one-byte String per call and then hands the general
+// substring machinery a needle it has a direct instruction for. `str_find_byte`
+// is libc's vectorised scan.
+// ---------------------------------------------------------------------------
+
+fn strIndexOfCharFrom(s: String, needle: Char, from: Int) -> Int {
+    let slen = __builtin_string_len(s)
+    let mut start = from
+    if (start < 0) { start = 0 }
+    if (start >= slen) { return 0 - 1 }
+    return str_find_byte(s, start, needle)
+}
+
+fn strIndexOfChar(s: String, needle: Char) -> Int {
+    return strIndexOfCharFrom(s, needle, 0)
+}
+
+fn strLastIndexOfChar(s: String, needle: Char) -> Int {
+    let mut i = __builtin_string_len(s)
+    while (i > 0) {
+        if (__builtin_string_byte_at(s, i - 1) == needle) { return i - 1 }
+        i = i - 1
+    }
+    return 0 - 1
+}
+
+fn strContainsChar(s: String, needle: Char) -> Bool {
+    return strIndexOfChar(s, needle) >= 0
+}
+
+fn strStartsWithChar(s: String, prefix: Char) -> Bool {
+    if (__builtin_string_len(s) == 0) { return false }
+    return __builtin_string_byte_at(s, 0) == prefix
+}
+
+fn strEndsWithChar(s: String, suffix: Char) -> Bool {
+    let slen = __builtin_string_len(s)
+    if (slen == 0) { return false }
+    return __builtin_string_byte_at(s, slen - 1) == suffix
+}
+
+fn strCountOfChar(s: String, needle: Char) -> Int {
+    let slen = __builtin_string_len(s)
+    let mut hits = 0
+    let mut i = 0
+    while (i < slen) {
+        if (__builtin_string_byte_at(s, i) == needle) { hits = hits + 1 }
+        i = i + 1
+    }
+    return hits
+}
+
+// ---------------------------------------------------------------------------
+// Producers
+//
+// Same rule as the Building section above: allocate the final size once and fill
+// it. None of these grows a buffer, because an assignment releases nothing.
+// ---------------------------------------------------------------------------
+
+// `[start, end)`. The half-open twin of `strSubstring`, which takes a *length*.
+// Both exist because `s[a..b]` is end-exclusive and reading a range operator as
+// a length is the mistake this pair is meant to stop.
+fn strSlice(s: String, start: Int, end: Int) -> String {
+    let slen = __builtin_string_len(s)
+    let mut first = start
+    if (first < 0) { first = 0 }
+    if (first > slen) { first = slen }
+    let mut stop = end
+    if (stop > slen) { stop = slen }
+    if (stop < first) { stop = first }
+    let count = stop - first
+    let out = str_with_capacity(count)
+    strCopyRangeInto(out, 0, s, first, count)
+    return out
+}
+
+// The first byte uppercased, the rest untouched. Deliberately not "the rest
+// lowercased": that is a different operation, it destroys `"McDonald"`, and a
+// caller who wants it can spell `s.toLower().capitalize()`.
+fn strCapitalize(s: String) -> String {
+    let slen = __builtin_string_len(s)
+    let out = str_with_capacity(slen)
+    strCopyRangeInto(out, 0, s, 0, slen)
+    if (slen > 0) {
+        __builtin_string_put_byte(out, 0, charToUpper(__builtin_string_byte_at(s, 0)))
+    }
+    return out
+}
+
+// An odd amount of padding puts the extra byte at the end, so that centring a
+// run of strings to the same width keeps their left edges aligned.
+fn strPadCenter(s: String, width: Int, pad: Char) -> String {
+    let slen = __builtin_string_len(s)
+    let mut outLen = width
+    if (slen > outLen) { outLen = slen }
+    let total = outLen - slen
+    let left = total / 2
+    let out = str_with_capacity(outLen)
+    let mut i = 0
+    while (i < left) {
+        __builtin_string_put_byte(out, i, pad)
+        i = i + 1
+    }
+    strCopyRangeInto(out, left, s, 0, slen)
+    let mut j = left + slen
+    while (j < outLen) {
+        __builtin_string_put_byte(out, j, pad)
+        j = j + 1
+    }
+    return out
+}
+
+// Trim any byte that appears in `set`, from both ends. `strTrim` is this with
+// the four space bytes, kept separate because it is the common case and needs no
+// inner scan per byte.
+fn strTrimChars(s: String, set: String) -> String {
+    let slen = __builtin_string_len(s)
+    let mut start = 0
+    while (start < slen and strContainsChar(set, __builtin_string_byte_at(s, start))) {
+        start = start + 1
+    }
+    let mut end = slen
+    while (end > start and strContainsChar(set, __builtin_string_byte_at(s, end - 1))) {
+        end = end - 1
+    }
+    let count = end - start
+    let out = str_with_capacity(count)
+    strCopyRangeInto(out, 0, s, start, count)
+    return out
+}
+
+// `at` past the end appends rather than failing, matching how every range in
+// this file is clamped rather than refused.
+fn strInsert(s: String, at: Int, other: String) -> String {
+    let slen = __builtin_string_len(s)
+    let olen = __builtin_string_len(other)
+    let mut cut = at
+    if (cut < 0) { cut = 0 }
+    if (cut > slen) { cut = slen }
+    let out = str_with_capacity(slen + olen)
+    strCopyRangeInto(out, 0, s, 0, cut)
+    strCopyRangeInto(out, cut, other, 0, olen)
+    strCopyRangeInto(out, cut + olen, s, cut, slen - cut)
+    return out
+}
+
+fn strRemoveRange(s: String, start: Int, length: Int) -> String {
+    let slen = __builtin_string_len(s)
+    let mut first = start
+    if (first < 0) { first = 0 }
+    if (first > slen) { first = slen }
+    let mut count = length
+    if (count < 0) { count = 0 }
+    if (first + count > slen) { count = slen - first }
+    let out = str_with_capacity(slen - count)
+    strCopyRangeInto(out, 0, s, 0, first)
+    strCopyRangeInto(out, first, s, first + count, slen - first - count)
+    return out
+}
+
+// `None` when the prefix is absent -- which is the difference from
+// `strStartsWith` plus `strSubstring`, where the caller has to remember to test
+// first and gets a silently wrong slice if they do not.
+fn strStripPrefix(s: String, prefix: String) -> Option<String> {
+    if (strStartsWith(s, prefix) == false) { return Option<String>.None }
+    let slen = __builtin_string_len(s)
+    let plen = __builtin_string_len(prefix)
+    let out = str_with_capacity(slen - plen)
+    strCopyRangeInto(out, 0, s, plen, slen - plen)
+    return Option<String>.Some(out)
+}
+
+fn strStripSuffix(s: String, suffix: String) -> Option<String> {
+    if (strEndsWith(s, suffix) == false) { return Option<String>.None }
+    let slen = __builtin_string_len(s)
+    let sufLen = __builtin_string_len(suffix)
+    let out = str_with_capacity(slen - sufLen)
+    strCopyRangeInto(out, 0, s, 0, slen - sufLen)
+    return Option<String>.Some(out)
+}
+
+// Not `strSplit(s, '\n')`, and the two differences are the ones that bite when
+// reading a file: a trailing newline *ends* the last line rather than starting
+// an empty one, and a CRLF file does not leave a '\r' on every element.
+fn strLines(s: String) -> List<String> {
+    let slen = __builtin_string_len(s)
+    let out: List<String> = list_new()
+    let mut start = 0
+    let mut i = 0
+    while (i < slen) {
+        if (__builtin_string_byte_at(s, i) == '\n') {
+            let mut end = i
+            if (end > start and __builtin_string_byte_at(s, end - 1) == '\r') { end = end - 1 }
+            let partLen = end - start
+            let part = str_with_capacity(partLen)
+            strCopyRangeInto(part, 0, s, start, partLen)
+            list_push(out, part)
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if (start < slen) {
+        let mut tailEnd = slen
+        if (__builtin_string_byte_at(s, tailEnd - 1) == '\r') { tailEnd = tailEnd - 1 }
+        let tailLen = tailEnd - start
+        let tail = str_with_capacity(tailLen)
+        strCopyRangeInto(tail, 0, s, start, tailLen)
+        list_push(out, tail)
+    }
+    return out
+}
+
+fn strChars(s: String) -> List<Char> {
+    let slen = __builtin_string_len(s)
+    let out: List<Char> = list_new()
+    let mut i = 0
+    while (i < slen) {
+        list_push(out, __builtin_string_byte_at(s, i))
+        i = i + 1
+    }
+    return out
+}
+
+fn strBytes(s: String) -> List<Int> {
+    let slen = __builtin_string_len(s)
+    let out: List<Int> = list_new()
+    let mut i = 0
+    while (i < slen) {
+        list_push(out, __builtin_string_byte_at(s, i) as Int)
+        i = i + 1
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// Closure-driven scans
+//
+// `strEach` is deliberately absent: a closure's return type has no `Void`
+// spelling yet, so `|c: Char| println(c)` does not typecheck. Iterate with
+// `for c in s` instead, which is the form that needs no closure at all.
+// ---------------------------------------------------------------------------
+
+fn strCountIf<F>(s: String, keep: F) -> Int {
+    let slen = __builtin_string_len(s)
+    let mut hits = 0
+    let mut i = 0
+    while (i < slen) {
+        if (keep(__builtin_string_byte_at(s, i))) { hits = hits + 1 }
+        i = i + 1
+    }
+    return hits
+}
+
+fn strIndexWhere<F>(s: String, keep: F) -> Int {
+    let slen = __builtin_string_len(s)
+    let mut i = 0
+    while (i < slen) {
+        if (keep(__builtin_string_byte_at(s, i))) { return i }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+fn strAllChars<F>(s: String, keep: F) -> Bool {
+    let slen = __builtin_string_len(s)
+    let mut i = 0
+    while (i < slen) {
+        if (keep(__builtin_string_byte_at(s, i)) == false) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+fn strAnyChars<F>(s: String, keep: F) -> Bool {
+    return strIndexWhere(s, keep) >= 0
+}
+
+// ---------------------------------------------------------------------------
+// Formatting and parsing
+// ---------------------------------------------------------------------------
+
+fn strFromBool(value: Bool) -> String {
+    if (value) {
+        let yes = str_with_capacity(4)
+        __builtin_string_put_byte(yes, 0, 't')
+        __builtin_string_put_byte(yes, 1, 'r')
+        __builtin_string_put_byte(yes, 2, 'u')
+        __builtin_string_put_byte(yes, 3, 'e')
+        return yes
+    }
+    let no = str_with_capacity(5)
+    __builtin_string_put_byte(no, 0, 'f')
+    __builtin_string_put_byte(no, 1, 'a')
+    __builtin_string_put_byte(no, 2, 'l')
+    __builtin_string_put_byte(no, 3, 's')
+    __builtin_string_put_byte(no, 4, 'e')
+    return no
+}
+
+// Exactly the two spellings `strFromBool` produces, case-insensitively. Not
+// "1"/"0" and not "yes"/"no": a parser that accepts more than its printer emits
+// is a parser whose round trip is untestable.
+fn strParseBool(s: String) -> Option<Bool> {
+    if (strEqualsIgnoreCase(s, "true")) { return Option<Bool>.Some(true) }
+    if (strEqualsIgnoreCase(s, "false")) { return Option<Bool>.Some(false) }
+    return Option<Bool>.None
+}
+
+// **Not correctly rounded, and that is a documented limit rather than a bug to
+// find later.** The digits are accumulated as an integer and divided by a power
+// of ten once, so the result is within one ulp but is not always the nearest
+// double to the decimal text -- a correctly-rounded parser needs big-integer
+// arithmetic (Clinger/Eisel-Lemire) that this library does not have yet. Use it
+// for configuration and input; do not use it where a decimal literal must
+// round-trip bit-for-bit.
+//
+// Rejects what it cannot represent rather than guessing: empty text, a lone
+// sign, a lone dot, any non-digit, and more than 18 significant digits.
+fn strParseFloat(s: String) -> Option<Float> {
+    let slen = __builtin_string_len(s)
+    if (slen == 0) { return Option<Float>.None }
+
+    let mut i = 0
+    let mut negative = false
+    if (__builtin_string_byte_at(s, 0) == '-') {
+        negative = true
+        i = 1
+    } else if (__builtin_string_byte_at(s, 0) == '+') {
+        i = 1
+    }
+    if (i >= slen) { return Option<Float>.None }
+
+    let mut digits = 0
+    let mut mantissa = 0
+    let mut scale = 0
+    let mut seenDot = false
+    while (i < slen) {
+        let c = __builtin_string_byte_at(s, i)
+        if (c == '.') {
+            if (seenDot) { return Option<Float>.None }
+            seenDot = true
+            i = i + 1
+        } else if (charIsDigit(c)) {
+            if (digits >= 18) { return Option<Float>.None }
+            mantissa = mantissa * 10 + charDigitValue(c)
+            digits = digits + 1
+            if (seenDot) { scale = scale + 1 }
+            i = i + 1
+        } else {
+            return Option<Float>.None
+        }
+    }
+    if (digits == 0) { return Option<Float>.None }
+
+    let mut value = mantissa as Float
+    let mut k = 0
+    while (k < scale) {
+        value = value / 10.0
+        k = k + 1
+    }
+    if (negative) { value = 0.0 - value }
+    return Option<Float>.Some(value)
+}
+
+// The parse, or the caller's number. For the very common case where a bad value
+// means "use the default" and the `Option` would only ever be fed to `optionOr`.
+fn strParseIntOr(s: String, fallback: Int) -> Int {
+    return optionOr(strParseInt(s), fallback)
+}
+
+// ---------------------------------------------------------------------------
+// `List<String>` receivers
+//
+// Free functions rather than an `impl`: `impl List<String>` is a generic `impl`,
+// which the parser rejects on purpose (src/parse/decl.psm), and the method
+// rewrite `x.f(a)` -> `f(x, a)` never needed an `impl` block to work. So
+// `parts.join(", ")` resolves to this with no new machinery at all.
+// ---------------------------------------------------------------------------
+
+fn join(parts: List<String>, sep: String) -> String {
+    return strJoin(parts, sep)
+}
+
+// ---------------------------------------------------------------------------
 // v0.1 3.2 -- the method surface
 // ---------------------------------------------------------------------------
 //
@@ -1274,47 +1800,153 @@ fn strFromInt(value: Int) -> String {
 impl String {
     fn length(self) -> Int { return strLength(self) }
     fn isEmpty(self) -> Bool { return strIsEmpty(self) }
+    fn isNotEmpty(self) -> Bool { return strIsEmpty(self) == false }
+    fn isBlank(self) -> Bool { return strIsBlank(self) }
     fn clone(self) -> String { return strClone(self) }
 
     fn charAt(self, index: Int) -> Char { return strCharAt(self, index) }
     fn byteAt(self, index: Int) -> Int { return strByteAt(self, index) }
+    fn get(self, index: Int) -> Option<Char> { return strGet(self, index) }
+    fn first(self) -> Char { return strFirst(self) }
+    fn last(self) -> Char { return strLast(self) }
+
     fn substring(self, start: Int, length: Int) -> String {
         return strSubstring(self, start, length)
     }
+    fn slice(self, start: Int, end: Int) -> String { return strSlice(self, start, end) }
 
     fn equals(self, other: String) -> Bool { return strEquals(self, other) }
+    fn equalsIgnoreCase(self, other: String) -> Bool {
+        return strEqualsIgnoreCase(self, other)
+    }
     fn compare(self, other: String) -> Int { return strCompare(self, other) }
 
     fn concat(self, other: String) -> String { return strConcat(self, other) }
     fn repeat(self, times: Int) -> String { return strRepeat(self, times) }
 
     fn contains(self, needle: String) -> Bool { return strContains(self, needle) }
+    fn contains(self, needle: Char) -> Bool { return strContainsChar(self, needle) }
     fn startsWith(self, prefix: String) -> Bool { return strStartsWith(self, prefix) }
+    fn startsWith(self, prefix: Char) -> Bool { return strStartsWithChar(self, prefix) }
     fn endsWith(self, suffix: String) -> Bool { return strEndsWith(self, suffix) }
+    fn endsWith(self, suffix: Char) -> Bool { return strEndsWithChar(self, suffix) }
+    fn matchesAt(self, needle: String, at: Int) -> Bool {
+        return strMatchesAt(self, needle, at)
+    }
+
     fn indexOf(self, needle: String) -> Int { return strIndexOf(self, needle) }
+    fn indexOf(self, needle: Char) -> Int { return strIndexOfChar(self, needle) }
+    fn indexOf(self, needle: String, from: Int) -> Int {
+        return strIndexOfFrom(self, needle, from)
+    }
+    fn indexOf(self, needle: Char, from: Int) -> Int {
+        return strIndexOfCharFrom(self, needle, from)
+    }
     fn lastIndexOf(self, needle: String) -> Int { return strLastIndexOf(self, needle) }
+    fn lastIndexOf(self, needle: Char) -> Int { return strLastIndexOfChar(self, needle) }
+    fn find(self, needle: String) -> Option<Int> { return strFind(self, needle) }
+    fn find(self, needle: String, from: Int) -> Option<Int> {
+        return strFindFrom(self, needle, from)
+    }
+    fn count(self, needle: String) -> Int { return strCountOf(self, needle) }
+    fn count(self, needle: Char) -> Int { return strCountOfChar(self, needle) }
     fn countOf(self, needle: String) -> Int { return strCountOf(self, needle) }
 
     fn trim(self) -> String { return strTrim(self) }
     fn trimStart(self) -> String { return strTrimStart(self) }
     fn trimEnd(self) -> String { return strTrimEnd(self) }
+    fn trimChars(self, set: String) -> String { return strTrimChars(self, set) }
     fn padStart(self, width: Int, pad: Char) -> String { return strPadStart(self, width, pad) }
     fn padEnd(self, width: Int, pad: Char) -> String { return strPadEnd(self, width, pad) }
+    fn padCenter(self, width: Int, pad: Char) -> String {
+        return strPadCenter(self, width, pad)
+    }
 
     fn toUpper(self) -> String { return strToUpper(self) }
     fn toLower(self) -> String { return strToLower(self) }
+    fn capitalize(self) -> String { return strCapitalize(self) }
     fn reverse(self) -> String { return strReverse(self) }
 
+    fn replace(self, old: String, new: String) -> String {
+        return strReplaceAll(self, old, new)
+    }
     fn replaceFirst(self, old: String, new: String) -> String {
         return strReplaceFirst(self, old, new)
     }
     fn replaceAll(self, old: String, new: String) -> String {
         return strReplaceAll(self, old, new)
     }
+    fn insert(self, at: Int, other: String) -> String { return strInsert(self, at, other) }
+    fn removeRange(self, start: Int, length: Int) -> String {
+        return strRemoveRange(self, start, length)
+    }
+    fn stripPrefix(self, prefix: String) -> Option<String> {
+        return strStripPrefix(self, prefix)
+    }
+    fn stripSuffix(self, suffix: String) -> Option<String> {
+        return strStripSuffix(self, suffix)
+    }
 
     fn split(self, sep: Char) -> List<String> { return strSplit(self, sep) }
+    fn split(self, sep: String) -> List<String> { return strSplitOn(self, sep) }
     fn splitOn(self, sep: String) -> List<String> { return strSplitOn(self, sep) }
     fn splitWhitespace(self) -> List<String> { return strSplitWhitespace(self) }
+    fn lines(self) -> List<String> { return strLines(self) }
+    fn chars(self) -> List<Char> { return strChars(self) }
+    fn bytes(self) -> List<Int> { return strBytes(self) }
+
+    // Generic in the closure, exactly as the free functions above are. The
+    // `impl` target may not be generic (src/parse/decl.psm rejects `impl List<T>`),
+    // but a *method* may: it is a free function whose first parameter is the
+    // receiver, and nothing about that stops it having type parameters.
+    fn countIf<F>(self, keep: F) -> Int { return strCountIf(self, keep) }
+    fn indexWhere<F>(self, keep: F) -> Int { return strIndexWhere(self, keep) }
+    // `allChars` and `anyChars`, not `allOf` and `anyOf`. The short names are
+    // std/list.psm's, over `List<T>`, and both sides are generic in the closure:
+    // an overload set holding `allOf<T, F>(List<T>, F)` and `allOf<F>(String, F)`
+    // could not be resolved, and test_89_closures stopped compiling the moment
+    // this file claimed the name. A method is a free function, so a method name
+    // is a global name -- that is the cost the header of this block is about.
+    fn allChars<F>(self, keep: F) -> Bool { return strAllChars(self, keep) }
+    fn anyChars<F>(self, keep: F) -> Bool { return strAnyChars(self, keep) }
 
     fn parseInt(self) -> Option<Int> { return strParseInt(self) }
+    fn parseIntOr(self, fallback: Int) -> Int { return strParseIntOr(self, fallback) }
+    fn parseFloat(self) -> Option<Float> { return strParseFloat(self) }
+    fn parseBool(self) -> Option<Bool> { return strParseBool(self) }
+}
+
+// A `Char` is a byte. These are the `char*` free functions above under the names
+// a call site reads better with, and `code` is the `as Int` cast named -- see the
+// note over `charCode` in src/common/text.psm for why writing that conversion out
+// by hand was once a source of silent wrongness.
+impl Char {
+    fn isDigit(self) -> Bool { return charIsDigit(self) }
+    fn isLower(self) -> Bool { return charIsLower(self) }
+    fn isUpper(self) -> Bool { return charIsUpper(self) }
+    fn isAlpha(self) -> Bool { return charIsAlpha(self) }
+    fn isAlnum(self) -> Bool { return charIsAlnum(self) }
+    fn isSpace(self) -> Bool { return charIsSpace(self) }
+
+    fn toUpper(self) -> Char { return charToUpper(self) }
+    fn toLower(self) -> Char { return charToLower(self) }
+    fn digitValue(self) -> Int { return charDigitValue(self) }
+    fn code(self) -> Int { return self as Int }
+    fn toString(self) -> String { return strFromChar(self) }
+}
+
+// `toString` on the numeric types, so that building text out of a number reads
+// the same way whatever the number is. The overload set is by exact type, as
+// every overload set here is: there is no implicit numeric promotion, so
+// `count.toString()` picks the `Int` body and nothing else.
+impl Int {
+    fn toString(self) -> String { return strFromInt(self) }
+}
+
+impl U64 {
+    fn toString(self) -> String { return strFromUnsigned(self) }
+}
+
+impl Bool {
+    fn toString(self) -> String { return strFromBool(self) }
 }

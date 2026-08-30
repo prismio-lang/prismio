@@ -32,7 +32,7 @@ internal fn parseDeclaration(p: Parser) -> ASTNode {
             // default body is: the check lives in overload resolution, so a
             // marker on a type or a global would be a promise the compiler does
             // not keep -- which is worse than an error.
-            diag_error_at(marker.file, marker.line, marker.col, marker.len,
+            diag_error_at_code("P3001", marker.file, marker.line, marker.col, marker.len,
                           strConcat(strConcat("`", markerText),
                                     "` is only accepted on a function in v0.1"))
             diag_note("a visibility marker on a type or a global is not enforced yet, and accepting it would promise that it is")
@@ -390,7 +390,7 @@ private fn parseFfiContract(p: Parser, annotation: ASTNode) {
     }
 
     if (p.checkVal(TokenType.SEPARATOR, "(")) {
-        diag_error_at(current.file, current.line, current.col, __builtin_string_len(name),
+        diag_error_at_code("P3002", current.file, current.line, current.col, __builtin_string_len(name),
             strConcat(strConcat("the ", diagQuote(name)), " contract takes no argument"))
         diag_note("only `retain_in(k)` and `produce(free_fn)` are parameterised")
     }
@@ -654,7 +654,7 @@ private fn parseImplCheckReceiver(p: Parser, method: ASTNode) {
     while (nodeExists(paramPtr)) {
         let param = ptr_to_node(paramPtr)
         if (param.i3 == 1 and index > 0) {
-            diag_error_at(param.file, param.line, param.col, param.len,
+            diag_error_at_code("P3003", param.file, param.line, param.col, param.len,
                           "`self` has to be the first parameter of a method")
             diag_note("`x.f(a)` is `f(x, a)`, so the receiver is argument zero")
         }

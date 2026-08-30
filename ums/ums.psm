@@ -3,3 +3,4 @@
 
 import ums.model.workspace
 import ums.dependency.resolve
+import ums.model.manifest_writer

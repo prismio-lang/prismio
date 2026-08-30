@@ -18,7 +18,7 @@ struct UmsWorkspace {
     valid: Bool
 }
 
-fn umsEmptyWorkspace(diagnostics: List<UmsDiagnostic>) -> UmsWorkspace {
+private fn umsEmptyWorkspace(diagnostics: List<UmsDiagnostic>) -> UmsWorkspace {
     return UmsWorkspace {
         project: umsProjectModel("", "", "debug"),
         plan: UmsBuildPlan { stateRoot: strClone(""), artifactRoot: strClone("") },
@@ -33,7 +33,7 @@ fn umsLoadText(source: String, manifestPath: String, root: String,
     let tokens = umsLex(source, manifestPath, diagnostics)
     let document = umsParse(tokens, manifestPath, diagnostics)
     let project = umsLowerDocument(document, root, manifestPath, profile, diagnostics)
-    umsProjectValidate(project, diagnostics)
+    project.validate(diagnostics)
     let mut plan = UmsBuildPlan { stateRoot: strClone(""), artifactRoot: strClone("") }
     if (list_len(diagnostics) == 0) {
         plan = umsBuildPlanCreate(project, diagnostics)
@@ -55,10 +55,15 @@ fn umsLoadProject(startDirectory: String, profile: String) -> UmsWorkspace {
     return umsLoadText(read_file(manifestPath), manifestPath, root, profile)
 }
 
-fn umsWorkspaceTargetCount(workspace: UmsWorkspace) -> Int {
-    return list_len(workspace.project.targets)
-}
+// The workspace's target accessors. Public because `src/main.psm` walks them:
+// `workspace.targetCount()` and `workspace.target(i)`.
+impl UmsWorkspace {
 
-fn umsWorkspaceTarget(workspace: UmsWorkspace, index: Int) -> UmsTarget {
-    return list_get(workspace.project.targets, index)
+         fn targetCount(self) -> Int {
+        return list_len(self.project.targets)
+    }
+
+         fn target(self, index: Int) -> UmsTarget {
+        return list_get(self.project.targets, index)
+    }
 }

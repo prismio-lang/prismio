@@ -19,7 +19,7 @@ fn umsIsDigit(value: Char) -> Bool {
     return value >= '0' and value <= '9'
 }
 
-fn umsIsAlpha(value: Char) -> Bool {
+private fn umsIsAlpha(value: Char) -> Bool {
     return (value >= 'a' and value <= 'z') or
            (value >= 'A' and value <= 'Z') or value == '_'
 }
@@ -28,124 +28,135 @@ fn umsIsAlnum(value: Char) -> Bool {
     return umsIsAlpha(value) or umsIsDigit(value)
 }
 
-fn umsLexerCurrent(lexer: UmsLexer) -> Char {
-    if (lexer.pos >= lexer.length) { return '\0' }
-    return strCharAt(lexer.source, lexer.pos)
-}
+// The lexer's own operations, as methods. Every one of these took `lexer` as an
+// explicit first parameter until 2026-08-30; an `impl` block is a naming
+// construct -- `x.f(a)` is the call `f(x, a)` after the checker's rewrite -- so
+// this is the same code under the name the call sites already implied.
+//
+// `private` because nothing outside this file drives a lexer: `umsLex` below is
+// the whole of the surface, and the visibility says so rather than leaving ten
+// more names in the program's.
+impl UmsLexer {
 
-fn umsLexerPeek(lexer: UmsLexer, distance: Int) -> Char {
-    let at = lexer.pos + distance
-    if (at < 0 or at >= lexer.length) { return '\0' }
-    return strCharAt(lexer.source, at)
-}
-
-fn umsLexerAdvance(lexer: UmsLexer) {
-    if (umsLexerCurrent(lexer) == '\n') {
-        lexer.line = lexer.line + 1
-        lexer.col = 1
-    } else {
-        lexer.col = lexer.col + 1
+    private fn current(self) -> Char {
+        if (self.pos >= self.length) { return '\0' }
+        return strCharAt(self.source, self.pos)
     }
-    lexer.pos = lexer.pos + 1
-}
 
-fn umsLexerSlice(lexer: UmsLexer, start: Int, length: Int) -> String {
-    let mut result = ""
-    let mut i = 0
-    while (i < length) {
-        result = strConcat(result, strFromChar(strCharAt(lexer.source, start + i)))
-        i = i + 1
+    private fn peek(self, distance: Int) -> Char {
+        let at = self.pos + distance
+        if (at < 0 or at >= self.length) { return '\0' }
+        return strCharAt(self.source, at)
     }
-    return result
-}
 
-fn umsLexerAdd(lexer: UmsLexer, kind: UmsTokenKind, value: String,
-               start: Int, line: Int, col: Int) {
-    list_push(lexer.tokens, umsToken(kind, value, line, col, lexer.pos - start))
-}
-
-fn umsLexerError(lexer: UmsLexer, code: String, line: Int, col: Int,
-                 len: Int, message: String) {
-    umsDiagnosticAdd(lexer.diagnostics, code, lexer.path, line, col, len, message)
-}
-
-fn umsLexerSkipSpace(lexer: UmsLexer) {
-    loop {
-        let current = umsLexerCurrent(lexer)
-        if (current == ' ' or current == '\t' or current == '\r' or current == '\n') {
-            umsLexerAdvance(lexer)
-        } else if (current == '#' or (current == '/' and umsLexerPeek(lexer, 1) == '/')) {
-            while (umsLexerCurrent(lexer) != '\n' and umsLexerCurrent(lexer) != '\0') {
-                umsLexerAdvance(lexer)
-            }
+    private fn advance(self) {
+        if (self.current() == '\n') {
+            self.line = self.line + 1
+            self.col = 1
         } else {
-            break
+            self.col = self.col + 1
         }
+        self.pos = self.pos + 1
     }
-}
 
-fn umsLexIdentifier(lexer: UmsLexer) {
-    let start = lexer.pos
-    let line = lexer.line
-    let col = lexer.col
-    while (umsIsAlnum(umsLexerCurrent(lexer)) or umsLexerCurrent(lexer) == '-') {
-        umsLexerAdvance(lexer)
-    }
-    let value = umsLexerSlice(lexer, start, lexer.pos - start)
-    let mut kind = UmsTokenKind.IDENTIFIER
-    if (strEquals(value, "true") or strEquals(value, "false")) {
-        kind = UmsTokenKind.BOOLEAN
-    }
-    umsLexerAdd(lexer, kind, value, start, line, col)
-}
-
-fn umsLexInteger(lexer: UmsLexer) {
-    let start = lexer.pos
-    let line = lexer.line
-    let col = lexer.col
-    while (umsIsDigit(umsLexerCurrent(lexer))) { umsLexerAdvance(lexer) }
-    umsLexerAdd(lexer, UmsTokenKind.INTEGER,
-                umsLexerSlice(lexer, start, lexer.pos - start), start, line, col)
-}
-
-fn umsLexString(lexer: UmsLexer) {
-    let start = lexer.pos
-    let line = lexer.line
-    let col = lexer.col
-    let mut value = ""
-    let mut terminated = false
-    umsLexerAdvance(lexer)
-
-    while (umsLexerCurrent(lexer) != '\0' and umsLexerCurrent(lexer) != '\n') {
-        let mut current = umsLexerCurrent(lexer)
-        if (current == '"') {
-            umsLexerAdvance(lexer)
-            terminated = true
-            break
+    private fn slice(self, start: Int, length: Int) -> String {
+        let mut result = ""
+        let mut i = 0
+        while (i < length) {
+            result = strConcat(result, strFromChar(strCharAt(self.source, start + i)))
+            i = i + 1
         }
-        if (current == '\\') {
-            umsLexerAdvance(lexer)
-            let escaped = umsLexerCurrent(lexer)
-            if (escaped == 'n') { current = '\n' }
-            else if (escaped == 'r') { current = '\r' }
-            else if (escaped == 't') { current = '\t' }
-            else if (escaped == '\\') { current = '\\' }
-            else if (escaped == '"') { current = '"' }
-            else {
-                umsLexerError(lexer, "UMS1003", lexer.line, lexer.col - 1, 2,
-                              strConcat("unsupported escape sequence \\", strFromChar(escaped)))
-                current = escaped
+        return result
+    }
+
+    private fn addToken(self, kind: UmsTokenKind, value: String,
+                   start: Int, line: Int, col: Int) {
+        list_push(self.tokens, umsToken(kind, value, start, line, col, self.pos - start))
+    }
+
+    private fn error(self, code: String, line: Int, col: Int,
+                     len: Int, message: String) {
+        umsDiagnosticAdd(self.diagnostics, code, self.path, line, col, len, message)
+    }
+
+    private fn skipSpace(self) {
+        loop {
+            let current = self.current()
+            if (current == ' ' or current == '\t' or current == '\r' or current == '\n') {
+                self.advance()
+            } else if (current == '#' or (current == '/' and self.peek(1) == '/')) {
+                while (self.current() != '\n' and self.current() != '\0') {
+                    self.advance()
+                }
+            } else {
+                break
             }
         }
-        value = strConcat(value, strFromChar(current))
-        umsLexerAdvance(lexer)
     }
 
-    if (terminated == false) {
-        umsLexerError(lexer, "UMS1002", line, col, lexer.pos - start,
-                      "unterminated string literal")
+    private fn lexIdentifier(self) {
+        let start = self.pos
+        let line = self.line
+        let col = self.col
+        while (umsIsAlnum(self.current()) or self.current() == '-') {
+            self.advance()
+        }
+        let value = self.slice(start, self.pos - start)
+        let mut kind = UmsTokenKind.IDENTIFIER
+        if (strEquals(value, "true") or strEquals(value, "false")) {
+            kind = UmsTokenKind.BOOLEAN
+        }
+        self.addToken(kind, value, start, line, col)
     }
-    umsLexerAdd(lexer, UmsTokenKind.STRING, value, start, line, col)
+
+    private fn lexInteger(self) {
+        let start = self.pos
+        let line = self.line
+        let col = self.col
+        while (umsIsDigit(self.current())) { self.advance() }
+        self.addToken(UmsTokenKind.INTEGER,
+                    self.slice(start, self.pos - start), start, line, col)
+    }
+
+    private fn lexString(self) {
+        let start = self.pos
+        let line = self.line
+        let col = self.col
+        let mut value = ""
+        let mut terminated = false
+        self.advance()
+
+        while (self.current() != '\0' and self.current() != '\n') {
+            let mut current = self.current()
+            if (current == '"') {
+                self.advance()
+                terminated = true
+                break
+            }
+            if (current == '\\') {
+                self.advance()
+                let escaped = self.current()
+                if (escaped == 'n') { current = '\n' }
+                else if (escaped == 'r') { current = '\r' }
+                else if (escaped == 't') { current = '\t' }
+                else if (escaped == '\\') { current = '\\' }
+                else if (escaped == '"') { current = '"' }
+                else {
+                    self.error("UMS1003", self.line, self.col - 1, 2,
+                                  strConcat("unsupported escape sequence \\", strFromChar(escaped)))
+                    current = escaped
+                }
+            }
+            value = strConcat(value, strFromChar(current))
+            self.advance()
+        }
+
+        if (terminated == false) {
+            self.error("UMS1002", line, col, self.pos - start,
+                          "unterminated string literal")
+        }
+        self.addToken(UmsTokenKind.STRING, value, start, line, col)
+    }
 }
 
 fn umsLex(source: String, path: String,
@@ -161,17 +172,17 @@ fn umsLex(source: String, path: String,
         diagnostics: diagnostics
     }
 
-    while (umsLexerCurrent(lexer) != '\0') {
-        umsLexerSkipSpace(lexer)
-        if (umsLexerCurrent(lexer) == '\0') { break }
+    while (lexer.current() != '\0') {
+        lexer.skipSpace()
+        if (lexer.current() == '\0') { break }
 
-        let current = umsLexerCurrent(lexer)
+        let current = lexer.current()
         if (umsIsAlpha(current)) {
-            umsLexIdentifier(lexer)
+            lexer.lexIdentifier()
         } else if (umsIsDigit(current)) {
-            umsLexInteger(lexer)
+            lexer.lexInteger()
         } else if (current == '"') {
-            umsLexString(lexer)
+            lexer.lexString()
         } else {
             let start = lexer.pos
             let line = lexer.line
@@ -185,16 +196,17 @@ fn umsLex(source: String, path: String,
             else if (current == ',') { kind = UmsTokenKind.COMMA }
             else if (current == ';') { kind = UmsTokenKind.SEMICOLON }
 
-            umsLexerAdvance(lexer)
+            lexer.advance()
             if (kind == UmsTokenKind.UNKNOWN) {
-                umsLexerError(lexer, "UMS1004", line, col, 1,
+                lexer.error("UMS1004", line, col, 1,
                               strConcat("unexpected character ", strFromChar(current)))
             } else {
-                umsLexerAdd(lexer, kind, strFromChar(current), start, line, col)
+                lexer.addToken(kind, strFromChar(current), start, line, col)
             }
         }
     }
 
-    list_push(lexer.tokens, umsToken(UmsTokenKind.EOF, "", lexer.line, lexer.col, 0))
+    list_push(lexer.tokens,
+              umsToken(UmsTokenKind.EOF, "", lexer.pos, lexer.line, lexer.col, 0))
     return lexer.tokens
 }

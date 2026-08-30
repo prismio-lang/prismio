@@ -1,0 +1,127 @@
+// v0.1 3.6 -- the String operator surface, and the ownership claim under it.
+//
+// Five desugarings, all of them in sema and all of them into ordinary
+// `std.string` calls: `s.length` is a property, `s[i]` is `strCharAt`,
+// `a == b` is `strEquals`, `a + b + c` is one `strConcat`, `s[a..b]` is
+// `strSlice`, and `for c in s` is the range loop over `strCharAt`.
+//
+// **This fixture is ledger-clean under `--verify` on purpose.** Every owned
+// result below is bound, so an unreleased allocation here means a desugaring
+// stopped giving its result an owner -- which is the failure mode that matters,
+// because the whole design rests on the rewrites producing calls the ownership
+// analysis already understands. It is also why the concatenation chain is
+// asserted rather than the pair: `a + b + c` lowered pairwise leaks the
+// intermediate (measured 2 allocated / 1 released, on the released 0.1 compiler
+// too), and flattening the spine into one call is what stops that.
+
+import std.io
+import std.string
+import std.option
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let s = "Hello, World"
+
+    // Properties -- no parentheses, and never an allocation.
+    if (s.length != 12) { return fail("s.length") }
+    if (s.isEmpty) { return fail("s.isEmpty") }
+    if (s.isNotEmpty == false) { return fail("s.isNotEmpty") }
+    if ("   ".isBlank == false) { return fail("s.isBlank") }
+    if (s.first != 'H') { return fail("s.first") }
+    if (s.last != 'd') { return fail("s.last") }
+    if ('7'.isDigit == false) { return fail("Char.isDigit") }
+    if ('7'.digitValue != 7) { return fail("Char.digitValue") }
+
+    // Indexing. Out of range is NUL rather than a trap, which is unambiguous
+    // because a Prismio String cannot contain one.
+    if (s[0] != 'H') { return fail("s[0]") }
+    if (s[4] != 'o') { return fail("s[4]") }
+    if (s[99] != '\0') { return fail("s[99] out of range") }
+
+    // Equality and ordering, by content rather than by address.
+    if ((s == "Hello, World") == false) { return fail("s == literal") }
+    if (s != "Hello, World") { return fail("s != equal literal") }
+    if (("apple" < "banana") == false) { return fail("String <") }
+    if ("banana" <= "apple") { return fail("String <=") }
+    if (("banana" > "apple") == false) { return fail("String >") }
+
+    // Concatenation. The three-part chain is one call, not two.
+    let two = "Hello" + ", World"
+    if ((two == s) == false) { return fail("a + b") }
+    let three = "Hello" + ", " + "World"
+    if ((three == s) == false) { return fail("a + b + c") }
+    let six = "a" + "b" + "c" + "d" + "e" + "f"
+    if ((six == "abcdef") == false) { return fail("six-part chain") }
+
+    // Slicing is half-open and allocates, so it is bound.
+    let head = s[0..5]
+    if ((head == "Hello") == false) { return fail("s[0..5]") }
+    let tail = s[7..12]
+    if ((tail == "World") == false) { return fail("s[7..12]") }
+    let clamped = s[7..99]
+    if ((clamped == "World") == false) { return fail("s[7..99] clamps") }
+
+    // Iteration over a String yields Char, and does not move the String.
+    let mut letters = 0
+    for c in s {
+        if (c.isAlpha) { letters = letters + 1 }
+    }
+    if (letters != 10) { return fail("for c in s") }
+    if (s.length != 12) { return fail("String still usable after iterating") }
+
+    // Iteration over a List, including one whose elements are owned Strings.
+    let parts = "one,two,three".split(',')
+    let mut seen = 0
+    for p in parts {
+        if (p.isNotEmpty) { seen = seen + 1 }
+    }
+    if (seen != 3) { return fail("for p in List<String>") }
+
+    let codes = "xyz".bytes()
+    let mut total = 0
+    for n in codes { total = total + n }
+    if (total != 363) { return fail("for n in List<Int>") }
+
+    // The rest of the method surface that has no operator.
+    let joined = parts.join("-")
+    if ((joined == "one-two-three") == false) { return fail("List.join") }
+    if (s.count('l') != 3) { return fail("count(Char)") }
+    if (s.indexOf('o', 5) != 8) { return fail("indexOf(Char, from)") }
+    if (optionOr(s.find("World"), 0 - 1) != 7) { return fail("find") }
+    if (optionOr(s.get(99), '?') != '?') { return fail("get out of range") }
+    // Bound, not nested -- and this one is worth naming. Written as
+    // `optionOr(s.stripPrefix("Hello, "), "!")` it reads back **empty**: the
+    // unbound `Option<String>` temporary is released after `optionOr` has taken
+    // an alias into the String it owns. That is a live defect in the ownership
+    // analysis rather than anything to do with `stripPrefix`, it is invisible to
+    // `--verify` because both releases are ledger-legal, and it is the only place
+    // in this fixture where the obvious spelling is the wrong one. See
+    // KNOWN_ISSUES.md. `Option<Int>` and `Option<Char>` above are unaffected:
+    // their payloads own nothing.
+    let maybeTail = s.stripPrefix("Hello, ")
+    let stripped = optionOr(maybeTail, "!")
+    if ((stripped == "World") == false) { return fail("stripPrefix") }
+    let capped = "mcdonald".capitalize()
+    if ((capped == "Mcdonald") == false) { return fail("capitalize") }
+    let centred = "ab".padCenter(6, '.')
+    if ((centred == "..ab..") == false) { return fail("padCenter") }
+    let crlf = "a\r\nb\n".lines()
+    if (list_len(crlf) != 2) { return fail("lines strips CR and trailing NL") }
+    if (s.countIf(|c: Char| charIsUpper(c)) != 2) { return fail("countIf") }
+    if (optionOr("3.5".parseFloat(), 0.0) != 3.5) { return fail("parseFloat") }
+    if (optionOr("TRUE".parseBool(), false) == false) { return fail("parseBool") }
+
+    let n = 255
+    let text = n.toString()
+    if ((text == "255") == false) { return fail("Int.toString") }
+    let flag = true.toString()
+    if ((flag == "true") == false) { return fail("Bool.toString") }
+
+    println("test_91 ok")
+    return 0
+}

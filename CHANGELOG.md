@@ -1,5 +1,125 @@
 # Changelog
 
+## Unreleased
+
+### Developer tooling
+
+- The test runner accepts fixture stems or substrings, including repeatable
+  `-k` filters, so one positive or negative test no longer requires a full
+  suite run. `--list` prints the available fixtures.
+- The compiler repository now has its own `build.ums`; `prismio build` treats
+  the compiler as a normal Prismio project and writes the executable below
+  `.prismio/build/<profile>/`. Seed bootstrapping remains an explicit toolchain
+  operation because it is what creates the first local compiler.
+- UMS has an explicit `compiler(...)` target kind for self-hosted toolchains.
+  It follows the executable pipeline but links the compiler backend and LLVM;
+  ordinary `executable(...)` targets retain the runtime-only separation.
+- `tools/format_sources.py` supplies a conservative repository formatter, and
+  `tools/lint.py` checks formatting, Python and shell syntax, Prismio tabs,
+  toolchain source-list agreement, and diagnostic-code integrity.
+- Compiler errors and warnings now have stable `P####` identifiers in human and
+  JSON diagnostics. CI asserts the protocol and rejects duplicate or uncoded
+  call sites.
+- Linux CI links ownership and concurrency fixtures under AddressSanitizer and
+  runs the interleaved milestone benchmark as a regression gate.
+
+### Project commands
+
+`build.ums` is the project manifest, and the CLI now works off it the way
+`cargo` works off `Cargo.toml`. A project command is the same command with no
+source named: `prismio build` builds the project, `prismio build main.psm`
+builds one file.
+
+- **`prismio init [name]`** — scaffolds `build.ums`, `src/main.psm` and a
+  `.gitignore` holding `.prismio/`, in this directory or a new one. One command
+  rather than Cargo's `new` plus `init`: the only difference between them is
+  whether a directory is created first, and the optional argument says that.
+  Nothing is written if the manifest already exists. The derived name is checked
+  by UMS's own validator rather than a copy of it, so a scaffold cannot be born
+  invalid.
+- **`prismio run [--release]`** — builds every target, then runs the executable
+  one. Refuses when there is no executable target, or more than one.
+- **`prismio test [--release]`** — a new `test(...)` target kind. A test is an
+  ordinary program that **exits 0 when it passes**; that is the entire protocol,
+  because Prismio has no assertion library and a richer contract would be a
+  promise the language cannot keep. `prismio build` does not build test targets,
+  for the reason `cargo build` does not.
+- **`prismio clean [--release]`** — removes this profile's build output, leaving
+  the lockfile alone.
+- **`--release`** selects the profile; the plan already rooted output at
+  `.prismio/build/<profile>/`, but the profile was hardcoded to `debug`.
+
+**An unknown command is now an unknown command.** Any unrecognised first argument
+was taken for a source path, so `prismio test` reported `error: cannot read test`
+— sending the reader to the filesystem when the answer was the command name.
+`prismio foo.psm` still means `prismio build foo.psm`; the shorthand is narrowed
+to a path-shaped argument.
+
+**`--version` reports the toolchain**, not just the version: the compiler
+directory and the standard library that resolves from here. A compiler developer
+has several generations in `build/` and `std` is found by search rather than
+configuration, so "what am I compiling against" previously had no answer short of
+reading source. `rustc -vV` and `go env` print this for the same reason.
+
+### Fixed
+
+- **A value read out of a parameter is a view of it.** `optionOr(f(), "!")`
+  returned `""`: the release for the unbound `Option<String>` temporary was
+  emitted between the call and the expression that read its result. `--verify`
+  could not see it — both releases were ledger-legal, so the run reported a clean
+  `4 allocated, 4 released, 0 leaked, 0 violation(s)` **and** the wrong answer.
+
+  Three fixes, and the first two alone changed nothing: a reference-shaped field
+  read now records a view of the object it came from; the AIF walk gained the
+  `MATCH_STATEMENT` case it never had, so a payload arm binder is bound to the
+  field it reads; and sema types the binder's *node* as well as its name, without
+  which the walk could not tell a `String` payload from an `Int` one. Not
+  Option-specific — a plain struct field and a concrete payload enum reproduced
+  it too.
+
+  The unbound form now leaks rather than dangling, which is the conservative
+  direction and what the released 0.1 compiler did. Guard:
+  `tests/test_92_field_view_provenance.psm`, which asserts values rather than the
+  ledger. See `aif/evidence/RESULTS-field-view-provenance.md`.
+
+### The String surface
+
+`String` gets operators, properties, and a method surface. Every one of them is a
+rewrite performed in semantic analysis into the `std.string` call it means, so
+overload resolution, the ownership analysis, AIF and codegen meet an ordinary call
+and none of them changed. All of it needs `import std.string` — there is still no
+prelude.
+
+- **Operators.** `a == b` and `a != b` are content equality; `<`, `<=`, `>`, `>=`
+  are the sign of `strCompare`; `a + b` concatenates; `s[i]` is the byte at `i`;
+  `s[start..end]` is a half-open slice. `==` on two Strings was previously a hard
+  rejection naming `strEquals`.
+- **A chain of `+` is one call.** `a + b + c` lowers to `strConcat(a, b, c)`, not
+  to nested calls. The nested form leaks its intermediate — 2 allocated, 1
+  released, on the released 0.1 compiler as well — so flattening is a correctness
+  measure. Up to six parts; past that, `strJoin`.
+- **Properties.** `s.length`, `s.isEmpty`, `c.isDigit` — a method call without the
+  parentheses. **A property may not allocate**: the rewrite is refused when the
+  resolved function returns an owned value, so `s.trim` is an error naming the fix
+  while `s.length` is not. A struct field always wins over a property, so no
+  existing program changes meaning.
+- **`for c in s` and `for x in xs`.** Leaving out the `..` iterates a `String` by
+  byte or a `List<T>` by element. The collection is borrowed, not moved. It must be
+  a *name*: the loop needs it more than once, and an owned result has to be bound
+  anyway. A desugaring over `s[i]`, not an extensible iterator protocol.
+- **~35 new methods and functions**, including `slice`, `lines`, `chars`, `bytes`,
+  `find`, `get`, `stripPrefix`, `stripSuffix`, `capitalize`, `padCenter`,
+  `trimChars`, `insert`, `removeRange`, `equalsIgnoreCase`, `isBlank`, `countIf`,
+  `parseFloat`, `parseBool`, `parseIntOr`, `parts.join(sep)`, `impl Char` for the
+  `char*` predicates, and `toString` on `Int`, `U64`, `Bool` and `Char`.
+
+The `str*` and `char*` free functions are unchanged and remain supported. The
+prefix is not decoration: a method is a free function whose first parameter is the
+receiver, so `std.string` now claims 64 unprefixed global names, and a program
+defining its own `fn isDigit(c: Char)` alongside it will not compile. Three places
+in this tree collided and were renamed. See KNOWN_ISSUES.md.
+
+
 ## 0.1.0
 
 The first release. Prismio is a self-hosted, statically typed, ahead-of-time

@@ -136,11 +136,21 @@ if [ -n "$OLD" ]; then
     # the release bar actually asks to read before a timing is believed.
     step "per-function mnemonic diff vs $OLD"
     printf '\n'
-    for prog in g1 g2 g3 g4 g5 g6 g9; do
+    # **The hand-tuned arms are diffed too, and that is not padding.** This loop
+    # covered only the natural programs until 2026-08-30, and a container change
+    # that improved every one of them regressed hand-tuned g4 by 46% -- 20.5ms to
+    # 30.1ms, slower than the natural program -- while this gate printed green.
+    # The tuned sources fuse loops and reuse buffers, so they exercise shapes the
+    # natural ones do not have; a change can be neutral on all seven naturals and
+    # move one tuned function by 26 instructions. See
+    # aif/evidence/RESULTS-flat-list-loop-guard.md.
+    for prog in g1 g2 g3 g4 g5 g6 g9 \
+                g1_dataview_tuned g2_tuned g3_tuned g4_tuned g5_tuned g6_tuned g9_tuned; do
         src="aif/evidence/xlang/prismio/$prog.psm"
+        [ -f "$src" ] || continue
         "$OLD" build "$src" -o "$WORK/$prog-old" >/dev/null 2>&1 || continue
         "$RC"  build "$src" -o "$WORK/$prog-new" >/dev/null 2>&1 || continue
-        printf '    %-4s %s\n' "$prog" \
+        printf '    %-18s %s\n' "$prog" \
             "$(python3 tools/fn_mnemonic_diff.py "$WORK/$prog-old" "$WORK/$prog-new" | head -1)"
     done
 fi

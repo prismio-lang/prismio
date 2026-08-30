@@ -13,6 +13,25 @@ import ast.types
 
 let mut irStringCounter = 0
 let mut irShortCircuitCounter = 0
+// How many loops enclose the statement being generated.
+//
+// The flat push below is worth its three header loads and a branch only where a
+// loop amortises them. Straight-line pushes keep the runtime call: g6's
+// `world_spawn` makes three in a row, and inlining them doubled it from 37 to 74
+// instructions and cost the program 1.16x -- against g2's cull loop, where the
+// same change is 0.97x.
+let mut irLoopDepth = 0
+
+// The slot holding the enclosing loop's flat-List guard, or "" outside such a
+// loop. One `i1` per loop rather than one test per `list_get`: see
+// generateLoopFlatGuard in src/ir/stmt.psm.
+let mut irLoopFlatGuard = ""
+let mut irLoopFlatGuardCounter = 0
+
+// Names the stack slot a `spawn`'s owned temporary argument is spilled into, so
+// the ordinary scope drop can reach it. Dotted like `sc.`, which no Prismio
+// identifier can contain, so it cannot collide with a user variable.
+let mut irSpawnArgCounter = 0
 
 // LAYOUT 3.2. On only while generating a workload driver -- the instrumented
 // build the compiler produces, runs and discards. It gates every emission this
@@ -155,6 +174,9 @@ extern fn aif_owns_call_result_at_node(node: Ptr) -> Int
 // value into a further call lets it outlive the frame. An unknown symbol answers
 // yes -- a false positive is a leak, a false negative is a use-after-free.
 extern fn aif_fn_may_return_param(symbol: String) -> Int
+// SPEC 8.4's other way a result can be an argument: a view carries provenance
+// rather than the argument's sites, so the points-to answer above misses it.
+extern fn aif_fn_may_return_view_of_param(symbol: String) -> Int
 
 // Struct-field ownership. Whether this type owns anything, and what each field
 // needs. Per field, because a struct mixes -- `World` is five owned Lists and an

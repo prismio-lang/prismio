@@ -49,19 +49,19 @@ private fn moduleTreeUsesDataView(nodePtr: Ptr) -> Bool {
 private fn generateFunction(func: ASTNode) {
     let funcName = func.s1
     let emittedName = functionSymbolName(func)
-    
+
     let mut retType = "void"
     if (nodeExists(func.child3)) {
         let retNode = ptr_to_node(func.child3)
         retType = mapTypeNode(retNode)
     }
-    
+
     let mut isMain = 0
     if (strEquals(funcName, "main")) {
         retType = "i32"
         isMain = 1
     }
-    
+
     let retSigType = storageType(retType)
     ir_function_begin(emittedName, retSigType)
     // The declared return, not the storage one: `struct:Point` and `String` are
@@ -95,6 +95,15 @@ private fn generateFunction(func: ASTNode) {
     }
 
     ir_function_body_start()
+    // A single source callsite cannot duplicate this body, and a callsite in a
+    // loop is exactly where exposing the body to the caller lets LICM and the
+    // loop pipeline see invariants across the call boundary. The mark is a
+    // module-wide AST fact computed below, never a function-name rule. Leave
+    // debug functions alone: always-inline at -O0 would erase the frame the
+    // debugger was explicitly asked to show.
+    if (func.i1 == 3 and ir_debug_enabled() == 0) {
+        ir_function_always_inline()
+    }
     ir_clear_local_var_types()
     ir_clear_returned()
 
@@ -149,7 +158,7 @@ private fn generateFunction(func: ASTNode) {
     }
 
     ir_scope_pop()
-    
+
     if (ir_has_returned() == 0) {
         if (strEquals(retSigType, "void")) {
             ir_ret_void()
@@ -161,7 +170,7 @@ private fn generateFunction(func: ASTNode) {
             }
         }
     }
-    
+
     // After the implicit return above, so that return still carries this
     // function's location rather than none.
     debugCloseFunction()
@@ -201,6 +210,168 @@ internal fn taskFunctionForCall(call: ASTNode) -> Ptr {
 
 internal fn taskThunkName(func: ASTNode) -> String {
     return strConcat(functionSymbolName(func), "__task")
+}
+
+// First pass: count every direct source callsite, capped at two. A unique
+// callsite is the fact that prevents code duplication; recursion is deliberately
+// disqualified even when there is only one syntactic self-call.
+private fn countFunctionCallsitesNode(nodePtr: Ptr, callerSymbol: String) {
+    if (nodeIsNull(nodePtr)) { return }
+    let node = ptr_to_node(nodePtr)
+
+    if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)) {
+        let targetPtr = taskFunctionForCall(node)
+        if (nodeExists(targetPtr)) {
+            let target = ptr_to_node(targetPtr)
+            let recursive = strEquals(functionSymbolName(target), callerSymbol)
+            if (target.i1 == 0 and recursive == false) {
+                target.i1 = 1
+            } else {
+                target.i1 = 2
+            }
+        }
+    }
+
+    countFunctionCallsitesChain(node.child1, callerSymbol)
+    countFunctionCallsitesChain(node.child2, callerSymbol)
+    countFunctionCallsitesChain(node.child3, callerSymbol)
+}
+
+private fn countFunctionCallsitesChain(head: Ptr, callerSymbol: String) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        countFunctionCallsitesNode(node_to_ptr(node), callerSymbol)
+        p = node.next
+    }
+}
+
+private fn isSourceLoop(node: ASTNode) -> Bool {
+    return node.kind == NodeKind.FOR_STATEMENT
+        or node.kind == NodeKind.WHILE_STATEMENT
+        or node.kind == NodeKind.LOOP_STATEMENT
+}
+
+// Count source calls at this loop level. Nested loops are separate optimization
+// regions: counting their calls in the parent made one inner call appear in two
+// loops and made a parent's unrelated siblings consume its inline budget.
+private fn directLoopCallCountNode(nodePtr: Ptr) -> Int {
+    if (nodeIsNull(nodePtr)) { return 0 }
+    let node = ptr_to_node(nodePtr)
+    if (isSourceLoop(node)) { return 0 }
+
+    let mut count = 0
+    if (node.kind == NodeKind.CALL_EXPR and nodeExists(taskFunctionForCall(node))) {
+        count = 1
+    }
+    return count
+        + directLoopCallCountChain(node.child1)
+        + directLoopCallCountChain(node.child2)
+        + directLoopCallCountChain(node.child3)
+}
+
+private fn directLoopCallCountChain(head: Ptr) -> Int {
+    let mut count = 0
+    let mut p = head
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        count = count + directLoopCallCountNode(node_to_ptr(node))
+        p = node.next
+    }
+    return count
+}
+
+private fn directLoopCallTargetNode(nodePtr: Ptr) -> Ptr {
+    if (nodeIsNull(nodePtr)) { return ptr_null() }
+    let node = ptr_to_node(nodePtr)
+    if (isSourceLoop(node)) { return ptr_null() }
+
+    if (node.kind == NodeKind.CALL_EXPR) {
+        let target = taskFunctionForCall(node)
+        if (nodeExists(target)) { return target }
+    }
+
+    let a = directLoopCallTargetChain(node.child1)
+    if (nodeExists(a)) { return a }
+    let b = directLoopCallTargetChain(node.child2)
+    if (nodeExists(b)) { return b }
+    return directLoopCallTargetChain(node.child3)
+}
+
+private fn directLoopCallTargetChain(head: Ptr) -> Ptr {
+    let mut p = head
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        let target = directLoopCallTargetNode(node_to_ptr(node))
+        if (nodeExists(target)) { return target }
+        p = node.next
+    }
+    return ptr_null()
+}
+
+// Second pass: spend one inline budget per loop. A loop with several source
+// calls (g4's four systems) keeps ordinary call boundaries; forcing all four
+// into one frame body measured 1.218x and grew main from 543 to 597 mnemonics.
+private fn markUniqueLoopCallsNode(nodePtr: Ptr) {
+    if (nodeIsNull(nodePtr)) { return }
+    let node = ptr_to_node(nodePtr)
+
+    if (isSourceLoop(node)) {
+        let count = directLoopCallCountChain(node.child1)
+            + directLoopCallCountChain(node.child2)
+            + directLoopCallCountChain(node.child3)
+        if (count == 1) {
+            let mut target = directLoopCallTargetChain(node.child1)
+            if (nodeIsNull(target)) { target = directLoopCallTargetChain(node.child2) }
+            if (nodeIsNull(target)) { target = directLoopCallTargetChain(node.child3) }
+            if (nodeExists(target)) {
+                let func = ptr_to_node(target)
+                if (func.i1 == 1) { func.i1 = 3 }
+            }
+        }
+    }
+
+    markUniqueLoopCallsChain(node.child1)
+    markUniqueLoopCallsChain(node.child2)
+    markUniqueLoopCallsChain(node.child3)
+}
+
+private fn markUniqueLoopCallsChain(head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        markUniqueLoopCallsNode(node_to_ptr(node))
+        p = node.next
+    }
+}
+
+private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
+    // The same AST can be emitted first as a workload driver and then as the
+    // shipped program, so no mark may survive from the earlier emission.
+    let mut clearPtr = module.child1
+    while (nodeExists(clearPtr)) {
+        let decl = ptr_to_node(clearPtr)
+        if (decl.kind == NodeKind.FUNCTION) { decl.i1 = 0 }
+        clearPtr = decl.next
+    }
+
+    let mut fnPtr = module.child1
+    while (nodeExists(fnPtr)) {
+        let func = ptr_to_node(fnPtr)
+        if (func.kind == NodeKind.FUNCTION and nodeExists(func.child2)) {
+            countFunctionCallsitesNode(func.child2, functionSymbolName(func))
+        }
+        fnPtr = func.next
+    }
+
+    let mut markPtr = module.child1
+    while (nodeExists(markPtr)) {
+        let func = ptr_to_node(markPtr)
+        if (func.kind == NodeKind.FUNCTION and nodeExists(func.child2)) {
+            markUniqueLoopCallsNode(func.child2)
+        }
+        markPtr = func.next
+    }
 }
 
 // A task crosses the C runtime through up to three `void*` slots. A String does
@@ -748,8 +919,19 @@ private fn generateReleaseFn(structNode: ASTNode) {
             // own allocation. The registry is asked rather than AIF because the
             // registry is what decided the layout. Inline implies plain data
             // (structIsPod), so there is never a nested release to run either.
+            //
+            // **A fat `String` is the exception, and excluding it is the fix for
+            // a leak this veto caused.** `String` is `struct:prismio.str`, a
+            // `{ptr, i64}` that does live in the object's own storage -- so it
+            // matches isStructTypeKey and was vetoed with the inline structs.
+            // But the half that is a pointer owns a heap buffer, so "inline
+            // implies plain data" is true of a user struct and false of this one:
+            // `struct Thing { name: String }` in a container leaked one buffer
+            // per element, and UMS -- whose models are almost entirely `strClone`d
+            // String fields -- leaked 1475 of 2112 allocations.
+            let fieldKey = ir_get_struct_field_type(tname, field.s1)
             let mut disp = aif_field_release(tname, field.s1)
-            if (isStructTypeKey(ir_get_struct_field_type(tname, field.s1))) {
+            if (isStructTypeKey(fieldKey) and isFatStringKey(fieldKey) == false) {
                 disp = AIF_ELEM_NONE
             }
             if (disp != AIF_ELEM_NONE) {
@@ -984,6 +1166,7 @@ fn generateModule(module: ASTNode) {
     // Rebuilt here rather than inherited from analyzeModule, so codegen does not
     // depend on which passes ran before it. It is one walk of the top level.
     indexModuleDeclarations(module)
+    markSingleLoopCallsiteFunctions(module)
     // `i3` is otherwise unused on FUNCTION nodes. Clear the per-emission thunk
     // mark because this AST may be compiled once as a workload and again as the
     // real program in the same process.
@@ -1300,7 +1483,7 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_begin("list_len", "i32")
     ir_declare_function_param("ptr")
     ir_declare_function_end()
-    
+
     // Struct-field ownership. Declared before any is defined, because a type
     // whose field is another owning struct calls that type's release -- and the
     // declaration order of two structs says nothing about which needs the other.
@@ -1351,7 +1534,7 @@ fn generateModule(module: ASTNode) {
     let mut stmtPtr = module.child1
     while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
-        
+
         if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
             if (moduleHasFunction(module, stmt.s1) == false) {
                 // W3. A foreign extern gets a stub *definition* below instead of
@@ -1375,7 +1558,7 @@ fn generateModule(module: ASTNode) {
                 if (nodeExists(stmt.child2)) { collectStringsBlock(ptr_to_node(stmt.child2)) }
             }
         }
-        
+
         if (stmt.kind == NodeKind.VARIABLE_DECL) {
             let mut initVal = "0"
             let mut globalStrName = ""
@@ -1437,7 +1620,7 @@ fn generateModule(module: ASTNode) {
             // does not exist.
             ir_set_global_var_type(stmt.s1, varType)
         }
-        
+
         if (stmt.kind == NodeKind.FUNCTION) {
             let mut retType = getDeclaredReturnType(stmt, stmt.child3)
             if (strEquals(stmt.s1, "main")) {
@@ -1446,12 +1629,12 @@ fn generateModule(module: ASTNode) {
             ir_set_fn_return_type(functionSymbolName(stmt), retType)
             collectStringsFunction(stmt)
         }
-        
+
         stmtPtr = stmt.next
     }
-    
+
     ir_blank_line()
-    
+
     // Second pass: functions
     let mut stmtPtr2 = module.child1
     while (nodeExists(stmtPtr2)) {

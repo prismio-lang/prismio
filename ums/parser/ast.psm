@@ -32,6 +32,9 @@ struct UmsAstStatement {
     // reference counting merely because blocks can nest.
     children: List<Int>,
     hasBlock: Bool,
+    start: Int,
+    blockOpen: Int,
+    blockClose: Int,
     line: Int,
     col: Int,
     len: Int
@@ -42,7 +45,7 @@ struct UmsAstDocument {
     roots: List<Int>
 }
 
-fn umsAstEmptyValue() -> UmsAstValue {
+private fn umsAstEmptyValue() -> UmsAstValue {
     return UmsAstValue {
         kind: UmsAstValueKind.UNKNOWN,
         text: strClone(""),
@@ -52,8 +55,8 @@ fn umsAstEmptyValue() -> UmsAstValue {
     }
 }
 
-fn umsAstStatement(kind: UmsAstStatementKind, name: String,
-                   line: Int, col: Int, len: Int) -> UmsAstStatement {
+internal fn umsAstStatement(kind: UmsAstStatementKind, name: String,
+                   start: Int, line: Int, col: Int, len: Int) -> UmsAstStatement {
     return UmsAstStatement {
         kind: kind,
         name: strClone(name),
@@ -61,6 +64,9 @@ fn umsAstStatement(kind: UmsAstStatementKind, name: String,
         arguments: list_new(),
         children: list_new(),
         hasBlock: false,
+        start: start,
+        blockOpen: -1,
+        blockClose: -1,
         line: line,
         col: col,
         len: len

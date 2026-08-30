@@ -1,8 +1,16 @@
 import std.string
+// Appended, never inserted: the tag is the variant's position, so reordering
+// these changes the value every compiled comparison expects -- the rule
+// std/option.psm states for `Option`.
 enum UmsTargetKind {
     UNKNOWN,
     EXECUTABLE,
-    LIBRARY
+    LIBRARY,
+    TEST,
+    // A self-hosted compiler executable. It uses the same Prismio frontend as
+    // an executable target, then links backend.a and LLVM through the bootstrap
+    // build path. Appended so existing target-kind ordinals remain stable.
+    COMPILER
 }
 
 

@@ -1,3 +1,4 @@
+import argparse
 import json
 import platform
 import re
@@ -5,6 +6,11 @@ import subprocess
 import sys
 import os
 import tempfile
+import io
+import time
+import threading
+import contextlib
+import concurrent.futures
 from pathlib import Path
 import shutil
 from shutil import which
@@ -41,7 +47,161 @@ def find_prismio_exe():
     sys.exit(1)
 
 
-PRISMIO_EXE = find_prismio_exe()
+PRISMIO_EXE = None
+
+
+def parse_runner_args():
+    parser = argparse.ArgumentParser(
+        description="Run the Prismio compiler suite or selected file fixtures."
+    )
+    parser.add_argument(
+        "patterns",
+        nargs="*",
+        help="fixture stem or substring, for example test_92_field_view_provenance",
+    )
+    parser.add_argument(
+        "-k",
+        "--filter",
+        action="append",
+        default=[],
+        dest="filters",
+        help="additional fixture stem or substring (repeatable)",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="list file fixtures without running them",
+    )
+    return parser.parse_args()
+
+
+def select_test_files(files, patterns):
+    """Select fixtures by exact stem first, then by case-insensitive substring."""
+    selected = []
+    for pattern in patterns:
+        key = Path(pattern).stem.lower()
+        exact = [path for path in files if path.stem.lower() == key]
+        matches = exact or [path for path in files if key in path.stem.lower()]
+        for path in matches:
+            if path not in selected:
+                selected.append(path)
+    return sorted(selected)
+
+
+# How many test processes to run at once, and why this is safe.
+#
+# Every file fixture compiles to its *own* `.exe` beside the source and deletes
+# it again, so two fixtures never touch the same path. The one piece of shared
+# state is the object cache, and `build_driver.c` writes it to a pid-qualified
+# sibling and `rename()`s it into place precisely so concurrent writers are fine
+# -- see the comment above `cache_store`.
+#
+# Measured on this host, 202 tests: **178s sequential, 41s at 8 workers.** The
+# suite was one sequential chain of ~1200 subprocess calls, and the compiler is
+# single-threaded, so almost all of that was cores sitting idle.
+#
+# PRISMIO_TEST_JOBS=1 restores the old sequential order, which is what to reach
+# for when a failure looks like it might be interference rather than a bug.
+def test_jobs():
+    env = os.environ.get("PRISMIO_TEST_JOBS")
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
+    return min(8, (os.cpu_count() or 4))
+
+
+_progress_lock = threading.Lock()
+_progress_done = 0
+_progress_total = 0
+
+
+def progress(label, ok, seconds):
+    """One line per finished test, in completion order, with its own duration.
+
+    Printed under a lock because the workers share stdout. The counter is what
+    makes a long run legible -- a suite that prints nothing for three minutes is
+    indistinguishable from a hung one, which is how a 90-second compile hid in
+    here.
+    """
+    global _progress_done
+    with _progress_lock:
+        _progress_done += 1
+        n = _progress_done
+    mark = f"{GREEN}ok  {RESET}" if ok else f"{RED}FAIL{RESET}"
+    print(f"  [{n:3d}/{_progress_total}] {mark} {seconds:6.2f}s  {label}", flush=True)
+
+
+def run_parallel(fn, items, label_of):
+    """Map `fn` over `items` in a thread pool, printing each result as it lands.
+
+    Threads rather than processes: every one of these blocks in `subprocess`, so
+    the GIL is never the constraint.
+    """
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=test_jobs()) as pool:
+        futures = {pool.submit(_timed, fn, it): it for it in items}
+        for fut in concurrent.futures.as_completed(futures):
+            it = futures[fut]
+            ok, seconds, out = fut.result()
+            progress(label_of(it), ok, seconds)
+            if out:
+                sys.stdout.write(out)
+            results.append(ok)
+    return results
+
+
+class _ThreadOut(io.TextIOBase):
+    """A `sys.stdout` that routes each worker thread's writes to its own buffer.
+
+    **`contextlib.redirect_stdout` cannot be used here and the reason is not
+    obvious.** It swaps a global, so with eight workers one thread's redirect
+    captures every other thread's output for as long as it is open -- and the
+    unwinding is out of order, so `sys.stdout` is left pointing at a discarded
+    buffer afterwards. The first parallel version of this file did exactly that:
+    the run was correct and silent, printing 2 of 154 progress lines and no
+    final summary, while still exiting 0.
+
+    A thread that has set no buffer -- the main one, which prints the progress
+    lines and the summary -- writes straight through.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self._local = threading.local()
+
+    def set_buffer(self, buf):
+        self._local.buf = buf
+
+    def write(self, text):
+        buf = getattr(self._local, "buf", None)
+        return (self._real if buf is None else buf).write(text)
+
+    def flush(self):
+        buf = getattr(self._local, "buf", None)
+        if buf is None:
+            self._real.flush()
+
+
+def _timed(fn, item):
+    buf = io.StringIO()
+    out = sys.stdout
+    t0 = time.time()
+    try:
+        if isinstance(out, _ThreadOut):
+            out.set_buffer(buf)
+        ok = fn(item)
+    except Exception as exc:                     # a crashed worker is a failure
+        ok = False
+        buf.write(f"    {exc}\n")
+    finally:
+        if isinstance(out, _ThreadOut):
+            out.set_buffer(None)
+    dt = time.time() - t0
+    # A passing test's chatter is noise at eight workers interleaved; a failing
+    # one's output is the whole point, so it is kept and printed after its line.
+    return ok, dt, ("" if ok else buf.getvalue())
 
 
 def run_command(cmd, capture=True):
@@ -188,7 +348,7 @@ def run_negative_test(test_file):
 
     print(f"{GREEN}[PASS] Negative test rejected invalid program{RESET}")
     for line in output.strip().splitlines():
-        if line.startswith("error:") and "aborting due to" not in line:
+        if re.match(r"error(?:\[P\d{4}\])?:", line) and "aborting due to" not in line:
             print(f"  {line}")
     return True
 
@@ -261,22 +421,32 @@ def run_corpus_test():
     ran = 0
     skipped_platform = 0
     with tempfile.TemporaryDirectory(prefix="prismio-corpus-") as temp_dir:
-        for src in sources:
+        # Each program already builds to its own executable in this directory,
+        # so the only thing that made this sequential was the loop. Thirty
+        # build-and-run pairs is the second largest block in the suite after
+        # run_no_inference_test.
+        def build_and_run(src):
             if src.stem in NO_MAIN:
-                continue
+                return ("skip_nomain", None)
             if darwin_only and "clock_gettime_nsec_np" in src.read_text(encoding="utf-8"):
-                skipped_platform += 1
-                continue
+                return ("skip_platform", None)
             exe = Path(temp_dir) / (src.stem + (".exe" if os.name == "nt" else ""))
             built = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(exe)])
             if built.returncode != 0:
-                problems.append(f"{src.stem}: did not build")
-                continue
+                return ("problem", f"{src.stem}: did not build")
             out = run_command([str(exe)])
             if out.returncode != 0:
-                problems.append(f"{src.stem}: exited {out.returncode}")
-                continue
-            ran += 1
+                return ("problem", f"{src.stem}: exited {out.returncode}")
+            return ("ran", None)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=test_jobs()) as pool:
+            for kind, payload in pool.map(build_and_run, sources):
+                if kind == "problem":
+                    problems.append(payload)
+                elif kind == "ran":
+                    ran += 1
+                elif kind == "skip_platform":
+                    skipped_platform += 1
 
     if problems:
         print(f"{RED}[FAIL] corpus: {len(problems)} program(s) failed{RESET}")
@@ -320,8 +490,33 @@ def run_ums_test():
             print(ran.stdout or ran.stderr)
             return False
 
+    # Prismio is itself described by the repository's build.ums. Build it from
+    # a descendant directory to cover upward discovery and, crucially, the
+    # compiler(...) target's backend/LLVM link path. An executable(...) target
+    # must remain runtime-only, so a model-only assertion cannot cover this.
+    compiler_artifact = PROJECT_ROOT / ".prismio" / "build" / "debug" / "prismio"
+    if compiler_artifact.exists():
+        compiler_artifact.unlink()
+    project_build = subprocess.run(
+        [str(PRISMIO_EXE), "build"], capture_output=True, text=True,
+        cwd=str(PROJECT_ROOT / "ums"),
+    )
+    if project_build.returncode != 0 or not compiler_artifact.exists():
+        print(f"{RED}[FAIL] ums: root compiler(...) target did not build{RESET}")
+        print(project_build.stdout or project_build.stderr)
+        return False
+    version = subprocess.run(
+        [str(compiler_artifact), "--version"], capture_output=True, text=True,
+        cwd=str(PROJECT_ROOT),
+    )
+    if version.returncode != 0 or "prismio 0.1.0" not in version.stdout:
+        print(f"{RED}[FAIL] ums: compiler target artifact is not runnable{RESET}")
+        print(version.stdout or version.stderr)
+        return False
+    compiler_artifact.unlink()
+
     print(f"{GREEN}[PASS] ums: manifest lowering, validation, build planning, "
-          f"dependency resolution and the lockfile{RESET}")
+          f"compiler targets, dependency resolution and the lockfile{RESET}")
     return True
 
 
@@ -385,6 +580,7 @@ def run_check_command_test():
     located_errors = [
         r for r in diagnostics
         if r.get("severity") == "error"
+        and re.fullmatch(r"P\d{4}", str(r.get("code", "")))
         and str(r.get("file", "")).endswith(invalid.name)
         and r.get("line", 0) > 0
         and r.get("column", 0) > 0
@@ -394,6 +590,10 @@ def run_check_command_test():
 
     if machine_bad.returncode == 0 or not located_errors:
         print(f"{RED}[FAIL] rejected JSON check has no located error{RESET}")
+        print(machine_bad.stderr)
+        return False
+    if located_errors[0].get("code") != "P4001":
+        print(f"{RED}[FAIL] type mismatch diagnostic code is not stable (expected P4001){RESET}")
         print(machine_bad.stderr)
         return False
     if len(summaries) != 1 or summaries[0].get("errors", 0) < 1:
@@ -1899,11 +2099,12 @@ def run_forced_layout_test():
          arithmetic over the cold fields -- with 0 violations and both halves
          released. This is the assertion that says the release path is right for
          cuts *the model never chose*, which is precisely what §8 will compile.
-         Forced split releases 4095 more objects than forced unsplit. The 4096
-         cold blocks are offset by one allocation in the other direction:
-         switching an empty boxed list to inline storage replaces its initial
-         pointer block with a body block. That gap is what proves the force
-         reached codegen rather than only the report.
+         Forced split releases 4096 more objects than forced unsplit, one cold
+         block per body. That gap is what proves the force reached codegen rather
+         than only the report. It was 4095 while `list_new` allocated a pointer
+         block eagerly and `list_set_elem_inline` replaced it -- one wasted
+         allocation on the unsplit path, cancelling one cold block. Lazy
+         allocation removed the waste and the exception with it.
       3. **A force that does not apply changes nothing.** This is the one that
          caught a real defect on the day it was written. `Body:5` is not a
          candidate; the first version left `hot_count` at 0 for it, so a mistyped
@@ -1991,19 +2192,22 @@ def run_forced_layout_test():
 
     if 4 in released_by_cut and 12 in released_by_cut:
         # A split allocates one cold block per object and cannot use inline list
-        # storage. The unsplit flat Body can: list_new first makes a pointer block,
-        # then list_set_elem_inline replaces it with a body block. That one extra
-        # allocation on the unsplit path offsets one of the 4096 cold blocks, so
-        # the net gap is bodies - 1. It is still the dynamic check that separates
-        # "the force reached codegen" from "the report agreed with itself".
+        # storage, so the gap is one block per body.
+        #
+        # **It was `bodies - 1` until 2026-08-30, and the missing one was waste.**
+        # `list_new` used to allocate a four-pointer block eagerly, which
+        # `list_set_elem_inline` then freed and replaced with a body block on the
+        # first push -- so the unsplit path carried one extra allocation that
+        # offset a cold block. `list_new` now allocates nothing until the first
+        # push, the way Rust's `RawVec::NEW` does, so there is no replacement and
+        # no offset. The number got simpler because the runtime did.
         gap = released_by_cut[4] - released_by_cut[12]
-        expected_gap = bodies - 1
+        expected_gap = bodies
         if gap != expected_gap:
             problems.append(
                 f"forced split released {gap} more objects than forced unsplit, "
-                f"expected exactly {expected_gap} -- one cold block per body, "
-                f"minus the inline list's replacement block. A force that only "
-                f"moved the manifest would read 0 here.")
+                f"expected exactly {expected_gap} -- one cold block per body. "
+                f"A force that only moved the manifest would read 0 here.")
 
     if problems:
         for p in problems:
@@ -4702,35 +4906,54 @@ def run_no_inference_test():
     PROBES = ("arena_objects", "arena_regions", "arena_bytes",
               "cyc_objects", "cyc_reclaimed", "cyc_collections_run")
 
+    # Two compiles and two runs per fixture, which is four subprocesses times
+    # every `test_*.psm` in the suite: **129s of the suite's 178s was here.**
+    # They are independent, so they go through the pool -- and each fixture gets
+    # its own pair of executables, because the single shared `ni_release.exe`
+    # was the only thing that made this sequential.
+    def check_one(src):
+        text = src.read_text(encoding="utf-8", errors="replace")
+        if any(p in text for p in PROBES):
+            return ("skip", src.name)
+        rel_exe = TEST_DIR / f"ni_release_{src.stem}.exe"
+        dbg_exe = TEST_DIR / f"ni_debug_{src.stem}.exe"
+        try:
+            rel = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(rel_exe)])
+            dbg = run_command([str(PRISMIO_EXE), "build", str(src), "--debug",
+                               "-o", str(dbg_exe)])
+
+            # A fixture that does not build either way is some other test's problem.
+            if rel.returncode != 0 and dbg.returncode != 0:
+                return ("ignore", None)
+            if rel.returncode != dbg.returncode:
+                return ("problem",
+                        f"{src.name}: build exit {rel.returncode} at release, "
+                        f"{dbg.returncode} at --debug -- a level changed which "
+                        "programs compile (SPEC 7.2)")
+
+            ran_rel = run_command([str(rel_exe)])
+            ran_dbg = run_command([str(dbg_exe)])
+            if ran_rel.stdout != ran_dbg.stdout:
+                return ("problem", f"{src.name}: stdout differs between release and --debug")
+            if ran_rel.returncode != ran_dbg.returncode:
+                return ("problem",
+                        f"{src.name}: exit {ran_rel.returncode} at release, "
+                        f"{ran_dbg.returncode} at --debug")
+            return ("checked", None)
+        finally:
+            cleanup_files(rel_exe, dbg_exe)
+
     problems = []
     checked = 0
     skipped = []
-    for src in fixtures:
-        text = src.read_text(encoding="utf-8", errors="replace")
-        if any(p in text for p in PROBES):
-            skipped.append(src.name)
-            continue
-        rel = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(release_exe)])
-        dbg = run_command([str(PRISMIO_EXE), "build", str(src), "--debug", "-o", str(debug_exe)])
-
-        # A fixture that does not build either way is some other test's problem.
-        if rel.returncode != 0 and dbg.returncode != 0:
-            continue
-        if rel.returncode != dbg.returncode:
-            problems.append(f"{src.name}: build exit {rel.returncode} at release, "
-                            f"{dbg.returncode} at --debug -- a level changed which "
-                            "programs compile (SPEC 7.2)")
-            continue
-
-        ran_rel = run_command([str(release_exe)])
-        ran_dbg = run_command([str(debug_exe)])
-        checked += 1
-
-        if ran_rel.stdout != ran_dbg.stdout:
-            problems.append(f"{src.name}: stdout differs between release and --debug")
-        if ran_rel.returncode != ran_dbg.returncode:
-            problems.append(f"{src.name}: exit {ran_rel.returncode} at release, "
-                            f"{ran_dbg.returncode} at --debug")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=test_jobs()) as pool:
+        for kind, payload in pool.map(check_one, fixtures):
+            if kind == "skip":
+                skipped.append(payload)
+            elif kind == "problem":
+                problems.append(payload)
+            elif kind == "checked":
+                checked += 1
 
     cleanup_files(release_exe, debug_exe)
     if checked == 0:
@@ -5426,6 +5649,57 @@ def run_inline_runtime_default_test():
     return True
 
 
+def run_single_loop_inline_test():
+    """Only a unique call that is alone in its loop receives alwaysinline.
+
+    This is the discriminating G4/G5 pair in miniature: marking both calls in a
+    multi-system loop recreated the measured G4 code-growth regression, while
+    omitting the one-call case prevents G5's caller from seeing stable list
+    invariants. Debug IR deliberately stays structurally faithful.
+    """
+    print(f"\n{BLUE}--- Running single_loop_inline ---{RESET}")
+    src = TEST_DIR / "test_88_single_loop_inline.psm"
+    problems = []
+
+    def marked_functions(text):
+        return set(re.findall(
+            r"; Function Attrs: [^\n]*alwaysinline[^\n]*\n"
+            r"define [^@\n]*@([^\s(]+)", text))
+
+    with tempfile.TemporaryDirectory(prefix="prismio-loop-inline-") as td:
+        release = Path(td) / "release.ll"
+        debug = Path(td) / "debug.ll"
+        for label, out, extra in (("release", release, []),
+                                  ("debug", debug, ["-g"])):
+            built = run_command([str(PRISMIO_EXE), "build", str(src),
+                                 *extra, "-o", str(out)])
+            if built.returncode != 0 or not out.exists():
+                problems.append(f"{label} IR build failed: "
+                                f"{elide_middle((built.stdout or '') + (built.stderr or ''))}")
+
+        if release.exists():
+            marked = marked_functions(release.read_text(
+                encoding="utf-8", errors="replace"))
+            expected = {"hot__Int"}
+            if marked != expected:
+                problems.append(f"release marked {sorted(marked)}, expected "
+                                f"only {sorted(expected)}")
+        if debug.exists():
+            marked = marked_functions(debug.read_text(
+                encoding="utf-8", errors="replace"))
+            if marked:
+                problems.append(f"debug IR unexpectedly marked {sorted(marked)}")
+
+    if problems:
+        print(f"{RED}[FAIL] single-loop inline classifier changed{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] unique single-loop call is inlined; crowded and "
+          f"debug calls retain boundaries{RESET}")
+    return True
+
+
 def run_overflow_checks_test():
     """RFC 0560's model: check in debug, wrap in release.
 
@@ -5840,39 +6114,80 @@ def run_curated_closure_test():
 
 
 def main():
+    global PRISMIO_EXE
+    args = parse_runner_args()
+
     print(f"{YELLOW}{'='*60}{RESET}")
     print(f"{YELLOW}Prismio Compiler Test Suite{RESET}")
     print(f"{YELLOW}{'='*60}{RESET}")
 
+    all_test_files = sorted(TEST_DIR.glob('test_*.psm'))
+    all_neg_test_files = sorted(TEST_DIR.glob('neg_*.psm'))
+    all_files = all_test_files + all_neg_test_files
+
+    if args.list:
+        for test_file in all_files:
+            print(test_file.stem)
+        return
+
+    PRISMIO_EXE = find_prismio_exe()
     if not PRISMIO_EXE.exists():
         print(f"{RED}[FAIL] Compiler not found at {PRISMIO_EXE}{RESET}")
         sys.exit(1)
 
-    test_files = sorted(TEST_DIR.glob('test_*.psm'))
-    neg_test_files = sorted(TEST_DIR.glob('neg_*.psm'))
+    patterns = args.patterns + args.filters
+    selected = select_test_files(all_files, patterns) if patterns else all_files
+    test_files = [path for path in selected if path.name.startswith("test_")]
+    neg_test_files = [path for path in selected if path.name.startswith("neg_")]
 
     if not test_files and not neg_test_files:
+        if patterns:
+            print(f"{RED}[FAIL] No fixture matched: {', '.join(patterns)}{RESET}")
+            print("Use --list to see available fixture names.")
+            sys.exit(2)
         print(f"{RED}[FAIL] No test files found!{RESET}")
         print("Test files should be named test_XX_*.psm or neg_XX_*.psm")
         sys.exit(1)
 
+    if patterns:
+        print(f"\nFilter: {', '.join(patterns)} (file fixtures only)")
     print(f"\nFound {len(test_files)} positive test(s)")
     print(f"Found {len(neg_test_files)} negative test(s)")
 
     passed = 0
     failed = 0
 
-    for test_file in test_files:
-        if run_test(test_file):
-            passed += 1
-        else:
-            failed += 1
+    global _progress_total
+    _progress_total = len(test_files) + len(neg_test_files)
+    print(f"Running file fixtures on {test_jobs()} worker(s)\n")
 
-    for test_file in neg_test_files:
-        if run_negative_test(test_file):
+    t_files = time.time()
+    real_stdout = sys.stdout
+    sys.stdout = _ThreadOut(real_stdout)
+    try:
+        outcomes = (run_parallel(run_test, test_files, lambda f: Path(f).stem)
+                    + run_parallel(run_negative_test, neg_test_files, lambda f: Path(f).stem))
+    finally:
+        sys.stdout = real_stdout
+    for ok in outcomes:
+        if ok:
             passed += 1
         else:
             failed += 1
+    print(f"\n  file fixtures: {time.time() - t_files:.1f}s "
+          f"({passed} passed, {failed} failed)\n")
+
+    if patterns:
+        print(f"{YELLOW}{'='*60}{RESET}")
+        print(f"{YELLOW}Filtered Test Results{RESET}")
+        print(f"{YELLOW}{'='*60}{RESET}")
+        print(f"{GREEN}Passed: {passed}{RESET}")
+        print(f"{RED}Failed: {failed}{RESET}")
+        print(f"Total:  {passed + failed}")
+        if failed:
+            sys.exit(1)
+        print(f"\n{GREEN}All selected tests passed!{RESET}")
+        sys.exit(0)
 
     if run_cli_test():
         passed += 1
@@ -6070,6 +6385,11 @@ def main():
         failed += 1
 
     if run_runtime_object_from_ir_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_single_loop_inline_test():
         passed += 1
     else:
         failed += 1

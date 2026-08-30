@@ -11,12 +11,15 @@ report. A later session re-runs this and compares JSON.
 
 WHAT IS MEASURED, AND HOW
 
-  frame time p50/p99/p999   In-process. Every program times each frame with
+  frame time p50/p99/p999   In-process. Every program times each sample with
                             clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) -- the same
                             call in all three languages -- and prints one
-                            `frame_ns` line per frame after the loop. This is the
-                            lead metric: process wall time hides the tail, and the
-                            tail is what a frame budget is made of.
+                            `frame_ns` line per sample after the loop. G5 groups
+                            32 renders per sample to lift its few-microsecond
+                            kernel above the rebuilt-binary noise floor; its
+                            total render count and checksum stay unchanged. This
+                            is the lead metric: process wall time hides the tail,
+                            and the tail is what a frame budget is made of.
 
   loop ms                   Sum of the frame samples. The work, without process
                             startup and without the report dump.

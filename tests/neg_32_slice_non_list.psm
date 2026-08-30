@@ -1,4 +1,4 @@
-// expect-error: slicing requires a List or Slice, found [Int]
+// expect-error: slicing requires a String, List, or Slice, found [Int]
 fn main() -> Int {
     let values: [Int] = [1, 2, 3]
     let bad = values[0..2]

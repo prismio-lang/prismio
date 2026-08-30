@@ -110,6 +110,7 @@ is `import ir.expr`, and `import ir.*` takes the whole package.
 | `src/aif/` | Allocation inference: the model, the walk, layout, and reporting |
 | `src/ir/` | Type lowering, expression and statement emission, and the LLVM bridge |
 | `src/main.psm` | CLI, import resolution, and the build driver |
+| `build.ums` | Required project manifest; declares the self-hosted compiler target |
 
 For a full breakdown of compiler internals, see [Architecture](https://docs.prismio.org/architecture)
 
@@ -121,16 +122,32 @@ For a full breakdown of compiler internals, see [Architecture](https://docs.pris
 
 | Dependency | Version | Notes |
 |---|---|---|
- Prismio | Latest | Includes LLVM toolchain and runtime |
+| clang + LLVM | 22.x | Native code generation and the LLVM C API backend |
 | Python | 3.8+ | Test runner utilities |
+| Prismio | not required | The committed seed creates the first local compiler |
 
 ### Using a Local Compiler Build
 
-By default, the test runner resolves `prismio` from the system `PATH` (via `find_prismio_exe()`
-in `test_runner.py`).
+Compiler contributors do not use a globally installed Prismio. Bootstrap named
+local generations, then use the last one explicitly:
 
-To verify changes against a local compiler build, put that build first on `PATH` for the session,
-e.g. `PATH="/path/to/local/build:$PATH" python test_runner.py`.
+```bash
+python3 tools/setup_llvm.py
+tools/bootstrap.sh --seed --out build/gen0
+tools/bootstrap.sh --compiler build/gen0 --out build/gen1
+tools/bootstrap.sh --compiler build/gen1 --out build/gen2
+```
+
+This repository is itself a Prismio project. Its required `build.ums` declares
+`compiler("prismio")`, so the project-native build is:
+
+```bash
+build/gen2 build
+```
+
+That discovers `build.ums` from the current directory or an ancestor and writes
+`.prismio/build/debug/prismio`. The special compiler target links the backend
+and LLVM; normal application executables continue to link only the runtime.
 
 ### IDE integration
 
@@ -153,9 +170,10 @@ program and checks the inference held. See [docs/DEBUGGING.md](docs/DEBUGGING.md
 ### Run the Test Suite
 
 ```bash
-cd tests
-python test_runner.py
+PRISMIO=$PWD/build/gen2 python3 tests/test_runner.py
 ```
+
+`PRISMIO` always wins over `PATH`, making the tested generation unambiguous.
 
 ---
 

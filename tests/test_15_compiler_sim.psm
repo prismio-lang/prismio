@@ -17,27 +17,27 @@ fn create_token(t: Int, v: Int, l: Int) -> Int {
 fn tokenize(input: Int) -> Int {
     let mut count = 0
     let mut pos = 0
-    
+
     while (pos < input) {
         let tok = create_token(1, pos, 1)
         count = count + 1
         pos = pos + 1
     }
-    
+
     return count
 }
 
 fn parse(token_count: Int) -> Int {
     let mut parsed = 0
     let mut i = 0
-    
+
     while (i < token_count) {
         if (i % 2 == 0) {
             parsed = parsed + 1
         }
         i = i + 1
     }
-    
+
     return parsed
 }
 

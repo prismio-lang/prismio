@@ -34,6 +34,7 @@ extern fn ir_function_begin(name: String, retType: String)
 extern fn ir_function_param(paramType: String, paramName: String)
 extern fn ir_function_param_unique(paramType: String, paramName: String)
 extern fn ir_function_body_start()
+extern fn ir_function_always_inline()
 extern fn ir_function_end()
 
 // Call Builder
@@ -267,6 +268,19 @@ extern fn ir_ptr_to_int(value: String, toType: String) -> Int
 extern fn ir_bitcast(fromType: String, value: String, toType: String) -> Int
 extern fn ir_struct_field_ptr(structName: String, object: String, fieldIndex: Int) -> Int
 extern fn ir_elem_ptr(elemType: String, base: String, index: String) -> Int
+// M4.2's flat-List access with its representation test hoisted out of the
+// element loop. `stride` is the static element size codegen already computed;
+// the emitted false arm is `list_get_inline` itself, so the boxed representation
+// is answered exactly as it was.
+extern fn ir_list_flat_elem(listValue: String, indexValue: String, stride: Int,
+                            guard: String) -> Int
+// The corresponding typed access for pointer-slot Lists, including scalar
+// values carried in a slot.
+extern fn ir_list_boxed_elem(listValue: String, indexValue: String) -> Int
+// The write end: a flat push that needs no allocator when the list has room.
+extern fn ir_list_flat_push(listValue: String, stride: Int) -> Int
+// One receiver's half of a loop's flat guard, for the preheader.
+extern fn ir_list_is_flat(listValue: String, stride: Int) -> Int
 extern fn ir_array_alloca(elemType: String, count: Int) -> Int
 extern fn ir_string_ptr(globalName: String) -> Int
 // LAYOUT 2. A constant C string created on demand and interned by content, for

@@ -37,6 +37,11 @@ nested blocks. New DSL sections can be parsed before the semantic model learns
 their meaning, and unknown schema elements receive semantic diagnostics rather
 than requiring lexer/parser changes.
 
+Tokens and AST block nodes retain byte offsets in addition to diagnostic line
+and column coordinates. `model/manifest_writer.psm` uses those offsets for
+minimal source edits. It does not serialize `UmsProjectModel`, because doing so
+would erase comments and formatting that have no semantic-model representation.
+
 ### The compiler executes; UMS orchestrates
 
 `src/main.psm` contains a thin `buildUmsProject` adapter. UMS owns discovery,
@@ -64,11 +69,11 @@ they will use the platform-appropriate global Prismio cache.
 
 - `parser/`: token vocabulary, DSL lexer, generic AST, recoverable parser
 - `model/`: diagnostics, metadata/build models, AST lowering, validation,
-  workspace facade
-- `targets/`: target kinds and target lookup
-- `dependency/`: dependency scopes and declarations
-- `resolver/`: upward manifest discovery; future dependency resolution belongs
-  behind a separate resolver API
+  workspace facade, and token-preserving manifest edits
+- `targets/`: executable, test, library, and self-hosted compiler target kinds,
+  plus target lookup
+- `dependency/`: dependency scopes, local-path resolution, and lockfile output
+- `resolver/`: upward manifest discovery
 - `builder/`: deterministic build-plan and artifact-path construction
 - `tests/`: manifest fixtures; `test_ums.psm` is the native subsystem test
 
@@ -85,25 +90,26 @@ belong in the parser or project metadata.
 
 - Only executable artifacts are emitted. Library declarations produce a clear
   validation diagnostic.
-- Dependencies are modeled but not resolved, downloaded, or linked.
-- Build profiles are an internal configuration value; profile blocks and CLI
-  selection are not parsed yet.
-- Project mode is integrated for `prismio build`; `run`, `test`, and `clean`
-  still use their existing behavior or are not yet implemented.
+- Local-path dependencies resolve and all dependencies are written to a
+  lockfile, but resolved sources are not added to import search or linked.
+  Registry dependencies still have no fetch implementation.
+- Debug and release profiles are CLI inputs; profile blocks are not parsed yet.
+- Manifest edits exist as a tested source transformation, but no dependency CLI
+  command writes the returned text to `build.ums` yet.
 - Target selection, target triples in manifests, incremental fingerprints,
-  package registries, lockfiles, publishing, and global caches are deferred.
+  package registries, publishing, and global caches are deferred.
 - The declared Prismio version is syntax-validated but compatibility selection
   is not yet enforced.
 
 ## Next implementation sequence
 
-1. Add profile and target-selection inputs to `UmsBuildConfiguration` without
-   moving them into project metadata.
-2. Introduce fingerprint/build-unit models and no-op detection.
-3. Define a dependency resolver interface plus lockfile model before choosing a
-   registry protocol.
-4. Add executable `run`, then test-target and clean orchestration against the
-   same workspace/build-plan API.
-5. Add library emission and dependency linkage through an explicit compiler
-   capability interface.
-6. Add target triples and platform-aware artifact naming.
+1. Put a dependency CLI in front of the manifest writer, with a replacement
+   strategy that cannot leave a partial `build.ums` behind.
+2. Add resolved local dependency roots to module search through an explicit
+   compiler capability interface.
+3. Introduce fingerprint/build-unit models and no-op detection.
+4. Add library emission and dependency linkage through the same capability
+   interface.
+5. Add target-selection and target-triple inputs without moving build policy
+   into project metadata.
+6. Define the registry and global-cache protocols before implementing a fetch.
