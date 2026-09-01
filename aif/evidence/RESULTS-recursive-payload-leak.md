@@ -1,8 +1,11 @@
 # `g8_tree_rebuild` leaks 12,282 of 12,284, and it is two mechanisms, not one
 
-Diagnosis only. Nothing in the compiler changed here; every number below is
-`build/host-routing-locked7` — the generation current on 2026-09-01 — run with
-`--verify`.
+**Status: FIXED for the general case, 2026-09-01.** §1–6 are the diagnosis, made
+against `build/host-routing-locked7`; §7 is what changed and what it moved. Both
+mechanisms turned out to be one — a site is per function, not per instance — and
+both are closed. g8 itself keeps a residue that is **not** this defect: 8,188
+allocations belonging to the `sink` reuse feature the workload was written to
+measure, and which its own header says is not landed.
 
 The standing account of this leak, recorded in `runtime/aif_support.c` above the
 type-release cache and again in the header of `tests/test_73_recursive_release.psm`,
@@ -236,3 +239,51 @@ fn main() -> Int {
     return 0
 }
 ```
+
+## 7 · The fix
+
+Two clauses in `aif_owns_call_result_at_node`, and one new fact.
+
+**Mechanism 1 — `in_recursive_released_field`.** `compute_released_fields` now
+accumulates two bitsets beside the union it already built, split by
+`field_closes_cycle`. The call-result query declines only for a site that lands
+in a released field which does *not* re-enter its owner's type. Where the field
+recurses, the field's release and the caller's drop are the same traversal, so
+the caller is not a second release point — and `field_release_of` has already
+required the tree shape that argument needs. The two scope-exit callers of
+`site_in_released_field` are untouched; they ask a different question, about a
+value and a container sharing a frame.
+
+**Mechanism 2 — `sink` reaches the analysis.** The pass-through guard read
+`fn_may_return_param`, one bit for the whole callee, and applied it to every site
+the call might return. Narrowing it per site was not enough on its own: `passes`
+feeds `mapAdd`'s output back into its own parameter, so the parameter really does
+point at those sites. What separates them is the **contract**: a `sink` parameter
+is a move, the caller's binding is dead after the call, and sema enforces it. So
+`aif_note_param_consuming` records it from the declaration in `src/aif/walk.psm`,
+and `site_may_be_param_of` skips those parameters. A borrow parameter still
+declines exactly as before.
+
+### What moved
+
+| | before | after | |
+|---|---:|---:|---|
+| F — self-recursive root | 4 / 1 / **3 leaked** | 4 / 4 / **0** | |
+| G — root at a distinct site | 8 / 8 / 0 | 8 / 8 / 0 | unchanged |
+| H — returns a `sink` parameter | 4 / 1 / **3 leaked** | 4 / 4 / **0** | |
+| I — returns no parameter | 4 / 4 / 0 | 4 / 4 / 0 | unchanged |
+| `g8_tree_rebuild` | 12,284 / **2** / 12,282 | 12,284 / **4,096** / 8,188 | checksum `528891` both |
+| `test_74_reinit_assignment` | 255 / 7 / 248 | 255 / **162** / 93 | violations 0 both |
+
+**g8's residue is the reuse feature, not this one.** Written with the pass loop
+unrolled — the same algorithm, `passes` expanded into five `mapAdd` calls — it
+reads **12,284 / 12,284 / 0**, checksum unchanged. What the recursive form still
+leaks is the intermediate consumed by each `sink`, which nothing reclaims because
+`mapAdd` does not yet free the block it destructures. That is M2.1's reuse token,
+which this workload exists to measure and which its header says is not landed.
+`test_74`'s note records the same residue and predicted this fall.
+
+**Gates:** fixpoint identical, suite **206/206**, AIF differential unchanged from
+the baseline (the same 2 pre-existing `src/main.psm` disagreements, present on
+`build/base-gen1` too). `test_74`'s expected leak count moves 248 → 93 in the
+runner, which is more frees at an unchanged allocation count.

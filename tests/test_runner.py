@@ -5294,7 +5294,16 @@ def run_aif_verify_test():
         # to fill its unused pointer payload slots with freshly malloc'd,
         # entirely uninitialised nodes; they are `none` now. Exactly half this
         # fixture's allocations were those fillers.
-        "test_74_reinit_assignment": 248,
+        #
+        # **248 -> 93 on 2026-09-01, and this time it is more frees rather than
+        # fewer allocations**: 255 allocated / 7 released became 255 / 162, with
+        # violations 0 in both. A self-recursive producer is one site serving the
+        # root and every interior node, and the root inherited the child's
+        # "already released by a field" answer -- so the caller was refused the
+        # one drop that would have reclaimed the structure. The fall is this
+        # note's own prediction; what remains is still the `sink` residue above.
+        # See aif/evidence/RESULTS-recursive-payload-leak.md.
+        "test_74_reinit_assignment": 93,
         # Boxed OBJECT replacement through the explicit exclusive capability.
         # The displaced Named owns a String, so zero proves list_set_exclusive
         # invoked the typed element release; ordinary list_set leaves one leak

@@ -2084,6 +2084,27 @@ int aif_var_scope(int fn, const char* name) {
 int aif_key_field(const char* type, const char* fld) { return key_intern(AIF_KEY_FIELD, aif_intern(type), aif_intern(fld)); }
 int aif_key_ret(int fn)                              { return key_intern(AIF_KEY_RET, fn, 0); }
 int aif_key_param(int fn, int index)                 { return key_intern(AIF_KEY_PARAM, fn, index); }
+
+// Which parameters are declared `sink`, by PARAM key.
+//
+// The one thing the pass-through guard needs and could not ask. A `sink`
+// parameter is a **move**: the caller gave up ownership at the call, and sema
+// enforces it -- the argument's binding is dead afterwards and `use of moved
+// value` is a hard error. So a callee handing a consuming parameter back is not
+// the double-free the guard exists to prevent; it is ownership returning to a
+// caller that no longer has it. Exactly one owner throughout.
+//
+// Recorded from the declaration rather than inferred, because `sink` is a
+// written contract like `alias` and FFI `consume`, and the points-to sets cannot
+// see the difference -- a moved argument and a borrowed one point at the same
+// site.
+static Bits param_consuming;
+
+void aif_note_param_consuming(int fn, int index) {
+    if (fn < 0 || index < 0) return;
+    bits_set(&param_consuming, key_intern(AIF_KEY_PARAM, fn, index),
+             "AIF consuming parameters");
+}
 int aif_key_count(void)                              { return key_count; }
 
 // ---------------------------------------------------------------------------
@@ -6348,6 +6369,36 @@ int aif_field_release(const char* type, const char* field) {
 static Bits in_released_field;
 static int in_released_field_done;
 
+// The same union, split by whether the field re-enters its owner's type.
+//
+// **Why the split exists.** A site is per function, not per instance, so a
+// self-recursive constructor -- `Tree.Node(build(..), v, build(..))` -- is *one*
+// site playing two roles: the root the caller is meant to own, and every
+// interior node the recursion stores into a payload field. The child role puts
+// it in `in_released_field`, and aif_owns_call_result_at_node then reads that
+// answer for the *root* and refuses the caller ownership of it. Nothing is
+// reclaimed at all: `__aif_release_Tree` is generated and never called, and the
+// structure leaks entire -- 12,282 of 12,284 on `g8_tree_rebuild.psm`.
+//
+// **Why exempting the recursive case is not a hole.** The exclusion exists so a
+// caller does not become a *second* release point for a value some field already
+// releases. Where the field re-enters the owner's type, the field's release and
+// the caller's drop are the **same traversal**: the caller frees the root, the
+// generated release recurses to the leaves, and each block is freed once. There
+// is no second freer to collide with.
+//
+// The tree shape that argument needs is not assumed here -- field_release_of has
+// already required it. A re-entering field contributes a disposition only when
+// every site it can hold answers AIF_ELEM_TYPED or AIF_ELEM_OBJECT, which
+// declines containers and anything the collector owns. A `parent` back-reference
+// or a DAG never reaches this set in the first place.
+//
+// A site that lands in *both* kinds of field is not exempt: a value stored into
+// an ordinary owned field somewhere else has a release point the caller's drop
+// does not reach, so it keeps the original answer.
+static Bits in_recursive_released_field;
+static Bits in_plain_released_field;
+
 // Whether anything actually reclaims a value of this type.
 //
 // **A field is only a release point if its owner has one**, and that is not
@@ -6391,6 +6442,13 @@ static void compute_released_fields(void) {
             int key = key_find(AIF_KEY_FIELD, t->name, t->field_name[i]);
             if (key < 0 || key >= pt_len) continue;
             bits_or(&in_released_field, &pt[key], "AIF released fields");
+            if (field_closes_cycle(n, field_declared_type(t, i))) {
+                bits_or(&in_recursive_released_field, &pt[key],
+                        "AIF recursive released fields");
+            } else {
+                bits_or(&in_plain_released_field, &pt[key],
+                        "AIF plain released fields");
+            }
         }
     }
 }
@@ -6398,6 +6456,18 @@ static void compute_released_fields(void) {
 static int site_in_released_field(int s) {
     compute_released_fields();
     return bits_test(&in_released_field, s);
+}
+
+// Released, and only ever through a field that re-enters its owner's type.
+//
+// Deliberately *not* folded into site_in_released_field, whose other two callers
+// are scope-exit questions (aif_frees_at_scope_node and its neighbour) where the
+// value and its container share a frame and the same-traversal argument above
+// does not apply. This one answers the call-result question only.
+static int site_only_in_recursive_released_field(int s) {
+    compute_released_fields();
+    if (!bits_test(&in_recursive_released_field, s)) return 0;
+    return !bits_test(&in_plain_released_field, s);
 }
 
 // Whether codegen should allocate this node's value through rc_alloc.
@@ -6687,6 +6757,45 @@ int aif_fn_may_return_param(const char* symbol) {
     return fn_may_return_param(aif_fn_lookup(symbol));
 }
 
+// The same hazard asked of **one site** rather than of the whole function.
+//
+// fn_may_return_param collapses the question to a single bit per callee: does
+// *any* return path hand back *any* parameter. aif_owns_call_result_at_node then
+// applies that bit to *every* site the call may return, which refuses ownership
+// of allocations no parameter can reach. `passes(sink t, n)` returning `t` on its
+// base path is the shape: the fact is true of the function, and it took
+// `mapAdd`'s fresh nodes with it -- 10,235 of the 12,282 leaked by
+// `g8_tree_rebuild.psm`.
+//
+// The finer question is already computable from the same data. If a parameter
+// may point at this site, returning it may be handing back the argument and the
+// caller must not free it. If no parameter of the callee can point at it, no
+// return path can make it the argument, whatever the function does on some other
+// path.
+//
+// **Soundness is the same argument one step down.** A callee that returns a
+// parameter returns what that parameter points to, so the site would be in the
+// PARAM key's set and is declined here exactly as before. This narrows which
+// sites are refused; it does not widen what may be freed for any site.
+//
+// Conservative in the same direction as its neighbours: an unknown or extern
+// symbol has no PARAM keys here and answers no, which is what the long note
+// above fn_may_return_param requires -- answering yes there was measured to leak
+// one String per integer printed.
+static int site_may_be_param_of(int f, int s) {
+    if (f < 0 || s < 0) return 0;
+    key_index_build();
+    for (int k = 0; k < key_count && k < pt_len; k++) {
+        KeyNode* kn = key_by_id[k];
+        if (kn == NULL || kn->kind != AIF_KEY_PARAM || kn->a != f) continue;
+        // A move, not a borrow: see aif_note_param_consuming. The caller cannot
+        // free what it no longer owns, so handing this one back is safe.
+        if (bits_test(&param_consuming, k)) continue;
+        if (bits_test(&pt[k], s)) return 1;
+    }
+    return 0;
+}
+
 // The view half of the question above, and the reason codegen had to fall back
 // on "does the result carry a pointer at all".
 //
@@ -6751,9 +6860,16 @@ int aif_owns_call_result_at_node(const void* node) {
         // **What made it safe to relax is the pass-through guard, not a new
         // fixed point.** The hazard the old test named is real -- a value handed
         // *in* and handed straight back is owned by the caller's argument, and
-        // freeing it here double-frees. That is exactly `fn_may_return_param`,
-        // so it is asked directly instead of being approximated by "the site
-        // belongs to somebody else".
+        // freeing it here double-frees. So it is asked directly instead of being
+        // approximated by "the site belongs to somebody else".
+        //
+        // Asked **per site**, not per function. `fn_may_return_param` is one bit
+        // for the whole callee, and applying it to every site the call may return
+        // refused ownership of allocations no parameter can reach: `passes(sink
+        // t, n)` returns `t` on its base path, which took `mapAdd`'s fresh nodes
+        // with it and leaked 10,235 of g8's 12,282. site_may_be_param_of asks
+        // whether *this* site is in some parameter's points-to set, which is the
+        // question the guard was always standing in for.
         //
         // The other half -- "no intermediate frame owns it" -- needs nothing
         // computed, because **returning a value already implies not dropping
@@ -6762,13 +6878,24 @@ int aif_owns_call_result_at_node(const void* node) {
         // declined by `nodeEscapesThroughCall` (src/ir/expr.psm). So every frame
         // on the path from the allocation to here has already been refused
         // ownership of it, and this caller is the first that can hold it.
-        if (sites[s].fn != c->fn && fn_may_return_param(c->fn)) return AIF_ELEM_NONE;
+        if (sites[s].fn != c->fn && site_may_be_param_of(c->fn, s)) return AIF_ELEM_NONE;
         if (sites[s].in_container) return AIF_ELEM_NONE;
         // A field the type releases is already this value's release point, so
         // the caller must not become a second one. The same exclusion as
         // in_container above, and reachable the same way: a function that both
         // stores a value into a field and returns that field.
-        if (site_in_released_field(s)) return AIF_ELEM_NONE;
+        //
+        // **Except where that field re-enters its owner's type**, which is not a
+        // second release point but the same one. A self-recursive constructor is
+        // one site serving both the root and every interior node, so the child
+        // role put the root in this set and refused the caller the only drop that
+        // would have reclaimed anything -- the whole structure, 12,282 of 12,284
+        // on g8. Where the field recurses, the caller's drop *is* the traversal
+        // that frees the children, once each; see the note on
+        // in_recursive_released_field for why field_release_of has already
+        // established the tree shape that needs.
+        if (site_in_released_field(s)
+            && !site_only_in_recursive_released_field(s)) return AIF_ELEM_NONE;
         if (aif_tier_of(s) != AIF_T2) return AIF_ELEM_NONE;
         int d = elem_disposition_of(s, AIF_T2);
         // A struct that owns something joins `List` here, and for the same
@@ -6975,6 +7102,9 @@ void aif_reset(void) {
     key_by_id_len = 0;
 
     bits_free(&in_released_field);
+    bits_free(&in_recursive_released_field);
+    bits_free(&in_plain_released_field);
+    bits_free(&param_consuming);
     in_released_field_done = 0;
     free(type_releases);
     type_releases = NULL;

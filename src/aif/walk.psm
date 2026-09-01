@@ -1151,6 +1151,11 @@ internal fn aifBuild(module: ASTNode) {
                         // value assigned to it anywhere in the body outlives
                         // every block inside it.
                         aif_var_note_scope(fid, param.s1, root)
+                        // Declared `sink`: the call moved it, so the caller has
+                        // no owner left for the guard to protect.
+                        if (strEquals(param.s2, "sink")) {
+                            aif_note_param_consuming(fid, index)
+                        }
                         let mut pty = aifNodeType(param)
                         if (strEquals(pty, "")) {
                             if (nodeExists(param.child1)) {

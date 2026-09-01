@@ -72,37 +72,32 @@ why the neighbouring predicate must still answer no for the latter.
 is run by `run_corpus_test` and the `--verify` sweep. See
 `aif/evidence/RESULTS-extern-alias-escape.md`.
 
-**A self-recursive producer leaks everything it builds, and it is two
-mechanisms.** `aif/evidence/xlang/prismio/g8_tree_rebuild.psm` reads **12,284
-allocated, 2 released, 12,282 leaked, 0 violation(s)** -- the whole structure,
-with a clean violation column. It is not in `bench.PROGRAMS` for that reason.
+**A self-recursive producer leaked everything it built, and it is fixed.** A
+site is per function, not per instance, so a self-recursive constructor was one
+site serving both the root the caller should own and every interior node stored
+into a payload field. The child role made `site_in_released_field` answer yes --
+rightly; it is what stops a double free -- and `aif_owns_call_result_at_node`
+read that same answer for the root and refused the caller the only drop that
+would have reclaimed anything. `__aif_release_Tree` was generated and never
+called.
 
-The standing account, in `runtime/aif_support.c` and in the header of
-`tests/test_73_recursive_release.psm`, is that ownership transfer survives only
-one hop. That is refuted: a four-level chain of distinct functions reclaims all
-16 of its allocations. Depth is not the trigger; self-recursion is, through two
-independent doors.
+The recorded account, that ownership transfer survives only one hop, was wrong:
+a four-level chain of *distinct* functions reclaims all 16 of its allocations.
+Depth was never the trigger.
 
-- **A site is per function, not per instance.** A self-recursive constructor is
-  one site playing two roles -- the root the caller should own, and every
-  interior node stored into a payload field. The child role makes
-  `site_in_released_field` answer yes, which is right and is what stops a double
-  free; `aif_owns_call_result_at_node` then reads that same answer for the root
-  and refuses the caller ownership of it. `__aif_release_Tree` is generated and
-  never called. Hoisting the root to a distinct site -- the identical recursion --
-  moves g8 from 2 released to **2,049**, the entire initial tree.
-- **`fn_may_return_param` is a per-function fact applied per site.** `passes`
-  returns its parameter on the base path, so ownership is refused for every site
-  it may return, including `mapAdd`'s fresh allocations that no parameter can
-  alias. That is the remaining 10,235, exactly 5 passes x 2,047 nodes.
+Two clauses closed it. A released field that re-enters its owner's type no
+longer excludes the caller, because there the field's release and the caller's
+drop are the same traversal. And a `sink` parameter -- a move the caller cannot
+undo -- no longer counts as a pass-through, which is what `passes(sink t, n)`
+needed. `g8_tree_rebuild` goes **2 released to 4,096**;
+`test_74_reinit_assignment` **248 leaked to 93**; violations 0 throughout,
+checksums unchanged. See `aif/evidence/RESULTS-recursive-payload-leak.md`.
 
-The fix recorded in the notes -- teaching the disposition that a Prismio call
-returning an owned `T` is plain -- is **not** the blocker:
-`aif_owns_call_result_at_node` already accepts `AIF_ELEM_TYPED` and
-`AIF_ELEM_OBJECT`, and all nine of g8's sites already report `T2 / owned`. The
-second mechanism is much the cheaper of the two and is worth roughly four fifths
-of the leak. See `aif/evidence/RESULTS-recursive-payload-leak.md`, which carries
-the six minimal reproducers and the controlled pairs.
+**What is still open is the reuse token, not the transfer.** g8 keeps 8,188
+leaks: `mapAdd` consumes a tree through a `sink` and nothing reclaims the block
+it destructures. Written with the pass loop unrolled the same workload reads
+12,284 / 12,284 / 0, which is how that residue was separated from the defect
+above. This is M2.1's reuse feature, which g8 was written to measure.
 
 **UMS resolution releases nothing it allocates.** Not unsoundness — `violations`
 is 0 either side — but a real regression in allocation hygiene. The recorded fix
@@ -137,26 +132,19 @@ in `std` calls the unprefixed names — the methods delegate to the prefixed
 bodies — so shadowing would be safe, but it is a language semantics change and has
 not been made.
 
-**`List<Int>` and `List<Bool>` never reach the inline-storage path.**
-`inlineElemSizeOfList` (`src/ir/expr.psm:633`) returns 0 for any element type
-that is not a struct, so `list_set_elem_inline` is never stamped, `elem_size`
-stays 0, and every access takes the boxed entry point rather than
-`list_get_inline`. The scalar case is not declined, it is not reached.
+**Scalar-element lists are inline now, and a read-dominated loop got slower.**
+`inlineElemSizeOfList` used to answer 0 for any element type that was not a
+struct, so `List<Bool>` and `List<Int>` spent a pointer slot each -- not
+declined, unreached. They are stored under their own width now: `List<Bool>` at
+4,000,000 elements goes **64.0 MB to 9.2 MB**, `List<Int>` to 32.7 MB, and a
+sieve to 2,000,000 is **1.25x faster**.
 
-Measured at 4,000,000 elements: `List<Bool>` and `List<Int>` both take 64.0 MB
-peak RSS -- 8 bytes an element -- while `List<B>` for `struct B { v: Bool }` is
-the same data at **9.2 MB**, one byte an element, because a one-field struct
-passes `isStructTypeKey` and a bare `Bool` does not. **7.0x on footprint, from
-the compiler's existing path.**
-
-For `List<Int>` 8 bytes is already the right density and the cost is the access
-path, not space. The storage is flat rather than boxed in both cases: 1,000
-pushes cost 11 allocations, not 1,011.
-
-The speed half is **unmeasured**, and the struct wrapper cannot stand in for it
--- the wrapper heap-allocates each literal before copying it into the row, so a
-sieve run that way is 10x slower while allocating 47,879 against 17. That number
-measures struct construction, not storage. See
+**A pure read loop is 2.31x slower** (2.14 ms to 4.94 ms over 20M `list_get`).
+Inline scalars leave `isStaticBoxedListGet`, whose lowering inlines and
+vectorises the access; the curated `list_get_inline_scalar` call does not. The
+shaped fix is a scalar `ir_list_flat_elem` that resolves the representation
+inside the intrinsic, so the flat arm can be address arithmetic and a load --
+a backend change, not done here. See
 `aif/evidence/RESULTS-scalar-list-storage.md`.
 
 ## Codegen

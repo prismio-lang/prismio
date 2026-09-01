@@ -389,6 +389,9 @@ extern fn aif_key_field(type: String, field: String) -> Int
 extern fn aif_elem_key(containerType: String) -> Int
 extern fn aif_key_ret(fnId: Int) -> Int
 extern fn aif_key_param(fnId: Int, index: Int) -> Int
+// `sink` on a parameter, told to the engine. A move rather than a borrow, which
+// is what lets the pass-through guard allow a callee to hand one back.
+extern fn aif_note_param_consuming(fnId: Int, index: Int)
 
 extern fn aif_argv_begin() -> Int
 extern fn aif_argv_push(vs: Int)
