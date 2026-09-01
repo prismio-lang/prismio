@@ -1,7 +1,9 @@
 # `List<Int>` and `List<Bool>` never reach the inline path, and the gate is one line
 
-Diagnosis only. No compiler change here. Every number is
-`build/host-routing-locked7`, LLVM 22.1.8, Apple Silicon.
+**Status: LANDED with a measured regression, 2026-09-01.** §1–4 are the diagnosis
+against `build/host-routing-locked7`; §5 is what changed and what it cost. The
+space win is large and the sieve gets faster; a pure read loop does not, and that
+is recorded here rather than left for someone to find.
 
 The flat-list machinery is built and working — `RESULTS-flat-list-view.md` and
 `RESULTS-curate-list-get-inline.md` are its evidence. What is not established
@@ -88,7 +90,7 @@ per-element allocation, so it should be smaller *and* no slower than the scalar
 arm above. That is the prediction the change has to be measured against, and it
 cannot be measured before the change exists.
 
-## 4 · The shape of the change
+## 4 · The shape of the change (as planned)
 
 1. Give `inlineElemSizeOfList` and `inlineElemSizeOfSlice` a scalar arm: for an
    element key that is a known-width scalar, return that width rather than 0.
@@ -108,3 +110,66 @@ uses struct-element lists almost throughout (`g4_ecs_world` is five
 `List<Struct>`), so the corpus median is likely to be flat and **the evidence
 for this change will have to come from a program written for it** — which is
 the same hole `g8_tree_rebuild` was written to fill for reuse.
+
+## 5 · What landed, and what it cost
+
+`inlineElemSizeOfList` and `inlineElemSizeOfSlice` answer with the scalar's width
+now. Four consequences had to be handled, and three of them are the same hazard:
+
+**The two conventions are not interchangeable.** The boxed entry points take a
+scalar *punned into* a pointer slot and hand back the slot's contents; the inline
+ones take an address and hand back an address. Crossing them is a wild read, not
+a wrong answer. There turned out to be **three** read paths — the `list_get`
+call, the `l[i]` subscript, and the slice subscript — and missing the second is
+what made `nums[0]` return `19160624` instead of `7`.
+
+**Only a scalar can tell the two apart**, which is why it is resolved in the
+runtime rather than in codegen. `list_get_inline` returns the slot's address for
+an inline list and its contents for a boxed one; for a struct both are addresses,
+so the existing guarded fast path can select between them. For a scalar they are
+different kinds of value and no single load covers both — so a scalar goes
+through `list_get_inline_scalar`, which branches on `elem_size` itself and
+returns a value either way. The flat fast path stays pointer-shaped for exactly
+this reason; extending it to scalars type-checks and is unsound in the fallback
+arm.
+
+**Writes go by value.** Reaching the inline setters with an address meant
+codegen spilling the scalar to a stack slot; that measured **1.76×** against the
+pointer slot it replaced, and it stores a stack address as the element if the
+list turns out boxed. `list_set_inline_scalar` / `list_push_inline_scalar` /
+`list_slice_set_inline_scalar` take the value widened to `i64` and store it back
+under the element's width — by assignment rather than by byte copy, which is what
+keeps it endian-safe.
+
+**`list_get_inline_scalar` is curated.** It calls nothing and touches only
+`RtList` fields, so it satisfies the closure rule the same way `list_get_inline`
+does. Left out it cost **8.9×** on a read loop, which is the whole of what the
+change was supposed to buy. Its write siblings stay out: they reach
+`scalar_store`, `list_inline_grow` and `list_set_elem_inline`, all `static`.
+
+### Measured, `build/base-gen1` against `build/rc-gen2`
+
+| | before | after | |
+|---|---:|---:|---|
+| `List<Bool>`, 4M elements | 64.0 MB | **9.2 MB** | **7.0× smaller** |
+| `List<Int>`, 4M elements | 64.0 MB | **32.7 MB** | **2.0× smaller** (`Int` is `i32`) |
+| sieve to 2,000,000 | 8.54 ms | **6.82 ms** | **1.25× faster** |
+| write loop, 20M `list_set` | 21.17 ms | **18.76 ms** | 1.13× faster |
+| read loop, 20M `list_get` | 2.14 ms | 4.94 ms | **2.31× slower** |
+
+**The read loop is a real regression and it is the one number to argue with.**
+Putting scalars inline takes them out of `isStaticBoxedListGet`, whose
+`ir_list_boxed_elem` lowering inlines the access into a guarded loop and
+vectorises; the curated call does not vectorise. The sieve still wins because it
+is write- and cache-bound, and 20M reads at 4.94 ms is 0.25 ns each — but a
+read-dominated scalar loop is slower than it was.
+
+**The fix is shaped and not done**: a scalar `ir_list_flat_elem`, which resolves
+the representation inside the intrinsic so the true arm can be address
+arithmetic and a load. That is a backend change and wants its own measurement.
+
+**Gates:** fixpoint identical, suite **206/206**, AIF differential 36 agree with
+the same 2 pre-existing `src/main.psm` disagreements the baseline has.
+`test_79_slices` — which already had a scalar-slice case — is what caught the
+subscript path, and `test_82_generic_layout` and `test_88_map_keys` caught a
+`zext ptr` from testing "not a struct key" where the question was the width.

@@ -636,7 +636,13 @@ private fn inlineElemSizeOfList(listExpr: ASTNode) -> Int {
     if (lt.kind != TypeKind.LIST) { return 0 }
     if (nodeIsNull(lt.child)) { return 0 }
     let ekey = typeIrKey(ptr_to_type(lt.child))
-    if (isStructTypeKey(ekey) == false) { return 0 }
+    // A scalar element is inline too, and used not to be. `isStructTypeKey`
+    // alone meant `List<Bool>` and `List<Int>` never reached this path at all --
+    // not declined, unreached -- so both spent a pointer slot per element.
+    // Measured at 4,000,000 elements: 64.0 MB against 9.2 MB for the same data
+    // as a one-field struct, which passed the predicate only because it was one.
+    // See aif/evidence/RESULTS-scalar-list-storage.md.
+    if (isStructTypeKey(ekey) == false) { return scalarInlineBytes(ekey) }
     return inlineElemSize(structTypeName(ekey))
 }
 
@@ -645,7 +651,13 @@ private fn inlineElemSizeOfSlice(sliceExpr: ASTNode) -> Int {
     let st = nodeGetType(sliceExpr)
     if (st.kind != TypeKind.SLICE or nodeIsNull(st.child)) { return 0 }
     let ekey = typeIrKey(ptr_to_type(st.child))
-    if (isStructTypeKey(ekey) == false or isValueStructKey(ekey)) { return 0 }
+    // **A slice views the list's own block, so this must agree with
+    // inlineElemSizeOfList exactly.** Leaving scalars out here while the list
+    // put them inline is not a lost optimisation but corruption: `list_get`
+    // ignores `elem_size` and returns `l->data[index]`, so a boxed slice read
+    // over a flat row hands back the first eight bytes of the row as a pointer.
+    if (isStructTypeKey(ekey) == false) { return scalarInlineBytes(ekey) }
+    if (isValueStructKey(ekey)) { return 0 }
     return inlineElemSize(structTypeName(ekey))
 }
 
@@ -947,6 +959,53 @@ private fn inlineOpName(funcName: String) -> String {
     if (strEquals(funcName, "list_set")) { return "list_set_inline" }
     if (strEquals(funcName, "list_push")) { return "list_push_inline" }
     return ""
+}
+
+// A scalar in a stack slot, so an inline container op has an address to copy
+// from. One alloca per call site; LLVM's SROA removes it wherever the copy is
+// visible, which on the push loops it is.
+//
+// **Handing a stack address to list_push_inline is safe only because a scalar
+// list owns nothing**: both inline entry points end in `list_release_source`,
+// which would hand `e` to a deallocator for any `elem_own` other than
+// AIF_ELEM_NONE. A scalar registers no site, so its list is told NONE and the
+// call returns before touching it. That is an inherited invariant rather than a
+// new one -- the boxed path already passes the scalar *punned into* a pointer to
+// the same function, and has always relied on the same answer.
+// A scalar widened to the i64 the by-value inline entry points take.
+//
+// A `double` goes through a bitcast rather than a conversion: the callee stores
+// the 64 bits back under the element's own width, so what has to survive is the
+// pattern and not the number. `fptoui` here would round a double to an integer
+// and store that.
+private fn scalarToInlineBits(storeType: String, value: String) -> String {
+    if (strEquals(storeType, "double")) {
+        return ir_get_temp_name(ir_bitcast("double", value, "i64"))
+    }
+    if (strEquals(storeType, "i64")) { return value }
+    return ir_get_temp_name(ir_zext(storeType, value, "i64"))
+}
+
+// The inverse of scalarToInlineBits: the i64 an inline scalar read returns,
+// back under the element's own width.
+private fn scalarFromInlineBits(storeType: String, bits: String) -> String {
+    if (strEquals(storeType, "double")) {
+        return ir_get_temp_name(ir_bitcast("i64", bits, "double"))
+    }
+    if (strEquals(storeType, "i64")) { return bits }
+    return ir_get_temp_name(ir_trunc("i64", bits, storeType))
+}
+
+private fn scalarSpillToSlot(storeType: String, value: String) -> String {
+    let slot = strConcat("elem.", strFromInt(irElemSpillCounter))
+    irElemSpillCounter = irElemSpillCounter + 1
+    ir_alloca(storeType, slot)
+    ir_store(storeType, value, slot)
+    // `%name` is how resolve_value in the backend names an alloca as a *value*:
+    // it looks the bare name up among the params and then the allocas. Handing
+    // it the undecorated name instead falls through to const_from_text, which
+    // fails the build with "non-null pointer constant".
+    return strConcat("%", slot)
 }
 
 private fn generateElemInlineStamp(expr: ASTNode, funcName: String, result: String) {
@@ -1303,10 +1362,21 @@ internal fn generateExpression(expr: ASTNode) -> String {
             ir_call_begin()
             ir_call_arg("ptr", arrayVal)
             ir_call_arg("i32", indexVal)
-            let mut getName = "list_get"
-            if (inlineElemSizeOfList(baseNode) > 0) { getName = "list_get_inline" }
-            let raw = ir_get_temp_name(ir_call_end("ptr", getName))
+            let listInline = inlineElemSizeOfList(baseNode)
             let retType = storageType(getExprType(expr))
+            // A scalar element goes by value, through the entry point that
+            // resolves the representation itself. See list_get_inline_scalar:
+            // `list_get_inline` returns an address for an inline list and the
+            // slot's contents for a boxed one, and only a scalar can tell those
+            // apart -- so the branch belongs where `elem_size` is, not here.
+            if (listInline > 0 and scalarInlineBytes(retType) > 0) {
+                ir_call_arg("i32", strFromInt(listInline))
+                let bits = ir_get_temp_name(ir_call_end("i64", "list_get_inline_scalar"))
+                return scalarFromInlineBits(retType, bits)
+            }
+            let mut getName = "list_get"
+            if (listInline > 0) { getName = "list_get_inline" }
+            let raw = ir_get_temp_name(ir_call_end("ptr", getName))
             if (isFatStringKey(retType)) { return fatFromPtr(raw) }
             if (strEquals(retType, "ptr") == false) { return slotToScalar(retType, raw) }
             return raw
@@ -1323,10 +1393,18 @@ internal fn generateExpression(expr: ASTNode) -> String {
             ir_call_arg("i32", offset)
             ir_call_arg("i32", length)
             ir_call_arg("i32", indexVal)
-            let mut getName = "list_slice_get"
-            if (inlineElemSizeOfSlice(baseNode) > 0) { getName = "list_slice_get_inline" }
-            let raw = ir_get_temp_name(ir_call_end("ptr", getName))
+            let sliceInline = inlineElemSizeOfSlice(baseNode)
             let retType = storageType(getExprType(expr))
+            // The same by-value resolution as `l[i]` above, one indirection out.
+            if (sliceInline > 0 and scalarInlineBytes(retType) > 0) {
+                ir_call_arg("i32", strFromInt(sliceInline))
+                let bits = ir_get_temp_name(
+                    ir_call_end("i64", "list_slice_get_inline_scalar"))
+                return scalarFromInlineBits(retType, bits)
+            }
+            let mut getName = "list_slice_get"
+            if (sliceInline > 0) { getName = "list_slice_get_inline" }
+            let raw = ir_get_temp_name(ir_call_end("ptr", getName))
             if (isFatStringKey(retType)) { return fatFromPtr(raw) }
             if (strEquals(retType, "ptr") == false) { return slotToScalar(retType, raw) }
             return raw
@@ -1775,13 +1853,20 @@ internal fn generateExpression(expr: ASTNode) -> String {
                     let length = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 2))
                     let index = generateExpression(indexNode)
                     let valueType = storageType(getExprType(valueNode))
+                    let sliceSetInline = inlineElemSizeOfSlice(sliceNode)
                     let mut passed = ""
                     if (isFatStringKey(valueType)) {
                         let value = generateExpression(valueNode)
                         passed = ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 0))
                     } else if (strEquals(valueType, "ptr") == false) {
                         let value = generateExpression(valueNode)
-                        passed = scalarToSlot(valueType, value)
+                        // Widened for the by-value setter, punned for the boxed
+                        // one. `value` is affine, so exactly one of these runs.
+                        if (sliceSetInline > 0 and scalarInlineBytes(valueType) > 0) {
+                            passed = scalarToInlineBits(valueType, value)
+                        } else {
+                            passed = scalarToSlot(valueType, value)
+                        }
                     } else {
                         passed = generateExpression(valueNode)
                     }
@@ -1791,10 +1876,20 @@ internal fn generateExpression(expr: ASTNode) -> String {
                     ir_call_arg("i32", offset)
                     ir_call_arg("i32", length)
                     ir_call_arg("i32", index)
-                    ir_call_arg("ptr", passed)
+                    // A scalar goes by value here too. Reaching
+                    // `list_slice_set_inline` with an address means
+                    // `list_set_inline` stores that address as the element when
+                    // the list turns out boxed -- a stack pointer written where
+                    // an Int belongs, which is the write-direction twin of what
+                    // list_get_inline_scalar exists to prevent.
                     let mut setName = "list_slice_set"
-                    if (inlineElemSizeOfSlice(sliceNode) > 0) {
-                        setName = "list_slice_set_inline"
+                    if (sliceSetInline > 0 and scalarInlineBytes(valueType) > 0) {
+                        ir_call_arg("i64", passed)
+                        ir_call_arg("i32", strFromInt(sliceSetInline))
+                        setName = "list_slice_set_inline_scalar"
+                    } else {
+                        ir_call_arg("ptr", passed)
+                        if (sliceSetInline > 0) { setName = "list_slice_set_inline" }
                     }
                     ir_call_end("void", setName)
                     return ""
@@ -1844,8 +1939,29 @@ internal fn generateExpression(expr: ASTNode) -> String {
             }
             return raw
         }
+        // **A scalar element belongs here too, and leaving it out was a
+        // regression rather than a missed optimisation.** Putting scalars inline
+        // takes them out of `isStaticBoxedListGet` above; if they do not arrive
+        // here they fall through to an out-of-line `list_get_inline` with no fast
+        // path at all, which measured **2.65x slower** on a read loop over
+        // `List<Int>` -- a change that bought 2x the space and spent 2.65x the
+        // time. The `ptr` test that used to stand here was guarding the right
+        // hazard the wrong way: ir_list_flat_elem yields the element's *address*,
+        // so a scalar needs a load rather than an exclusion.
+        //
+        // The fat String stays out, and not by accident: it is a `struct:` key
+        // that is a pair in a register rather than storage reached by GEP, so it
+        // has neither an inline stride nor an address to load from here.
+        // **Pointer-shaped elements only, and the restriction is soundness.**
+        // ir_list_flat_elem selects between flat address arithmetic and a
+        // `list_get_inline` call, which returns the slot's *contents* when the
+        // list turned out boxed. For a struct both arms are addresses and the
+        // select is well typed; for a scalar the two arms are different kinds of
+        // value and no single load covers them. A scalar takes
+        // list_get_inline_scalar instead, which branches where `elem_size` is.
+        let flatRet = storageType(getExprType(expr))
         if (flatStride > 0 and strEquals(irLoopFlatGuard, "") == false
-                and strEquals(storageType(getExprType(expr)), "ptr")) {
+                and strEquals(flatRet, "ptr")) {
             let listNode = ptr_to_node(expr.child2)
             let listVal = generateExpression(listNode)
             let indexVal = generateExpression(ptr_to_node(listNode.next))
@@ -1966,12 +2082,17 @@ internal fn generateExpression(expr: ASTNode) -> String {
         let mut ownedTempKinds: List<Int> = list_new()
         let mut ownedTempTypes: List<String> = list_new()
 
+        // Which storage key the element argument carried, so the entry-point
+        // choice below can tell a scalar from a struct without re-deriving it.
+        let mut elemStoreKey = ""
         let mut argPtr = expr.child2
         let mut argIndex = 0
         while (nodeExists(argPtr)) {
             let argNode = ptr_to_node(argPtr)
             let argVal = generateExpression(argNode)
             let argStore = storageType(getExprType(argNode))
+            // Cloned: `argStore` is affine and the branches below still name it.
+            if (argIndex == elemArg) { elemStoreKey = strClone(argStore) }
             // Cloned because `argVal` is affine and the argument itself still
             // has to consume it below -- the same reason the two branches under
             // this one each name it exactly once.
@@ -1996,7 +2117,27 @@ internal fn generateExpression(expr: ASTNode) -> String {
                 }
             } else {
                 if (argIndex == elemArg) {
-                    ir_call_arg("ptr", scalarToSlot(argStore, argVal))
+                    // **Two conventions, and they are not interchangeable.**
+                    // `list_push`/`list_set` take the element *punned into* a
+                    // pointer slot; `list_push_inline`/`list_set_inline` take a
+                    // pointer to the bytes and memcpy `elem_size` of them. Give
+                    // the inline pair a punned scalar and it copies from the
+                    // address numerically equal to the value -- which is the
+                    // "read a body as a pointer" the notes on inlineElemSize
+                    // warn about, and it is a wild read rather than a wrong
+                    // answer. A struct element needs nothing here: it already
+                    // *is* the address of its bytes.
+                    // **`scalarInlineBytes`, not "is it a struct key".** A
+                    // struct element reaches here as a bare `ptr` for a generic
+                    // or a boxed layout, which is not a struct key and is not a
+                    // scalar either -- and `zext ptr to i64` fails module
+                    // verification. Asking for the width answers 0 for `ptr` and
+                    // for anything else this does not know how to widen.
+                    if (inlineSize > 0 and scalarInlineBytes(argStore) > 0) {
+                        ir_call_arg("i64", scalarToInlineBits(argStore, argVal))
+                    } else {
+                        ir_call_arg("ptr", scalarToSlot(argStore, argVal))
+                    }
                 } else {
                     ir_call_arg(argStore, argVal)
                 }
@@ -2015,10 +2156,23 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // reaches the push with `List<Invalid>` and is boxed, and one with an
         // annotation reaches it already stamped.
         if (inlineSize > 0) {
-            let inlineName = inlineOpName(funcName)
+            let mut inlineName = inlineOpName(funcName)
+            // A scalar element takes the by-value pair. `list_get` is unaffected:
+            // it returns the slot's address either way and the load above is what
+            // reads it.
+            let mut scalarElem = false
+            if (scalarInlineBytes(elemStoreKey) > 0) {
+                scalarElem = true
+                if (strEquals(funcName, "list_push")) { inlineName = "list_push_inline_scalar" }
+                if (strEquals(funcName, "list_set")) { inlineName = "list_set_inline_scalar" }
+            }
             if (strEquals(inlineName, "") == false) {
                 callName = inlineName
-                if (strEquals(funcName, "list_push")) {
+                // `list_push_inline` has always taken the size so an unstamped
+                // empty list can stamp itself. The scalar pair takes it as well,
+                // and `list_set_inline` -- the struct one -- still does not.
+                if (strEquals(funcName, "list_push")
+                        or (scalarElem and strEquals(funcName, "list_set"))) {
                     ir_call_arg("i32", strFromInt(inlineSize))
                 }
             }
@@ -2118,6 +2272,14 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // since it registers no site to place or count.
         if (strEquals(funcName, "list_get") and strEquals(retType, "ptr") == false
             and strEquals(retType, "struct:prismio.str") == false) {
+            // Resolved by value, for the reason list_get_inline_scalar gives:
+            // the inline entry point returns an address and the boxed one the
+            // slot's contents, and only a scalar can tell them apart.
+            if (inlineSize > 0 and scalarInlineBytes(retType) > 0) {
+                ir_call_arg("i32", strFromInt(inlineSize))
+                let bits = ir_get_temp_name(ir_call_end("i64", "list_get_inline_scalar"))
+                return scalarFromInlineBits(retType, bits)
+            }
             let slot = ir_get_temp_name(ir_call_end("ptr", callName))
             return slotToScalar(retType, slot)
         }

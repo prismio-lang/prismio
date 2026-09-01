@@ -33,6 +33,10 @@ let mut irLoopFlatGuardCounter = 0
 // identifier can contain, so it cannot collide with a user variable.
 let mut irSpawnArgCounter = 0
 
+// Names the stack slot a scalar is spilled into so an inline container op has an
+// address to copy from. Dotted like `sc.` for the same reason.
+let mut irElemSpillCounter = 0
+
 // LAYOUT 3.2. On only while generating a workload driver -- the instrumented
 // build the compiler produces, runs and discards. It gates every emission this
 // feature adds, and there is exactly one place it is set (runWorkloadProfile in

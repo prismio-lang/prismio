@@ -309,6 +309,26 @@ private fn scalarBitsOf(t: String) -> Int {
     return 0
 }
 
+// The bytes a scalar occupies in an inline container row, or 0 for a key that
+// is not a scalar.
+//
+// **In bytes, and rounded up, because a row is addressed by stride.** `i1` is
+// one byte here rather than one bit: the element address is
+// `data + index * elem_size`, which cannot name a bit, and a bit-packed
+// `List<Bool>` is a different representation with a different access path rather
+// than a smaller number in this function. One byte is still 8x what the pointer
+// slot spends on it.
+//
+// `struct:` keys are deliberately absent -- their size is a layout question for
+// ir_struct_size, which knows about padding and nested flat fields, and a second
+// answer here is the disagreement the note on inlineElemSize warns about.
+internal fn scalarInlineBytes(t: String) -> Int {
+    let bits = scalarBitsOf(t)
+    if (bits == 0) { return 0 }
+    if (bits == 1) { return 1 }
+    return bits / 8
+}
+
 internal fn scalarToSlot(storeType: String, value: String) -> String {
     if (strEquals(storeType, "ptr")) { return value }
     // A String in a container slot is its pointer. The length is not stored --

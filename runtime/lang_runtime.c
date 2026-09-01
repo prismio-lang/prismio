@@ -1374,6 +1374,15 @@ static int list_inline_enabled(void) {
 // here would be a libc call with a dynamic length. This is what a constant-size
 // memcpy would have become.
 static void list_copy_elem(void* dst, const void* src, size_t size) {
+    // The scalar widths, first and by value. Both ladders below step by 8 or 4
+    // bytes and a 1- or 2-byte element matched neither, so `List<Bool>` reached
+    // `memcpy` -- a call per element to move one byte, which is most of what an
+    // inline `List<Bool>` was paying over the pointer slot it replaced.
+    if (size == 1) { *(unsigned char*)dst = *(const unsigned char*)src; return; }
+    if (size == 2) {
+        *(unsigned short*)dst = *(const unsigned short*)src;
+        return;
+    }
     if ((size & 7) == 0) {
         unsigned long long* d = (unsigned long long*)dst;
         const unsigned long long* s = (const unsigned long long*)src;
@@ -1506,6 +1515,83 @@ void list_push_inline(void* lp, void* value, int elem_size) {
                    value, (size_t)l->elem_size);
     l->len = l->len + 1;
     list_release_source(l, value);
+}
+
+// The scalar half of the inline write path, taking the value **by value**.
+//
+// `list_set_inline` and `list_push_inline` copy from an address, which suits a
+// struct -- it already is one. A scalar is in a register, so reaching them meant
+// codegen spilling it to a stack slot for the callee to load back. That round
+// trip is not free: it measured **1.76x** against the pointer slot it replaced
+// on a 20M-element write loop, because the spill stops LLVM doing to this loop
+// what it does to the boxed one.
+//
+// **Stored by width rather than by memcpy, which is what keeps it endian-safe.**
+// Copying `size` bytes off the front of `bits` would be little-endian-only; a
+// cast and an assignment moves the *value*, so the compiler writes whatever byte
+// order the target uses. A `double` arrives here bitcast to its 64-bit pattern
+// and comes back out the same way, which is a move rather than a conversion.
+static void scalar_store(void* dst, unsigned long long v, int size) {
+    if (size == 1)      { *(unsigned char*)dst      = (unsigned char)v; }
+    else if (size == 2) { *(unsigned short*)dst     = (unsigned short)v; }
+    else if (size == 4) { *(unsigned int*)dst       = (unsigned int)v; }
+    else                { *(unsigned long long*)dst = v; }
+}
+
+void list_set_inline_scalar(void* lp, int index, unsigned long long bits, int elem_size) {
+    RtList* l = (RtList*)lp;
+    // Unstamped, or stamped to a width this call site does not agree with: the
+    // caller's static element type is the only authority on representation, so
+    // rather than guess, fall back to the boxed setter with the value punned the
+    // way that path expects. Reached only by a list codegen could not stamp.
+    if (l->elem_size != elem_size) {
+        list_set(lp, index, (void*)(uintptr_t)bits);
+        return;
+    }
+    if (index < 0 || index >= l->len) return;
+    scalar_store((unsigned char*)l->data + (size_t)index * (size_t)elem_size,
+                 bits, elem_size);
+}
+
+// The read half of the by-value scalar path, and the reason it exists is
+// **correctness, not symmetry**.
+//
+// `list_get_inline` returns two different *kinds* of thing: the slot's address
+// when the list is inline, and the slot's contents when it is not. A struct
+// cannot tell the difference -- a boxed slot holds a pointer to the struct and an
+// inline slot is the struct, so both are addresses. A scalar can: its boxed slot
+// holds the value punned into the pointer. So codegen cannot emit one load and
+// cover both, and the representation guard it would branch on selects between the
+// two kinds rather than between two addresses.
+//
+// Resolving it here instead means the branch is on `elem_size`, which is the fact
+// that actually decides, and the caller gets a value either way.
+unsigned long long list_get_inline_scalar(void* lp, int index, int elem_size) {
+    RtList* l = (RtList*)lp;
+    if ((unsigned)index >= (unsigned)l->len) return 0;
+    if (l->elem_size != elem_size) {
+        return (unsigned long long)(uintptr_t)l->data[index];
+    }
+    const unsigned char* src =
+        (const unsigned char*)l->data + (size_t)index * (size_t)elem_size;
+    if (elem_size == 1) return *(const unsigned char*)src;
+    if (elem_size == 2) return *(const unsigned short*)src;
+    if (elem_size == 4) return *(const unsigned int*)src;
+    return *(const unsigned long long*)src;
+}
+
+
+void list_push_inline_scalar(void* lp, unsigned long long bits, int elem_size) {
+    RtList* l = (RtList*)lp;
+    if (!l->elem_size) {
+        if (l->len == 0) list_set_elem_inline(lp, elem_size);
+        if (!l->elem_size) { list_push(lp, (void*)(uintptr_t)bits); return; }
+    }
+    if (l->elem_size != elem_size) { list_push(lp, (void*)(uintptr_t)bits); return; }
+    if (l->len >= l->cap) list_inline_grow(l);
+    scalar_store((unsigned char*)l->data + (size_t)l->len * (size_t)elem_size,
+                 bits, elem_size);
+    l->len = l->len + 1;
 }
 
 // SPEC 8.4's element view, resolved. The address is computed from the list
@@ -1916,6 +2002,20 @@ void* list_slice_get(void* lp, int offset, int length, int index) {
 
 void* list_slice_get_inline(void* lp, int offset, int length, int index) {
     return list_get_inline(lp, list_slice_index(lp, offset, length, index));
+}
+
+// Beside its siblings rather than beside list_get_inline_scalar, because
+// list_slice_index is static and defined here.
+unsigned long long list_slice_get_inline_scalar(void* lp, int offset, int length,
+                                                int index, int elem_size) {
+    return list_get_inline_scalar(lp, list_slice_index(lp, offset, length, index),
+                                  elem_size);
+}
+
+void list_slice_set_inline_scalar(void* lp, int offset, int length, int index,
+                                  unsigned long long bits, int elem_size) {
+    list_set_inline_scalar(lp, list_slice_index(lp, offset, length, index), bits,
+                           elem_size);
 }
 
 void list_slice_set(void* lp, int offset, int length, int index, void* value) {

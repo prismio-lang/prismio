@@ -892,8 +892,19 @@ static int object_cache_trace(void);
 // `static` in lang_runtime.c, which is the exact failure the note above records
 // for `list_push`. They need the same outlining treatment `list_push_grow` was
 // given before they can be curated.
+// **`list_get_inline_scalar` belongs here for the same reason and by the same
+// test.** It is what codegen emits for every read of a scalar-element list, and
+// it satisfies the closure rule as trivially as `list_get_inline` does: its body
+// calls nothing, and touches only fields of RtList. Left out, a `List<Int>` read
+// pays a real `bl` per element -- measured at **8.9x** on a read loop, which is
+// the whole of what putting scalars inline was supposed to buy.
+//
+// Its write siblings stay out, and for the reason the note above gives: they
+// reach `scalar_store`, `list_inline_grow` and `list_set_elem_inline`, all
+// `static` in lang_runtime.c. They need the same outlining `list_push_grow` was
+// given first.
 static const char* const PRISMIO_CURATED_OPS[] = {
-    "list_get", "list_get_inline", "list_set", "list_len",
+    "list_get", "list_get_inline", "list_get_inline_scalar", "list_set", "list_len",
     "list_set_elem_owner", "list_set_elem_releaser",
     "rc_retain", "rc_release", "list_push",
     "data_view_check_index", "data_view_column", "data_view_len",
@@ -904,7 +915,7 @@ static const char* const PRISMIO_CURATED_OPS[] = {
 // which are not bytes in lang_runtime.c. Bump this whenever that curation
 // policy changes; M4.3c added invariant ready-view loads and exposed that the
 // old key could otherwise reuse a semantically older curated module forever.
-#define PRISMIO_CURATED_SCHEMA "curated-v2-invariant-dataview"
+#define PRISMIO_CURATED_SCHEMA "curated-v3-scalar-inline-get"
 
 // On by default after the curated-module path became part of the ordinary
 // Windows/Linux/macOS suite. `0` remains the measurement and emergency opt-out:
