@@ -157,7 +157,10 @@ discrimination `test_73` says it wants and does not currently have for the
 recursive shape.
 
 Both pairs are reproduced here in full so this file stands on its own. Each
-shares the same prelude:
+block below holds *two* programs: assemble one by taking the prelude, then the
+shared helpers, then exactly one `main`. All four were assembled that way
+mechanically from this file and reproduce the ledgers quoted. Each shares the
+same prelude:
 
 ```prismio
 import std.io
@@ -186,13 +189,21 @@ fn build(depth: Int, seed: Int) -> Tree {
 }
 
 // F: the root is the same site as every child.       4 / 1 / 3 leaked
-fn main() -> Int { let t = build(1, 7); println(sum(t)); return 0 }
+fn main() -> Int {
+    let t = build(1, 7)
+    println(sum(t))
+    return 0
+}
 
 // G: the root gets a site of its own.                8 / 8 / 0
 fn buildRoot(depth: Int, seed: Int) -> Tree {
     return Tree.Node(build(depth - 1, seed), seed, build(depth - 1, seed))
 }
-fn main() -> Int { let t = buildRoot(2, 7); println(sum(t)); return 0 }
+fn main() -> Int {
+    let t = buildRoot(2, 7)
+    println(sum(t))
+    return 0
+}
 ```
 
 **Pair 2 — mechanism 2.** H leaks 3 of 4; I reclaims 4 of 4. The only difference
@@ -208,12 +219,20 @@ fn pick(sink t: Tree, n: Int) -> Tree {
     if (n == 0) { return t }
     return make(n)
 }
-fn main() -> Int { let t = pick(make(1), 0); println(sum(t)); return 0 }
+fn main() -> Int {
+    let t = pick(make(1), 0)
+    println(sum(t))
+    return 0
+}
 
 // I: no path returns a parameter.                    4 / 4 / 0
 fn pick(n: Int) -> Tree {
     if (n == 0) { return make(0) }
     return make(n)
 }
-fn main() -> Int { let t = pick(0); println(sum(t)); return 0 }
+fn main() -> Int {
+    let t = pick(0)
+    println(sum(t))
+    return 0
+}
 ```
