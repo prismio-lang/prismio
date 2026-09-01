@@ -72,6 +72,38 @@ why the neighbouring predicate must still answer no for the latter.
 is run by `run_corpus_test` and the `--verify` sweep. See
 `aif/evidence/RESULTS-extern-alias-escape.md`.
 
+**A self-recursive producer leaks everything it builds, and it is two
+mechanisms.** `aif/evidence/xlang/prismio/g8_tree_rebuild.psm` reads **12,284
+allocated, 2 released, 12,282 leaked, 0 violation(s)** -- the whole structure,
+with a clean violation column. It is not in `bench.PROGRAMS` for that reason.
+
+The standing account, in `runtime/aif_support.c` and in the header of
+`tests/test_73_recursive_release.psm`, is that ownership transfer survives only
+one hop. That is refuted: a four-level chain of distinct functions reclaims all
+16 of its allocations. Depth is not the trigger; self-recursion is, through two
+independent doors.
+
+- **A site is per function, not per instance.** A self-recursive constructor is
+  one site playing two roles -- the root the caller should own, and every
+  interior node stored into a payload field. The child role makes
+  `site_in_released_field` answer yes, which is right and is what stops a double
+  free; `aif_owns_call_result_at_node` then reads that same answer for the root
+  and refuses the caller ownership of it. `__aif_release_Tree` is generated and
+  never called. Hoisting the root to a distinct site -- the identical recursion --
+  moves g8 from 2 released to **2,049**, the entire initial tree.
+- **`fn_may_return_param` is a per-function fact applied per site.** `passes`
+  returns its parameter on the base path, so ownership is refused for every site
+  it may return, including `mapAdd`'s fresh allocations that no parameter can
+  alias. That is the remaining 10,235, exactly 5 passes x 2,047 nodes.
+
+The fix recorded in the notes -- teaching the disposition that a Prismio call
+returning an owned `T` is plain -- is **not** the blocker:
+`aif_owns_call_result_at_node` already accepts `AIF_ELEM_TYPED` and
+`AIF_ELEM_OBJECT`, and all nine of g8's sites already report `T2 / owned`. The
+second mechanism is much the cheaper of the two and is worth roughly four fifths
+of the leak. See `aif/evidence/RESULTS-recursive-payload-leak.md`, which carries
+the six minimal reproducers and the controlled pairs.
+
 **UMS resolution releases nothing it allocates.** Not unsoundness — `violations`
 is 0 either side — but a real regression in allocation hygiene. The recorded fix
 moves the ledger by zero; the real shape is about eight lines, and the clause to
