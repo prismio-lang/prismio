@@ -81,3 +81,9 @@ dist/
 # 936 files and two 70k-line JSON blobs that change wholesale on every run --
 # a build product of the sources, not a source. Kept on disk, out of the repo.
 graphify-out/
+
+# Python bytecode. Interpreter-written build output for tools/ and tests/, keyed
+# on the CPython version that wrote it -- `tools/__pycache__/*.cpython-313.pyc`
+# is not reusable by anyone on a different 3.x, and two of them were committed.
+__pycache__/
+*.pyc

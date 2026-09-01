@@ -1,6 +1,22 @@
 import std.io
+import std.string
 
 fn main() -> Int {
-    print("Hello")
+
+    let word = "prismio"
+    let mut vowels = 0
+
+    for c in word {
+        if (c == 'i' or c == 'o') {
+            vowels = vowels + 1
+        }
+    }
+    println(vowels)
+
+    let parts = "a,b,c".split(',')
+
+    for p in parts {
+        println(p)
+    }
     return 0
 }
