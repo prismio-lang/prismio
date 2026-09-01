@@ -87,3 +87,17 @@ graphify-out/
 # is not reusable by anyone on a different 3.x, and two of them were committed.
 __pycache__/
 *.pyc
+
+# Build products the compiler leaves beside a test source. `prismio run
+# tests/foo.psm` writes an executable named `tests/foo` -- no extension, so the
+# `*.exe` rule above does not catch it, and three of them were committed once by
+# a `git add -A`. Everything tracked under tests/ is a .psm or the runner, so
+# those come back explicitly.
+tests/*
+!tests/*.psm
+!tests/*.py
+
+# ...except this one, which is generated: run_workload_test writes it from
+# workload_static.psm with the `workload` block stripped, as the control the
+# measured build is compared against.
+tests/workload_static_control.psm
