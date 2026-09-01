@@ -137,6 +137,28 @@ in `std` calls the unprefixed names — the methods delegate to the prefixed
 bodies — so shadowing would be safe, but it is a language semantics change and has
 not been made.
 
+**`List<Int>` and `List<Bool>` never reach the inline-storage path.**
+`inlineElemSizeOfList` (`src/ir/expr.psm:633`) returns 0 for any element type
+that is not a struct, so `list_set_elem_inline` is never stamped, `elem_size`
+stays 0, and every access takes the boxed entry point rather than
+`list_get_inline`. The scalar case is not declined, it is not reached.
+
+Measured at 4,000,000 elements: `List<Bool>` and `List<Int>` both take 64.0 MB
+peak RSS -- 8 bytes an element -- while `List<B>` for `struct B { v: Bool }` is
+the same data at **9.2 MB**, one byte an element, because a one-field struct
+passes `isStructTypeKey` and a bare `Bool` does not. **7.0x on footprint, from
+the compiler's existing path.**
+
+For `List<Int>` 8 bytes is already the right density and the cost is the access
+path, not space. The storage is flat rather than boxed in both cases: 1,000
+pushes cost 11 allocations, not 1,011.
+
+The speed half is **unmeasured**, and the struct wrapper cannot stand in for it
+-- the wrapper heap-allocates each literal before copying it into the row, so a
+sieve run that way is 10x slower while allocating 47,879 against 17. That number
+measures struct construction, not storage. See
+`aif/evidence/RESULTS-scalar-list-storage.md`.
+
 ## Codegen
 
 **A string literal in a curated runtime function breaks the link.**
