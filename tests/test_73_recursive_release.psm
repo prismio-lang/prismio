@@ -31,13 +31,20 @@
 // binding-owned ones. One case can take the feature's coverage down to nothing
 // without failing, which is the same trap `test_72` fell into with arenas.
 //
-// **Why every tree here is built inline rather than recursively.** Ownership
-// transfer survives exactly one hop: it requires the returned site to belong to
-// the callee. A recursive `build` returns sites belonging to its own recursive
-// calls, so the caller owns nothing and the drop never happens -- INFERENCE 6's
-// contexts, the same gap `test_47_aif_containers` records as its 6. A fixture
-// written that way would leak for a reason that has nothing to do with this
-// feature and would look like a regression in it.
+// **Why every tree here is built inline rather than recursively.** It was
+// written this way because a recursively built one leaked, and the reason
+// recorded here -- "ownership transfer survives exactly one hop" -- was wrong. A
+// four-level chain of *distinct* functions reclaims all 16 of its allocations,
+// so depth was never the trigger. What blocked it was that a site is per
+// function rather than per instance: a self-recursive constructor is one site
+// serving both the root and every interior node, and the child role made
+// `site_in_released_field` answer yes for the root as well.
+//
+// Fixed on 2026-09-01, so the recursive form no longer leaks and this fixture
+// could take one. It keeps the inline shape deliberately: inline is what makes
+// the *release* recurse more than one level, which is what this file is for, and
+// a recursive builder would fold a second feature's regression into this one's
+// count. `aif/evidence/RESULTS-recursive-payload-leak.md` guards the other half.
 
 import std.io
 

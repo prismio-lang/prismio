@@ -6182,16 +6182,22 @@ static int field_declared_type(const Nominal* t, int i) {
 // `parent` back-reference is not, so the answer for that shape is still 0 --
 // reached through an empty `agreed` rather than through this marker.
 //
-// **Known limit, and it is unmeasured on purpose:** the generated release
-// recurses once per level, so reclaiming a structure of depth d costs d stack
-// frames. A balanced tree is fine (d is logarithmic); a list-shaped recursive
-// type is not, and deep enough it would trade a leak for a stack overflow.
-// There is no measured threshold here because the shape that would hit it cannot
-// be reached yet: a deep structure has to be *built* recursively, and ownership
-// transfer survives only one hop, so its caller owns nothing and no release runs
-// at all. Whichever change lifts that hop makes this reachable and should bring
-// its own measurement -- and the fix is to loop on the last self-referential
-// field rather than recurse into it.
+// **Known limit:** the generated release recurses once per level, so reclaiming
+// a structure of depth d costs d stack frames. A balanced tree is fine (d is
+// logarithmic); a list-shaped recursive type is not, and deep enough it would
+// trade a leak for a stack overflow. The fix is to loop on the last
+// self-referential field rather than recurse into it.
+//
+// **This became reachable on 2026-09-01 and is still unmeasured.** The reason
+// given here for it being unreachable -- that a deep structure has to be built
+// recursively and "ownership transfer survives only one hop", so no release runs
+// at all -- was wrong twice over. Transfer already survived several hops: a
+// four-level chain of distinct functions reclaims everything. What actually
+// blocked it was that a site is per function rather than per instance, so a
+// self-recursive constructor's root inherited its own children's "already
+// released by a field" answer. That is fixed (see in_recursive_released_field),
+// a recursively built structure is now reclaimed, and the depth this note
+// describes is reachable with nothing measuring it.
 static int* type_releases;
 static int type_releases_cap;
 
