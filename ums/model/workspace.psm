@@ -4,12 +4,14 @@ import ums.model.lowering
 import ums.model.validation
 import ums.parser.lexer
 import ums.parser.parser
+import ums.parser.ast
 import ums.resolver.discovery
 import ums.builder.build_plan
 import std.string
 
 extern fn read_file(path: String borrow) -> String produce(free)
 extern fn get_directory(path: String borrow) -> String produce(free)
+extern fn join_path(directory: String borrow, child: String borrow) -> String produce(free)
 
 struct UmsWorkspace {
     project: UmsProjectModel,
@@ -53,6 +55,107 @@ fn umsLoadProject(startDirectory: String, profile: String) -> UmsWorkspace {
     if (__builtin_string_len(manifestPath) == 0) { return umsEmptyWorkspace(diagnostics) }
     let root = get_directory(manifestPath)
     return umsLoadText(read_file(manifestPath), manifestPath, root, profile)
+}
+
+private fn umsBootstrapPrefixLength(source: String) -> Int {
+    let length = __builtin_string_len(source)
+    let mut pos = 0
+
+    // The bootstrap block is required to be first, apart from whitespace and
+    // comments. That gives the installed compiler a finite prefix to scan; it
+    // never has to lex syntax owned by a newer project host.
+    loop {
+        while (pos < length and (strCharAt(source, pos) == ' ' or
+               strCharAt(source, pos) == '\t' or strCharAt(source, pos) == '\r' or
+               strCharAt(source, pos) == '\n')) {
+            pos = pos + 1
+        }
+        if (pos < length and strCharAt(source, pos) == '#') {
+            while (pos < length and strCharAt(source, pos) != '\n') { pos = pos + 1 }
+        } else if (pos + 1 < length and strCharAt(source, pos) == '/' and
+                   strCharAt(source, pos + 1) == '/') {
+            while (pos < length and strCharAt(source, pos) != '\n') { pos = pos + 1 }
+        } else {
+            break
+        }
+    }
+
+    if (strMatchesAt(source, "toolchain", pos) == false) { return 0 }
+    pos = pos + 9
+    while (pos < length and (strCharAt(source, pos) == ' ' or
+           strCharAt(source, pos) == '\t' or strCharAt(source, pos) == '\r' or
+           strCharAt(source, pos) == '\n')) {
+        pos = pos + 1
+    }
+    if (pos >= length or strCharAt(source, pos) != '{') { return 0 }
+
+    let mut depth = 1
+    let mut inString = false
+    let mut escaped = false
+    pos = pos + 1
+    while (pos < length) {
+        let current = strCharAt(source, pos)
+        if (inString) {
+            if (escaped) { escaped = false }
+            else if (current == '\\') { escaped = true }
+            else if (current == '"') { inString = false }
+        } else if (current == '"') {
+            inString = true
+        } else if (current == '#') {
+            while (pos < length and strCharAt(source, pos) != '\n') { pos = pos + 1 }
+            continue
+        } else if (current == '/' and pos + 1 < length and
+                   strCharAt(source, pos + 1) == '/') {
+            while (pos < length and strCharAt(source, pos) != '\n') { pos = pos + 1 }
+            continue
+        } else if (current == '{') {
+            depth = depth + 1
+        } else if (current == '}') {
+            depth = depth - 1
+            if (depth == 0) { return pos + 1 }
+        }
+        pos = pos + 1
+    }
+    return 0
+}
+
+// The installed compiler calls this before it parses any command. It deliberately
+// reads only the first `toolchain { host = "..." }` block: all remaining syntax
+// belongs to the selected host, which may implement a newer UMS.
+fn umsProjectHost(startDirectory: String) -> String {
+    let diagnostics = umsDiagnostics()
+    let manifestPath = umsDiscoverManifest(startDirectory, diagnostics)
+    if (__builtin_string_len(manifestPath) == 0) { return "" }
+
+    let source = read_file(manifestPath)
+    let prefixLength = umsBootstrapPrefixLength(source)
+    if (prefixLength == 0) { return "" }
+
+    let root = get_directory(manifestPath)
+    let prefix = strSubstring(source, 0, prefixLength)
+    let tokens = umsLex(prefix, manifestPath, diagnostics)
+    let document = umsParse(tokens, manifestPath, diagnostics)
+    let mut i = 0
+    while (i < list_len(document.roots)) {
+        let block = list_get(document.statements, list_get(document.roots, i))
+        if (block.kind == UmsAstStatementKind.CALL and block.hasBlock and
+            list_len(block.arguments) == 0 and strEquals(block.name, "toolchain")) {
+            let mut childIndex = 0
+            while (childIndex < list_len(block.children)) {
+                let property = list_get(document.statements,
+                                        list_get(block.children, childIndex))
+                if (property.kind == UmsAstStatementKind.ASSIGNMENT and
+                    strEquals(property.name, "host") and
+                    property.value.kind == UmsAstValueKind.STRING and
+                    __builtin_string_len(property.value.text) > 0) {
+                    return join_path(root, property.value.text)
+                }
+                childIndex = childIndex + 1
+            }
+        }
+        i = i + 1
+    }
+    return ""
 }
 
 // The workspace's target accessors. Public because `src/main.psm` walks them:

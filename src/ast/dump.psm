@@ -94,6 +94,10 @@ private fn nodeKindName(k: NodeKind) -> String {
     else if (k == NodeKind.CLOSURE_EXPR) { return "CLOSURE_EXPR" }
     else if (k == NodeKind.TRAIT_DECL) { return "TRAIT_DECL" }
     else if (k == NodeKind.IMPL_DECL) { return "IMPL_DECL" }
+    else if (k == NodeKind.IMPL_METHOD) { return "IMPL_METHOD" }
+    else if (k == NodeKind.IMPL_HEADER) { return "IMPL_HEADER" }
+    else if (k == NodeKind.GENERIC_PARAM) { return "GENERIC_PARAM" }
+    else if (k == NodeKind.TRAIT_REF) { return "TRAIT_REF" }
     else if (k == NodeKind.BLOCK) { return "BLOCK" }
     else if (k == NodeKind.IF_STATEMENT) { return "IF_STATEMENT" }
     else if (k == NodeKind.MATCH_STATEMENT) { return "MATCH_STATEMENT" }

@@ -490,33 +490,181 @@ def run_ums_test():
             print(ran.stdout or ran.stderr)
             return False
 
-    # Prismio is itself described by the repository's build.ums. Build it from
-    # a descendant directory to cover upward discovery and, crucially, the
-    # compiler(...) target's backend/LLVM link path. An executable(...) target
-    # must remain runtime-only, so a model-only assertion cannot cover this.
+    # Native linkage belongs to an executable target, not to a compiler-only
+    # target kind. Exercise both a searched archive and an exact object path so
+    # this checks the real clang command rather than only the lowered model.
+    with tempfile.TemporaryDirectory(prefix="prismio-native-link-") as temp_dir:
+        project = Path(temp_dir)
+        native = project / "native"
+        source_dir = project / "src"
+        native.mkdir()
+        source_dir.mkdir()
+
+        (native / "answer.c").write_text(
+            "long long prismio_native_answer(void) { return 40; }\n",
+            encoding="utf-8",
+        )
+        (native / "bonus.c").write_text(
+            "long long prismio_native_bonus(void) { return 2; }\n",
+            encoding="utf-8",
+        )
+        (source_dir / "main.psm").write_text(
+            "extern fn prismio_native_answer() -> Int\n"
+            "extern fn prismio_native_bonus() -> Int\n\n"
+            "fn main() -> Int {\n"
+            "    if (prismio_native_answer() + prismio_native_bonus() == 42) {\n"
+            "        return 0\n"
+            "    }\n"
+            "    return 1\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        framework_link = (
+            "            framework(\"Security\")\n"
+            if sys.platform == "darwin" else ""
+        )
+        (project / "build.ums").write_text(
+            "project { name = \"native-link\" version = \"0.1.0\" prismio = \"0.1\" }\n"
+            "targets {\n"
+            "    executable(\"native-link\") {\n"
+            "        entry = \"src/main.psm\"\n"
+            "        link {\n"
+            "            search(\"native\")\n"
+            "            library(\"answer\")\n"
+            "            file(\"native/bonus.o\")\n"
+            + framework_link +
+            "        }\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        clang = shutil.which("clang")
+        archiver = shutil.which("llvm-ar") or shutil.which("ar")
+        if not clang or not archiver:
+            print(f"{RED}[FAIL] ums: clang and an archive tool are required{RESET}")
+            return False
+        answer_object = native / "answer.o"
+        bonus_object = native / "bonus.o"
+        answer_archive = native / "libanswer.a"
+        native_steps = [
+            [clang, "-c", str(native / "answer.c"), "-o", str(answer_object)],
+            [archiver, "rcs", str(answer_archive), str(answer_object)],
+            [clang, "-c", str(native / "bonus.c"), "-o", str(bonus_object)],
+        ]
+        for command in native_steps:
+            step = subprocess.run(command, capture_output=True, text=True)
+            if step.returncode != 0:
+                print(f"{RED}[FAIL] ums: native link fixture setup failed{RESET}")
+                print(step.stdout or step.stderr)
+                return False
+
+        native_build = subprocess.run(
+            [str(PRISMIO_EXE), "build"], capture_output=True, text=True,
+            cwd=str(project),
+        )
+        native_exe = project / ".prismio" / "build" / "debug" / "native-link"
+        if native_build.returncode != 0 or not native_exe.exists():
+            print(f"{RED}[FAIL] ums: declared native inputs did not link{RESET}")
+            print(native_build.stdout or native_build.stderr)
+            return False
+        native_run = subprocess.run([str(native_exe)], capture_output=True, text=True)
+        if native_run.returncode != 0:
+            print(f"{RED}[FAIL] ums: native-linked executable returned the wrong result{RESET}")
+            print(native_run.stdout or native_run.stderr)
+            return False
+
+    # Prismio is itself described by the repository's build.ums. A user-facing
+    # binary is named `prismio`; named bootstrap generations deliberately do not
+    # redirect, so copy the tested generation under its launcher name here.
+    # The first build has no host and therefore runs under stage 0. The second
+    # must forward the complete command before the local host parses build.ums.
+    #
+    # Build from a descendant directory to cover upward discovery and,
+    # crucially, executable("prismio")'s backend component/LLVM link path. A
+    # model-only assertion cannot cover whether that component really links.
     compiler_artifact = PROJECT_ROOT / ".prismio" / "build" / "debug" / "prismio"
+    compiler_candidate = compiler_artifact.with_name(compiler_artifact.name + ".next")
     if compiler_artifact.exists():
         compiler_artifact.unlink()
-    project_build = subprocess.run(
-        [str(PRISMIO_EXE), "build"], capture_output=True, text=True,
-        cwd=str(PROJECT_ROOT / "ums"),
-    )
-    if project_build.returncode != 0 or not compiler_artifact.exists():
-        print(f"{RED}[FAIL] ums: root compiler(...) target did not build{RESET}")
-        print(project_build.stdout or project_build.stderr)
-        return False
-    version = subprocess.run(
-        [str(compiler_artifact), "--version"], capture_output=True, text=True,
-        cwd=str(PROJECT_ROOT),
-    )
-    if version.returncode != 0 or "prismio 0.1.0" not in version.stdout:
-        print(f"{RED}[FAIL] ums: compiler target artifact is not runnable{RESET}")
-        print(version.stdout or version.stderr)
-        return False
-    compiler_artifact.unlink()
+    if compiler_candidate.exists():
+        compiler_candidate.unlink()
+
+    with tempfile.TemporaryDirectory(prefix="prismio-launcher-") as launcher_dir:
+        launcher = Path(launcher_dir) / ("prismio.exe" if os.name == "nt" else "prismio")
+        shutil.copy2(PRISMIO_EXE, launcher)
+
+        project_build = subprocess.run(
+            [str(launcher), "build"], capture_output=True, text=True,
+            cwd=str(PROJECT_ROOT / "ums"),
+        )
+        if (project_build.returncode != 0 or not compiler_artifact.exists()
+                or "compiler host: stage-0" not in project_build.stdout):
+            print(f"{RED}[FAIL] ums: stage 0 did not build the first project host{RESET}")
+            print(project_build.stdout or project_build.stderr)
+            return False
+
+        local_build = subprocess.run(
+            [str(launcher), "build"], capture_output=True, text=True,
+            cwd=str(PROJECT_ROOT / "ums"),
+        )
+        if (local_build.returncode != 0
+                or "compiler host: project-local" not in local_build.stdout
+                or "staged project compiler:" not in local_build.stdout
+                or "promoted project compiler:" not in local_build.stdout):
+            print(f"{RED}[FAIL] ums: the complete build command was not hosted{RESET}")
+            print(local_build.stdout or local_build.stderr)
+            return False
+
+        forwarded_version = subprocess.run(
+            [str(launcher), "--version"], capture_output=True, text=True,
+            cwd=str(PROJECT_ROOT),
+        )
+        if (forwarded_version.returncode != 0
+                or "compiler host: project-local" not in forwarded_version.stdout
+                or "prismio 0.1.0" not in forwarded_version.stdout):
+            print(f"{RED}[FAIL] ums: a non-build command was not forwarded to the host{RESET}")
+            print(forwarded_version.stdout or forwarded_version.stderr)
+            return False
+
+        # A direct local invocation has no global parent waiting to promote its
+        # sibling candidate, so it must fail rather than overwrite itself.
+        self_build = subprocess.run(
+            [str(compiler_artifact), "build"], capture_output=True, text=True,
+            cwd=str(PROJECT_ROOT),
+        )
+        if self_build.returncode == 0 or "P1051" not in (self_build.stdout + self_build.stderr):
+            print(f"{RED}[FAIL] ums: a project compiler tried to replace itself{RESET}")
+            print(self_build.stdout or self_build.stderr)
+            return False
+
+        # A corrupt active generation falls back to stage 0 rather than becoming
+        # a permanent dead end. The command is not replayed after a host failure;
+        # fallback happens only because the preflight could not start the host.
+        compiler_artifact.write_bytes(b"not a Prismio compiler\n")
+        fallback_build = subprocess.run(
+            [str(launcher), "build"], capture_output=True, text=True,
+            cwd=str(PROJECT_ROOT),
+        )
+        fallback_output = fallback_build.stdout + fallback_build.stderr
+        if (fallback_build.returncode != 0 or "P1052" not in fallback_output
+                or "compiler host: stage-0" not in fallback_output):
+            print(f"{RED}[FAIL] ums: a broken project compiler did not fall back to stage 0{RESET}")
+            print(fallback_output)
+            return False
+
+        clean = subprocess.run(
+            [str(launcher), "clean"], capture_output=True, text=True,
+            cwd=str(PROJECT_ROOT / "ums"),
+        )
+        if (clean.returncode != 0 or compiler_artifact.exists()
+                or "compiler host: project-local" not in clean.stdout):
+            print(f"{RED}[FAIL] ums: hosted clean did not remove the compiler after it exited{RESET}")
+            print(clean.stdout or clean.stderr)
+            return False
 
     print(f"{GREEN}[PASS] ums: manifest lowering, validation, build planning, "
-          f"compiler targets, dependency resolution and the lockfile{RESET}")
+          f"native linkage, host routing, dependency resolution and the lockfile{RESET}")
     return True
 
 
@@ -684,7 +832,7 @@ def run_aif_test():
     print(f"\n{BLUE}--- Running aif_tiers ---{RESET}")
     fixture = TEST_DIR / "aif_tiers.psm"
 
-    result = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    result = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--manifest"])
     if result.returncode != 0:
         print(f"{RED}[FAIL] `prismio aif` exited {result.returncode}{RESET}")
         print(result.stdout or result.stderr)
@@ -723,6 +871,64 @@ def run_aif_test():
         return False
 
     print(f"{GREEN}[PASS] AIF assigns every SPEC 4.2 clause its expected tier{RESET}")
+    return True
+
+
+def run_aif_human_report_test():
+    """The default is an interactive explanation; the manifest is explicit.
+
+    This fixture deliberately imports std.io without calling it. It is the shape
+    that made the old report especially confusing: four mangled library records
+    looked like four allocations performed by an otherwise empty main.
+    """
+    print(f"\n{BLUE}--- Running aif_human_report ---{RESET}")
+    fixture = TEST_DIR / "aif_human_report.psm"
+    problems = []
+
+    human = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    if human.returncode != 0:
+        problems.append(f"default report exited {human.returncode}")
+    else:
+        text = human.stdout
+        for wanted in ("AIF analysis", "Storage plan", "Your code",
+                       "No allocation sites found", "Imported modules",
+                       "potential allocation site(s), not runtime allocation counts",
+                       "std.io:", "unique heap", "returned to the caller",
+                       "--why=<ID>", "--manifest"):
+            if wanted not in text:
+                problems.append(f"default report does not contain {wanted!r}")
+        if "aif-manifest 1" in text:
+            problems.append("default report still prints the compiler manifest")
+        if "prismioStdIo" in text:
+            problems.append("default report exposes mangled stdlib symbols")
+        if "/stdlib/" in text:
+            problems.append("default report exposes the installed stdlib path")
+
+    why = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--why=1"])
+    if why.returncode != 0:
+        problems.append(f"numeric --why exited {why.returncode}")
+    else:
+        for wanted in ("Allocation 1", "Storage    unique heap",
+                       "Reason     returned to the caller", "E-RETURN"):
+            if wanted not in why.stdout:
+                problems.append(f"numeric --why does not contain {wanted!r}")
+
+    manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--manifest"])
+    if manifest.returncode != 0:
+        problems.append(f"--manifest exited {manifest.returncode}")
+    else:
+        if not manifest.stdout.startswith("aif-manifest 1\n"):
+            problems.append("--manifest no longer emits the stable manifest")
+        if "prismioStdIo" not in manifest.stdout:
+            problems.append("--manifest lost stable allocation symbols")
+
+    if problems:
+        print(f"{RED}[FAIL] the AIF interactive and manifest surfaces are not separated{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+
+    print(f"{GREEN}[PASS] AIF defaults to human storage decisions; --manifest preserves the CI form{RESET}")
     return True
 
 
@@ -794,7 +1000,7 @@ AIF_NO_TASK_CONTROL = {
 
 def aif_thread_records(source):
     """symbol -> (tier, thread) from a manifest run."""
-    result = run_command([str(PRISMIO_EXE), "aif", str(source)])
+    result = run_command([str(PRISMIO_EXE), "aif", str(source), "--manifest"])
     if result.returncode != 0:
         return None, result
     got = {r: (v["tier"], v["thread"])
@@ -1060,7 +1266,7 @@ def run_manifest_parseable_test():
     problems = []
     tmp = TEST_DIR / "_manifest_parse.txt"
     for src in sources:
-        result = run_command([str(PRISMIO_EXE), "aif", str(src)])
+        result = run_command([str(PRISMIO_EXE), "aif", str(src), "--manifest"])
         if result.returncode != 0:
             continue
         tmp.write_text(result.stdout, encoding="utf-8")
@@ -1138,7 +1344,7 @@ def run_region_diagnostic_test():
         problems.append("the warning lost its note, which is the half that names the repair")
     cleanup_files(exe)
 
-    manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--manifest"])
     placements = {r: v["placement"]
                   for r, v in manifest_records(manifest.stdout).items()}
     if placements.get("serves__Void#1") != "region:work":
@@ -1181,7 +1387,8 @@ def run_region_diagnostic_test():
 
     # `region:none` -- a T1 site the heap serves. test_57's list sites are the
     # case, and `region:scope` must not come back.
-    other = run_command([str(PRISMIO_EXE), "aif", str(TEST_DIR / "test_57_pin_tiers.psm")])
+    other = run_command([str(PRISMIO_EXE), "aif",
+                         str(TEST_DIR / "test_57_pin_tiers.psm"), "--manifest"])
     if "region:none" not in other.stdout:
         problems.append("no T1 site reports region:none")
     if "region:scope" in other.stdout:
@@ -1194,7 +1401,8 @@ def run_region_diagnostic_test():
     # "zero" and never was -- it is that the estimate describes the build, so a
     # non-zero arena must report non-zero bytes and an inert one must report 0.
     # test_57 below still covers the inert direction.
-    budget = run_command([str(PRISMIO_EXE), "aif", str(TEST_DIR / "test_49_aif_struct_fields.psm")])
+    budget = run_command([str(PRISMIO_EXE), "aif",
+                          str(TEST_DIR / "test_49_aif_struct_fields.psm"), "--manifest"])
     if "peak-bytes  108 bytes" not in budget.stdout:
         problems.append("test_49's arena bytes do not describe the build: expected "
                         "108, the arena automatic placement gives it "
@@ -1389,7 +1597,7 @@ def run_placement_pin_test():
     problems = []
 
     fixture = TEST_DIR / "test_63_placement_pin.psm"
-    manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--manifest"])
 
     records = {r: (v["placement"], v["origin"])
                for r, v in manifest_records(manifest.stdout).items()}
@@ -1550,7 +1758,7 @@ def run_layout_cost_model_test():
             f"model whose argmin is not what the binary contains is a manifest "
             f"describing a program nobody built.")
 
-    manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--manifest"])
     saw_record = False
     for line in manifest.stdout.splitlines():
         if "Sample" in line and line.strip().startswith("make__"):
@@ -2354,7 +2562,7 @@ def run_bracket_summary_test():
         return int(m.group(1)) if m else -1
 
     def bracket_lines(path):
-        out = run_command([str(PRISMIO_EXE), "aif", str(path)]).stdout
+        out = run_command([str(PRISMIO_EXE), "aif", str(path), "--manifest"]).stdout
         if "bracketed calls (SPEC 5.2.1.1 regime (a))" not in out:
             return 0
         at = out.index("bracketed calls (SPEC 5.2.1.1 regime (a))")
@@ -2411,7 +2619,7 @@ def run_pin_tier_test():
     print(f"\n{BLUE}--- Running pin_tiers ---{RESET}")
     fixture = TEST_DIR / "test_57_pin_tiers.psm"
 
-    result = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    result = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--manifest"])
     if result.returncode != 0:
         print(f"{RED}[FAIL] `prismio aif` exited {result.returncode}{RESET}")
         print(result.stdout or result.stderr)
@@ -2572,7 +2780,7 @@ def run_aif_view_test():
     problems = []
     fixture = TEST_DIR / "test_53_aif_views.psm"
 
-    result = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    result = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--manifest"])
     if result.returncode != 0:
         print(f"{RED}[FAIL] aif exited {result.returncode}{RESET}")
         print(result.stdout or result.stderr)
@@ -5284,9 +5492,8 @@ def run_aif_verify_test():
         # not compile at all on the generation before M2.1c, so a regression in
         # the feature is a build failure, and `neg_10_move_in_loop` guards the
         # other direction. What the count tracks is M2.1a-ii's residue: the trees
-        # this fixture rebuilds are consumed through a `sink` and nothing reclaims
-        # a destructured block yet. **It should fall when M2.1a-ii lands**, and a
-        # rise means something stopped being reclaimed that was.
+        # this fixture rebuilds are consumed through a `sink`; before M2.1b
+        # nothing reclaimed or reused the destructured block.
         #
         # **504 -> 248 on 2026-08-29, and it is fewer allocations rather than
         # more frees**: 511 allocated / 7 released became 255 allocated / 7
@@ -5301,9 +5508,14 @@ def run_aif_verify_test():
         # root and every interior node, and the root inherited the child's
         # "already released by a field" answer -- so the caller was refused the
         # one drop that would have reclaimed the structure. The fall is this
-        # note's own prediction; what remains is still the `sink` residue above.
-        # See aif/evidence/RESULTS-recursive-payload-leak.md.
-        "test_74_reinit_assignment": 93,
+        # note's own prediction; what remained was the `sink` residue above.
+        #
+        # **93 -> 0 on 2026-09-02, with allocations 255 -> 69.** M2.1b pairs
+        # each consumed Tree constructor with the same-tag constructor returned
+        # by mapAdd. The old block is the new block, so the scope-drop guard also
+        # honours the stamped move; otherwise old and new bindings release one
+        # physical tree twice. See RESULTS-M2-reuse-token.md.
+        "test_74_reinit_assignment": 0,
         # Boxed OBJECT replacement through the explicit exclusive capability.
         # The displaced Named owns a String, so zero proves list_set_exclusive
         # invoked the typed element release; ordinary list_set leaves one leak
@@ -5517,7 +5729,7 @@ def aif_records(source, budget=None):
     The columns are `symbol tier placement type layout origin site`, and the site
     is last because a path may contain spaces and nothing else may.
     """
-    cmd = [str(PRISMIO_EXE), "aif", str(source)]
+    cmd = [str(PRISMIO_EXE), "aif", str(source), "--manifest"]
     if budget is not None:
         cmd.append(f"--budget={budget}")
     result = run_command(cmd)
@@ -5956,6 +6168,10 @@ def run_curated_emits_test():
         print(f"{RED}[FAIL] curated emits: could not find inlineOpName in src/ir/expr.psm{RESET}")
         return False
     emitted = set(re.findall(r'return "([a-z_0-9]+)"', body.group(0)))
+    # The scalar calls refine that generic mapping after the element width is
+    # known. They are emitted ops too; omitting them here recreates the stale
+    # curated-list hole this gate exists to catch.
+    emitted.update(re.findall(r'inlineName\s*=\s*"([a-z_0-9]+)"', expr))
     emitted.discard("")
 
     ops = re.search(r"PRISMIO_CURATED_OPS\[\] = \{(.*?)\};", driver, re.S)
@@ -6219,6 +6435,11 @@ def main():
         failed += 1
 
     if run_aif_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_aif_human_report_test():
         passed += 1
     else:
         failed += 1

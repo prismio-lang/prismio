@@ -137,52 +137,56 @@ private fn expectCloseAngle(p: Parser, context: String) {
     p.expectVal(TokenType.RELATIONAL_OPERATOR, ">", context)
 }
 
-// The type parameters of a generic declaration: `fn map<T, U>(...)`,
-// `struct Pair<K, V> { ... }`. Returns them comma-joined, or "" for an ordinary
-// declaration.
-//
-// **Stored on the declaration's `s2`, which sema also uses for a function's
-// mangled symbol.** The two cannot collide, and the reason is structural rather
-// than lucky: monomorphisation removes every template from the module before
-// sema runs, and an instantiated copy has its `s2` cleared. A FUNCTION carrying
-// type parameters is therefore a node sema never sees. If that ordering ever
-// changes, this needs a slot of its own -- `i1`/`i2`/`i3` are free on both kinds.
-//
-// Comma-joined text rather than a node chain because it is read by
-// substitution as a set of names, never walked as a tree, and FUNCTION has no
-// free child slot -- child1/2/3 are parameters, body and return type.
-private fn parseGenericParams(p: Parser) -> String {
+// A trait reference is a path in semantic trait position, not a type. Its
+// arguments are type annotations because `From<List<T>>` applies a trait to a
+// type tree, but the root keeps its own kind so no pass can accidentally ask for
+// the runtime type of `From`.
+private fn parseTraitRef(p: Parser) -> ASTNode {
+    let traitRef = p.node(NodeKind.TRAIT_REF)
+    let name = p.current()
+    traitRef.s1 = name.value
+    p.expectToken(TokenType.IDENTIFIER, "a trait name in a type parameter list")
+    if (p.matchVal(TokenType.RELATIONAL_OPERATOR, "<")) {
+        parseTypeArgList(p, traitRef)
+    }
+    return traitRef
+}
+
+// The declaration keeps comma-joined parameter names for substitution and
+// mangling, while genericInfo owns one GENERIC_PARAM node per name and structural
+// TRAIT_REF nodes for its bounds. The split is intentional: names are a flat
+// substitution environment, but a bound such as `From<List<T>>` is a tree and
+// must not be encoded with punctuation delimiters.
+private fn parseGenericParams(p: Parser, owner: ASTNode) -> String {
     if (p.matchVal(TokenType.RELATIONAL_OPERATOR, "<") == false) { return "" }
 
     let mut params = ""
+    let genericParams = nodeList()
     loop {
         let name = p.current()
         p.expectToken(TokenType.IDENTIFIER, "type parameter name")
 
-        // v0.1 3.3. One bound per parameter: `fn sort<T: Ord>(...)`. Encoded into
-        // the same comma-joined text as `T:Ord` rather than taking a slot of its
-        // own, for the reason the list is text at all -- it is read as a set of
-        // names and never walked as a tree. monoParamName and monoParamBound are
-        // the two readers.
-        //
-        // One, not a list. `T: Ord + Hash` is the shape a later release wants and
-        // this spelling does not preclude it: the encoding already has a
-        // separator to spare and the check is per-bound.
-        let mut bound = ""
+        let genericParam = parserNodeFrom(NodeKind.GENERIC_PARAM, name)
+        genericParam.s1 = name.value
         if (p.matchVal(TokenType.SEPARATOR, ":")) {
-            let boundName = p.current()
-            p.expectToken(TokenType.IDENTIFIER, "a trait name after `:` in a type parameter list")
-            bound = strConcat(":", boundName.value)
+            let bounds = nodeList()
+            loop {
+                nodeListPush(bounds, parseTraitRef(p))
+                if (p.matchVal(TokenType.ARITHMETIC_OPERATOR, "+") == false) { break }
+            }
+            genericParam.child1 = bounds.head
         }
+        nodeListPush(genericParams, genericParam)
 
         if (strEquals(params, "")) {
-            params = strConcat(name.value, bound)
+            params = strClone(name.value)
         } else {
-            params = strConcat(strConcat(params, ","), strConcat(name.value, bound))
+            params = strConcat(strConcat(params, ","), name.value)
         }
         if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
     }
     p.expectCloseAngle("type parameter list")
+    owner.genericInfo = genericParams.head
     return params
 }
 
@@ -204,6 +208,79 @@ internal fn parseTypeArgList(p: Parser, node: ASTNode) {
     p.expectCloseAngle("type argument list")
 }
 
+// Deep-copy one type annotation tree. An impl target and each method annotation
+// must own separate child chains: substitution mutates annotations in place, so
+// sharing the header's `Box<T>` with every receiver would make instantiating one
+// method rewrite the target seen by all the others.
+private fn copyTypeAnnotationChain(ptr: Ptr) -> Ptr {
+    let copies = nodeList()
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let source = ptr_to_node(p)
+        let copy = createNode(NodeKind.TYPE_ANNOTATION)
+        copy.s1 = source.s1
+        copy.s2 = source.s2
+        copy.i1 = source.i1
+        copy.i2 = source.i2
+        copy.i3 = source.i3
+        copy.line = source.line
+        copy.col = source.col
+        copy.len = source.len
+        copy.file = source.file
+        copy.child1 = copyTypeAnnotationChain(source.child1)
+        nodeListPush(copies, copy)
+        p = source.next
+    }
+    return copies.head
+}
+
+private fn copyTypeAnnotationInto(target: ASTNode, sourcePtr: Ptr) {
+    let source = ptr_to_node(sourcePtr)
+    target.s1 = source.s1
+    target.s2 = source.s2
+    target.i1 = source.i1
+    target.i2 = source.i2
+    target.i3 = source.i3
+    target.child1 = copyTypeAnnotationChain(source.child1)
+}
+
+private fn copyTraitRefChain(ptr: Ptr) -> Ptr {
+    let copies = nodeList()
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let source = ptr_to_node(p)
+        let copy = createNode(NodeKind.TRAIT_REF)
+        copy.s1 = source.s1
+        copy.i2 = source.i2
+        nodeSpanFrom(copy, source)
+        copy.child1 = copyTypeAnnotationChain(source.child1)
+        nodeListPush(copies, copy)
+        p = source.next
+    }
+    return copies.head
+}
+
+private fn copyGenericParamChain(ptr: Ptr) -> Ptr {
+    let copies = nodeList()
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let source = ptr_to_node(p)
+        let copy = createNode(NodeKind.GENERIC_PARAM)
+        copy.s1 = source.s1
+        nodeSpanFrom(copy, source)
+        copy.child1 = copyTraitRefChain(source.child1)
+        nodeListPush(copies, copy)
+        p = source.next
+    }
+    return copies.head
+}
+
+private fn implTargetAnnotation(p: Parser) -> Ptr {
+    let owner = ptr_to_node(p.implType)
+    let header = ptr_to_node(owner.child3)
+    return header.child1
+}
+
 // `Self` inside an `impl` block is the type the block is for.
 //
 // Resolved here, in the parser, because this is the only place that knows which
@@ -213,14 +290,6 @@ internal fn parseTypeArgList(p: Parser, node: ASTNode) {
 // Inside a `trait` body it is deliberately left alone. There is no type there to
 // resolve it to, and the conformance check substitutes it once per `impl` --
 // which is the only thing a trait signature is ever read for.
-private fn typeName(p: Parser, name: Token) -> String {
-    if (strEquals(name.value, "Self") == false) { return name.value }
-    if (nodeExists(p.implType) == false) { return name.value }
-    let owner = ptr_to_node(p.implType)
-    if (owner.kind != NodeKind.IMPL_DECL) { return name.value }
-    return strClone(owner.s1)
-}
-
 internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
     let typeNode = p.node(NodeKind.TYPE_ANNOTATION)
 
@@ -236,7 +305,12 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
 
     let name = p.current()
     if (name.type == TokenType.IDENTIFIER or name.type == TokenType.KEYWORD) {
-        typeNode.s1 = p.typeName(name)
+        if (strEquals(name.value, "Self") and nodeExists(p.implType)
+            and ptr_to_node(p.implType).kind == NodeKind.IMPL_DECL) {
+            copyTypeAnnotationInto(typeNode, implTargetAnnotation(p))
+        } else {
+            typeNode.s1 = name.value
+        }
         p.advance()
     } else {
         p.fatal(strConcat("expected a type name, found ", parserDescribe(name)))
@@ -254,6 +328,10 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
     // not have to be known to the parser -- which is the whole point: `List` was
     // the only generic type because it was the only name this test admitted.
     if (p.matchVal(TokenType.RELATIONAL_OPERATOR, "<")) {
+        if (strEquals(name.value, "Self") and nodeExists(p.implType)
+            and ptr_to_node(p.implType).kind == NodeKind.IMPL_DECL) {
+            p.fatal("`Self` already denotes the complete impl target and cannot take type arguments")
+        }
         parseTypeArgList(p, typeNode)
     }
 
@@ -434,12 +512,6 @@ internal fn parseVariableDecl(p: Parser) -> ASTNode {
 // What a bare `self` is typed as. Inside an `impl` block it is the block's type;
 // inside a `trait` it is `Self`, which has no type yet and is substituted once
 // per conforming `impl`.
-private fn receiverTypeName(p: Parser) -> String {
-    let owner = ptr_to_node(p.implType)
-    if (owner.kind == NodeKind.TRAIT_DECL) { return "Self" }
-    return strClone(owner.s1)
-}
-
 internal fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
     let param = p.node(NodeKind.FUNCTION_PARAMETER)
 
@@ -477,7 +549,12 @@ internal fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
     if (nodeExists(p.implType) and strEquals(param.s1, "self")
         and p.checkVal(TokenType.SEPARATOR, ":") == false) {
         let receiver = parserNodeFrom(NodeKind.TYPE_ANNOTATION, name)
-        receiver.s1 = p.receiverTypeName()
+        let owner = ptr_to_node(p.implType)
+        if (owner.kind == NodeKind.TRAIT_DECL) {
+            receiver.s1 = "Self"
+        } else {
+            copyTypeAnnotationInto(receiver, implTargetAnnotation(p))
+        }
         // The span is the block's type name, not this `self`. A misspelt type is
         // reported once per method either way, and pointing at `self` would blame
         // a token that spells nothing wrong.
@@ -540,7 +617,7 @@ private fn parseFunctionDecl(p: Parser) -> ASTNode {
     fnNode.s1 = name.value
     p.expectToken(TokenType.IDENTIFIER, "function name")
 
-    fnNode.s2 = parseGenericParams(p)
+    fnNode.s2 = parseGenericParams(p, fnNode)
     fnNode.child1 = parseParameterList(p, false)
 
     if (p.matchVal(TokenType.ARROW, "->")) {
@@ -570,30 +647,42 @@ private fn parseFunctionDecl(p: Parser) -> ASTNode {
 // there because there is no namespacing. `impl String { fn trim(self) }`
 // delegating to `strTrim` is additive and costs none of that churn.
 //
-// A generic `impl` is rejected rather than mis-parsed. `impl List<T>` would have
-// to instantiate a method per instantiation of the type, which is a second
-// monomorphisation entry point and not v0.1; leaving the syntax an error keeps
-// it available to mean that later.
+// The IMPL_HEADER under child3 is the source of truth for the declaration:
+// generic parameter names in s1 and their bounds in genericInfo, the target
+// annotation in child1, and (for a trait impl) the TRAIT_REF in child2.
+// IMPL_DECL.s1/s2 retain the two base names as lookup accelerators; they
+// deliberately do not try to encode either structural side as text.
 private fn parseImplDecl(p: Parser) -> ASTNode {
     p.expectVal(TokenType.KEYWORD, "impl", "impl block")
 
     let implNode = p.node(NodeKind.IMPL_DECL)
-    let head = p.current()
-    p.expectToken(TokenType.IDENTIFIER, "the type an `impl` block is for")
-    p.rejectGenericImpl()
+    let header = createNode(NodeKind.IMPL_HEADER)
+    nodeSpanFrom(header, implNode)
+    header.s1 = parseGenericParams(p, header)
+
+    let head = parseTypeAnnotation(p)
 
     // `impl Ord for Int` -- the trait form. The name is read once and then
     // placed, rather than assigned twice: a String field assigned over is a
     // String nothing releases.
     if (p.matchVal(TokenType.KEYWORD, "for")) {
-        implNode.s2 = head.value
-        let target = p.current()
-        implNode.s1 = target.value
-        p.expectToken(TokenType.IDENTIFIER, "the type after `for` in an `impl` block")
-        p.rejectGenericImpl()
+        head.kind = NodeKind.TRAIT_REF
+        header.child2 = node_to_ptr(head)
+        implNode.s2 = head.s1
+        if (head.i1 == 1 or head.i3 == 1) {
+            p.fatal("an implemented trait must be a named, non-optional trait reference")
+        }
+
+        let target = parseTypeAnnotation(p)
+        header.child1 = node_to_ptr(target)
+        implNode.s1 = target.s1
     } else {
-        implNode.s1 = head.value
+        header.child1 = node_to_ptr(head)
+        implNode.s1 = head.s1
     }
+    implNode.child3 = node_to_ptr(header)
+
+    parseImplCheckTarget(p, implNode)
 
     p.expectVal(TokenType.SEPARATOR, "{", "impl body")
 
@@ -604,6 +693,7 @@ private fn parseImplDecl(p: Parser) -> ASTNode {
     p.implType = node_to_ptr(implNode)
 
     let methods = nodeList()
+    let methodRecords = nodeList()
     while (p.checkVal(TokenType.SEPARATOR, "}") == false) {
         if (p.check(TokenType.EOF)) {
             p.fatal("this `impl` block is never closed; reached end of file looking for `}`")
@@ -623,21 +713,134 @@ private fn parseImplDecl(p: Parser) -> ASTNode {
                                        parserDescribe(p.current())))
         }
         let method = parseFunctionDecl(p)
+        method.s2 = parseImplMethodParams(p, header.s1, method.s2)
+        parseImplMethodGenericInfo(header, method)
         if (methodVisibility >= 0) { method.i2 = methodVisibility }
         parseImplCheckReceiver(p, method)
+
+        // The method itself is moved into the module's declaration chain after
+        // this block returns. Keep its name and unique source span in a separate
+        // record with its own sibling link, so conformance can recover the exact
+        // function without retaining an AST back-edge.
+        let record = createNode(NodeKind.IMPL_METHOD)
+        nodeSpanFrom(record, method)
+        record.s1 = method.s1
+        nodeListPush(methodRecords, record)
         nodeListPush(methods, method)
     }
     p.expectVal(TokenType.SEPARATOR, "}", "impl body")
 
     p.implType = ptr_null()
     implNode.child1 = methods.head
+    implNode.child2 = methodRecords.head
     return implNode
 }
 
-private fn rejectGenericImpl(p: Parser) {
-    if (p.checkVal(TokenType.RELATIONAL_OPERATOR, "<")) {
-        p.fatal("a generic `impl` block is not supported yet; write the methods as generic free functions")
+private fn parseImplMethodGenericInfo(header: ASTNode, method: ASTNode) {
+    if (nodeIsNull(header.genericInfo)) { return }
+    let implParams = copyGenericParamChain(header.genericInfo)
+    let mut tail = implParams
+    while (nodeExists(ptr_to_node(tail).next)) { tail = ptr_to_node(tail).next }
+    ptr_to_node(tail).next = method.genericInfo
+    method.genericInfo = implParams
+}
+
+// The flat name environment is shared with generic functions and types. Bounds
+// travel separately through parseImplMethodGenericInfo, so this reader never
+// has to parse semantic information back out of text.
+private fn implParamNameAt(params: String, index: Int) -> String {
+    let mut start = 0
+    let mut seen = 0
+    let mut i = 0
+    let n = __builtin_string_len(params)
+    while (i <= n) {
+        if (i == n or strCharAt(params, i) == ',') {
+            if (seen == index) {
+                return strSubstring(params, start, i - start)
+            }
+            seen = seen + 1
+            start = i + 1
+        }
+        i = i + 1
     }
+    return ""
+}
+
+private fn implParamCount(params: String) -> Int {
+    if (strEquals(params, "")) { return 0 }
+    let mut count = 1
+    let mut i = 0
+    while (i < __builtin_string_len(params)) {
+        if (strCharAt(params, i) == ',') { count = count + 1 }
+        i = i + 1
+    }
+    return count
+}
+
+private fn implParamsContain(params: String, name: String) -> Bool {
+    let mut i = 0
+    while (i < implParamCount(params)) {
+        if (strEquals(implParamNameAt(params, i), name)) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+private fn implTargetContainsParam(annotationPtr: Ptr, name: String) -> Bool {
+    let mut p = annotationPtr
+    while (nodeExists(p)) {
+        let annotation = ptr_to_node(p)
+        if (annotation.i1 == 0 and annotation.i2 == 0
+            and strEquals(annotation.s1, name)) { return true }
+        if (implTargetContainsParam(annotation.child1, name)) { return true }
+        p = annotation.next
+    }
+    return false
+}
+
+private fn parseImplCheckTarget(p: Parser, implNode: ASTNode) {
+    let header = ptr_to_node(implNode.child3)
+    let target = ptr_to_node(header.child1)
+    if (target.i1 == 1 or target.i3 == 1) {
+        p.fatal("an `impl` target must be a named, non-optional type")
+    }
+    if (target.i2 == 0 and implParamsContain(header.s1, target.s1)) {
+        if (strEquals(implNode.s2, "")) {
+            p.fatal("an inherent `impl` target must have a nominal type constructor, not a type parameter")
+        }
+        p.fatal("blanket trait `impl` blocks over a bare type parameter are not supported yet")
+    }
+
+    let count = implParamCount(header.s1)
+    let mut i = 0
+    while (i < count) {
+        if (implTargetContainsParam(header.child1, implParamNameAt(header.s1, i)) == false
+            and (nodeIsNull(header.child2)
+                 or implTargetContainsParam(ptr_to_node(header.child2).child1,
+                                            implParamNameAt(header.s1, i)) == false)) {
+            p.fatal(strConcat(strConcat("unconstrained type parameter `",
+                                        implParamNameAt(header.s1, i)),
+                              "` in `impl`; every impl parameter must occur in its target or trait arguments"))
+        }
+        i = i + 1
+    }
+}
+
+private fn parseImplMethodParams(p: Parser, implParams: String, methodParams: String) -> String {
+    if (strEquals(implParams, "")) { return methodParams }
+
+    let mut i = 0
+    while (i < implParamCount(methodParams)) {
+        let name = implParamNameAt(methodParams, i)
+        if (implParamsContain(implParams, name)) {
+            p.fatal(strConcat(strConcat("method type parameter `", name),
+                              "` duplicates an `impl` type parameter"))
+        }
+        i = i + 1
+    }
+
+    if (strEquals(methodParams, "")) { return strClone(implParams) }
+    return strConcat(strConcat(implParams, ","), methodParams)
 }
 
 // A bare `self` has to be the *first* parameter, and that is a shape error in the
@@ -694,9 +897,7 @@ private fn parseTraitDecl(p: Parser) -> ASTNode {
     traitNode.s1 = name.value
     p.expectToken(TokenType.IDENTIFIER, "trait name")
 
-    if (p.checkVal(TokenType.RELATIONAL_OPERATOR, "<")) {
-        p.fatal("a generic `trait` is not supported yet")
-    }
+    traitNode.s2 = parseGenericParams(p, traitNode)
 
     p.expectVal(TokenType.SEPARATOR, "{", "trait body")
 
@@ -875,7 +1076,7 @@ private fn parseStructDecl(p: Parser) -> ASTNode {
     structNode.s1 = name.value
     p.expectToken(TokenType.IDENTIFIER, "struct name")
 
-    structNode.s2 = parseGenericParams(p)
+    structNode.s2 = parseGenericParams(p, structNode)
     p.expectVal(TokenType.SEPARATOR, "{", "struct body")
 
     let fields = nodeList()
@@ -904,7 +1105,7 @@ private fn parseEnumDecl(p: Parser) -> ASTNode {
     enumNode.s1 = name.value
     p.expectToken(TokenType.IDENTIFIER, "enum name")
 
-    enumNode.s2 = parseGenericParams(p)
+    enumNode.s2 = parseGenericParams(p, enumNode)
     p.expectVal(TokenType.SEPARATOR, "{", "enum body")
 
     let variants = nodeList()

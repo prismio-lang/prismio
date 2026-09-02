@@ -1,0 +1,10 @@
+// expect-error: blanket trait `impl` blocks over a bare type parameter are not supported yet
+trait Named {
+    fn name(self) -> Int
+}
+
+impl<T> Named for T {
+    fn name(self) -> Int { return 0 }
+}
+
+fn main() -> Int { return 0 }

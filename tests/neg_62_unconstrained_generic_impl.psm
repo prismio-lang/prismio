@@ -1,0 +1,10 @@
+// expect-error: unconstrained type parameter `U` in `impl`
+struct Box<T> {
+    value: T
+}
+
+impl<T, U> Box<T> {
+    fn get(self) -> T { return self.value }
+}
+
+fn main() -> Int { return 0 }

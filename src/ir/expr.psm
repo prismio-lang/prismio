@@ -1139,6 +1139,18 @@ internal fn generateExpression(expr: ASTNode) -> String {
     if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
         let structName = expr.s1
 
+        // M2.1b. A consuming payload match may pair its dead constructor with
+        // the same-tag constructor returned by this branch. The eligibility
+        // proof and the token's frame limit live in stmt.psm; the expression
+        // lowering only consumes the token instead of allocating a new block.
+        // i3 is otherwise unused on STRUCT_LITERAL_EXPR.
+        if (expr.i3 == 2 and strEquals(irReuseValue, "") == false) {
+            let reused = irReuseValue
+            irReuseValue = ""
+            generateStructLiteralFields(expr, structName, reused)
+            return reused
+        }
+
         // AIF decides where this value lives. T0 means the analysis proved it
         // does not outlive the frame that creates it, so it gets a stack slot
         // and no allocation call at all; every other tier still goes through the
@@ -1939,34 +1951,37 @@ internal fn generateExpression(expr: ASTNode) -> String {
             }
             return raw
         }
-        // **A scalar element belongs here too, and leaving it out was a
-        // regression rather than a missed optimisation.** Putting scalars inline
-        // takes them out of `isStaticBoxedListGet` above; if they do not arrive
-        // here they fall through to an out-of-line `list_get_inline` with no fast
-        // path at all, which measured **2.65x slower** on a read loop over
-        // `List<Int>` -- a change that bought 2x the space and spent 2.65x the
-        // time. The `ptr` test that used to stand here was guarding the right
-        // hazard the wrong way: ir_list_flat_elem yields the element's *address*,
-        // so a scalar needs a load rather than an exclusion.
+        // **A scalar element belongs here too, and leaving it out was a real
+        // regression.** Putting scalars inline takes them out of
+        // `isStaticBoxedListGet` above; falling through to the curated
+        // `list_get_inline_scalar` call measured 2.31x slower on a 20M-read loop
+        // because the old ir_list_boxed_elem body was visible and vectorised.
+        //
+        // The pointer and scalar intrinsics stay separate because their result
+        // conventions differ. ir_list_flat_elem joins two addresses: the flat
+        // row address and list_get_inline's result. Its scalar twin joins two
+        // values: a typed load from the flat row and list_get_inline_scalar's
+        // i64 carrier converted back to the element type. Merging first and
+        // loading afterwards would load through a boxed scalar value as though
+        // it were an address whenever inline storage is disabled.
         //
         // The fat String stays out, and not by accident: it is a `struct:` key
         // that is a pair in a register rather than storage reached by GEP, so it
-        // has neither an inline stride nor an address to load from here.
-        // **Pointer-shaped elements only, and the restriction is soundness.**
-        // ir_list_flat_elem selects between flat address arithmetic and a
-        // `list_get_inline` call, which returns the slot's *contents* when the
-        // list turned out boxed. For a struct both arms are addresses and the
-        // select is well typed; for a scalar the two arms are different kinds of
-        // value and no single load covers them. A scalar takes
-        // list_get_inline_scalar instead, which branches where `elem_size` is.
+        // has neither a scalar load type nor an address to load from here.
         let flatRet = storageType(getExprType(expr))
-        if (flatStride > 0 and strEquals(irLoopFlatGuard, "") == false
-                and strEquals(flatRet, "ptr")) {
+        if (flatStride > 0 and strEquals(irLoopFlatGuard, "") == false) {
             let listNode = ptr_to_node(expr.child2)
             let listVal = generateExpression(listNode)
             let indexVal = generateExpression(ptr_to_node(listNode.next))
             let guard = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
-            return ir_get_temp_name(ir_list_flat_elem(listVal, indexVal, flatStride, guard))
+            if (strEquals(flatRet, "ptr")) {
+                return ir_get_temp_name(ir_list_flat_elem(
+                    listVal, indexVal, flatStride, guard))
+            }
+            if (scalarInlineBytes(flatRet) > 0) {
+                return ir_get_temp_name(ir_list_flat_scalar_elem(
+                    listVal, indexVal, flatRet, flatStride, guard))
+            }
         }
 
         // Byte length is the pair's second field. This is a reserved compiler

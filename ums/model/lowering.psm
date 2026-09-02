@@ -24,6 +24,27 @@ impl UmsProjectModel {
         return false
     }
 
+    private fn lowerAuthors(self, diagnostics: List<UmsDiagnostic>,
+                       statement: UmsAstStatement) {
+        if (statement.value.kind != UmsAstValueKind.ARRAY) {
+            self.lowerError(diagnostics, statement, "UMS2011",
+                          "project.authors must be an array")
+            return
+        }
+        let mut i = 0
+        while (i < list_len(statement.arrayValues)) {
+            let author = list_get(statement.arrayValues, i)
+            if (author.kind != UmsAstValueKind.STRING) {
+                umsDiagnosticAdd(diagnostics, "UMS2012", self.manifestPath,
+                                 author.line, author.col, author.len,
+                                 "every project.authors item must be a string literal")
+            } else {
+                list_push(self.metadata.authors, strClone(author.text))
+            }
+            i = i + 1
+        }
+    }
+
     private fn lowerMetadata(self, document: UmsAstDocument,
                         block: UmsAstStatement,
                         diagnostics: List<UmsDiagnostic>) {
@@ -60,6 +81,44 @@ impl UmsProjectModel {
                         self.metadata.prismioVersion = strClone(property.value.text)
                     }
                 }
+            } else if (strEquals(property.name, "description")) {
+                if (self.metadata.descriptionDeclared) {
+                    self.lowerError(diagnostics, property, "UMS2002",
+                                  "project.description is declared more than once")
+                } else {
+                    self.metadata.descriptionDeclared = true
+                    if (self.lowerString(diagnostics, property, "project.description")) {
+                        self.metadata.description = strClone(property.value.text)
+                    }
+                }
+            } else if (strEquals(property.name, "license")) {
+                if (self.metadata.licenseDeclared) {
+                    self.lowerError(diagnostics, property, "UMS2002",
+                                  "project.license is declared more than once")
+                } else {
+                    self.metadata.licenseDeclared = true
+                    if (self.lowerString(diagnostics, property, "project.license")) {
+                        self.metadata.license = strClone(property.value.text)
+                    }
+                }
+            } else if (strEquals(property.name, "licenseFile")) {
+                if (self.metadata.licenseFileDeclared) {
+                    self.lowerError(diagnostics, property, "UMS2002",
+                                  "project.licenseFile is declared more than once")
+                } else {
+                    self.metadata.licenseFileDeclared = true
+                    if (self.lowerString(diagnostics, property, "project.licenseFile")) {
+                        self.metadata.licenseFile = strClone(property.value.text)
+                    }
+                }
+            } else if (strEquals(property.name, "authors")) {
+                if (self.metadata.authorsDeclared) {
+                    self.lowerError(diagnostics, property, "UMS2002",
+                                  "project.authors is declared more than once")
+                } else {
+                    self.metadata.authorsDeclared = true
+                    self.lowerAuthors(diagnostics, property)
+                }
             } else {
                 self.lowerError(diagnostics, property, "UMS2004",
                     strConcat(strConcat("unknown project property '", property.name), "'"))
@@ -68,18 +127,98 @@ impl UmsProjectModel {
         }
     }
 
-    private fn lowerTargetEntry(self, document: UmsAstDocument,
-                           call: UmsAstStatement,
-                           diagnostics: List<UmsDiagnostic>) -> String {
+    private fn lowerToolchain(self, document: UmsAstDocument,
+                         block: UmsAstStatement,
+                         diagnostics: List<UmsDiagnostic>) {
+        let mut i = 0
+        while (i < list_len(block.children)) {
+            let property = list_get(document.statements, list_get(block.children, i))
+            if (property.kind != UmsAstStatementKind.ASSIGNMENT or
+                strEquals(property.name, "host") == false) {
+                self.lowerError(diagnostics, property, "UMS2401",
+                    "toolchain contains only the optional 'host' property")
+            } else if (self.lowerString(diagnostics, property, "toolchain.host")) {
+                if (__builtin_string_len(self.toolchain.host) > 0) {
+                    self.lowerError(diagnostics, property, "UMS2402",
+                                  "toolchain.host is declared more than once")
+                } else if (__builtin_string_len(property.value.text) == 0) {
+                    self.lowerError(diagnostics, property, "UMS2404",
+                                  "toolchain.host cannot be empty")
+                } else if (strCharAt(property.value.text, 0) == '/' or
+                           strCharAt(property.value.text, 0) == '\\' or
+                           strCharAt(property.value.text, 1) == ':') {
+                    self.lowerError(diagnostics, property, "UMS2405",
+                                  "toolchain.host must be relative to the project root")
+                } else {
+                    self.toolchain.host = strClone(property.value.text)
+                }
+            }
+            i = i + 1
+        }
+    }
+
+    private fn lowerLinkBlock(self, document: UmsAstDocument,
+                         block: UmsAstStatement,
+                         target: UmsTarget,
+                         diagnostics: List<UmsDiagnostic>) {
+        if (list_len(block.arguments) != 0) {
+            self.lowerError(diagnostics, block, "UMS2107",
+                          "link takes no arguments")
+            return
+        }
+
+        let mut i = 0
+        while (i < list_len(block.children)) {
+            let declaration = list_get(document.statements,
+                                       list_get(block.children, i))
+            let mut kind = UmsLinkKind.UNKNOWN
+            if (strEquals(declaration.name, "library")) { kind = UmsLinkKind.LIBRARY }
+            else if (strEquals(declaration.name, "search")) { kind = UmsLinkKind.SEARCH }
+            else if (strEquals(declaration.name, "file")) { kind = UmsLinkKind.FILE }
+            else if (strEquals(declaration.name, "framework")) { kind = UmsLinkKind.FRAMEWORK }
+            else if (strEquals(declaration.name, "component")) { kind = UmsLinkKind.COMPONENT }
+
+            if (declaration.kind != UmsAstStatementKind.CALL or
+                declaration.hasBlock or kind == UmsLinkKind.UNKNOWN) {
+                self.lowerError(diagnostics, declaration, "UMS2108",
+                    strConcat(strConcat("unknown link declaration '", declaration.name),
+                              "'; expected library, search, file, framework or component"))
+            } else if (list_len(declaration.arguments) != 1 or
+                       list_get(declaration.arguments, 0).kind != UmsAstValueKind.STRING) {
+                self.lowerError(diagnostics, declaration, "UMS2109",
+                    strConcat(declaration.name, " requires exactly one string argument"))
+            } else {
+                let value = list_get(declaration.arguments, 0)
+                list_push(target.links, umsLinkInput(kind, value.text,
+                          declaration.line, declaration.col, declaration.len))
+            }
+            i = i + 1
+        }
+    }
+
+    private fn lowerBody(self, document: UmsAstDocument,
+                    call: UmsAstStatement,
+                    target: UmsTarget,
+                    diagnostics: List<UmsDiagnostic>) -> String {
         let mut entry = ""
+        let mut linkBlocks = 0
         let mut i = 0
         while (i < list_len(call.children)) {
             let property = list_get(document.statements, list_get(call.children, i))
-            if (property.kind != UmsAstStatementKind.ASSIGNMENT or
-                strEquals(property.name, "entry") == false) {
+            if (property.kind == UmsAstStatementKind.CALL and
+                property.hasBlock and strEquals(property.name, "link")) {
+                linkBlocks = linkBlocks + 1
+                if (linkBlocks > 1) {
+                    self.lowerError(diagnostics, property, "UMS2110",
+                                  "target link is declared more than once")
+                } else {
+                    self.lowerLinkBlock(document, property, target, diagnostics)
+                }
+            } else if (property.kind != UmsAstStatementKind.ASSIGNMENT or
+                       strEquals(property.name, "entry") == false) {
                 self.lowerError(diagnostics, property, "UMS2101",
                     strConcat(strConcat("unknown target property '", property.name),
-                               "'; expected 'entry'"))
+                               "'; expected 'entry' or 'link'"))
             } else if (self.lowerString(diagnostics, property, "target entry")) {
                 if (__builtin_string_len(entry) > 0) {
                     self.lowerError(diagnostics, property, "UMS2102",
@@ -104,10 +243,6 @@ impl UmsProjectModel {
         // one: the exit status is the whole protocol, which is what a language
         // with no assertion library can actually promise.
         else if (strEquals(call.name, "test")) { kind = UmsTargetKind.TEST }
-        // A compiler target is executable output with the toolchain backend
-        // linked in. Prismio itself needs this; an ordinary executable target
-        // correctly links runtime.a only and cannot satisfy the ir_* symbols.
-        else if (strEquals(call.name, "compiler")) { kind = UmsTargetKind.COMPILER }
         else {
             self.lowerError(diagnostics, call, "UMS2103",
                 strConcat(strConcat("unknown target kind '", call.name), "'"))
@@ -125,14 +260,16 @@ impl UmsProjectModel {
                           strConcat(call.name, " requires exactly one string name"))
             return
         }
-        if (umsTargetFind(self.targets, argument.text) >= 0) {
+        let targetName = strClone(argument.text)
+        if (umsTargetFind(self.targets, targetName) >= 0) {
             self.lowerError(diagnostics, call, "UMS2105",
-                strConcat(strConcat("target '", argument.text), "' is declared more than once"))
+                strConcat(strConcat("target '", targetName), "' is declared more than once"))
             return
         }
-        list_push(self.targets, umsTarget(kind, argument.text,
-                  self.lowerTargetEntry(document, call, diagnostics),
-                  call.line, call.col, call.len))
+        let target = umsTarget(kind, targetName, "",
+                               call.line, call.col, call.len)
+        target.entry = self.lowerBody(document, call, target, diagnostics)
+        list_push(self.targets, target)
     }
 
     private fn lowerTargets(self, document: UmsAstDocument,
@@ -143,7 +280,7 @@ impl UmsProjectModel {
             let call = list_get(document.statements, list_get(block.children, i))
             if (call.kind != UmsAstStatementKind.CALL) {
                 self.lowerError(diagnostics, call, "UMS2106",
-                              "targets contains executable(...), library(...), test(...) or compiler(...) declarations")
+                              "targets contains executable(...), library(...) or test(...) declarations")
             } else {
                 self.lowerTarget(document, call, diagnostics)
             }
@@ -227,6 +364,7 @@ internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPat
                     profile: String, diagnostics: List<UmsDiagnostic>) -> UmsProjectModel {
     let project = umsProjectModel(root, manifestPath, profile)
     let mut projectBlocks = 0
+    let mut toolchainBlocks = 0
     let mut targetBlocks = 0
     let mut dependencyBlocks = 0
     let mut i = 0
@@ -241,6 +379,15 @@ internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPat
             projectBlocks = projectBlocks + 1
             if (projectBlocks == 1) {
                 project.lowerMetadata(document, block, diagnostics)
+            }
+        } else if (strEquals(block.name, "toolchain")) {
+            toolchainBlocks = toolchainBlocks + 1
+            if (i != 0) {
+                project.lowerError(diagnostics, block, "UMS2403",
+                    "toolchain must be the first build.ums block")
+            }
+            if (toolchainBlocks == 1) {
+                project.lowerToolchain(document, block, diagnostics)
             }
         } else if (strEquals(block.name, "targets")) {
             targetBlocks = targetBlocks + 1
@@ -262,6 +409,10 @@ internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPat
     if (projectBlocks > 1) {
         umsDiagnosticAdd(diagnostics, "UMS2007", manifestPath, 0, 0, 0,
                          "build.ums may contain only one project block")
+    }
+    if (toolchainBlocks > 1) {
+        umsDiagnosticAdd(diagnostics, "UMS2010", manifestPath, 0, 0, 0,
+                         "build.ums may contain only one toolchain block")
     }
     if (targetBlocks > 1) {
         umsDiagnosticAdd(diagnostics, "UMS2008", manifestPath, 0, 0, 0,

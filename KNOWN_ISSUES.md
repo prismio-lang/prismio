@@ -93,11 +93,27 @@ needed. `g8_tree_rebuild` goes **2 released to 4,096**;
 `test_74_reinit_assignment` **248 leaked to 93**; violations 0 throughout,
 checksums unchanged. See `aif/evidence/RESULTS-recursive-payload-leak.md`.
 
-**What is still open is the reuse token, not the transfer.** g8 keeps 8,188
-leaks: `mapAdd` consumes a tree through a `sink` and nothing reclaims the block
-it destructures. Written with the pass loop unrolled the same workload reads
-12,284 / 12,284 / 0, which is how that residue was separated from the defect
-above. This is M2.1's reuse feature, which g8 was written to measure.
+**The remaining reuse-token leak is fixed.** g8 kept 8,188 leaks because
+`mapAdd` consumed a tree through a `sink` and nothing reclaimed the block it
+destructured. M2.1b now pairs a proved one-owner, consuming match arm with its
+direct same-tag constructor and writes the replacement into the dead block.
+The shared/mixed path still allocates; `test_100_reuse_token` observes the old
+and new values through two live containers and guards that fallback.
+
+The g8 ledger is now **2,049 / 2,049 / 0**, down from 12,284 / 4,096 / 8,188,
+with checksum 528891 unchanged. Its 20-run p50 is **51.94 us instead of 189.92
+us** (3.66x faster), and allocator calls inside the measured window fall
+12,539 to 2,304. `test_74_reinit_assignment` also reaches **69 / 69 / 0**.
+See `aif/evidence/RESULTS-M2-reuse-token.md`.
+
+**The generated recursive release no longer consumes one frame per list
+element.** M2.1a made this path reachable: a 500,000-link `Chain` built
+iteratively printed its success line and then exited 139 during its scope drop.
+The release now loops on its last direct self field while retaining ordinary
+recursion for earlier self fields. The same discriminator exits normally at
+**500,001 / 500,001 / 0**, 0 violations. Multiple-self-field types retain a
+stack bound through their non-tail branches; removing that requires an explicit
+worklist. See `aif/evidence/RESULTS-recursive-release-depth.md`.
 
 **UMS resolution releases nothing it allocates.** Not unsoundness — `violations`
 is 0 either side — but a real regression in allocation hygiene. The recorded fix
@@ -132,20 +148,31 @@ in `std` calls the unprefixed names — the methods delegate to the prefixed
 bodies — so shadowing would be safe, but it is a language semantics change and has
 not been made.
 
-**Scalar-element lists are inline now, and a read-dominated loop got slower.**
+**Scalar-element lists are inline now, and the read regression is closed.**
 `inlineElemSizeOfList` used to answer 0 for any element type that was not a
 struct, so `List<Bool>` and `List<Int>` spent a pointer slot each -- not
 declined, unreached. They are stored under their own width now: `List<Bool>` at
 4,000,000 elements goes **64.0 MB to 9.2 MB**, `List<Int>` to 32.7 MB, and a
 sieve to 2,000,000 is **1.25x faster**.
 
-**A pure read loop is 2.31x slower** (2.14 ms to 4.94 ms over 20M `list_get`).
-Inline scalars leave `isStaticBoxedListGet`, whose lowering inlines and
-vectorises the access; the curated `list_get_inline_scalar` call does not. The
-shaped fix is a scalar `ir_list_flat_elem` that resolves the representation
-inside the intrinsic, so the flat arm can be address arithmetic and a load --
-a backend change, not done here. See
-`aif/evidence/RESULTS-scalar-list-storage.md`.
+The first version made a pure read loop **2.31x slower** (2.14 ms to 4.94 ms
+over 20M `list_get`): inline scalars left `isStaticBoxedListGet`, whose lowering
+inlined and vectorised the access, for a curated call that did not vectorise.
+`ir_list_flat_scalar_elem` now resolves the representation inside the backend
+intrinsic. Its flat arm is constant-stride address arithmetic plus a typed load;
+its boxed arm still calls `list_get_inline_scalar` and converts the i64 bit
+carrier to the same result type before the join. On the retained discriminator,
+the regressed compiler is 5.62 ms median and the intrinsic is **1.94 ms** over
+20M reads (**0.346x**); the emitted arm64 body is a 16-lane NEON reduction.
+The original 20M-write loop stayed flat at 1.002x because scalar set remained
+behind a runtime call. The scalar write pair is curated now: set takes
+18.929 ms to **7.721 ms** (0.408x), while the read control stays flat at 0.962x;
+the mixed sieve improves 6.849 ms to **3.505 ms** (0.512x). Push stamping,
+fallback and growth live behind an exported cold helper, so the established-list
+path inlines without exposing allocator statics. See
+`aif/evidence/RESULTS-scalar-list-storage.md`,
+`aif/evidence/RESULTS-curate-scalar-write.md`, and the three
+`aif/evidence/bench/scalar_list_*.psm` programs.
 
 ## Codegen
 

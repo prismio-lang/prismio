@@ -1,0 +1,21 @@
+// expect-error: Int does not implement `Enabled`
+trait Scored {
+    fn score(self) -> Int
+}
+
+trait Enabled {
+    fn enabled(self) -> Bool
+}
+
+impl Scored for Int {
+    fn score(self) -> Int { return self }
+}
+
+fn activeScore<T: Scored + Enabled>(value: T) -> Int {
+    if (enabled(value)) { return score(value) }
+    return 0
+}
+
+fn main() -> Int {
+    return activeScore(7)
+}

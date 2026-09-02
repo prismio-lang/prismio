@@ -1,0 +1,10 @@
+// expect-error: method type parameter `T` duplicates an `impl` type parameter
+struct Box<T> {
+    value: T
+}
+
+impl<T> Box<T> {
+    fn replace<T>(self, value: T) -> T { return value }
+}
+
+fn main() -> Int { return 0 }

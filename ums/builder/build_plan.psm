@@ -37,12 +37,21 @@ fn umsBuildPlanCreate(project: UmsProjectModel,
     let mut i = 0
     while (i < list_len(project.targets)) {
         let target = list_get(project.targets, i)
+        let plannedLinks: List<UmsLinkInput> = list_new()
+        let mut linkIndex = 0
+        while (linkIndex < list_len(target.links)) {
+            let input = list_get(target.links, linkIndex)
+            list_push(plannedLinks, umsLinkInput(input.kind, input.value,
+                      input.line, input.col, input.len))
+            linkIndex = linkIndex + 1
+        }
         let planned = UmsTarget {
             kind: target.kind,
             name: strClone(target.name),
             entry: strClone(target.entry),
             sourcePath: join_path(project.root, target.entry),
             outputPath: join_path(profileRoot, target.name),
+            links: plannedLinks,
             line: target.line,
             col: target.col,
             len: target.len

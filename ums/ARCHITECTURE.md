@@ -32,10 +32,11 @@ build.ums
    -> compiler entry/output pairs
 ```
 
-The parser AST is intentionally generic: assignments, calls, arguments, and
-nested blocks. New DSL sections can be parsed before the semantic model learns
-their meaning, and unknown schema elements receive semantic diagnostics rather
-than requiring lexer/parser changes.
+The parser AST is intentionally generic: assignments, scalar values, flat
+scalar arrays, calls, arguments, and nested blocks. New DSL sections can be
+parsed before the semantic model learns their meaning, and unknown schema
+elements receive semantic diagnostics rather than requiring lexer/parser
+changes.
 
 Tokens and AST block nodes retain byte offsets in addition to diagnostic line
 and column coordinates. `model/manifest_writer.psm` uses those offsets for
@@ -49,6 +50,28 @@ manifest interpretation, validation, target enumeration, and artifact paths.
 The adapter calls the existing `compileSource` for each planned executable, so
 UMS does not duplicate lexing, semantic analysis, AIF, LLVM generation, or
 native linking.
+
+### Host selection is a stable prefix
+
+An optional `toolchain` block must be the first manifest block. The global
+launcher scans only that finite prefix for a project-relative `host`; it does
+not lex or lower the remaining manifest. If the host exists and starts, the
+launcher forwards the original arguments and working directory. The host owns
+the full UMS parse and command, so it may extend UMS independently of the older
+global compiler. Without a usable host, global Prismio is stage 0 and processes
+the manifest itself.
+
+The launcher remains alive while the executable at `toolchain.host` builds its
+`.next` sibling. It validates and promotes that candidate after the host exits. The
+same split lets `clean` remove a running Windows compiler only after its process
+has ended. A hosted command failure is returned directly and is never replayed.
+
+Artifact kind does not encode linkage. `executable`, `test`, and the future
+`library` describe outputs; a target's ordered `link` inputs describe native
+dependencies. `library`, `search`, `file`, and `framework` lower to quoted clang
+arguments. `component("prismio.backend")` selects the toolchain-owned local
+backend bundle and its transitive LLVM dependency. Host promotion is selected
+only by matching the planned output to `toolchain.host`.
 
 ### Generated state is project-local and isolated
 
@@ -69,9 +92,10 @@ they will use the platform-appropriate global Prismio cache.
 
 - `parser/`: token vocabulary, DSL lexer, generic AST, recoverable parser
 - `model/`: diagnostics, metadata/build models, AST lowering, validation,
-  workspace facade, and token-preserving manifest edits
-- `targets/`: executable, test, library, and self-hosted compiler target kinds,
-  plus target lookup
+  workspace facade, stable host-prefix selection, and token-preserving manifest
+  edits
+- `targets/`: executable, test, and library target kinds; ordered native link
+  inputs and target lookup
 - `dependency/`: dependency scopes, local-path resolution, and lockfile output
 - `resolver/`: upward manifest discovery
 - `builder/`: deterministic build-plan and artifact-path construction

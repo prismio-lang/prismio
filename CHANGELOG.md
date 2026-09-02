@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Language
+
+- Generic parameters accept multiple trait bounds with `+`, such as
+  `fn keep<T: Ord + Copy>(value: T) -> T`. Every bound is checked independently
+  at instantiation, and diagnostics identify the requirement that failed.
+- Trait conformance belongs to the exact `impl Trait for Type` block. An
+  unrelated global or inherent method with the same signature can no longer
+  satisfy an incomplete impl accidentally. `Map` now states its real
+  `K: Key + Copy` requirement instead of relying on cross-impl conformance.
+- Concrete trait implementations are coherent: a second `impl Trait for Type`
+  is rejected at the later declaration with a note pointing to the first.
+- Generic inherent impls are supported with structural targets, including
+  `impl<T> Box<T>`, impl-level bounds, complete `Self` substitution, methods
+  with additional type parameters, and concrete specializations such as
+  `impl Box<Int>`. Unconstrained parameters and bare type-parameter targets are
+  rejected. Generic methods sharing a name on different receiver constructors
+  retain distinct demand-driven instantiations.
+- Generic trait impls such as `impl<T: Bound> Trait for Box<T>` participate in
+  bound satisfaction only when their structural target matches and every impl
+  bound holds. Conformance is checked against the owning generic method
+  templates, and coherence rejects overlapping generic/concrete targets while
+  permitting provably disjoint concrete specializations.
+- Traits may declare type parameters, as in `trait From<T>`. Structural trait
+  applications such as `From<Int>` are supported in impls and bounds; their
+  arguments participate in conformance, generic applicability, and coherence.
+  Impl parameters may be constrained by the trait side (`impl<T> From<T> for
+  String`), and arity mismatches receive declaration-directed diagnostics.
+
 ### Developer tooling
 
 - The test runner accepts fixture stems or substrings, including repeatable
@@ -11,9 +39,19 @@
   the compiler as a normal Prismio project and writes the executable below
   `.prismio/build/<profile>/`. Seed bootstrapping remains an explicit toolchain
   operation because it is what creates the first local compiler.
-- UMS has an explicit `compiler(...)` target kind for self-hosted toolchains.
-  It follows the executable pipeline but links the compiler backend and LLVM;
-  ordinary `executable(...)` targets retain the runtime-only separation.
+- UMS keeps artifact shape separate from native linkage. Self-hosted Prismio is
+  `executable("prismio")` with `component("prismio.backend")`; ordinary targets
+  can declare ordered `library`, `search`, `file`, and Mach-O `framework`
+  inputs without pretending to be compilers.
+- Project metadata now supports optional descriptions, SPDX-shaped licenses,
+  project-relative license files, and author lists. UMS array values are a
+  reusable flat scalar syntax rather than an authors-only parser special case.
+- An optional, first `toolchain { host = "..." }` block selects a project-local
+  compiler. Global Prismio reads only that stable prefix, forwards the original
+  command when the host is usable, and otherwise processes it as stage 0.
+- `prismio aif <source>` now defaults to a source-oriented storage plan with
+  numeric allocation IDs; `--why=<ID>` explains one decision and `--manifest`
+  preserves the stable tier/symbol form used by compiler tooling and CI.
 - `tools/format_sources.py` supplies a conservative repository formatter, and
   `tools/lint.py` checks formatting, Python and shell syntax, Prismio tabs,
   toolchain source-list agreement, and diagnostic-code integrity.

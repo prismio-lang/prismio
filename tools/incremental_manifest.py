@@ -158,7 +158,7 @@ def wipe_state(workdir, cache_dir):
 def manifest(compiler, source, cache_dir, extra=None):
     env = dict(os.environ)
     env["PRISMIO_OBJ_CACHE_DIR"] = cache_dir
-    cmd = [compiler, "aif", source] + (extra or [])
+    cmd = [compiler, "aif", source, "--manifest"] + (extra or [])
     p = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if p.returncode != 0:
         print(p.stdout)

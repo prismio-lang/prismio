@@ -1,0 +1,20 @@
+// expect-error: `Int` does not implement `Measured`: no `measure`
+trait Measured {
+    fn measure(self) -> Int
+}
+
+// The old conformance check searched the whole overload set, so this unrelated
+// free function silently satisfied the impl below.
+fn measure(value: Int) -> Int {
+    return value
+}
+
+impl Measured for Int {
+    fn unrelated(self) -> Int {
+        return self
+    }
+}
+
+fn main() -> Int {
+    return 0
+}

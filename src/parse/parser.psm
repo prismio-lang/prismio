@@ -23,15 +23,15 @@ extern fn exit(code: Int)
 // struct literal. It was a module-level global until it became clear it is
 // simply parser state, and parser state belongs on the parser.
 //
-// `implType` is the IMPL_DECL whose body is being read, or null outside one. It
-// is the whole of what an `impl` block adds to the parser: a bare `self`
-// parameter takes its type from here, and nothing else in the grammar changes.
+// `implType` is the IMPL_DECL whose body is being read, or null outside one. Its
+// IMPL_HEADER child supplies the structural target annotation copied onto a bare
+// `self` parameter and every `Self` annotation in the body.
 // A `Ptr` rather than the type's name because `Ptr` is copyable -- a `String`
 // field would be moved out of the parser by the first method that read it.
 struct Parser {
     current: Ptr, // Token pointer
     allowStructLit: Int,
-    implType: Ptr // ASTNode (IMPL_DECL), or null
+    implType: Ptr // ASTNode (IMPL_DECL with child3 IMPL_HEADER), or null
 }
 
 fn parserCreate(tokens: Token) -> Parser {
@@ -261,11 +261,12 @@ impl Parser {
             // first parameter is the receiver, so every pass downstream keys on
             // `== NodeKind.FUNCTION` and needs to know nothing about `impl`.
             //
-            // The IMPL_DECL itself stays, with its children detached, because it is
-            // the record that this type has these methods -- which is what a trait
-            // bound is checked against. Detaching matters: a node cannot be in two
-            // `next` chains at once, and leaving `child1` pointing at the first
-            // method would make it point into the module chain and run off the end.
+            // The IMPL_DECL itself stays. Its method definitions move from child1
+            // into the module chain; child2 retains separate IMPL_METHOD records
+            // and child3 retains the structural IMPL_HEADER
+            // with their names and source spans. A node cannot be in two `next`
+            // chains at once, so the records own the impl-local sibling chain while
+            // overload resolution continues to see ordinary top-level functions.
             if (stmt.kind == NodeKind.IMPL_DECL) {
                 let methods = stmt.child1
                 stmt.child1 = ptr_null()

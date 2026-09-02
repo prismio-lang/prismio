@@ -1,0 +1,16 @@
+// expect-error: no `value`
+trait Valued {
+    fn value(self) -> Int
+}
+
+struct Box<T> {
+    item: T
+}
+
+impl<T> Valued for Box<T> {
+    // U belongs to this method rather than to the impl, so this is not the
+    // non-generic method signature required by Valued.
+    fn value<U>(self) -> Int { return 0 }
+}
+
+fn main() -> Int { return 0 }

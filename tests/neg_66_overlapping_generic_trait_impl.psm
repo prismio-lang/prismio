@@ -1,0 +1,27 @@
+// expect-error: overlapping impl `Readable` for `Box<Int>`
+// expect-error: the first overlapping implementation is here
+trait Positive {
+    fn positive(self) -> Bool
+}
+
+impl Positive for Int {
+    fn positive(self) -> Bool { return self > 0 }
+}
+
+trait Readable {
+    fn read(self) -> Int
+}
+
+struct Box<T> {
+    value: T
+}
+
+impl<T: Positive> Readable for Box<T> {
+    fn read(self) -> Int { return 1 }
+}
+
+impl Readable for Box<Int> {
+    fn read(self) -> Int { return 2 }
+}
+
+fn main() -> Int { return 0 }

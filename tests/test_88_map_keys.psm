@@ -35,10 +35,8 @@ impl Key for Point {
     }
 }
 
-// `Key` requires `copyOf` as well, and this is where a user type supplies it --
-// in an `impl Copy` block, not in the `impl Key` block above. Conformance is
-// checked by name and signature over the whole module, so the two blocks
-// together satisfy `Key` and neither writes the other's method.
+// `Map` requires `Key + Copy`, and this is where a user type supplies the second
+// capability. Each impl satisfies only its own trait.
 impl Copy for Point {
     fn copyOf(self) -> Self {
         return Point { x: self.x, y: self.y }

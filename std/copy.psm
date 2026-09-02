@@ -11,11 +11,9 @@
 // and duplicating is per-type: an `Int` copies itself, a `String` needs
 // `strClone`, a struct needs a field-by-field rebuild.
 //
-// **`copyOf` is deliberately shared with `Key`.** Trait conformance here is
-// checked by name and signature against the whole module, not against the block
-// the method was written in -- an `impl` block is a naming construct. So
-// `impl Copy for String` satisfies `Key`'s `copyOf` requirement as well, and a
-// type never writes the same method twice to be both.
+// `Copy` is separate from `Key`. A map needs both capabilities and writes
+// `K: Key + Copy`; conformance belongs to the exact impl block, so neither trait
+// can acquire methods accidentally from the other's implementation.
 //
 // A `copyOf` that returns `self` is correct only for a type that owns nothing:
 // returning a parameter from a function is a borrow escaping, and for an owned

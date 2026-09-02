@@ -1,0 +1,46 @@
+// Scalar-inline storage mixed read/write discriminator: Eratosthenes to two
+// million. The full operation is timed, including construction of List<Bool>;
+// the answer is 148,933 primes.
+
+import std.io
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
+
+fn main() -> Int {
+    let limit = 2000000
+    let t0 = clock_gettime_nsec_np(4)
+
+    let prime: List<Bool> = list_new_with_capacity(limit + 1)
+    let mut i = 0
+    while (i <= limit) {
+        list_push(prime, true)
+        i = i + 1
+    }
+    list_set(prime, 0, false)
+    list_set(prime, 1, false)
+
+    let mut p = 2
+    while (p * p <= limit) {
+        if (list_get(prime, p)) {
+            let mut composite = p * p
+            while (composite <= limit) {
+                list_set(prime, composite, false)
+                composite = composite + p
+            }
+        }
+        p = p + 1
+    }
+
+    let mut count = 0
+    i = 2
+    while (i <= limit) {
+        if (list_get(prime, i)) { count = count + 1 }
+        i = i + 1
+    }
+
+    let t1 = clock_gettime_nsec_np(4)
+    print("primes ")
+    println(count)
+    print("elapsed_ns ")
+    println((t1 - t0) as Int)
+    return 0
+}

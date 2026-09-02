@@ -1,11 +1,23 @@
+toolchain {
+    host = ".prismio/build/debug/prismio"
+}
+
 project {
     name = "prismio"
     version = "0.1.0"
     prismio = "0.1.0"
+    description = "The Prismio programming language and compiler"
+    license = "Apache-2.0"
+    authors = [
+        "Saksham Jaiswal"
+    ]
 }
 
 targets {
-    compiler("prismio") {
+    executable("prismio") {
         entry = "src/main.psm"
+        link {
+            component("prismio.backend")
+        }
     }
 }

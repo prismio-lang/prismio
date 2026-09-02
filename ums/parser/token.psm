@@ -11,6 +11,8 @@ enum UmsTokenKind {
     RIGHT_BRACE,
     LEFT_PAREN,
     RIGHT_PAREN,
+    LEFT_BRACKET,
+    RIGHT_BRACKET,
     COMMA,
     SEMICOLON,
     EOF
@@ -48,6 +50,8 @@ internal fn umsTokenKindName(kind: UmsTokenKind) -> String {
     if (kind == UmsTokenKind.RIGHT_BRACE) { return "'}'" }
     if (kind == UmsTokenKind.LEFT_PAREN) { return "'('" }
     if (kind == UmsTokenKind.RIGHT_PAREN) { return "')'" }
+    if (kind == UmsTokenKind.LEFT_BRACKET) { return "'['" }
+    if (kind == UmsTokenKind.RIGHT_BRACKET) { return "']'" }
     if (kind == UmsTokenKind.COMMA) { return "','" }
     if (kind == UmsTokenKind.SEMICOLON) { return "';'" }
     if (kind == UmsTokenKind.EOF) { return "end of file" }

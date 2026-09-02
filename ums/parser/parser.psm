@@ -93,6 +93,35 @@ impl UmsParser {
         }
     }
 
+    private fn parseArray(self, statement: UmsAstStatement) {
+        let opening = self.advance()
+        statement.value = UmsAstValue {
+            kind: UmsAstValueKind.ARRAY,
+            text: strClone(""),
+            line: opening.line,
+            col: opening.col,
+            len: opening.len
+        }
+        if (self.take(UmsTokenKind.RIGHT_BRACKET)) { return }
+
+        loop {
+            list_push(statement.arrayValues, self.parseValue())
+            if (self.take(UmsTokenKind.RIGHT_BRACKET)) { break }
+            if (self.take(UmsTokenKind.COMMA) == false) {
+                self.expected("',' or ']'")
+                while (self.at(UmsTokenKind.RIGHT_BRACKET) == false and
+                       self.at(UmsTokenKind.SEMICOLON) == false and
+                       self.at(UmsTokenKind.EOF) == false) {
+                    self.advance()
+                }
+                self.take(UmsTokenKind.RIGHT_BRACKET)
+                break
+            }
+            // A final comma makes one-item-per-line metadata edits stable.
+            if (self.take(UmsTokenKind.RIGHT_BRACKET)) { break }
+        }
+    }
+
     private fn parseStatement(self, document: UmsAstDocument) -> Int {
         let token = self.current()
         if (token.kind != UmsTokenKind.IDENTIFIER) {
@@ -105,7 +134,11 @@ impl UmsParser {
         if (self.take(UmsTokenKind.EQUAL)) {
             let statement = umsAstStatement(UmsAstStatementKind.ASSIGNMENT, name.value,
                                             name.offset, name.line, name.col, name.len)
-            statement.value = self.parseValue()
+            if (self.at(UmsTokenKind.LEFT_BRACKET)) {
+                self.parseArray(statement)
+            } else {
+                statement.value = self.parseValue()
+            }
             self.take(UmsTokenKind.SEMICOLON)
             let index = list_len(document.statements)
             list_push(document.statements, statement)

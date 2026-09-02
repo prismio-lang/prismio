@@ -15,8 +15,9 @@
 // > Give it bounds and this file becomes a hash table without its callers
 // > changing.
 //
-// That is exactly what happened. `K: Key` (std/key.psm) supplies `hash` and
-// `eq`, `mapIndexOf` went from a linear scan to a probe, and **no caller
+// That is exactly what happened. `K: Key + Copy` uses `Key` (std/key.psm) for
+// `hash`/`eq` and `Copy` (std/copy.psm) for storage; `mapIndexOf` went from a
+// linear scan to a probe, and **no caller
 // changed** -- `tests/test_65_map.psm` is untouched and still passes.
 //
 // **String keys work now.** The old header said they "do not instantiate, and
@@ -33,8 +34,8 @@
 // that is not the probe table.
 //
 // **Keys may be owned; values may not, and that is a measured limit rather than
-// an oversight.** `K: Key` carries `copyOf`, so a `String` or a struct key is
-// duplicated into the table and `Map<String, Int>` is `--verify` clean at
+// an oversight.** `K: Key + Copy` duplicates a `String` or a struct key into
+// the table and `Map<String, Int>` is `--verify` clean at
 // 9 allocated / 9 released / 0 leaked. `V` has no bound, so an owned `V` is
 // rejected at compile time with "cannot move out of borrowed value `value`" --
 // the same honest error the association list gave, and not a silent one.
@@ -60,11 +61,12 @@
 // probe chain.
 
 import std.key
+import std.copy
 import std.option
 
 // `slots` holds an index into `keys`/`values`, or -1 for empty. Its length is
 // always a power of two, so `hash & mask` is the bucket.
-struct Map<K: Key, V> {
+struct Map<K: Key + Copy, V> {
     keys: List<K>,
     values: List<V>,
     slots: List<Int>,
@@ -76,7 +78,7 @@ struct Map<K: Key, V> {
 // is right from the start.
 private fn mapInitialCapacity() -> Int { return 8 }
 
-fn mapNew<K: Key, V>() -> Map<K, V> {
+fn mapNew<K: Key + Copy, V>() -> Map<K, V> {
     let k: List<K> = list_new()
     let v: List<V> = list_new()
     let s: List<Int> = list_new_with_capacity(mapInitialCapacity())
@@ -88,13 +90,13 @@ fn mapNew<K: Key, V>() -> Map<K, V> {
     return Map<K, V> { keys: k, values: v, slots: s, mask: mapInitialCapacity() - 1 }
 }
 
-fn mapLen<K: Key, V>(m: Map<K, V>) -> Int {
+fn mapLen<K: Key + Copy, V>(m: Map<K, V>) -> Int {
     return list_len(m.keys)
 }
 
 // The slot `key` occupies, or the first empty slot on its probe chain. Always
 // terminates: the table is grown before it can fill, so an empty slot exists.
-private fn mapSlotOf<K: Key, V>(m: Map<K, V>, key: K) -> Int {
+private fn mapSlotOf<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Int {
     let mut at = hash(key) & m.mask
     loop {
         let entry = list_get(m.slots, at)
@@ -108,7 +110,7 @@ private fn mapSlotOf<K: Key, V>(m: Map<K, V>, key: K) -> Int {
 // The index of `key`, or -1. Every other function here is written in terms of
 // this one, so the probe is in one place -- which is what let the linear scan
 // this replaced be swapped out without touching a caller.
-fn mapIndexOf<K: Key, V>(m: Map<K, V>, key: K) -> Int {
+fn mapIndexOf<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Int {
     return list_get(m.slots, mapSlotOf(m, key))
 }
 
@@ -118,7 +120,7 @@ fn mapIndexOf<K: Key, V>(m: Map<K, V>, key: K) -> Int {
 // micro-optimisation: assigning a new `List` over `m.slots` releases nothing, so
 // every rehash would leak the old table. Pushing the new half and then clearing
 // the old half reuses the one allocation the map has ever had for this.
-private fn mapRehash<K: Key, V>(m: Map<K, V>) {
+private fn mapRehash<K: Key + Copy, V>(m: Map<K, V>) {
     let old = m.mask + 1
     let capacity = old * 2
 
@@ -143,7 +145,7 @@ private fn mapRehash<K: Key, V>(m: Map<K, V>) {
     }
 }
 
-fn mapHas<K: Key, V>(m: Map<K, V>, key: K) -> Bool {
+fn mapHas<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Bool {
     return mapIndexOf(m, key) >= 0
 }
 
@@ -152,7 +154,7 @@ fn mapHas<K: Key, V>(m: Map<K, V>, key: K) -> Bool {
 // This is the lookup that can distinguish "absent" from "present and equal to
 // the fallback", which mapGetOr cannot. It is what the earlier version of this
 // file said would arrive with REQUIREMENTS 14, and it did.
-fn mapGet<K: Key, V>(m: Map<K, V>, key: K) -> Option<V> {
+fn mapGet<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Option<V> {
     let at = mapIndexOf(m, key)
     if (at < 0) { return Option<V>.None }
     return Option.Some(list_get(m.values, at))
@@ -160,7 +162,7 @@ fn mapGet<K: Key, V>(m: Map<K, V>, key: K) -> Option<V> {
 
 // Absence answered with a caller-supplied value. Kept alongside mapGet for the
 // many callers that have a sensible default and do not want to match on one.
-fn mapGetOr<K: Key, V>(m: Map<K, V>, key: K, fallback: V) -> V {
+fn mapGetOr<K: Key + Copy, V>(m: Map<K, V>, key: K, fallback: V) -> V {
     let at = mapIndexOf(m, key)
     if (at < 0) { return fallback }
     return list_get(m.values, at)
@@ -172,7 +174,7 @@ fn mapGetOr<K: Key, V>(m: Map<K, V>, key: K, fallback: V) -> V {
 // Grows at 3/4 load. The check is `(count) * 4 > capacity * 3` *after* the
 // insert, so the table is never left full -- which is the precondition that makes
 // mapSlotOf's loop terminate.
-fn mapSet<K: Key, V>(m: Map<K, V>, key: K, value: V) -> Bool {
+fn mapSet<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V) -> Bool {
     let at = mapSlotOf(m, key)
     let entry = list_get(m.slots, at)
     if (entry >= 0) {
@@ -182,7 +184,7 @@ fn mapSet<K: Key, V>(m: Map<K, V>, key: K, value: V) -> Bool {
 
     // The key is **copied in**, not moved: a parameter is a borrow, so
     // `list_push(m.keys, key)` is "cannot move out of borrowed value", which is
-    // exactly why an owned key was unwritable before `Key` carried `copyOf`. A
+    // exactly why an owned key needs the separate `Copy` bound. A
     // `sink` parameter pushed here would be worse than either -- codegen
     // transfers nothing, so the caller's scope exit and the list's release both
     // free it, and `--verify` reports "release of a pointer that is not live".
@@ -199,10 +201,10 @@ fn mapSet<K: Key, V>(m: Map<K, V>, key: K, value: V) -> Bool {
 
 // The key at a position, for iterating a map. Positions are insertion order and
 // stay valid until the next mapSet that inserts.
-fn mapKeyAt<K: Key, V>(m: Map<K, V>, index: Int) -> K {
+fn mapKeyAt<K: Key + Copy, V>(m: Map<K, V>, index: Int) -> K {
     return list_get(m.keys, index)
 }
 
-fn mapValueAt<K: Key, V>(m: Map<K, V>, index: Int) -> V {
+fn mapValueAt<K: Key + Copy, V>(m: Map<K, V>, index: Int) -> V {
     return list_get(m.values, index)
 }

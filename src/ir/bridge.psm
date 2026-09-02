@@ -274,6 +274,12 @@ extern fn ir_elem_ptr(elemType: String, base: String, index: String) -> Int
 // is answered exactly as it was.
 extern fn ir_list_flat_elem(listValue: String, indexValue: String, stride: Int,
                             guard: String) -> Int
+// The scalar twin returns a value rather than an address. Its flat arm loads
+// `elemType` directly; its fallback arm converts list_get_inline_scalar's i64
+// bit carrier back to the same type before the two arms join.
+extern fn ir_list_flat_scalar_elem(listValue: String, indexValue: String,
+                                   elemType: String, stride: Int,
+                                   guard: String) -> Int
 // The corresponding typed access for pointer-slot Lists, including scalar
 // values carried in a slot.
 extern fn ir_list_boxed_elem(listValue: String, indexValue: String) -> Int

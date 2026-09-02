@@ -1,12 +1,15 @@
-// expect-error: a generic `impl` block is not supported yet
+// Trait arguments are checked against the declaration's parameter arity.
+// expect-error: takes trait parameters <>
 struct Box<T> {
     value: T
 }
 
-impl Box<Int> {
-    fn get(self) -> Int {
-        return self.value
-    }
+trait Readable {
+    fn get(self) -> Int
+}
+
+impl Readable<Int> for Box<Int> {
+    fn get(self) -> Int { return 0 }
 }
 
 fn main() -> Int {

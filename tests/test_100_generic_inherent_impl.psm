@@ -1,0 +1,95 @@
+// Generic inherent impls lower into ordinary generic function templates. The
+// structural receiver annotation is what lets existing call inference solve the
+// impl parameter from `Box<Int>` and instantiate the method on demand.
+
+import std.io
+
+struct Box<T> {
+    value: T
+}
+
+struct Pair<A, B> {
+    first: A,
+    second: B
+}
+
+struct Cell<T> {
+    item: T
+}
+
+trait Score {
+    fn score(self) -> Int
+}
+
+impl Score for Int {
+    fn score(self) -> Int { return self }
+}
+
+// Kept before Box's impl and deliberately reuses `get`. Template selection has
+// to inspect the receiver constructor; source order is not dispatch.
+impl<T> Cell<T> {
+    fn get(self) -> T {
+        return self.item
+    }
+}
+
+impl<T> Box<T> {
+    fn get(self) -> T {
+        return self.value
+    }
+
+    // `Self` must copy the complete `Box<T>` target, not only its base name.
+    fn choose(self, other: Self, first: Bool) -> T {
+        if (first) { return self.value }
+        return other.value
+    }
+
+    // Method parameters extend the impl parameter list. Both T and U must be
+    // inferred and substituted into this return type and literal.
+    fn pairWith<U>(self, other: U) -> Pair<T, U> {
+        return Pair<T, U> { first: self.value, second: other }
+    }
+}
+
+impl<T: Score> Box<T> {
+    fn scoreOf(self) -> Int {
+        return score(self.value)
+    }
+}
+
+// A concrete specialization uses the same structural target representation,
+// but is an ordinary non-generic function after parsing.
+impl Box<Int> {
+    fn plusOne(self) -> Int {
+        return self.value + 1
+    }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let seven = Box<Int> { value: 7 }
+    let nine = Box<Int> { value: 9 }
+    let yes = Box<Bool> { value: true }
+    let cell = Cell<Int> { item: 23 }
+
+    if (seven.get() != 7) { return fail("method inference at Int") }
+    if (get(yes) == false) { return fail("free-call inference at Bool") }
+    if (cell.get() != 23) { return fail("same method name on another generic receiver") }
+    if (seven.choose(nine, false) != 9) { return fail("structural Self") }
+    if (seven.plusOne() != 8) { return fail("concrete generic specialization") }
+    if (seven.scoreOf() != 7) { return fail("impl-level bound") }
+
+    let left = seven.pairWith(true)
+    if (left.first != 7 or left.second == false) { return fail("method parameter U") }
+
+    let right = yes.pairWith(11)
+    if (right.first == false or right.second != 11) { return fail("second method instantiation") }
+
+    println("test_100 ok")
+    return 0
+}

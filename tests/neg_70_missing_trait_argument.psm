@@ -1,0 +1,10 @@
+// expect-error: takes trait parameters <T>
+trait From<T> {
+    fn from(value: T) -> Self
+}
+
+impl From for String {
+    fn from(value: Int) -> String { return "x" }
+}
+
+fn main() -> Int { return 0 }

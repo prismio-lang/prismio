@@ -1731,10 +1731,201 @@ private fn semaCheckImplBlocks(module: ASTNode) {
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
         if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, "") == false) {
-            semaCheckConformance(module, stmt)
+            let first = semaFirstOverlappingTraitImpl(module, stmt)
+            if (first.file != stmt.file or first.line != stmt.line or first.col != stmt.col) {
+                let targetText = semaAnnotationText(ptr_to_node(stmt.child3).child1)
+                let traitText = monoTraitRefText(ptr_to_node(stmt.child3).child2)
+                if (semaImplsExactlyAgree(first, stmt)) {
+                    semaErrorAt(stmt, strConcat(strConcat("duplicate impl ", diagQuote(traitText)),
+                                                strConcat(" for ", diagQuote(targetText))))
+                    diag_note_at(first.file, first.line, first.col, first.len,
+                                 "the first implementation is here")
+                } else {
+                    semaErrorAt(stmt, strConcat(strConcat("overlapping impl ", diagQuote(traitText)),
+                                                strConcat(" for ", diagQuote(targetText))))
+                    diag_note_at(first.file, first.line, first.col, first.len,
+                                 "the first overlapping implementation is here")
+                }
+            } else {
+                semaCheckConformance(module, stmt)
+            }
         }
         p = stmt.next
     }
+}
+
+private fn semaImplParam(params: String, name: String) -> Bool {
+    let count = monoParamCount(params)
+    let mut i = 0
+    while (i < count) {
+        if (strEquals(monoParamName(params, i), name)) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// Conservative structural unification for coherence. A type parameter may
+// stand for any annotation, while two concrete constructors have to agree all
+// the way down. Treating two constrained parameters as potentially equal is the
+// open-world rule: a future type may implement both bounds, so bounds alone do
+// not make impls disjoint.
+private fn semaImplTargetsMayOverlap(aPtr: Ptr, aParams: String,
+                                     bPtr: Ptr, bParams: String) -> Bool {
+    if (nodeIsNull(aPtr) or nodeIsNull(bPtr)) { return false }
+    let a = ptr_to_node(aPtr)
+    let b = ptr_to_node(bPtr)
+    let aVariable = a.i1 == 0 and a.i2 == 0 and semaImplParam(aParams, a.s1)
+    let bVariable = b.i1 == 0 and b.i2 == 0 and semaImplParam(bParams, b.s1)
+    if (aVariable or bVariable) { return true }
+
+    if (a.i1 != b.i1 or a.i2 != b.i2 or a.i3 != b.i3) { return false }
+    if (strEquals(a.s1, b.s1) == false) { return false }
+
+    let mut aArg = a.child1
+    let mut bArg = b.child1
+    loop {
+        if (nodeIsNull(aArg) and nodeIsNull(bArg)) { return true }
+        if (nodeIsNull(aArg) or nodeIsNull(bArg)) { return false }
+        if (semaImplTargetsMayOverlap(aArg, aParams, bArg, bParams) == false) {
+            return false
+        }
+        aArg = ptr_to_node(aArg).next
+        bArg = ptr_to_node(bArg).next
+    }
+}
+
+private fn semaAnnotationHasImplParam(annotationPtr: Ptr, params: String) -> Bool {
+    let mut p = annotationPtr
+    while (nodeExists(p)) {
+        let annotation = ptr_to_node(p)
+        if (annotation.i1 == 0 and annotation.i2 == 0
+            and semaImplParam(params, annotation.s1)) { return true }
+        if (semaAnnotationHasImplParam(annotation.child1, params)) { return true }
+        p = annotation.next
+    }
+    return false
+}
+
+// Collect the fully-concrete annotations paired with each occurrence of one
+// parameter. If `Pair<T, T>` is compared with `Pair<Int, Bool>`, T is required
+// to be both concrete types and the patterns are disjoint. A counterpart that
+// still contains the other impl's parameters is skipped here: it may be chosen
+// later, so treating it as unequal would permit a real overlap.
+private fn semaCollectImplParamConstraints(patternPtr: Ptr, patternParams: String,
+                                           otherPtr: Ptr, otherParams: String,
+                                           paramName: String, state: ASTNode) {
+    if (nodeIsNull(patternPtr) or nodeIsNull(otherPtr) or state.i1 == 1) { return }
+    let pattern = ptr_to_node(patternPtr)
+    let other = ptr_to_node(otherPtr)
+
+    if (pattern.i1 == 0 and pattern.i2 == 0 and strEquals(pattern.s1, paramName)) {
+        if (semaAnnotationHasImplParam(otherPtr, otherParams)) { return }
+        if (nodeIsNull(state.child1)) {
+            state.child1 = otherPtr
+        } else if (semaAnnotationsExactlyAgree(state.child1, otherPtr) == false) {
+            state.i1 = 1
+        }
+        return
+    }
+
+    let mut patternArg = pattern.child1
+    let mut otherArg = other.child1
+    while (nodeExists(patternArg) and nodeExists(otherArg)) {
+        semaCollectImplParamConstraints(patternArg, patternParams,
+                                        otherArg, otherParams, paramName, state)
+        patternArg = ptr_to_node(patternArg).next
+        otherArg = ptr_to_node(otherArg).next
+    }
+}
+
+private fn semaImplParamConstraintsAgree(aHeader: ASTNode, bHeader: ASTNode) -> Bool {
+    let mut i = 0
+    while (i < monoParamCount(aHeader.s1)) {
+        let state = createNode(NodeKind.IMPL_HEADER)
+        semaCollectImplParamConstraints(aHeader.child1, aHeader.s1,
+                                        bHeader.child1, bHeader.s1,
+                                        monoParamName(aHeader.s1, i), state)
+        semaCollectImplParamConstraints(ptr_to_node(aHeader.child2).child1, aHeader.s1,
+                                        ptr_to_node(bHeader.child2).child1, bHeader.s1,
+                                        monoParamName(aHeader.s1, i), state)
+        if (state.i1 == 1) { return false }
+        i = i + 1
+    }
+
+    i = 0
+    while (i < monoParamCount(bHeader.s1)) {
+        let state = createNode(NodeKind.IMPL_HEADER)
+        semaCollectImplParamConstraints(bHeader.child1, bHeader.s1,
+                                        aHeader.child1, aHeader.s1,
+                                        monoParamName(bHeader.s1, i), state)
+        semaCollectImplParamConstraints(ptr_to_node(bHeader.child2).child1, bHeader.s1,
+                                        ptr_to_node(aHeader.child2).child1, aHeader.s1,
+                                        monoParamName(bHeader.s1, i), state)
+        if (state.i1 == 1) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+private fn semaImplsOverlap(a: ASTNode, b: ASTNode) -> Bool {
+    if (strEquals(a.s2, b.s2) == false) { return false }
+    let aHeader = ptr_to_node(a.child3)
+    let bHeader = ptr_to_node(b.child3)
+    if (semaImplTargetsMayOverlap(aHeader.child1, aHeader.s1,
+                                  bHeader.child1, bHeader.s1) == false) {
+        return false
+    }
+    let aTraitArgs = ptr_to_node(aHeader.child2).child1
+    let bTraitArgs = ptr_to_node(bHeader.child2).child1
+    if (nodeExists(aTraitArgs) or nodeExists(bTraitArgs)) {
+        if (semaImplTargetsMayOverlap(aTraitArgs, aHeader.s1,
+                                      bTraitArgs, bHeader.s1) == false) {
+            return false
+        }
+    }
+    return semaImplParamConstraintsAgree(aHeader, bHeader)
+}
+
+private fn semaAnnotationsExactlyAgree(aPtr: Ptr, bPtr: Ptr) -> Bool {
+    if (nodeIsNull(aPtr) and nodeIsNull(bPtr)) { return true }
+    if (nodeIsNull(aPtr) or nodeIsNull(bPtr)) { return false }
+    let a = ptr_to_node(aPtr)
+    let b = ptr_to_node(bPtr)
+    if (a.i1 != b.i1 or a.i2 != b.i2 or a.i3 != b.i3) { return false }
+    if (strEquals(a.s1, b.s1) == false) { return false }
+
+    let mut aArg = a.child1
+    let mut bArg = b.child1
+    loop {
+        if (nodeIsNull(aArg) and nodeIsNull(bArg)) { return true }
+        if (nodeIsNull(aArg) or nodeIsNull(bArg)) { return false }
+        if (semaAnnotationsExactlyAgree(aArg, bArg) == false) { return false }
+        aArg = ptr_to_node(aArg).next
+        bArg = ptr_to_node(bArg).next
+    }
+}
+
+private fn semaImplsExactlyAgree(a: ASTNode, b: ASTNode) -> Bool {
+    let aHeader = ptr_to_node(a.child3)
+    let bHeader = ptr_to_node(b.child3)
+    if (strEquals(aHeader.s1, bHeader.s1) == false) { return false }
+    return semaAnnotationsExactlyAgree(aHeader.child1, bHeader.child1)
+        and semaAnnotationsExactlyAgree(aHeader.child2, bHeader.child2)
+}
+
+// The first implementation whose target can unify with this one. Source spans
+// distinguish the returned declaration from the current declaration without
+// making pointer equality part of the language implementation.
+private fn semaFirstOverlappingTraitImpl(module: ASTNode, current: ASTNode) -> ASTNode {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.IMPL_DECL and semaImplsOverlap(stmt, current)) {
+            return stmt
+        }
+        p = stmt.next
+    }
+    return ptr_to_node(ptr_null())
 }
 
 private fn semaFindTrait(module: ASTNode, name: String) -> ASTNode {
@@ -1748,46 +1939,106 @@ private fn semaFindTrait(module: ASTNode, name: String) -> ASTNode {
 }
 
 private fn semaCheckConformance(module: ASTNode, implNode: ASTNode) {
-    let traitDecl = semaFindTrait(module, implNode.s2)
+    let header = ptr_to_node(implNode.child3)
+    let traitRef = ptr_to_node(header.child2)
+    let traitDecl = semaFindTrait(module, traitRef.s1)
     if (nodeIsNull(node_to_ptr(traitDecl))) {
-        semaErrorAt(implNode, strConcat("unknown trait ", diagQuote(implNode.s2)))
+        semaErrorAt(implNode, strConcat("unknown trait ", diagQuote(traitRef.s1)))
         diag_note("a trait has to be declared with `trait Name { fn ... }` before a type can implement it")
         return
+    }
+
+    if (semaAnnotationChainLength(traitRef.child1) != monoParamCount(traitDecl.s2)) {
+        semaErrorAt(implNode, strConcat(strConcat(diagQuote(traitDecl.s1),
+                    " takes trait parameters <"), strConcat(strConcat(traitDecl.s2,
+                    ">, and the arguments in "),
+                    strConcat(diagQuote(monoTraitRefText(header.child2)), " do not match"))))
+        return
+    }
+
+    let mut traitArg = traitRef.child1
+    while (nodeExists(traitArg)) {
+        if (semaAnnotationHasImplParam(traitArg, header.s1) == false
+            and typeIsValid(semaAnnotationType(module, ptr_to_node(traitArg))) == false) {
+            return
+        }
+        traitArg = ptr_to_node(traitArg).next
     }
 
     let mut signaturePtr = traitDecl.child1
     while (nodeExists(signaturePtr)) {
         let signature = ptr_to_node(signaturePtr)
-        if (semaHasConformingMethod(module, implNode.s1, signature) == false) {
-            semaErrorAt(implNode, strConcat(strConcat(diagQuote(implNode.s1),
-                        strConcat(" does not implement ", diagQuote(implNode.s2))),
+        if (semaHasConformingMethod(module, implNode, traitDecl, signature) == false) {
+            let targetText = semaAnnotationText(ptr_to_node(implNode.child3).child1)
+            semaErrorAt(implNode, strConcat(strConcat(diagQuote(targetText),
+                        strConcat(" does not implement ",
+                                  diagQuote(monoTraitRefText(header.child2)))),
                         strConcat(": no ", diagQuote(signature.s1))))
             diag_note(strConcat(strConcat("the trait declares it as ", semaSignatureText(signature)),
-                                ", with `Self` standing for the implementing type"))
+                                strConcat(", with `Self` standing for ", diagQuote(targetText))))
         }
         signaturePtr = signature.next
     }
 }
 
-// Any declaration of this name whose whole signature agrees. The declaration
-// index answers "which declarations carry this name" without a walk, which is
-// what makes this cheap enough to run per trait method.
-private fn semaHasConformingMethod(module: ASTNode, typeName: String, signature: ASTNode) -> Bool {
-    let count = ir_decl_count(signature.s1)
-    let mut i = 0
-    while (i < count) {
-        let candidate = ptr_to_node(ir_decl_at(signature.s1, i))
-        if (candidate.kind == NodeKind.FUNCTION
-            and semaSignaturesAgree(typeName, signature, candidate)) {
-            return true
+// Only a method written in this exact impl satisfies its trait. The functions
+// remain in the global overload set for ordinary calls, but parseImplDecl also
+// retained IMPL_METHOD records under child2 so conformance does not accidentally
+// accept an inherent method, a free function, or another trait's implementation.
+private fn semaHasConformingMethod(module: ASTNode, implNode: ASTNode,
+                                   traitDecl: ASTNode, signature: ASTNode) -> Bool {
+    let header = ptr_to_node(implNode.child3)
+    let mut recordPtr = implNode.child2
+    while (nodeExists(recordPtr)) {
+        let record = ptr_to_node(recordPtr)
+        if (strEquals(record.s1, signature.s1)) {
+            let count = ir_decl_count(record.s1)
+            let mut i = 0
+            while (i < count) {
+                let candidate = ptr_to_node(ir_decl_at(record.s1, i))
+                if (candidate.kind == NodeKind.FUNCTION
+                    and candidate.file == record.file
+                    and candidate.line == record.line
+                    and candidate.col == record.col
+                    and semaSignaturesAgree(header.child1, traitDecl.s2,
+                                            ptr_to_node(header.child2).child1,
+                                            signature, candidate)) {
+                    return true
+                }
+                i = i + 1
+            }
+
+            // A generic impl method is a template parked on module.child2 and
+            // therefore absent from the declaration index above. Match it by the
+            // same source identity. Its generic parameters must be exactly the
+            // impl's parameters; a method-local generic cannot satisfy a
+            // non-generic trait requirement accidentally.
+            let mut templatePtr = module.child2
+            while (nodeExists(templatePtr)) {
+                let candidate = ptr_to_node(templatePtr)
+                if (candidate.kind == NodeKind.FUNCTION
+                    and strEquals(candidate.s1, record.s1)
+                    and candidate.file == record.file
+                    and candidate.line == record.line
+                    and candidate.col == record.col
+                    and strEquals(candidate.s2, header.s1)
+                    and semaSignaturesAgree(header.child1, traitDecl.s2,
+                                            ptr_to_node(header.child2).child1,
+                                            signature, candidate)) {
+                    return true
+                }
+                templatePtr = candidate.next
+            }
         }
-        i = i + 1
+        recordPtr = record.next
     }
     return false
 }
 
-private fn semaSignaturesAgree(typeName: String, signature: ASTNode, candidate: ASTNode) -> Bool {
-    if (semaAnnotationsAgree(typeName, signature.child3, candidate.child3) == false) { return false }
+private fn semaSignaturesAgree(targetPtr: Ptr, traitParams: String, traitArgs: Ptr,
+                               signature: ASTNode, candidate: ASTNode) -> Bool {
+    if (semaAnnotationsAgree(targetPtr, traitParams, traitArgs,
+                             signature.child3, candidate.child3) == false) { return false }
 
     let mut want = signature.child1
     let mut have = candidate.child1
@@ -1796,7 +2047,8 @@ private fn semaSignaturesAgree(typeName: String, signature: ASTNode, candidate: 
         if (nodeIsNull(want) or nodeIsNull(have)) { return false }
         let wantParam = ptr_to_node(want)
         let haveParam = ptr_to_node(have)
-        if (semaAnnotationsAgree(typeName, wantParam.child1, haveParam.child1) == false) {
+        if (semaAnnotationsAgree(targetPtr, traitParams, traitArgs,
+                                 wantParam.child1, haveParam.child1) == false) {
             return false
         }
         want = wantParam.next
@@ -1806,19 +2058,61 @@ private fn semaSignaturesAgree(typeName: String, signature: ASTNode, candidate: 
 
 // `Self` in the trait's half stands for the implementing type. An absent
 // annotation on both sides is a void return and agrees with itself.
-private fn semaAnnotationsAgree(typeName: String, wantPtr: Ptr, havePtr: Ptr) -> Bool {
+private fn semaAnnotationChainAt(ptr: Ptr, index: Int) -> Ptr {
+    let mut p = ptr
+    let mut i = 0
+    while (nodeExists(p)) {
+        if (i == index) { return p }
+        i = i + 1
+        p = ptr_to_node(p).next
+    }
+    return ptr_null()
+}
+
+private fn semaAnnotationChainLength(ptr: Ptr) -> Int {
+    let mut count = 0
+    let mut p = ptr
+    while (nodeExists(p)) {
+        count = count + 1
+        p = ptr_to_node(p).next
+    }
+    return count
+}
+
+private fn semaAppliedAnnotationAgrees(suffixOptional: Bool,
+                                       appliedPtr: Ptr, havePtr: Ptr) -> Bool {
+    if (nodeIsNull(appliedPtr) or nodeIsNull(havePtr)) { return false }
+    let applied = ptr_to_node(appliedPtr)
+    let have = ptr_to_node(havePtr)
+    if (applied.i1 != have.i1 or applied.i2 != have.i2) { return false }
+    let expectedOptional = applied.i3 == 1 or suffixOptional
+    if (expectedOptional != (have.i3 == 1)) { return false }
+    if (strEquals(applied.s1, have.s1) == false) { return false }
+    return semaAnnotationsExactlyAgree(applied.child1, have.child1)
+}
+
+private fn semaAnnotationsAgree(targetPtr: Ptr, traitParams: String, traitArgs: Ptr,
+                                wantPtr: Ptr, havePtr: Ptr) -> Bool {
     if (nodeIsNull(wantPtr) and nodeIsNull(havePtr)) { return true }
     if (nodeIsNull(wantPtr) or nodeIsNull(havePtr)) { return false }
 
     let want = ptr_to_node(wantPtr)
     let have = ptr_to_node(havePtr)
-    if (want.i1 != have.i1) { return false }
-    if (want.i2 != have.i2) { return false }
-    if (want.i3 != have.i3) { return false }
-
     if (strEquals(want.s1, "Self")) {
-        if (strEquals(have.s1, typeName) == false) { return false }
-    } else if (strEquals(want.s1, have.s1) == false) {
+        return semaAppliedAnnotationAgrees(want.i3 == 1, targetPtr, havePtr)
+    }
+
+    if (want.i1 == 0 and want.i2 == 0) {
+        let traitParam = monoParamIndex(traitParams, want.s1)
+        if (traitParam >= 0) {
+            return semaAppliedAnnotationAgrees(want.i3 == 1,
+                                               semaAnnotationChainAt(traitArgs, traitParam),
+                                               havePtr)
+        }
+    }
+
+    if (want.i1 != have.i1 or want.i2 != have.i2 or want.i3 != have.i3) { return false }
+    if (strEquals(want.s1, have.s1) == false) {
         return false
     }
 
@@ -1826,7 +2120,8 @@ private fn semaAnnotationsAgree(typeName: String, wantPtr: Ptr, havePtr: Ptr) ->
     let mut haveArg = have.child1
     loop {
         if (nodeIsNull(wantArg) and nodeIsNull(haveArg)) { return true }
-        if (semaAnnotationsAgree(typeName, wantArg, haveArg) == false) { return false }
+        if (semaAnnotationsAgree(targetPtr, traitParams, traitArgs,
+                                 wantArg, haveArg) == false) { return false }
         wantArg = ptr_to_node(wantArg).next
         haveArg = ptr_to_node(haveArg).next
     }

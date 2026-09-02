@@ -19,6 +19,113 @@ private fn matchBindsPayload(stmt: ASTNode) -> Bool {
     return false
 }
 
+// Whether this expression contains the transfer of one payload binding. Sema
+// stamps the exact identifier use rather than leaving codegen to reconstruct a
+// callee's ownership mode after overload resolution.
+private fn expressionMovesName(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let node = ptr_to_node(nodePtr)
+    if (node.kind == NodeKind.IDENTIFIER_EXPR
+        and node.i3 == 1 and strEquals(node.s1, name)) {
+        return true
+    }
+    if (expressionMovesName(node.child1, name)) { return true }
+    if (expressionMovesName(node.child2, name)) { return true }
+    if (expressionMovesName(node.child3, name)) { return true }
+    return expressionMovesName(node.next, name)
+}
+
+// The index of a direct sink parameter, or -1. Only the parameter itself can
+// supply a reuse token in this first slice: a local alias would need liveness
+// and provenance beyond the syntactic branch proof below.
+private fn sinkParameterIndex(name: String) -> Int {
+    if (nodeIsNull(irFunctionDecl)) { return 0 - 1 }
+    let func = ptr_to_node(irFunctionDecl)
+    let mut paramPtr = func.child1
+    let mut index = 0
+    while (nodeExists(paramPtr)) {
+        let param = ptr_to_node(paramPtr)
+        if (strEquals(param.s1, name) and strEquals(param.s2, "sink")) {
+            return index
+        }
+        index = index + 1
+        paramPtr = param.next
+    }
+    return 0 - 1
+}
+
+// A same-tag constructor returned directly from this arm, after every owned
+// payload binder has been transferred. Returns the constructor node or none.
+// This deliberately rejects intervening statements, a constructor nested under
+// another expression, and a tag change: each would need a more general token
+// lifetime or field-disposition proof.
+private fn reusableArmConstructor(arm: ASTNode, structName: String) -> Ptr {
+    if (nodeIsNull(arm.child2)) { return ptr_null() }
+    let block = ptr_to_node(arm.child2)
+    if (nodeIsNull(block.child1)) { return ptr_null() }
+    let ret = ptr_to_node(block.child1)
+    if (ret.kind != NodeKind.RETURN_STATEMENT or nodeExists(ret.next)
+        or nodeIsNull(ret.child1)) {
+        return ptr_null()
+    }
+
+    let constructor = ptr_to_node(ret.child1)
+    if (constructor.kind != NodeKind.STRUCT_LITERAL_EXPR
+        or strEquals(constructor.s1, structName) == false) {
+        return ptr_null()
+    }
+
+    // Payload enum constructors always carry `$tag` as a literal field. Match
+    // it to the arm tag rather than relying on every variant having today's
+    // tagged-product size.
+    let mut sameTag = false
+    let mut fieldPtr = constructor.child1
+    while (nodeExists(fieldPtr)) {
+        let field = ptr_to_node(fieldPtr)
+        if (strEquals(field.s1, "$tag") and nodeExists(field.child1)) {
+            let tag = ptr_to_node(field.child1)
+            if (tag.kind == NodeKind.LITERAL_EXPR
+                and strEquals(tag.s1, strFromInt(arm.i1))) {
+                sameTag = true
+            }
+        }
+        fieldPtr = field.next
+    }
+    if (sameTag == false) { return ptr_null() }
+
+    let pattern = ptr_to_node(arm.child1)
+    if (pattern.kind == NodeKind.CALL_EXPR) {
+        let mut binderPtr = pattern.child2
+        while (nodeExists(binderPtr)) {
+            let binder = ptr_to_node(binderPtr)
+            if (typeIsMoveOnly(nodeGetType(binder))
+                and expressionMovesName(ret.child1, binder.s1) == false) {
+                return ptr_null()
+            }
+            binderPtr = binder.next
+        }
+    }
+    return ret.child1
+}
+
+// Arms are generated one at a time, which makes the reuse token naturally
+// frame-limited. The expression consumes irReuseValue on its first use.
+private fn beginArmReuse(stmt: ASTNode, arm: ASTNode, structName: String) {
+    irReuseValue = ""
+    let scrutinee = ptr_to_node(stmt.child1)
+    if (scrutinee.kind != NodeKind.IDENTIFIER_EXPR) { return }
+    let paramIndex = sinkParameterIndex(scrutinee.s1)
+    if (paramIndex < 0) { return }
+
+    let func = ptr_to_node(irFunctionDecl)
+    if (aif_param_reusable(functionSymbolName(func), paramIndex) == 0) { return }
+
+    let constructorPtr = reusableArmConstructor(arm, structName)
+    if (nodeIsNull(constructorPtr)) { return }
+    ptr_to_node(constructorPtr).i3 = 2
+    irReuseValue = stmt.s1
+}
+
 // Binds the names a variant pattern introduced, by loading the payload fields
 // this arm's variant occupies.
 private fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: String) {
@@ -533,7 +640,9 @@ private fn generateStatement(stmt: ASTNode) {
 
                 ir_label_numbered(armLabel)
                 generatePayloadBinders(arm, structTypeName(scrutType), stmt.s1)
+                beginArmReuse(stmt, arm, structTypeName(scrutType))
                 generateBlock(ptr_to_node(arm.child2))
+                irReuseValue = ""
                 if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
                 ir_clear_returned()
 
@@ -542,7 +651,11 @@ private fn generateStatement(stmt: ASTNode) {
                 armPtr = arm.next
             } else if (strEquals(arm.s1, "_")) {
                 // wildcard: runs in the current fall-through block
+                if (payloadMatch) {
+                    beginArmReuse(stmt, arm, structTypeName(scrutType))
+                }
                 generateBlock(ptr_to_node(arm.child2))
+                irReuseValue = ""
                 if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
                 ir_clear_returned()
                 needsFinalBr = false
@@ -656,6 +769,38 @@ private fn generateScopeDrops(floor: Int) {
         let loaded = ir_load(storeType, ir_drop_slot(floor, i))
         let value = ir_get_temp_name(loaded)
         let kind = ir_drop_kind(floor, i)
+
+        // M2.1b. A functional update may return the same physical block its
+        // sink argument occupied. The source and result bindings can both be on
+        // the conservative drop list even though affine ownership means only
+        // the newer one is live. Compare pointer slots against the newer drops
+        // before releasing: the first occurrence performs the teardown and an
+        // older alias skips it. This is deliberately a scope-unwind rule rather
+        // than a blanket "moved bindings never drop" rule -- struct-field moves
+        // rely on the existing field/caller agreement, and suppressing their
+        // caller release regresses test_49.
+        let mut duplicate = "0"
+        if (strEquals(storeType, "ptr")) {
+            let mut j = 0
+            while (j < i) {
+                let earlierType = storageType(ir_drop_type(floor, j))
+                if (strEquals(earlierType, "ptr")) {
+                    let earlier = ir_get_temp_name(ir_load("ptr", ir_drop_slot(floor, j)))
+                    let same = ir_get_temp_name(ir_icmp_eq("ptr", value, earlier))
+                    duplicate = ir_get_temp_name(ir_or("i1", duplicate, same))
+                }
+                j = j + 1
+            }
+        }
+
+        let releaseLabel = ir_get_label()
+        let doneLabel = ir_get_label()
+        if (strEquals(duplicate, "0")) {
+            ir_br_numbered(releaseLabel)
+        } else {
+            ir_cond_br_numbered(duplicate, doneLabel, releaseLabel)
+        }
+        ir_label_numbered(releaseLabel)
         if (kind == IR_DROP_LIST) {
             ir_free_list(value)
         } else if (kind == IR_DROP_DATAVIEW) {
@@ -669,6 +814,8 @@ private fn generateScopeDrops(floor: Int) {
         } else {
             ir_free_object(value)
         }
+        ir_br_numbered(doneLabel)
+        ir_label_numbered(doneLabel)
         i = i + 1
     }
 }

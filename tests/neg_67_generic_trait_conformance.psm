@@ -1,0 +1,14 @@
+// expect-error: no `prefer`
+trait Choice {
+    fn prefer(self, other: Self) -> Int
+}
+
+struct Box<T> {
+    value: T
+}
+
+impl<T> Choice for Box<T> {
+    fn prefer(self, other: Box<Int>) -> Int { return 0 }
+}
+
+fn main() -> Int { return 0 }

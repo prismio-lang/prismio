@@ -178,6 +178,265 @@ private fn aifSymbolOf(site: Int) -> String {
     return strConcat(strConcat(base, "#"), strFromInt(aif_site_ordinal(site)))
 }
 
+// Both the human report and the manifest need a stable record order. The native
+// table is reset with the analysis and filled at most once, so `--why=3` names
+// the same row the default report numbered 3 without maintaining a second sort.
+private fn aifPrepareOrder() {
+    if (aif_order_count() > 0) { return }
+    let mut i = 0
+    while (i < aif_site_count()) {
+        aif_order_add(aifSymbolOf(i), i)
+        i = i + 1
+    }
+    aif_order_sort()
+}
+
+private fn aifIsEntrySite(site: Int, sourcePath: String) -> Bool {
+    return strEquals(diag_file_path(aif_site_file(site)), sourcePath)
+}
+
+private fn aifEntrySiteCount(sourcePath: String) -> Int {
+    let mut count = 0
+    let mut i = 0
+    while (i < aif_site_count()) {
+        if (aifIsEntrySite(i, sourcePath)) { count = count + 1 }
+        i = i + 1
+    }
+    return count
+}
+
+private fn aifReportPathLeaf(path: String) -> String {
+    let forward = strLastIndexOf(path, "/")
+    let backward = strLastIndexOf(path, "\\")
+    let mut at = forward
+    if (backward > at) { at = backward }
+    if (at < 0) { return path }
+    return strSubstring(path, at + 1, __builtin_string_len(path) - at - 1)
+}
+
+// Imported files already carry the logical name they were reached by. That is
+// the useful label for standard and application modules alike: `std.io:28:15`,
+// not a Homebrew Cellar path, and `network.http:42:9`, not an ambiguous
+// `http.psm` leaf shared by another package.
+private fn aifFriendlyPosition(site: Int) -> String {
+    let file = aif_site_file(site)
+    let mut label = aifReportPathLeaf(diag_file_path(file))
+    if (strEquals(diag_file_module(file), "") == false) {
+        label = strClone(diag_file_module(file))
+    }
+    return strConcat(strConcat(label, ":"), strConcat(strFromInt(aif_site_line(site)),
+           strConcat(":", strFromInt(aif_site_col(site)))))
+}
+
+// Human storage groups. Placement wins over tier: a T2 allocation reached from
+// a bracketed call can be bump-allocated in its caller's arena while retaining
+// the T2 facts it derived in the callee.
+private fn aifStorageClass(site: Int) -> Int {
+    if (strEquals(aif_region_name_at_site(site), "") == false) { return 1 }
+    let tier = aif_tier_of(site)
+    if (tier == 0) { return 0 }
+    if (tier == 1) { return 2 }
+    if (tier == 2) { return 3 }
+    if (tier == 3) { return 4 }
+    if (tier == 4) { return 5 }
+    return 6
+}
+
+private fn aifStorageClassName(kind: Int) -> String {
+    if (kind == 0) { return "Stack" }
+    if (kind == 1) { return "Arena" }
+    if (kind == 2) { return "Scoped heap" }
+    if (kind == 3) { return "Unique heap" }
+    if (kind == 4) { return "Shared heap" }
+    if (kind == 5) { return "Cycle-managed heap" }
+    return "Cross-thread heap"
+}
+
+private fn aifStorageClassCount(kind: Int) -> Int {
+    let mut count = 0
+    let mut i = 0
+    while (i < aif_site_count()) {
+        if (aifStorageClass(i) == kind) { count = count + 1 }
+        i = i + 1
+    }
+    return count
+}
+
+private fn aifHumanStorage(site: Int) -> String {
+    let regionName = aif_region_name_at_site(site)
+    if (strEquals(regionName, "") == false) { return strConcat("arena:", regionName) }
+
+    let tier = aif_tier_of(site)
+    if (tier == 0) { return "stack" }
+    if (tier == 1) { return "scoped heap" }
+    if (tier == 2) { return "unique heap" }
+    if (tier == 3) {
+        if (aif_site_is_rc(site) == 1) { return "shared heap (RC)" }
+        return "heap (RC unavailable)"
+    }
+    if (tier == 4) {
+        if (aif_site_is_cyclic(site) == 1) { return "cycle-managed heap" }
+        return "heap (cycle management unavailable)"
+    }
+    if (aif_site_is_rc(site) == 0) { return "cross-thread heap (RC unavailable)" }
+    if (aif_site_is_cyclic(site) == 1) { return "cross-thread heap (RC + cycles)" }
+    return "cross-thread heap (atomic RC)"
+}
+
+private fn aifShortReason(site: Int) -> String {
+    if (strEquals(aif_region_name_at_site(site), "") == false) {
+        if (aif_site_is_bracketed(site) == 1) { return "caller region selected" }
+        return "lifetime fits the region"
+    }
+
+    let tier = aif_tier_of(site)
+    if (tier == 0) { return "small value does not escape" }
+    if (tier == 1) { return "scope-bound; no arena selected" }
+    if (tier == 3) { return "multiple owners in one thread" }
+    if (tier == 4) { return "may participate in a cycle" }
+    if (tier == 5) { return "crosses a thread boundary" }
+
+    // T2 has several escape causes. Naming the common roots here removes the
+    // need to open a derivation just to learn that a returned value reached its
+    // caller; the complete witness remains available through `--why`.
+    let n = aif_cause_build(site, aif_cause_domain_for(site))
+    let mut i = 0
+    while (i < n) {
+        let rule = aif_rule_name(aif_cause_rule(i))
+        if (strEquals(rule, "E-RETURN")) { return "returned to the caller" }
+        if (strEquals(rule, "E-STATIC")) { return "stored in static state" }
+        if (strEquals(rule, "E-OPAQUE")) { return "foreign lifetime is unknown" }
+        i = i + 1
+    }
+    return "unique value escapes its scope"
+}
+
+private fn aifHumanSiteAtId(sourcePath: String, wanted: Int) -> Int {
+    if (wanted < 1) { return -1 }
+    aifPrepareOrder()
+    let mut id = 1
+    let mut group = 0
+    while (group < 2) {
+        let mut i = 0
+        while (i < aif_order_count()) {
+            let site = aif_order_site(i)
+            let entry = aifIsEntrySite(site, sourcePath)
+            if ((group == 0 and entry) or (group == 1 and entry == false)) {
+                if (id == wanted) { return site }
+                id = id + 1
+            }
+            i = i + 1
+        }
+        group = group + 1
+    }
+    return -1
+}
+
+private fn aifHumanIdOf(sourcePath: String, wantedSite: Int) -> Int {
+    aifPrepareOrder()
+    let mut id = 1
+    let mut group = 0
+    while (group < 2) {
+        let mut i = 0
+        while (i < aif_order_count()) {
+            let site = aif_order_site(i)
+            let entry = aifIsEntrySite(site, sourcePath)
+            if ((group == 0 and entry) or (group == 1 and entry == false)) {
+                if (site == wantedSite) { return id }
+                id = id + 1
+            }
+            i = i + 1
+        }
+        group = group + 1
+    }
+    return -1
+}
+
+private fn aifEmitHumanRow(site: Int, id: Int) {
+    print(aifPad(strFromInt(id), 5))
+    print(aifPad(aifFriendlyPosition(site), 25))
+    print(aifPad(aif_site_type(site), 16))
+    print(aifPad(aifHumanStorage(site), 34))
+    println(aifShortReason(site))
+}
+
+private fn aifEmitHumanGroup(sourcePath: String, entryGroup: Bool, startId: Int) -> Int {
+    let mut id = startId
+    let mut i = 0
+    while (i < aif_order_count()) {
+        let site = aif_order_site(i)
+        if (aifIsEntrySite(site, sourcePath) == entryGroup) {
+            aifEmitHumanRow(site, id)
+            id = id + 1
+        }
+        i = i + 1
+    }
+    return id
+}
+
+// The interactive surface. It speaks in storage mechanisms and source
+// locations; tiers and mangled symbols stay available in `--manifest` and in
+// the compiler-evidence half of `--why`.
+private fn aifEmitHumanReport(sourcePath: String, converged: Bool) {
+    aifPrepareOrder()
+    let total = aif_site_count()
+    let local = aifEntrySiteCount(sourcePath)
+    let imported = total - local
+
+    println("AIF analysis")
+    print("  Source   ")
+    println(aifReportPathLeaf(sourcePath))
+    print("  Result   ")
+    if (converged) {
+        print("converged in ")
+        print(strFromInt(aif_rounds()))
+        println(" rounds")
+    } else {
+        print("budget exhausted after ")
+        print(strFromInt(aif_rounds()))
+        println(" rounds; unsettled decisions were made conservative")
+    }
+    print("  Sites    ")
+    print(strFromInt(total))
+    println(" potential allocation site(s), not runtime allocation counts")
+
+    println("")
+    println("Storage plan")
+    let mut kind = 0
+    while (kind < 7) {
+        print("  ")
+        print(aifPad(aifStorageClassName(kind), 24))
+        println(strFromInt(aifStorageClassCount(kind)))
+        kind = kind + 1
+    }
+
+    println("")
+    println("Your code")
+    let mut nextId = 1
+    if (local == 0) {
+        println("  No allocation sites found.")
+    } else {
+        println("ID   location                 type            storage                           reason")
+        nextId = aifEmitHumanGroup(sourcePath, true, nextId)
+    }
+
+    println("")
+    println("Imported modules")
+    if (imported == 0) {
+        println("  No imported allocation sites found.")
+    } else {
+        print("  ")
+        print(strFromInt(imported))
+        println(" potential site(s) found in imported source.")
+        println("  Imported sites are analyzed even when their functions are not executed.")
+        println("ID   location                 type            storage                           reason")
+        nextId = aifEmitHumanGroup(sourcePath, false, nextId)
+    }
+
+    println("")
+    println("Use `--why=<ID>` for one decision or `--manifest` for compiler/CI details.")
+}
+
 // SPEC 6.2. Line-oriented UTF-8, records sorted byte-wise ascending by symbol --
 // the sort is normative, because an unstable order makes every diff useless.
 private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String, converged: Bool) {
@@ -259,12 +518,7 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
     println("#")
     println("# symbol                                      tier  thread       placement         type            layout      origin            site")
 
-    let mut i = 0
-    while (i < total) {
-        aif_order_add(aifSymbolOf(i), i)
-        i = i + 1
-    }
-    aif_order_sort()
+    aifPrepareOrder()
 
     // A record whose facts came from a truncated iteration is not a settled
     // proof, and SPEC 6.2 makes that visible: a reviewer should read a large
@@ -1074,13 +1328,39 @@ internal fn aifEmitBracketing(site: Int) {
     }
 }
 
-private fn aifEmitCause(site: Int, converged: Bool) {
+private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
+                        symbolHeader: Bool) {
     let domain = aif_cause_domain_for(site)
     let n = aif_cause_build(site, domain)
 
-    print(aifPad(aifSymbolOf(site), 32))
-    print("  ")
+    // Manifest-diff tooling asks by stable symbol and historically drops this
+    // first line because it already printed the changed record. Numeric `--why`
+    // is the interactive path, so it starts with the useful allocation card.
+    if (symbolHeader) {
+        print(aifPad(aifSymbolOf(site), 32))
+        print("  ")
+        println(aifTierName(aif_tier_of(site)))
+        println("")
+    }
+
+    print("Allocation ")
+    println(strFromInt(aifHumanIdOf(sourcePath, site)))
+    print("  Location   ")
+    println(aifFriendlyPosition(site))
+    print("  Type       ")
+    println(aif_site_type(site))
+    print("  Storage    ")
+    println(aifHumanStorage(site))
+    print("  Reason     ")
+    println(aifShortReason(site))
+    println("")
+    println("Compiler evidence")
+    print("  Symbol     ")
+    println(aifSymbolOf(site))
+    print("  Tier       ")
     println(aifTierName(aif_tier_of(site)))
+    print("  Thread     ")
+    println(aifThreadName(aif_site_thread(site)))
     println("")
 
     println("  minimal cause")
@@ -1157,20 +1437,34 @@ private fn aifEmitCause(site: Int, converged: Bool) {
     }
 }
 
-// Finds the record by the symbol the manifest prints, so a reader can copy one
-// out of a diff and paste it back. Returns 1 when it found one.
-fn aifExplain(symbol: String, converged: Bool) -> Int {
+// Accepts the short numeric id from the interactive report as well as the
+// stable symbol from a manifest diff. Returns 1 when it found one.
+fn aifExplain(selector: String, sourcePath: String, converged: Bool) -> Int {
+    aifPrepareOrder()
+    let numeric = optionOr(strParseInt(selector), -1)
+    if (numeric > 0) {
+        let selected = aifHumanSiteAtId(sourcePath, numeric)
+        if (selected >= 0) {
+            aifEmitCause(selected, sourcePath, converged, false)
+            return 1
+        }
+        print("no allocation numbered ")
+        println(selector)
+        println("run `prismio aif <file>` to list the available allocation ids")
+        return 0
+    }
+
     let total = aif_site_count()
     let mut i = 0
     while (i < total) {
-        if (strEquals(aifSymbolOf(i), symbol)) {
-            aifEmitCause(i, converged)
+        if (strEquals(aifSymbolOf(i), selector)) {
+            aifEmitCause(i, sourcePath, converged, true)
             return 1
         }
         i = i + 1
     }
     print("no manifest record named ")
-    println(symbol)
+    println(selector)
     return 0
 }
 
@@ -1465,12 +1759,13 @@ private fn aifAnalyze(module: ASTNode, sourcePath: String, version: String,
                ownedCollections: Bool, summary: Bool, thetaFields: Bool,
                budget: Int) {
     aifAnalyzeProfiled(module, sourcePath, version, ownedCollections, summary,
-                        thetaFields, budget, "", false)
+                        thetaFields, budget, "", false, false)
 }
 
 fn aifAnalyzeProfiled(module: ASTNode, sourcePath: String, version: String,
                        ownedCollections: Bool, summary: Bool, thetaFields: Bool,
-                       budget: Int, profilePath: String, layout: Bool) {
+                       budget: Int, profilePath: String, layout: Bool,
+                       manifest: Bool) {
     let converged = aifRunProfiled(module, ownedCollections, thetaFields, budget,
                                     profilePath)
 
@@ -1484,7 +1779,9 @@ fn aifAnalyzeProfiled(module: ASTNode, sourcePath: String, version: String,
         aifEmitLayout(module, sourcePath)
     } else if (summary) {
         aifEmitSummary(sourcePath, converged)
-    } else {
+    } else if (manifest) {
         aifEmitManifest(module, sourcePath, version, converged)
+    } else {
+        aifEmitHumanReport(sourcePath, converged)
     }
 }

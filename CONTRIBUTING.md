@@ -90,22 +90,39 @@ cmp /tmp/a.ll /tmp/b.ll
 PRISMIO=$PWD/build/gen2 python3 tests/test_runner.py
 ```
 
-The repository itself is a Prismio project. Once a local generation exists,
-`build/gen2 build` reads the root `build.ums` and writes the compiler to
-`.prismio/build/debug/prismio`. The bootstrap script remains necessary for the
-generation chain because it is what creates the first local compiler and names
-each self-host generation separately. Neither path uses a globally installed
-`prismio`. The manifest declares a `compiler(...)` target rather than an
-ordinary `executable(...)`, because the compiler also links the backend and
-LLVM while application executables link only the runtime.
+The repository itself is a Prismio project. For the ordinary edit loop, bare
+`prismio build` reads the stable first block of the root manifest:
+
+```ums
+toolchain { host = ".prismio/build/debug/prismio" }
+```
+
+On the first run that host is absent, so global Prismio processes `build.ums`
+and builds it as stage 0. On later runs global Prismio forwards the complete
+command to the last known-good project host. The host—not the older installed
+compiler—then parses the complete manifest and builds a sibling candidate. The
+global parent atomically promotes that candidate only after the host exits.
+
+The bootstrap script remains necessary for a machine with no installed Prismio
+and for the named generation chain, where the exact host compiler is part of the
+check. The manifest declares `executable("prismio")` and explicitly links the
+`prismio.backend` toolchain component. Artifact kind and native linkage remain
+separate: application executables link only the runtime unless their own
+`link { ... }` block names additional libraries, search paths, files, or
+platform frameworks.
+Do not run a project build
+through `.prismio/build/debug/prismio` itself; it is the host generation being
+replaced, while the installed stage-0 process is the orchestrator.
 
 **Two generations before believing it.** A compiler that links may only have
 linked because the *old* one built it; the second generation is the first one
 built by your change. `cmp` failing means the two disagree about the compiler
 they emit, which is a real bug even when every test passes.
 
-Name generations explicitly. Do not rely on whichever `prismio` is first on
-`PATH` — a stale one makes a bootstrap failure look nondeterministic.
+Name generations explicitly for bootstrap and fixed-point checks. Bare
+`prismio` is intentional only for the project-local loop described above. The
+installed compiler reads only the stable `toolchain` prefix, so newer syntax in
+the rest of the manifest is handled by the selected host.
 `build/gen2 --version` prints the compiler directory and the standard library it
 resolves, which is the fastest way to check you are running what you think.
 

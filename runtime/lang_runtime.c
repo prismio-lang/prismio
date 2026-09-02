@@ -1447,7 +1447,13 @@ void list_set_elem_inline(void* lp, int elem_size) {
 // layout that *did* keep addresses stable was measured first, and cost 1.14x
 // against this one on the corpus: two dependent loads and a count-leading-zeros
 // per access, against a load and a multiply-add.
-static void list_inline_grow(RtList* l) {
+// The cold half of the inline push path, outlined for the curated module just
+// as `list_push_grow` is for boxed lists. A curated caller is copied into the
+// program module, so anything it still calls must have external linkage in the
+// separately linked runtime object. Keeping arena allocation and block copying
+// here also keeps that uncommon work out of the inliner's hot-path budget.
+void list_inline_grow(void* lp) {
+    RtList* l = (RtList*)lp;
     int nc = l->cap ? l->cap * 2 : 4;
     size_t bytes = (size_t)nc * (size_t)l->elem_size;
     unsigned char* nd = l->arena ? (unsigned char*)arena_alloc_at(l->arena, bytes)
@@ -1581,7 +1587,11 @@ unsigned long long list_get_inline_scalar(void* lp, int index, int elem_size) {
 }
 
 
-void list_push_inline_scalar(void* lp, unsigned long long bits, int elem_size) {
+// Stamping, representation fallback and growth are cold relative to a push
+// into an established list. Keep them behind one exported boundary so the
+// curated fast path is small enough to inline and references no runtime-local
+// symbols. This is the scalar analogue of `list_push_grow`.
+void list_push_inline_scalar_slow(void* lp, unsigned long long bits, int elem_size) {
     RtList* l = (RtList*)lp;
     if (!l->elem_size) {
         if (l->len == 0) list_set_elem_inline(lp, elem_size);
@@ -1589,6 +1599,17 @@ void list_push_inline_scalar(void* lp, unsigned long long bits, int elem_size) {
     }
     if (l->elem_size != elem_size) { list_push(lp, (void*)(uintptr_t)bits); return; }
     if (l->len >= l->cap) list_inline_grow(l);
+    scalar_store((unsigned char*)l->data + (size_t)l->len * (size_t)elem_size,
+                 bits, elem_size);
+    l->len = l->len + 1;
+}
+
+void list_push_inline_scalar(void* lp, unsigned long long bits, int elem_size) {
+    RtList* l = (RtList*)lp;
+    if (l->elem_size != elem_size || l->len >= l->cap) {
+        list_push_inline_scalar_slow(lp, bits, elem_size);
+        return;
+    }
     scalar_store((unsigned char*)l->data + (size_t)l->len * (size_t)elem_size,
                  bits, elem_size);
     l->len = l->len + 1;

@@ -99,9 +99,39 @@ enum NodeKind {
     // rewrite is also what makes the lowering idempotent, which it has to be --
     // semaExpr runs over an argument more than once.
     //
-    // Last, for the reason SLICE_EXPR is: adding a kind in the middle renumbers
-    // the ordinals the committed seed and test_41 depend on.
-    CLOSURE_EXPR
+    // Kept at the end for the reason SLICE_EXPR is: adding a kind in the middle
+    // renumbers the ordinals the committed seed and test_41 depend on.
+    CLOSURE_EXPR,
+
+    // A record that one function came from one `impl` block. `s1` and the source
+    // span identify the top-level FUNCTION that parseModule splices into the
+    // declaration chain. The record has its own `next`, so sema can check the
+    // exact impl without putting the function in two sibling chains or keeping
+    // a non-owning AST back-edge.
+    IMPL_METHOD,
+
+    // The structural half of an IMPL_DECL. `s1` is the impl's generic parameter
+    // name list, genericInfo owns their bounds, child1 is the target
+    // TYPE_ANNOTATION, and child2 is the implemented TRAIT_REF when there is
+    // one. IMPL_DECL keeps target and trait base names in s1/s2 as lookup
+    // accelerators; those strings are not the source of truth for either side.
+    //
+    // Kept at the end so the committed bootstrap seed's existing NodeKind
+    // ordinals do not move.
+    IMPL_HEADER,
+
+    // One declared type parameter. `s1` is its name and child1 is the chain of
+    // TRAIT_REF bounds. Declarations keep the comma-joined names in s2/header.s1
+    // for monomorphisation and mangling; this node is the semantic metadata that
+    // cannot be represented safely as delimiter-separated text once a bound can
+    // be `From<List<T>>`.
+    GENERIC_PARAM,
+
+    // A trait path in a bound or impl header. `s1` is the trait name and child1
+    // is its TYPE_ANNOTATION argument chain. This is deliberately distinct from
+    // TYPE_ANNOTATION: a trait is not a value type, even though its arguments use
+    // the same recursive type grammar.
+    TRAIT_REF
 }
 
 // Flat AST Node using String for pointers (type punning)
@@ -139,7 +169,12 @@ struct ASTNode {
     line: Int,
     col: Int,
     len: Int,
-    file: Int
+    file: Int,
+    // Declaration-only metadata, kept out of child1/2/3 because those slots are
+    // part of the executable AST shape. It points to a GENERIC_PARAM chain on a
+    // generic function, type, trait, or impl header and is otherwise absent.
+    // Trailing placement preserves every established AST field offset.
+    genericInfo: Ptr
 }
 
 // Both are the identity on a pointer (runtime/lang_runtime.c), so the result is
@@ -210,7 +245,8 @@ fn createNode(kind: NodeKind) -> ASTNode {
         line: 0,
         col: 0,
         len: 0,
-        file: 0
+        file: 0,
+        genericInfo: ptr_null()
     }
 }
 

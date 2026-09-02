@@ -1,0 +1,14 @@
+// expect-error: duplicate impl `Marker` for `Int`
+// expect-error: the first implementation is here
+trait Marker {
+}
+
+impl Marker for Int {
+}
+
+impl Marker for Int {
+}
+
+fn main() -> Int {
+    return 0
+}

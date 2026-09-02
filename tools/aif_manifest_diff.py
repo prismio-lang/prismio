@@ -23,8 +23,9 @@ manifests; only the compiler knows *why*, because only the solver has the
 derivation. Without `--compiler` the gate still works and reports the fact of the
 regression, which is what CI needs even where no binary is at hand.
 
-Generate the inputs with `prismio aif <source>`; any two manifests over the same
-source are comparable.
+Generate the inputs with `prismio aif <source> --manifest`; any two manifests
+over the same source are comparable. The unflagged command is intentionally a
+human report rather than this line-oriented protocol.
 """
 import argparse
 import re

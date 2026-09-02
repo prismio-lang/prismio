@@ -1,0 +1,20 @@
+// expect-error: `Bag` is not a trait, so `T: Bag` cannot be a bound
+trait Scored {
+    fn score(self) -> Int
+}
+
+struct Bag {
+    value: Int
+}
+
+impl Scored for Int {
+    fn score(self) -> Int { return self }
+}
+
+fn scoreWith<T: Scored + Bag>(value: T) -> Int {
+    return score(value)
+}
+
+fn main() -> Int {
+    return scoreWith(7)
+}

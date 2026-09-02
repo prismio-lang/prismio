@@ -2919,7 +2919,11 @@ int aif_solve(int max_rounds) {
                 resolve(k->b, &scratch_val);
                 if (bits_or(&pt[k->a], &scratch_val, "AIF points-to")) changed = delta_pt = 1;
                 bits_to_vec(&scratch_val, &vec_val);
-                // A-CALL: passing a value hands out a borrow of it.
+                // A-CALL: passing a value hands out a borrow of it. `sink` still
+                // flows through this fact: Borrowed means one owner plus a
+                // call-duration borrow, not another owner, and M2.1b's reuse
+                // query distinguishes that from Shared without changing tier or
+                // field-release answers elsewhere in the program.
                 for (int i = 0; i < vec_val.len; i++) {
                     if (raise_alias(vec_val.v[i], AIF_A_BORROWED, -1)) changed = moved(vec_val.v[i]);
                 }
@@ -5918,6 +5922,39 @@ int aif_cycle_at_node(const void* node) {
     return 0;
 }
 
+static int key_find(int kind, int a, int b);
+static int bits_any(const Bits* b);
+
+// M2.1b. Whether a consuming parameter can supply an in-place reuse token.
+//
+// This is an agreement query over the converged parameter points-to set, not a
+// new inference rule. `sink` proves that the caller gives up its owner; A says
+// whether another owner can still observe mutation of that block. Borrowed is
+// admitted here because A-CALL borrows last only for the duration of the call
+// that records them; the consuming call is a distinct transfer, and the token
+// stays inside it. Shared is the first state with another owner. A mixed/shared
+// path declines as a whole and codegen keeps allocating in the ordinary way.
+// T-Cross and foreign values are excluded explicitly: neither is memory this
+// activation may mutate as its sole owner, even if a future change makes its A
+// fact look optimistic. The query uses key_find rather than interning after the
+// solve, for the same bounds reason as field_release_of below.
+int aif_param_reusable(const char* symbol, int index) {
+    int fn = aif_fn_lookup(symbol);
+    if (fn < 0 || index < 0) return 0;
+    int key = key_find(AIF_KEY_PARAM, fn, index);
+    if (key < 0 || key >= pt_len || !bits_any(&pt[key])) return 0;
+    if (!bits_test(&param_consuming, key)) return 0;
+
+    for (int s = 0; s < site_count; s++) {
+        if (!bits_test(&pt[key], s)) continue;
+        if (!site_is_move_only(&sites[s])) return 0;
+        if (sites[s].A > AIF_A_BORROWED) return 0;
+        if (sites[s].T > AIF_T_TRANSFERRED) return 0;
+        if (sites[s].foreign || sites[s].in_container) return 0;
+    }
+    return 1;
+}
+
 static int type_releases_of(int nominal);
 
 static int elem_disposition_of(int id, int tier) {
@@ -6182,13 +6219,16 @@ static int field_declared_type(const Nominal* t, int i) {
 // `parent` back-reference is not, so the answer for that shape is still 0 --
 // reached through an empty `agreed` rather than through this marker.
 //
-// **Known limit:** the generated release recurses once per level, so reclaiming
-// a structure of depth d costs d stack frames. A balanced tree is fine (d is
-// logarithmic); a list-shaped recursive type is not, and deep enough it would
-// trade a leak for a stack overflow. The fix is to loop on the last
-// self-referential field rather than recurse into it.
+// **The reachable depth limit is closed for the list-shaped case.** Generated
+// release now loops on its last direct self field instead of calling itself.
+// `Chain { End, Link(Int, Chain) }` at 500,000 links made the old executable
+// print and then exit 139; the loop exits normally with a 500,001 / 500,001 / 0
+// verifier ledger. A type with several self fields still recurses through the
+// non-tail ones; a balanced tree is logarithmic, while eliminating the bound on
+// an adversarial non-tail branch would require an explicit worklist. See
+// `aif/evidence/RESULTS-recursive-release-depth.md`.
 //
-// **This became reachable on 2026-09-01 and is still unmeasured.** The reason
+// **This became reachable on 2026-09-01.** The reason
 // given here for it being unreachable -- that a deep structure has to be built
 // recursively and "ownership transfer survives only one hop", so no release runs
 // at all -- was wrong twice over. Transfer already survived several hops: a

@@ -11,11 +11,21 @@
 #include "prismio_platform.h"
 #include "prismio_runtime.h"
 #include <time.h>
+#ifndef _WIN32
+#include <errno.h>
+#include <sys/wait.h>
+#endif
 
 #ifndef PRISMIO_EMBEDDED_SOURCES_HEADER
 #define PRISMIO_EMBEDDED_SOURCES_HEADER "embedded_sources.h"
 #endif
 #include PRISMIO_EMBEDDED_SOURCES_HEADER
+
+// Generated code stores the process arguments here before it enters Prismio
+// `main`. Forwarding uses the original vector directly, so quoting cannot change
+// an argument and the hosted command keeps the caller's exact CLI contract.
+extern int prismio_argc;
+extern char** prismio_argv;
 
 // The C sources a compiled program is linked against, plus the headers they need
 // available beside them when they are unpacked from the embedded copies. Keeping
@@ -785,6 +795,74 @@ static int target_is_mach_o(void) {
     return strstr(t, "apple") != NULL || strstr(t, "darwin") != NULL;
 }
 
+// Ordered native inputs for the next executable link. UMS owns their meaning;
+// the driver owns shell-safe spelling. Keeping this as arguments rather than a
+// raw flags string means a manifest value can never become a second command or
+// smuggle in an unrelated driver option.
+static char* g_native_link_args = NULL;
+static int g_native_link_has_framework = 0;
+
+void compiler_link_reset(void) {
+    free(g_native_link_args);
+    g_native_link_args = NULL;
+    g_native_link_has_framework = 0;
+}
+
+static int compiler_link_append_argument(const char* argument) {
+    char* quoted = command_quote_arg(argument ? argument : "");
+    if (!quoted) return 1;
+
+    size_t old_len = g_native_link_args ? strlen(g_native_link_args) : 0;
+    size_t quoted_len = strlen(quoted);
+    char* grown = (char*)realloc(g_native_link_args, old_len + quoted_len + 2);
+    if (!grown) {
+        free(quoted);
+        return 1;
+    }
+    g_native_link_args = grown;
+    g_native_link_args[old_len] = ' ';
+    memcpy(g_native_link_args + old_len + 1, quoted, quoted_len + 1);
+    free(quoted);
+    return 0;
+}
+
+static int compiler_link_append_prefixed(const char* prefix, const char* value) {
+    size_t len = strlen(prefix) + strlen(value ? value : "") + 1;
+    char* argument = (char*)malloc(len);
+    if (!argument) return 1;
+    snprintf(argument, len, "%s%s", prefix, value ? value : "");
+    int result = compiler_link_append_argument(argument);
+    free(argument);
+    return result;
+}
+
+int compiler_link_library(const char* name) {
+    return compiler_link_append_prefixed("-l", name);
+}
+
+int compiler_link_search(const char* path) {
+    return compiler_link_append_prefixed("-L", path);
+}
+
+int compiler_link_file(const char* path) {
+    return compiler_link_append_argument(path);
+}
+
+int compiler_link_framework(const char* name) {
+    g_native_link_has_framework = 1;
+    if (compiler_link_append_argument("-framework") != 0) return 1;
+    return compiler_link_append_argument(name);
+}
+
+static int compiler_link_inputs_supported(void) {
+    if (g_native_link_has_framework && !target_is_mach_o()) {
+        fprintf(stderr,
+                "ERROR: framework(...) is available only when building a Mach-O target.\n");
+        return 0;
+    }
+    return 1;
+}
+
 // LAYOUT 3.2. A workload driver calls rt_profile_*, and an *installed*
 // runtime.lib may predate them -- it is a binary someone built at some point,
 // and this feature is newer than some of those points. The link then fails on
@@ -886,12 +964,9 @@ static int object_cache_trace(void);
 // It satisfies the closure rule trivially: its body references no symbols, only
 // fields of RtList.
 //
-// **Its two siblings do not, and are deliberately absent.** `list_set_inline`
-// reaches `list_copy_elem` and `list_release_source`, and `list_push_inline`
-// reaches those plus `list_inline_grow` and `list_set_elem_inline` -- all
-// `static` in lang_runtime.c, which is the exact failure the note above records
-// for `list_push`. They need the same outlining treatment `list_push_grow` was
-// given before they can be curated.
+// **Its two struct siblings remain absent by measurement.** Curating
+// `list_set_inline` and `list_push_inline` was 0.999x on the corpus for +3.1%
+// compiler time, so their waiver is a result rather than an implementation gap.
 // **`list_get_inline_scalar` belongs here for the same reason and by the same
 // test.** It is what codegen emits for every read of a scalar-element list, and
 // it satisfies the closure rule as trivially as `list_get_inline` does: its body
@@ -899,12 +974,15 @@ static int object_cache_trace(void);
 // pays a real `bl` per element -- measured at **8.9x** on a read loop, which is
 // the whole of what putting scalars inline was supposed to buy.
 //
-// Its write siblings stay out, and for the reason the note above gives: they
-// reach `scalar_store`, `list_inline_grow` and `list_set_elem_inline`, all
-// `static` in lang_runtime.c. They need the same outlining `list_push_grow` was
-// given first.
+// Its scalar write siblings are curated too. `scalar_store` folds into their
+// bodies; `list_set_elem_inline` was already exported, and push stamping,
+// fallback and growth cross the runtime boundary through exported
+// `list_push_inline_scalar_slow`. That mirrors `list_push_grow`: the copied fast
+// path stays cheap enough to inline and no arena-allocation static leaks into a
+// program module.
 static const char* const PRISMIO_CURATED_OPS[] = {
-    "list_get", "list_get_inline", "list_get_inline_scalar", "list_set", "list_len",
+    "list_get", "list_get_inline", "list_get_inline_scalar",
+    "list_set_inline_scalar", "list_push_inline_scalar", "list_set", "list_len",
     "list_set_elem_owner", "list_set_elem_releaser",
     "rc_retain", "rc_release", "list_push",
     "data_view_check_index", "data_view_column", "data_view_len",
@@ -915,7 +993,7 @@ static const char* const PRISMIO_CURATED_OPS[] = {
 // which are not bytes in lang_runtime.c. Bump this whenever that curation
 // policy changes; M4.3c added invariant ready-view loads and exposed that the
 // old key could otherwise reuse a semantically older curated module forever.
-#define PRISMIO_CURATED_SCHEMA "curated-v3-scalar-inline-get"
+#define PRISMIO_CURATED_SCHEMA "curated-v4-scalar-inline-write"
 
 // On by default after the curated-module path became part of the ordinary
 // Windows/Linux/macOS suite. `0` remains the measurement and emergency opt-out:
@@ -1200,7 +1278,8 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     return result;
 }
 
-// Normal user mode: link the program against the runtime library and nothing else.
+// Normal user mode: link the program against the runtime library and any native
+// inputs explicitly declared by its UMS target.
 // backend.lib -- the LLVM C API backend, the symbol tables, the diagnostics
 // engine and this file -- exists only so the compiler can
 // generate code and must never end up in a user's binary.
@@ -1211,10 +1290,13 @@ static int link_against_runtime_library(const char* program_obj,
     char* q_lib = command_quote_arg(runtime_lib);
     char* q_exe = command_quote_arg(exe_file);
     char* target = target_clang_flags();
-    int len = (int)(strlen(q_obj) + strlen(q_lib) + strlen(q_exe) + strlen(target) + 64);
+    const char* native = g_native_link_args ? g_native_link_args : "";
+    int len = (int)(strlen(q_obj) + strlen(q_lib) + strlen(q_exe) +
+                    strlen(target) + strlen(native) + 64);
     char* command = (char*)malloc(len);
 
-    snprintf(command, len, "clang %s%s %s -o %s", target, q_obj, q_lib, q_exe);
+    snprintf(command, len, "clang %s%s %s%s -o %s",
+             target, q_obj, q_lib, native, q_exe);
     int result = run_build_command(command);
 
     free(command);
@@ -1584,6 +1666,7 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
     }
     command_len += (int)(strlen(q_exe) + strlen(q_program_obj));
     command_len += (int)(strlen(llvm_include) + strlen(llvm_lib)) * 2 + 256;
+    command_len += g_native_link_args ? (int)strlen(g_native_link_args) : 0;
     char* command = (char*)malloc(command_len);
     int result = 0;
 
@@ -1730,6 +1813,10 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
             if (!q_objs[i]) continue;
             written += snprintf(command + written, command_len - written, " %s", q_objs[i]);
         }
+        if (g_native_link_args) {
+            written += snprintf(command + written, command_len - written,
+                                "%s", g_native_link_args);
+        }
         written += snprintf(command + written, command_len - written, " -o %s", q_exe);
         if (include_backend) {
             // The half that was missing. Without it the backend's several
@@ -1832,6 +1919,7 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
         fprintf(stderr, "ERROR: could not create output directory\n");
         return 1;
     }
+    if (!compiler_link_inputs_supported()) return 1;
 
     char* program_obj = compiler_temp_obj_path(exe_file, "program");
     int result = compile_ir_to_object(ir_file, program_obj);
@@ -1920,6 +2008,7 @@ int compiler_bootstrap_executable(const char* ir_file, const char* exe_file) {
         fprintf(stderr, "ERROR: could not create output directory\n");
         return 1;
     }
+    if (!compiler_link_inputs_supported()) return 1;
 
     char probe[1024];
     if (!find_toolchain_source(probe, sizeof(probe), "lang_runtime.c")) {
@@ -1989,6 +2078,177 @@ static char* run_command_path(const char* exe_file) {
     }
     path[out] = '\0';
     return path;
+}
+
+static int compiler_hosted_env_begin(char** saved, int* was_set) {
+    const char* current = getenv("PRISMIO_INTERNAL_HOSTED");
+    *saved = NULL;
+    *was_set = current != NULL;
+    if (current) {
+        *saved = (char*)malloc(strlen(current) + 1);
+        if (!*saved) return 1;
+        strcpy(*saved, current);
+    }
+#ifdef _WIN32
+    if (_putenv_s("PRISMIO_INTERNAL_HOSTED", "1") != 0) return 1;
+#else
+    if (setenv("PRISMIO_INTERNAL_HOSTED", "1", 1) != 0) return 1;
+#endif
+    return 0;
+}
+
+static void compiler_hosted_env_end(char* saved, int was_set) {
+#ifdef _WIN32
+    _putenv_s("PRISMIO_INTERNAL_HOSTED", was_set ? saved : "");
+#else
+    if (was_set) setenv("PRISMIO_INTERNAL_HOSTED", saved, 1);
+    else unsetenv("PRISMIO_INTERNAL_HOSTED");
+#endif
+    free(saved);
+}
+
+int compiler_is_hosted(void) {
+    const char* value = getenv("PRISMIO_INTERNAL_HOSTED");
+    return value && value[0] == '1' && value[1] == '\0';
+}
+
+int compiler_is_current_executable(const char* path) {
+    if (!path || !path[0]) return 0;
+#ifdef _WIN32
+    char current[MAX_PATH];
+    char candidate[MAX_PATH];
+    DWORD current_len = GetModuleFileNameA(NULL, current, MAX_PATH);
+    DWORD candidate_len = GetFullPathNameA(path, MAX_PATH, candidate, NULL);
+    if (current_len == 0 || current_len >= MAX_PATH ||
+        candidate_len == 0 || candidate_len >= MAX_PATH) {
+        return 0;
+    }
+    return _stricmp(current, candidate) == 0;
+#else
+    char* directory = prismio_executable_directory();
+    if (!directory || prismio_argc < 1 || !prismio_argv || !prismio_argv[0]) {
+        free(directory);
+        return 0;
+    }
+
+    const char* leaf = path_file_name(prismio_argv[0]);
+    size_t current_len = strlen(directory) + strlen(leaf) + 2;
+    char* current = (char*)malloc(current_len);
+    if (!current) {
+        free(directory);
+        return 0;
+    }
+    snprintf(current, current_len, "%s/%s", directory, leaf);
+
+    struct stat current_stat;
+    struct stat candidate_stat;
+    int same = stat(current, &current_stat) == 0 &&
+               stat(path, &candidate_stat) == 0 &&
+               current_stat.st_dev == candidate_stat.st_dev &&
+               current_stat.st_ino == candidate_stat.st_ino;
+    free(current);
+    free(directory);
+    return same;
+#endif
+}
+
+// The global compiler is a launcher once a project host exists. exec/spawn is
+// used instead of a shell command so spaces, quotes, dollar signs and every
+// other legal argument reach the host byte-for-byte unchanged.
+int compiler_forward_cli(const char* host) {
+    if (!host || !host[0] || prismio_argc < 1 || !prismio_argv) return 1;
+
+    char** arguments = (char**)calloc((size_t)prismio_argc + 1, sizeof(char*));
+    if (!arguments) return 1;
+    arguments[0] = (char*)host;
+    for (int i = 1; i < prismio_argc; i++) arguments[i] = prismio_argv[i];
+
+    int result = 1;
+#ifdef _WIN32
+    char* saved = NULL;
+    int was_set = 0;
+    if (compiler_hosted_env_begin(&saved, &was_set) != 0) {
+        free(saved);
+        free(arguments);
+        return 1;
+    }
+    intptr_t status = _spawnv(_P_WAIT, host, (const char* const*)arguments);
+    compiler_hosted_env_end(saved, was_set);
+    result = status == 0 ? 0 : 1;
+#else
+    pid_t child = fork();
+    if (child == 0) {
+        setenv("PRISMIO_INTERNAL_HOSTED", "1", 1);
+        execv(host, arguments);
+        _exit(127);
+    }
+    if (child > 0) {
+        int status = 0;
+        pid_t waited = 0;
+        do {
+            waited = waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        result = waited == child && WIFEXITED(status) &&
+                 WEXITSTATUS(status) == 0 ? 0 : 1;
+    }
+#endif
+    free(arguments);
+    return result;
+}
+
+// A compiler candidate is not allowed to displace the last known-good local
+// generation merely because clang linked it. Starting it with the cheapest
+// side-effect-free command catches a bad image, a missing dynamic dependency,
+// and an architecture mismatch before promotion. Output is discarded because a
+// project build should report the selected host, not print a second version
+// banner in its middle.
+int compiler_check_executable(const char* exe_file) {
+    char* normalized = run_command_path(exe_file);
+    if (!normalized) return 1;
+
+    char* quoted = command_quote_arg(normalized);
+    size_t command_len = strlen(quoted) + 40;
+    char* command = (char*)malloc(command_len);
+    if (!command) {
+        free(quoted);
+        free(normalized);
+        return 1;
+    }
+
+#ifdef _WIN32
+    snprintf(command, command_len, "%s --version >NUL 2>&1", quoted);
+#else
+    snprintf(command, command_len, "%s --version >/dev/null 2>&1", quoted);
+#endif
+    char* saved = NULL;
+    int was_set = 0;
+    if (compiler_hosted_env_begin(&saved, &was_set) != 0) {
+        free(saved);
+        free(command);
+        free(quoted);
+        free(normalized);
+        return 1;
+    }
+    int result = run_build_command(command);
+    compiler_hosted_env_end(saved, was_set);
+
+    free(command);
+    free(quoted);
+    free(normalized);
+    return result;
+}
+
+// Candidate and active are siblings, so this is one same-filesystem operation.
+// The child compiler has exited before it gets here, which makes replacement
+// valid on Windows too; the UMS side refuses to promote over the executable that
+// owns the orchestrating process.
+int compiler_promote_executable(const char* candidate_file, const char* active_file) {
+#ifdef _WIN32
+    return MoveFileExA(candidate_file, active_file,
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : 1;
+#else
+    return rename(candidate_file, active_file) == 0 ? 0 : 1;
+#endif
 }
 
 // LAYOUT 3.2 -- running a workload at build time

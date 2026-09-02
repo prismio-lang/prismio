@@ -1,0 +1,29 @@
+// expect-error: does not implement `Readable`
+trait Positive {
+    fn positive(self) -> Bool
+}
+
+impl Positive for Int {
+    fn positive(self) -> Bool { return self > 0 }
+}
+
+trait Readable {
+    fn read(self) -> Int
+}
+
+struct Box<T> {
+    value: T
+}
+
+impl<T: Positive> Readable for Box<T> {
+    fn read(self) -> Int { return 1 }
+}
+
+fn readAny<T: Readable>(value: T) -> Int {
+    return read(value)
+}
+
+fn main() -> Int {
+    let boxed = Box<Bool> { value: true }
+    return readAny(boxed)
+}

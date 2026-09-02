@@ -23,6 +23,42 @@ fn main() -> Int {
     if (strEquals(workspace.project.metadata.version, "1.0.0") == false) {
         return umsTestFail("project version should be lowered")
     }
+
+    let packageMetadata = umsLoadText(
+        "project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" description = \"HTTP client library\" license = \"MIT\" authors = [\"Saksham Jaiswal\", \"Prismio Contributors\",] } targets { executable(\"http\") { entry = \"src/main.psm\" } }",
+        "memory:package-metadata", "ums/tests/fixtures/valid", "debug")
+    if (packageMetadata.valid == false or
+        strEquals(packageMetadata.project.metadata.description,
+                  "HTTP client library") == false or
+        strEquals(packageMetadata.project.metadata.license, "MIT") == false or
+        list_len(packageMetadata.project.metadata.authors) != 2 or
+        strEquals(list_get(packageMetadata.project.metadata.authors, 0),
+                  "Saksham Jaiswal") == false) {
+        return umsTestFail("optional package metadata and string arrays should lower")
+    }
+
+    let licenseFileMetadata = umsLoadText(
+        "project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" licenseFile = \"../../../../LICENSE\" } targets { executable(\"http\") { entry = \"src/main.psm\" } }",
+        "memory:license-file", "ums/tests/fixtures/valid", "debug")
+    if (licenseFileMetadata.valid == false or
+        strEquals(licenseFileMetadata.project.metadata.licenseFile,
+                  "../../../../LICENSE") == false) {
+        return umsTestFail("a project-relative license file should lower and validate")
+    }
+
+    let invalidMetadata = umsLoadText(
+        "project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" description = \"\" license = \"MIT\" licenseFile = \"../../../../LICENSE\" authors = [] } targets { executable(\"http\") { entry = \"src/main.psm\" } }",
+        "memory:invalid-metadata", "ums/tests/fixtures/valid", "debug")
+    if (invalidMetadata.valid or list_len(invalidMetadata.diagnostics) < 3) {
+        return umsTestFail("empty and mutually exclusive package metadata should be rejected")
+    }
+
+    let invalidAuthorType = umsLoadText(
+        "project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" authors = [\"Saksham\", 7] } targets { executable(\"http\") { entry = \"src/main.psm\" } }",
+        "memory:invalid-author-type", "ums/tests/fixtures/valid", "debug")
+    if (invalidAuthorType.valid) {
+        return umsTestFail("author arrays must contain only strings")
+    }
     if (workspace.targetCount() != 1) {
         return umsTestFail("one target should be planned")
     }
@@ -45,11 +81,38 @@ fn main() -> Int {
     }
 
     let compilerProject = umsLoadText(
-        "project { name = \"prismio\" version = \"0.1.0\" prismio = \"0.1\" } targets { compiler(\"prismio\") { entry = \"src/main.psm\" } }",
+        "toolchain { host = \".prismio/build/debug/prismio\" } project { name = \"prismio\" version = \"0.1.0\" prismio = \"0.1\" } targets { executable(\"prismio\") { entry = \"src/main.psm\" link { component(\"prismio.backend\") search(\"native\") library(\"sqlite3\") file(\"native/libextra.a\") framework(\"Security\") } } }",
         "memory:compiler", ".", "debug")
+    let compilerTarget = compilerProject.target(0)
     if (compilerProject.valid == false or compilerProject.targetCount() != 1 or
-        compilerProject.target(0).kind != UmsTargetKind.COMPILER) {
-        return umsTestFail("a compiler target should lower and plan as a compiler")
+        compilerTarget.kind != UmsTargetKind.EXECUTABLE or
+        strEquals(compilerTarget.name, "prismio") == false or
+        list_len(compilerTarget.links) != 5 or
+        umsTargetHasComponent(compilerTarget, "prismio.backend") == false or
+        strEquals(compilerProject.project.toolchain.host,
+                  ".prismio/build/debug/prismio") == false) {
+        return umsTestFail("an executable should preserve its ordered native link inputs")
+    }
+
+    let lateToolchain = umsLoadText(
+        "project { name = \"prismio\" version = \"0.1.0\" prismio = \"0.1\" } toolchain { host = \".prismio/build/debug/prismio\" } targets { executable(\"prismio\") { entry = \"src/main.psm\" link { component(\"prismio.backend\") } } }",
+        "memory:late-toolchain", ".", "debug")
+    if (lateToolchain.valid) {
+        return umsTestFail("toolchain must be the stable first manifest block")
+    }
+
+    let legacyCompiler = umsLoadText(
+        "project { name = \"prismio\" version = \"0.1.0\" prismio = \"0.1\" } targets { compiler { entry = \"src/main.psm\" } }",
+        "memory:legacy-compiler", ".", "debug")
+    if (legacyCompiler.valid) {
+        return umsTestFail("compiler must not return as an artifact kind")
+    }
+
+    let unknownComponent = umsLoadText(
+        "project { name = \"app\" version = \"0.1.0\" prismio = \"0.1\" } targets { executable(\"app\") { entry = \"src/main.psm\" link { component(\"other.backend\") } } }",
+        "memory:unknown-component", ".", "debug")
+    if (unknownComponent.valid) {
+        return umsTestFail("unknown toolchain components must be rejected")
     }
 
     let invalid = umsLoadText(

@@ -1,0 +1,40 @@
+// Concrete coherence is keyed by the (trait, type) pair: different traits may
+// be implemented for one type and one trait may be implemented for different
+// types without overlap.
+
+import std.io
+
+trait Left {
+    fn left(self) -> Int
+}
+
+trait Right {
+    fn right(self) -> Int
+}
+
+impl Left for Int {
+    fn left(self) -> Int { return self + 1 }
+}
+
+impl Right for Int {
+    fn right(self) -> Int { return self + 2 }
+}
+
+impl Left for Bool {
+    fn left(self) -> Int {
+        if (self) { return 1 }
+        return 0
+    }
+}
+
+fn useLeft<T: Left>(value: T) -> Int {
+    return left(value)
+}
+
+fn main() -> Int {
+    if (useLeft(4) != 5) { return 1 }
+    if (useLeft(true) != 1) { return 2 }
+    if (right(4) != 6) { return 3 }
+    println("test_99 ok")
+    return 0
+}

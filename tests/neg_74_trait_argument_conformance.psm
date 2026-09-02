@@ -1,0 +1,10 @@
+// expect-error: no `from`
+trait From<T> {
+    fn from(value: T) -> Self
+}
+
+impl From<Int> for String {
+    fn from(value: Bool) -> String { return "x" }
+}
+
+fn main() -> Int { return 0 }

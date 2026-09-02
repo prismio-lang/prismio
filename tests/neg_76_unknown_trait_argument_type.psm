@@ -1,0 +1,10 @@
+// expect-error: unknown type `Missing`
+trait From<T> {
+    fn from(value: T) -> Self
+}
+
+impl From<Missing> for String {
+    fn from(value: Missing) -> String { return "x" }
+}
+
+fn main() -> Int { return 0 }

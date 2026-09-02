@@ -151,10 +151,12 @@ private fn generateFunction(func: ASTNode) {
     // iteration -- and each declaration gets its own slot, which the old
     // name-keyed pre-pass could not express.
     if (nodeExists(func.child2)) {
+        irFunctionDecl = node_to_ptr(func)
         irFunctionBody = func.child2
 
         generateBlock(ptr_to_node(func.child2))
         irFunctionBody = ptr_null()
+        irFunctionDecl = ptr_null()
     }
 
     ir_scope_pop()
@@ -882,6 +884,19 @@ internal fn releaseFnName(typeName: String) -> String {
     return strConcat("__aif_release_", typeName)
 }
 
+// The release disposition after applying the layout veto shared by both the
+// tail-self scan and the field walk below. A user struct stored inline is part
+// of its owner's allocation; a fat String is the exception because its inline
+// pair still owns a separate character buffer.
+private fn generatedFieldRelease(tname: String, field: ASTNode) -> Int {
+    let fieldKey = ir_get_struct_field_type(tname, field.s1)
+    let mut disp = aif_field_release(tname, field.s1)
+    if (isStructTypeKey(fieldKey) and isFatStringKey(fieldKey) == false) {
+        disp = AIF_ELEM_NONE
+    }
+    return disp
+}
+
 // Emits one release per owned field, then frees the object.
 //
 // **Reverse declaration order**, as everywhere else a scope unwinds: a later
@@ -897,18 +912,51 @@ private fn generateReleaseFn(structNode: ASTNode) {
     ir_function_param("ptr", "p_obj")
     ir_function_body_start()
 
-    // REQUIREMENTS 4 made this reachable. A `T?` field can hold `none`, and a
-    // generated release reached through one would compute field addresses from a
-    // null pointer. The other three dispositions all tolerate a null already --
-    // `free(NULL)` is a no-op and list_release and rc_release both guard -- so
-    // this is the only one that has to say so itself.
+    let n = irFieldCountOf(structNode)
+
+    // The field walk below is reverse declaration order. Its last direct call
+    // back into this release therefore comes from the lowest-index owned field
+    // of the same type. Remember that field and turn only that call into the
+    // loop continuation; all earlier fields keep their ordinary recursive
+    // releases, so their order and semantics do not change.
+    let mut tailSelfIndex = 0 - 1
+    let mut foundLastRelease = false
+    let mut scan = 0
+    while (scan < n and foundLastRelease == false) {
+        let field = nthStructField(structNode, scan)
+        if (nodeExists(node_to_ptr(field))) {
+            let disp = generatedFieldRelease(tname, field)
+            if (disp != AIF_ELEM_NONE) {
+                // This is the last release in the reverse-order walk. Only a
+                // self-typed field here is a tail call; choosing a later self
+                // field would move this release across an earlier owned field.
+                foundLastRelease = true
+                if (disp == AIF_ELEM_TYPED) {
+                    let ftype = ptr_to_node(field.child1)
+                    if (strEquals(ftype.s1, tname)) { tailSelfIndex = scan }
+                }
+            }
+        }
+        scan = scan + 1
+    }
+
+    // A slot keeps the frontend bridge simple; mem2reg turns it into the loop
+    // phi. The null test belongs inside the loop because an optional/tail enum
+    // field can terminate the traversal with a null value.
+    let currentSlot = "release.current"
+    ir_alloca("ptr", currentSlot)
+    ir_store("ptr", "%p_obj", currentSlot)
+    let loopLabel = ir_get_label()
     let bodyLabel = ir_get_label()
     let doneLabel = ir_get_label()
-    let isNull = ir_get_temp_name(ir_icmp_eq("ptr", "%p_obj", "null"))
+    ir_br_numbered(loopLabel)
+    ir_label_numbered(loopLabel)
+    let current = ir_get_temp_name(ir_load("ptr", currentSlot))
+    let isNull = ir_get_temp_name(ir_icmp_eq("ptr", current, "null"))
     ir_cond_br_numbered(isNull, doneLabel, bodyLabel)
     ir_label_numbered(bodyLabel)
 
-    let n = irFieldCountOf(structNode)
+    let mut tailValue = "null"
     let mut i = n - 1
     while (i >= 0) {
         let field = nthStructField(structNode, i)
@@ -929,14 +977,10 @@ private fn generateReleaseFn(structNode: ASTNode) {
             // `struct Thing { name: String }` in a container leaked one buffer
             // per element, and UMS -- whose models are almost entirely `strClone`d
             // String fields -- leaked 1475 of 2112 allocations.
-            let fieldKey = ir_get_struct_field_type(tname, field.s1)
-            let mut disp = aif_field_release(tname, field.s1)
-            if (isStructTypeKey(fieldKey) and isFatStringKey(fieldKey) == false) {
-                disp = AIF_ELEM_NONE
-            }
+            let disp = generatedFieldRelease(tname, field)
             if (disp != AIF_ELEM_NONE) {
                 let idx = ir_get_struct_field_index(tname, field.s1)
-                let slot = ir_struct_field_ptr(tname, "%p_obj", idx)
+                let slot = ir_struct_field_ptr(tname, current, idx)
                 let loaded = ir_struct_load_ptr("ptr", ir_get_temp_name(slot), tname, idx)
                 let value = ir_get_temp_name(loaded)
                 if (disp == AIF_ELEM_LIST) {
@@ -962,11 +1006,16 @@ private fn generateReleaseFn(structNode: ASTNode) {
                     // (list_release drives cyc_release), and a struct field is
                     // not a container.
                     ir_free_rc_atomic(value)
-                } else if (disp == AIF_ELEM_TYPED) {
+                } else if (disp == AIF_ELEM_TYPED and i != tailSelfIndex) {
                     let ftype = ptr_to_node(field.child1)
                     ir_free_typed(value, releaseFnName(ftype.s1))
-                } else {
+                } else if (disp != AIF_ELEM_TYPED) {
                     ir_free_object(value)
+                }
+                // Last use in source order: assigning a String transfers it,
+                // and sema intentionally does not make that move path-sensitive.
+                if (disp == AIF_ELEM_TYPED and i == tailSelfIndex) {
+                    tailValue = value
                 }
             }
         }
@@ -981,9 +1030,14 @@ private fn generateReleaseFn(structNode: ASTNode) {
     //
     // Before the object's own free, not after: the cold pointer lives inside the
     // hot record. A no-op when the type is not split.
-    ir_free_cold(tname, "%p_obj")
-    ir_free_object("%p_obj")
-    ir_br_numbered(doneLabel)
+    ir_free_cold(tname, current)
+    ir_free_object(current)
+    if (tailSelfIndex >= 0) {
+        ir_store("ptr", tailValue, currentSlot)
+        ir_br_numbered(loopLabel)
+    } else {
+        ir_br_numbered(doneLabel)
+    }
     ir_label_numbered(doneLabel)
     ir_ret_void()
     ir_function_end()

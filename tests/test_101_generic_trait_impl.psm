@@ -1,0 +1,137 @@
+// Generic trait impls are selected by structurally matching the concrete target
+// and then checking the impl's own bounds. Their methods remain ordinary generic
+// function templates and are instantiated on demand.
+
+import std.io
+
+trait Positive {
+    fn positive(self) -> Bool
+}
+
+impl Positive for Int {
+    fn positive(self) -> Bool { return self > 0 }
+}
+
+trait Readable {
+    fn read(self) -> Int
+    fn prefer(self, other: Self, first: Bool) -> Int
+}
+
+struct Box<T> {
+    value: T
+}
+
+struct Cell<T> {
+    item: T
+}
+
+impl<T: Positive> Readable for Box<T> {
+    fn read(self) -> Int {
+        if (positive(self.value)) { return 10 }
+        return 0
+    }
+
+    fn prefer(self, other: Self, first: Bool) -> Int {
+        if (first and positive(self.value)) { return 1 }
+        if (positive(other.value)) { return 2 }
+        return 0
+    }
+}
+
+// The same trait method names on another generic constructor exercise both
+// trait applicability and generic template overload selection.
+impl<T: Positive> Readable for Cell<T> {
+    fn read(self) -> Int {
+        if (positive(self.item)) { return 20 }
+        return 0
+    }
+
+    fn prefer(self, other: Self, first: Bool) -> Int {
+        if (first and positive(self.item)) { return 3 }
+        if (positive(other.item)) { return 4 }
+        return 0
+    }
+}
+
+fn readAny<T: Readable>(value: T) -> Int {
+    return read(value)
+}
+
+// Concrete specializations of one generic target are disjoint and may
+// implement the same trait independently.
+trait Marked {
+    fn mark(self) -> Int
+}
+
+struct Label<T> {
+    value: T
+}
+
+impl Marked for Label<Int> {
+    fn mark(self) -> Int { return self.value }
+}
+
+impl Marked for Label<Bool> {
+    fn mark(self) -> Int {
+        if (self.value) { return 1 }
+        return 0
+    }
+}
+
+fn markAny<T: Marked>(value: T) -> Int {
+    return mark(value)
+}
+
+// Repeated parameters participate in overlap unification. Pair<T, T> and
+// Pair<Int, Bool> are provably disjoint and both impls are legal.
+trait PairKind {
+    fn pairKind(self) -> Int
+}
+
+struct Pair<A, B> {
+    left: A,
+    right: B
+}
+
+impl<T> PairKind for Pair<T, T> {
+    fn pairKind(self) -> Int { return 1 }
+}
+
+impl PairKind for Pair<Int, Bool> {
+    fn pairKind(self) -> Int { return 2 }
+}
+
+fn pairKindAny<T: PairKind>(value: T) -> Int {
+    return pairKind(value)
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let box = Box<Int> { value: 7 }
+    let otherBox = Box<Int> { value: 9 }
+    let cell = Cell<Int> { item: 3 }
+    let otherCell = Cell<Int> { item: 4 }
+
+    if (readAny(box) != 10) { return fail("generic Box impl through a bound") }
+    if (cell.read() != 20) { return fail("generic Cell impl through a method") }
+    if (box.prefer(otherBox, false) != 2) { return fail("Self is Box<T>") }
+    if (cell.prefer(otherCell, true) != 3) { return fail("Self is Cell<T>") }
+
+    let intLabel = Label<Int> { value: 12 }
+    let boolLabel = Label<Bool> { value: true }
+    if (markAny(intLabel) != 12) { return fail("Label<Int> specialization") }
+    if (markAny(boolLabel) != 1) { return fail("Label<Bool> specialization") }
+
+    let same = Pair<Int, Int> { left: 1, right: 2 }
+    let mixed = Pair<Int, Bool> { left: 1, right: true }
+    if (pairKindAny(same) != 1) { return fail("repeated generic parameter") }
+    if (pairKindAny(mixed) != 2) { return fail("disjoint concrete specialization") }
+
+    println("test_101 ok")
+    return 0
+}

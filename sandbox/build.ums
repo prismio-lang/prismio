@@ -1,0 +1,11 @@
+project {
+    name = "sandbox"
+    version = "0.1.0"
+    prismio = "0.1.0"
+}
+
+targets {
+    executable("sandbox") {
+        entry = "main.psm"
+    }
+}

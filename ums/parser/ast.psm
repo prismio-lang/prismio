@@ -1,12 +1,13 @@
 import std.string
+
 enum UmsAstValueKind {
     UNKNOWN,
     STRING,
     INTEGER,
     BOOLEAN,
-    IDENTIFIER
+    IDENTIFIER,
+    ARRAY
 }
-
 
 enum UmsAstStatementKind {
     UNKNOWN,
@@ -27,6 +28,11 @@ struct UmsAstStatement {
     name: String,
     value: UmsAstValue,
     arguments: List<UmsAstValue>,
+    // Flat scalar values for an assignment such as `authors = ["A", "B"]`.
+    // Kept on the statement rather than recursively inside UmsAstValue: a flat
+    // list is the manifest feature UMS needs, and the non-recursive shape keeps
+    // value representation as cheap as call arguments.
+    arrayValues: List<UmsAstValue>,
     // Indices into UmsAstDocument.statements. Keeping syntax edges as indices
     // avoids a recursive nominal type, so a manifest AST never needs runtime
     // reference counting merely because blocks can nest.
@@ -62,6 +68,7 @@ internal fn umsAstStatement(kind: UmsAstStatementKind, name: String,
         name: strClone(name),
         value: umsAstEmptyValue(),
         arguments: list_new(),
+        arrayValues: list_new(),
         children: list_new(),
         hasBlock: false,
         start: start,

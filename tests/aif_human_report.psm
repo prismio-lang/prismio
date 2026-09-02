@@ -1,0 +1,5 @@
+import std.io
+
+fn main() -> Int {
+    return 0
+}

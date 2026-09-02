@@ -603,8 +603,17 @@ class Engine:
             obj = e['c1'][0] if e['c1'] else None
             if obj is not None and self.m.is_ref(obj['ty']):
                 base = obj['ty'].split('<')[0]
-                self.sites_of(obj, fn, scope)
-                return self.ref(('field', base, e['s1']))
+                container = self.sites_of(obj, fn, scope)
+                field = self.ref(('field', base, e['s1']))
+                # A reference-shaped field is a view of the object it was read
+                # from, just as list_get returns a view of its list below. The
+                # in-compiler engine has carried this edge since the field-view
+                # provenance fix; without the matching oracle rule, returning
+                # `lexer.tokens` left the lexer stack-local here while the
+                # compiler correctly raised it to Caller.
+                if self.m.is_ref(ty):
+                    return vs_view_of(field, container)
+                return field
             return VS_EMPTY
 
         # REQUIREMENTS 15. `spawn f(a, b)`. Mirrors src/aif/walk.psm.

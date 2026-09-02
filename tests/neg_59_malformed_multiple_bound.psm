@@ -1,0 +1,12 @@
+// expect-error: expected IDENTIFIER in a trait name in a type parameter list
+trait Scored {
+    fn score(self) -> Int
+}
+
+fn scoreWith<T: Scored +>(value: T) -> Int {
+    return score(value)
+}
+
+fn main() -> Int {
+    return scoreWith(7)
+}

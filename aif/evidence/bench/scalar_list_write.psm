@@ -1,0 +1,32 @@
+// Scalar-inline storage write discriminator.
+//
+// The timed region performs exactly 20,000,000 sequential list_set calls. The
+// list is populated first, outside the timer, so no allocation or growth is in
+// the number.
+
+import std.io
+extern fn clock_gettime_nsec_np(clk: Int) -> I64
+
+fn main() -> Int {
+    let count = 20000000
+    let values: List<Int> = list_new_with_capacity(count)
+    let mut i = 0
+    while (i < count) {
+        list_push(values, 0)
+        i = i + 1
+    }
+
+    let t0 = clock_gettime_nsec_np(4)
+    i = 0
+    while (i < list_len(values)) {
+        list_set(values, i, (i % 251) - 125)
+        i = i + 1
+    }
+    let t1 = clock_gettime_nsec_np(4)
+
+    print("checksum ")
+    println(list_get(values, 0) + list_get(values, count - 1))
+    print("elapsed_ns ")
+    println((t1 - t0) as Int)
+    return 0
+}

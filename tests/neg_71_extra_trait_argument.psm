@@ -1,0 +1,10 @@
+// expect-error: takes trait parameters <>
+trait Named {
+    fn name(self) -> String
+}
+
+impl Named<Int> for String {
+    fn name(self) -> String { return self }
+}
+
+fn main() -> Int { return 0 }

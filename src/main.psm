@@ -31,6 +31,14 @@ extern fn cli_arg(index: Int) -> String alias
 extern fn compiler_default_exe_path(sourcePath: String) -> String produce(free)
 extern fn compiler_temp_ir_path(sourcePath: String) -> String produce(free)
 extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
+// Ordered native inputs for one UMS target. Paths reach this boundary already
+// resolved against the manifest root; the C driver quotes every argument before
+// it constructs the clang command.
+extern fn compiler_link_reset()
+extern fn compiler_link_library(name: String borrow) -> Int
+extern fn compiler_link_search(path: String borrow) -> Int
+extern fn compiler_link_file(path: String borrow) -> Int
+extern fn compiler_link_framework(name: String borrow) -> Int
 // SPEC 7.3. Tells the build to compile the runtime with its own allocator
 // pointed at the verify shims, so the strings and lists it allocates are in the
 // same accounting as everything ir_alloc_object handed out.
@@ -47,6 +55,15 @@ extern fn compiler_set_debug_info(on: Int)
 extern fn compiler_set_sysroot(path: String borrow)
 extern fn compiler_bootstrap_executable(irFile: String, exeFile: String) -> Int
 extern fn compiler_run_executable(exeFile: String) -> Int
+// Project-host executables are built beside their active local generation. The
+// candidate has to start before it can replace that generation, and promotion
+// is a binary rename rather than compiler_publish_file's text copy.
+extern fn compiler_check_executable(exeFile: String borrow) -> Int
+extern fn compiler_promote_executable(candidateFile: String borrow,
+                                      activeFile: String borrow) -> Int
+extern fn compiler_forward_cli(host: String borrow) -> Int
+extern fn compiler_is_hosted() -> Int
+extern fn compiler_is_current_executable(path: String borrow) -> Int
 extern fn ir_jit_run_main(programName: String) -> Int
 // LAYOUT 3.2. Runs a workload driver with no argv and a wall-clock bound, so W2's
 // "times out" is a case that can actually occur rather than a clause nothing
@@ -486,9 +503,9 @@ private fn printUsage() {
     println("  prismio bootstrap [source.psm] [-o output.exe] [-g]")
     println("  prismio runtime-hash")
     println("  prismio dump-ast <source.psm>")
-    println("  prismio aif <source.psm> [--summary] [--layout] [--copyable-collections] [--theta-fields] [--budget=N]")
+    println("  prismio aif <source.psm> [--manifest] [--summary] [--layout] [--copyable-collections] [--theta-fields] [--budget=N]")
     println("                            [--target <triple>]")
-    println("  prismio aif <source.psm> --why=<symbol>   why one record has the tier it has")
+    println("  prismio aif <source.psm> --why=<ID|symbol>   explain one allocation decision")
     println("  prismio build|aif <source.psm> --force-layout=<Type>:<hot>   emit a named layout candidate")
     println("")
     println("-g emits DWARF: line tables, functions, scopes, locals and struct")
@@ -675,7 +692,7 @@ private fn checkCommand(path: String) -> Int {
 // generates -- which is the point at this stage: the tier distribution becomes
 // measurable before any of it is risked on the self-host.
 private fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: Bool,
-               budget: Int, why: String, layout: Bool) -> Int {
+               budget: Int, why: String, layout: Bool, manifest: Bool) -> Int {
     let merged = analyzedModule(path)
     if (diag_error_count() > 0) {
         return 1
@@ -704,11 +721,11 @@ private fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, theta
         let converged = aifRunProfiled(merged, ownedCollections, thetaFields, budget,
                                         profilePath)
         discardWorkloadProfile(profilePath)
-        return 1 - aifExplain(why, converged)
+        return 1 - aifExplain(why, path, converged)
     }
 
     aifAnalyzeProfiled(merged, path, PRISMIO_VERSION, ownedCollections, summary,
-                        thetaFields, budget, profilePath, layout)
+                        thetaFields, budget, profilePath, layout, manifest)
     discardWorkloadProfile(profilePath)
     reportForcedLayouts()
     return 0
@@ -1190,6 +1207,48 @@ private fn initUmsProject(nameArg: String) -> Int {
     return 0
 }
 
+private fn umsNativePath(root: String, value: String) -> String {
+    let length = __builtin_string_len(value)
+    if (length > 0 and (strCharAt(value, 0) == '/' or
+        strCharAt(value, 0) == '\\')) {
+        return strClone(value)
+    }
+    if (length > 1 and strCharAt(value, 1) == ':') {
+        return strClone(value)
+    }
+    return join_path(root, value)
+}
+
+// Clears the previous target first: a project may build several executables in
+// one compiler process, and native dependencies belong to exactly the target
+// that declared them. Components are consumed by buildUmsProject; everything
+// else becomes one safely quoted clang argument in declaration order.
+private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
+    compiler_link_reset()
+    let mut i = 0
+    while (i < list_len(target.links)) {
+        let input = list_get(target.links, i)
+        let mut result = 0
+        if (input.kind == UmsLinkKind.LIBRARY) {
+            result = compiler_link_library(input.value)
+        } else if (input.kind == UmsLinkKind.SEARCH) {
+            let path = umsNativePath(root, input.value)
+            result = compiler_link_search(path)
+        } else if (input.kind == UmsLinkKind.FILE) {
+            let path = umsNativePath(root, input.value)
+            result = compiler_link_file(path)
+        } else if (input.kind == UmsLinkKind.FRAMEWORK) {
+            result = compiler_link_framework(input.value)
+        }
+        if (result != 0) {
+            diag_error_code("P1058", "could not prepare native linker inputs")
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
 // `prismio test` -- build every `test(...)` target and run it.
 //
 // **A test passes when it exits 0.** That is the entire protocol, and it is
@@ -1213,8 +1272,12 @@ private fn testUmsProject(profile: String) -> Int {
     while (index < workspace.targetCount()) {
         let target = workspace.target(index)
         if (target.kind == UmsTargetKind.TEST) {
+            if (configureUmsTargetLink(workspace.project.root, target) != 0) {
+                return 1
+            }
+            let includesBackend = umsTargetHasComponent(target, "prismio.backend")
             if (compileSource(target.sourcePath, target.outputPath,
-                              false, false, false, false, false, false, false) != 0) {
+                              false, includesBackend, false, false, false, false, false) != 0) {
                 return 1
             }
             total = total + 1
@@ -1304,7 +1367,14 @@ private fn cleanUmsProject(profile: String) -> Int {
     while (index < workspace.targetCount()) {
         let target = workspace.target(index)
         if (file_exists(target.outputPath) == 1) {
-            if (delete_file(target.outputPath) == 0) {
+            if (compiler_is_hosted() == 1 and
+                compiler_is_current_executable(target.outputPath) == 1) {
+                // The global launcher removes this compiler after the hosted
+                // process exits. Windows rejects deleting the executable that
+                // owns this process; counting it here keeps `clean`'s report
+                // about the complete operation rather than this half of it.
+                removed = removed + 1
+            } else if (delete_file(target.outputPath) == 0) {
                 removed = removed + 1
             } else {
                 diag_error_code("P1020", strConcat("could not remove ", target.outputPath))
@@ -1318,6 +1388,116 @@ private fn cleanUmsProject(profile: String) -> Int {
     print(removed)
     print(" artifact(s) from ")
     println(profile)
+    return 0
+}
+
+private fn checkUmsCompilerCandidate(candidate: String) -> Int {
+    if (compiler_check_executable(candidate) != 0) {
+        delete_file(candidate)
+        diag_error_code("P1054", "the compiler candidate did not start; the active local compiler was kept")
+        return 1
+    }
+    return 0
+}
+
+private fn promoteUmsCompilerCandidate(candidate: String, active: String) -> Int {
+    if (checkUmsCompilerCandidate(strClone(candidate)) != 0) { return 1 }
+    if (compiler_promote_executable(candidate, active) != 0) {
+        delete_file(candidate)
+        diag_error_code("P1055", "could not promote the compiler candidate; the active local compiler was kept")
+        return 1
+    }
+
+    print("promoted project compiler: ")
+    println(active)
+    return 0
+}
+
+// The selected local host owns the full UMS build. When it rebuilds the artifact
+// it is currently running, it leaves a checked sibling for the global parent to
+// promote after this process exits. That ordering is required on Windows and
+// also means a failed edit never displaces the last known-good compiler.
+private fn buildUmsHostTarget(target: UmsTarget) -> Int {
+    let candidate = strConcat(strClone(target.outputPath), ".next")
+    if (file_exists(candidate) == 1) { delete_file(candidate) }
+
+    let currentPath = join_path(executable_directory(), pathLeaf(cli_arg(0)))
+    let replacesSelf = compiler_is_current_executable(target.outputPath) == 1
+    if (replacesSelf and compiler_is_hosted() == 0) {
+        diag_error_code("P1051", "the project-local compiler cannot replace itself without its global parent")
+        diag_note("run `prismio build` through the installed global compiler")
+        return 1
+    }
+    if (compiler_is_hosted() == 0) {
+        print("compiler host: stage-0 ")
+        println(currentPath)
+    }
+
+    let built = compileSource(target.sourcePath, strClone(candidate),
+                              false, true, false, false, false, false, false)
+    if (built != 0) {
+        delete_file(candidate)
+        diag_error_code("P1053", "the compiler candidate did not build; the active local compiler was kept")
+        return 1
+    }
+    if (replacesSelf) {
+        if (checkUmsCompilerCandidate(strClone(candidate)) != 0) { return 1 }
+        print("staged project compiler: ")
+        println(candidate)
+        return 0
+    }
+    return promoteUmsCompilerCandidate(candidate, target.outputPath)
+}
+
+// A binary named `prismio` is the user-facing launcher. Named bootstrap
+// generations (`build/g1`, `build/g2`, ...) remain exact tools and never
+// redirect, which keeps fixed-point checks and PRISMIO=<path> deterministic.
+private fn isGlobalLauncher() -> Bool {
+    let name = pathLeaf(cli_arg(0))
+    return strEquals(name, "prismio") or strEquals(name, "prismio.exe")
+}
+
+// Returns -1 when the current compiler should process the command itself.
+// Otherwise the return value is the hosted command's result and `main` returns
+// it immediately; a failed hosted command is never replayed under stage 0.
+private fn dispatchToUmsHost() -> Int {
+    if (isGlobalLauncher() == false or compiler_is_hosted() == 1) { return -1 }
+
+    let host = umsProjectHost(".")
+    if (__builtin_string_len(host) == 0 or file_exists(host) == 0 or
+        compiler_is_current_executable(host) == 1) {
+        return -1
+    }
+    if (compiler_check_executable(host) != 0) {
+        diag_warning_code("P1052", "the configured project host is not runnable")
+        diag_note("falling back to the global compiler")
+        return -1
+    }
+
+    let candidate = strConcat(strClone(host), ".next")
+    if (file_exists(candidate) == 1) { delete_file(candidate) }
+
+    print("compiler host: project-local ")
+    println(host)
+    let result = compiler_forward_cli(host)
+    if (result != 0) {
+        if (file_exists(candidate) == 1) { delete_file(candidate) }
+        return result
+    }
+
+    // The hosted process intentionally leaves its running compiler alone. The
+    // launcher owns the two operations that require that process to have exited:
+    // promoting a successful self-build and deleting the host during `clean`.
+    if (cli_arg_count() > 1 and strEquals(cli_arg(1), "clean")) {
+        if (file_exists(host) == 1 and delete_file(host) != 0) {
+            diag_error_code("P1056", "could not remove the project compiler after clean")
+            return 1
+        }
+        return 0
+    }
+    if (file_exists(candidate) == 1) {
+        return promoteUmsCompilerCandidate(candidate, host)
+    }
     return 0
 }
 
@@ -1361,12 +1541,28 @@ private fn buildUmsProject(profile: String, runAfterBuild: Bool) -> Int {
             index = index + 1
             continue
         }
-        let compilerTarget = target.kind == UmsTargetKind.COMPILER
-        if (compileSource(target.sourcePath, target.outputPath,
-                          false, compilerTarget, false, false, false, false, false) != 0) {
+        if (configureUmsTargetLink(workspace.project.root, target) != 0) {
             return 1
         }
-        if (target.kind == UmsTargetKind.EXECUTABLE or compilerTarget) {
+        let includesBackend = umsTargetHasComponent(target, "prismio.backend")
+        let configuredHost = join_path(workspace.project.root,
+                                       workspace.project.toolchain.host)
+        let hostTarget = __builtin_string_len(workspace.project.toolchain.host) > 0 and
+                         strEquals(target.outputPath, configuredHost)
+        if (hostTarget and includesBackend == false) {
+            diag_error_code("P1057", "the toolchain.host target does not link prismio.backend")
+            diag_note("add `link { component(\"prismio.backend\") }` to that executable")
+            return 1
+        }
+        if (hostTarget) {
+            if (buildUmsHostTarget(target) != 0) { return 1 }
+        } else {
+            if (compileSource(target.sourcePath, target.outputPath,
+                              false, includesBackend, false, false, false, false, false) != 0) {
+                return 1
+            }
+        }
+        if (target.kind == UmsTargetKind.EXECUTABLE) {
             if (executables == 0) { firstExecutable = index }
             executables = executables + 1
         }
@@ -1407,6 +1603,9 @@ fn main() -> Int {
     let mut jitMode = false
     let mut debugMode = false
     let mut argIndex = 0
+
+    let hosted = dispatchToUmsHost()
+    if (hosted >= 0) { return hosted }
 
     if (cli_arg_count() <= 1) {
         printUsage()
@@ -1523,12 +1722,18 @@ fn main() -> Int {
         let mut aifThetaFields = false
         let mut aifWhy = ""
         let mut aifLayout = false
+        let mut aifManifest = false
         let mut aifBudgetArg = AIF_DEFAULT_ROUNDS
         let mut aifArg = 3
         while (aifArg < cli_arg_count()) {
             let flag = cli_arg(aifArg)
             if (strEquals(flag, "--summary")) {
                 aifSummary = true
+            } else if (strEquals(flag, "--manifest")) {
+                // The stable, compiler-facing form that `prismio aif` printed
+                // before the interactive report became the default. CI and
+                // manifest diffs opt into it explicitly.
+                aifManifest = true
             } else if (strEquals(flag, "--layout")) {
                 // LAYOUT 7.2's argmin and 8's ranked top-k. Acted on since
                 // 2026-08-17: the `emitted` column says which candidate the binary
@@ -1597,7 +1802,7 @@ fn main() -> Int {
         }
 
         return aifCommand(cli_arg(2), aifSummary, aifOwned, aifThetaFields, aifBudgetArg,
-                           aifWhy, aifLayout)
+                           aifWhy, aifLayout, aifManifest)
     }
 
     // Compiler development. The command itself selects the build mode -- there is no

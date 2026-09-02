@@ -1,9 +1,10 @@
 # `List<Int>` and `List<Bool>` never reach the inline path, and the gate is one line
 
-**Status: LANDED with a measured regression, 2026-09-01.** §1–4 are the diagnosis
-against `build/host-routing-locked7`; §5 is what changed and what it cost. The
-space win is large and the sieve gets faster; a pure read loop does not, and that
-is recorded here rather than left for someone to find.
+**Status: LANDED; measured read and write regressions closed, 2026-09-02.** §1–4 are the
+diagnosis against `build/host-routing-locked7`; §5 is the scalar-storage change
+and the regression it exposed; §6 is the backend intrinsic that restores the
+vectorised read path. Scalar write curation and its separate measurement are in
+`RESULTS-curate-scalar-write.md`.
 
 The flat-list machinery is built and working — `RESULTS-flat-list-view.md` and
 `RESULTS-curate-list-get-inline.md` are its evidence. What is not established
@@ -144,8 +145,10 @@ keeps it endian-safe.
 **`list_get_inline_scalar` is curated.** It calls nothing and touches only
 `RtList` fields, so it satisfies the closure rule the same way `list_get_inline`
 does. Left out it cost **8.9×** on a read loop, which is the whole of what the
-change was supposed to buy. Its write siblings stay out: they reach
-`scalar_store`, `list_inline_grow` and `list_set_elem_inline`, all `static`.
+change was supposed to buy. Its write siblings were initially left out because
+their call closure reached runtime-local helpers. That boundary has since been
+outlined and both are curated: the retained 20M write loop moves from 18.929 ms
+to **7.721 ms**. See `RESULTS-curate-scalar-write.md`.
 
 ### Measured, `build/base-gen1` against `build/rc-gen2`
 
@@ -173,3 +176,52 @@ the same 2 pre-existing `src/main.psm` disagreements the baseline has.
 `test_79_slices` — which already had a scalar-slice case — is what caught the
 subscript path, and `test_82_generic_layout` and `test_88_map_keys` caught a
 `zext ptr` from testing "not a struct key" where the question was the width.
+
+## 6 · The scalar flat-read intrinsic
+
+`ir_list_flat_scalar_elem` is the scalar twin of `ir_list_flat_elem`. Keeping
+the two entry points separate is the correctness boundary:
+
+- the pointer form joins the flat row's address with `list_get_inline`'s result;
+- the scalar form joins a typed load from the flat row with
+  `list_get_inline_scalar`'s i64 bit carrier converted back to the element type.
+
+Joining the pointer form first and loading afterwards is unsound: when inline
+storage is disabled, a boxed scalar is the value punned into a pointer, not an
+address that may be dereferenced. The new intrinsic branches on the hoisted
+`elem_size == stride` guard, performs constant-stride address arithmetic and a
+typed load on the flat arm, and retains the runtime call on the fallback arm.
+The bounds check stays before the flat load; loops bounded by `list_len` make it
+removable and vectorisable.
+
+The benchmark sources are retained now rather than reconstructed from prose:
+
+- `aif/evidence/bench/scalar_list_read.psm` — 20M sequential `list_get` calls;
+- `aif/evidence/bench/scalar_list_write.psm` — 20M sequential `list_set` calls;
+- `aif/evidence/bench/scalar_list_sieve.psm` — Eratosthenes to 2,000,000.
+
+Fifteen interleaved runs, medians, `build/aif-scalar-final` against
+`build/scalar-flat-gen1` on the same Apple Silicon/LLVM 22.1.8 host:
+
+| | regressed scalar-inline | scalar flat intrinsic | new / old |
+|---|---:|---:|---:|
+| read, 20M `list_get` | 5.615 ms | **1.944 ms** | **0.346x** |
+| write, 20M `list_set` | 19.167 ms | 19.202 ms | 1.002x |
+| sieve to 2,000,000 | 7.090 ms | 6.964 ms | 0.982x |
+
+Both read binaries print `checksum -6279`; both sieve binaries print
+`primes 148933`. The new read body contains a 16-element arm64 NEON reduction
+(`ldp q4, q5` / `ldp q6, q7` and four `add.4s` accumulators). With
+`PRISMIO_INLINE_ELEMS=0`, the focused scalar-list fixture also passes through
+the boxed fallback with the same **12 allocated / 12 released / 0 leaked / 0
+violations** ledger as the flat representation.
+
+**Gates:** compiler IR fixpoint identical between `scalar-flat-gen2` and
+`scalar-flat-gen3` (SHA-256
+`b823e87a26ae2ee467c06179d2b141813937552af8f2eedd7383bb10819f16c3`);
+toolchain source lists agree; `git diff --check` clean; AIF differential **19/19**.
+The dirty report/UMS WIP suite run is **206/207**: all 206 non-WIP gates pass,
+and the sole failure is the compiler's two existing `rc_alloc` calls for
+`UmsLinkInput` and `UmsAstValue`. A pre-change emission with
+`build/aif-scalar-final` has the same two calls, so that red is baseline-equivalent
+and unrelated to this backend change.

@@ -6,11 +6,29 @@ enum UmsTargetKind {
     UNKNOWN,
     EXECUTABLE,
     LIBRARY,
-    TEST,
-    // A self-hosted compiler executable. It uses the same Prismio frontend as
-    // an executable target, then links backend.a and LLVM through the bootstrap
-    // build path. Appended so existing target-kind ordinals remain stable.
-    COMPILER
+    TEST
+}
+
+// A target's artifact shape and the native things it links are separate axes.
+// `executable("prismio")` is still an executable; linking Prismio's own backend
+// does not turn it into a fourth artifact kind. Components name toolchain-owned
+// bundles with transitive requirements, while the other forms map directly to
+// ordinary native linker inputs.
+enum UmsLinkKind {
+    UNKNOWN,
+    LIBRARY,
+    SEARCH,
+    FILE,
+    FRAMEWORK,
+    COMPONENT
+}
+
+struct UmsLinkInput {
+    kind: UmsLinkKind,
+    value: String,
+    line: Int,
+    col: Int,
+    len: Int
 }
 
 
@@ -20,6 +38,7 @@ struct UmsTarget {
     entry: String,
     sourcePath: String,
     outputPath: String,
+    links: List<UmsLinkInput>,
     line: Int,
     col: Int,
     len: Int
@@ -33,10 +52,34 @@ fn umsTarget(kind: UmsTargetKind, name: String, entry: String,
         entry: strClone(entry),
         sourcePath: strClone(""),
         outputPath: strClone(""),
+        links: list_new(),
         line: line,
         col: col,
         len: len
     }
+}
+
+fn umsLinkInput(kind: UmsLinkKind, value: String,
+                line: Int, col: Int, len: Int) -> UmsLinkInput {
+    return UmsLinkInput {
+        kind: kind,
+        value: strClone(value),
+        line: line,
+        col: col,
+        len: len
+    }
+}
+
+fn umsTargetHasComponent(target: UmsTarget, name: String) -> Bool {
+    let mut i = 0
+    while (i < list_len(target.links)) {
+        let input = list_get(target.links, i)
+        if (input.kind == UmsLinkKind.COMPONENT and strEquals(input.value, name)) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
 }
 
 fn umsTargetFind(targets: List<UmsTarget>, name: String) -> Int {

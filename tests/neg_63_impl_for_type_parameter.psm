@@ -1,0 +1,6 @@
+// expect-error: an inherent `impl` target must have a nominal type constructor
+impl<T> T {
+    fn identity(self) -> T { return self }
+}
+
+fn main() -> Int { return 0 }

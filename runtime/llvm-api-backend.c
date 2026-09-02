@@ -1895,6 +1895,118 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
     return intern_value(phi);
 }
 
+// The scalar read end of the same guarded flat-List view.
+//
+// This cannot be expressed as ir_list_flat_elem followed by a load. The pointer
+// intrinsic's flat arm returns an address, while list_get_inline returns a boxed
+// scalar's bits punned into a pointer; loading after that join dereferences the
+// value whenever the list is boxed. Resolve the representation here instead:
+// the flat arm is constant-stride address arithmetic plus a typed load, and the
+// fallback calls list_get_inline_scalar, whose i64 bit carrier is converted to
+// the same LLVM type before the phi.
+//
+// The bounds branch is required because this arm performs a load. A select may
+// hide an out-of-range address result, as the pointer intrinsic does, but it
+// cannot make an invalid load non-trapping. Loop bounds make this branch
+// removable in the read benchmark, just as they do for ir_list_boxed_elem.
+int ir_list_flat_scalar_elem(const char *list, const char *index,
+                             const char *elem_type, int stride,
+                             const char *guard) {
+    LLVMTypeRef elemty = type_from_key(elem_type);
+    if (block_done()) return intern_value(LLVMConstNull(elemty));
+
+    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef listty = rt_list_header_type();
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+    LLVMValueRef idx = resolve_value(index, "i32");
+
+    LLVMValueRef is_flat;
+    if (guard && guard[0]) {
+        is_flat = resolve_value(guard, "i1");
+    } else {
+        LLVMValueRef size_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, "");
+        LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
+        tag_scalar(elem_size, "i32");
+        is_flat = LLVMBuildICmp(
+            g_builder, LLVMIntEQ, elem_size,
+            LLVMConstInt(i32, (unsigned long long)stride, 0), "");
+    }
+
+    int flat = ir_get_label();
+    int boxed = ir_get_label();
+    int join = ir_get_label();
+    LLVMBuildCondBr(g_builder, is_flat, block_for(flat), block_for(boxed));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(flat));
+    LLVMValueRef len_ptr = LLVMBuildStructGEP2(
+        g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+    tag_scalar(len, "i32");
+    LLVMValueRef in_bounds = LLVMBuildICmp(
+        g_builder, LLVMIntULT, idx, len, "");
+    int present = ir_get_label();
+    int absent = ir_get_label();
+    int checked = ir_get_label();
+    LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(absent));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(present));
+    LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+        g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+    LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+    tag_scalar(data, "ptr");
+    LLVMValueRef offset = LLVMBuildMul(
+        g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
+        LLVMConstInt(i64, (unsigned long long)stride, 0), "");
+    LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+    LLVMValueRef loaded = LLVMBuildLoad2(g_builder, elemty, addr, "");
+    tag_scalar(loaded, elem_type);
+    LLVMBuildBr(g_builder, block_for(checked));
+    LLVMBasicBlockRef present_end = LLVMGetInsertBlock(g_builder);
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(absent));
+    LLVMBuildBr(g_builder, block_for(checked));
+    LLVMBasicBlockRef absent_end = LLVMGetInsertBlock(g_builder);
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(checked));
+    LLVMValueRef flat_val = LLVMBuildPhi(g_builder, elemty, "");
+    LLVMValueRef flat_values[2] = {loaded, LLVMConstNull(elemty)};
+    LLVMBasicBlockRef flat_blocks[2] = {present_end, absent_end};
+    LLVMAddIncoming(flat_val, flat_values, flat_blocks, 2);
+    LLVMBuildBr(g_builder, block_for(join));
+    LLVMBasicBlockRef flat_end = LLVMGetInsertBlock(g_builder);
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(boxed));
+    LLVMTypeRef params[3] = {ptrty, i32, i32};
+    LLVMTypeRef fnty = LLVMFunctionType(i64, params, 3, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "list_get_inline_scalar");
+    if (!fn) fn = LLVMAddFunction(g_module, "list_get_inline_scalar", fnty);
+    LLVMValueRef args[3] = {
+        hdr, idx, LLVMConstInt(i32, (unsigned long long)stride, 0)
+    };
+    LLVMValueRef bits = LLVMBuildCall2(g_builder, fnty, fn, args, 3, "");
+    LLVMValueRef boxed_val;
+    if (strcmp(elem_type, "double") == 0) {
+        boxed_val = LLVMBuildBitCast(g_builder, bits, elemty, "");
+    } else if (strcmp(elem_type, "i64") == 0) {
+        boxed_val = bits;
+    } else {
+        boxed_val = LLVMBuildTrunc(g_builder, bits, elemty, "");
+    }
+    LLVMBuildBr(g_builder, block_for(join));
+    LLVMBasicBlockRef boxed_end = LLVMGetInsertBlock(g_builder);
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(join));
+    LLVMValueRef phi = LLVMBuildPhi(g_builder, elemty, "");
+    LLVMValueRef incoming[2] = {flat_val, boxed_val};
+    LLVMBasicBlockRef blocks[2] = {flat_end, boxed_end};
+    LLVMAddIncoming(phi, incoming, blocks, 2);
+    return intern_value(phi);
+}
+
 // Emit the typed pointer-slot access in the caller. The frontend selects this
 // only for a known List element type whose representation cannot be stamped
 // inline; Invalid/inferred-later Lists keep the generic runtime accessor.

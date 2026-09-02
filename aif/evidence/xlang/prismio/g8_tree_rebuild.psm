@@ -1,10 +1,9 @@
 // G8 tree rebuild -- the reuse axis, which this corpus did not have.
 //
-// **Not in `bench.PROGRAMS` yet, and it must not be added until M2.1a lands.**
-// It currently leaks essentially everything it allocates (24569 of 24577 at the
-// settings below), and adding it to the corpus would falsify the standing claim
-// that every benchmark program has a clean `--verify` ledger. That leak is not a
-// defect in this file: it is M2.1's blocker, measured. See TODO § M2.1's ground.
+// **In `bench.PROGRAMS` since M2.1b.** The consuming same-tag rebuild now reuses
+// its one-owner input block. At the settings below the verifier reads 2,049
+// allocated / 2,049 released / 0 leaked, down from 12,284 allocations and 8,188
+// leaks before reuse, while the checksum stays 528891.
 //
 // **Why it exists.** M2's exit gate was recorded as "allocation count on g2 and
 // g6 must drop by 10x", with a note re-targeting it at `g7` "which does" contain
@@ -17,8 +16,8 @@
 // same size in the same branch, which is exactly the pairing Perceus (PLDI 2021)
 // turns into a reuse token: the matched block is dead at the constructor, so the
 // constructor can write into it instead of calling the allocator. Today the
-// compiler does neither -- it allocates a fresh node per rebuilt node per pass,
-// and never frees the old one.
+// compiler now does exactly that on the one-owner path. A shared/mixed path
+// keeps the ordinary allocation arm; test_100_reuse_token guards that half.
 //
 // **What the workload measures once M2.1 lands**: allocations should fall from
 // (nodes x passes) to (nodes), once, because every pass after the first reuses

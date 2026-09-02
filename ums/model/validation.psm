@@ -42,6 +42,32 @@ private fn umsValidVersion(value: String, minimumComponents: Int) -> Bool {
     return componentDigits > 0 and components >= minimumComponents
 }
 
+// UMS does not embed the SPDX license catalogue. It does reject strings that
+// cannot be SPDX expressions at all; registry publication can later validate
+// identifiers against the versioned catalogue it serves.
+private fn umsValidLicenseExpression(value: String) -> Bool {
+    let trimmed = strTrim(value)
+    if (__builtin_string_len(trimmed) == 0) { return false }
+    let mut i = 0
+    while (i < __builtin_string_len(trimmed)) {
+        let current = strCharAt(trimmed, i)
+        if (umsIsAlnum(current) == false and current != '-' and current != '.' and
+            current != '+' and current != ':' and current != '(' and
+            current != ')' and current != ' ') {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+private fn umsAbsolutePath(value: String) -> Bool {
+    let length = __builtin_string_len(value)
+    if (length == 0) { return false }
+    if (strCharAt(value, 0) == '/' or strCharAt(value, 0) == '\\') { return true }
+    return length > 1 and strCharAt(value, 1) == ':'
+}
+
 // Validation, as methods on the model it validates. `project.validate(diags)`
 // rather than `umsProjectValidate(project, diags)`: the same call after the
 // checker's rewrite, and the receiver stops being an argument that happens to be
@@ -75,6 +101,53 @@ impl UmsProjectModel {
                                "project.prismio must contain at least major and minor versions")
         }
 
+
+        if (self.metadata.descriptionDeclared) {
+            let description = strTrim(self.metadata.description)
+            if (__builtin_string_len(description) == 0) {
+                self.validationError(diagnostics, "UMS2316",
+                                   "project.description cannot be empty")
+            }
+        }
+
+        if (self.metadata.licenseDeclared and
+            umsValidLicenseExpression(self.metadata.license) == false) {
+            self.validationError(diagnostics, "UMS2317",
+                               "project.license must be a non-empty SPDX expression")
+        }
+        if (self.metadata.licenseFileDeclared) {
+            if (__builtin_string_len(self.metadata.licenseFile) == 0 or
+                umsAbsolutePath(self.metadata.licenseFile)) {
+                self.validationError(diagnostics, "UMS2318",
+                                   "project.licenseFile must be a non-empty project-relative path")
+            } else {
+                let licensePath = join_path(self.root, self.metadata.licenseFile)
+                if (file_exists(licensePath) == 0) {
+                    self.validationError(diagnostics, "UMS2319",
+                        strConcat("project.licenseFile does not exist: ",
+                                  self.metadata.licenseFile))
+                }
+            }
+        }
+        if (self.metadata.licenseDeclared and self.metadata.licenseFileDeclared) {
+            self.validationError(diagnostics, "UMS2320",
+                               "project.license and project.licenseFile are mutually exclusive")
+        }
+
+        if (self.metadata.authorsDeclared and list_len(self.metadata.authors) == 0) {
+            self.validationError(diagnostics, "UMS2321",
+                               "project.authors must contain at least one author")
+        }
+        let mut authorIndex = 0
+        while (authorIndex < list_len(self.metadata.authors)) {
+            let author = strTrim(list_get(self.metadata.authors, authorIndex))
+            if (__builtin_string_len(author) == 0) {
+                self.validationError(diagnostics, "UMS2322",
+                                   "project.authors cannot contain an empty author")
+            }
+            authorIndex = authorIndex + 1
+        }
+
         if (list_len(self.targets) == 0) {
             self.validationError(diagnostics, "UMS2307",
                                "at least one build target is required")
@@ -105,6 +178,22 @@ impl UmsProjectModel {
                 umsDiagnosticAdd(diagnostics, "UMS2313", self.manifestPath,
                     target.line, target.col, target.len,
                     "library targets are modeled but artifact emission is not implemented yet")
+            }
+            let mut linkIndex = 0
+            while (linkIndex < list_len(target.links)) {
+                let input = list_get(target.links, linkIndex)
+                if (__builtin_string_len(input.value) == 0) {
+                    umsDiagnosticAdd(diagnostics, "UMS2314", self.manifestPath,
+                        input.line, input.col, input.len,
+                        "link inputs cannot be empty")
+                } else if (input.kind == UmsLinkKind.COMPONENT and
+                           strEquals(input.value, "prismio.backend") == false) {
+                    umsDiagnosticAdd(diagnostics, "UMS2315", self.manifestPath,
+                        input.line, input.col, input.len,
+                        strConcat(strConcat("unknown toolchain component '", input.value),
+                                  "'; available component: prismio.backend"))
+                }
+                linkIndex = linkIndex + 1
             }
             targetIndex = targetIndex + 1
         }

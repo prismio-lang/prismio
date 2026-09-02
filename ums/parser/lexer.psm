@@ -193,6 +193,8 @@ fn umsLex(source: String, path: String,
             else if (current == '}') { kind = UmsTokenKind.RIGHT_BRACE }
             else if (current == '(') { kind = UmsTokenKind.LEFT_PAREN }
             else if (current == ')') { kind = UmsTokenKind.RIGHT_PAREN }
+            else if (current == '[') { kind = UmsTokenKind.LEFT_BRACKET }
+            else if (current == ']') { kind = UmsTokenKind.RIGHT_BRACKET }
             else if (current == ',') { kind = UmsTokenKind.COMMA }
             else if (current == ';') { kind = UmsTokenKind.SEMICOLON }
 

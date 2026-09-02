@@ -1,10 +1,9 @@
 // `Key` -- what a hash table needs of a type.
 //
-// **One trait with two methods, not two traits.** v0.1 admits one bound per type
-// parameter, and a map key needs both hashing and equality, so `Map<K: Key, V>`
-// is the only shape that expresses the requirement today. When bounds become a
-// list, this splits into `Hash + Eq` with no change to any impl below -- the
-// methods are already named for the two halves.
+// Hashing and equality stay together because they form one semantic contract:
+// equal keys must hash equal. Copying is separate. `std.map` asks for
+// `K: Key + Copy`, so a type implements storage policy independently from key
+// identity and an impl is responsible only for the methods written inside it.
 //
 // **`eq` rather than `==`.** `String ==` compares pointers and sema rejects it,
 // so a map keyed on String cannot be written in terms of the operator at all.
@@ -13,28 +12,16 @@
 // typecheck for every type, which was the operator, which was wrong for the one
 // key type everybody wants.
 //
-// **Three methods, one bound.** v0.1 admits one bound per type parameter, so
-// `Key` carries `copyOf` as well rather than `Map` asking for `Key + Copy`. The
-// impls do not duplicate anything: `copyOf` comes from `impl Copy for <T>` in
-// std/copy.psm and conformance finds it there.
-//
 // **The hash contract**: equal keys must hash equal. Unequal keys need not hash
 // unequally -- that is what the probe's `eq` is for. A `hash` that returns a
 // constant is correct and slow, which is the right failure mode for a trait a
 // user implements by hand.
 
 import std.string
-import std.copy
 
 trait Key {
     fn hash(self) -> Int
     fn eq(self, other: Self) -> Bool
-    // A map keeps its keys, and a parameter is a borrow -- so a key that owns
-    // anything has to be duplicated on the way in. Shared with `Copy`: an `impl`
-    // block is a naming construct and conformance is checked by name and
-    // signature over the whole module, so `impl Copy for String` satisfies this
-    // and no type writes `copyOf` twice. See std/copy.psm.
-    fn copyOf(self) -> Self
 }
 
 // MurmurHash3's finalizer. An identity hash is a real hazard here rather than a

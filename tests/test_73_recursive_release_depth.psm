@@ -1,0 +1,30 @@
+// A list-shaped recursive value must be released without one native stack
+// frame per element. The builder is iterative as well, so a failure at this
+// depth belongs to the generated release and cannot be blamed on construction.
+//
+// The pre-loop release prints the success line and then dies with SIGSEGV while
+// unwinding 500,000 `Link` blocks. The iterative release exits normally and
+// its verifier ledger is exactly 500,001 / 500,001 / 0.
+
+import std.io
+
+enum Chain {
+    End,
+    Link(Int, Chain)
+}
+
+fn buildChain(count: Int) -> Chain {
+    let mut chain = Chain.End
+    let mut i = 0
+    while (i < count) {
+        chain = Chain.Link(i, chain)
+        i = i + 1
+    }
+    return chain
+}
+
+fn main() -> Int {
+    let chain = buildChain(500000)
+    println("recursive release depth ok")
+    return 0
+}

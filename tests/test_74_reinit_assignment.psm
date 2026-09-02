@@ -16,6 +16,10 @@
 // generation before M2.1c, so a regression is a build failure rather than a
 // wrong number. `neg_10_move_in_loop.psm` guards the other direction and must
 // keep failing -- `drop(b)` in a loop is still a move that repeats.
+//
+// M2.1b also makes this a reuse gate: both tree forms finish with a clean
+// verifier ledger, and the loop assignment's old/new pointer guard must keep an
+// in-place result from being released between the call and the store.
 
 import std.io
 import std.string

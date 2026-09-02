@@ -1,0 +1,87 @@
+// Trait applications are structural: their type arguments participate in
+// bounds, conformance, generic impl selection, and coherence.
+
+import std.io
+import std.string
+import trait_args.source
+
+// T is constrained by the trait argument even though the target is concrete.
+impl<T> From<T> for String {
+    fn from(value: T) -> String { return "made" }
+}
+
+fn make<U: From<Int>>(value: Int) -> U {
+    return from(value)
+}
+
+// The same target may implement distinct applications of one generic trait.
+impl ScaleBy<Int> for String {
+    fn scaleBy(self, value: Int) -> Int {
+        return strLength(self) + value
+    }
+}
+
+impl ScaleBy<Bool> for String {
+    fn scaleBy(self, value: Bool) -> Int {
+        if (value) { return strLength(self) + 100 }
+        return strLength(self)
+    }
+}
+
+fn scaleWithInt<U: ScaleBy<Int>>(value: U) -> Int {
+    return scaleBy(value, 3)
+}
+
+fn scaleWithBool<U: ScaleBy<Bool>>(value: U) -> Int {
+    return scaleBy(value, true)
+}
+
+// Nested type arguments exercise `>>` recovery and recursive identity.
+impl Wraps<List<Int>> for String {
+    fn wraps(self) -> Bool { return strLength(self) > 0 }
+}
+
+fn acceptsWrapped<U: Wraps<List<Int>>>(value: U) -> Bool {
+    return wraps(value)
+}
+
+// These patterns only look overlapping when target and trait arguments are
+// compared independently. The first requires both occurrences of T to agree,
+// so Tagged<Int> for Carrier<Bool> is disjoint.
+struct Carrier<T> {
+    value: T
+}
+
+impl<T> Tagged<T> for Carrier<T> {
+    fn tag(self, marker: T) -> Int { return 1 }
+}
+
+impl Tagged<Int> for Carrier<Bool> {
+    fn tag(self, marker: Int) -> Int { return marker + 10 }
+}
+
+fn sameTag<U: Tagged<Bool>>(value: U) -> Int {
+    return tag(value, true)
+}
+
+fn crossTag<U: Tagged<Int>>(value: U) -> Int {
+    return tag(value, 5)
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let made = make<String>(7)
+    if (strEquals(made, "made") == false) { return fail("generic impl solved from trait argument") }
+    if (scaleWithInt<String>("abcd") != 7) { return fail("ScaleBy<Int>") }
+    if (scaleWithBool<String>("abcd") != 104) { return fail("ScaleBy<Bool>") }
+    if (acceptsWrapped<String>("x") == false) { return fail("nested trait argument") }
+    if (sameTag(Carrier<Bool> { value: true }) != 1) { return fail("same variable across target and trait") }
+    if (crossTag(Carrier<Bool> { value: true }) != 15) { return fail("disjoint cross constraint") }
+    println("test_102 ok")
+    return 0
+}

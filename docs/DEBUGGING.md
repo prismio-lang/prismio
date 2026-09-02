@@ -176,10 +176,38 @@ about the binary and not about anything you can inspect.
 Prismio's decisions are inferred, so the compiler has to have had a reason, and it can be
 asked for it. Three tools, in the order you would reach for them.
 
-### The manifest — where each site went
+### The storage plan — where each site went
 
 ```bash
 prismio aif leak.psm
+```
+
+```
+AIF analysis
+  Source   leak.psm
+  Result   converged in 5 rounds
+  Sites    7 potential allocation site(s), not runtime allocation counts
+
+Storage plan
+  Stack                   1
+  Arena                   1
+  Scoped heap             0
+  Unique heap             5
+
+Your code
+ID   location                 type            storage             reason
+1    leak.psm:9:17            Node            unique heap         returned to the caller
+```
+
+The default report separates sites in the entry source from sites found in
+imported modules. IDs are short-lived handles for that report: use
+`--why=<ID>` immediately to inspect one. A site is a source location that may
+execute zero, one, or many times; it is not a runtime allocation count.
+
+For CI and compiler development, request the stable manifest explicitly:
+
+```bash
+prismio aif leak.psm --manifest
 ```
 
 ```
@@ -195,11 +223,12 @@ main#0                      T1    Isolated   region:auto    String   AoS      le
 makeNode__Int#0             T2    Isolated   owned          Node     AoS      leak.psm:9:17
 ```
 
-One row per allocation site, keyed by the function that contains it. `tier` is what the
-analysis proved (T0 stack, T1 region, T2 owned, T3 counted, T4 shared/collected);
-`placement` is what codegen actually emitted for it, which is a different claim — `rc:none`
-means the facts permit a count and no count was emitted, and printing `rc` there would
-assert a mechanism the binary does not contain.
+One manifest row per allocation site, keyed by the function that contains it.
+`tier` is what the analysis proved (T0 stack, T1 region, T2 owned, T3 counted,
+T4 shared/collected); `placement` is what codegen actually emitted for it,
+which is a different claim — `rc:none` means the facts permit a count and no
+count was emitted, and printing `rc` there would assert a mechanism the binary
+does not contain.
 
 `--summary` collapses it to a distribution, which is the form to use on a large program:
 
@@ -221,14 +250,24 @@ with no header of ours in front of them.
 
 ### `--why` — the derivation, and the repair
 
-The manifest says a site is T2. `--why` says how it got there and what would move it:
+The default report numbers a site. `--why` says how it got there and what would
+move it:
 
 ```bash
-prismio aif leak.psm --why=makeNode__Int#0
+prismio aif leak.psm --why=1
 ```
 
 ```
-makeNode__Int#0                   T2
+Allocation 1
+  Location   leak.psm:9:17
+  Type       Node
+  Storage    unique heap
+  Reason     returned to the caller
+
+Compiler evidence
+  Symbol     makeNode__Int#0
+  Tier       T2
+  Thread     Isolated
 
   minimal cause
     E rose to Caller
@@ -320,10 +359,11 @@ attached rather than a performance mystery three weeks later.
 | What is in this variable, here, now? | `-g` and lldb/gdb |
 | Where did it crash? | `-g` — stack traces need nothing else |
 | Which field is at which offset? | `-g` — the offsets are the emitted ones, permutations and splits included |
-| Where does this allocation live? | `prismio aif x.psm` |
+| Where do this program's allocations live? | `prismio aif x.psm` |
 | How does this program's memory behave overall? | `prismio aif x.psm --summary` |
-| Why is *this* site on the heap? | `prismio aif x.psm --why=<symbol>` |
+| Why is *this* site on the heap? | `prismio aif x.psm --why=<ID>` |
 | What would move it? | the same — `--why` ranks the repairs and rejects the false ones |
+| What is the stable CI/compiler record? | `prismio aif x.psm --manifest` |
 | Did any of that actually hold? | `prismio build x.psm --verify`, then run it |
 | Did my change make it worse? | `tools/aif_manifest_diff.py old new --compiler <prismio>` |
 | Why is this struct laid out this way? | `prismio aif x.psm --layout` |

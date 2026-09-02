@@ -1,0 +1,15 @@
+// expect-error: takes trait arguments <T>
+trait From<T> {
+    fn from(value: T) -> Self
+}
+
+impl From<Int> for String {
+    fn from(value: Int) -> String { return "x" }
+}
+
+fn requireFrom<T: From>(value: T) -> T { return value }
+
+fn main() -> Int {
+    let value = requireFrom<String>("x")
+    return 0
+}

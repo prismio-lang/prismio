@@ -65,6 +65,16 @@ fn irSetProfileMode(enabled: Bool, profilePath: String) {
 // for a pointer is exactly NULL -- the value this wants.
 let mut irFunctionBody: Ptr
 
+// The declaration whose body is being emitted. M2.1b's reuse eligibility needs
+// the written ownership mode of a parameter; the body pointer above cannot
+// answer that because parameters live outside the body block.
+let mut irFunctionDecl: Ptr
+
+// A frame-limited reuse token. It is set only while one consuming match arm is
+// emitted and cleared before the next branch, so it cannot cross a call or be
+// retained beyond the branch that destructured the block.
+let mut irReuseValue = ""
+
 // AIF's T0. The only tier codegen currently acts on -- everything else keeps
 // the allocator hook it always used. Kept as a named constant here rather than
 // imported so that ir.psm depends on the memory model's *answer* and not on its
@@ -118,6 +128,11 @@ let AIF_ELEM_CYCLE_ATOMIC = 7
 // expression that cannot collide. -1 means no inference ran for this node; see
 // the use site in generateExpression.
 extern fn aif_tier_at_node(node: Ptr) -> Int
+
+// M2.1b. True only when every allocation site that may reach this consuming
+// parameter has one owner (Unique or a call-duration Borrowed fact). A
+// mixed/shared points-to set declines, keeping the ordinary allocation path.
+extern fn aif_param_reusable(symbol: String, index: Int) -> Int
 
 // Whether the value this node allocates dies with the scope that allocates it,
 // which is what licenses a free at that scope's exits. Not derivable from the

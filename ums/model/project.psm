@@ -6,7 +6,15 @@ import std.string
 struct UmsProjectMetadata {
     name: String,
     version: String,
-    prismioVersion: String
+    prismioVersion: String,
+    description: String,
+    license: String,
+    licenseFile: String,
+    authors: List<String>,
+    descriptionDeclared: Bool,
+    licenseDeclared: Bool,
+    licenseFileDeclared: Bool,
+    authorsDeclared: Bool
 }
 
 // Build policy is intentionally not part of project metadata. Profiles and
@@ -17,11 +25,19 @@ struct UmsBuildConfiguration {
     buildDirectory: String
 }
 
+// Read by the installed compiler before it lowers the complete manifest. The
+// `toolchain` block is therefore a deliberately small, stable bootstrap surface:
+// once this host exists, that host owns the real UMS parse and command.
+struct UmsToolchainConfiguration {
+    host: String
+}
+
 struct UmsProjectModel {
     root: String,
     manifestPath: String,
     metadata: UmsProjectMetadata,
     build: UmsBuildConfiguration,
+    toolchain: UmsToolchainConfiguration,
     targets: List<UmsTarget>,
     dependencies: List<UmsDependency>
 }
@@ -33,13 +49,22 @@ internal fn umsProjectModel(root: String, manifestPath: String, profile: String)
         metadata: UmsProjectMetadata {
             name: strClone(""),
             version: strClone(""),
-            prismioVersion: strClone("")
+            prismioVersion: strClone(""),
+            description: strClone(""),
+            license: strClone(""),
+            licenseFile: strClone(""),
+            authors: list_new(),
+            descriptionDeclared: false,
+            licenseDeclared: false,
+            licenseFileDeclared: false,
+            authorsDeclared: false
         },
         build: UmsBuildConfiguration {
             profile: strClone(profile),
             stateDirectory: strClone(".prismio"),
             buildDirectory: strClone("build")
         },
+        toolchain: UmsToolchainConfiguration { host: strClone("") },
         targets: list_new(),
         dependencies: list_new()
     }

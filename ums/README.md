@@ -25,6 +25,11 @@ project {
     name = "http"
     version = "1.0.0"
     prismio = "1.0"
+    description = "HTTP client library"
+    license = "MIT"
+    authors = [
+        "Saksham Jaiswal"
+    ]
 }
 
 targets {
@@ -40,17 +45,28 @@ dependencies {
 
 Statements do not require semicolons, although semicolons are accepted. UMS
 accepts `//` and `#` line comments. Strings support `\\`, `\"`, `\n`, `\r`, and
-`\t` escapes.
+`\t` escapes. Assignments may also use flat arrays of scalar values; a trailing
+comma is accepted.
 
 Supported top-level blocks and declarations are:
 
+- `toolchain { host = ".prismio/build/debug/compiler" }` (optional; when
+  present it must be the first block so an older global compiler can read this
+  stable prefix without parsing the remaining manifest)
 - `project { name = "..."; version = "..."; prismio = "..." }`
+- optional project metadata: `description = "..."`, `license = "MIT"`, and
+  `authors = ["Name", "Another Name"]`
+- `licenseFile = "LICENSE"` as a project-relative alternative to `license`;
+  the two fields are mutually exclusive
 - `targets { executable("name") { entry = "..." } }`
 - `targets { library("name") { entry = "..." } }` (modeled and validated, but
   library artifact emission is not implemented yet)
 - `targets { test("name") { entry = "..." } }`
-- `targets { compiler("name") { entry = "..." } }` (a self-hosted compiler;
-  links the compiler backend and LLVM in addition to the runtime)
+- `link { library("sqlite3") }` (passes `-lsqlite3`)
+- `link { search("native/lib") }` (a project-root-relative native search path)
+- `link { file("native/libcodec.a") }` (an exact project-root-relative object or library)
+- `link { framework("Security") }` (Mach-O targets only)
+- `link { component("prismio.backend") }` (the local Prismio backend plus LLVM)
 - `dependencies { implementation("name", "constraint") }`
 - `dependencies { implementation("name", "constraint", "../local-path") }`
 - `dependencies { api("name", "constraint") }`
@@ -59,6 +75,12 @@ Supported top-level blocks and declarations are:
 Local-path dependencies resolve against the directory containing `build.ums`.
 Registry-shaped dependencies are represented and locked, but report `UMS2211`
 because no registry exists yet.
+
+`license` accepts a non-empty SPDX-shaped expression. The manifest validator
+checks its structure; a future package registry owns validation against its
+versioned SPDX identifier catalogue. Authors and descriptions must not be empty.
+`prismio init` keeps its generated manifest minimal and does not write empty
+metadata placeholders.
 
 ## Manifest edits
 
@@ -92,6 +114,21 @@ explicit-source form remains available:
 ```text
 prismio build src/main.psm -o app
 ```
+
+`toolchain.host` creates a two-layer command boundary. Global `prismio` reads
+only that stable first block. If the project-relative host is absent or cannot
+start, global Prismio processes the command itself; otherwise it forwards the
+original argument vector and working directory, and the host parses the full
+manifest. A hosted failure is returned directly and is never replayed globally.
+
+When the executable whose planned output equals `toolchain.host` rebuilds the
+running host, it writes a checked `.next` sibling. The global parent promotes
+that candidate only after the hosted process exits, which works on Windows and
+preserves the last known-good compiler. Host identity comes from the configured
+path, not from a special target kind; that executable must link
+`component("prismio.backend")`.
+`clean` follows the same ownership rule: the host plans the clean, then its
+global parent removes the running host after it exits.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for subsystem boundaries and extension
 points.

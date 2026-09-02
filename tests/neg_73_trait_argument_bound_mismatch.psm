@@ -1,0 +1,15 @@
+// expect-error: does not implement `From<Int>`
+trait From<T> {
+    fn from(value: T) -> Self
+}
+
+impl From<Bool> for String {
+    fn from(value: Bool) -> String { return "x" }
+}
+
+fn requireFromInt<T: From<Int>>(value: T) -> T { return value }
+
+fn main() -> Int {
+    let value = requireFromInt<String>("x")
+    return 0
+}

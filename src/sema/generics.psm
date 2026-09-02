@@ -143,6 +143,7 @@ internal fn monoCopyOne(ptr: Ptr) -> ASTNode {
     dup.child1 = monoCopyChain(src.child1)
     dup.child2 = monoCopyChain(src.child2)
     dup.child3 = monoCopyChain(src.child3)
+    dup.genericInfo = monoCopyChain(src.genericInfo)
     return dup
 }
 
@@ -195,26 +196,11 @@ internal fn monoParamAt(params: String, index: Int) -> String {
     return ""
 }
 
-// v0.1 3.3. A parameter list entry is `T` or `T:Ord`; these two split it. The
-// bound rides in the same text as the name because the list is text -- see
-// parseGenericParams for why -- and because a slot on the declaration would have
-// had to be threaded through monoCopyOne, substitution and the mangled name, none
-// of which have any business knowing about bounds.
-private fn monoParamName(params: String, index: Int) -> String {
-    let entry = monoParamAt(params, index)
-    let at = strIndexOf(entry, ":")
-    if (at < 0) { return entry }
-    return strSubstring(entry, 0, at)
+internal fn monoParamName(params: String, index: Int) -> String {
+    return monoParamAt(params, index)
 }
 
-private fn monoParamBound(params: String, index: Int) -> String {
-    let entry = monoParamAt(params, index)
-    let at = strIndexOf(entry, ":")
-    if (at < 0) { return "" }
-    return strSubstring(entry, at + 1, __builtin_string_len(entry) - at - 1)
-}
-
-private fn monoParamIndex(params: String, name: String) -> Int {
+internal fn monoParamIndex(params: String, name: String) -> Int {
     let count = monoParamCount(params)
     let mut i = 0
     while (i < count) {
@@ -224,39 +210,186 @@ private fn monoParamIndex(params: String, name: String) -> Int {
     return -1
 }
 
+private fn monoGenericParamAt(infoPtr: Ptr, index: Int) -> Ptr {
+    return monoChainAt(infoPtr, index)
+}
+
 // ---------------------------------------------------------
 // Bounds
 // ---------------------------------------------------------
 
-// Whether the module declares `impl <traitName> for <type>`.
-//
-// A walk of the top level rather than a lookup, and deliberately: an IMPL_DECL is
-// not a named top-level declaration, so it is not in the declaration index, and
-// putting it there would mean the merge's duplicate rule started applying to it.
-// Instantiation is rare -- once per (template, argument list) -- while the index
-// is asked a question per identifier, which is what REQUIREMENTS 16 was about.
-//
-// Types are compared by name because an `impl` block's type is always a plain
-// name: a generic `impl` is a parse error, so there is no `Map<K, V>` here to
-// have to structurally match.
-private fn monoImplements(module: ASTNode, typeName: String, traitName: String) -> Bool {
+private fn monoFindTrait(module: ASTNode, traitName: String) -> ASTNode {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, traitName)
-            and strEquals(stmt.s1, typeName)) {
-            return true
-        }
+        if (stmt.kind == NodeKind.TRAIT_DECL and strEquals(stmt.s1, traitName)) { return stmt }
         p = stmt.next
     }
-    return false
+    return ptr_to_node(ptr_null())
 }
 
-private fn monoHasTrait(module: ASTNode, traitName: String) -> Bool {
+private fn monoAnnotationText(annotationPtr: Ptr) -> String {
+    if (nodeIsNull(annotationPtr)) { return "" }
+    let annotation = ptr_to_node(annotationPtr)
+    if (annotation.i1 == 1) {
+        return strConcat(strConcat("[", monoAnnotationText(annotation.child1)), "]")
+    }
+    let mut text = strClone(annotation.s1)
+    if (annotation.i2 == 1) {
+        text = strConcat(text, "<")
+        let mut argPtr = annotation.child1
+        let mut first = true
+        while (nodeExists(argPtr)) {
+            if (first == false) { text = strConcat(text, ", ") }
+            first = false
+            text = strConcat(text, monoAnnotationText(argPtr))
+            argPtr = ptr_to_node(argPtr).next
+        }
+        text = strConcat(text, ">")
+    }
+    if (annotation.i3 == 1) { text = strConcat(text, "?") }
+    return text
+}
+
+internal fn monoTraitRefText(traitRefPtr: Ptr) -> String {
+    if (nodeIsNull(traitRefPtr)) { return "" }
+    let traitRef = ptr_to_node(traitRefPtr)
+    if (traitRef.i2 == 0) { return strClone(traitRef.s1) }
+
+    let mut text = strConcat(traitRef.s1, "<")
+    let mut argPtr = traitRef.child1
+    let mut first = true
+    while (nodeExists(argPtr)) {
+        if (first == false) { text = strConcat(text, ", ") }
+        first = false
+        text = strConcat(text, monoAnnotationText(argPtr))
+        argPtr = ptr_to_node(argPtr).next
+    }
+    return strConcat(text, ">")
+}
+
+private fn monoTraitRefHasValidArity(module: ASTNode, traitRef: ASTNode) -> Bool {
+    let traitDecl = monoFindTrait(module, traitRef.s1)
+    if (nodeIsNull(node_to_ptr(traitDecl))) { return false }
+    return monoChainLength(traitRef.child1) == monoParamCount(traitDecl.s2)
+}
+
+private fn monoTraitRefsEqual(module: ASTNode, a: ASTNode, b: ASTNode) -> Bool {
+    if (strEquals(a.s1, b.s1) == false) { return false }
+    let mut aArg = a.child1
+    let mut bArg = b.child1
+    loop {
+        if (nodeIsNull(aArg) and nodeIsNull(bArg)) { return true }
+        if (nodeIsNull(aArg) or nodeIsNull(bArg)) { return false }
+        if (typeEquals(semaAnnotationType(module, ptr_to_node(aArg)),
+                       semaAnnotationType(module, ptr_to_node(bArg))) == false) {
+            return false
+        }
+        aArg = ptr_to_node(aArg).next
+        bArg = ptr_to_node(bArg).next
+    }
+}
+
+// The no-diagnostic form of a generic impl's bounds. A bound such as
+// `impl<T: Key> Hashable for Box<T>` controls whether this impl is applicable;
+// failure is not itself an error because another impl may apply. The outer
+// bound check reports `Box<X> does not implement Hashable` only after the search
+// has exhausted the set.
+private fn monoImplBoundsHold(module: ASTNode, params: String,
+                              genericInfo: Ptr, argsPtr: Ptr) -> Bool {
+    let count = monoParamCount(params)
+    let mut i = 0
+    while (i < count) {
+        let argPtr = monoChainAt(argsPtr, i)
+        if (nodeIsNull(argPtr)) { return false }
+        let argT = semaAnnotationType(module, ptr_to_node(argPtr))
+        let genericParamPtr = monoGenericParamAt(genericInfo, i)
+        if (nodeExists(genericParamPtr)) {
+            let mut boundPtr = ptr_to_node(genericParamPtr).child1
+            while (nodeExists(boundPtr)) {
+                let concreteBound = monoCopyOne(boundPtr)
+                monoSubstituteChain(concreteBound.child1, params, argsPtr)
+                if (monoTraitRefHasValidArity(module, concreteBound) == false) { return false }
+                if (monoImplements(module, argT, concreteBound) == false) { return false }
+                boundPtr = ptr_to_node(boundPtr).next
+            }
+        }
+        i = i + 1
+    }
+    return true
+}
+
+private fn monoMatchTraitParam(module: ASTNode, patternPtr: Ptr, actualPtr: Ptr,
+                               paramName: String) -> ASTNode {
+    let mut pattern = patternPtr
+    let mut actual = actualPtr
+    while (nodeExists(pattern) and nodeExists(actual)) {
+        let solved = monoMatchParam(module, ptr_to_node(pattern),
+                                    semaAnnotationType(module, ptr_to_node(actual)), paramName)
+        if (nodeExists(node_to_ptr(solved))) { return solved }
+        pattern = ptr_to_node(pattern).next
+        actual = ptr_to_node(actual).next
+    }
+    return ptr_to_node(ptr_null())
+}
+
+private fn monoImplApplies(module: ASTNode, implNode: ASTNode,
+                           actual: TypeInfo, traitRef: ASTNode) -> Bool {
+    if (nodeIsNull(implNode.child3)) { return false }
+    let header = ptr_to_node(implNode.child3)
+    if (nodeIsNull(header.child1) or nodeIsNull(header.child2)) { return false }
+    let implTrait = ptr_to_node(header.child2)
+    if (strEquals(implTrait.s1, traitRef.s1) == false) { return false }
+
+    let params = header.s1
+    let target = ptr_to_node(header.child1)
+    if (strEquals(params, "")) {
+        return typeEquals(semaAnnotationType(module, target), actual)
+            and monoTraitRefsEqual(module, implTrait, traitRef)
+    }
+
+    let solvedArgs = nodeList()
+    let count = monoParamCount(params)
+    let mut i = 0
+    while (i < count) {
+        let mut solved = monoMatchParam(module, target, actual, monoParamName(params, i))
+        if (nodeIsNull(node_to_ptr(solved))) {
+            solved = monoMatchTraitParam(module, implTrait.child1, traitRef.child1,
+                                         monoParamName(params, i))
+        }
+        if (nodeIsNull(node_to_ptr(solved))) { return false }
+        nodeListPush(solvedArgs, solved)
+        i = i + 1
+    }
+
+    // Solving every parameter is necessary but not sufficient. For
+    // `Pair<T, Int>` against `Pair<Bool, String>`, T is solvable while the fixed
+    // second argument still disagrees. Substitute the solution into a copy and
+    // compare the complete concrete type; this also enforces repeated variables
+    // such as `Pair<T, T>`.
+    let concreteTarget = monoCopyOne(header.child1)
+    monoSubstituteChain(node_to_ptr(concreteTarget), params, solvedArgs.head)
+    if (typeEquals(semaAnnotationType(module, concreteTarget), actual) == false) {
+        return false
+    }
+
+    let concreteTrait = monoCopyOne(header.child2)
+    monoSubstituteChain(concreteTrait.child1, params, solvedArgs.head)
+    if (monoTraitRefsEqual(module, concreteTrait, traitRef) == false) { return false }
+    return monoImplBoundsHold(module, params, header.genericInfo, solvedArgs.head)
+}
+
+// Whether the module declares an applicable `impl <traitName> for <actual>`.
+// A walk rather than a declaration-index lookup is deliberate: impls are not
+// named declarations, and the query occurs once per generic instantiation rather
+// than once per identifier expression.
+private fn monoImplements(module: ASTNode, actual: TypeInfo, traitRef: ASTNode) -> Bool {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.TRAIT_DECL and strEquals(stmt.s1, traitName)) { return true }
+        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, traitRef.s1)) {
+            if (monoImplApplies(module, stmt, actual, traitRef)) { return true }
+        }
         p = stmt.next
     }
     return false
@@ -274,18 +407,26 @@ private fn monoHasTrait(module: ASTNode, traitName: String) -> Bool {
 // body whose bound was violated is a body full of calls that cannot resolve, and
 // reporting those puts the compiler's own vocabulary and the standard library's
 // line numbers in front of a user who wrote one wrong type argument.
-private fn monoCheckBounds(module: ASTNode, at: ASTNode, name: String, params: String, argsPtr: Ptr) -> Bool {
+private fn monoCheckBounds(module: ASTNode, at: ASTNode, name: String, params: String,
+                           genericInfo: Ptr, argsPtr: Ptr) -> Bool {
     let count = monoParamCount(params)
     let mut satisfied = true
     let mut i = 0
     while (i < count) {
-        let bound = monoParamBound(params, i)
-        if (strEquals(bound, "") == false) {
-            let argPtr = monoChainAt(argsPtr, i)
-            if (nodeExists(argPtr)) {
-                if (monoCheckOneBound(module, at, name, monoParamName(params, i), bound,
-                                      semaAnnotationType(module, ptr_to_node(argPtr))) == false) {
-                    satisfied = false
+        let argPtr = monoChainAt(argsPtr, i)
+        if (nodeExists(argPtr)) {
+            let argT = semaAnnotationType(module, ptr_to_node(argPtr))
+            let genericParamPtr = monoGenericParamAt(genericInfo, i)
+            if (nodeExists(genericParamPtr)) {
+                let mut boundPtr = ptr_to_node(genericParamPtr).child1
+                while (nodeExists(boundPtr)) {
+                    let concreteBound = monoCopyOne(boundPtr)
+                    monoSubstituteChain(concreteBound.child1, params, argsPtr)
+                    if (monoCheckOneBound(module, at, name, monoParamName(params, i),
+                                          concreteBound, argT) == false) {
+                        satisfied = false
+                    }
+                    boundPtr = ptr_to_node(boundPtr).next
                 }
             }
         }
@@ -318,28 +459,41 @@ private fn monoFirstReportOfBound(typeName: String, bound: String) -> Bool {
 }
 
 private fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param: String,
-                     bound: String, argT: TypeInfo) -> Bool {
+                     bound: ASTNode, argT: TypeInfo) -> Bool {
     // An invalid argument type is the result of an error already reported; a
     // second one about a bound it cannot possibly satisfy is noise. Answered
     // `false` all the same, so the instantiation still does not happen.
     if (typeIsValid(argT) == false) { return false }
 
-    if (monoHasTrait(module, bound) == false) {
-        if (monoFirstReportOfBound(argT.name, bound)) {
-            semaErrorAt(at, strConcat(strConcat(diagQuote(bound), " is not a trait, so `"),
-                                      strConcat(strConcat(param, ": "), strConcat(bound, "` cannot be a bound"))))
+    let traitDecl = monoFindTrait(module, bound.s1)
+    let boundText = monoTraitRefText(node_to_ptr(bound))
+    if (nodeIsNull(node_to_ptr(traitDecl))) {
+        if (monoFirstReportOfBound(argT.name, boundText)) {
+            semaErrorAt(at, strConcat(strConcat(diagQuote(boundText), " is not a trait, so `"),
+                                      strConcat(strConcat(param, ": "), strConcat(boundText, "` cannot be a bound"))))
         }
         return false
     }
 
-    if (monoImplements(module, argT.name, bound)) { return true }
-    if (monoFirstReportOfBound(argT.name, bound) == false) { return false }
+    if (monoChainLength(bound.child1) != monoParamCount(traitDecl.s2)) {
+        if (monoFirstReportOfBound(argT.name, boundText)) {
+            semaErrorAt(at, strConcat(strConcat(diagQuote(bound.s1), " takes trait arguments <"),
+                                      strConcat(strConcat(traitDecl.s2,
+                                                ">, and the arguments in bound "),
+                                                strConcat(diagQuote(boundText), " do not match"))))
+        }
+        return false
+    }
+
+    if (monoImplements(module, argT, bound)) { return true }
+    if (monoFirstReportOfBound(argT.name, boundText) == false) { return false }
 
     semaErrorAt(at, strConcat(strConcat(typeDisplay(argT), " does not implement "),
-                              diagQuote(bound)))
+                              diagQuote(boundText)))
     diag_note(strConcat(strConcat(diagQuote(name), " requires it: the type parameter is declared "),
-                        strConcat(strConcat(param, ": "), bound)))
-    diag_note(strConcat(strConcat("write `impl ", bound), strConcat(strConcat(" for ", argT.name), " { ... }`")))
+                        strConcat(strConcat(param, ": "), boundText)))
+    diag_note(strConcat(strConcat("write `impl ", boundText),
+                        strConcat(strConcat(" for ", argT.name), " { ... }`")))
     return false
 }
 
@@ -490,7 +644,8 @@ internal fn monoInstantiateStruct(module: ASTNode, tn: ASTNode) -> String {
         monoArityError(tn, tn.s1, params)
         return ""
     }
-    if (monoCheckBounds(module, tn, tn.s1, params, tn.child1) == false) { return "" }
+    if (monoCheckBounds(module, tn, tn.s1, params,
+                        template.genericInfo, tn.child1) == false) { return "" }
 
     // The mangled name is written straight onto the declaration that will carry
     // it, and every read below is a read of that field.
@@ -571,7 +726,26 @@ private fn monoInstantiateFunction(module: ASTNode, template: ASTNode, argsPtr: 
     let copy = monoCopyOne(node_to_ptr(template))
     copy.s1 = monoMangledName(module, template.s1, argsPtr)
     copy.s2 = ""
-    if (ir_decl_count(copy.s1) > 0) { return copy.s1 }
+
+    // Two generic overloads can have the same base name and the same type
+    // arguments while still being distinct functions -- generic impl methods
+    // make `Box<T>.get` beside `Cell<T>.get` the ordinary case. The old
+    // name-only test treated the first instantiation as proof that every other
+    // template with that mangled name already existed, so the second method was
+    // silently replaced by the first. Template source identity is stable on a
+    // copy and distinguishes exactly the declaration being instantiated.
+    let existingCount = ir_decl_count(copy.s1)
+    let mut existingIndex = 0
+    while (existingIndex < existingCount) {
+        let existing = ptr_to_node(ir_decl_at(copy.s1, existingIndex))
+        if (existing.kind == NodeKind.FUNCTION
+            and existing.file == template.file
+            and existing.line == template.line
+            and existing.col == template.col) {
+            return copy.s1
+        }
+        existingIndex = existingIndex + 1
+    }
 
     monoSubstituteChain(copy.child1, params, argsPtr)
     monoSubstituteChain(copy.child2, params, argsPtr)
@@ -624,6 +798,15 @@ internal fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, param
     // recorded what it was made from, so the match is positional against that
     // rather than an attempt to read the mangled name back apart.
     if (tn.i2 == 1 and actual.kind == TypeKind.STRUCT and nodeExists(tn.child1)) {
+        // `Box<T>` can only solve T from a Box instantiation. Looking only at
+        // the recorded argument list made an unrelated `Cell<Int>` appear to
+        // match whenever it had the same arity. `$` cannot occur in a source
+        // identifier, so this prefix tests the constructor without trying to
+        // parse type arguments back out of the mangled name.
+        let constructorPrefix = strConcat(tn.s1, monoSeparator())
+        if (strStartsWith(actual.name, constructorPrefix) == false) {
+            return ptr_to_node(ptr_null())
+        }
         let decl = findStructDeclNamed(module, actual.name)
         if (nodeExists(node_to_ptr(decl)) and nodeExists(decl.child2)) {
             let mut want = tn.child1
@@ -654,6 +837,28 @@ private fn monoSolveTypeParam(module: ASTNode, template: ASTNode, argPtr: Ptr, p
     return ptr_to_node(ptr_null())
 }
 
+// Solving every type parameter does not prove the whole signature matches. In
+// `Pair<T, T>` against `Pair<Int, Bool>`, T is solvable from the first argument
+// position but its second occurrence disagrees. Substitute the proposed
+// solution into copies of the parameter annotations and compare every complete
+// argument type before committing to this template.
+private fn monoTemplateAcceptsCall(module: ASTNode, template: ASTNode,
+                                   argPtr: Ptr, solvedArgs: Ptr) -> Bool {
+    let mut paramPtr = template.child1
+    let mut actualPtr = argPtr
+    while (nodeExists(paramPtr) and nodeExists(actualPtr)) {
+        let param = ptr_to_node(paramPtr)
+        let expectedAnnotation = monoCopyOne(param.child1)
+        monoSubstituteChain(node_to_ptr(expectedAnnotation), template.s2, solvedArgs)
+        let expected = semaAnnotationType(module, expectedAnnotation)
+        let actual = semaExpr(module, ptr_to_node(actualPtr))
+        if (typeEquals(expected, actual) == false) { return false }
+        paramPtr = param.next
+        actualPtr = ptr_to_node(actualPtr).next
+    }
+    return nodeIsNull(paramPtr) and nodeIsNull(actualPtr)
+}
+
 // Rewrites a call to a generic function so that it names an instantiation.
 //
 // Does nothing when the name is not a generic function, which is the common
@@ -665,10 +870,8 @@ private fn monoSolveTypeParam(module: ASTNode, template: ASTNode, argPtr: Ptr, p
 // the diagnostic at the call site with the overload machinery's wording instead
 // of inventing a second vocabulary for the same mistake.
 internal fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode) {
-    let template = monoFindTemplate(module, callee.s1, NodeKind.FUNCTION)
-    if (nodeIsNull(node_to_ptr(template))) { return }
-
-    let params = template.s2
+    let firstTemplate = monoFindTemplate(module, callee.s1, NodeKind.FUNCTION)
+    if (nodeIsNull(node_to_ptr(firstTemplate))) { return }
 
     // Written out at the call site: `vecNew<Int>()`. Taken as given rather than
     // solved, and cleared afterwards so that the repeated semaExpr overload
@@ -677,30 +880,57 @@ internal fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: A
     if (nodeExists(callExpr.child3)) {
         let explicit = ptr_to_node(callExpr.child3)
         callExpr.child3 = ptr_null()
-        if (monoChainLength(explicit.child1) != monoParamCount(params)) {
-            monoArityError(callExpr, template.s1, params)
+        if (monoChainLength(explicit.child1) != monoParamCount(firstTemplate.s2)) {
+            monoArityError(callExpr, firstTemplate.s1, firstTemplate.s2)
             return
         }
-        if (monoCheckBounds(module, callExpr, template.s1, params, explicit.child1) == false) {
+        if (monoCheckBounds(module, callExpr, firstTemplate.s1,
+                            firstTemplate.s2, firstTemplate.genericInfo,
+                            explicit.child1) == false) {
             callExpr.i1 = 1
             return
         }
-        callee.s1 = monoInstantiateFunction(module, template, explicit.child1)
+        callee.s1 = monoInstantiateFunction(module, firstTemplate, explicit.child1)
         return
     }
 
-    let count = monoParamCount(params)
-    let solvedArgs = nodeList()
-    let mut i = 0
-    while (i < count) {
-        let solved = monoSolveTypeParam(module, template, callExpr.child2, monoParamName(params, i))
-        if (nodeIsNull(node_to_ptr(solved))) { return }
-        nodeListPush(solvedArgs, solved)
-        i = i + 1
+    // A name may have several generic templates. This was unobservable while
+    // generic functions were effectively unique by name, but generic inherent
+    // impls naturally repeat names such as `get` across receiver types. Try the
+    // templates in declaration order and choose the first whose every parameter
+    // can be solved structurally from this call. Ordinary overload resolution
+    // still chooses among the resulting concrete functions.
+    let mut templatePtr = module.child2
+    while (nodeExists(templatePtr)) {
+        let template = ptr_to_node(templatePtr)
+        if (template.kind == NodeKind.FUNCTION and strEquals(template.s1, callee.s1)) {
+            let params = template.s2
+            let count = monoParamCount(params)
+            let solvedArgs = nodeList()
+            let mut solvedAll = true
+            let mut i = 0
+            while (i < count) {
+                let solved = monoSolveTypeParam(module, template, callExpr.child2,
+                                                monoParamName(params, i))
+                if (nodeIsNull(node_to_ptr(solved))) {
+                    solvedAll = false
+                } else {
+                    nodeListPush(solvedArgs, solved)
+                }
+                i = i + 1
+            }
+            if (solvedAll and monoTemplateAcceptsCall(module, template,
+                                                       callExpr.child2, solvedArgs.head)) {
+                if (monoCheckBounds(module, callExpr, template.s1,
+                                    params, template.genericInfo,
+                                    solvedArgs.head) == false) {
+                    callExpr.i1 = 1
+                    return
+                }
+                callee.s1 = monoInstantiateFunction(module, template, solvedArgs.head)
+                return
+            }
+        }
+        templatePtr = template.next
     }
-    if (monoCheckBounds(module, callExpr, template.s1, params, solvedArgs.head) == false) {
-        callExpr.i1 = 1
-        return
-    }
-    callee.s1 = monoInstantiateFunction(module, template, solvedArgs.head)
 }

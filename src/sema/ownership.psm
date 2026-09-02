@@ -40,6 +40,12 @@ internal fn semaMoveOperand(node: ASTNode) {
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
         if (typeIsMoveOnly(nodeGetType(node))) {
             if (ir_is_borrowed(node.s1) == 1) { return }
+            // M2.1b. Keep the transfer on the use node as well as in sema's
+            // per-name state. Codegen runs after that state has been cleared,
+            // but reset/reuse has to prove that every owned payload extracted
+            // from a consumed constructor is transferred into its replacement.
+            // i3 has no other meaning on an identifier expression.
+            node.i3 = 1
             // Move state is tracked per name over the AST in source order, so a
             // move inside a loop body is seen once but executes on every
             // iteration. If the binding was created outside the loop, that is a

@@ -110,7 +110,7 @@ is `import ir.expr`, and `import ir.*` takes the whole package.
 | `src/aif/` | Allocation inference: the model, the walk, layout, and reporting |
 | `src/ir/` | Type lowering, expression and statement emission, and the LLVM bridge |
 | `src/main.psm` | CLI, import resolution, and the build driver |
-| `build.ums` | Required project manifest; declares the self-hosted compiler target |
+| `build.ums` | Required project manifest; declares the self-hosted executable and its native linkage |
 
 For a full breakdown of compiler internals, see [Architecture](https://docs.prismio.org/architecture)
 
@@ -128,8 +128,32 @@ For a full breakdown of compiler internals, see [Architecture](https://docs.pris
 
 ### Using a Local Compiler Build
 
-Compiler contributors do not use a globally installed Prismio. Bootstrap named
-local generations, then use the last one explicitly:
+With Prismio installed, the ordinary compiler-development loop is one project
+command:
+
+```bash
+prismio build
+```
+
+The repository's first, stable manifest block names its optional project host:
+
+```ums
+toolchain {
+    host = ".prismio/build/debug/prismio"
+}
+```
+
+The installed compiler reads only that bootstrap block. On a fresh checkout the
+host is absent, so the installed compiler processes `build.ums` and builds it as
+stage 0. Once the host exists, global `prismio` forwards the complete command to
+it; the local compiler then parses the complete manifest, including any newer
+UMS behavior it implements. A self-build is staged and the global parent
+atomically promotes it after the host exits, so a failed edit leaves the working
+local generation intact.
+
+The committed seed remains the path for a fresh checkout with no installed
+Prismio, and named generations remain the path for bootstrap and fixed-point
+verification:
 
 ```bash
 python3 tools/setup_llvm.py
@@ -138,16 +162,26 @@ tools/bootstrap.sh --compiler build/gen0 --out build/gen1
 tools/bootstrap.sh --compiler build/gen1 --out build/gen2
 ```
 
-This repository is itself a Prismio project. Its required `build.ums` declares
-`compiler("prismio")`, so the project-native build is:
+The compiler is an ordinary named executable whose dependencies are explicit:
 
-```bash
-build/gen2 build
+```ums
+targets {
+    executable("prismio") {
+        entry = "src/main.psm"
+        link {
+            component("prismio.backend")
+        }
+    }
+}
 ```
 
-That discovers `build.ums` from the current directory or an ancestor and writes
-`.prismio/build/debug/prismio`. The special compiler target links the backend
-and LLVM; normal application executables continue to link only the runtime.
+`prismio.backend` is a toolchain component: it supplies the local compiler
+backend and its LLVM dependency. It changes what the executable links, not what
+kind of artifact the target emits. Application targets can use the same
+`link` block with `library`, `search`, `file`, and (for Mach-O) `framework`
+inputs; without them, an executable links only the Prismio runtime. Use named `build/genN` binaries
+directly when the exact host generation is part of the check; use bare
+`prismio build` for the normal local development loop.
 
 ### IDE integration
 
@@ -163,17 +197,19 @@ locals and struct layouts — so a program can be run under lldb or gdb. On macO
 is written beside the binary.
 
 Separately, and more useful for the questions a debugger cannot answer, the memory model
-explains itself: `prismio aif <source.psm>` prints where every allocation went,
-`--why=<symbol>` derives it and ranks the repairs, and `prismio build --verify` runs the
-program and checks the inference held. See [docs/DEBUGGING.md](docs/DEBUGGING.md).
+explains itself: `prismio aif <source.psm>` prints a source-oriented storage plan,
+`--why=<ID>` explains one numbered decision, and `--manifest` emits the stable
+compiler/CI form with tiers and symbols. `prismio build --verify` runs the program
+and checks the inference held. See [docs/DEBUGGING.md](docs/DEBUGGING.md).
 
 ### Run the Test Suite
 
 ```bash
-PRISMIO=$PWD/build/gen2 python3 tests/test_runner.py
+PRISMIO=$PWD/.prismio/build/debug/prismio python3 tests/test_runner.py
 ```
 
-`PRISMIO` always wins over `PATH`, making the tested generation unambiguous.
+`PRISMIO` always wins over `PATH`, making the tested local generation
+unambiguous. Fixed-point work can set it to a named `build/genN` instead.
 
 ---
 

@@ -1,0 +1,14 @@
+// expect-error: overlapping impl `From<Int>`
+trait From<T> {
+    fn from(value: T) -> Self
+}
+
+impl<T> From<T> for String {
+    fn from(value: T) -> String { return "generic" }
+}
+
+impl From<Int> for String {
+    fn from(value: Int) -> String { return "int" }
+}
+
+fn main() -> Int { return 0 }
