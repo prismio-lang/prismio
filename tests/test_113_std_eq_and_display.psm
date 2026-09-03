@@ -1,0 +1,70 @@
+// `Eq` and `Display` from the standard vocabulary. Equality prefers `Eq` and
+// falls back to `Ord`, so a type that can be ordered can always be compared.
+
+import std.io
+import std.eq
+import std.ord
+import std.display
+import std.string
+
+// Equatable, with no meaningful order. This is the case the split exists for:
+// before it, `==` here meant inventing a `cmp` that means nothing.
+struct Colour { r: Int, g: Int, b: Int }
+
+impl Eq for Colour {
+    fn eq(self, other: Self) -> Bool {
+        return self.r == other.r and self.g == other.g and self.b == other.b
+    }
+}
+
+impl Display for Colour {
+    fn show(self) -> String { return strConcat("#", strFromInt(self.r)) }
+}
+
+// Ordered, with no `Eq` of its own. `==` falls back to `cmp(a, b) == 0`.
+struct Version { n: Int }
+
+impl Ord for Version {
+    fn cmp(self, other: Self) -> Int {
+        if (self.n < other.n) { return 0 - 1 }
+        if (self.n > other.n) { return 1 }
+        return 0
+    }
+}
+
+fn describe<T: Display>(value: T) -> String { return show(value) }
+fn same<T: Eq>(a: T, b: T) -> Bool { return eq(a, b) }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let a = Colour { r: 1, g: 2, b: 3 }
+    let b = Colour { r: 1, g: 2, b: 3 }
+    let c = Colour { r: 9, g: 9, b: 9 }
+
+    if ((a == b) == false) { return fail("equality through Eq") }
+    if ((a != c) == false) { return fail("inequality through Eq") }
+
+    // Ord-only: every operator, including equality.
+    let v1 = Version { n: 1 }
+    let v2 = Version { n: 2 }
+    if ((v1 == Version { n: 1 }) == false) { return fail("equality falls back to Ord") }
+    if ((v1 != v2) == false) { return fail("inequality falls back to Ord") }
+    if ((v1 < v2) == false) { return fail("relational through Ord") }
+
+    // Display, on a user type and on builtins, through a bound.
+    if (strEquals(describe(a), "#1") == false) { return fail("Display on a user type") }
+    if (strEquals(describe(42), "42") == false) { return fail("Display on Int") }
+    if (strEquals(describe(true), "true") == false) { return fail("Display on Bool") }
+    if (strEquals(describe("hi"), "hi") == false) { return fail("Display on String") }
+
+    if (same(1, 1) == false) { return fail("Eq on a builtin") }
+    if (same("a", "b")) { return fail("Eq on String compares by value") }
+
+    println("test_113 ok")
+    return 0
+}

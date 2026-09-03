@@ -1,0 +1,63 @@
+// `trait Child: Parent` makes `Parent` an obligation on every type implementing
+// `Child`, checked transitively.
+
+import std.io
+import std.string
+
+trait Named {
+    fn label(self) -> String
+}
+
+trait Sized {
+    fn size(self) -> Int
+}
+
+// Two supertraits, joined with `+`.
+trait Described: Named + Sized {
+    fn detail(self) -> String
+}
+
+// A third link, to prove the obligation is transitive rather than one level.
+trait Reported: Described {
+    fn report(self) -> String
+}
+
+struct Item { n: Int }
+
+impl Named for Item {
+    fn label(self) -> String { return "item" }
+}
+
+impl Sized for Item {
+    fn size(self) -> Int { return self.n }
+}
+
+impl Described for Item {
+    fn detail(self) -> String { return strConcat(label(self), "!") }
+}
+
+impl Reported for Item {
+    fn report(self) -> String { return strConcat(detail(self), strFromInt(size(self))) }
+}
+
+// A bound on the child gives the parent's methods too, because the obligation
+// guarantees the implementation exists.
+fn describeAny<T: Described>(value: T) -> String {
+    return strConcat(label(value), detail(value))
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let item = Item { n: 3 }
+    if (strEquals(label(item), "item") == false) { return fail("supertrait method") }
+    if (strEquals(detail(item), "item!") == false) { return fail("child method") }
+    if (strEquals(report(item), "item!3") == false) { return fail("transitive chain") }
+    if (strEquals(describeAny(item), "itemitem!") == false) { return fail("parent through a child bound") }
+    println("test_105 ok")
+    return 0
+}

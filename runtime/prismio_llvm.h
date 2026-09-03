@@ -23,7 +23,6 @@
 #ifndef PRISMIO_LLVM_H
 #define PRISMIO_LLVM_H
 
-// ---------------------------------------------------------------------------
 // Pinned LLVM version.
 //
 // A given Prismio release targets one LLVM major version. The C API is stable
@@ -39,7 +38,6 @@
 // on a different major version.
 //
 // Keep this in step with DEFAULT_VERSION in tools/setup_llvm.py.
-// ---------------------------------------------------------------------------
 #ifndef PRISMIO_LLVM_EXPECTED_MAJOR
 #define PRISMIO_LLVM_EXPECTED_MAJOR 22
 #endif
@@ -161,6 +159,8 @@ LLVMTypeRef LLVMInt64TypeInContext(LLVMContextRef C);
 LLVMTypeRef LLVMDoubleTypeInContext(LLVMContextRef C);
 LLVMTypeRef LLVMPointerTypeInContext(LLVMContextRef C, unsigned AddressSpace);
 LLVMTypeRef LLVMArrayType2(LLVMTypeRef ElementType, uint64_t ElementCount);
+LLVMValueRef LLVMConstArray2(LLVMTypeRef ElementTy, LLVMValueRef *ConstantVals,
+                             uint64_t Length);
 LLVMTypeRef LLVMFunctionType(LLVMTypeRef ReturnType, LLVMTypeRef *ParamTypes,
                              unsigned ParamCount, LLVMBool IsVarArg);
 LLVMTypeRef LLVMStructCreateNamed(LLVMContextRef C, const char *Name);

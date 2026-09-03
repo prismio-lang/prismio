@@ -1,0 +1,7 @@
+// expect-error: is its own supertrait
+// A cycle makes the transitive obligation infinite, so it is refused at the
+// declaration rather than at each implementing type.
+trait A: B { fn a(self) -> Int }
+trait B: A { fn b(self) -> Int }
+
+fn main() -> Int { return 0 }

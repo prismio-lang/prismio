@@ -1,0 +1,10 @@
+// expect-error: cannot be a struct field
+// A trait object's storage is a pair built at the call site, so a field holding
+// one would point into a frame that has returned.
+trait Show { fn show(self) -> Int }
+
+struct Holder {
+    item: dyn Show
+}
+
+fn main() -> Int { return 0 }

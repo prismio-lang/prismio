@@ -21,3 +21,17 @@ targets {
         }
     }
 }
+
+commands {
+    command("dist") {
+        description = "Package an installable toolchain and check the runtime/backend split"
+        shell("tools/package.sh", "--compiler", ".prismio/build/debug/prismio",
+              "--out", "dist/Prismio")
+        shell("tools/verify_separation.sh", "--dist", "dist/Prismio")
+    }
+
+    command("suite") {
+        description = "Run the compiler test suite against the project compiler"
+        shell("python3", "tests/test_runner.py", args)
+    }
+}

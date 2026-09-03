@@ -6,18 +6,10 @@
 // The build driver compiles this file with -DPRISMIO_AIF_VERIFY for `--verify`,
 // which is why verify mode still changes no codegen: the swap happens when the
 // runtime is compiled, not when the program is generated.
-#ifdef PRISMIO_AIF_VERIFY
-#include <stddef.h>
-void* aif_verify_alloc(size_t size);
-void  aif_verify_release(void* p);
-void  aif_verify_arm(void);
-#define rt_base_alloc(n) aif_verify_alloc(n)
-#define rt_free(p)       aif_verify_release(p)
-#else
-#define rt_base_alloc(n) malloc(n)
-#define rt_free(p)       free(p)
-#endif
-
+// The seam itself is in prismio_runtime.h, included below. This file used to
+// define its own copy of the two macros ahead of that include, which the
+// header's `#ifndef` guard tolerated -- two definitions that happened to agree.
+// One definition cannot disagree.
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -32,9 +24,8 @@ void  aif_verify_arm(void);
 #ifdef _WIN32
 #include <windows.h>
 #endif
-// For the threading primitives the `--verify` ledger locks with. The two
-// rt_base_alloc/rt_free macros above are already defined, and the header's guard
-// lets that stand rather than fighting over which one wins.
+// For the threading primitives the `--verify` ledger locks with, and for the
+// rt_base_alloc/rt_free seam this file's allocations sit on.
 #include "prismio_runtime.h"
 
 // AIF Level 4, second half: `region` absorbs collections too.

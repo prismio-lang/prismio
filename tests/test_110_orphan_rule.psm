@@ -1,0 +1,52 @@
+// An implementation is legal where the module owns one of the two things it
+// names: the trait, or the type.
+
+import std.io
+import std.string
+import trait_args.source
+
+// (1) We own the type. The trait is foreign, which is the ordinary case for
+// implementing someone else's interface for our own data.
+struct Ticket { n: Int }
+
+impl ScaleBy<Int> for Ticket {
+    fn scaleBy(self, value: Int) -> Int { return self.n + value }
+}
+
+// (2) We own the trait. The type is foreign -- `String` is built in and owned by
+// nobody, so this is legal only because the trait is declared right here.
+trait Describe {
+    fn describe(self) -> Int
+}
+
+impl Describe for String {
+    fn describe(self) -> Int { return strLength(self) }
+}
+
+// (3) We own both.
+impl Describe for Ticket {
+    fn describe(self) -> Int { return self.n }
+}
+
+// A generic type we own also counts, even though it is a template and leaves the
+// declaration chain before the check runs.
+struct Holder<T> { value: T }
+
+impl<T> Describe for Holder<T> {
+    fn describe(self) -> Int { return 1 }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (scaleBy(Ticket { n: 5 }, 2) != 7) { return fail("foreign trait, our type") }
+    if (Describe.describe("abcd") != 4) { return fail("our trait, foreign type") }
+    if (Describe.describe(Ticket { n: 9 }) != 9) { return fail("both ours") }
+    if (describe(Holder<Int> { value: 1 }) != 1) { return fail("our generic type") }
+    println("test_110 ok")
+    return 0
+}

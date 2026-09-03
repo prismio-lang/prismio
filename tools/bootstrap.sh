@@ -61,7 +61,7 @@ for tool in clang; do
 done
 
 # Must match prismio_toolchain_files[] in runtime/build_driver.c.
-RUNTIME_SOURCES="lang_runtime.c program_support.c build_driver.c ir_symbols.c aif_support.c diagnostics.c llvm-api-backend.c"
+RUNTIME_SOURCES="lang_runtime.c program_support.c build_driver.c ir_symbols.c aif_containers.c aif_support.c diagnostics.c llvm-api-backend.c"
 
 green() { printf '\033[32m%s\033[0m\n' "$1"; }
 step()  { printf '\033[90m[%s]\033[0m\n' "$1"; }

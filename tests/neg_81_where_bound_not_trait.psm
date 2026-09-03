@@ -1,0 +1,12 @@
+// expect-error: Missing
+// A `where` clause naming something that is not a trait is refused the same way
+// the parameter-list spelling is.
+trait Show { fn show(self) -> Int }
+
+fn render<T>(value: T) -> Int where T: Missing {
+    return 0
+}
+
+fn main() -> Int {
+    return render(1)
+}

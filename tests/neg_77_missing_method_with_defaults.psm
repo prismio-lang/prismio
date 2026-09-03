@@ -1,0 +1,15 @@
+// expect-error: no `required`
+// A trait may mix defaulted and required methods. A default must not make the
+// trait as a whole look satisfied.
+import std.string
+
+trait Mixed {
+    fn required(self) -> Int
+    fn provided(self) -> Int { return 1 }
+}
+
+impl Mixed for String {
+    fn provided(self) -> Int { return 2 }
+}
+
+fn main() -> Int { return 0 }

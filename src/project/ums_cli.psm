@@ -1,0 +1,730 @@
+// Driving UMS project commands, and the compiler's own promotion.
+//
+// The two belong together: the project this compiler builds may *be* this
+// compiler, so `build` has a case where the artifact is the running binary. The
+// launcher stays alive to promote the candidate the host leaves behind, and
+// `clean` has the same ownership split. Separating them would put both halves
+// of one protocol in two files.
+//
+// UMS owns what a manifest means; this file owns what the CLI does with it.
+
+import std.io
+import lexer.scanner
+import lexer.token
+import common.text
+import ast.nodes
+import parse.*
+import ir.*
+import sema.*
+import common.diagnostics
+import ast.dump
+import aif.*
+import std.string
+import std.option
+import driver.compile
+import ums.ums
+
+// argv, which the C runtime owns and outlives every use of it. Not an
+// allocation, and freeing one would be a free of memory this program never got.
+extern fn cli_arg(index: Int) -> String alias
+extern fn cli_arg_count() -> Int
+extern fn command_quote_arg(argument: String borrow) -> String produce(free)
+// Project-host executables are built beside their active local generation. The
+// candidate has to start before it can replace that generation, and promotion
+// is a binary rename rather than compiler_publish_file's text copy.
+extern fn compiler_check_executable(exeFile: String borrow) -> Int
+extern fn compiler_forward_cli(host: String borrow) -> Int
+extern fn compiler_is_current_executable(path: String borrow) -> Int
+extern fn compiler_is_hosted() -> Int
+extern fn compiler_link_file(path: String borrow) -> Int
+extern fn compiler_link_framework(name: String borrow) -> Int
+extern fn compiler_link_library(name: String borrow) -> Int
+// Ordered native inputs for one UMS target. Paths reach this boundary already
+// resolved against the manifest root; the C driver quotes every argument before
+// it constructs the clang command.
+extern fn compiler_link_reset()
+extern fn compiler_link_search(path: String borrow) -> Int
+extern fn compiler_promote_executable(candidateFile: String borrow,
+                                      activeFile: String borrow) -> Int
+extern fn compiler_run_executable(exeFile: String) -> Int
+extern fn current_directory() -> String produce(free)
+extern fn delete_file(path: String) -> Int
+extern fn executable_directory() -> String produce(free)
+// A project command's `shell` step. `command_quote_arg` mallocs and hands the
+// buffer over; `execute_command` only reads. Both contracts are std/process.psm's,
+// which is where they were worked out.
+extern fn execute_command(command: String borrow) -> Int
+extern fn file_exists(path: String) -> Int
+extern fn join_path(directory: String, filename: String) -> String
+extern fn make_directory(path: String borrow) -> Int
+// The writer half of the filesystem surface, for `init`. Both return 0 for
+// success, which is the C convention here and the opposite of `file_exists`;
+// std/fs.psm normalises that for applications, and this file cannot import it
+// because the two would declare the same symbols twice.
+extern fn write_file(path: String borrow, content: String borrow) -> Int
+
+private fn pathLeaf(path: String) -> String {
+    let mut cut = strLastIndexOfChar(path, '/')
+    let back = strLastIndexOfChar(path, '\\')
+    if (back > cut) { cut = back }
+    if (cut < 0) { return strClone(path) }
+    return strSubstring(path, cut + 1, __builtin_string_len(path) - cut - 1)
+}
+
+// `prismio init [name]` -- a project in the current directory, or in a new one.
+//
+// One command rather than Cargo's `new` plus `init`: the only difference between
+// them is whether a directory is created first, and that is what the optional
+// argument says. It leaves the word `new` free, which matters because `new`
+// means *project* everywhere else and would be a trap on anything else.
+//
+// **Nothing is written if anything would be overwritten.** The manifest is
+// checked for first, and its presence ends the command -- re-running `init` in a
+// project is a mistake, not a request to reset it.
+fn initUmsProject(nameArg: String) -> Int {
+    let mut root = "."
+    let mut name = ""
+    if (strEquals(nameArg, "")) {
+        name = pathLeaf(current_directory())
+    } else {
+        root = strClone(nameArg)
+        name = strClone(nameArg)
+    }
+
+    // Rejected by UMS's own rule rather than a copy of it, so a name this writes
+    // is a name the validator accepts -- the scaffold cannot be born invalid.
+    if (umsValidName(name) == false) {
+        diag_error_code("P1013", strConcat(strConcat("cannot use ", diagQuote(name)), " as a project name"))
+        diag_note("a name may hold letters, digits, `-`, `_` and `.`")
+        diag_note("run `prismio init <name>` to choose one")
+        return 1
+    }
+
+    let manifestPath = join_path(root, "build.ums")
+    if (file_exists(manifestPath) == 1) {
+        diag_error_code("P1014", strConcat(manifestPath, " already exists"))
+        return 1
+    }
+
+    if (make_directory(join_path(root, "src")) != 0) {
+        diag_error_code("P1015", strConcat("could not create ", join_path(root, "src")))
+        return 1
+    }
+
+    let manifest = strConcat("project {\n    name = \"", name)
+    let manifestBody = strConcat(manifest,
+        strConcat("\"\n    version = \"0.1.0\"\n    prismio = \"",
+        strConcat(PRISMIO_VERSION,
+        strConcat("\"\n}\n\ntargets {\n    executable(\"", name))))
+    let manifestText = strConcat(manifestBody, "\") {\n        entry = \"src/main.psm\"\n    }\n}\n")
+    if (write_file(manifestPath, manifestText) != 0) {
+        diag_error_code("P1016", strConcat("could not write ", manifestPath))
+        return 1
+    }
+
+    let entryPath = join_path(join_path(root, "src"), "main.psm")
+    if (file_exists(entryPath) == 0) {
+        if (write_file(entryPath,
+                "import std.io\n\nfn main() -> Int {\n    println(\"Hello, Prismio!\")\n    return 0\n}\n") != 0) {
+            diag_error_code("P1017", strConcat("could not write ", entryPath))
+            return 1
+        }
+    }
+
+    // `.prismio/` is build output, and a project that commits it ships one
+    // machine's binaries. Written only when absent, so an existing ignore file
+    // is never rewritten from under its author.
+    let ignorePath = join_path(root, ".gitignore")
+    if (file_exists(ignorePath) == 0) {
+        if (write_file(ignorePath, ".prismio/\n") != 0) {
+            diag_error_code("P1018", strConcat("could not write ", ignorePath))
+            return 1
+        }
+    }
+
+    print("created ")
+    println(name)
+    print("  ")
+    println(manifestPath)
+    print("  ")
+    println(entryPath)
+    print("  ")
+    println(ignorePath)
+    println("")
+    if (strEquals(nameArg, "")) {
+        println("build it with `prismio run`")
+    } else {
+        print("build it with `cd ")
+        print(nameArg)
+        println(" && prismio run`")
+    }
+    return 0
+}
+
+private fn umsNativePath(root: String, value: String) -> String {
+    let length = __builtin_string_len(value)
+    if (length > 0 and (strCharAt(value, 0) == '/' or
+        strCharAt(value, 0) == '\\')) {
+        return strClone(value)
+    }
+    if (length > 1 and strCharAt(value, 1) == ':') {
+        return strClone(value)
+    }
+    return join_path(root, value)
+}
+
+// Clears the previous target first: a project may build several executables in
+// one compiler process, and native dependencies belong to exactly the target
+// that declared them. Components are consumed by buildUmsProject; everything
+// else becomes one safely quoted clang argument in declaration order.
+private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
+    compiler_link_reset()
+    let mut i = 0
+    while (i < list_len(target.links)) {
+        let input = list_get(target.links, i)
+        let mut result = 0
+        if (input.kind == UmsLinkKind.LIBRARY) {
+            result = compiler_link_library(input.value)
+        } else if (input.kind == UmsLinkKind.SEARCH) {
+            let path = umsNativePath(root, input.value)
+            result = compiler_link_search(path)
+        } else if (input.kind == UmsLinkKind.FILE) {
+            let path = umsNativePath(root, input.value)
+            result = compiler_link_file(path)
+        } else if (input.kind == UmsLinkKind.FRAMEWORK) {
+            result = compiler_link_framework(input.value)
+        }
+        if (result != 0) {
+            diag_error_code("P1058", "could not prepare native linker inputs")
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// `prismio test` -- build every `test(...)` target and run it.
+//
+// **A test passes when it exits 0.** That is the entire protocol, and it is
+// deliberate: Prismio has no assertion library and no test attribute, so
+// inventing a richer contract here would be a promise the language cannot keep.
+// It is also what `tests/test_runner.py` already does for the compiler's own
+// suite, so a project's tests and the compiler's are checked the same way.
+//
+// Every test is built before any is run, and every test runs even after one
+// fails -- a run that stops at the first failure tells you about one test when
+// you asked about all of them.
+fn testUmsProject(profile: String) -> Int {
+    let workspace = umsLoadProject(".", profile)
+    if (workspace.valid == false) {
+        umsDiagnosticsPrint(workspace.diagnostics)
+        return 1
+    }
+    if (rejectReservedCommandNames(workspace) != 0) { return 1 }
+
+    let mut total = 0
+    let mut index = 0
+    while (index < workspace.targetCount()) {
+        let target = workspace.target(index)
+        if (target.kind == UmsTargetKind.TEST) {
+            if (configureUmsTargetLink(workspace.project.root, target) != 0) {
+                return 1
+            }
+            let includesBackend = umsTargetHasComponent(target, "prismio.backend")
+            if (compileSource(target.sourcePath, target.outputPath,
+                              false, includesBackend, false, false, false, false, false) != 0) {
+                return 1
+            }
+            total = total + 1
+        }
+        index = index + 1
+    }
+
+    if (total == 0) {
+        println("no test targets declared")
+        diag_note("add `test(\"name\") { entry = \"tests/name.psm\" }` to build.ums")
+        return 0
+    }
+
+    print("running ")
+    print(total)
+    println(" test(s)")
+
+    let mut passed = 0
+    let mut failed = 0
+    index = 0
+    while (index < workspace.targetCount()) {
+        let target = workspace.target(index)
+        if (target.kind == UmsTargetKind.TEST) {
+            if (compiler_run_executable(target.outputPath) == 0) {
+                print("  ok    ")
+                println(target.name)
+                passed = passed + 1
+            } else {
+                print("  FAIL  ")
+                println(target.name)
+                failed = failed + 1
+            }
+        }
+        index = index + 1
+    }
+
+    print(passed)
+    print(" passed, ")
+    print(failed)
+    println(" failed")
+    if (failed > 0) { return 1 }
+    return 0
+}
+
+// The profile a project command was asked for. `--release` is the only one with
+// a spelling of its own; anything else is a flag this command does not take, and
+// is reported as that rather than taken for a source path.
+fn projectProfile(startIndex: Int) -> String {
+    let mut profile = "debug"
+    let mut i = startIndex
+    while (i < cli_arg_count()) {
+        let flag = cli_arg(i)
+        if (strEquals(flag, "--release")) {
+            profile = "release"
+        } else if (strEquals(flag, "--debug-profile")) {
+            profile = "debug"
+        } else {
+            diag_error_code("P1019", strConcat("unknown argument ", diagQuote(flag)))
+            diag_note("a project command takes `--release`; name a source file to build one file")
+            return ""
+        }
+        i = i + 1
+    }
+    return profile
+}
+
+// Remove what this profile's build wrote.
+//
+// Deletes each planned target's output rather than the profile directory,
+// because the compiler has no recursive delete and `delete_file` is the whole
+// primitive. That is not a shortcut today: a planned target's output is the only
+// thing a project build writes under the profile root, so this is complete. It
+// stops being complete the moment a build emits an intermediate there, and the
+// fix then is a directory primitive rather than a longer list here.
+//
+// The lockfile is deliberately left alone. It records what was resolved, not
+// what was built, and `cargo clean` does not remove `Cargo.lock` either.
+fn cleanUmsProject(profile: String) -> Int {
+    let workspace = umsLoadProject(".", profile)
+    if (workspace.valid == false) {
+        umsDiagnosticsPrint(workspace.diagnostics)
+        return 1
+    }
+    if (rejectReservedCommandNames(workspace) != 0) { return 1 }
+
+    let mut removed = 0
+    let mut index = 0
+    while (index < workspace.targetCount()) {
+        let target = workspace.target(index)
+        if (file_exists(target.outputPath) == 1) {
+            if (compiler_is_hosted() == 1 and
+                compiler_is_current_executable(target.outputPath) == 1) {
+                // The global launcher removes this compiler after the hosted
+                // process exits. Windows rejects deleting the executable that
+                // owns this process; counting it here keeps `clean`'s report
+                // about the complete operation rather than this half of it.
+                removed = removed + 1
+            } else if (delete_file(target.outputPath) == 0) {
+                removed = removed + 1
+            } else {
+                diag_error_code("P1020", strConcat("could not remove ", target.outputPath))
+                return 1
+            }
+        }
+        index = index + 1
+    }
+
+    print("removed ")
+    print(removed)
+    print(" artifact(s) from ")
+    println(profile)
+    return 0
+}
+
+private fn checkUmsCompilerCandidate(candidate: String) -> Int {
+    if (compiler_check_executable(candidate) != 0) {
+        delete_file(candidate)
+        diag_error_code("P1054", "the compiler candidate did not start; the active local compiler was kept")
+        return 1
+    }
+    return 0
+}
+
+private fn promoteUmsCompilerCandidate(candidate: String, active: String) -> Int {
+    if (checkUmsCompilerCandidate(strClone(candidate)) != 0) { return 1 }
+    if (compiler_promote_executable(candidate, active) != 0) {
+        delete_file(candidate)
+        diag_error_code("P1055", "could not promote the compiler candidate; the active local compiler was kept")
+        return 1
+    }
+
+    print("promoted project compiler: ")
+    println(active)
+    return 0
+}
+
+// The selected local host owns the full UMS build. When it rebuilds the artifact
+// it is currently running, it leaves a checked sibling for the global parent to
+// promote after this process exits. That ordering is required on Windows and
+// also means a failed edit never displaces the last known-good compiler.
+private fn buildUmsHostTarget(target: UmsTarget) -> Int {
+    let candidate = strConcat(strClone(target.outputPath), ".next")
+    if (file_exists(candidate) == 1) { delete_file(candidate) }
+
+    let currentPath = join_path(executable_directory(), pathLeaf(cli_arg(0)))
+    let replacesSelf = compiler_is_current_executable(target.outputPath) == 1
+    if (replacesSelf and compiler_is_hosted() == 0) {
+        diag_error_code("P1051", "the project-local compiler cannot replace itself without its global parent")
+        diag_note("run `prismio build` through the installed global compiler")
+        return 1
+    }
+    if (compiler_is_hosted() == 0) {
+        print("compiler host: stage-0 ")
+        println(currentPath)
+    }
+
+    let built = compileSource(target.sourcePath, strClone(candidate),
+                              false, true, false, false, false, false, false)
+    if (built != 0) {
+        delete_file(candidate)
+        diag_error_code("P1053", "the compiler candidate did not build; the active local compiler was kept")
+        return 1
+    }
+    if (replacesSelf) {
+        if (checkUmsCompilerCandidate(strClone(candidate)) != 0) { return 1 }
+        print("staged project compiler: ")
+        println(candidate)
+        return 0
+    }
+    return promoteUmsCompilerCandidate(candidate, target.outputPath)
+}
+
+// A binary named `prismio` is the user-facing launcher. Named bootstrap
+// generations (`build/g1`, `build/g2`, ...) remain exact tools and never
+// redirect, which keeps fixed-point checks and PRISMIO=<path> deterministic.
+private fn isGlobalLauncher() -> Bool {
+    let name = pathLeaf(cli_arg(0))
+    return strEquals(name, "prismio") or strEquals(name, "prismio.exe")
+}
+
+// Returns -1 when the current compiler should process the command itself.
+// Otherwise the return value is the hosted command's result and `main` returns
+// it immediately; a failed hosted command is never replayed under stage 0.
+fn dispatchToUmsHost() -> Int {
+    if (isGlobalLauncher() == false or compiler_is_hosted() == 1) { return -1 }
+
+    let host = umsProjectHost(".")
+    if (__builtin_string_len(host) == 0 or file_exists(host) == 0 or
+        compiler_is_current_executable(host) == 1) {
+        return -1
+    }
+    if (compiler_check_executable(host) != 0) {
+        diag_warning_code("P1052", "the configured project host is not runnable")
+        diag_note("falling back to the global compiler")
+        return -1
+    }
+
+    let candidate = strConcat(strClone(host), ".next")
+    if (file_exists(candidate) == 1) { delete_file(candidate) }
+
+    print("compiler host: project-local ")
+    println(host)
+    let result = compiler_forward_cli(host)
+    if (result != 0) {
+        if (file_exists(candidate) == 1) { delete_file(candidate) }
+        return result
+    }
+
+    // The hosted process intentionally leaves its running compiler alone. The
+    // launcher owns the two operations that require that process to have exited:
+    // promoting a successful self-build and deleting the host during `clean`.
+    if (cli_arg_count() > 1 and strEquals(cli_arg(1), "clean")) {
+        if (file_exists(host) == 1 and delete_file(host) != 0) {
+            diag_error_code("P1056", "could not remove the project compiler after clean")
+            return 1
+        }
+        return 0
+    }
+    if (file_exists(candidate) == 1) {
+        return promoteUmsCompilerCandidate(candidate, host)
+    }
+    return 0
+}
+
+// One target, built the way the project build builds it.
+//
+// Extracted rather than duplicated because a project command's `build` step has
+// to reach the *same* host-target case: when the target being built is the
+// configured `toolchain.host`, the compiler is replacing the binary it is
+// running, and that path stages a candidate instead of writing over itself.
+// A second copy of that decision is a second thing to keep in step.
+// Compared by output path, because the output path is what buildUmsHostTarget
+// replaces and `toolchain.host` names a file rather than a target.
+private fn isUmsHostTarget(workspace: UmsWorkspace, target: UmsTarget) -> Bool {
+    if (__builtin_string_len(workspace.project.toolchain.host) == 0) { return false }
+    return strEquals(target.outputPath,
+                     join_path(workspace.project.root, workspace.project.toolchain.host))
+}
+
+private fn buildUmsTarget(workspace: UmsWorkspace, target: UmsTarget) -> Int {
+    if (configureUmsTargetLink(workspace.project.root, target) != 0) {
+        return 1
+    }
+    let includesBackend = umsTargetHasComponent(target, "prismio.backend")
+    let hostTarget = isUmsHostTarget(workspace, target)
+    if (hostTarget and includesBackend == false) {
+        diag_error_code("P1057", "the toolchain.host target does not link prismio.backend")
+        diag_note("add `link { component(\"prismio.backend\") }` to that executable")
+        return 1
+    }
+    if (hostTarget) {
+        return buildUmsHostTarget(target)
+    }
+    return compileSource(target.sourcePath, target.outputPath,
+                         false, includesBackend, false, false, false, false, false)
+}
+
+fn buildUmsProject(profile: String, runAfterBuild: Bool) -> Int {
+    let workspace = umsLoadProject(".", profile)
+    if (workspace.valid == false) {
+        umsDiagnosticsPrint(workspace.diagnostics)
+        return 1
+    }
+    if (rejectReservedCommandNames(workspace) != 0) { return 1 }
+
+    // v0.1 3.7. Dependencies are resolved and recorded before a single target is
+    // compiled, because a build that half-succeeds and then reports an unresolved
+    // dependency has already written artifacts against a tree it could not
+    // describe.
+    //
+    // The lockfile is written **before** the failure check, not after it. A failed
+    // resolve is exactly the case a reader wants the file for -- it records what
+    // was asked for and that it did not resolve, which is the difference between
+    // "the lockfile is stale" and "the fetch has nothing behind it".
+    let resolveDiagnostics = umsDiagnostics()
+    let resolutions = workspace.project.resolveDependencies(resolveDiagnostics)
+    if (workspace.project.writeLockfile(resolutions) == false) {
+        println("error: could not write the lockfile")
+        return 1
+    }
+    if (list_len(resolveDiagnostics) > 0) {
+        umsDiagnosticsPrint(resolveDiagnostics)
+        return 1
+    }
+
+    let mut index = 0
+    let mut executables = 0
+    let mut firstExecutable = 0
+    while (index < workspace.targetCount()) {
+        let target = workspace.target(index)
+        // A test target is not built here, for the reason `cargo build` does not
+        // build tests: the ordinary build is the one a developer runs constantly,
+        // and paying for the test programs every time is a cost with no reader.
+        // `prismio test` builds them.
+        if (target.kind == UmsTargetKind.TEST) {
+            index = index + 1
+            continue
+        }
+        if (buildUmsTarget(workspace, target) != 0) { return 1 }
+        if (target.kind == UmsTargetKind.EXECUTABLE) {
+            if (executables == 0) { firstExecutable = index }
+            executables = executables + 1
+        }
+        index = index + 1
+    }
+
+    if (runAfterBuild == false) { return 0 }
+
+    // Every target is built before anything is run, so `run` on a project whose
+    // library target does not compile fails rather than running a stale binary
+    // that happens to be next to it.
+    if (executables == 0) {
+        diag_error_code("P1021", "this project declares no executable target to run")
+        diag_note("add `executable(\"name\") { entry = \"src/main.psm\" }` to build.ums")
+        return 1
+    }
+    if (executables > 1) {
+        diag_error_code("P1022", "this project declares more than one executable target")
+        diag_note("running a chosen target needs a name argument, which `run` does not take yet")
+        return 1
+    }
+
+    let target = workspace.target(firstExecutable)
+    if (compiler_run_executable(target.outputPath) != 0) {
+        diag_error_code("P1023", strConcat(target.outputPath, " exited with a failure status"))
+        return 1
+    }
+    return 0
+}
+
+// Which command names the toolchain owns.
+//
+// CLI policy, and so here rather than in `ums/`: UMS validates a command's
+// shape, but which names are still free is not the manifest system's to know --
+// `ums/ums.psm` says it owns no CLI policy. Built-ins win at dispatch, so a
+// manifest taking one of these names has written a command that could never run.
+// Saying so when the manifest loads beats a project finding out the day the
+// toolchain gains a verb.
+private fn umsReservedCommandName(name: String) -> Bool {
+    return strEquals(name, "init") or strEquals(name, "build") or
+           strEquals(name, "run") or strEquals(name, "test") or
+           strEquals(name, "clean") or strEquals(name, "check") or
+           strEquals(name, "bootstrap") or strEquals(name, "aif") or
+           strEquals(name, "dump-ast") or strEquals(name, "runtime-hash") or
+           strEquals(name, "--help") or strEquals(name, "-h") or
+           strEquals(name, "--version") or strEquals(name, "-V")
+}
+
+private fn rejectReservedCommandNames(workspace: UmsWorkspace) -> Int {
+    let mut index = 0
+    let mut rejected = 0
+    while (index < workspace.commandCount()) {
+        let declared = workspace.command(index)
+        if (umsReservedCommandName(declared.name)) {
+            diag_error_code("P1058",
+                strConcat("a project command cannot be named ", diagQuote(declared.name)))
+            diag_note("that name is a built-in command and built-ins win; rename it in build.ums")
+            rejected = 1
+        }
+        index = index + 1
+    }
+    return rejected
+}
+
+// `--release` picks the profile a command's build steps use and is forwarded as
+// well, so one flag reaches both halves of `prismio dist --release`: the targets
+// it builds and the script it runs.
+private fn umsCommandProfile(startIndex: Int) -> String {
+    let mut i = startIndex
+    while (i < cli_arg_count()) {
+        if (strEquals(cli_arg(i), "--release")) { return "release" }
+        i = i + 1
+    }
+    return "debug"
+}
+
+// A relative program resolves against the project root, because `build.ums` is
+// discovered upward: the working directory is wherever the user stood, while a
+// path in the manifest was written relative to the manifest. A bare name carries
+// no separator and is left for PATH to answer.
+private fn umsShellProgram(root: String, program: String) -> String {
+    let mut i = 0
+    while (i < __builtin_string_len(program)) {
+        let current = strCharAt(program, i)
+        if (current == '/' or current == '\\') { return umsNativePath(root, program) }
+        i = i + 1
+    }
+    return strClone(program)
+}
+
+// Every argument is quoted, the forwarded ones included: what the user typed
+// after the command name reaches the shell as arguments and never as syntax.
+private fn umsShellCommandLine(root: String, step: UmsCommandStep,
+                               forwardFrom: Int) -> String {
+    let mut line = command_quote_arg(umsShellProgram(root, step.subject))
+    let mut index = 0
+    while (index < list_len(step.arguments)) {
+        let argument = list_get(step.arguments, index)
+        if (argument.forwarded) {
+            let mut forwarded = forwardFrom
+            while (forwarded < cli_arg_count()) {
+                line = strConcat(line, " ", command_quote_arg(cli_arg(forwarded)))
+                forwarded = forwarded + 1
+            }
+        } else {
+            line = strConcat(line, " ", command_quote_arg(argument.text))
+        }
+        index = index + 1
+    }
+    return line
+}
+
+private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
+                             forwardFrom: Int) -> Int {
+    if (step.kind == UmsCommandStepKind.SHELL) {
+        return execute_command(umsShellCommandLine(workspace.project.root, step, forwardFrom))
+    }
+
+    // UMS2603 already proved this name resolves, so a miss here is a bug in this
+    // file rather than in the manifest.
+    let index = umsTargetFind(workspace.project.targets, step.subject)
+    if (index < 0) {
+        diag_error_code("P1060", strConcat("step names no target: ", diagQuote(step.subject)))
+        return 1
+    }
+    let target = list_get(workspace.project.targets, index)
+
+    // Rebuilding the host stages a candidate the *launcher* promotes once this
+    // process exits, so every later step in the command would still run the
+    // previous compiler while reading as though it ran the new one.
+    if (isUmsHostTarget(workspace, target)) {
+        diag_error_code("P1061",
+            strConcat("a command step cannot build the toolchain.host target: ",
+                       diagQuote(step.subject)))
+        diag_note("run `prismio build` first; the rebuilt compiler is promoted only after that process exits")
+        return 1
+    }
+    if (buildUmsTarget(workspace, target) != 0) { return 1 }
+    if (step.kind == UmsCommandStepKind.BUILD) { return 0 }
+    if (compiler_run_executable(target.outputPath) != 0) {
+        diag_error_code("P1023", strConcat(target.outputPath, " exited with a failure status"))
+        return 1
+    }
+    return 0
+}
+
+// Returns -1 when this is not a project command, so `main` can report the
+// unknown-command diagnostic it would have reported anyway. Every built-in verb
+// has already declined the name by the time this runs, and that ordering is the
+// whole of the "built-ins win" rule -- there is no second check enforcing it.
+fn runUmsProjectCommand(name: String, forwardFrom: Int) -> Int {
+    let workspace = umsLoadProject(".", umsCommandProfile(forwardFrom))
+    if (__builtin_string_len(workspace.project.manifestPath) == 0) { return -1 }
+
+    let found = workspace.findCommand(name)
+    if (found < 0) { return -1 }
+    if (workspace.valid == false) {
+        umsDiagnosticsPrint(workspace.diagnostics)
+        return 1
+    }
+    if (rejectReservedCommandNames(workspace) != 0) { return 1 }
+
+    let declared = workspace.command(found)
+    let mut index = 0
+    while (index < list_len(declared.steps)) {
+        if (runUmsCommandStep(workspace, list_get(declared.steps, index), forwardFrom) != 0) {
+            diag_error_code("P1059",
+                strConcat("project command ", diagQuote(declared.name), " failed"))
+            return 1
+        }
+        index = index + 1
+    }
+    return 0
+}
+
+// Listed when a command is not recognised, because the built-in list on its own
+// sends a reader hunting for a typo in a name their project does define.
+fn listUmsProjectCommands() {
+    let workspace = umsLoadProject(".", "debug")
+    if (workspace.commandCount() == 0) { return }
+    println("")
+    println("Project commands declared in build.ums:")
+    let mut index = 0
+    while (index < workspace.commandCount()) {
+        let declared = workspace.command(index)
+        print("  prismio ")
+        print(declared.name)
+        if (__builtin_string_len(declared.description) > 0) {
+            print("  --  ")
+            print(declared.description)
+        }
+        println("")
+        index = index + 1
+    }
+}

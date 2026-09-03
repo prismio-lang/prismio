@@ -1,0 +1,453 @@
+// Compiling one source file: the frontend orchestration every command shares.
+//
+// `compileSource` is the whole build for one entry point -- merge, analyse,
+// AIF, IR, native -- and the analysis commands beside it are the same front
+// half stopped early. They are here rather than in the CLI because what they
+// share is a pipeline, not an argument vector.
+
+import std.io
+import lexer.scanner
+import lexer.token
+import common.text
+import ast.nodes
+import parse.*
+import ir.*
+import sema.*
+import common.diagnostics
+import ast.dump
+import aif.*
+import std.string
+import std.option
+import driver.imports
+import driver.workload
+
+extern fn compiler_bootstrap_executable(irFile: String, exeFile: String) -> Int
+extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
+extern fn compiler_installed_runtime_hash() -> String produce(free)
+extern fn compiler_run_executable(exeFile: String) -> Int
+// Every path through both mallocs, including the failure paths, which allocate a
+// one-byte empty string rather than returning a literal. That is the same
+// invariant Level 4 had to give str_substring and str_trim -- anything declared
+// to return String returns something a release can take -- and it is what makes
+// `produce` true here rather than nearly true.
+extern fn compiler_runtime_source_hash() -> String produce(free)
+// `-g`. Two things the driver does differently once the module carries debug
+// info: the object step drops to -O0, and on Darwin a .dSYM is written before
+// the object -- which is where Mach-O keeps the DWARF -- is deleted.
+extern fn compiler_set_debug_info(on: Int)
+// SPEC 7.3. Tells the build to compile the runtime with its own allocator
+// pointed at the verify shims, so the strings and lists it allocates are in the
+// same accounting as everything ir_alloc_object handed out.
+extern fn compiler_set_verify_mode(on: Int)
+extern fn compiler_temp_ir_path(sourcePath: String) -> String produce(free)
+extern fn delete_file(path: String) -> Int
+extern fn file_exists(path: String) -> Int
+extern fn get_directory(path: String) -> String
+extern fn ir_jit_run_main(programName: String) -> Int
+extern fn read_file(path: String) -> String
+
+private fn reportForcedLayouts() {
+    let mut i = 0
+    while (i < aif_layout_forced_count()) {
+        if (aif_layout_force_applied(i) == 0) {
+            diag_warning_code("P1003", strConcat(strConcat(strConcat(
+                "--force-layout did not apply: no candidate of ",
+                diagQuote(aif_layout_forced_type(i))),
+                strConcat(" keeps ", strFromInt(aif_layout_forced_hot(i)))),
+                " fields hot (see `aif --layout` for the candidates)"))
+        }
+        i = i + 1
+    }
+}
+
+// The installed runtime library carries the hash of the sources it was built from.
+// When both that and a source tree are present they must agree, otherwise the
+// program being compiled would silently link a runtime that no longer matches the
+// code in front of you. Content hashes rather than timestamps, so a fresh checkout
+// or a file copy does not read as a change.
+private fn checkRuntimeFreshness() {
+    let installed = compiler_installed_runtime_hash()
+    if (strEquals(installed, "")) {
+        return
+    }
+
+    let current = compiler_runtime_source_hash()
+    if (strEquals(current, "")) {
+        return
+    }
+
+    if (strEquals(installed, current)) {
+        return
+    }
+
+    diag_error_code("P1004", "the installed Prismio runtime library is stale")
+    print("  runtime library was built from sources hashing ")
+    println(installed)
+    print("  the runtime sources on disk now hash ")
+    println(current)
+    println("  Re-package the toolchain (tools/package.sh, or tools/package.ps1 on Windows)")
+    println("  so lib/ matches runtime/, or move away from the source tree to use the")
+    println("  installed runtime as-is.")
+    exit(1)
+}
+
+// Front half of compileSource -- lex, parse, resolve imports, type check -- and
+// nothing after it. The commands that analyse rather than build all need exactly
+// this and none of them may proceed past a diagnostic, so it is one function
+// rather than a flag threaded through compileSource: the build path keeps no
+// branch that only an analysis command takes.
+//
+// Failure is signalled through the diagnostic count rather than through the
+// returned node, because "no AST" and "an AST with errors in it" are different
+// states and only one of them has anything to return. Callers check
+// diag_error_count() > 0; diag_finish() prints but does not reset, so the count
+// is still there to read.
+//
+// This function is where `ptr_is_null` came from. The obvious version returned a
+// node pointer and used "" as the sentinel, which is the idiom the rest of the
+// compiler uses -- and it silently reported every successful parse as a failure,
+// because a punned pointer compares as a string and an ASTNode begins with its
+// `kind`, of which MODULE is 0. See ast.psm.
+private fn analyzedModule(path: String) -> ASTNode {
+    let content = read_file(path)
+    if (strEquals(content, "") and file_exists(path) == 0) {
+        diag_error_code("P1005", strConcat("cannot read ", path))
+        return createNode(NodeKind.MODULE)
+    }
+
+    let rootFile = diag_add_file(path, content)
+    let lex = createLexer(content, rootFile)
+    let headToken = lexAllTokens(lex)
+    let p = parserCreate(headToken)
+    let astRoot = parseModule(p)
+
+    let baseDir = get_directory(path)
+    let mergedAst = resolveImports(astRoot, baseDir, path)
+
+    // Parsing recovers, so errors may already be waiting here. Type checking a
+    // module with a declaration missing produces cascades, not information.
+    if (diag_error_count() > 0) {
+        diag_finish()
+        return mergedAst
+    }
+
+    analyzeModule(mergedAst)
+
+    if (diag_error_count() > 0) {
+        diag_finish()
+    }
+
+    return mergedAst
+}
+
+// Emits the post-sema AST as JSON. Sema has to have run: the dump carries each
+// node's resolved type, and without it the `ty` field would be empty on every
+// node.
+fn dumpAstCommand(path: String) -> Int {
+    let merged = analyzedModule(path)
+    if (diag_error_count() > 0) {
+        return 1
+    }
+
+    dumpAstJson(merged, path, PRISMIO_VERSION)
+    return 0
+}
+
+// The IDE-facing compile boundary: the complete frontend, with no AIF, IR,
+// native toolchain or output file. A successful JSON run still emits a summary,
+// which gives a long-lived client an explicit signal to clear stale diagnostics.
+fn checkCommand(path: String) -> Int {
+    analyzedModule(path)
+    diag_finish()
+    if (diag_error_count() > 0) {
+        return 1
+    }
+    return 0
+}
+
+// Runs the AIF memory model over the module and reports (aif/spec/SPEC.md 6).
+// Produces no IR and touches no codegen, so it cannot change what `build`
+// generates -- which is the point at this stage: the tier distribution becomes
+// measurable before any of it is risked on the self-host.
+fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: Bool,
+               budget: Int, why: String, layout: Bool, manifest: Bool) -> Int {
+    let merged = analyzedModule(path)
+    if (diag_error_count() > 0) {
+        return 1
+    }
+
+    // **The manifest has to describe the build, and that means running the
+    // workload here too.** This is the same trap the `owned_collections` default
+    // fell into: `prismio aif` analysed one language and `prismio build` compiled
+    // another, both were true, and two sessions of notes were written off the
+    // wrong number. A declared workload changes the `layout` column, so reporting
+    // the static profile while the build measures one would put this command back
+    // in exactly that position.
+    //
+    // The cost is real and is the honest price: `prismio aif` on a program with a
+    // workload compiles and runs that workload, so it is as slow as a build. The
+    // alternative is a fast command that describes a binary nobody builds.
+    let profilePath = runWorkloadProfile(merged, path, false)
+
+    // `--why` explains one record instead of printing the manifest. It runs the
+    // same inference -- the derivation is a by-product of the solve, not a
+    // second pass -- so the answer describes the build a plain run would give.
+    // That last clause was false while ownedCollections defaulted to off: the
+    // derivation explained a tier from a model the build does not use, and
+    // A-COPY was the answer to every "why is this T3" the compiler could ask.
+    if (strEquals(why, "") == false) {
+        let converged = aifRunProfiled(merged, ownedCollections, thetaFields, budget,
+                                        profilePath)
+        discardWorkloadProfile(profilePath)
+        return 1 - aifExplain(why, path, converged)
+    }
+
+    aifAnalyzeProfiled(merged, path, PRISMIO_VERSION, ownedCollections, summary,
+                        thetaFields, budget, profilePath, layout, manifest)
+    discardWorkloadProfile(profilePath)
+    reportForcedLayouts()
+    return 0
+}
+
+// ---------------------------------------------------------------------------
+// LAYOUT 3.2 -- the workload runner
+//
+// Builds a second, instrumented program from the same module, runs it, and
+// returns the path of the profile it wrote. Returns "" for every failure, which
+// is W2: "SHALL cause a fallback to the static profile and a warning. It SHALL
+// NOT fail the build."
+//
+// **There is no path out of this function that returns non-zero**, and that is
+// the clause implemented rather than described. Every step below is checked and
+// every check warns and returns "". The one thing that would violate it is a
+// diagnostic *error*, so this raises none -- `diag_warning` throughout.
+//
+// The instrumented build deliberately reuses the ordinary pipeline rather than a
+// special one: same aifRun, same generateModule, same compiler_build_executable.
+// LAYOUT 3.2 requires the workload to run "under a baseline layout (AoS, source
+// field order, no packing)", which is what a run with no profile loaded already
+// produces -- so the baseline is the absence of an input rather than a second
+// code path that has to be kept in step with the first.
+
+fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstrapMode: Bool,
+                  verifyMode: Bool, debugMode: Bool, debugInfo: Bool, optimized: Bool,
+                  jitMode: Bool) -> Int {
+    let mut outFile = ""
+    let mut emitIrOnly = false
+
+    // Bootstrap deliberately skips this: it never consults the installed libraries
+    // at all, so their freshness cannot affect the result.
+    if (bootstrapMode == false) {
+        checkRuntimeFreshness()
+    }
+
+    if (strEndsWith(outputFile, ".ll")) {
+        outFile = outputFile
+        emitIrOnly = true
+    } else {
+        outFile = compiler_temp_ir_path(path)
+    }
+
+    let content = read_file(path)
+    if (strEquals(content, "") and file_exists(path) == 0) {
+        diag_error_code("P1008", strConcat("cannot read ", path))
+        if (bootstrapMode) {
+            println("  bootstrap compiles the Prismio compiler from a source checkout.")
+            println("  Run it from the repository root, or give the source path explicitly:")
+            println("      prismio bootstrap path/to/src/main.psm")
+        }
+        return 1
+    }
+
+    let rootFile = diag_add_file(path, content)
+    let lex = createLexer(content, rootFile)
+    let headToken = lexAllTokens(lex)
+    let p = parserCreate(headToken)
+    let astRoot = parseModule(p)
+
+    let baseDir = get_directory(path)
+    let mergedAst = resolveImports(astRoot, baseDir, path)
+
+    // Parsing recovers, so errors may already be waiting here. Type checking a
+    // module with a declaration missing produces cascades, not information.
+    if (diag_error_count() > 0) {
+        diag_finish()
+        return 1
+    }
+
+    analyzeModule(mergedAst)
+
+    // Sema reports every error it finds rather than stopping at the first, so the
+    // decision to give up belongs here rather than inside the checker.
+    if (diag_error_count() > 0) {
+        diag_finish()
+        return 1
+    }
+
+    // AIF, between sema and codegen. It reports nothing here and writes nothing
+    // back to the AST; codegen queries it per allocation site through
+    // aif_tier_at. `prismio aif` runs the same engine and prints the manifest.
+    //
+    // It cannot fail the build. SPEC 1: inference failure degrades performance
+    // and never correctness, and a value it says nothing about is allocated the
+    // way it always was.
+    // `true` for owned collections is AIF Level 4: types.psm made String and List
+    // move-only, so the copy rule no longer applies to them and the analysis has
+    // to agree with the language. This is the switch that gives the 184 T1 string
+    // sites a free point -- with it off, site_is_move_only admits structs only and
+    // aif_frees_at_scope_node declines every one of them.
+    // SPEC 7.2's level, as a budget. `debug` is zero rounds: the same engine
+    // runs, builds the same graph and records the same pins, but nothing is
+    // proved, so widening puts every value at its top tier -- heap, no drop, no
+    // arena, no count, no collector. That is the zero-analysis mode SPEC 7.1
+    // requires, and running the engine rather than skipping it is what keeps
+    // 7.2's "a level SHALL NOT change which programs compile" true: a refuted
+    // `pin` is still diagnosed.
+    let mut aif_rounds = AIF_DEFAULT_ROUNDS
+    if (debugMode) { aif_rounds = 0 }
+
+    // LAYOUT 3. If the program declares a workload, measure it before the real
+    // analysis runs, and hand the measured profile to the layout search in place
+    // of the static estimate.
+    //
+    // **Everything about the ordering here is W2 and W4.**
+    //
+    // W2 -- "a workload that fails to build, fails to run, times out, or exceeds
+    // the budget SHALL cause a fallback to the static profile and a warning; it
+    // SHALL NOT fail the build." So this returns a path or "", nothing else. It
+    // cannot raise a diagnostic error, and `diag_error_count()` is deliberately
+    // not consulted after it: a build that got this far has a program that
+    // compiles, and the workload is an optimisation input.
+    //
+    // W4 -- "two builds with different profiles SHALL produce behaviourally
+    // identical programs." The profile reaches codegen through exactly one
+    // channel, aif_layout_select's field counts, and a layout is not observable.
+    // Nothing below reads the profile for any other purpose, and irProfileMode is
+    // false for the whole of the real build.
+    //
+    // Deliberately skipped in bootstrap mode. The compiler declares no workload,
+    // so this would be dead code there -- but it would also mean the bootstrap
+    // path could run a program at build time, and bootstrap's whole contract is
+    // that it builds from the checkout and does nothing else.
+    let mut profilePath = ""
+    if (bootstrapMode == false and debugMode == false) {
+        profilePath = runWorkloadProfile(mergedAst, path, verifyMode)
+    }
+
+    let aifConverged = aifRunProfiled(mergedAst, true, false, aif_rounds, profilePath)
+    discardWorkloadProfile(profilePath)
+
+    // The one thing AIF can fail a build for, and SPEC 5.4.1 is explicit that it
+    // is not a violation of SPEC 1: a pin a *converged* analysis refutes is a
+    // false assertion about the program, not an inference failure. An unproven
+    // one warns and is ignored.
+    // REQUIREMENTS 19's gate joins it, and for the same reason: a budget the
+    // converged estimate exceeds is a false assertion about one's own program,
+    // which SPEC 5.4.1 separates from an inference failure.
+    if (aifReportPins() + aifReportBudgets(aifConverged) > 0) {
+        diag_finish()
+        return 1
+    }
+
+    // SPEC 5.2. Warns rather than fails, so it goes after the gate above: an
+    // inert `region` is a pessimisation, not a false assertion about a value.
+    aifReportInertRegions()
+
+    // After the analysis, because `applied` is set by the selection it reports on.
+    // A workload build runs the engine twice and this reads the second, real pass
+    // -- which is the one whose layout ships.
+    reportForcedLayouts()
+
+    ir_reset()
+
+    // SPEC 7.3's verify mode is a name swap through the allocator seam and
+    // nothing else -- codegen is identical to a release build. The shims live in
+    // runtime/lang_runtime.c and check that every object is released exactly
+    // once, poisoning it on the way out so a read that should not have happened
+    // returns a pattern instead of plausible data.
+    if (verifyMode) {
+        ir_set_alloc_function("aif_verify_alloc")
+        ir_set_free_function("aif_verify_release")
+        // The other half of the swap. Strings and lists are affine as of Level 4
+        // and are allocated inside the runtime, past this seam -- without this
+        // every string a program drops reports as a release of something that was
+        // never live.
+        compiler_set_verify_mode(1)
+    }
+
+    // Before generateModule, because the first thing it does after starting the
+    // module is open the compile unit.
+    //
+    // `optimized` is passed through to DW_AT_APPLE_optimized rather than assumed
+    // false: -g drops the object step to -O0, but an explicit `-O2 -g` still runs
+    // the IR pipeline, and a debugger uses that bit to warn the reader that a
+    // variable may have been folded away. Claiming otherwise is exactly the kind
+    // of small lie ir/debug.psm exists to prevent.
+    if (debugInfo) {
+        irSetDebugInfo(true, strConcat("prismio ", PRISMIO_VERSION), path, optimized)
+        compiler_set_debug_info(1)
+    }
+
+    generateModule(mergedAst)
+
+    // Before `ir_write_file`, and that is the whole point: `--jit` writes no IR,
+    // spawns no clang and links nothing. The module generated above is the one
+    // that runs, so what executes is what a `build` of the same source would
+    // have produced.
+    if (jitMode) {
+        // Reported exactly as the non-JIT `run` reports it, and deliberately:
+        // `--jit` is a way of running the same program, so a caller must not be
+        // able to tell which path ran from the exit status or the diagnostic.
+        // That is also what makes the two comparable in run_jit_test.
+        let status = ir_jit_run_main(path)
+        if (status != 0) {
+            diag_error_code("P1009", strConcat(path, " exited with a failure status"))
+            return 1
+        }
+        return 0
+    }
+
+    if (ir_write_file(outFile) != 0) {
+        diag_error_code("P1010", strConcat("cannot write LLVM IR to ", outFile))
+        return 1
+    }
+
+    if (emitIrOnly) {
+        print("Wrote LLVM IR: ")
+        println(outFile)
+        return 0
+    }
+
+    let mut buildFailed = 0
+    if (bootstrapMode) {
+        buildFailed = compiler_bootstrap_executable(outFile, outputFile)
+    } else {
+        buildFailed = compiler_build_executable(outFile, outputFile)
+    }
+
+    if (buildFailed != 0) {
+        delete_file(outFile)
+        diag_error_code("P1011", "the native build step failed (llc/clang); see the output above")
+        return 1
+    }
+
+    delete_file(outFile)
+
+    print("Built ")
+    println(outputFile)
+
+    if (runAfterBuild) {
+        if (compiler_run_executable(outputFile) != 0) {
+            diag_error_code("P1012", strConcat(outputFile, " exited with a failure status"))
+            return 1
+        }
+    }
+
+    return 0
+}
+
+// Project mode is deliberately a thin adapter. UMS discovers, parses, validates
+// and plans the project; the compiler keeps the one responsibility it already
+// owns: compiling each planned Prismio entry source. Future run/test/clean
+// commands should call the same UMS model instead of growing parallel CLI logic.
+// The last component of a path, with either separator. `""` when there is none.

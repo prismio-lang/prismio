@@ -24,29 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void aif_oom(const char* what) {
-    fprintf(stderr, "internal error: out of memory growing %s\n", what);
-    fflush(stderr);
-    exit(1);
-}
-
-static void* xmalloc(size_t n, const char* what) {
-    void* p = malloc(n);
-    if (!p) aif_oom(what);
-    return p;
-}
-
-static void* xcalloc(size_t n, size_t sz, const char* what) {
-    void* p = calloc(n ? n : 1, sz);
-    if (!p) aif_oom(what);
-    return p;
-}
-
-static void* xrealloc(void* p, size_t n, const char* what) {
-    void* q = realloc(p, n);
-    if (!q) aif_oom(what);
-    return q;
-}
+#include "aif_containers.h"
 
 // Fact encodings
 // Escape is a single int so that it fits an array slot and a Prismio `Int`
@@ -92,136 +70,6 @@ static void* xrealloc(void* p, size_t n, const char* what) {
 #define AIF_K_ARRAY  2
 #define AIF_K_LIST   3
 #define AIF_K_OPAQUE 4
-
-// Growable bitsets
-// Both halves of the solver state are sets of small integers: a points-to node
-// holds a set of sites, and a site holds the set of nodes referencing it.
-// Bitsets make union and subset one word-loop each, which keeps the round cost
-// proportional to the graph rather than to the constraint list.
-
-typedef unsigned long long Word;
-#define WORD_BITS 64
-
-typedef struct {
-    Word* w;
-    int nwords;
-} Bits;
-
-static void bits_ensure(Bits* b, int bit, const char* what) {
-    int need = bit / WORD_BITS + 1;
-    if (need <= b->nwords) return;
-    int grow = b->nwords ? b->nwords * 2 : 8;
-    if (grow < need) grow = need;
-    b->w = (Word*)xrealloc(b->w, (size_t)grow * sizeof(Word), what);
-    memset(b->w + b->nwords, 0, (size_t)(grow - b->nwords) * sizeof(Word));
-    b->nwords = grow;
-}
-
-static int bits_test(const Bits* b, int bit) {
-    int wi = bit / WORD_BITS;
-    if (bit < 0 || wi >= b->nwords) return 0;
-    return (int)((b->w[wi] >> (bit % WORD_BITS)) & 1u);
-}
-
-// Returns 1 only when the bit was absent. The solver's `changed` flag is the
-// disjunction of every such return, so an update that adds nothing must report
-// nothing -- otherwise the loop never terminates.
-static int bits_set(Bits* b, int bit, const char* what) {
-    bits_ensure(b, bit, what);
-    int wi = bit / WORD_BITS;
-    Word m = (Word)1 << (bit % WORD_BITS);
-    if (b->w[wi] & m) return 0;
-    b->w[wi] |= m;
-    return 1;
-}
-
-static void bits_clear(Bits* b) {
-    if (b->nwords) memset(b->w, 0, (size_t)b->nwords * sizeof(Word));
-}
-
-static int bits_is_empty(const Bits* b) {
-    for (int i = 0; i < b->nwords; i++) {
-        if (b->w[i]) return 0;
-    }
-    return 1;
-}
-
-// dst |= src, reporting whether dst grew.
-static int bits_or(Bits* dst, const Bits* src, const char* what) {
-    int changed = 0;
-    for (int i = 0; i < src->nwords; i++) {
-        if (!src->w[i]) continue;
-        bits_ensure(dst, i * WORD_BITS, what);
-        Word before = dst->w[i];
-        Word after = before | src->w[i];
-        if (after != before) {
-            dst->w[i] = after;
-            changed = 1;
-        }
-    }
-    return changed;
-}
-
-static int bits_count_at_least_two(const Bits* b) {
-    int seen = 0;
-    for (int i = 0; i < b->nwords; i++) {
-        Word x = b->w[i];
-        while (x) {
-            x &= x - 1;
-            if (++seen >= 2) return 1;
-        }
-    }
-    return 0;
-}
-
-static void bits_free(Bits* b) {
-    free(b->w);
-    b->w = NULL;
-    b->nwords = 0;
-}
-
-// Int vectors
-// Set membership is a bitset, but the solver's rules need to *enumerate* a set,
-// sometimes two of them nested. Materialising a bitset into a plain int array
-// keeps that a pair of ordinary loops. The buffers are reused across rounds,
-// so this allocates a handful of times for the whole run.
-
-typedef struct {
-    int* v;
-    int len, cap;
-} IntVec;
-
-static void vec_push(IntVec* iv, int x, const char* what) {
-    if (iv->len == iv->cap) {
-        iv->cap = iv->cap ? iv->cap * 2 : 64;
-        iv->v = (int*)xrealloc(iv->v, (size_t)iv->cap * sizeof(int), what);
-    }
-    iv->v[iv->len++] = x;
-}
-
-// Portable count-trailing-zeros. A branchless intrinsic exists on every
-// compiler that matters and on none of them by the same name, and this runs
-// once per set bit rather than once per word, so a six-step binary search costs
-// nothing measurable next to the round it sits inside.
-static int ctz64(Word x) {
-    int n = 0;
-    if (!(x & 0xFFFFFFFFull)) { x >>= 32; n += 32; }
-    if (!(x & 0xFFFFull))     { x >>= 16; n += 16; }
-    if (!(x & 0xFFull))       { x >>= 8;  n += 8;  }
-    if (!(x & 0xFull))        { x >>= 4;  n += 4;  }
-    if (!(x & 0x3ull))        { x >>= 2;  n += 2;  }
-    if (!(x & 0x1ull))        { n += 1; }
-    return n;
-}
-
-static void bits_to_vec(const Bits* b, IntVec* out) {
-    out->len = 0;
-    for (int wi = 0; wi < b->nwords; wi++) {
-        for (Word x = b->w[wi]; x; x &= x - 1) {
-            vec_push(out, wi * WORD_BITS + ctz64(x), "AIF bit enumeration");
-        }
-    }
-}
 
 // String interning
 // Type names, field names and variable names all become integer ids, because
@@ -687,7 +535,6 @@ static int field_is_inline(int type_name, int field_name) {
 // Choosing a layout codegen cannot produce would be a manifest that describes a
 // binary nobody built.
 
-// ---------------------------------------------------------------------------
 // Reading a measured profile back (LAYOUT 2.2)
 //
 // The format is the one rt_profile_dump writes, and the parser is deliberately
@@ -695,7 +542,6 @@ static int field_is_inline(int type_name, int field_name) {
 // *input to codegen only* (W4), so a malformed one can make the layout worse and
 // can never make the program wrong -- which means failing the build over it would
 // trade a real cost for no correctness, exactly what W2 forbids.
-// ---------------------------------------------------------------------------
 
 static int g_profile_source = -1;      // interned "workload:NAME", or -1 for static
 static int g_profile_runs = 0;
@@ -961,10 +807,8 @@ void aif_layout_select(void) {
 // audited before anything emits it. That ordering is deliberate -- a split object
 // is two allocations and needs the whole release path (RESULTS-layout 5) before
 // any of it may be emitted.
-// ---------------------------------------------------------------------------
 // Three deliberate divergences from the prototype, each of which changes the
 // answer, and each measured rather than argued.
-// ---------------------------------------------------------------------------
 // **1. Candidates are AoS x splits, not AoS/SoA x splits.** The prototype ranks
 // SoA and picks it: on `g1_particles.psm` it returns `SoA 5.37x`. SoA needs
 // handles, which do not exist (RESULTS-layout 1), so a compiler that ranked it
@@ -1228,7 +1072,6 @@ static long long layout_cost(Nominal* t, Bits* hot, int is_split) {
     return total;
 }
 
-// ---------------------------------------------------------------------------
 // The candidate space (LAYOUT 6), and the ranking LAYOUT 8 asks for.
 //
 // Cuts are taken at strict frequency boundaries down the access-count ranking,
@@ -1241,7 +1084,6 @@ static long long layout_cost(Nominal* t, Bits* hot, int is_split) {
 // punned-slot invariant is about the first byte of the object
 // (tests/test_41_punned_slot_bytes.psm), and a cut by frequency alone would
 // happily put a never-read field there.
-// ---------------------------------------------------------------------------
 
 #define AIF_MAX_CANDIDATES 32
 
@@ -1355,7 +1197,6 @@ int aif_layout_cand_at_rank(int k) {
     return prev;
 }
 
-// ---------------------------------------------------------------------------
 // LAYOUT 8's forced candidate
 //
 // §8 selects a layout by *measuring* the top-k candidates instead of trusting the
@@ -1381,7 +1222,6 @@ int aif_layout_cand_at_rank(int k) {
 // not in the program, or a cut that is not a candidate, is the shape of mistake
 // this project has made most -- an instrument that matched nothing and reported
 // success. `aif_layout_force_applied` is how the frontend can raise it.
-// ---------------------------------------------------------------------------
 
 #define AIF_MAX_FORCED 32
 
@@ -1475,7 +1315,6 @@ int aif_layout_cand_bytes(int i, int cold) {
     return b;
 }
 
-// ---------------------------------------------------------------------------
 // LAYOUT 6's hot/cold split, taken rather than reported
 //
 // The ranking above scores every admissible cut; this decides which one codegen
@@ -1535,7 +1374,6 @@ int aif_layout_cand_bytes(int i, int cold) {
 // solve. Before the solve because `type_releases_of` reads the answer; after the
 // sizes because the sizes are computed from the unsplit order on purpose -- see
 // aif_layout_field_bytes.
-// ---------------------------------------------------------------------------
 
 void aif_layout_no_split(const char* type) {
     int id = nominal_find(type);
@@ -2013,7 +1851,6 @@ static int key_intern(int kind, int a, int b) {
 
 int aif_key_var(int fn, const char* name)            { return key_intern(AIF_KEY_VAR, fn, aif_intern(name)); }
 
-// ---------------------------------------------------------------------------
 // Declaring scopes
 //
 // E-BIND needs the scope a *variable* was declared in, not the scope the
@@ -2029,7 +1866,6 @@ int aif_key_var(int fn, const char* name)            { return key_intern(AIF_KEY
 // Shadowing joins outward. Two declarations of one name in sibling blocks join
 // to their least common ancestor, which is at least as long-lived as either, so
 // the answer is conservative rather than dependent on which the walk saw last.
-// ---------------------------------------------------------------------------
 
 static int* var_scope;
 static int var_scope_cap;
@@ -2107,7 +1943,6 @@ void aif_note_param_consuming(int fn, int index) {
 }
 int aif_key_count(void)                              { return key_count; }
 
-// ---------------------------------------------------------------------------
 // Declared FFI contracts
 //
 // What an `extern` declaration says about ownership (FFI 5), keyed by the
@@ -2116,7 +1951,6 @@ int aif_key_count(void)                              { return key_count; }
 //
 // Keyed through the same tuple map as everything else, so a contract lookup at a
 // call site is one hash rather than a scan over declarations.
-// ---------------------------------------------------------------------------
 
 static int* extern_contract;    // key id -> interned contract text, -1 unset
 static int extern_contract_cap;
@@ -4256,7 +4090,6 @@ int aif_region_serves(int scope) {
     return n;
 }
 
-// ----------------------------------------------------------------------------
 // SPEC 5.4 applied to placement -- `pin(<region-name>)`
 //
 // SPEC 5.2.1.1 says this of its own regime (a): "(a) is fragile as a language
@@ -4282,7 +4115,6 @@ int aif_region_serves(int scope) {
 // Ordering: this runs after aif_place_arenas, unlike aif_check_pins which must
 // run before it. A tier pin is an *input* to placement (the cost model ranks
 // scopes by tier); a placement pin is an assertion about its *output*.
-// ----------------------------------------------------------------------------
 void aif_check_placement_pins(int converged) {
     for (int i = 0; i < site_count; i++) {
         Site* s = &sites[i];
@@ -5296,7 +5128,6 @@ int aif_site_is_bracketed(int id) {
     return site_bracket_region(id) >= 0 && site_arena_scope(id) >= 0;
 }
 
-// ----------------------------------------------------------------------------
 // What a bracketed call adds to its region's footprint (REQUIREMENTS 19)
 //
 // `arena_would_serve` deliberately does not count these, and must not: it is the
@@ -5316,7 +5147,6 @@ int aif_site_is_bracketed(int id) {
 // other input to this estimate. `weight_of` cannot be used for the first half:
 // loop_depth is counted *within* a function, so a difference taken across two of
 // them is not a number.
-// ----------------------------------------------------------------------------
 
 static long weight_in_own_fn(int site_scope) {
     if (site_scope < 0 || site_scope >= scope_count) return 1;
@@ -6291,7 +6121,6 @@ int aif_type_releases(const char* name) {
     return type_releases_of(nominal_find(name));
 }
 
-// ---------------------------------------------------------------------------
 // CYCLES 4 -- the cyclic-edge restriction
 //
 // Every edge of a value-level reference cycle connects two types in one SCC of
@@ -6305,7 +6134,6 @@ int aif_type_releases(const char* name) {
 // two edges rather than eight, and the collector never descends into the string
 // graph hanging off it. Those subgraphs are usually far larger than the cyclic
 // skeleton, which is what makes CYCLES 6's work bounds credible.
-// ---------------------------------------------------------------------------
 
 static int same_scc(int a, int b) {
     if (a < 0 || b < 0) return 0;

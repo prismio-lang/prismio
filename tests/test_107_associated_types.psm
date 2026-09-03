@@ -1,0 +1,80 @@
+// A trait may own a type. The trait names it, each `impl` chooses it, and a
+// projection `T.Item` in a signature resolves to the choice at instantiation.
+
+import std.io
+import std.string
+
+trait Container {
+    type Item
+    fn size(self) -> Int
+}
+
+struct Bag { n: Int }
+struct Sack { s: String }
+
+impl Container for Bag {
+    type Item = Int
+    fn size(self) -> Int { return self.n }
+}
+
+impl Container for Sack {
+    type Item = String
+    fn size(self) -> Int { return strLength(self.s) }
+}
+
+fn itemOf(c: Bag) -> Int { return c.n }
+fn itemOf(c: Sack) -> String { return c.s }
+
+// Projection in return position, resolved differently per instantiation.
+fn pick<T: Container>(c: T) -> T.Item {
+    return itemOf(c)
+}
+
+// Projection in parameter position.
+fn same(c: Bag, value: Int) -> Bool { return c.n == value }
+fn same(c: Sack, value: String) -> Bool { return strEquals(c.s, value) }
+
+fn matches<T: Container>(c: T, value: T.Item) -> Bool {
+    return same(c, value)
+}
+
+// An associated type on a generic impl: the choice may mention the impl's own
+// parameter, so the projection resolves through the substituted target.
+struct Cell<T> { value: T }
+
+trait Holds {
+    type Held
+    fn tag(self) -> Int
+}
+
+impl<T> Holds for Cell<T> {
+    type Held = Int
+    fn tag(self) -> Int { return 1 }
+}
+
+// An equality constraint narrows a bound to one choice of the associated type.
+fn intContainer<T: Container<Item = Int>>(c: T) -> Int {
+    return size(c)
+}
+
+fn stringContainer<T: Container<Item = String>>(c: T) -> Int {
+    return size(c)
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (pick(Bag { n: 7 }) != 7) { return fail("Int projection") }
+    if (strEquals(pick(Sack { s: "abcd" }), "abcd") == false) { return fail("String projection") }
+    if (matches(Bag { n: 3 }, 3) == false) { return fail("projection in parameter position") }
+    if (matches(Sack { s: "hi" }, "hi") == false) { return fail("second parameter instance") }
+    if (tag(Cell<Int> { value: 1 }) != 1) { return fail("associated type on a generic impl") }
+    if (intContainer(Bag { n: 5 }) != 5) { return fail("equality constraint accepts the match") }
+    if (stringContainer(Sack { s: "abc" }) != 3) { return fail("second equality constraint") }
+    println("test_107 ok")
+    return 0
+}

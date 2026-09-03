@@ -1,0 +1,413 @@
+// Import resolution: a module name to a merged declaration chain.
+//
+// Two questions, and the module exists to answer them: where a module name
+// lives on disk, and whether it has already been merged. Getting the second
+// wrong emits duplicate LLVM `define` lines that llc rejects a long way from
+// the import that caused them -- mergeNamedModule says what a diamond-shaped
+// import graph does without the memo.
+//
+// The surface is `resolveImports` and `standardModulePath`. The other fifteen
+// functions and the merge-tail cache are private to this file.
+
+import std.io
+import lexer.scanner
+import lexer.token
+import common.text
+import ast.nodes
+import parse.*
+import ir.*
+import sema.*
+import common.diagnostics
+import std.string
+
+// Declared here as well as in the modules that share them: the merge keeps the
+// first EXTERN_FUNCTION of a given name and drops the rest, which is what lets
+// each module name the externs it actually uses.
+extern fn read_file(path: String) -> String
+extern fn get_directory(path: String) -> String
+extern fn join_path(directory: String, filename: String) -> String
+extern fn file_exists(path: String) -> Int
+extern fn list_modules(directory: String) -> String produce(free)
+
+// The last statement appended to the module being merged. Reset with the module
+// in resolveImports(); see appendStatement() for why it is a cache rather than
+// the list's only tail.
+// Zero-initialized rather than assigned: a global cannot be initialized by a
+// call, and a zero-filled pointer is NULL, which is the empty cache this wants.
+let mut mergeTailPtr: Ptr
+
+// Two same-named top-level declarations of the same kind are duplicates, with one
+// exception: FUNCTION. Overloading means several `fn` nodes legitimately share a
+// name (tests/test_29_overloads.psm), and a genuinely duplicated overload has to
+// survive the merge so sema can reject it (tests/neg_06_duplicate_overload.psm).
+//
+// EXTERN_FUNCTION is deliberately *not* exempt. Modules each declare the externs
+// they use, so `str_equals` is declared by both utils.psm and keywords.psm, and
+// `exit` by both parser.psm and sema.psm; merging both copies makes sema report a
+// spurious "duplicate function overload". Keeping the first is correct.
+//
+// This does not disturb the forward-declaration idiom in ir.psm/parser.psm/
+// sema.psm, where an `extern fn` declares a function the same file also defines:
+// that pairs an EXTERN_FUNCTION with a FUNCTION, so the kind check above already
+// treats them as distinct (and generateModule skips the `declare` when a real
+// `define` exists).
+
+private fn sameTopLevelName(a: ASTNode, b: ASTNode) -> Bool {
+    if (a.kind != b.kind) { return false }
+    if (strEquals(a.s1, b.s1) == false) { return false }
+    if (a.kind == NodeKind.FUNCTION) {
+        return false
+    }
+    return true
+}
+
+// Asks the declaration index, which appendStatement() keeps current as it
+// merges, rather than rescanning everything merged so far. The scan was
+// quadratic in the number of declarations and ran before sema -- this compiler's
+// own source merges about 1 500 of them.
+private fn hasNamedTopLevel(module: ASTNode, stmt: ASTNode) -> Bool {
+    if (isNamedTopLevel(stmt) == false) {
+        return false
+    }
+
+    let count = ir_decl_count(stmt.s1)
+    let mut i = 0
+    while (i < count) {
+        let scan = ptr_to_node(ir_decl_at(stmt.s1, i))
+        if (sameTopLevelName(scan, stmt)) {
+            return true
+        }
+        i = i + 1
+    }
+
+    return false
+}
+
+private fn parseSource(content: String, file: Int) -> ASTNode {
+    let lex = createLexer(content, file)
+    let headToken = lexAllTokens(lex)
+    let p = parserCreate(headToken)
+    return parseModule(p)
+}
+
+private fn appendStatement(module: ASTNode, stmt: ASTNode) {
+    if (hasNamedTopLevel(module, stmt)) {
+        return
+    }
+
+    if (nodeIsNull(module.child1)) {
+        module.child1 = node_to_ptr(stmt)
+        mergeTailPtr = node_to_ptr(stmt)
+        indexTopLevel(stmt)
+        return
+    }
+
+    // Walking to the end per statement made merging quadratic. The cached tail
+    // is a shortcut, not a second source of truth: when it is empty -- a module
+    // that was appended to by something other than this function -- the walk it
+    // replaced still runs, once, and the cache picks up from there.
+    if (nodeIsNull(mergeTailPtr)) {
+        mergeTailPtr = module.child1
+        let mut searching = true
+        while (searching) {
+            let scan = ptr_to_node(mergeTailPtr)
+            if (nodeIsNull(scan.next)) {
+                searching = false
+            } else {
+                mergeTailPtr = scan.next
+            }
+        }
+    }
+
+    let tail = ptr_to_node(mergeTailPtr)
+    tail.next = node_to_ptr(stmt)
+    mergeTailPtr = node_to_ptr(stmt)
+    indexTopLevel(stmt)
+}
+
+// A dotted module name is a directory path: `ir.expr` becomes `ir/expr`.
+//
+// '/' is emitted unconditionally because the frontend has no way to ask what the
+// host's separator is; join_path normalises the joined result.
+private fn moduleRelativePath(moduleName: String) -> String {
+    let mut relative = ""
+    let mut i = 0
+    let length = __builtin_string_len(moduleName)
+    while (i < length) {
+        let c = strCharAt(moduleName, i)
+        if (c == '.') {
+            relative = strConcat(relative, "/")
+        } else {
+            relative = strConcat(relative, strFromChar(c))
+        }
+        i = i + 1
+    }
+    return relative
+}
+
+// Everything an import names is resolved against the directory of the file being
+// compiled, not against the importing module -- so a module path means the same
+// thing written anywhere in the tree. The `.` case exists because there is
+// nothing to join to.
+private fn resolveUnder(baseDir: String, relative: String) -> String {
+    if (strEquals(baseDir, ".")) {
+        return relative
+    }
+    return join_path(baseDir, relative)
+}
+
+// Compiler subsystems normally live below src/, which is also the source root.
+// UMS is deliberately different: it is a first-class toolchain subsystem beside
+// src/, not compiler implementation. Reserving the `ums` import root lets the
+// self-hosted CLI consume that subsystem without a mirror, symlink, or C bridge.
+// The rule is narrow on purpose so ordinary user module resolution remains
+// relative to the entry source exactly as before.
+
+
+private fn importBaseDir(baseDir: String, moduleName: String) -> String {
+    if (strEquals(moduleName, "ums") or strStartsWith(moduleName, "ums.")) {
+        return get_directory(baseDir)
+    }
+    return baseDir
+}
+
+private fn joinImportPath(baseDir: String, moduleName: String) -> String {
+    return resolveUnder(importBaseDir(baseDir, moduleName),
+                        strConcat(moduleRelativePath(moduleName), ".psm"))
+}
+
+private fn joinImportDir(baseDir: String, packageName: String) -> String {
+    return resolveUnder(importBaseDir(baseDir, packageName), moduleRelativePath(packageName))
+}
+
+// Memo key for an already-resolved module. Paths are wrapped in "|" so that a
+// substring search can never match a partial path (e.g. "src\ir.psm" must not be
+// found inside "src\dir.psm").
+private fn importMemoKey(importPath: String) -> String {
+    return strConcat(strConcat("|", importPath), "|")
+}
+
+// Resolves one named module into `merged`, unless it has already been resolved.
+//
+// Resolving each path once is what keeps a diamond-shaped import graph correct:
+// src/main.psm reaches common/text.psm through five distinct paths, and without
+// this every one of that module's functions and extern declarations would be
+// merged five times, emitting duplicate LLVM `define`/`declare` lines that llc
+// rejects outright ("invalid redefinition of function"). Marking a path before
+// recursing into it also makes an import cycle terminate instead of recursing
+// forever.
+//
+// `site` is the import that asked, and is only used to place the diagnostic.
+private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
+                      baseDir: String, visited: String) -> String {
+    let importPath = resolveImportPath(baseDir, moduleName)
+
+    // v0.1 3.5, selective imports. `import std.string.strTrim` names a *name*
+    // and not a module, and nothing but resolution can tell the two apart --
+    // `std.string` could equally hold a `strTrim.psm`, and then the same text
+    // means the module. So the full path is tried first and this is the
+    // fallback, which is where Kotlin settles the same ambiguity and for the
+    // same reason: a grammar cannot see the filesystem.
+    //
+    // The record goes in before the memo check below, not after. A module is
+    // merged once however many files import it, so a second file selecting from
+    // an already-merged module would otherwise take everything.
+    if (file_exists(importPath) == 0) {
+        let cut = strLastIndexOf(moduleName, ".")
+        if (cut > 0) {
+            let parent = strSubstring(moduleName, 0, cut)
+            if (file_exists(resolveImportPath(baseDir, parent)) == 1) {
+                ir_select_record(site.file, parent,
+                    strSubstring(moduleName, cut + 1,
+                                 __builtin_string_len(moduleName) - cut - 1))
+                return mergeNamedModule(merged, site, parent, baseDir, visited)
+            }
+        }
+    }
+
+    let key = importMemoKey(importPath)
+    if (strContains(visited, key)) {
+        return visited
+    }
+
+    let seen = strConcat(visited, key)
+
+    let content = read_file(importPath)
+    if (strEquals(content, "") and file_exists(importPath) == 0) {
+        diag_error_at_code("P1001", site.file, site.line, site.col, site.len,
+            strConcat(strConcat("cannot read imported module ", diagQuote(moduleName)),
+                       strConcat(": no such file ", importPath)))
+        diag_finish()
+        exit(1)
+    }
+
+    // Registered before parsing so every token from this file carries an id that
+    // resolves back to its text, long after the merge has erased which module a
+    // declaration came from.
+    let file = diag_add_file(importPath, content)
+    // ...and the name it was reached by, which the id alone cannot recover: the
+    // installed layout stores `std/string.psm` at `stdlib/string.psm`, so a
+    // qualifier derived from the path would differ between a checkout and an
+    // install. Every module arrives here with its logical path already built --
+    // mergePackageImport composes `pkg.leaf` before calling -- so this one line
+    // covers named and package imports both.
+    diag_set_file_module(file, moduleName)
+    return mergeModuleImports(merged, parseSource(content, file), baseDir, seen)
+}
+
+// `import pkg.*` -- every module directly inside `pkg`, in the order
+// list_modules sorted them.
+//
+// Non-recursive, like Kotlin's: a nested package is a separate import. A
+// directory with no modules in it is an error rather than a no-op, because the
+// only ways to reach it are a typo in the package name and a package that has
+// been emptied, and both are worth hearing about.
+private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
+                        visited: String) -> String {
+    let dirPath = joinImportDir(baseDir, site.s1)
+    let listing = list_modules(dirPath)
+
+    if (strEquals(listing, "")) {
+        diag_error_at_code("P1002", site.file, site.line, site.col, site.len,
+            strConcat(strConcat("package ", diagQuote(site.s1)),
+                       strConcat(" contains no modules: ", dirPath)))
+        diag_finish()
+        exit(1)
+    }
+
+    let mut seen = visited
+    let mut name = ""
+    let mut i = 0
+    let length = __builtin_string_len(listing)
+
+    while (i < length) {
+        let c = strCharAt(listing, i)
+        if (c == '\n') {
+            let qualified = strConcat(strConcat(site.s1, "."), name)
+            seen = mergeNamedModule(merged, site, qualified, baseDir, seen)
+            name = ""
+        } else {
+            name = strConcat(name, strFromChar(c))
+        }
+        i = i + 1
+    }
+
+    let last = strConcat(strConcat(site.s1, "."), name)
+    return mergeNamedModule(merged, site, last, baseDir, seen)
+}
+
+// Walks `module`, appending its non-import declarations into the shared `merged`
+// accumulator and resolving each import it carries. `visited` threads the set of
+// already-resolved paths through the recursion and is returned so sibling
+// imports see what earlier ones resolved.
+private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited: String) -> String {
+    let mut seen = visited
+
+    let mut stmtPtr = module.child1
+    while (nodeExists(stmtPtr)) {
+        let stmt = ptr_to_node(stmtPtr)
+        let nextStmt = stmt.next
+        stmt.next = ptr_null()
+
+        if (stmt.kind == NodeKind.IMPORT_STATEMENT) {
+            if (stmt.i1 == 1) {
+                seen = mergePackageImport(merged, stmt, baseDir, seen)
+            } else {
+                seen = mergeNamedModule(merged, stmt, stmt.s1, baseDir, seen)
+            }
+        } else {
+            appendStatement(merged, stmt)
+        }
+
+        stmtPtr = nextStmt
+    }
+
+    return seen
+}
+
+// Finds a standard module in a source checkout or an installed toolchain.
+// Standard modules are compiler-owned rather than relative to an application's
+// entry file, so a local `std/` directory cannot replace the shipped
+// definitions.
+//
+// `leaf` is the file name, because the installed layout flattens the package:
+// `std/map.psm` in a checkout is `stdlib/map.psm` once installed.
+fn standardModulePath(baseDir: String, leaf: String) -> String {
+    let besideEntry = join_path(baseDir, strConcat("std/", leaf))
+    if (file_exists(besideEntry) == 1) { return besideEntry }
+
+    let inSourceTree = join_path(get_directory(baseDir), strConcat("std/", leaf))
+    if (file_exists(inSourceTree) == 1) { return inSourceTree }
+
+    let toolchainRoot = get_directory(executable_directory())
+
+    let installed = join_path(toolchainRoot, strConcat("stdlib/", leaf))
+    if (file_exists(installed) == 1) { return installed }
+
+    let besideBuild = join_path(toolchainRoot, strConcat("std/", leaf))
+    if (file_exists(besideBuild) == 1) { return besideBuild }
+
+    return ""
+}
+
+// Where `import std.map` reads from.
+//
+// An ordinary import is relative to the source root, and that is right for an
+// application's own modules. It is wrong for `std.*`: those are shipped with the
+// compiler, and a program that imports one is not asking for a file that happens
+// to sit next to it. Resolved relative to the entry first all the same, so a
+// checkout of the compiler compiles against its own `std/` rather than an
+// installed copy.
+//
+// Each branch rebuilds the path rather than binding it once. Strings are affine,
+// so a binding tested with file_exists and then returned is named twice; a fresh
+// temporary per use is a str_concat and avoids the question.
+private fn resolveImportPath(baseDir: String, moduleName: String) -> String {
+    if (file_exists(joinImportPath(baseDir, moduleName)) == 1) {
+        return joinImportPath(baseDir, moduleName)
+    }
+    if (strStartsWith(moduleName, "std.") == false) {
+        return joinImportPath(baseDir, moduleName)
+    }
+    let leaf = strConcat(strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm")
+    if (strEquals(standardModulePath(baseDir, leaf), "")) {
+        return joinImportPath(baseDir, moduleName)
+    }
+    return standardModulePath(baseDir, strConcat(strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm"))
+}
+
+// The entry file is marked resolved before the walk begins, so that a package
+// import naming the package it lives in cannot pull it in a second time and
+// duplicate every function it defines.
+fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNode {
+    let merged = createNode(NodeKind.MODULE)
+    // The index and the tail cache describe `merged`, so both start empty with
+    // it. analyzeModule and generateModule rebuild the index from the finished
+    // module; this fill is the merge's own, and it is the same one walk.
+    ir_reset_decl_index()
+    // Selections are recorded by the merge below and read by sema, so this is
+    // the one point where the previous run's are gone and this run's are not
+    // yet made.
+    ir_reset_selections()
+    mergeTailPtr = ptr_null()
+    // No prelude. `std.io` is an ordinary import, so a program that names no I/O
+    // carries none -- which is what lets a target with no stdout link at all.
+    mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))
+
+    // Before the templates are collected, and after the merge: a default may be
+    // inherited from a trait declared in another module, and a default expanded
+    // on a generic impl has to be collected as a template like any other.
+    monoExpandDefaultMethods(merged)
+
+    // Generic declarations come out of the chain here, at the end of the merge
+    // rather than at the start of sema, so that every consumer of a resolved
+    // module sees the same thing: a chain of concrete declarations, plus
+    // whatever instantiation later appends to it.
+    monoCollectTemplates(merged)
+
+    // After the templates are out of the way, so that a *generic* payload enum
+    // is desugared once per instantiation rather than once as a template whose
+    // payload types are still type parameters.
+    enumDesugarModule(merged)
+    return merged
+}

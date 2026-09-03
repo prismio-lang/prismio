@@ -73,6 +73,26 @@ arguments. `component("prismio.backend")` selects the toolchain-owned local
 backend bundle and its transitive LLVM dependency. Host promotion is selected
 only by matching the planned output to `toolchain.host`.
 
+### A command is manifest data; which names are free is not
+
+`commands` needed no lexer or parser change, which is the generic AST paying for
+itself: a command is a named block of calls, and calls with arguments are what
+the parser already produces. Lowering, validation, and a dispatch hook were the
+whole change.
+
+The reserved-name rule is deliberately *not* here. UMS validates a command's
+shape -- the name is well formed, the steps resolve, a `run` step names
+something executable. Which names are still available is CLI policy, so
+`src/main.psm` owns the list and reports `P1058`. UMS embedded by another
+Prismio tool would have a different verb list and the same manifest rules.
+
+Steps run in declaration order and stop at the first failure. A `build` step may
+not name the `toolchain.host` target: the rebuilt host is promoted by the global
+parent only after this process exits, so later steps would still be running the
+previous compiler. That is `P1061`, and it is checked at execution rather than
+in validation because host identity is a comparison against the planned output
+path, which the build plan produces after validation has run.
+
 ### Generated state is project-local and isolated
 
 `UmsBuildConfiguration` defaults to:
@@ -96,6 +116,7 @@ they will use the platform-appropriate global Prismio cache.
   edits
 - `targets/`: executable, test, and library target kinds; ordered native link
   inputs and target lookup
+- `commands/`: project command, step, and argument models, and command lookup
 - `dependency/`: dependency scopes, local-path resolution, and lockfile output
 - `resolver/`: upward manifest discovery
 - `builder/`: deterministic build-plan and artifact-path construction

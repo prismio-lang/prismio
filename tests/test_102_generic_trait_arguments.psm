@@ -5,9 +5,14 @@ import std.io
 import std.string
 import trait_args.source
 
+// The traits come from `trait_args.source`, so the targets here are local types.
+// A module that declares neither the trait nor the type may not implement one
+// for the other.
+struct Label { text: String }
+
 // T is constrained by the trait argument even though the target is concrete.
-impl<T> From<T> for String {
-    fn from(value: T) -> String { return "made" }
+impl<T> From<T> for Label {
+    fn from(value: T) -> Label { return Label { text: "made" } }
 }
 
 fn make<U: From<Int>>(value: Int) -> U {
@@ -15,16 +20,16 @@ fn make<U: From<Int>>(value: Int) -> U {
 }
 
 // The same target may implement distinct applications of one generic trait.
-impl ScaleBy<Int> for String {
+impl ScaleBy<Int> for Label {
     fn scaleBy(self, value: Int) -> Int {
-        return strLength(self) + value
+        return strLength(self.text) + value
     }
 }
 
-impl ScaleBy<Bool> for String {
+impl ScaleBy<Bool> for Label {
     fn scaleBy(self, value: Bool) -> Int {
-        if (value) { return strLength(self) + 100 }
-        return strLength(self)
+        if (value) { return strLength(self.text) + 100 }
+        return strLength(self.text)
     }
 }
 
@@ -37,8 +42,8 @@ fn scaleWithBool<U: ScaleBy<Bool>>(value: U) -> Int {
 }
 
 // Nested type arguments exercise `>>` recovery and recursive identity.
-impl Wraps<List<Int>> for String {
-    fn wraps(self) -> Bool { return strLength(self) > 0 }
+impl Wraps<List<Int>> for Label {
+    fn wraps(self) -> Bool { return strLength(self.text) > 0 }
 }
 
 fn acceptsWrapped<U: Wraps<List<Int>>>(value: U) -> Bool {
@@ -75,11 +80,11 @@ fn fail(message: String) -> Int {
 }
 
 fn main() -> Int {
-    let made = make<String>(7)
-    if (strEquals(made, "made") == false) { return fail("generic impl solved from trait argument") }
-    if (scaleWithInt<String>("abcd") != 7) { return fail("ScaleBy<Int>") }
-    if (scaleWithBool<String>("abcd") != 104) { return fail("ScaleBy<Bool>") }
-    if (acceptsWrapped<String>("x") == false) { return fail("nested trait argument") }
+    let made = make<Label>(7)
+    if (strEquals(made.text, "made") == false) { return fail("generic impl solved from trait argument") }
+    if (scaleWithInt<Label>(Label { text: "abcd" }) != 7) { return fail("ScaleBy<Int>") }
+    if (scaleWithBool<Label>(Label { text: "abcd" }) != 104) { return fail("ScaleBy<Bool>") }
+    if (acceptsWrapped<Label>(Label { text: "x" }) == false) { return fail("nested trait argument") }
     if (sameTag(Carrier<Bool> { value: true }) != 1) { return fail("same variable across target and trait") }
     if (crossTag(Carrier<Bool> { value: true }) != 15) { return fail("disjoint cross constraint") }
     println("test_102 ok")

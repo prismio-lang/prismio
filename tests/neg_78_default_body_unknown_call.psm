@@ -1,0 +1,15 @@
+// expect-error: absent
+// A default body is checked once expanded. Calling something the implementing
+// type does not have is an error at the impl that inherited it.
+import std.string
+
+trait Broken {
+    fn base(self) -> Int
+    fn derived(self) -> Int { return absent(self) }
+}
+
+impl Broken for String {
+    fn base(self) -> Int { return 1 }
+}
+
+fn main() -> Int { return 0 }

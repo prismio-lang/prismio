@@ -1,0 +1,14 @@
+// expect-error: speak
+// A qualifier restricts the call to that trait's methods. `Soft` declares no
+// `speak` for this type, so naming it finds nothing rather than falling back.
+struct Dog { n: Int }
+
+trait Loud { fn speak(self) -> Int }
+trait Soft { fn whisper(self) -> Int }
+
+impl Loud for Dog { fn speak(self) -> Int { return 1 } }
+impl Soft for Dog { fn whisper(self) -> Int { return 2 } }
+
+fn main() -> Int {
+    return Soft.speak(Dog { n: 0 })
+}

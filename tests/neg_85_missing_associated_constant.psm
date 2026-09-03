@@ -1,0 +1,14 @@
+// expect-error: no `let MAX`
+// A constant is part of the contract exactly as a method is.
+import std.string
+
+trait Bounded {
+    let MAX: Int
+    fn current(self) -> Int
+}
+
+impl Bounded for String {
+    fn current(self) -> Int { return 1 }
+}
+
+fn main() -> Int { return 0 }

@@ -1,0 +1,12 @@
+// expect-error: may not implement one for the other
+// The trait comes from another module and `String` is built in, so this module
+// owns neither. Another module could write the same implementation, and nothing
+// would be able to see the conflict until some third program imported both.
+import std.string
+import trait_args.source
+
+impl ScaleBy<Int> for String {
+    fn scaleBy(self, value: Int) -> Int { return strLength(self) + value }
+}
+
+fn main() -> Int { return 0 }

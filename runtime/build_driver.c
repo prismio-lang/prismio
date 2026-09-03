@@ -56,10 +56,12 @@ int ir_link_modules(const char* dest_ir, const char* src_ir, const char* out_pat
 static const PrismioToolchainFile prismio_toolchain_files[] = {
     { "prismio_platform.h", 0, NULL,              1 },
     { "prismio_runtime.h",  0, NULL,              1 },
+    { "aif_containers.h",   0, NULL,              0 },
     { "lang_runtime.c",     1, "lang_runtime",    1 },
     { "program_support.c",  1, "program_support", 1 },
     { "build_driver.c",     1, "build_driver",    0 },
     { "ir_symbols.c",       1, "ir_symbols",      0 },
+    { "aif_containers.c",   1, "aif_containers",  0 },
     { "aif_support.c",      1, "aif_support",     0 },
     { "diagnostics.c",      1, "diagnostics",     0 },
     { "llvm-api-backend.c", 1, "backend",         0 },
@@ -76,13 +78,15 @@ static const char* prismio_embedded_text(int index) {
     switch (index) {
         case 0: return prismio_embedded_prismio_platform_h;
         case 1: return prismio_embedded_prismio_runtime_h;
-        case 2: return prismio_embedded_lang_runtime_c;
-        case 3: return prismio_embedded_program_support_c;
-        case 4: return prismio_embedded_build_driver_c;
-        case 5: return prismio_embedded_ir_symbols_c;
-        case 6: return prismio_embedded_aif_support_c;
-        case 7: return prismio_embedded_diagnostics_c;
-        case 8: return prismio_embedded_llvm_api_backend_c;
+        case 2: return prismio_embedded_aif_containers_h;
+        case 3: return prismio_embedded_lang_runtime_c;
+        case 4: return prismio_embedded_program_support_c;
+        case 5: return prismio_embedded_build_driver_c;
+        case 6: return prismio_embedded_ir_symbols_c;
+        case 7: return prismio_embedded_aif_containers_c;
+        case 8: return prismio_embedded_aif_support_c;
+        case 9: return prismio_embedded_diagnostics_c;
+        case 10: return prismio_embedded_llvm_api_backend_c;
         default: return NULL;
     }
 }

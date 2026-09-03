@@ -1,0 +1,90 @@
+// A trait method may carry a body. An impl inherits it or overrides it, and the
+// body is substituted for `Self` and for the trait's own arguments.
+
+import std.io
+import std.string
+
+struct Dog { tag: Int }
+struct Cat { tag: Int }
+
+trait Greet {
+    fn name(self) -> String
+    // Written once. A default may call the trait's other methods on `Self`.
+    fn greet(self) -> String { return strConcat("hello ", name(self)) }
+}
+
+impl Greet for Dog {
+    fn name(self) -> String { return "dog" }
+}
+
+// The override wins, and the default is not emitted for this impl.
+impl Greet for Cat {
+    fn name(self) -> String { return "cat" }
+    fn greet(self) -> String { return "meow" }
+}
+
+// `Self` in a default's return position resolves to each implementing type.
+struct Counter { n: Int }
+
+trait Bump {
+    fn step(self) -> Int
+    fn bumped(self) -> Counter { return Counter { n: step(self) + 1 } }
+}
+
+impl Bump for Counter {
+    fn step(self) -> Int { return self.n }
+}
+
+// A default on a generic impl is instantiated per concrete receiver.
+struct Box<T> { value: T }
+
+trait Tagged {
+    fn tagOf(self) -> Int
+    fn doubled(self) -> Int { return tagOf(self) * 2 }
+}
+
+impl<T> Tagged for Box<T> {
+    fn tagOf(self) -> Int { return 7 }
+}
+
+// A default whose signature mentions the trait's argument: `factor: T` has to
+// become `factor: Int` in the expansion, not stay a type parameter.
+trait ScaleBy<T> {
+    fn unit(self) -> Int
+    fn scale(self, factor: T) -> Int { return unit(self) * 10 }
+}
+
+impl ScaleBy<Int> for Dog {
+    fn unit(self) -> Int { return 3 }
+}
+
+// A bound still sees a defaulted method as part of the trait.
+fn greetThrough<U: Greet>(value: U) -> String {
+    return greet(value)
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let dog = Dog { tag: 1 }
+    let cat = Cat { tag: 2 }
+
+    if (strEquals(greet(dog), "hello dog") == false) { return fail("inherited default") }
+    if (strEquals(greet(cat), "meow") == false) { return fail("override wins") }
+    if (strEquals(greetThrough(dog), "hello dog") == false) { return fail("default through a bound") }
+
+    let counter = Counter { n: 4 }
+    if (bumped(counter).n != 5) { return fail("Self in a default's return type") }
+
+    if (doubled(Box<Int> { value: 1 }) != 14) { return fail("default on a generic impl") }
+    if (doubled(Box<Bool> { value: true }) != 14) { return fail("second instance of one default") }
+
+    if (scale(dog, 5) != 30) { return fail("trait argument substituted in a default") }
+
+    println("test_103 ok")
+    return 0
+}

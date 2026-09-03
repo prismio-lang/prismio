@@ -15,8 +15,9 @@ The initial implementation provides:
 - validation with stable `UMSxxxx` diagnostic codes;
 - local-path dependency resolution and a versioned lockfile;
 - token-preserving dependency edits for existing manifests;
-- build plans rooted at `.prismio/build/<profile>/`; and
-- project-mode integration for `init`, `build`, `run`, `test`, and `clean`.
+- build plans rooted at `.prismio/build/<profile>/`;
+- project-mode integration for `init`, `build`, `run`, `test`, and `clean`; and
+- project-defined commands composed of build, run, and shell steps.
 
 ## Manifest syntax
 
@@ -40,6 +41,14 @@ targets {
 
 dependencies {
     implementation("json", "1.2.0")
+}
+
+commands {
+    command("dist") {
+        description = "Package a release archive"
+        build("http")
+        shell("tools/package.sh", "--out", "dist", args)
+    }
 }
 ```
 
@@ -71,6 +80,7 @@ Supported top-level blocks and declarations are:
 - `dependencies { implementation("name", "constraint", "../local-path") }`
 - `dependencies { api("name", "constraint") }`
 - `dependencies { testImplementation("name", "constraint") }`
+- `commands { command("name") { ... } }`
 
 Local-path dependencies resolve against the directory containing `build.ums`.
 Registry-shaped dependencies are represented and locked, but report `UMS2211`
@@ -81,6 +91,55 @@ checks its structure; a future package registry owns validation against its
 versioned SPDX identifier catalogue. Authors and descriptions must not be empty.
 `prismio init` keeps its generated manifest minimal and does not write empty
 metadata placeholders.
+
+## Project commands
+
+A `commands` block declares commands the project owns. Each is a name, an
+optional `description`, and one or more steps run in declaration order; the
+command stops at the first step that fails.
+
+```ums
+commands {
+    command("dist") {
+        description = "Package a release archive"
+        build("http")
+        shell("tools/package.sh", "--out", "dist", args)
+    }
+}
+```
+
+Three step forms:
+
+- `build("target")` builds a declared target.
+- `run("target")` builds a declared executable target and then runs it. It
+  builds on its own, so a `build` step for the same target before it is
+  redundant.
+- `shell("program", "arg", ...)` runs an external program. Every argument is
+  quoted for the platform's shell, so an argument containing spaces or shell
+  metacharacters stays one argument. A program written with a path separator
+  resolves against the project root, because `build.ums` is discovered upward
+  and the working directory is wherever the user stood; a bare name is left to
+  `PATH`.
+
+The bare word `args` inside a `shell` step splices in whatever the user typed
+after the command name, keeping its position among the fixed arguments. It is
+the only identifier a step argument accepts.
+
+`--release` among those arguments selects the profile the command's build steps
+use, and is still forwarded, so one flag reaches both halves of
+`prismio dist --release`.
+
+A `build` step may not name the `toolchain.host` target. Rebuilding the host
+stages a candidate the global parent promotes only after the process exits, so
+every later step in the command would still run the previous compiler while
+reading as though it ran the new one. `prismio build` is how the host is
+rebuilt.
+
+Built-in commands win. A manifest that names one of `init`, `build`, `run`,
+`test`, `clean`, `check`, `bootstrap`, `aif`, `dump-ast` or `runtime-hash` is
+rejected when it loads, rather than silently declaring a command that could
+never be dispatched. Which names are reserved is CLI policy and lives in
+`src/main.psm`; UMS validates a command's shape and does not know the verb list.
 
 ## Manifest edits
 
@@ -104,6 +163,7 @@ prismio build [--release]
 prismio run [--release]
 prismio test [--release]
 prismio clean [--release]
+prismio <command> [args...]
 ```
 
 UMS finds the nearest ancestor `build.ums`, validates it, creates a build plan,

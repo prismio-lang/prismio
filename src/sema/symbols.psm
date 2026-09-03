@@ -68,12 +68,79 @@ internal fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
     if (strEquals(fnNode.s1, "main")) {
         return "main"
     }
-    return strConcat(strConcat(fnNode.s1, "__"), semaParamSignature(module, fnNode.child1))
+
+    // A trait's method is named by its trait as well as its signature, so that
+    // two traits may each declare `speak` for one type. Without this they mangle
+    // to one symbol and the second is rejected as a duplicate definition -- which
+    // is the global method namespace charging for something the program never
+    // asked for. An inherent method and a free function are unchanged.
+    let owner = semaOwningTrait(module, fnNode)
+    let signature = semaParamSignature(module, fnNode.child1)
+    if (strEquals(owner, "") == false) {
+        return strConcat(strConcat(owner, "_"),
+                         strConcat(fnNode.s1, strConcat("__", signature)))
+    }
+    return strConcat(strConcat(fnNode.s1, "__"), signature)
+}
+
+// One entry per trait-impl method: `s1` is the owning trait's name and the span
+// is the method's. Rebuilt once per module by semaCacheFunctionSymbols.
+//
+// **This exists because the obvious version was quadratic.** Asking "which trait
+// owns this function?" by walking the module's declarations, once per function,
+// is O(functions x declarations) -- around fifteen million steps on the compiler
+// itself, for an answer drawn from a set of a few dozen. The index is that set.
+let mut semaTraitMethodIndex: Ptr
+
+private fn semaBuildTraitMethodIndex(module: ASTNode) {
+    let entries = nodeList()
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, "") == false) {
+            let mut recordPtr = stmt.child2
+            while (nodeExists(recordPtr)) {
+                let record = ptr_to_node(recordPtr)
+                if (record.kind == NodeKind.IMPL_METHOD) {
+                    let entry = createNode(NodeKind.IMPL_METHOD)
+                    entry.s1 = strClone(stmt.s2)
+                    nodeSpanFrom(entry, record)
+                    nodeListPush(entries, entry)
+                }
+                recordPtr = record.next
+            }
+        }
+        p = stmt.next
+    }
+    semaTraitMethodIndex = entries.head
+}
+
+// The trait an `impl` method belongs to, or "" for a free function or an
+// inherent method.
+//
+// By source position against the IMPL_METHOD records, which is the identity the
+// rest of the checker already uses: a method leaves its `impl` block for the
+// module chain, and the record is what remembers where it came from. Two
+// declarations cannot begin at the same file, line and column.
+internal fn semaOwningTrait(module: ASTNode, fnNode: ASTNode) -> String {
+    let mut p = semaTraitMethodIndex
+    while (nodeExists(p)) {
+        let entry = ptr_to_node(p)
+        if (entry.file == fnNode.file
+            and entry.line == fnNode.line
+            and entry.col == fnNode.col) {
+            return entry.s1
+        }
+        p = entry.next
+    }
+    return ""
 }
 
 // Mangles every function's symbol once and stores it on the node, so the
 // duplicate-detection passes can compare strings instead of recomputing.
 internal fn semaCacheFunctionSymbols(module: ASTNode) {
+    semaBuildTraitMethodIndex(module)
+
     let mut stmtPtr = module.child1
     while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
@@ -122,7 +189,24 @@ private fn semaArgMatchesType(module: ASTNode, argNode: ASTNode, expected: TypeI
         return true
     }
     let actual = semaExpr(module, argNode)
-    return semaTypesMatch(expected, actual)
+    if (semaTypesMatch(expected, actual)) { return true }
+
+    // T15. A concrete value is accepted where a trait object is expected, when
+    // its type implements the trait. The value is wrapped after the overload is
+    // chosen -- matching has to admit the coercion first, or no overload is
+    // found and there is nothing to wrap.
+    return semaCoercesToDyn(module, expected, actual)
+}
+
+// Whether `actual` may be built into the trait object `expected`.
+internal fn semaCoercesToDyn(module: ASTNode, expected: TypeInfo, actual: TypeInfo) -> Bool {
+    if (typeIsValid(expected) == false or typeIsValid(actual) == false) { return false }
+    if (expected.kind != TypeKind.STRUCT) { return false }
+    if (strStartsWith(expected.name, "dyn$") == false) { return false }
+    if (actual.kind == TypeKind.STRUCT and strStartsWith(actual.name, "dyn$")) { return false }
+
+    let traitName = strSubstring(expected.name, 4, __builtin_string_len(expected.name) - 4)
+    return semaTypeImplementsNamedTrait(module, typeDisplay(actual), traitName)
 }
 
 private fn semaSignatureMatchesCall(module: ASTNode, fnNode: ASTNode, argPtr: Ptr) -> Bool {
@@ -211,7 +295,7 @@ private fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
 //
 // Cloned because diag_file_module is an `alias` into the registry's storage and
 // this returns an owned String.
-private fn semaFileQualifier(file: Int) -> String {
+internal fn semaFileQualifier(file: Int) -> String {
     return strClone(diag_file_module(file))
 }
 
@@ -333,6 +417,15 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
     // before it existed, and it keeps semaFileQualifier's clone off the loop.
     let selective = ir_select_active(call.file) == 1
 
+    // `Loud.speak(dog)` -- a *trait*-qualified call, which is how a method that
+    // two traits both declare for one type is named unambiguously. Whether the
+    // qualifier is a trait is a property of the qualifier, so it is asked once
+    // here rather than once per candidate.
+    let mut traitQualified = false
+    if (strEquals(qualifier, "") == false) {
+        traitQualified = semaIsTraitName(module, qualifier)
+    }
+
     // REQUIREMENTS 16. This used to walk every top-level declaration in the
     // module, once per call site -- the compiler's dominant cost, and quadratic.
     // The index holds the declarations carrying this name, in source order, so
@@ -348,9 +441,14 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         if (stmt.kind == NodeKind.EXTERN_FUNCTION and definitionExists == false) {
             isCandidate = true
         }
-        if (isCandidate and strEquals(qualifier, "") == false
-            and strEquals(semaFileQualifier(stmt.file), qualifier) == false) {
-            isCandidate = false
+        if (isCandidate and strEquals(qualifier, "") == false) {
+            if (traitQualified) {
+                if (strEquals(semaOwningTrait(module, stmt), qualifier) == false) {
+                    isCandidate = false
+                }
+            } else if (strEquals(semaFileQualifier(stmt.file), qualifier) == false) {
+                isCandidate = false
+            }
         }
         // v0.1 3.5. The importing file's half of the filter above. `import
         // std.string.strTrim` takes one name from that module, so every other
@@ -403,6 +501,10 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
     if (matchCount > 1) {
         semaErrorAt(call, strConcat(strConcat("ambiguous call to ", diagQuote(name)),
                                        ": more than one overload matches these arguments"))
+        // When the tie is between two traits, the fix is a spelling rather than a
+        // change to either declaration, so the note names it. Silent otherwise:
+        // an ordinary overload tie has no qualifier that would resolve it.
+        semaNoteTraitQualifiers(module, call, name, argPtr)
         return ptr_to_node(bestPtr)
     }
     if (matchCount == 1) {
@@ -424,7 +526,11 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         return createNode(NodeKind.MODULE)
     }
     if (strEquals(qualifier, "") == false) {
-        semaErrorAt(call, strConcat(strConcat("module ", diagQuote(qualifier)),
+        // A qualifier is a module or a trait, and saying the wrong one sends the
+        // reader to check their imports for a name that is a trait's.
+        let mut kind = "module "
+        if (traitQualified) { kind = "trait " }
+        semaErrorAt(call, strConcat(strConcat(kind, diagQuote(qualifier)),
                                     strConcat(" declares no ", diagQuote(name))))
         return createNode(NodeKind.MODULE)
     }
@@ -457,4 +563,42 @@ internal fn semaCheckArity(call: ASTNode, name: String, argPtr: Ptr, expected: I
     semaErrorAt(call, strConcat(strConcat(diagQuote(name), " expects "),
                   strConcat(strFromInt(expected), strConcat(noun, strFromInt(actual)))))
     return false
+}
+
+internal fn semaIsTraitName(module: ASTNode, name: String) -> Bool {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.TRAIT_DECL and strEquals(stmt.s1, name)) { return true }
+        p = stmt.next
+    }
+    return false
+}
+
+// Names the trait-qualified spellings that would resolve an ambiguous call.
+// Only traits: an inherent method or a free function contributes no qualifier,
+// and suggesting one that does not exist is worse than saying nothing.
+private fn semaNoteTraitQualifiers(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) {
+    let count = ir_decl_count(name)
+    let mut suggestion = ""
+    let mut i = 0
+    while (i < count) {
+        let stmt = ptr_to_node(ir_decl_at(name, i))
+        if (stmt.kind == NodeKind.FUNCTION and semaSignatureMatchesCall(module, stmt, argPtr)) {
+            let owner = semaOwningTrait(module, stmt)
+            if (strEquals(owner, "") == false) {
+                if (strEquals(suggestion, "") == false) {
+                    suggestion = strConcat(suggestion, " or ")
+                }
+                suggestion = strConcat(suggestion,
+                                       strConcat("`", strConcat(owner,
+                                                 strConcat(".", strConcat(name, "(...)`")))))
+            }
+        }
+        i = i + 1
+    }
+    if (strEquals(suggestion, "") == false) {
+        diag_note_at(call.file, call.line, call.col, call.len,
+                     strConcat("name the trait: write ", suggestion))
+    }
 }

@@ -1,0 +1,16 @@
+// expect-error: is declared Int
+// The value is checked against the type the trait declared, at the impl that
+// wrote it.
+import std.string
+
+trait Bounded {
+    let MAX: Int
+    fn current(self) -> Int
+}
+
+impl Bounded for String {
+    let MAX: Int = "not an int"
+    fn current(self) -> Int { return 1 }
+}
+
+fn main() -> Int { return 0 }

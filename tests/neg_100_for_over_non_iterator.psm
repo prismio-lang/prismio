@@ -1,0 +1,13 @@
+// expect-error: implementing `Iterator`
+// A type that is neither a String nor a List nor an Iterator cannot be iterated,
+// and the diagnostic says which of those would fix it.
+struct Bag { n: Int }
+
+fn main() -> Int {
+    let b = Bag { n: 1 }
+    let mut total = 0
+    for x in b {
+        total = total + 1
+    }
+    return total
+}

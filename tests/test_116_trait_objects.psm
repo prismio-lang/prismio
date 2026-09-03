@@ -1,0 +1,84 @@
+// A trait object: one function, many concrete types, the implementation chosen
+// at run time through a table rather than at the call site by overload
+// resolution.
+
+import std.io
+import std.string
+
+trait Shape {
+    fn area(self) -> Int
+    fn scaled(self, factor: Int) -> Int
+}
+
+struct Square { side: Int }
+struct Rect { w: Int, h: Int }
+
+impl Shape for Square {
+    fn area(self) -> Int { return self.side * self.side }
+    fn scaled(self, factor: Int) -> Int { return area(self) * factor }
+}
+
+impl Shape for Rect {
+    fn area(self) -> Int { return self.w * self.h }
+    fn scaled(self, factor: Int) -> Int { return area(self) * factor }
+}
+
+// A second trait, to prove the tables are per-trait rather than per-type.
+trait Named {
+    fn label(self) -> Int
+}
+
+impl Named for Square {
+    fn label(self) -> Int { return 1 }
+}
+
+impl Named for Rect {
+    fn label(self) -> Int { return 2 }
+}
+
+// The whole point: this function is compiled once and works for every
+// implementation, including ones written after it.
+fn measure(s: dyn Shape) -> Int {
+    return area(s)
+}
+
+// A method with arguments beyond the receiver.
+fn measureScaled(s: dyn Shape, factor: Int) -> Int {
+    return scaled(s, factor)
+}
+
+fn nameOf(n: dyn Named) -> Int {
+    return label(n)
+}
+
+// An object passed on to another function that also takes one: the pair is
+// forwarded, not rebuilt.
+fn forwarded(s: dyn Shape) -> Int {
+    return measure(s)
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let sq = Square { side: 3 }
+    let re = Rect { w: 2, h: 5 }
+
+    if (measure(sq) != 9) { return fail("dispatch to the first implementation") }
+    if (measure(re) != 10) { return fail("dispatch to the second implementation") }
+
+    if (measureScaled(sq, 2) != 18) { return fail("method with a further argument") }
+    if (measureScaled(re, 3) != 30) { return fail("second instance with arguments") }
+
+    if (nameOf(sq) != 1) { return fail("a second trait's table") }
+    if (nameOf(re) != 2) { return fail("second trait, second type") }
+
+    if (forwarded(sq) != 9) { return fail("an object forwarded to another call") }
+    if (forwarded(re) != 10) { return fail("second forwarded instance") }
+
+    println("test_116 ok")
+    return 0
+}

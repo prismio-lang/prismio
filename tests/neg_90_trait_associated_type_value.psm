@@ -1,0 +1,9 @@
+// expect-error: the choice belongs in each `impl`
+// A trait names an associated type; choosing it there would be a default the
+// rest of the design does not yet have.
+trait Container {
+    type Item = Int
+    fn size(self) -> Int
+}
+
+fn main() -> Int { return 0 }

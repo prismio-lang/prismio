@@ -1,4 +1,5 @@
 import ums.model.project
+import ums.commands.command
 import ums.model.diagnostic
 import ums.model.lowering
 import ums.model.validation
@@ -168,5 +169,17 @@ impl UmsWorkspace {
 
          fn target(self, index: Int) -> UmsTarget {
         return list_get(self.project.targets, index)
+    }
+
+    fn commandCount(self) -> Int {
+        return list_len(self.project.commands)
+    }
+
+    fn command(self, index: Int) -> UmsCommand {
+        return list_get(self.project.commands, index)
+    }
+
+    fn findCommand(self, name: String) -> Int {
+        return umsCommandFind(self.project.commands, name)
     }
 }

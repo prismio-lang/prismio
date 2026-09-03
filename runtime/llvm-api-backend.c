@@ -12,7 +12,6 @@
 // folded as they are built. It is also the prerequisite for a custom memory
 // model: allocation is a policy hook here (see "memory model" below) instead of
 // a hardcoded `call ptr @malloc` spelled out in the frontend.
-// ---------------------------------------------------------------------------
 // How values cross the FFI
 // Prismio has no pointer type, so the frontend passes everything as String. The
 // compiler already relies on this for AST nodes (ptr_to_node/node_to_ptr). Here
@@ -25,7 +24,6 @@
 // The literal case is what lets the existing frontend keep passing "0", "42",
 // "true" and "null" straight through without being rewritten first. '$' cannot
 // appear in a Prismio identifier, so a handle can never collide with user text.
-// ---------------------------------------------------------------------------
 // Status: this is the only backend. llvm-bridge.c has been deleted.
 // The compiler self-hosts on this backend to a fixed point and passes the full
 // test suite. src/ir.psm no longer emits any IR text -- struct literals, member
@@ -1199,7 +1197,6 @@ int ir_alloc_stack(const char *struct_name) {
     return intern_value(hot);
 }
 
-// ---------------------------------------------------------------------------
 // The second half of a split object.
 //
 // Allocated through the **same allocator the hot record came from**, and that is
@@ -1211,7 +1208,6 @@ int ir_alloc_stack(const char *struct_name) {
 //
 // Emitted immediately after the hot allocation and before any field initialiser,
 // because a struct literal's first cold field write is the next instruction.
-// ---------------------------------------------------------------------------
 static void attach_cold(const StructType *s, LLVMValueRef hot, const char *alloc_fn,
                         LLVMTypeRef size_ty) {
     if (!s || s->hot_count <= 0) return;
@@ -1541,7 +1537,6 @@ int ir_struct_field_ptr(const char *struct_name, const char *object, int field_i
         LLVMBuildStructGEP2(g_builder, s->type, obj, (unsigned)field_index, ""));
 }
 
-// ---------------------------------------------------------------------------
 // M4.2 -- is this type's layout flat enough to store inline in a container?
 //
 // Two conditions, and each rules out a different failure:
@@ -1564,7 +1559,6 @@ int ir_struct_field_ptr(const char *struct_name, const char *object, int field_i
 // not seen answers "not flat" and the element stays boxed. Unknown means boxed
 // is the only safe direction here: a wrong "flat" is a memcpy of something that
 // owns memory.
-// ---------------------------------------------------------------------------
 int ir_get_struct_field_count(const char *struct_name);
 const char *ir_get_struct_field_type_at(const char *struct_name, int index);
 int ir_is_struct_type_name(const char *name);
@@ -2349,6 +2343,113 @@ int ir_call_end(const char *ret_type, const char *func_name) {
     return is_void ? -1 : intern_value(call);
 }
 
+// An indirect call at an arbitrary signature: dispatch through a trait object's
+// vtable.
+//
+// `ir_call_indirect_ptr` above handles exactly one shape, `fn(ptr) -> void`,
+// because the collector's visitor was the only indirect call the compiler made.
+// A trait method has whatever signature it was declared with, so the function
+// type is built from the arguments already pushed by `ir_call_arg` and the
+// return type the frontend resolved -- the same two sources `ir_call_end` uses
+// when it has to synthesise a declaration.
+//
+// There is no forward-reference case here. The callee is a value loaded from a
+// vtable at run time, not a name that might be defined later in the module.
+int ir_call_end_indirect(const char *ret_type, const char *fn_value) {
+    if (g_call_depth <= 0) backend_fail("call end without begin", fn_value);
+    CallFrame *f = &g_calls[--g_call_depth];
+
+    int is_void = (!ret_type || !*ret_type || strcmp(ret_type, "void") == 0);
+
+    LLVMTypeRef param_types[MAX_CALL_ARGS];
+    for (int i = 0; i < f->count; i++) param_types[i] = LLVMTypeOf(f->args[i]);
+    LLVMTypeRef rty = is_void ? LLVMVoidTypeInContext(g_ctx) : type_from_key(ret_type);
+    LLVMTypeRef fn_ty = LLVMFunctionType(rty, param_types, (unsigned)f->count, 0);
+
+    LLVMValueRef callee = resolve_value(fn_value, "ptr");
+    LLVMValueRef call = LLVMBuildCall2(g_builder, fn_ty, callee, f->args,
+                                       (unsigned)f->count, "");
+    return is_void ? -1 : intern_value(call);
+}
+
+// A vtable: one constant array of function addresses per (trait, implementing
+// type) pair, in the trait's declaration order.
+//
+// Built incrementally for the same reason a call is: the entries arrive one at a
+// time from a walk on the Prismio side, and passing an array across the seam
+// would mean marshalling one.
+//
+// **Emitted after every function has been generated**, so `LLVMGetNamedFunction`
+// always finds its target. A vtable entry cannot synthesise a forward
+// declaration the way `ir_call_end` does, because a bare function address
+// carries no argument types to reconstruct a signature from.
+#define MAX_VTABLE_ENTRIES 256
+static LLVMValueRef g_vtable[MAX_VTABLE_ENTRIES];
+static int g_vtable_count = 0;
+
+// Declared before the functions that reference it, defined after them.
+//
+// A vtable is referenced while a function body is being built and its entries
+// are only knowable once every function exists, so the global has to be created
+// empty and filled later. The length is knowable up front -- it is the trait's
+// method count -- which is what lets the declaration carry the final type and
+// the definition merely supply the initialiser.
+void ir_vtable_declare(const char *name, int count) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef arr = LLVMArrayType2(ptr, (uint64_t)count);
+    if (!LLVMGetNamedGlobal(g_module, name)) LLVMAddGlobal(g_module, arr, name);
+}
+
+void ir_vtable_begin(void) {
+    g_vtable_count = 0;
+}
+
+void ir_vtable_entry(const char *fn_name) {
+    if (g_vtable_count >= MAX_VTABLE_ENTRIES) backend_fail("vtable too large", fn_name);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, fn_name);
+    if (!fn) backend_fail("vtable entry names an unknown function", fn_name);
+    g_vtable[g_vtable_count++] = fn;
+}
+
+// Constant and private: the table never changes, and nothing outside this module
+// names it. Both are what let the linker place it in read-only data.
+void ir_vtable_end(const char *name) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef arr = LLVMArrayType2(ptr, (uint64_t)g_vtable_count);
+    LLVMValueRef init = LLVMConstArray2(ptr, g_vtable, (uint64_t)g_vtable_count);
+
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (!g) g = LLVMAddGlobal(g_module, arr, name);
+    LLVMSetInitializer(g, init);
+    LLVMSetGlobalConstant(g, 1);
+    LLVMSetLinkage(g, LLVMPrivateLinkage);
+    g_vtable_count = 0;
+}
+
+// The address of a vtable, as a value. The second half of a trait object.
+int ir_vtable_addr(const char *name) {
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (!g) backend_fail("address of unknown vtable", name);
+    return intern_value(g);
+}
+
+// The Nth pointer of a pointer array: index, then load.
+//
+// Serves both halves of dispatch, because both are that shape. A vtable is an
+// array of function pointers, and a trait object is an array of two -- the
+// value and its table -- so neither needs a struct layout to be read.
+//
+// For a vtable the index is the method's position in the trait's declaration
+// order, the same order `ir_vtable_entry` was called in. That correspondence is
+// the whole of the dispatch, and it is the frontend's to keep.
+int ir_ptr_slot(const char *base_value, int index) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMValueRef table = resolve_value(base_value, "ptr");
+    LLVMValueRef idx = LLVMConstInt(LLVMInt32TypeInContext(g_ctx), (unsigned)index, 0);
+    LLVMValueRef slot = LLVMBuildGEP2(g_builder, ptr, table, &idx, 1, "");
+    return intern_value(LLVMBuildLoad2(g_builder, ptr, slot, ""));
+}
+
 void ir_global_var(const char *name, const char *type, const char *init_value,
                    int is_const) {
     LLVMTypeRef ty = type_from_key(type);
@@ -2412,7 +2513,6 @@ int ir_const_cstring(const char *text) {
 }
 
 // Pointer to the first byte of a previously created string global.
-// ---------------------------------------------------------------------------
 // First-class aggregates
 //
 // Every aggregate in this compiler has been `ptr` until now -- a struct, a list
@@ -2425,7 +2525,6 @@ int ir_const_cstring(const char *text) {
 //
 // So: undef to start an aggregate, insertvalue to fill it, extractvalue to read
 // a field back. The same three LLVM gives any frontend building a fat pointer.
-// ---------------------------------------------------------------------------
 
 int ir_undef(const char *type) {
     return intern_value(LLVMGetUndef(type_from_key(type)));
@@ -2516,7 +2615,6 @@ void ir_blank_line(void) { /* formatting only */ }
 // Everything here is off unless the frontend calls ir_debug_begin(). A release
 // build takes not one branch differently, which is why -g could land without
 // moving a byte of anyone's output.
-// ---------------------------------------------------------------------------
 // The rule this section is written around: **never emit a location that is
 // wrong.** A debugger that says "no location for x" sends the reader to a print
 // statement. A debugger that says "x is at frame offset 12" when x is at 16
@@ -2530,7 +2628,6 @@ void ir_blank_line(void) { /* formatting only */ }
 //   - a struct is described only when its exact byte layout is known, and a
 //     field the hot/cold split moved out of the record is described where it
 //     really is (behind the link pointer) rather than at a made-up offset.
-// ---------------------------------------------------------------------------
 // Three things Prismio makes harder than C does, and what is done about each.
 // **1. AIF's T0 hoists an allocation into an alloca in the entry block**, and
 // one slot serves every iteration of the loop that declares it. The DWARF is
@@ -2553,7 +2650,6 @@ void ir_blank_line(void) { /* formatting only */ }
 // a permutation is described rather than papered over, and a split type is
 // described as what it is: a hot record with a `__cold` pointer, and a second
 // composite behind it.
-// ---------------------------------------------------------------------------
 // Why a -g build pins the module's data layout
 // A module with no `target datalayout` is laid out by LLVM's *default*
 // specification, in which i64 has a 4-byte ABI alignment. `{ i32, i64 }` is 12
@@ -2759,7 +2855,6 @@ static LLVMMetadataRef di_file(int file_id) {
     return g_di_files[file_id];
 }
 
-// ---------------------------------------------------------------------------
 // Types
 //
 // Two facts are needed per binding and the frontend has one of each: the
@@ -2768,7 +2863,6 @@ static LLVMMetadataRef di_file(int file_id) {
 // name sema recorded ("Int", "String", "Point"), which is what the reader typed.
 // The key decides the shape; the name only refines a pointer, and only when the
 // two agree about there being a pointer.
-// ---------------------------------------------------------------------------
 
 static LLVMMetadataRef di_cached(const char *key) {
     for (int i = 0; i < g_di_type_count; i++) {
@@ -3171,9 +3265,7 @@ static LLVMMetadataRef di_struct_type(const char *name) {
     return real;
 }
 
-// ---------------------------------------------------------------------------
 // Lifecycle
-// ---------------------------------------------------------------------------
 
 // Asks the target machine for the layout the object file will be built with, and
 // writes it onto the module. See the section header for why a -g build cannot
@@ -3292,9 +3384,7 @@ static void debug_clear_location(void) {
     LLVMSetCurrentDebugLocation2(g_alloca_builder, NULL);
 }
 
-// ---------------------------------------------------------------------------
 // Scopes and locations
-// ---------------------------------------------------------------------------
 
 // The scope a location in `file` should hang from. Same file as the enclosing
 // scope: the scope itself. A different one: a DILexicalBlockFile over it, so the
@@ -3421,9 +3511,7 @@ void ir_debug_location(int file_id, int line, int col) {
     LLVMSetCurrentDebugLocation2(g_alloca_builder, loc);
 }
 
-// ---------------------------------------------------------------------------
 // Variables
-// ---------------------------------------------------------------------------
 
 // `slot` is the alloca's name, the same one ir_alloca() was given and every
 // load and store since has resolved through. arg_no is 0 for a local and the

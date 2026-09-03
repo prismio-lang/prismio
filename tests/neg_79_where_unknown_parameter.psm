@@ -1,0 +1,10 @@
+// expect-error: which is not a type parameter
+// A clause naming a parameter the declaration does not have would be silently
+// dropped, and the constraint the author wrote would never be checked.
+trait Show { fn show(self) -> Int }
+
+fn render<T>(value: T) -> Int where U: Show {
+    return 0
+}
+
+fn main() -> Int { return 0 }

@@ -260,6 +260,20 @@ extern fn ir_func_addr(name: String) -> Int
 // traversal phase, so its callee is a value rather than a name.
 extern fn ir_call_indirect_ptr(fnValue: String, arg: String)
 
+// T15. Dispatch through a trait object: an indirect call at whatever signature
+// the method was declared with, and the vtables it dispatches through.
+//
+// `ir_call_end_indirect` closes a call opened with `ir_call_begin` exactly as
+// `ir_call_end` does; the difference is that the callee is a loaded value rather
+// than a name.
+extern fn ir_call_end_indirect(retType: String, fnValue: String) -> Int
+extern fn ir_vtable_declare(name: String, count: Int)
+extern fn ir_vtable_begin()
+extern fn ir_vtable_entry(fnName: String)
+extern fn ir_vtable_end(name: String)
+extern fn ir_vtable_addr(name: String) -> Int
+extern fn ir_ptr_slot(baseValue: String, index: Int) -> Int
+
 // REQUIREMENTS 20. A `List<T>` stores pointer-sized slots, so a scalar element
 // rides in one. Boxing it would cost an allocation per element and hand the
 // container something to own, which is exactly what a scalar element is not.

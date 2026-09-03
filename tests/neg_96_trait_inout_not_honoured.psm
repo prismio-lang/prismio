@@ -1,0 +1,14 @@
+// expect-error: is `inout` in the trait
+// The same rule for a mutable borrow: an implementation may not quietly take a
+// shared one.
+struct Cell { n: Int }
+
+trait Update {
+    fn bump(inout self, by: Int) -> Int
+}
+
+impl Update for Cell {
+    fn bump(self, by: Int) -> Int { return self.n + by }
+}
+
+fn main() -> Int { return 0 }

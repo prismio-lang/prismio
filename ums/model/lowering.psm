@@ -1,6 +1,7 @@
 import std.io
 import ums.model.project
 import ums.model.diagnostic
+import ums.commands.command
 import ums.parser.ast
 import std.string
 
@@ -287,6 +288,141 @@ impl UmsProjectModel {
             i = i + 1
         }
     }
+
+    // Everything after the program: string literals, plus the bare word `args`
+    // standing for what the user typed after the command name. The marker keeps
+    // its position in the list, so a command can put forwarded arguments in the
+    // middle of a fixed argument list rather than only at the end.
+    private fn lowerShellArguments(self, call: UmsAstStatement, step: UmsCommandStep,
+                              diagnostics: List<UmsDiagnostic>) {
+        let mut i = 1
+        while (i < list_len(call.arguments)) {
+            let argument = list_get(call.arguments, i)
+            if (argument.kind == UmsAstValueKind.STRING) {
+                list_push(step.arguments, umsCommandArgument(false, argument.text,
+                          argument.line, argument.col, argument.len))
+            } else if (argument.kind == UmsAstValueKind.IDENTIFIER and
+                       strEquals(argument.text, "args")) {
+                list_push(step.arguments, umsCommandArgument(true, "",
+                          argument.line, argument.col, argument.len))
+            } else {
+                umsDiagnosticAdd(diagnostics, "UMS2508", self.manifestPath,
+                                 argument.line, argument.col, argument.len,
+                                 "a shell argument is a string literal or the bare word `args`")
+            }
+            i = i + 1
+        }
+    }
+
+    // A rejected step is still pushed, as UNKNOWN. Validation skips that kind
+    // because lowering has already reported it, and the push is what stops a
+    // command whose only step was rejected from *also* being reported as
+    // declaring no steps -- one mistake, two errors, two things to go and fix.
+    private fn lowerCommandStep(self, call: UmsAstStatement, command: UmsCommand,
+                           diagnostics: List<UmsDiagnostic>) {
+        let mut kind = UmsCommandStepKind.UNKNOWN
+        if (strEquals(call.name, "build")) { kind = UmsCommandStepKind.BUILD }
+        else if (strEquals(call.name, "run")) { kind = UmsCommandStepKind.RUN }
+        else if (strEquals(call.name, "shell")) { kind = UmsCommandStepKind.SHELL }
+
+        if (call.kind != UmsAstStatementKind.CALL or call.hasBlock or
+            kind == UmsCommandStepKind.UNKNOWN) {
+            self.lowerError(diagnostics, call, "UMS2504",
+                strConcat(strConcat("unknown command step '", call.name),
+                           "'; expected build, run or shell"))
+            kind = UmsCommandStepKind.UNKNOWN
+        } else if (list_len(call.arguments) == 0 or
+                   list_get(call.arguments, 0).kind != UmsAstValueKind.STRING) {
+            self.lowerError(diagnostics, call, "UMS2505",
+                strConcat(call.name, " requires a string as its first argument"))
+            kind = UmsCommandStepKind.UNKNOWN
+        } else if (kind != UmsCommandStepKind.SHELL and list_len(call.arguments) != 1) {
+            self.lowerError(diagnostics, call, "UMS2506",
+                strConcat(call.name, " takes exactly one target name"))
+            kind = UmsCommandStepKind.UNKNOWN
+        }
+
+        if (kind == UmsCommandStepKind.UNKNOWN) {
+            list_push(command.steps, umsCommandStep(kind, call.name,
+                      call.line, call.col, call.len))
+            return
+        }
+
+        let subject = list_get(call.arguments, 0)
+        let step = umsCommandStep(kind, subject.text, call.line, call.col, call.len)
+        if (kind == UmsCommandStepKind.SHELL) {
+            self.lowerShellArguments(call, step, diagnostics)
+        }
+        list_push(command.steps, step)
+    }
+
+    private fn lowerCommand(self, document: UmsAstDocument,
+                       call: UmsAstStatement,
+                       diagnostics: List<UmsDiagnostic>) {
+        if (strEquals(call.name, "command") == false or call.hasBlock == false) {
+            self.lowerError(diagnostics, call, "UMS2501",
+                strConcat(strConcat("unknown commands declaration '", call.name),
+                           "'; expected command(\"name\") { ... }"))
+            return
+        }
+        if (list_len(call.arguments) != 1) {
+            self.lowerError(diagnostics, call, "UMS2502",
+                          "command requires exactly one string name")
+            return
+        }
+        let argument = list_get(call.arguments, 0)
+        if (argument.kind != UmsAstValueKind.STRING) {
+            self.lowerError(diagnostics, call, "UMS2502",
+                          "command requires exactly one string name")
+            return
+        }
+        let commandName = strClone(argument.text)
+        if (umsCommandFind(self.commands, commandName) >= 0) {
+            self.lowerError(diagnostics, call, "UMS2503",
+                strConcat(strConcat("command '", commandName), "' is declared more than once"))
+            return
+        }
+
+        let command = umsCommand(commandName, call.line, call.col, call.len)
+        let mut descriptions = 0
+        let mut i = 0
+        while (i < list_len(call.children)) {
+            let child = list_get(document.statements, list_get(call.children, i))
+            if (child.kind != UmsAstStatementKind.ASSIGNMENT) {
+                self.lowerCommandStep(child, command, diagnostics)
+            } else if (strEquals(child.name, "description") == false) {
+                self.lowerError(diagnostics, child, "UMS2504",
+                    strConcat(strConcat("unknown command property '", child.name),
+                               "'; expected 'description'"))
+            } else if (self.lowerString(diagnostics, child, "command description")) {
+                descriptions = descriptions + 1
+                if (descriptions > 1) {
+                    self.lowerError(diagnostics, child, "UMS2507",
+                                  "command description is declared more than once")
+                } else {
+                    command.description = strClone(child.value.text)
+                }
+            }
+            i = i + 1
+        }
+        list_push(self.commands, command)
+    }
+
+    private fn lowerCommands(self, document: UmsAstDocument,
+                        block: UmsAstStatement,
+                        diagnostics: List<UmsDiagnostic>) {
+        let mut i = 0
+        while (i < list_len(block.children)) {
+            let call = list_get(document.statements, list_get(block.children, i))
+            if (call.kind != UmsAstStatementKind.CALL) {
+                self.lowerError(diagnostics, call, "UMS2501",
+                              "commands contains command(...) declarations")
+            } else {
+                self.lowerCommand(document, call, diagnostics)
+            }
+            i = i + 1
+        }
+    }
 }
 
 private fn umsDependencyScope(name: String) -> UmsDependencyScope {
@@ -366,6 +502,7 @@ internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPat
     let mut projectBlocks = 0
     let mut toolchainBlocks = 0
     let mut targetBlocks = 0
+    let mut commandBlocks = 0
     let mut dependencyBlocks = 0
     let mut i = 0
 
@@ -394,6 +531,11 @@ internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPat
             if (targetBlocks == 1) {
                 project.lowerTargets(document, block, diagnostics)
             }
+        } else if (strEquals(block.name, "commands")) {
+            commandBlocks = commandBlocks + 1
+            if (commandBlocks == 1) {
+                project.lowerCommands(document, block, diagnostics)
+            }
         } else if (strEquals(block.name, "dependencies")) {
             dependencyBlocks = dependencyBlocks + 1
             if (dependencyBlocks == 1) {
@@ -417,6 +559,10 @@ internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPat
     if (targetBlocks > 1) {
         umsDiagnosticAdd(diagnostics, "UMS2008", manifestPath, 0, 0, 0,
                          "build.ums may contain only one targets block")
+    }
+    if (commandBlocks > 1) {
+        umsDiagnosticAdd(diagnostics, "UMS2013", manifestPath, 0, 0, 0,
+                         "build.ums may contain only one commands block")
     }
     if (dependencyBlocks > 1) {
         umsDiagnosticAdd(diagnostics, "UMS2009", manifestPath, 0, 0, 0,

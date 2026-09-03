@@ -265,6 +265,20 @@ internal fn monoTraitRefText(traitRefPtr: Ptr) -> String {
         text = strConcat(text, monoAnnotationText(argPtr))
         argPtr = ptr_to_node(argPtr).next
     }
+
+    // Equality constraints are part of what the bound demanded, so they belong in
+    // the text a failed bound is reported with. Without them the diagnostic for
+    // `Container<Item = Int>` read `Container<>` and told the reader that a type
+    // implementing Container did not implement it.
+    let mut constraintPtr = traitRef.child2
+    while (nodeExists(constraintPtr)) {
+        let constraint = ptr_to_node(constraintPtr)
+        if (first == false) { text = strConcat(text, ", ") }
+        first = false
+        text = strConcat(text, strConcat(constraint.s1,
+                                         strConcat(" = ", monoAnnotationText(constraint.child1))))
+        constraintPtr = constraint.next
+    }
     return strConcat(text, ">")
 }
 
@@ -388,7 +402,9 @@ private fn monoImplements(module: ASTNode, actual: TypeInfo, traitRef: ASTNode) 
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
         if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, traitRef.s1)) {
-            if (monoImplApplies(module, stmt, actual, traitRef)) { return true }
+            if (monoImplApplies(module, stmt, actual, traitRef)) {
+                return monoConstraintsHold(module, stmt, traitRef)
+            }
         }
         p = stmt.next
     }
@@ -450,6 +466,18 @@ private fn monoCheckBounds(module: ASTNode, at: ASTNode, name: String, params: S
 // a program with ten of them has a 60-byte string. It is only ever appended to on
 // a path that has already failed the build.
 let mut monoReportedBounds = ""
+
+// T21. Instantiation is demand-driven and appends to the chain analyzeModule is
+// still walking, so a template that asks for a larger instance of itself --
+// `grow<T>` calling `grow(Box<T> { value: x })` -- names `Box<T>`,
+// `Box<Box<T>>`, and so on, and the compiler never terminates. It hangs with no
+// diagnostic at all, which is the worst possible answer to a one-character
+// mistake.
+//
+// **There is no call stack to bound.** What grows is the type, so that is what
+// is bounded. 32 is far past anything written by hand, and a runaway reaches it
+// in 32 steps, so the diagnostic arrives at once instead of after a hang.
+let MONO_MAX_TYPE_DEPTH = 32
 
 private fn monoFirstReportOfBound(typeName: String, bound: String) -> Bool {
     let marker = strConcat(strConcat("|", typeName), strConcat(":", strConcat(bound, "|")))
@@ -539,7 +567,7 @@ private fn monoSubstituteInto(target: ASTNode, argPtr: Ptr) {
     target.child1 = arg.child1
 }
 
-private fn monoSubstituteChain(ptr: Ptr, params: String, argsPtr: Ptr) {
+internal fn monoSubstituteChain(ptr: Ptr, params: String, argsPtr: Ptr) {
     let mut p = ptr
     while (nodeExists(p)) {
         let node = ptr_to_node(p)
@@ -646,6 +674,9 @@ internal fn monoInstantiateStruct(module: ASTNode, tn: ASTNode) -> String {
     }
     if (monoCheckBounds(module, tn, tn.s1, params,
                         template.genericInfo, tn.child1) == false) { return "" }
+    // The struct half of the same bound. `Box<Box<...>>` is what actually grows
+    // when a generic function instantiates itself with a larger argument.
+    if (monoArgsTooDeep(tn, tn.s1, tn.child1)) { return "" }
 
     // The mangled name is written straight onto the declaration that will carry
     // it, and every read below is a read of that field.
@@ -682,6 +713,7 @@ internal fn monoInstantiateStruct(module: ASTNode, tn: ASTNode) -> String {
     // own field list, and has to find the name already taken rather than recur.
     ir_declare_named_type(copy.s1, 1)
     monoSubstituteChain(copy.child1, params, tn.child1)
+    monoResolveProjections(module, node_to_ptr(copy))
 
     if (copy.kind == NodeKind.ENUM_DECL) {
         // Desugared *after* substitution, so the struct's payload slots carry
@@ -747,9 +779,12 @@ private fn monoInstantiateFunction(module: ASTNode, template: ASTNode, argsPtr: 
         existingIndex = existingIndex + 1
     }
 
+    if (monoArgsTooDeep(template, template.s1, argsPtr)) { return template.s1 }
+
     monoSubstituteChain(copy.child1, params, argsPtr)
     monoSubstituteChain(copy.child2, params, argsPtr)
     monoSubstituteChain(copy.child3, params, argsPtr)
+    monoResolveProjections(module, node_to_ptr(copy))
 
     // Appended and indexed before it is predeclared, because predeclaring reads
     // the parameter annotations back through the declaration index.
@@ -777,6 +812,11 @@ private fn monoInstantiateFunction(module: ASTNode, template: ASTNode, argsPtr: 
 // step and recurses, which is all inference this needs: a type parameter is
 // found in argument position, never solved from a return type.
 internal fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, paramName: String) -> ASTNode {
+    // `value: T.Item` says nothing about what `T` is -- it is the projection's
+    // base that would have to be known first. Contributing nothing here leaves
+    // `T` to be solved from a parameter that can actually determine it.
+    if (tn.kind == NodeKind.ASSOC_TYPE_REF) { return ptr_to_node(ptr_null()) }
+
     if (tn.i1 == 0 and tn.i2 == 0 and strEquals(tn.s1, paramName)) {
         if (typeIsValid(actual) == false) { return ptr_to_node(ptr_null()) }
         return monoAnnotationFromType(actual)
@@ -850,6 +890,7 @@ private fn monoTemplateAcceptsCall(module: ASTNode, template: ASTNode,
         let param = ptr_to_node(paramPtr)
         let expectedAnnotation = monoCopyOne(param.child1)
         monoSubstituteChain(node_to_ptr(expectedAnnotation), template.s2, solvedArgs)
+        monoResolveProjections(module, node_to_ptr(expectedAnnotation))
         let expected = semaAnnotationType(module, expectedAnnotation)
         let actual = semaExpr(module, ptr_to_node(actualPtr))
         if (typeEquals(expected, actual) == false) { return false }
@@ -933,4 +974,316 @@ internal fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: A
         }
         templatePtr = template.next
     }
+}
+
+// ---------------------------------------------------------
+// Default trait methods
+// ---------------------------------------------------------
+
+// A trait signature carrying a body is a default, and an `impl` that omits the
+// method inherits it. The expansion is a splice for the same reason the parser
+// splices an `impl` block's own methods: every pass downstream keys on
+// `== NodeKind.FUNCTION`, and none of them should learn that defaults exist.
+//
+// **This must run before monoCollectTemplates.** Templates leave the module
+// chain there, so a default expanded after it would never be collected, and a
+// default on a generic impl would silently never instantiate. It must also run
+// after the merge, because the trait may be declared in another module.
+//
+// Appending while walking is safe: what is appended is a FUNCTION, and the walk
+// only descends into IMPL_DECL.
+fn monoExpandDefaultMethods(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, "") == false) {
+            monoExpandOneImpl(module, stmt)
+        }
+        p = stmt.next
+    }
+}
+
+private fn monoExpandOneImpl(module: ASTNode, implNode: ASTNode) {
+    let header = ptr_to_node(implNode.child3)
+    if (nodeIsNull(header.child2)) { return }
+    let traitRef = ptr_to_node(header.child2)
+    let traitDecl = monoFindTrait(module, traitRef.s1)
+    if (nodeIsNull(node_to_ptr(traitDecl))) { return }
+
+    // An unknown trait and a wrong argument count are conformance's diagnostics.
+    // Substituting against a mismatched argument list would report the failure
+    // as a type error inside a body the program never wrote.
+    if (monoChainLength(traitRef.child1) != monoParamCount(traitDecl.s2)) { return }
+
+    let mut signaturePtr = traitDecl.child1
+    while (nodeExists(signaturePtr)) {
+        let signature = ptr_to_node(signaturePtr)
+        if (nodeExists(signature.child2)
+            and monoImplDeclaresMethod(implNode, signature.s1) == false) {
+            monoAddDefaultMethod(module, implNode, header, traitRef, traitDecl, signature)
+        }
+        signaturePtr = signature.next
+    }
+}
+
+// The impl's own IMPL_METHOD records rather than the module chain. A function of
+// this name is very likely to exist for some other type, and an override has to
+// be this `impl` block's own to count as one.
+private fn monoImplDeclaresMethod(implNode: ASTNode, name: String) -> Bool {
+    let mut p = implNode.child2
+    while (nodeExists(p)) {
+        let record = ptr_to_node(p)
+        if (record.kind == NodeKind.IMPL_METHOD and strEquals(record.s1, name)) { return true }
+        p = record.next
+    }
+    return false
+}
+
+private fn monoAddDefaultMethod(module: ASTNode, implNode: ASTNode, header: ASTNode,
+                                traitRef: ASTNode, traitDecl: ASTNode, signature: ASTNode) {
+    let method = monoCopyOne(node_to_ptr(signature))
+
+    // `Self` before the trait's arguments. The target may itself be written in
+    // terms of those arguments -- `impl<T> From<T> for Box<T>` -- so expanding
+    // `Self` first leaves a `Box<T>` the second pass then resolves, where the
+    // other order would leave a `T` that no longer has anything to match.
+    monoSubstituteChain(node_to_ptr(method), "Self", header.child1)
+    monoSubstituteChain(node_to_ptr(method), traitDecl.s2, traitRef.child1)
+    monoResolveProjections(module, node_to_ptr(method))
+
+    // The impl's parameters, exactly as parseImplMethodGenericInfo gives them to
+    // a method written out by hand: one template carrying the impl's parameters
+    // and the method's, so instantiation needs no second mechanism.
+    method.s2 = header.s1
+    method.genericInfo = monoCopyChain(header.genericInfo)
+
+    // The span stays the trait's. An error inside a default is an error in the
+    // body as written, and pointing at the `impl` that inherited it would send
+    // the reader to a method that is not there.
+    let record = createNode(NodeKind.IMPL_METHOD)
+    nodeSpanFrom(record, method)
+    record.s1 = method.s1
+    monoPushImplMethodRecord(implNode, record)
+
+    monoAppendDeclaration(module, method)
+}
+
+private fn monoPushImplMethodRecord(implNode: ASTNode, record: ASTNode) {
+    if (nodeIsNull(implNode.child2)) {
+        implNode.child2 = node_to_ptr(record)
+        return
+    }
+    let mut p = implNode.child2
+    loop {
+        let existing = ptr_to_node(p)
+        if (nodeIsNull(existing.next)) {
+            existing.next = node_to_ptr(record)
+            return
+        }
+        p = existing.next
+    }
+}
+
+// ---------------------------------------------------------
+// Associated type projections
+// ---------------------------------------------------------
+
+// `T.Item` is resolved once its base is concrete: with `T := Bag` it becomes
+// whatever `impl Container for Bag` chose for `Item`. That happens at the points
+// where a template becomes a concrete declaration, because substitution is what
+// stops the base being a type parameter.
+//
+// The node is rewritten in place into an ordinary TYPE_ANNOTATION, so nothing
+// after monomorphisation has to know projections exist. A projection that
+// cannot be resolved is deliberately left alone: it then names a type nobody
+// declared, and the ordinary unknown-type diagnostic reports it at the
+// annotation the programmer wrote.
+// Whether any trait or impl in this module declares an associated type. Asked
+// once before the deep walk below, because a projection cannot resolve to
+// something nobody declared -- and without the question, resolving projections
+// costs a full recursive walk of every declaration in every compile, including
+// the overwhelming majority that have no associated types at all.
+internal fn monoModuleHasAssocType(module: ASTNode) -> Bool {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.TRAIT_DECL and monoChainHasAssocType(stmt.child3)) {
+            return true
+        }
+        if (stmt.kind == NodeKind.IMPL_DECL
+            and monoChainHasAssocType(ptr_to_node(stmt.child3).child3)) {
+            return true
+        }
+        p = stmt.next
+    }
+    return false
+}
+
+private fn monoChainHasAssocType(ptr: Ptr) -> Bool {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        if (ptr_to_node(p).kind == NodeKind.ASSOC_TYPE) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+internal fn monoResolveProjections(module: ASTNode, ptr: Ptr) {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        // Children first, so a projection whose base is itself a projection has
+        // a concrete base by the time this one is resolved.
+        monoResolveProjections(module, node.child1)
+        monoResolveProjections(module, node.child2)
+        monoResolveProjections(module, node.child3)
+        if (node.kind == NodeKind.ASSOC_TYPE_REF) {
+            monoResolveOneProjection(module, node)
+        }
+        p = node.next
+    }
+}
+
+private fn monoResolveOneProjection(module: ASTNode, node: ASTNode) {
+    if (nodeIsNull(node.child1)) { return }
+    let chosenPtr = monoFindAssocType(module, monoAnnotationText(node.child1), node.s1)
+    if (nodeIsNull(chosenPtr)) { return }
+
+    // `T.Item?` is an optional whatever `Item` turned out to be, so the suffix
+    // written at the projection survives the rewrite rather than being replaced
+    // by the chosen type's own.
+    let optional = node.i3
+    let chosen = monoCopyOne(chosenPtr)
+    node.kind = NodeKind.TYPE_ANNOTATION
+    node.s1 = chosen.s1
+    node.s2 = chosen.s2
+    node.i1 = chosen.i1
+    node.i2 = chosen.i2
+    node.i3 = chosen.i3
+    if (optional == 1) { node.i3 = 1 }
+    node.child1 = chosen.child1
+}
+
+private fn monoFindAssocType(module: ASTNode, targetText: String, member: String) -> Ptr {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.IMPL_DECL) {
+            let header = ptr_to_node(stmt.child3)
+            if (strEquals(monoAnnotationText(header.child1), targetText)) {
+                let mut memberPtr = header.child3
+                while (nodeExists(memberPtr)) {
+                    let candidate = ptr_to_node(memberPtr)
+                    if (candidate.kind == NodeKind.ASSOC_TYPE
+                        and strEquals(candidate.s1, member)) {
+                        return candidate.child1
+                    }
+                    memberPtr = candidate.next
+                }
+            }
+        }
+        p = stmt.next
+    }
+    return ptr_null()
+}
+
+// `T: Container<Item = Int>` demands more than that an implementation exists:
+// the type it chose has to be the one written. Compared as annotation text, the
+// same way impl targets are compared everywhere else on this side.
+//
+// An implementation that does not name the constrained member at all fails the
+// bound rather than passing it vacuously -- the constraint asked about something
+// this trait does not have, and treating that as satisfied would make the
+// spelling meaningless.
+private fn monoConstraintsHold(module: ASTNode, implNode: ASTNode, traitRef: ASTNode) -> Bool {
+    let header = ptr_to_node(implNode.child3)
+    let mut p = traitRef.child2
+    while (nodeExists(p)) {
+        let wanted = ptr_to_node(p)
+        let chosenPtr = monoImplAssocTypeAnnotation(header, wanted.s1)
+        if (nodeIsNull(chosenPtr)) { return false }
+        if (strEquals(monoAnnotationText(chosenPtr),
+                      monoAnnotationText(wanted.child1)) == false) { return false }
+        p = wanted.next
+    }
+    return true
+}
+
+private fn monoImplAssocTypeAnnotation(header: ASTNode, name: String) -> Ptr {
+    let mut p = header.child3
+    while (nodeExists(p)) {
+        let member = ptr_to_node(p)
+        if (member.kind == NodeKind.ASSOC_TYPE and strEquals(member.s1, name)) {
+            return member.child1
+        }
+        p = member.next
+    }
+    return ptr_null()
+}
+
+private fn monoTypeDepth(ptr: Ptr) -> Int {
+    if (nodeIsNull(ptr)) { return 0 }
+    let node = ptr_to_node(ptr)
+
+    // **An already-instantiated generic arrives as a mangled name, not a tree.**
+    // `Box$Box$Int` is a single annotation with no children, so measuring the
+    // tree alone reports depth 1 forever and the bound never fires on the one
+    // case it exists for. The nesting is in the name, so the separator is what
+    // counts it.
+    let mut deepest = monoSeparatorCount(node.s1)
+
+    let mut p = node.child1
+    while (nodeExists(p)) {
+        let depth = monoTypeDepth(p)
+        if (depth > deepest) { deepest = depth }
+        p = ptr_to_node(p).next
+    }
+    return deepest + 1
+}
+
+// Answers whether any argument is nested past the bound, and reports it once.
+// Reported against the template, which is the declaration that has to change;
+// the call site is wherever the recursion happened to be unrolled and is not
+// where the mistake lives.
+private fn monoArgsTooDeep(at: ASTNode, name: String, argsPtr: Ptr) -> Bool {
+    let mut p = argsPtr
+    while (nodeExists(p)) {
+        if (monoTypeDepth(p) > MONO_MAX_TYPE_DEPTH) {
+            semaErrorAt(at, strConcat(strConcat("instantiating ", diagQuote(name)),
+                        strConcat(" does not terminate: its type argument ",
+                                  strConcat(diagQuote(monoElide(monoAnnotationText(p))),
+                                            " grows at every step"))))
+            diag_note("a generic that instantiates itself with a larger type has no fixpoint; take the recursive argument by a type that does not grow")
+            return true
+        }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+private fn monoSeparatorCount(name: String) -> Int {
+    let separator = strCharAt(monoSeparator(), 0)
+    let mut count = 0
+    let mut i = 0
+    let n = __builtin_string_len(name)
+    while (i < n) {
+        if (strCharAt(name, i) == separator) { count = count + 1 }
+        i = i + 1
+    }
+    return count
+}
+
+// The offending type is 30 levels of mangled name by the time the bound fires,
+// and printing all of it buries the sentence that explains what went wrong. The
+// head is what identifies it; the tail is the same thing repeated.
+private fn monoElide(text: String) -> String {
+    let n = __builtin_string_len(text)
+    if (n <= 48) { return strClone(text) }
+    let mut head = ""
+    let mut i = 0
+    while (i < 48) {
+        head = strConcat(head, strFromChar(strCharAt(text, i)))
+        i = i + 1
+    }
+    return strConcat(head, "...")
 }

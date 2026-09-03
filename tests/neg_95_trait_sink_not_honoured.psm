@@ -1,0 +1,15 @@
+// expect-error: is `sink` in the trait
+// The trait obliges the implementation to consume the receiver. Borrowing it
+// instead is a different contract, and generic code behind the bound would be
+// relying on the one the trait wrote.
+import std.string
+
+trait Consume {
+    fn consume(sink self) -> Int
+}
+
+impl Consume for String {
+    fn consume(self) -> Int { return 1 }
+}
+
+fn main() -> Int { return 0 }

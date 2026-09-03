@@ -1,0 +1,7 @@
+// expect-error: names no trait
+// `dyn` needs a trait; anything else has no methods to build a table from.
+struct Dog { n: Int }
+
+fn f(v: dyn Dog) -> Int { return 0 }
+
+fn main() -> Int { return 0 }

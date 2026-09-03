@@ -1,0 +1,18 @@
+// expect-error: does not implement `Show`
+// A bound in a `where` clause is checked at instantiation exactly as one written
+// in the parameter list.
+import std.string
+
+trait Show { fn show(self) -> Int }
+
+impl Show for Int {
+    fn show(self) -> Int { return 1 }
+}
+
+fn render<T>(value: T) -> Int where T: Show {
+    return show(value)
+}
+
+fn main() -> Int {
+    return render(true)
+}

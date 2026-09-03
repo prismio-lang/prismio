@@ -124,10 +124,13 @@ violations.
 | `std/key.psm` | `import std.key` | the `Key` bound `Map` needs |
 | `std/ord.psm` | `import std.ord` | the `Ord` bound `sort` needs |
 | `std/copy.psm` | `import std.copy` | the `Copy` bound |
+| `std/eq.psm` | `import std.eq` | the `Eq` bound, and `==` on a struct |
+| `std/display.psm` | `import std.display` | the `Display` bound — a value's text |
+| `std/iter.psm` | `import std.iter` | the `Iterator` bound, and `for ... in` over your own type |
 
 **There is no prelude.** `std.io` is an ordinary import: a program that prints
 nothing carries no I/O, which is what lets a target with no stdout link at all.
-See the comment above `resolveImports` in `src/main.psm`.
+See the comment above `resolveImports` in `src/driver/imports.psm`.
 
 This is why `a == b`, `a + b`, `s[i]`, `s[a..b]` and `for c in s` on a String all
 need `import std.string`: each is rewritten in sema into the `std.string` call it
@@ -136,7 +139,7 @@ the missing import rather than the function the rewrite was about to call.
 
 `std.*` is compiler-owned rather than resolved relative to the importing
 program's source root, and it is found by **search, in this order**
-(`standardModulePath` in `src/main.psm`):
+(`standardModulePath` in `src/driver/imports.psm`):
 
 | | Looked for | Why it is there |
 |---|---|---|

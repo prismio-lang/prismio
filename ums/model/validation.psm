@@ -1,5 +1,6 @@
 import std.io
 import ums.model.project
+import ums.commands.command
 import ums.model.diagnostic
 import std.string
 
@@ -213,6 +214,54 @@ impl UmsProjectModel {
                                "' has an empty version constraint"))
             }
             dependencyIndex = dependencyIndex + 1
+        }
+
+        let mut commandIndex = 0
+        while (commandIndex < list_len(self.commands)) {
+            let command = list_get(self.commands, commandIndex)
+            if (umsValidName(command.name) == false) {
+                umsDiagnosticAdd(diagnostics, "UMS2601", self.manifestPath,
+                    command.line, command.col, command.len,
+                    strConcat(strConcat("invalid command name '", command.name), "'"))
+            }
+            if (list_len(command.steps) == 0) {
+                umsDiagnosticAdd(diagnostics, "UMS2602", self.manifestPath,
+                    command.line, command.col, command.len,
+                    strConcat(strConcat("command '", command.name), "' declares no steps"))
+            }
+            let mut stepIndex = 0
+            while (stepIndex < list_len(command.steps)) {
+                let step = list_get(command.steps, stepIndex)
+                if (step.kind == UmsCommandStepKind.UNKNOWN) {
+                    // Lowering already reported this one; a second diagnostic
+                    // about its subject would name a mistake that is not there.
+                    stepIndex = stepIndex + 1
+                    continue
+                }
+                if (step.kind == UmsCommandStepKind.SHELL) {
+                    if (__builtin_string_len(step.subject) == 0) {
+                        umsDiagnosticAdd(diagnostics, "UMS2605", self.manifestPath,
+                            step.line, step.col, step.len,
+                            "a shell step needs a program to run")
+                    }
+                } else {
+                    let referenced = umsTargetFind(self.targets, step.subject)
+                    if (referenced < 0) {
+                        umsDiagnosticAdd(diagnostics, "UMS2603", self.manifestPath,
+                            step.line, step.col, step.len,
+                            strConcat(strConcat("no target named '", step.subject),
+                                       "' is declared in this project"))
+                    } else if (step.kind == UmsCommandStepKind.RUN and
+                               list_get(self.targets, referenced).kind != UmsTargetKind.EXECUTABLE) {
+                        umsDiagnosticAdd(diagnostics, "UMS2604", self.manifestPath,
+                            step.line, step.col, step.len,
+                            strConcat(strConcat("run needs an executable target, and '",
+                                       step.subject), "' is not one"))
+                    }
+                }
+                stepIndex = stepIndex + 1
+            }
+            commandIndex = commandIndex + 1
         }
     }
 }

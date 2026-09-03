@@ -1,0 +1,22 @@
+// expect-error: Missing
+// A projection through a member the trait does not declare resolves to nothing,
+// and is then an unknown type at the annotation that was written.
+trait Container {
+    type Item
+    fn size(self) -> Int
+}
+
+struct Bag { n: Int }
+
+impl Container for Bag {
+    type Item = Int
+    fn size(self) -> Int { return self.n }
+}
+
+fn pick<T: Container>(c: T) -> T.Missing {
+    return size(c)
+}
+
+fn main() -> Int {
+    return pick(Bag { n: 1 })
+}

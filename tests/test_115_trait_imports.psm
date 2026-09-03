@@ -1,0 +1,43 @@
+// Everything a trait owns has to survive an import: methods, defaults,
+// supertraits, associated constants and associated types.
+
+import std.io
+import std.string
+import trait_vis.source
+
+// A local type implementing the imported trait. The orphan rule allows this
+// because the type is ours.
+struct Local { n: Int }
+
+impl Greet for Local {
+    fn greeting(self) -> String { return "local" }
+}
+
+fn greetAny<T: Greet>(value: T) -> String {
+    return greeting(value)
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let h = Host { n: 7 }
+
+    if (strEquals(greeting(h), "hello") == false) { return fail("imported method") }
+    // The default was expanded in the declaring module, so the private helper it
+    // calls is in scope there even though it is not in scope here.
+    if (strEquals(loudly(h), "hello!") == false) { return fail("imported default") }
+
+    if (Host.LIMIT != 42) { return fail("imported associated constant") }
+    if (size(h) != 7) { return fail("imported associated type impl") }
+
+    if (strEquals(greetAny(h), "hello") == false) { return fail("imported trait as a bound") }
+    if (strEquals(greetAny(Local { n: 1 }), "local") == false) { return fail("local impl of an imported trait") }
+    if (strEquals(loudly(Local { n: 1 }), "local!") == false) { return fail("default inherited by a local impl") }
+
+    println("test_115 ok")
+    return 0
+}

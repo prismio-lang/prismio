@@ -131,7 +131,43 @@ enum NodeKind {
     // is its TYPE_ANNOTATION argument chain. This is deliberately distinct from
     // TYPE_ANNOTATION: a trait is not a value type, even though its arguments use
     // the same recursive type grammar.
-    TRAIT_REF
+    TRAIT_REF,
+
+    // A trait-owned constant. `s1` is its name, child1 the declared
+    // TYPE_ANNOTATION, and child2 the value -- absent in a trait, required in an
+    // `impl`. It never becomes a top-level declaration: a use is resolved to the
+    // implementing type's value and rewritten in place, so the name stays out of
+    // the global value namespace entirely.
+    //
+    // Appended for the same reason IMPL_HEADER was: the committed seed's
+    // existing NodeKind ordinals must not move.
+    ASSOC_CONST,
+
+    // A trait-owned type. `s1` is its name; child1 is the chosen
+    // TYPE_ANNOTATION, absent in a trait and required in an `impl`. It shares
+    // the trait's and header's member chain with ASSOC_CONST, so every reader of
+    // that chain filters by kind.
+    ASSOC_TYPE,
+
+    // A projection, `T.Item`: `s1` is the member name and child1 is the base
+    // TYPE_ANNOTATION. Substitution resolves it to the implementing type's
+    // choice, so no pass after monomorphisation should ever see one -- a
+    // surviving projection is diagnosed rather than silently treated as a type.
+    ASSOC_TYPE_REF,
+
+    // T15. Building a trait object from a concrete value: `s1` is the object's
+    // struct name (`dyn$Show`), `s2` the vtable's, and child1 the value being
+    // referred to. Produced by sema at a call site, never written.
+    DYN_MAKE,
+
+    // T15. A call dispatched through a trait object. `s1` is the method name,
+    // `s2` the return type key, `i1` the method's row in the vtable, child1 the
+    // object and child2 the remaining arguments.
+    //
+    // Its own kind rather than a marked CALL_EXPR, so the one large function
+    // that emits calls stays untouched and the whole of dynamic dispatch is one
+    // branch that can be read in one place.
+    DYN_CALL
 }
 
 // Flat AST Node using String for pointers (type punning)

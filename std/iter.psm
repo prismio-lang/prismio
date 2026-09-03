@@ -1,0 +1,20 @@
+// `Iterator` -- a sequence produced one element at a time.
+//
+// **`hasNext` and `next`, not `next() -> Option<Item>`.** The conventional shape
+// costs a payload-enum value per element, and Prismio's payload enums are not
+// tagged unions yet -- so the conventional spelling would put an allocation in
+// the innermost part of every loop. This pair answers the same two questions
+// with no per-element value at all.
+//
+// `next` takes `inout self` because advancing is a mutation, which means an
+// iterator must be a `mut` binding. That is the contract, and T18 makes it one:
+// an implementation may not quietly take the receiver by borrow instead.
+//
+// `for x in it` desugars to exactly this protocol, so a type implementing
+// `Iterator` is usable with the loop syntax and needs nothing else.
+
+trait Iterator {
+    type Item
+    fn hasNext(self) -> Bool
+    fn next(inout self) -> Self.Item
+}

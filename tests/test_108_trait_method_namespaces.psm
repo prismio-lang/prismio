@@ -1,0 +1,59 @@
+// A method belongs to its trait, not to one global namespace. Two traits may
+// each declare the same method for one type, and a qualified call names which.
+
+import std.io
+import std.string
+
+struct Dog { n: Int }
+struct Robot { n: Int }
+
+trait Loud {
+    fn speak(self) -> Int
+}
+
+trait Soft {
+    fn speak(self) -> Int
+}
+
+impl Loud for Dog {
+    fn speak(self) -> Int { return 1 }
+}
+
+// The same method name, the same receiver type, a different trait. This is a
+// duplicate definition only if methods share one namespace.
+impl Soft for Dog {
+    fn speak(self) -> Int { return 2 }
+}
+
+// One trait for a second type: the unqualified call is unambiguous there.
+impl Loud for Robot {
+    fn speak(self) -> Int { return 3 }
+}
+
+// A qualified call works through a bound as well.
+fn loudly<T: Loud>(value: T) -> Int {
+    return Loud.speak(value)
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let d = Dog { n: 0 }
+
+    if (Loud.speak(d) != 1) { return fail("qualified call to the first trait") }
+    if (Soft.speak(d) != 2) { return fail("qualified call to the second trait") }
+
+    // Unambiguous without a qualifier: only one trait declares it for Robot.
+    if (speak(Robot { n: 0 }) != 3) { return fail("unqualified call with one candidate") }
+    if (Loud.speak(Robot { n: 0 }) != 3) { return fail("qualified call with one candidate") }
+
+    if (loudly(d) != 1) { return fail("qualified call through a bound") }
+    if (loudly(Robot { n: 0 }) != 3) { return fail("second instance through a bound") }
+
+    println("test_108 ok")
+    return 0
+}

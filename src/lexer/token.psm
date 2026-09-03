@@ -100,6 +100,7 @@ internal fn isKeyword(word: String) -> Bool {
     if (strEquals(word, "impl")) { return true }
     if (strEquals(word, "enum")) { return true }
     if (strEquals(word, "trait")) { return true }
+    if (strEquals(word, "where")) { return true }
     if (strEquals(word, "fn")) { return true }
     if (strEquals(word, "extern")) { return true }
 

@@ -1,0 +1,18 @@
+// expect-error: must also implement `Named`
+// The obligation is transitive: implementing the bottom of a chain requires
+// every link, not only the one directly above.
+import std.string
+
+trait Named { fn label(self) -> String }
+trait Described: Named { fn detail(self) -> String }
+trait Reported: Described { fn report(self) -> String }
+
+impl Described for String {
+    fn detail(self) -> String { return "d" }
+}
+
+impl Reported for String {
+    fn report(self) -> String { return "r" }
+}
+
+fn main() -> Int { return 0 }

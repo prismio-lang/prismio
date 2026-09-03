@@ -1234,6 +1234,11 @@ fn generateModule(module: ASTNode) {
     // size argument and array GEP indices.
     ir_set_pointer_int_type(irPtrIntType())
     ir_module_start("self_hosted_module")
+
+    // T15. Declared here, defined after every function. A body that builds a
+    // trait object takes the table's address while it is being generated, and
+    // the entries are not knowable until the functions they name exist.
+    generateVtableDeclarations(module)
     // A named target is written onto the module, so that clang (which is handed
     // the same triple) and -g (which reads member offsets from the layout) agree
     // with codegen about what is being built. The implicit host stamps nothing,
@@ -1768,10 +1773,158 @@ fn generateModule(module: ASTNode) {
         }
     }
 
+    // T15. **After every function, and that ordering is the whole reason this is
+    // here** rather than beside the impl it describes: a vtable entry is the
+    // address of a compiled function, and unlike a call it carries no argument
+    // types to synthesise a forward declaration from.
+    generateVtables(module)
+
     // Before ir_module_end, and before ir_write_file's verifier runs: an
     // unfinalised DIBuilder leaves temporary metadata nodes in the module, which
     // is a verification failure rather than a missing line.
     debugEndModule()
 
     ir_module_end()
+}
+
+// ---------------------------------------------------------
+// Trait object vtables
+// ---------------------------------------------------------
+
+// Names already emitted, joined with `;`. A program may build the same object in
+// twenty places and the table is one.
+let mut irEmittedVtables = ""
+
+// One table per (trait, implementing type) the program actually builds an object
+// of. A trait nobody makes an object of emits nothing, and an implementation
+// never used dynamically costs no table -- which is the same "pay for what you
+// use" the fat-pointer representation was chosen for.
+private fn generateVtables(module: ASTNode) {
+    irEmittedVtables = ""
+    generateVtablesFrom(module, module.child1)
+}
+
+private fn generateVtableDeclarations(module: ASTNode) {
+    irEmittedVtables = ""
+    generateVtableDeclarationsFrom(module, module.child1)
+    irEmittedVtables = ""
+}
+
+private fn generateVtableDeclarationsFrom(module: ASTNode, ptr: Ptr) {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.DYN_MAKE) {
+            let marker = strConcat(node.s2, ";")
+            if (strContains(irEmittedVtables, marker) == false) {
+                irEmittedVtables = strConcat(irEmittedVtables, marker)
+                let traitName = strSubstring(node.s1, 4, __builtin_string_len(node.s1) - 4)
+                let traitDecl = irFindTrait(module, traitName)
+                if (nodeIsNull(node_to_ptr(traitDecl)) == false) {
+                    ir_vtable_declare(node.s2, irTraitMethodCount(traitDecl))
+                }
+            }
+        }
+        generateVtableDeclarationsFrom(module, node.child1)
+        generateVtableDeclarationsFrom(module, node.child2)
+        generateVtableDeclarationsFrom(module, node.child3)
+        p = node.next
+    }
+}
+
+private fn irTraitMethodCount(traitDecl: ASTNode) -> Int {
+    let mut count = 0
+    let mut p = traitDecl.child1
+    while (nodeExists(p)) {
+        count = count + 1
+        p = ptr_to_node(p).next
+    }
+    return count
+}
+
+private fn generateVtablesFrom(module: ASTNode, ptr: Ptr) {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.DYN_MAKE) { generateOneVtable(module, node) }
+        generateVtablesFrom(module, node.child1)
+        generateVtablesFrom(module, node.child2)
+        generateVtablesFrom(module, node.child3)
+        p = node.next
+    }
+}
+
+private fn generateOneVtable(module: ASTNode, make: ASTNode) {
+    let name = make.s2
+    let marker = strConcat(name, ";")
+    if (strContains(irEmittedVtables, marker)) { return }
+    irEmittedVtables = strConcat(irEmittedVtables, marker)
+
+    let traitName = strSubstring(make.s1, 4, __builtin_string_len(make.s1) - 4)
+    let traitDecl = irFindTrait(module, traitName)
+    if (nodeIsNull(node_to_ptr(traitDecl))) { return }
+
+    // Matched by the name the object was built with rather than by taking the
+    // type apart: sema wrote that name from the trait and the target, so
+    // rebuilding it here compares the two spellings instead of parsing one.
+    let implNode = irFindImplForVtable(module, traitName, name)
+    if (nodeIsNull(node_to_ptr(implNode))) { return }
+
+    ir_vtable_begin()
+    let mut sigPtr = traitDecl.child1
+    while (nodeExists(sigPtr)) {
+        let signature = ptr_to_node(sigPtr)
+        ir_vtable_entry(irImplMethodSymbol(module, implNode, signature.s1))
+        sigPtr = signature.next
+    }
+    ir_vtable_end(name)
+}
+
+private fn irFindTrait(module: ASTNode, name: String) -> ASTNode {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.TRAIT_DECL and strEquals(stmt.s1, name)) { return stmt }
+        p = stmt.next
+    }
+    return ptr_to_node(ptr_null())
+}
+
+private fn irFindImplForVtable(module: ASTNode, traitName: String, vtableName: String) -> ASTNode {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, traitName)) {
+            let candidate = strConcat(strConcat("vtable$", traitName),
+                                      strConcat("$", stmt.s1))
+            if (strEquals(candidate, vtableName)) { return stmt }
+        }
+        p = stmt.next
+    }
+    return ptr_to_node(ptr_null())
+}
+
+// The mangled symbol of this impl's method, found the way conformance finds it:
+// by the source position the IMPL_METHOD record kept when the method left the
+// block for the module chain.
+private fn irImplMethodSymbol(module: ASTNode, implNode: ASTNode, methodName: String) -> String {
+    let mut recordPtr = implNode.child2
+    while (nodeExists(recordPtr)) {
+        let record = ptr_to_node(recordPtr)
+        if (record.kind == NodeKind.IMPL_METHOD and strEquals(record.s1, methodName)) {
+            let mut fnPtr = module.child1
+            while (nodeExists(fnPtr)) {
+                let fnNode = ptr_to_node(fnPtr)
+                if (fnNode.kind == NodeKind.FUNCTION
+                    and fnNode.file == record.file
+                    and fnNode.line == record.line
+                    and fnNode.col == record.col) {
+                    return strClone(fnNode.s2)
+                }
+                fnPtr = fnNode.next
+            }
+        }
+        recordPtr = record.next
+    }
+    return ""
 }

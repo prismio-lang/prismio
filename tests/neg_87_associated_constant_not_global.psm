@@ -1,0 +1,18 @@
+// expect-error: MAX
+// An associated constant is reached through its type. It never enters the
+// global value namespace, so the bare name is not in scope.
+import std.string
+
+trait Bounded {
+    let MAX: Int
+    fn current(self) -> Int
+}
+
+impl Bounded for String {
+    let MAX: Int = 10
+    fn current(self) -> Int { return 1 }
+}
+
+fn main() -> Int {
+    return MAX
+}

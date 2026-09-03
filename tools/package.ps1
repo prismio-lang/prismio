@@ -27,7 +27,7 @@ if ([string]::IsNullOrEmpty($Repo)) { $Repo = Split-Path -Parent $PSScriptRoot }
 # Must match prismio_toolchain_files[] in runtime\build_driver.c.
 $libraries = @(
     @{ Name = 'runtime'; Sources = @('lang_runtime.c', 'program_support.c') },
-    @{ Name = 'backend'; Sources = @('build_driver.c', 'ir_symbols.c', 'aif_support.c', 'diagnostics.c', 'llvm-api-backend.c') }
+    @{ Name = 'backend'; Sources = @('build_driver.c', 'ir_symbols.c', 'aif_containers.c', 'aif_support.c', 'diagnostics.c', 'llvm-api-backend.c') }
 )
 
 # Absolute: the compiler is invoked from $Repo further down, and the final listing

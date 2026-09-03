@@ -1,0 +1,48 @@
+// A trait may own constants. The trait states name and type; each `impl` gives
+// the value, and a use is written as `Type.NAME`.
+
+import std.io
+import std.string
+
+trait Bounded {
+    let MAX: Int
+    let LABEL: String
+    fn current(self) -> Int
+}
+
+struct Gauge { n: Int }
+struct Dial { n: Int }
+
+impl Bounded for Gauge {
+    let MAX: Int = 100
+    let LABEL: String = "gauge"
+    fn current(self) -> Int { return self.n }
+}
+
+// The same constant names on a second type. Nothing is emitted globally, so
+// these never collide.
+impl Bounded for Dial {
+    let MAX: Int = 12
+    let LABEL: String = "dial"
+    fn current(self) -> Int { return self.n }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (Gauge.MAX != 100) { return fail("constant on the first type") }
+    if (Dial.MAX != 12) { return fail("same name on a second type") }
+    if (strEquals(Gauge.LABEL, "gauge") == false) { return fail("String-typed constant") }
+    if (strEquals(Dial.LABEL, "dial") == false) { return fail("second String constant") }
+
+    // Usable in ordinary expressions.
+    let headroom = Gauge.MAX - current(Gauge { n: 40 })
+    if (headroom != 60) { return fail("constant in an expression") }
+
+    println("test_106 ok")
+    return 0
+}

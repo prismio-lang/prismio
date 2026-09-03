@@ -1,0 +1,51 @@
+// A blanket implementation covers every type satisfying its bounds. This is how
+// one trait is given to everything that already implements another.
+
+import std.io
+import std.string
+
+trait Show {
+    fn show(self) -> Int
+}
+
+trait Pretty {
+    fn pretty(self) -> Int
+}
+
+// Everything that is `Show` is also `Pretty`, written once.
+impl<T: Show> Pretty for T {
+    fn pretty(self) -> Int { return show(self) * 2 }
+}
+
+struct Dog { n: Int }
+struct Cat { n: Int }
+
+impl Show for Dog {
+    fn show(self) -> Int { return self.n }
+}
+
+impl Show for Cat {
+    fn show(self) -> Int { return self.n + 10 }
+}
+
+// A type that is not `Show` simply is not covered, rather than being an error.
+struct Rock { n: Int }
+
+fn viaBound<U: Pretty>(value: U) -> Int {
+    return pretty(value)
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (pretty(Dog { n: 3 }) != 6) { return fail("blanket applied to the first type") }
+    if (pretty(Cat { n: 1 }) != 22) { return fail("blanket applied to the second type") }
+    if (viaBound(Dog { n: 4 }) != 8) { return fail("blanket satisfies a bound") }
+    if (viaBound(Cat { n: 0 }) != 20) { return fail("second instance through a bound") }
+    println("test_111 ok")
+    return 0
+}

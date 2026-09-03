@@ -253,6 +253,85 @@ fn main() -> Int {
         return umsTestFail("a malformed manifest should refuse the edit without changing source")
     }
 
+    // Commands. The base declares both an executable and a test target, because
+    // two of the rules below are about which kind a step may name.
+    let commandBase = "project { name = \"app\" version = \"1.0.0\" prismio = \"1.0\" } targets { executable(\"app\") { entry = \"src/main.psm\" } test(\"probe\") { entry = \"src/main.psm\" } } "
+
+    let commandsWorkspace = umsLoadText(
+        strConcat(commandBase,
+            "commands { command(\"ship\") { description = \"build then package\" build(\"app\") shell(\"tools/pack.sh\", \"--out\", args, \"--tail\") } }"),
+        "memory:commands", "ums/tests/fixtures/valid", "debug")
+    if (commandsWorkspace.valid == false) {
+        umsDiagnosticsPrint(commandsWorkspace.diagnostics)
+        return umsTestFail("a commands block should lower and validate")
+    }
+    if (commandsWorkspace.commandCount() != 1 or
+        commandsWorkspace.findCommand("ship") != 0 or
+        commandsWorkspace.findCommand("absent") >= 0) {
+        return umsTestFail("a declared command should be found by name and only by its own")
+    }
+
+    let ship = commandsWorkspace.command(0)
+    if (strEquals(ship.description, "build then package") == false or
+        list_len(ship.steps) != 2) {
+        return umsTestFail("a command should keep its description and every step")
+    }
+    if (list_get(ship.steps, 0).kind != UmsCommandStepKind.BUILD or
+        strEquals(list_get(ship.steps, 0).subject, "app") == false or
+        list_get(ship.steps, 1).kind != UmsCommandStepKind.SHELL or
+        strEquals(list_get(ship.steps, 1).subject, "tools/pack.sh") == false) {
+        return umsTestFail("steps should keep their kind, subject and declaration order")
+    }
+
+    // The marker is a member of the argument list rather than a flag, so that a
+    // manifest can put forwarded arguments *between* two fixed ones.
+    let packArguments = list_get(ship.steps, 1).arguments
+    if (list_len(packArguments) != 3 or
+        list_get(packArguments, 0).forwarded or
+        list_get(packArguments, 1).forwarded == false or
+        list_get(packArguments, 2).forwarded or
+        strEquals(list_get(packArguments, 0).text, "--out") == false) {
+        return umsTestFail("`args` should keep its position among shell arguments")
+    }
+
+    let duplicateCommand = umsLoadText(
+        strConcat(commandBase,
+            "commands { command(\"a\") { shell(\"x\") } command(\"a\") { shell(\"y\") } }"),
+        "memory:duplicate-command", "ums/tests/fixtures/valid", "debug")
+    if (duplicateCommand.valid) {
+        return umsTestFail("a command name declared twice should be rejected")
+    }
+
+    let unknownStepTarget = umsLoadText(
+        strConcat(commandBase, "commands { command(\"a\") { build(\"nope\") } }"),
+        "memory:unknown-step-target", "ums/tests/fixtures/valid", "debug")
+    if (unknownStepTarget.valid) {
+        return umsTestFail("a step naming no declared target should be rejected")
+    }
+
+    let runNeedsExecutable = umsLoadText(
+        strConcat(commandBase, "commands { command(\"a\") { run(\"probe\") } }"),
+        "memory:run-needs-executable", "ums/tests/fixtures/valid", "debug")
+    if (runNeedsExecutable.valid) {
+        return umsTestFail("a run step should refuse a target it cannot execute")
+    }
+
+    // One mistake, one diagnostic. The rejected step is still recorded, so the
+    // command is not *also* reported as declaring none.
+    let rejectedStep = umsLoadText(
+        strConcat(commandBase, "commands { command(\"a\") { deploy(\"x\") } }"),
+        "memory:rejected-step", "ums/tests/fixtures/valid", "debug")
+    if (rejectedStep.valid or list_len(rejectedStep.diagnostics) != 1) {
+        return umsTestFail("a rejected step should report once, not twice")
+    }
+
+    let emptyCommand = umsLoadText(
+        strConcat(commandBase, "commands { command(\"a\") { description = \"nothing\" } }"),
+        "memory:empty-command", "ums/tests/fixtures/valid", "debug")
+    if (emptyCommand.valid or list_len(emptyCommand.diagnostics) != 1) {
+        return umsTestFail("a command with no steps should be rejected once")
+    }
+
     println("PASS: UMS parser, models, validation, planning, resolution, lockfile and writer")
     return 0
 }

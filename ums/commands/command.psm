@@ -1,0 +1,88 @@
+import std.string
+
+// Appended, never inserted: the tag is the variant's position, so reordering
+// these changes the value every compiled comparison expects -- the rule
+// std/option.psm states for `Option`.
+enum UmsCommandStepKind {
+    UNKNOWN,
+    BUILD,
+    RUN,
+    SHELL
+}
+
+// A shell argument is either a literal from the manifest or the marker that
+// splices in whatever the user typed after the command name. Position is part of
+// the meaning -- `shell("git", "commit", args)` and `shell("git", args, "commit")`
+// are different commands -- so the marker is a member of the argument list rather
+// than a flag on the step.
+struct UmsCommandArgument {
+    forwarded: Bool,
+    text: String,
+    line: Int,
+    col: Int,
+    len: Int
+}
+
+// A step is one action in declaration order. `subject` is the target name for
+// BUILD and RUN and the program for SHELL, because all three are a name plus an
+// optional argument list and a second field would be empty in two of the three.
+struct UmsCommandStep {
+    kind: UmsCommandStepKind,
+    subject: String,
+    arguments: List<UmsCommandArgument>,
+    line: Int,
+    col: Int,
+    len: Int
+}
+
+struct UmsCommand {
+    name: String,
+    description: String,
+    steps: List<UmsCommandStep>,
+    line: Int,
+    col: Int,
+    len: Int
+}
+
+fn umsCommand(name: String, line: Int, col: Int, len: Int) -> UmsCommand {
+    return UmsCommand {
+        name: strClone(name),
+        description: strClone(""),
+        steps: list_new(),
+        line: line,
+        col: col,
+        len: len
+    }
+}
+
+fn umsCommandStep(kind: UmsCommandStepKind, subject: String,
+                  line: Int, col: Int, len: Int) -> UmsCommandStep {
+    return UmsCommandStep {
+        kind: kind,
+        subject: strClone(subject),
+        arguments: list_new(),
+        line: line,
+        col: col,
+        len: len
+    }
+}
+
+fn umsCommandArgument(forwarded: Bool, text: String,
+                      line: Int, col: Int, len: Int) -> UmsCommandArgument {
+    return UmsCommandArgument {
+        forwarded: forwarded,
+        text: strClone(text),
+        line: line,
+        col: col,
+        len: len
+    }
+}
+
+fn umsCommandFind(commands: List<UmsCommand>, name: String) -> Int {
+    let mut i = 0
+    while (i < list_len(commands)) {
+        if (strEquals(list_get(commands, i).name, name)) { return i }
+        i = i + 1
+    }
+    return -1
+}

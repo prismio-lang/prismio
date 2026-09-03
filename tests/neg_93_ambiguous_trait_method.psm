@@ -1,0 +1,14 @@
+// expect-error: name the trait
+// Two traits declare `speak` for one type, so the unqualified call cannot say
+// which is meant. The fix is a spelling, and the diagnostic names it.
+struct Dog { n: Int }
+
+trait Loud { fn speak(self) -> Int }
+trait Soft { fn speak(self) -> Int }
+
+impl Loud for Dog { fn speak(self) -> Int { return 1 } }
+impl Soft for Dog { fn speak(self) -> Int { return 2 } }
+
+fn main() -> Int {
+    return speak(Dog { n: 0 })
+}

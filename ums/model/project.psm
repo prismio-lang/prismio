@@ -1,4 +1,5 @@
 import ums.targets.target
+import ums.commands.command
 import ums.dependency.dependency
 import std.string
 
@@ -39,6 +40,7 @@ struct UmsProjectModel {
     build: UmsBuildConfiguration,
     toolchain: UmsToolchainConfiguration,
     targets: List<UmsTarget>,
+    commands: List<UmsCommand>,
     dependencies: List<UmsDependency>
 }
 
@@ -66,6 +68,7 @@ internal fn umsProjectModel(root: String, manifestPath: String, profile: String)
         },
         toolchain: UmsToolchainConfiguration { host: strClone("") },
         targets: list_new(),
+        commands: list_new(),
         dependencies: list_new()
     }
 }

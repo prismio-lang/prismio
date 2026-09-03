@@ -1,0 +1,11 @@
+// expect-error: does not terminate
+// A generic that instantiates itself with a strictly larger type has no
+// fixpoint. Without a bound the compiler does not terminate at all, which is the
+// worst possible answer to a one-character mistake.
+struct Box<T> { value: T }
+
+fn grow<T>(x: T) -> Int {
+    return grow(Box<T> { value: x })
+}
+
+fn main() -> Int { return grow(1) }

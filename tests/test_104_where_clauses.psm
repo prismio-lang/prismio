@@ -1,0 +1,79 @@
+// `where` states the same constraints as a bound written in the parameter list,
+// on functions, structs, and impls, and the two spellings compose.
+
+import std.io
+import std.string
+
+struct Box<T> { value: T }
+
+trait Show {
+    fn show(self) -> String
+}
+
+trait Weigh {
+    fn weigh(self) -> Int
+}
+
+impl Show for Int {
+    fn show(self) -> String { return strFromInt(self) }
+}
+
+impl Weigh for Int {
+    fn weigh(self) -> Int { return self * 2 }
+}
+
+impl Show for Bool {
+    fn show(self) -> String { if (self) { return "yes" } return "no" }
+}
+
+// A bound moved out of the parameter list entirely.
+fn render<T>(value: T) -> String where T: Show {
+    return show(value)
+}
+
+// Two parameters, each constrained by its own clause.
+fn renderBoth<A, B>(a: A, b: B) -> String where A: Show, B: Show {
+    return strConcat(show(a), show(b))
+}
+
+// `+` inside a clause, and the union with a bound already in the list.
+fn heavy<T: Show>(value: T) -> Int where T: Weigh {
+    return weigh(value)
+}
+
+fn both<T>(value: T) -> Int where T: Show + Weigh {
+    return strLength(show(value)) + weigh(value)
+}
+
+// On an impl: the clause constrains the impl's own parameter.
+trait Boxed {
+    fn describe(self) -> String
+}
+
+impl<T> Boxed for Box<T> where T: Show {
+    fn describe(self) -> String { return show(self.value) }
+}
+
+// On a struct declaration.
+struct Wrapper<T> where T: Show {
+    inner: T
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (strEquals(render(7), "7") == false) { return fail("where on a function") }
+    if (strEquals(render(true), "yes") == false) { return fail("second instance") }
+    if (strEquals(renderBoth(1, false), "1no") == false) { return fail("two clauses") }
+    if (heavy(21) != 42) { return fail("clause unions with a list bound") }
+    if (both(5) != 11) { return fail("`+` inside a clause") }
+    if (strEquals(describe(Box<Int> { value: 3 }), "3") == false) { return fail("where on an impl") }
+    let w = Wrapper<Int> { inner: 9 }
+    if (strEquals(show(w.inner), "9") == false) { return fail("where on a struct") }
+    println("test_104 ok")
+    return 0
+}

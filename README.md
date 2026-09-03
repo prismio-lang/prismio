@@ -109,7 +109,9 @@ is `import ir.expr`, and `import ir.*` takes the whole package.
 | `src/sema/` | Type checking, overload resolution, ownership enforcement, control-flow analysis |
 | `src/aif/` | Allocation inference: the model, the walk, layout, and reporting |
 | `src/ir/` | Type lowering, expression and statement emission, and the LLVM bridge |
-| `src/main.psm` | CLI, import resolution, and the build driver |
+| `src/driver/` | Import resolution, workload profiling, and the compile pipeline |
+| `src/project/` | What the CLI does with a manifest, including compiler promotion |
+| `src/main.psm` | CLI parsing, usage, and command dispatch |
 | `build.ums` | Required project manifest; declares the self-hosted executable and its native linkage |
 
 For a full breakdown of compiler internals, see [Architecture](https://docs.prismio.org/architecture)

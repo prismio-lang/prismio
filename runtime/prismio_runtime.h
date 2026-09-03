@@ -34,6 +34,9 @@
 #include <stddef.h>
 void* aif_verify_alloc(size_t size);
 void  aif_verify_release(void* p);
+// Arms the ledger. Declared here with the other two rather than beside the one
+// caller, so the whole seam is one block that swaps together.
+void  aif_verify_arm(void);
 #define rt_base_alloc(n) aif_verify_alloc(n)
 #define rt_free(p)       aif_verify_release(p)
 #else

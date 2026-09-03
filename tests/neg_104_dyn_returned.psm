@@ -1,0 +1,14 @@
+// expect-error: cannot be a return type
+// The same rule in the other direction: returning an object hands the caller a
+// pointer into the frame that built it.
+trait Show { fn show(self) -> Int }
+
+struct Dog { n: Int }
+
+impl Show for Dog {
+    fn show(self) -> Int { return self.n }
+}
+
+fn make() -> dyn Show { return Dog { n: 1 } }
+
+fn main() -> Int { return 0 }

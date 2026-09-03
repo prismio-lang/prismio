@@ -1,0 +1,45 @@
+// `Eq` -- equality, for the types that have it.
+//
+// **Separate from `Ord` because equality is the weaker requirement.** A type may
+// be equatable without having a total order -- a point, a colour, a set -- and
+// asking such a type for `cmp` forces its author to invent an ordering that
+// means nothing so that `==` will work. Splitting them costs one trait and buys
+// back every type in that shape.
+//
+// The comparison operators route here for `==` and `!=`, and to `Ord` for the
+// four relational ones. A type that implements only `Eq` can be compared for
+// equality and not ordered, which is exactly the distinction the split exists to
+// express.
+//
+// **A trait is a check, not dispatch.** `eq(a, b)` inside a bounded generic is
+// resolved by ordinary overload resolution once `T` is concrete, so an `impl`
+// here costs nothing at a call site that does not use it -- and a type this file
+// does not cover is covered by writing `impl Eq for MyType` beside the type,
+// with no change here.
+
+import std.string
+
+trait Eq {
+    fn eq(self, other: Self) -> Bool
+}
+
+impl Eq for Int    { fn eq(self, other: Self) -> Bool { return self == other } }
+impl Eq for I8     { fn eq(self, other: Self) -> Bool { return self == other } }
+impl Eq for I16    { fn eq(self, other: Self) -> Bool { return self == other } }
+impl Eq for I64    { fn eq(self, other: Self) -> Bool { return self == other } }
+impl Eq for Isize  { fn eq(self, other: Self) -> Bool { return self == other } }
+impl Eq for U8     { fn eq(self, other: Self) -> Bool { return self == other } }
+impl Eq for U16    { fn eq(self, other: Self) -> Bool { return self == other } }
+impl Eq for U32    { fn eq(self, other: Self) -> Bool { return self == other } }
+impl Eq for U64    { fn eq(self, other: Self) -> Bool { return self == other } }
+impl Eq for Usize  { fn eq(self, other: Self) -> Bool { return self == other } }
+impl Eq for Char   { fn eq(self, other: Self) -> Bool { return self == other } }
+impl Eq for Bool   { fn eq(self, other: Self) -> Bool { return self == other } }
+
+// Float carries the same caveat `Ord` records: NaN is equal to nothing,
+// including itself. That is IEEE 754 and not an oversight here.
+impl Eq for Float  { fn eq(self, other: Self) -> Bool { return self == other } }
+
+// By value, not by address. Comparing two Strings with `==` is the mistake this
+// exists to make unnecessary.
+impl Eq for String { fn eq(self, other: Self) -> Bool { return strEquals(self, other) } }

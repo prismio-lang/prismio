@@ -1,0 +1,50 @@
+// A trait's ownership conventions are part of its contract. An implementation
+// has to take its parameters the way the trait declared them.
+
+import std.io
+import std.string
+
+struct Buffer { n: Int }
+
+trait Consume {
+    // The receiver is moved in, not borrowed.
+    fn consume(sink self) -> Int
+}
+
+trait Update {
+    fn bump(inout self, by: Int) -> Int
+}
+
+trait Read {
+    fn peek(self) -> Int
+}
+
+impl Consume for Buffer {
+    fn consume(sink self) -> Int { return self.n }
+}
+
+impl Update for Buffer {
+    fn bump(inout self, by: Int) -> Int {
+        self.n = self.n + by
+        return self.n
+    }
+}
+
+impl Read for Buffer {
+    fn peek(self) -> Int { return self.n }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut b = Buffer { n: 5 }
+    if (Read.peek(b) != 5) { return fail("borrowed receiver") }
+    if (Update.bump(b, 3) != 8) { return fail("inout receiver") }
+    if (Consume.consume(Buffer { n: 2 }) != 2) { return fail("sink receiver") }
+    println("test_109 ok")
+    return 0
+}

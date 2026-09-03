@@ -335,10 +335,13 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
         if (semaStringSugarAvailable(stmt, "strLength", "iterating a String") == false) {
             return false
         }
+    } else if (sourceT.kind == TypeKind.STRUCT
+               and semaTypeImplementsNamedTrait(module, sourceT.name, "Iterator")) {
+        return semaForEachIterator(module, stmt, source)
     } else if (sourceT.kind != TypeKind.LIST) {
-        semaErrorAt(source, strConcat("`for ... in` needs a String or a List, found ",
+        semaErrorAt(source, strConcat("`for ... in` needs a String, a List, or a type implementing `Iterator`, found ",
                                       typeDisplay(sourceT)))
-        diag_note("iterate anything else by index -- `for i in 0..n`")
+        diag_note("implement `Iterator` for it, or iterate by index -- `for i in 0..n`")
         return false
     }
 
@@ -375,6 +378,58 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
     stmt.s1 = indexName
     stmt.child1 = node_to_ptr(zero)
     stmt.child2 = node_to_ptr(length)
+    return true
+}
+
+// T20. `for x in it` over a type implementing `Iterator`, desugared to the loop
+// the protocol describes:
+//
+//     while (hasNext(it)) {
+//         let x = next(it)
+//         <body>
+//     }
+//
+// **A `while`, not the range loop the other two collections desugar to.** The
+// chosen protocol is `hasNext`/`next` precisely so that a stream with no known
+// length can be iterated, and a range needs an end.
+//
+// `next` takes `inout self`, so the iterator has to be a `mut` binding. That
+// falls out of T18 rather than being checked here: the call is an ordinary one
+// and the conventions are part of the trait's contract, so the diagnostic for a
+// non-`mut` iterator is the one any `inout` argument gets.
+//
+// Both calls carry `Iterator` as the qualifier, so T12's filter selects the
+// trait's methods rather than any function named `hasNext` or `next`.
+private fn semaForEachIterator(module: ASTNode, stmt: ASTNode, source: ASTNode) -> Bool {
+    let condition = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(condition, source)
+    let conditionArgs = nodeList()
+    nodeListPush(conditionArgs, semaNameNode(source, source.s1))
+    semaBecomeCall(condition, "hasNext", conditionArgs.head)
+    condition.s1 = strClone("Iterator")
+
+    let advance = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(advance, source)
+    let advanceArgs = nodeList()
+    nodeListPush(advanceArgs, semaNameNode(source, source.s1))
+    semaBecomeCall(advance, "next", advanceArgs.head)
+    advance.s1 = strClone("Iterator")
+
+    // `let <var> = next(it)`, prepended to the body the user wrote, exactly as
+    // the indexed desugar prepends its element binding.
+    let bind = createNode(NodeKind.VARIABLE_DECL)
+    nodeSpanFrom(bind, stmt)
+    bind.s1 = strClone(stmt.s1)
+    bind.child2 = node_to_ptr(advance)
+
+    let body = ptr_to_node(stmt.child3)
+    bind.next = body.child1
+    body.child1 = node_to_ptr(bind)
+
+    stmt.kind = NodeKind.WHILE_STATEMENT
+    stmt.child1 = node_to_ptr(condition)
+    stmt.child2 = node_to_ptr(body)
+    stmt.child3 = ptr_null()
     return true
 }
 
@@ -756,7 +811,11 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                 return typeBool()
             }
             if (leftT.kind == TypeKind.STRUCT or rightT.kind == TypeKind.STRUCT) {
+                if (semaRouteStructComparison(module, expr, op, leftT, rightT)) {
+                    return semaExpr(module, expr)
+                }
                 semaErrorAt(expr, "cannot compare struct values directly; compare their fields")
+                diag_note("implement `Eq` for equality, or `Ord` for equality and the relational operators")
                 nodeSetType(expr, typeBool())
                 return typeBool()
             }
@@ -794,6 +853,21 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                                             expr.child2, enumExplicitArgs(target))) {
                     return semaExpr(module, expr)
                 }
+            }
+
+            // `Loud.speak(dog)` -- a *trait*-qualified call. Tried before the
+            // module qualifier because a trait name is not a module path, and
+            // parked on the call's `s1` by the same mechanism: overload
+            // resolution reads it as a filter, and it survives the re-entry into
+            // semaExpr and monoCopyOne's copy.
+            if (target.kind == NodeKind.IDENTIFIER_EXPR
+                and semaIsTraitName(module, target.s1)) {
+                let qualifiedName = createNode(NodeKind.IDENTIFIER_EXPR)
+                qualifiedName.s1 = strClone(callee.s1)
+                nodeSpanFrom(qualifiedName, callee)
+                expr.s1 = strClone(target.s1)
+                expr.child1 = node_to_ptr(qualifiedName)
+                return semaExpr(module, expr)
             }
 
             // v0.1 3.5. `token.isKeyword(w)` -- a *module*-qualified call.
@@ -927,6 +1001,14 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             return builtinT
         }
 
+        // T15. A call whose receiver is a trait object dispatches through that
+        // object's table. Decided before overload resolution, because there is
+        // no function with a `dyn` parameter to resolve to -- the implementations
+        // take their own concrete type.
+        if (semaIsDynDispatch(module, expr, name)) {
+            return semaDynDispatch(module, expr, name)
+        }
+
         let fnNode = semaFindFunctionOverload(module, expr, name, expr.child2)
 
         let mut argPtr = expr.child2
@@ -935,6 +1017,10 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             let argNode = ptr_to_node(argPtr)
             let paramNode = ptr_to_node(paramPtr)
             let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
+            // T15. A concrete value passed where a trait object is expected is
+            // wrapped here, after the overload is chosen. Matching admitted the
+            // coercion; this is where it is actually built.
+            semaBuildDynIfNeeded(module, argNode, paramT)
             semaCheckValue(module, argNode, paramT, strConcat(diagQuote(name), " argument"))
             // Only `sink` parameters take ownership; `let`/`inout` borrow.
             if (strEquals(paramNode.s2, "sink")) {
@@ -958,7 +1044,17 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         } else {
             retT = semaDeclaredReturnType(module, fnNode.child2)
         }
-        expr.s2 = semaFunctionSymbol(module, fnNode)
+        // **Read the cache, do not recompute.** semaCacheFunctionSymbols already
+        // mangled every declaration once; recomputing here ran that work per
+        // *call site*, and since T12 the mangling walks the module's impls to
+        // find a method's owning trait. That turned one walk per declaration
+        // into one per call, and it is where the trait work showed up as compile
+        // time. Cloned rather than aliased: the node owns its symbol.
+        if (strEquals(fnNode.s2, "")) {
+            expr.s2 = semaFunctionSymbol(module, fnNode)
+        } else {
+            expr.s2 = strClone(fnNode.s2)
+        }
         nodeSetType(expr, retT)
         return retT
     }
@@ -1070,6 +1166,13 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         if (objectNode.kind == NodeKind.IDENTIFIER_EXPR and semaEnumHasVariant(module, objectNode.s1, expr.s1)) {
             nodeSetType(expr, typeInt())
             return typeInt()
+        }
+
+        // After the enum paths, so a variant always wins and no existing program
+        // changes meaning.
+        if (objectNode.kind == NodeKind.IDENTIFIER_EXPR
+            and semaResolveAssocConst(module, expr, objectNode.s1)) {
+            return semaExpr(module, expr)
         }
 
         let objectT = semaExpr(module, objectNode)
@@ -1512,6 +1615,14 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
         // sees the range loop it already handled.
         if (nodeIsNull(stmt.child2)) {
             if (semaForEachDesugar(module, stmt) == false) { return }
+            // The `Iterator` form rewrites this statement into a `while` rather
+            // than a range, because a stream has no end to range over. Re-enter
+            // so it is checked as the `while` it now is; falling through would
+            // read its Bool condition as a range start.
+            if (stmt.kind == NodeKind.WHILE_STATEMENT) {
+                semaStatement(module, stmt, expectedReturn)
+                return
+            }
         }
         let startT = semaExpr(module, ptr_to_node(stmt.child1))
         semaExpectAssignable(ptr_to_node(stmt.child1), "for range start", typeInt(), startT)
@@ -1747,11 +1858,444 @@ private fn semaCheckImplBlocks(module: ASTNode) {
                                  "the first overlapping implementation is here")
                 }
             } else {
+                semaCheckOrphan(module, stmt)
                 semaCheckConformance(module, stmt)
             }
         }
         p = stmt.next
     }
+}
+
+// The orphan rule. An implementation is legal where it owns one of the two
+// things it names: the trait, or the type. Both foreign is what makes coherence
+// unenforceable, because two packages can each write it and neither can see the
+// other -- and the conflict surfaces only when some third program imports both.
+//
+// Checked per module rather than per package: the module is the unit a file
+// declares in, and it is the coarsest unit this compiler can actually attribute
+// a declaration to. A built-in type is owned by nobody, so implementing a trait
+// for `Int` requires owning the trait -- which is what `std/copy.psm` does.
+//
+// Inherent implementations are not orphans: they name only a type, and writing
+// one for a foreign type is a separate question this rule does not decide.
+// A trait object is a pair: the value, and the table of the implementation's
+// methods. **Two words, and not one of them on the type itself** -- putting a
+// vtable pointer inside every object, the way C++ does, would tax every struct
+// in the program for a feature most of them never take part in. Here the cost
+// sits at the `dyn` use site and nowhere else.
+//
+// Built as an ordinary struct because Prismio already passes structs by pointer,
+// so every existing path -- parameters, locals, field access, codegen's layout
+// table -- carries one without a special case.
+private fn semaSynthesiseDynStructs(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        // Read `next` first: the synthesised structs are appended to this chain.
+        let following = stmt.next
+        semaSynthesiseDynFrom(module, node_to_ptr(stmt))
+        p = following
+    }
+}
+
+private fn semaSynthesiseDynFrom(module: ASTNode, ptr: Ptr) {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.TYPE_ANNOTATION and strStartsWith(node.s1, "dyn$")) {
+            semaEnsureDynStruct(module, node)
+        }
+        semaSynthesiseDynFrom(module, node.child1)
+        semaSynthesiseDynFrom(module, node.child2)
+        semaSynthesiseDynFrom(module, node.child3)
+        p = node.next
+    }
+}
+
+private fn semaEnsureDynStruct(module: ASTNode, annotation: ASTNode) {
+    let name = annotation.s1
+    let mut existing = module.child1
+    while (nodeExists(existing)) {
+        let stmt = ptr_to_node(existing)
+        if (stmt.kind == NodeKind.STRUCT_DECL and strEquals(stmt.s1, name)) { return }
+        existing = stmt.next
+    }
+
+    // `strSubstring` takes a length, not an end. "dyn$" is four characters.
+    let traitName = strSubstring(name, 4, __builtin_string_len(name) - 4)
+    let traitDecl = semaFindTrait(module, traitName)
+    if (nodeIsNull(node_to_ptr(traitDecl))) {
+        semaErrorAt(annotation, strConcat(strConcat("`dyn ", traitName),
+                                          "` names no trait"))
+        return
+    }
+    if (semaTraitIsObjectSafe(module, traitDecl, annotation) == false) { return }
+
+    let decl = createNode(NodeKind.STRUCT_DECL)
+    nodeSpanFrom(decl, annotation)
+    decl.s1 = strClone(name)
+    decl.child1 = node_to_ptr(semaDynField("value"))
+    ptr_to_node(decl.child1).next = node_to_ptr(semaDynField("methods"))
+    monoAppendDeclaration(module, decl)
+}
+
+private fn semaDynField(name: String) -> ASTNode {
+    let field = createNode(NodeKind.STRUCT_FIELD)
+    field.s1 = strClone(name)
+    let annotation = createNode(NodeKind.TYPE_ANNOTATION)
+    annotation.s1 = strClone("Ptr")
+    field.child1 = node_to_ptr(annotation)
+    return field
+}
+
+// Object safety. A trait is usable as `dyn` when every method it declares can be
+// one row of one table, which is what rules out the two shapes below.
+//
+// Reported at the `dyn` that asked, not at the trait: the trait is a correct
+// declaration, and what failed is the attempt to make an object of it.
+private fn semaTraitIsObjectSafe(module: ASTNode, traitDecl: ASTNode, at: ASTNode) -> Bool {
+    let mut memberPtr = traitDecl.child3
+    while (nodeExists(memberPtr)) {
+        let member = ptr_to_node(memberPtr)
+        if (member.kind == NodeKind.ASSOC_TYPE) {
+            semaErrorAt(at, strConcat(strConcat("`", traitDecl.s1),
+                        strConcat("` has an associated type, so it cannot be a `dyn` object yet",
+                                  "")))
+            diag_note("an object would have to fix the associated type at the use site; write a bound instead")
+            return false
+        }
+        memberPtr = member.next
+    }
+
+    let mut sigPtr = traitDecl.child1
+    while (nodeExists(sigPtr)) {
+        let signature = ptr_to_node(sigPtr)
+        if (strEquals(signature.s2, "") == false) {
+            semaErrorAt(at, strConcat(strConcat("`", traitDecl.s1),
+                        strConcat("` cannot be a `dyn` object: ",
+                                  strConcat(diagQuote(signature.s1), " is generic"))))
+            diag_note("one vtable row holds one function, and a generic method needs a different one per type argument")
+            return false
+        }
+        if (semaSignatureMentionsSelf(signature)) {
+            semaErrorAt(at, strConcat(strConcat("`", traitDecl.s1),
+                        strConcat("` cannot be a `dyn` object: ",
+                                  strConcat(diagQuote(signature.s1),
+                                            " mentions `Self` away from the receiver"))))
+            diag_note("the concrete type is not known through an object, so `Self` there has no meaning")
+            return false
+        }
+        sigPtr = signature.next
+    }
+    return true
+}
+
+// `Self` anywhere but the receiver: a later parameter, or the return type. The
+// receiver is what the object *is*, so `Self` there is the one position an
+// object can supply.
+private fn semaSignatureMentionsSelf(signature: ASTNode) -> Bool {
+    if (semaAnnotationMentionsSelf(signature.child3)) { return true }
+    if (nodeIsNull(signature.child1)) { return false }
+    let mut paramPtr = ptr_to_node(signature.child1).next
+    while (nodeExists(paramPtr)) {
+        let param = ptr_to_node(paramPtr)
+        if (semaAnnotationMentionsSelf(param.child1)) { return true }
+        paramPtr = param.next
+    }
+    return false
+}
+
+private fn semaAnnotationMentionsSelf(ptr: Ptr) -> Bool {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.TYPE_ANNOTATION and strEquals(node.s1, "Self")) { return true }
+        if (semaAnnotationMentionsSelf(node.child1)) { return true }
+        p = node.next
+    }
+    return false
+}
+
+// Rewrites a concrete argument into the trait object the parameter asked for.
+//
+// **In place, by rewriting the kind**, the same way a payload variant becomes a
+// struct literal: the argument sits in a `next` chain whose previous link this
+// function cannot see, so the node stays and its old content moves under it.
+private fn semaBuildDynIfNeeded(module: ASTNode, argNode: ASTNode, paramT: TypeInfo) {
+    let actual = nodeGetType(argNode)
+    if (semaCoercesToDyn(module, paramT, actual) == false) { return }
+
+    let traitName = strSubstring(paramT.name, 4, __builtin_string_len(paramT.name) - 4)
+    let value = monoCopyOne(node_to_ptr(argNode))
+
+    argNode.kind = NodeKind.DYN_MAKE
+    argNode.s1 = strClone(paramT.name)
+    argNode.s2 = strConcat(strConcat("vtable$", traitName),
+                           strConcat("$", typeDisplay(actual)))
+    argNode.i1 = 0
+    argNode.i2 = 0
+    argNode.i3 = 0
+    argNode.child1 = node_to_ptr(value)
+    argNode.child2 = ptr_null()
+    argNode.child3 = ptr_null()
+    nodeSetType(argNode, paramT)
+}
+
+// Whether this call is a method call on a trait object.
+private fn semaIsDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> Bool {
+    if (nodeIsNull(expr.child2)) { return false }
+    let receiver = ptr_to_node(expr.child2)
+    let receiverT = semaExpr(module, receiver)
+    if (typeIsValid(receiverT) == false) { return false }
+    if (receiverT.kind != TypeKind.STRUCT) { return false }
+    if (strStartsWith(receiverT.name, "dyn$") == false) { return false }
+
+    let traitName = strSubstring(receiverT.name, 4, __builtin_string_len(receiverT.name) - 4)
+    let traitDecl = semaFindTrait(module, traitName)
+    if (nodeIsNull(node_to_ptr(traitDecl))) { return false }
+    return semaTraitMethodIndex(traitDecl, name) >= 0
+}
+
+// The method's row in the vtable: its position in the trait's declaration order.
+// **That order is the whole of the dispatch** -- codegen fills the table walking
+// the same chain, and the two must not diverge.
+private fn semaTraitMethodIndex(traitDecl: ASTNode, name: String) -> Int {
+    let mut index = 0
+    let mut p = traitDecl.child1
+    while (nodeExists(p)) {
+        let signature = ptr_to_node(p)
+        if (strEquals(signature.s1, name)) { return index }
+        index = index + 1
+        p = signature.next
+    }
+    return 0 - 1
+}
+
+private fn semaDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> TypeInfo {
+    let receiver = ptr_to_node(expr.child2)
+    let receiverT = nodeGetType(receiver)
+    let traitName = strSubstring(receiverT.name, 4, __builtin_string_len(receiverT.name) - 4)
+    let traitDecl = semaFindTrait(module, traitName)
+    let index = semaTraitMethodIndex(traitDecl, name)
+
+    let signature = ptr_to_node(semaAnnotationChainAt(traitDecl.child1, index))
+    let retT = semaDeclaredReturnType(module, signature.child3)
+
+    // The remaining arguments are checked against the trait's own signature,
+    // skipping the receiver: through an object the concrete type is unknown, and
+    // the trait's declaration is the only description of the call there is.
+    let rest = receiver.next
+    let mut argPtr = rest
+    let mut paramPtr = ptr_null()
+    if (nodeExists(signature.child1)) { paramPtr = ptr_to_node(signature.child1).next }
+    while (nodeExists(argPtr) and nodeExists(paramPtr)) {
+        let argNode = ptr_to_node(argPtr)
+        let paramNode = ptr_to_node(paramPtr)
+        let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
+        semaCheckValue(module, argNode, paramT, strConcat(diagQuote(name), " argument"))
+        argPtr = argNode.next
+        paramPtr = paramNode.next
+    }
+    if (nodeExists(argPtr) or nodeExists(paramPtr)) {
+        semaErrorAt(expr, strConcat(strConcat("wrong number of arguments to ", diagQuote(name)),
+                                    " through a trait object"))
+    }
+
+    receiver.next = ptr_null()
+    expr.kind = NodeKind.DYN_CALL
+    expr.s1 = strClone(name)
+    expr.s2 = typeSemKey(retT)
+    expr.i1 = index
+    expr.child1 = node_to_ptr(receiver)
+    expr.child2 = rest
+    expr.child3 = ptr_null()
+    nodeSetType(expr, retT)
+    return retT
+}
+
+private fn semaCheckDynPositions(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.FUNCTION) {
+            // A parameter's own annotation is the one legal position. Anything
+            // nested inside it is not: `List<dyn Show>` outlives the call for
+            // exactly the same reason a field does.
+            let mut paramPtr = stmt.child1
+            while (nodeExists(paramPtr)) {
+                let param = ptr_to_node(paramPtr)
+                if (nodeExists(param.child1)) {
+                    semaRejectDyn(ptr_to_node(param.child1).child1, "a type argument")
+                }
+                paramPtr = param.next
+            }
+            semaRejectDyn(stmt.child3, "a return type")
+            semaRejectDyn(stmt.child2, "a binding")
+        } else if (stmt.kind == NodeKind.STRUCT_DECL) {
+            let mut fieldPtr = stmt.child1
+            while (nodeExists(fieldPtr)) {
+                let field = ptr_to_node(fieldPtr)
+                semaRejectDyn(field.child1, "a struct field")
+                fieldPtr = field.next
+            }
+        }
+        p = stmt.next
+    }
+}
+
+private fn semaRejectDyn(ptr: Ptr, position: String) {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.TYPE_ANNOTATION and strStartsWith(node.s1, "dyn$")) {
+            let traitName = strSubstring(node.s1, 4, __builtin_string_len(node.s1) - 4)
+            semaErrorAt(node, strConcat(strConcat("`dyn ", traitName),
+                        strConcat("` cannot be ", strConcat(position,
+                                  ": a trait object is a borrow and cannot outlive the call it is passed to"))))
+            diag_note("take it as a parameter, or use a bound -- `fn f<T: Trait>(v: T)` -- for a value you need to keep")
+        }
+        semaRejectDyn(node.child1, position)
+        semaRejectDyn(node.child2, position)
+        semaRejectDyn(node.child3, position)
+        p = node.next
+    }
+}
+
+private fn semaCheckOrphan(module: ASTNode, implNode: ASTNode) {
+    let header = ptr_to_node(implNode.child3)
+    if (nodeIsNull(header.child2)) { return }
+
+    let here = semaFileQualifier(implNode.file)
+    let traitRef = ptr_to_node(header.child2)
+
+    let traitDecl = semaFindTrait(module, traitRef.s1)
+    if (nodeIsNull(node_to_ptr(traitDecl)) == false
+        and strEquals(semaFileQualifier(traitDecl.file), here)) { return }
+
+    if (semaModuleDeclaresType(module, semaAnnotationBaseName(header.child1), here)) { return }
+
+    let targetText = semaAnnotationText(header.child1)
+    semaErrorAt(implNode,
+                strConcat(strConcat("this module declares neither ",
+                                    diagQuote(monoTraitRefText(header.child2))),
+                          strConcat(" nor ", strConcat(diagQuote(targetText),
+                                    ", so it may not implement one for the other"))))
+    diag_note("implement it in the module that declares the trait or the type; an implementation both of whose names are foreign cannot be checked for conflicts against another module that writes the same one")
+}
+
+private fn semaAnnotationBaseName(annotationPtr: Ptr) -> String {
+    if (nodeIsNull(annotationPtr)) { return "" }
+    return ptr_to_node(annotationPtr).s1
+}
+
+// **Both chains.** A generic type is a template and monoCollectTemplates moved it
+// off `child1` before sema ran, so a module that declares `Carrier<T>` and
+// implements a foreign trait for it looks like an orphan if only the concrete
+// declarations are searched.
+private fn semaModuleDeclaresType(module: ASTNode, name: String, qualifier: String) -> Bool {
+    if (strEquals(name, "")) { return false }
+    if (semaChainDeclaresType(module.child1, name, qualifier)) { return true }
+    return semaChainDeclaresType(module.child2, name, qualifier)
+}
+
+private fn semaChainDeclaresType(ptr: Ptr, name: String, qualifier: String) -> Bool {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if ((stmt.kind == NodeKind.STRUCT_DECL or stmt.kind == NodeKind.ENUM_DECL)
+            and strEquals(stmt.s1, name)
+            and strEquals(semaFileQualifier(stmt.file), qualifier)) { return true }
+        p = stmt.next
+    }
+    return false
+}
+
+// T14/T20. A comparison operator on a struct is routed through a trait: `==` and
+// `!=` through `Eq`, and the four relational operators through `Ord`.
+//
+// **Split because equality is the weaker requirement.** A type may be equatable
+// without having a total order, and routing `==` through `cmp` would force its
+// author to invent an ordering that means nothing. A type that implements only
+// `Eq` can be compared for equality and not ordered.
+//
+// Each operator keeps its meaning and codegen sees an ordinary call, which is
+// what makes the generated code predictable rather than six special cases:
+// `a == b` becomes `eq(a, b)`, `a != b` becomes `eq(a, b) == false`, and
+// `a < b` becomes `cmp(a, b) < 0`.
+//
+// Structs only. A primitive comparison is a machine instruction and stays one,
+// which is what keeps this additive: no program that compiled before changes
+// meaning, because comparing structs was an error.
+//
+// The rewritten call carries the trait as its qualifier, so it selects that
+// trait's method under T12's filter rather than any function of the same name.
+private fn semaRouteStructComparison(module: ASTNode, expr: ASTNode, op: String,
+                                     leftT: TypeInfo, rightT: TypeInfo) -> Bool {
+    if (leftT.kind != TypeKind.STRUCT or rightT.kind != TypeKind.STRUCT) { return false }
+    if (strEquals(leftT.name, rightT.name) == false) { return false }
+
+    // `==` prefers `Eq` and falls back to `Ord`. **Equality never depends on
+    // having written the right one of the two**: a type that can be ordered can
+    // be compared for equality, because `cmp(a, b) == 0` is what equality means
+    // for an ordered type, and a type that is only equatable uses `Eq`.
+    //
+    // Without the fallback, splitting `Eq` out of `Ord` would have taken `==`
+    // away from every type that had it through `Ord` alone -- a feature removal
+    // dressed up as a refinement.
+    let equality = strEquals(op, "==") or strEquals(op, "!=")
+    let mut traitName = "Ord"
+    let mut method = "cmp"
+    if (equality and semaTypeImplementsNamedTrait(module, leftT.name, "Eq")) {
+        traitName = "Eq"
+        method = "eq"
+    }
+    if (semaTypeImplementsNamedTrait(module, leftT.name, traitName) == false) { return false }
+
+    let left = ptr_to_node(expr.child1)
+    let right = ptr_to_node(expr.child2)
+    left.next = node_to_ptr(right)
+    right.next = ptr_null()
+
+    let callee = createNode(NodeKind.IDENTIFIER_EXPR)
+    callee.s1 = strClone(method)
+    nodeSpanFrom(callee, expr)
+
+    let call = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(call, expr)
+    call.s1 = strClone(traitName)
+    call.child1 = node_to_ptr(callee)
+    call.child2 = node_to_ptr(left)
+
+    let comparand = createNode(NodeKind.LITERAL_EXPR)
+    nodeSpanFrom(comparand, expr)
+    if (strEquals(traitName, "Eq")) {
+        // Both compare against `true`, and **the operator is left alone**:
+        // `eq(a,b) == true` is equality and `eq(a,b) != true` is its negation, so
+        // one comparand serves both without a negation node and without
+        // rewriting `expr.s1`. Overwriting it frees the string `op` is still
+        // reading, which surfaced as garbage in unrelated diagnostics.
+        comparand.i1 = TokenType.BOOL_LITERAL
+        comparand.s1 = strClone("true")
+    } else {
+        comparand.i1 = TokenType.NUMBER_LITERAL
+        comparand.s1 = strClone("0")
+    }
+
+    expr.child1 = node_to_ptr(call)
+    expr.child2 = node_to_ptr(comparand)
+    return true
+}
+
+internal fn semaTypeImplementsNamedTrait(module: ASTNode, typeName: String,
+                                        traitName: String) -> Bool {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, traitName)
+            and strEquals(stmt.s1, typeName)) { return true }
+        p = stmt.next
+    }
+    return false
 }
 
 private fn semaImplParam(params: String, name: String) -> Bool {
@@ -1968,7 +2512,11 @@ private fn semaCheckConformance(module: ASTNode, implNode: ASTNode) {
     let mut signaturePtr = traitDecl.child1
     while (nodeExists(signaturePtr)) {
         let signature = ptr_to_node(signaturePtr)
-        if (semaHasConformingMethod(module, implNode, traitDecl, signature) == false) {
+        let conformingPtr = semaFindConformingMethod(module, implNode, traitDecl, signature)
+        if (nodeExists(conformingPtr)) {
+            semaCheckMethodConventions(signature, ptr_to_node(conformingPtr))
+        }
+        if (nodeIsNull(conformingPtr)) {
             let targetText = semaAnnotationText(ptr_to_node(implNode.child3).child1)
             semaErrorAt(implNode, strConcat(strConcat(diagQuote(targetText),
                         strConcat(" does not implement ",
@@ -1979,6 +2527,240 @@ private fn semaCheckConformance(module: ASTNode, implNode: ASTNode) {
         }
         signaturePtr = signature.next
     }
+
+    semaCheckTraitMembers(module, implNode, header, traitDecl)
+
+    semaCheckSupertraits(module, implNode, traitDecl,
+                         semaAnnotationText(header.child1), 0)
+}
+
+// A constant is part of the contract exactly as a method is: the trait states
+// the name and type, and the `impl` supplies the value. The value's type is
+// checked against the declaration here rather than at the use, so a wrong one is
+// reported against the `impl` that wrote it.
+// A trait's constants and types are part of the contract exactly as its methods
+// are: the trait states the name, and the `impl` supplies the value or the
+// choice. Both live in one member chain and are told apart by kind.
+//
+// **The cursor advances once, at the end.** An earlier version advanced inside
+// each branch and one branch did not, so a missing member looped forever
+// reporting the same error -- a hang rather than a diagnostic. There is no
+// branch here that can forget.
+private fn semaCheckTraitMembers(module: ASTNode, implNode: ASTNode, header: ASTNode,
+                                 traitDecl: ASTNode) {
+    let targetText = semaAnnotationText(header.child1)
+
+    let mut declaredPtr = traitDecl.child3
+    while (nodeExists(declaredPtr)) {
+        let declared = ptr_to_node(declaredPtr)
+        let suppliedPtr = semaFindImplMember(header, declared.s1, declared.kind)
+
+        if (nodeIsNull(suppliedPtr)) {
+            let mut spelling = "`let "
+            if (declared.kind == NodeKind.ASSOC_TYPE) { spelling = "`type " }
+            semaErrorAt(implNode,
+                        strConcat(strConcat(diagQuote(targetText),
+                                            strConcat(" does not implement ",
+                                                      diagQuote(monoTraitRefText(header.child2)))),
+                                  strConcat(strConcat(": no ", spelling),
+                                            strConcat(declared.s1, "`"))))
+            diag_note_at(declared.file, declared.line, declared.col, declared.len,
+                         "the trait declares it here")
+        } else if (declared.kind == NodeKind.ASSOC_CONST) {
+            // Only a constant carries a value to check. An associated type's
+            // choice is checked as an ordinary annotation wherever a projection
+            // substitutes it.
+            let supplied = ptr_to_node(suppliedPtr)
+            let wantT = semaAnnotationType(module, ptr_to_node(declared.child1))
+            let gotT = semaExpr(module, ptr_to_node(supplied.child2))
+            if (typeIsValid(wantT) and typeIsValid(gotT) and typeEquals(wantT, gotT) == false) {
+                semaErrorAt(supplied,
+                            strConcat(strConcat("`let ", strConcat(declared.s1, "` is declared ")),
+                                      strConcat(typeDisplay(wantT),
+                                                strConcat(", and this value is ", typeDisplay(gotT)))))
+            }
+        }
+
+        declaredPtr = declared.next
+    }
+}
+
+private fn semaFindImplMember(header: ASTNode, name: String, kind: NodeKind) -> Ptr {
+    let mut p = header.child3
+    while (nodeExists(p)) {
+        let member = ptr_to_node(p)
+        if (member.kind == kind and strEquals(member.s1, name)) { return p }
+        p = member.next
+    }
+    return ptr_null()
+}
+
+// **The use is replaced by the value, not resolved to a symbol.** That is what
+// keeps an associated constant out of the global value namespace: nothing is
+// emitted for it, so there is no global for a same-named constant on another
+// type to collide with, and `Int.MAX` and `Item.MAX` never meet.
+//
+// The span is deliberately not copied over. An error in the substituted value
+// belongs at the use the reader is looking at.
+private fn semaResolveAssocConst(module: ASTNode, expr: ASTNode, typeName: String) -> Bool {
+    let valuePtr = semaFindAssocConstValue(module, typeName, expr.s1)
+    if (nodeIsNull(valuePtr)) { return false }
+
+    let copy = monoCopyOne(valuePtr)
+    expr.kind = copy.kind
+    expr.s1 = copy.s1
+    expr.s2 = copy.s2
+    expr.i1 = copy.i1
+    expr.i2 = copy.i2
+    expr.i3 = copy.i3
+    expr.child1 = copy.child1
+    expr.child2 = copy.child2
+    expr.child3 = copy.child3
+    return true
+}
+
+private fn semaFindAssocConstValue(module: ASTNode, typeName: String, constName: String) -> Ptr {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.IMPL_DECL) {
+            let header = ptr_to_node(stmt.child3)
+            if (strEquals(semaAnnotationText(header.child1), typeName)) {
+                let found = semaFindImplMember(header, constName, NodeKind.ASSOC_CONST)
+                if (nodeIsNull(found) == false) { return ptr_to_node(found).child2 }
+            }
+        }
+        p = stmt.next
+    }
+    return ptr_null()
+}
+
+// A supertrait is an obligation on the implementing type, not on the trait: the
+// type needs its own `impl` of it. Walked transitively so a type implementing
+// the bottom of a chain is told about every link at once, rather than learning
+// about the next one only after satisfying the last.
+//
+// The depth bound is what keeps a cyclic declaration from recursing here. The
+// cycle itself is diagnosed once, against the trait, by semaCheckSupertraitCycles.
+private fn semaCheckSupertraits(module: ASTNode, implNode: ASTNode, traitDecl: ASTNode,
+                                targetText: String, depth: Int) {
+    if (depth > 64) { return }
+
+    let mut superPtr = traitDecl.child2
+    while (nodeExists(superPtr)) {
+        let superRef = ptr_to_node(superPtr)
+        if (semaTargetImplementsTrait(module, targetText, superRef) == false) {
+            semaErrorAt(implNode,
+                        strConcat(strConcat(diagQuote(targetText),
+                                            strConcat(" implements ", diagQuote(traitDecl.s1))),
+                                  strConcat(", so it must also implement ",
+                                            diagQuote(monoTraitRefText(superPtr)))))
+            diag_note_at(traitDecl.file, traitDecl.line, traitDecl.col, traitDecl.len,
+                         "the supertrait is required here")
+        }
+        let parent = semaFindTrait(module, superRef.s1)
+        if (nodeIsNull(node_to_ptr(parent)) == false) {
+            semaCheckSupertraits(module, implNode, parent, targetText, depth + 1)
+        }
+        superPtr = superRef.next
+    }
+}
+
+// Compared as written. Two spellings of one type do not match here, which makes
+// this refuse to see an implementation rather than invent one; a missing impl is
+// reported at the impl that needs it, where the reader can see both.
+private fn semaTargetImplementsTrait(module: ASTNode, targetText: String,
+                                     traitRef: ASTNode) -> Bool {
+    let wanted = monoTraitRefText(node_to_ptr(traitRef))
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, "") == false) {
+            let header = ptr_to_node(stmt.child3)
+            if (strEquals(semaAnnotationText(header.child1), targetText)
+                and strEquals(monoTraitRefText(header.child2), wanted)) { return true }
+        }
+        p = stmt.next
+    }
+    return false
+}
+
+// Reported against the declaration rather than against each implementing type,
+// so a cycle is one diagnostic instead of one per `impl`.
+private fn semaCheckSupertraitCycles(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.TRAIT_DECL
+            and semaTraitReaches(module, stmt.child2, stmt.s1, 0)) {
+            semaErrorAt(stmt, strConcat(strConcat("trait ", diagQuote(stmt.s1)),
+                                        " is its own supertrait, directly or through a cycle"))
+        }
+        p = stmt.next
+    }
+}
+
+private fn semaTraitReaches(module: ASTNode, superPtr: Ptr, targetName: String,
+                            depth: Int) -> Bool {
+    if (depth > 64) { return true }
+    let mut p = superPtr
+    while (nodeExists(p)) {
+        let superRef = ptr_to_node(p)
+        if (strEquals(superRef.s1, targetName)) { return true }
+        let parent = semaFindTrait(module, superRef.s1)
+        if (nodeIsNull(node_to_ptr(parent)) == false) {
+            if (semaTraitReaches(module, parent.child2, targetName, depth + 1)) { return true }
+        }
+        p = superRef.next
+    }
+    return false
+}
+
+// SPEC 5. A trait's ownership conventions are part of its contract. `sink self`
+// obliges an implementation to consume the receiver, and generic code behind the
+// bound is entitled to rely on that; a trait that can state an obligation
+// nothing enforces is a hole in the one language where ownership is the point.
+//
+// Checked separately from signature matching, and reported per parameter, so the
+// message is the convention that differs rather than "no such method" for a
+// method the reader can plainly see.
+private fn semaContainsProjection(ptr: Ptr) -> Bool {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.ASSOC_TYPE_REF) { return true }
+        if (semaContainsProjection(node.child1)) { return true }
+        if (semaContainsProjection(node.child2)) { return true }
+        if (semaContainsProjection(node.child3)) { return true }
+        p = node.next
+    }
+    return false
+}
+
+private fn semaCheckMethodConventions(signature: ASTNode, candidate: ASTNode) {
+    let mut want = signature.child1
+    let mut have = candidate.child1
+    while (nodeExists(want) and nodeExists(have)) {
+        let wantParam = ptr_to_node(want)
+        let haveParam = ptr_to_node(have)
+        if (strEquals(wantParam.s2, haveParam.s2) == false) {
+            semaErrorAt(haveParam,
+                        strConcat(strConcat("parameter ", diagQuote(haveParam.s1)),
+                                  strConcat(strConcat(" is ", semaConventionText(wantParam.s2)),
+                                            strConcat(" in the trait, and ",
+                                                      semaConventionText(haveParam.s2)))))
+            diag_note_at(wantParam.file, wantParam.line, wantParam.col, wantParam.len,
+                         "the trait declares the convention here")
+        }
+        want = wantParam.next
+        have = haveParam.next
+    }
+}
+
+private fn semaConventionText(convention: String) -> String {
+    if (strEquals(convention, "sink")) { return "`sink`" }
+    if (strEquals(convention, "inout")) { return "`inout`" }
+    return "a borrow"
 }
 
 // Only a method written in this exact impl satisfies its trait. The functions
@@ -1987,7 +2769,29 @@ private fn semaCheckConformance(module: ASTNode, implNode: ASTNode) {
 // accept an inherent method, a free function, or another trait's implementation.
 private fn semaHasConformingMethod(module: ASTNode, implNode: ASTNode,
                                    traitDecl: ASTNode, signature: ASTNode) -> Bool {
+    return nodeExists(semaFindConformingMethod(module, implNode, traitDecl, signature))
+}
+
+private fn semaFindConformingMethod(module: ASTNode, implNode: ASTNode,
+                                    traitDecl: ASTNode, rawSignature: ASTNode) -> Ptr {
     let header = ptr_to_node(implNode.child3)
+
+    // A signature mentioning `Self.Item` cannot be compared as written: the
+    // trait's half still says `Self.Item` while the implementation's says the
+    // type it chose. Resolve the projection against this impl first -- `Self`
+    // to the target, then the projection to the choice -- and compare concrete
+    // annotations.
+    //
+    // Copied, and only when a projection is actually present. The trait's own
+    // node is shared by every implementation of it, so resolving in place would
+    // fix the first impl's choice for all of them.
+    let mut signature = rawSignature
+    if (semaContainsProjection(node_to_ptr(rawSignature))) {
+        let resolved = monoCopyOne(node_to_ptr(rawSignature))
+        monoSubstituteChain(node_to_ptr(resolved), "Self", header.child1)
+        monoResolveProjections(module, node_to_ptr(resolved))
+        signature = resolved
+    }
     let mut recordPtr = implNode.child2
     while (nodeExists(recordPtr)) {
         let record = ptr_to_node(recordPtr)
@@ -2003,7 +2807,7 @@ private fn semaHasConformingMethod(module: ASTNode, implNode: ASTNode,
                     and semaSignaturesAgree(header.child1, traitDecl.s2,
                                             ptr_to_node(header.child2).child1,
                                             signature, candidate)) {
-                    return true
+                    return ir_decl_at(record.s1, i)
                 }
                 i = i + 1
             }
@@ -2025,14 +2829,14 @@ private fn semaHasConformingMethod(module: ASTNode, implNode: ASTNode,
                     and semaSignaturesAgree(header.child1, traitDecl.s2,
                                             ptr_to_node(header.child2).child1,
                                             signature, candidate)) {
-                    return true
+                    return templatePtr
                 }
                 templatePtr = candidate.next
             }
         }
         recordPtr = record.next
     }
-    return false
+    return ptr_null()
 }
 
 private fn semaSignaturesAgree(targetPtr: Ptr, traitParams: String, traitArgs: Ptr,
@@ -2444,6 +3248,11 @@ fn analyzeModule(module: ASTNode) {
     // "which declarations carry this name?" without a walk, which is what
     // overload resolution asks once per call site. Together they take checking
     // from cubic to linear in the number of declarations (REQUIREMENTS 16).
+    // T15. `dyn Show` parsed to the name `dyn$Show`; the struct it names is
+    // built here, before the type registry is filled, so every later pass
+    // resolves it as an ordinary named type without being taught anything.
+    semaSynthesiseDynStructs(module)
+
     semaRegisterNamedTypes(module)
     semaCacheFunctionSymbols(module)
     indexModuleDeclarations(module)
@@ -2451,6 +3260,28 @@ fn analyzeModule(module: ASTNode) {
     // After the index, because conformance is asked by name: an `impl` block's
     // methods are ordinary top-level functions by now, and finding them is the
     // same lookup overload resolution does.
+    // Associated-type projections on *concrete* declarations. Instantiation
+    // resolves the ones inside a template, but `impl Iterator for Countdown`
+    // writing `-> Self.Item` is never instantiated, so nothing else would.
+    //
+    // Guarded, because this is a full recursive walk of every declaration and a
+    // projection cannot resolve to an associated type nobody declared. The
+    // compiler's own sources declare none, so they pay one shallow scan instead.
+    if (monoModuleHasAssocType(module)) {
+        monoResolveProjections(module, module.child1)
+    }
+
+    // T15. A trait object is a borrow, and this is what makes that true rather
+    // than merely intended. Its storage is a stack pair built at the call site,
+    // so anything that outlives the call -- a field, a return, a binding, a type
+    // argument -- would hold a pointer into a dead frame.
+    //
+    // Without this the escape was blocked only by accident: coercion happens at
+    // call arguments and nowhere else, so a return or a binding failed with a
+    // type mismatch. A struct field was not blocked at all.
+    semaCheckDynPositions(module)
+
+    semaCheckSupertraitCycles(module)
     semaCheckImplBlocks(module)
 
     // A DataView owns several column allocations, while struct fields are

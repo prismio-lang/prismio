@@ -1136,6 +1136,9 @@ internal fn generateExpression(expr: ASTNode) -> String {
         }
     }
 
+    if (expr.kind == NodeKind.DYN_MAKE) { return generateDynMake(expr) }
+    if (expr.kind == NodeKind.DYN_CALL) { return generateDynCall(expr) }
+
     if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
         let structName = expr.s1
 
@@ -2355,4 +2358,60 @@ internal fn generateExpression(expr: ASTNode) -> String {
     }
 
     return "0"
+}
+
+// ---------------------------------------------------------
+// Trait objects
+// ---------------------------------------------------------
+
+// Building one: a pair of the value and its method table.
+//
+// **On the stack, unconditionally, with no AIF query.** A trait object is a
+// borrow -- it cannot be stored in a field, returned, or outlive the call it is
+// an argument to -- so it can never outlive the frame that builds it. That is
+// exactly the condition a T0 placement states, and here it is a property of the
+// language rather than something inference has to prove.
+//
+// The value itself is not copied and not owned. What goes in the first word is
+// the pointer the argument already was.
+private fn generateDynMake(e: ASTNode) -> String {
+    let structName = e.s1
+    let value = generateExpression(ptr_to_node(e.child1))
+    let object = ir_get_temp_name(ir_alloc_stack(structName))
+
+    ir_store_ptr("ptr", value, ir_get_temp_name(ir_struct_field_ptr(structName, object, 0)))
+    let table = ir_get_temp_name(ir_vtable_addr(e.s2))
+    ir_store_ptr("ptr", table, ir_get_temp_name(ir_struct_field_ptr(structName, object, 1)))
+    return object
+}
+
+// Dispatching through one: read the table out of the object, take the method's
+// row, and call it with the object's value standing in for the receiver.
+//
+// The callee is an ordinary implementation compiled against its own concrete
+// type. Nothing about it knows it was reached dynamically, which is what keeps
+// one implementation serving both call forms.
+private fn generateDynCall(e: ASTNode) -> String {
+    let object = generateExpression(ptr_to_node(e.child1))
+    let value = ir_get_temp_name(ir_ptr_slot(object, 0))
+    let table = ir_get_temp_name(ir_ptr_slot(object, 1))
+    let method = ir_get_temp_name(ir_ptr_slot(table, e.i1))
+
+    ir_call_begin()
+    ir_call_arg("ptr", value)
+    let mut argPtr = e.child2
+    while (nodeExists(argPtr)) {
+        let argNode = ptr_to_node(argPtr)
+        let argStore = storageType(getExprType(argNode))
+        ir_call_arg(argStore, generateExpression(argNode))
+        argPtr = argNode.next
+    }
+
+    // **The IR storage key, not the sema key sema parked on `s2`.** The backend
+    // resolves a type by its storage spelling; handing it `Int` fails with
+    // "unknown type key", which is the same distinction `storageType` exists to
+    // draw everywhere else in this file.
+    let temp = ir_call_end_indirect(storageType(getExprType(e)), method)
+    if (temp < 0) { return "" }
+    return ir_get_temp_name(temp)
 }

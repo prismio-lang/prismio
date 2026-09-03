@@ -1,0 +1,24 @@
+// expect-error: Container<Item = Int>
+// An equality constraint is a further demand on the implementation: `Sack`
+// implements `Container`, but its `Item` is not the one the bound named.
+import std.string
+
+trait Container {
+    type Item
+    fn size(self) -> Int
+}
+
+struct Sack { s: String }
+
+impl Container for Sack {
+    type Item = String
+    fn size(self) -> Int { return strLength(self.s) }
+}
+
+fn intOnly<T: Container<Item = Int>>(c: T) -> Int {
+    return size(c)
+}
+
+fn main() -> Int {
+    return intOnly(Sack { s: "x" })
+}

@@ -1,0 +1,16 @@
+// expect-error: mentions `Self` away from the receiver
+// A method returning `Self` needs a different function per implementing type,
+// which is exactly what one row of one table cannot hold.
+trait Dup {
+    fn dup(self) -> Self
+}
+
+struct D { n: Int }
+
+impl Dup for D {
+    fn dup(self) -> Self { return self }
+}
+
+fn f(v: dyn Dup) -> Int { return 0 }
+
+fn main() -> Int { return 0 }

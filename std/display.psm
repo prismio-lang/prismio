@@ -1,0 +1,41 @@
+// `Display` -- a value's text, for the types that have one.
+//
+// **What this replaces.** `std.io` carries one `print` overload per builtin type
+// and a user type can never join that set: printing a `Version` means calling
+// something that builds a String by hand at every site. A trait moves that
+// decision to the type, once.
+//
+// `show` returns a String rather than writing to a stream, because a caller
+// wants the text as often as it wants it printed -- in an error message, a key,
+// a joined line -- and a writer-shaped trait makes those callers build a stream
+// to throw away.
+//
+// **A trait is a check, not dispatch.** `show(v)` inside a bounded generic is
+// resolved by ordinary overload resolution once `T` is concrete, so an `impl`
+// here costs nothing at a call site that does not use it -- and a type this file
+// does not cover is covered by writing `impl Display for MyType` beside the
+// type, with no change here.
+
+import std.string
+
+trait Display {
+    fn show(self) -> String
+}
+
+impl Display for Int    { fn show(self) -> String { return strFromInt(self) } }
+impl Display for I8     { fn show(self) -> String { return strFromInt(self as Int) } }
+impl Display for I16    { fn show(self) -> String { return strFromInt(self as Int) } }
+impl Display for I64    { fn show(self) -> String { return strFromInt(self as Int) } }
+impl Display for Isize  { fn show(self) -> String { return strFromInt(self as Int) } }
+impl Display for U8     { fn show(self) -> String { return strFromUnsigned(self as U64) } }
+impl Display for U16    { fn show(self) -> String { return strFromUnsigned(self as U64) } }
+impl Display for U32    { fn show(self) -> String { return strFromUnsigned(self as U64) } }
+impl Display for U64    { fn show(self) -> String { return strFromUnsigned(self) } }
+impl Display for Usize  { fn show(self) -> String { return strFromUnsigned(self as U64) } }
+impl Display for Bool   { fn show(self) -> String { return strFromBool(self) } }
+impl Display for Char   { fn show(self) -> String { return strFromChar(self) } }
+
+// A String shows as itself. Cloned rather than returned directly: `show` hands
+// back a value the caller owns, and returning the receiver's own storage would
+// give two owners for one allocation.
+impl Display for String { fn show(self) -> String { return strClone(self) } }

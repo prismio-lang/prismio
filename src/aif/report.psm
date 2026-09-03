@@ -1175,10 +1175,10 @@ private fn aifEmitPlacement(site: Int) {
     println("")
     println("  placement")
 
-    let where = aif_region_name_at_site(site)
-    if (strEquals(where, "") == false) {
+    let regionName = aif_region_name_at_site(site)
+    if (strEquals(regionName, "") == false) {
         print("    region:")
-        print(where)
+        print(regionName)
         println("  -- bump-allocated, and released in bulk when the region exits")
         // The two ways to be served are not the same fact, and a reader acting on
         // this needs to know which one this is. A lexical region is what the

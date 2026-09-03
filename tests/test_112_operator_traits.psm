@@ -1,0 +1,52 @@
+// Comparison operators on a struct are routed through a trait: `==` and `!=`
+// through `Eq`, the four relational ones through `Ord`.
+
+import std.io
+import std.eq
+import std.ord
+import std.string
+
+struct Version { major: Int, minor: Int }
+
+impl Eq for Version {
+    fn eq(self, other: Self) -> Bool {
+        return self.major == other.major and self.minor == other.minor
+    }
+}
+
+impl Ord for Version {
+    fn cmp(self, other: Self) -> Int {
+        if (self.major < other.major) { return 0 - 1 }
+        if (self.major > other.major) { return 1 }
+        if (self.minor < other.minor) { return 0 - 1 }
+        if (self.minor > other.minor) { return 1 }
+        return 0
+    }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let a = Version { major: 1, minor: 2 }
+    let b = Version { major: 1, minor: 9 }
+    let c = Version { major: 1, minor: 2 }
+
+    if ((a < b) == false) { return fail("less than") }
+    if ((b > a) == false) { return fail("greater than") }
+    if ((a <= c) == false) { return fail("less or equal") }
+    if ((a >= c) == false) { return fail("greater or equal") }
+    if ((a == c) == false) { return fail("equality through Eq") }
+    if ((a != b) == false) { return fail("inequality through Eq") }
+    if (a > b) { return fail("strictly greater is false here") }
+
+    // Primitives are unaffected: their comparison is still a machine
+    // instruction, not a call.
+    if ((1 < 2) == false) { return fail("primitive comparison") }
+
+    println("test_112 ok")
+    return 0
+}

@@ -294,7 +294,15 @@ fn typeIsValid(t: TypeInfo) -> Bool {
 }
 
 fn typeDisplay(t: TypeInfo) -> String {
-    if (t.kind == TypeKind.STRUCT) { return t.name }
+    if (t.kind == TypeKind.STRUCT) {
+        // A trait object is a synthesised struct named `dyn$Show`, and `$` cannot
+        // occur in a source identifier -- so printing the internal name shows the
+        // reader a type they did not write and cannot spell.
+        if (strStartsWith(t.name, "dyn$")) {
+            return strConcat("dyn ", strSubstring(t.name, 4, __builtin_string_len(t.name) - 4))
+        }
+        return t.name
+    }
     if (t.kind == TypeKind.ENUM) { return t.name }
     if (t.kind == TypeKind.ARRAY) {
         if (nodeExists(t.child)) {

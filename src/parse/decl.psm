@@ -147,9 +147,40 @@ private fn parseTraitRef(p: Parser) -> ASTNode {
     traitRef.s1 = name.value
     p.expectToken(TokenType.IDENTIFIER, "a trait name in a type parameter list")
     if (p.matchVal(TokenType.RELATIONAL_OPERATOR, "<")) {
-        parseTypeArgList(p, traitRef)
+        parseTraitRefArgs(p, traitRef)
     }
     return traitRef
+}
+
+// A trait reference's arguments, which unlike a type's may fix an associated
+// type: `Container<Item = Int>`. Not parseTypeArgList, which is shared with type
+// annotations and generic struct literals and must keep meaning exactly what it
+// meant there.
+//
+// Positional arguments stay on child1 so arity checking is untouched; equality
+// constraints go on child2, because they are a further demand on an
+// implementation rather than an argument the trait declared.
+private fn parseTraitRefArgs(p: Parser, traitRef: ASTNode) {
+    traitRef.i2 = 1
+    let args = nodeList()
+    let constraints = nodeList()
+    loop {
+        if (p.check(TokenType.IDENTIFIER) and p.peek().type == TokenType.ASSIGNMENT_OPERATOR) {
+            let name = p.current()
+            p.advance()
+            p.advance()
+            let constraint = p.node(NodeKind.ASSOC_TYPE)
+            constraint.s1 = name.value
+            constraint.child1 = node_to_ptr(parseTypeAnnotation(p))
+            nodeListPush(constraints, constraint)
+        } else {
+            nodeListPush(args, parseTypeAnnotation(p))
+        }
+        if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
+    }
+    traitRef.child1 = args.head
+    traitRef.child2 = constraints.head
+    p.expectCloseAngle("trait argument list")
 }
 
 // The declaration keeps comma-joined parameter names for substitution and
@@ -254,6 +285,22 @@ private fn copyTraitRefChain(ptr: Ptr) -> Ptr {
         copy.i2 = source.i2
         nodeSpanFrom(copy, source)
         copy.child1 = copyTypeAnnotationChain(source.child1)
+        copy.child2 = copyAssocTypeChain(source.child2)
+        nodeListPush(copies, copy)
+        p = source.next
+    }
+    return copies.head
+}
+
+private fn copyAssocTypeChain(ptr: Ptr) -> Ptr {
+    let copies = nodeList()
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let source = ptr_to_node(p)
+        let copy = createNode(NodeKind.ASSOC_TYPE)
+        copy.s1 = source.s1
+        nodeSpanFrom(copy, source)
+        copy.child1 = copyTypeAnnotationChain(source.child1)
         nodeListPush(copies, copy)
         p = source.next
     }
@@ -305,6 +352,24 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
 
     let name = p.current()
     if (name.type == TokenType.IDENTIFIER or name.type == TokenType.KEYWORD) {
+        // `dyn Show` -- a trait object. **Contextual, not reserved**, for the
+        // reason the AIF annotations and `type` are: reserving a word breaks
+        // programs already using it as a name, and `dyn` is only special when a
+        // trait name follows it in type position.
+        //
+        // Named `dyn$Show`. `$` cannot occur in a source identifier, so the name
+        // cannot collide, and every pass that resolves a named type resolves
+        // this one without being taught anything -- the struct it names is
+        // synthesised in sema.
+        if (strEquals(name.value, "dyn") and p.peek().type == TokenType.IDENTIFIER) {
+            p.advance()
+            let traitName = p.current()
+            typeNode.s1 = strConcat("dyn$", traitName.value)
+            p.advance()
+            if (p.matchVal(TokenType.SEPARATOR, "?")) { typeNode.i3 = 1 }
+            return typeNode
+        }
+
         if (strEquals(name.value, "Self") and nodeExists(p.implType)
             and ptr_to_node(p.implType).kind == NodeKind.IMPL_DECL) {
             copyTypeAnnotationInto(typeNode, implTargetAnnotation(p))
@@ -333,6 +398,21 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
             p.fatal("`Self` already denotes the complete impl target and cannot take type arguments")
         }
         parseTypeArgList(p, typeNode)
+    }
+
+    // `T.Item` -- a projection through a trait's associated type. Its own node
+    // rather than a name containing a dot: substitution has to resolve it to the
+    // implementing type's choice, and encoding structure as text is what the
+    // trait-argument work already had to undo once.
+    if (p.checkVal(TokenType.SEPARATOR, ".")) {
+        p.advance()
+        let projection = p.node(NodeKind.ASSOC_TYPE_REF)
+        let member = p.current()
+        projection.s1 = member.value
+        p.expectToken(TokenType.IDENTIFIER, "associated type name after `.`")
+        projection.child1 = node_to_ptr(typeNode)
+        if (p.matchVal(TokenType.SEPARATOR, "?")) { projection.i3 = 1 }
+        return projection
     }
 
     // REQUIREMENTS 4. `T?` -- a reference that may be absent. Postfix, and after
@@ -623,6 +703,7 @@ private fn parseFunctionDecl(p: Parser) -> ASTNode {
     if (p.matchVal(TokenType.ARROW, "->")) {
         fnNode.child3 = node_to_ptr(parseTypeAnnotation(p))
     }
+    parseWhereClause(p, fnNode)
     fnNode.child2 = node_to_ptr(parseBlock(p))
 
     return fnNode
@@ -683,6 +764,7 @@ private fn parseImplDecl(p: Parser) -> ASTNode {
     implNode.child3 = node_to_ptr(header)
 
     parseImplCheckTarget(p, implNode)
+    parseWhereClause(p, header)
 
     p.expectVal(TokenType.SEPARATOR, "{", "impl body")
 
@@ -694,6 +776,7 @@ private fn parseImplDecl(p: Parser) -> ASTNode {
 
     let methods = nodeList()
     let methodRecords = nodeList()
+    let constants = nodeList()
     while (p.checkVal(TokenType.SEPARATOR, "}") == false) {
         if (p.check(TokenType.EOF)) {
             p.fatal("this `impl` block is never closed; reached end of file looking for `}`")
@@ -705,11 +788,16 @@ private fn parseImplDecl(p: Parser) -> ASTNode {
         // -- the declaring file, or its package -- because a method *is* a free
         // function whose first parameter is the receiver, and it carries the same
         // `file` id either way.
+        if (p.checkVal(TokenType.KEYWORD, "let")) {
+            nodeListPush(constants, parseAssocConst(p, true))
+        } else if (parseAtAssocType(p)) {
+            nodeListPush(constants, parseAssocType(p, true))
+        } else {
         let methodVisibility = p.visibilityLevel()
         if (methodVisibility >= 0) { p.advance() }
 
         if (p.checkVal(TokenType.KEYWORD, "fn") == false) {
-            p.fatal(strConcat("an `impl` block holds `fn` declarations, found ",
+            p.fatal(strConcat("an `impl` block holds `fn` and `let` declarations, found ",
                                        parserDescribe(p.current())))
         }
         let method = parseFunctionDecl(p)
@@ -727,12 +815,14 @@ private fn parseImplDecl(p: Parser) -> ASTNode {
         record.s1 = method.s1
         nodeListPush(methodRecords, record)
         nodeListPush(methods, method)
+        }
     }
     p.expectVal(TokenType.SEPARATOR, "}", "impl body")
 
     p.implType = ptr_null()
     implNode.child1 = methods.head
     implNode.child2 = methodRecords.head
+    header.child3 = constants.head
     return implNode
 }
 
@@ -804,11 +894,13 @@ private fn parseImplCheckTarget(p: Parser, implNode: ASTNode) {
     if (target.i1 == 1 or target.i3 == 1) {
         p.fatal("an `impl` target must be a named, non-optional type")
     }
-    if (target.i2 == 0 and implParamsContain(header.s1, target.s1)) {
-        if (strEquals(implNode.s2, "")) {
-            p.fatal("an inherent `impl` target must have a nominal type constructor, not a type parameter")
-        }
-        p.fatal("blanket trait `impl` blocks over a bare type parameter are not supported yet")
+    // An inherent `impl T` has no trait to give the methods a home and would put
+    // a method on every type at once. A *trait* impl over a bare parameter is a
+    // blanket implementation, which is allowed: the trait names it, and coherence
+    // decides whether it may coexist with any other implementation.
+    if (target.i2 == 0 and implParamsContain(header.s1, target.s1)
+        and strEquals(implNode.s2, "")) {
+        p.fatal("an inherent `impl` target must have a nominal type constructor, not a type parameter")
     }
 
     let count = implParamCount(header.s1)
@@ -899,6 +991,20 @@ private fn parseTraitDecl(p: Parser) -> ASTNode {
 
     traitNode.s2 = parseGenericParams(p, traitNode)
 
+    // Supertraits. `child2` rather than a name list, because a supertrait may be
+    // an application -- `trait Sorted: Ord<Self>` -- and comparing those is the
+    // same structural question a bound asks.
+    if (p.matchVal(TokenType.SEPARATOR, ":")) {
+        let supertraits = nodeList()
+        loop {
+            nodeListPush(supertraits, parseTraitRef(p))
+            if (p.matchVal(TokenType.ARITHMETIC_OPERATOR, "+") == false) { break }
+        }
+        traitNode.child2 = supertraits.head
+    }
+
+    parseWhereClause(p, traitNode)
+
     p.expectVal(TokenType.SEPARATOR, "{", "trait body")
 
     // Set for the same reason an `impl` block sets it, and read differently: a
@@ -907,23 +1013,62 @@ private fn parseTraitDecl(p: Parser) -> ASTNode {
     p.implType = node_to_ptr(traitNode)
 
     let signatures = nodeList()
+    let constants = nodeList()
     while (p.checkVal(TokenType.SEPARATOR, "}") == false) {
         if (p.check(TokenType.EOF)) {
             p.fatal("this `trait` is never closed; reached end of file looking for `}`")
         }
-        if (p.checkVal(TokenType.KEYWORD, "fn") == false) {
-            p.fatal(strConcat("a `trait` holds `fn` signatures, found ",
-                                       parserDescribe(p.current())))
+        if (p.checkVal(TokenType.KEYWORD, "let")) {
+            nodeListPush(constants, parseAssocConst(p, false))
+        } else if (parseAtAssocType(p)) {
+            nodeListPush(constants, parseAssocType(p, false))
+        } else {
+            if (p.checkVal(TokenType.KEYWORD, "fn") == false) {
+                p.fatal(strConcat("a `trait` holds `fn` signatures, `let` constants and `type` members, found ",
+                                           parserDescribe(p.current())))
+            }
+            let signature = parseTraitSignature(p)
+            parseImplCheckReceiver(p, signature)
+            nodeListPush(signatures, signature)
         }
-        let signature = parseTraitSignature(p)
-        parseImplCheckReceiver(p, signature)
-        nodeListPush(signatures, signature)
     }
     p.expectVal(TokenType.SEPARATOR, "}", "trait body")
 
     p.implType = ptr_null()
     traitNode.child1 = signatures.head
+    traitNode.child3 = constants.head
     return traitNode
+}
+
+// `let NAME: Type` in a trait states the obligation; `let NAME: Type = value` in
+// an `impl` discharges it. Requiring the value on exactly one side is what makes
+// the declaration say which half of the contract it is, rather than leaving a
+// trait constant that silently defaults.
+//
+// `let` rather than a new keyword: it is already how the language names an
+// immutable value, including at module level, and a reserved word bought nothing
+// that the existing one did not already say.
+private fn parseAssocConst(p: Parser, requireValue: Bool) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "let", "associated constant")
+
+    let constNode = p.node(NodeKind.ASSOC_CONST)
+    let name = p.current()
+    constNode.s1 = name.value
+    p.expectToken(TokenType.IDENTIFIER, "constant name")
+
+    p.expectVal(TokenType.SEPARATOR, ":", "associated constant type")
+    constNode.child1 = node_to_ptr(parseTypeAnnotation(p))
+
+    if (requireValue) {
+        p.expectVal(TokenType.ASSIGNMENT_OPERATOR, "=", "associated constant value")
+        constNode.child2 = node_to_ptr(parseExpression(p, 0))
+    } else {
+        if (p.checkVal(TokenType.ASSIGNMENT_OPERATOR, "=")) {
+            p.fatal("a `trait` declares a constant's type; the value belongs in each `impl`")
+        }
+    }
+
+    return constNode
 }
 
 // A method signature: a FUNCTION with no `child2`. That absence is the whole
@@ -945,11 +1090,11 @@ private fn parseTraitSignature(p: Parser) -> ASTNode {
         signature.child3 = node_to_ptr(parseTypeAnnotation(p))
     }
 
-    // Diagnosed rather than accepted-and-ignored. A default method body is a real
-    // feature a later release may want, and silently dropping one now is how a
-    // program compiles while doing something other than what it says.
+    // A body makes this signature a default. The presence of `child2` is the only
+    // difference between a method an `impl` must supply and one it may inherit,
+    // and it is what both conformance and the expansion in generics.psm read.
     if (p.checkVal(TokenType.SEPARATOR, "{")) {
-        p.fatal("a `trait` method has no body; write the implementation in an `impl` block")
+        signature.child2 = node_to_ptr(parseBlock(p))
     }
 
     return signature
@@ -1077,6 +1222,7 @@ private fn parseStructDecl(p: Parser) -> ASTNode {
     p.expectToken(TokenType.IDENTIFIER, "struct name")
 
     structNode.s2 = parseGenericParams(p, structNode)
+    parseWhereClause(p, structNode)
     p.expectVal(TokenType.SEPARATOR, "{", "struct body")
 
     let fields = nodeList()
@@ -1136,4 +1282,100 @@ private fn parseEnumDecl(p: Parser) -> ASTNode {
     p.expectVal(TokenType.SEPARATOR, "}", "enum body")
     enumNode.child1 = variants.head
     return enumNode
+}
+
+// ---------------------------------------------------------
+// `where` clauses
+// ---------------------------------------------------------
+
+// `where T: Ord` states the same constraint as `<T: Ord>`. It appends to the
+// parameter's bound chain rather than replacing it, so a declaration may use
+// both spellings on one parameter and get the union -- which is what makes this
+// a notation and not a second constraint mechanism for bound checking to learn.
+//
+// Naming a parameter the declaration does not have is refused here. Sema reads
+// bounds through `genericInfo`, so an unmatched clause would otherwise be
+// silently dropped and the constraint the author wrote would never be checked.
+private fn parseWhereClause(p: Parser, owner: ASTNode) {
+    if (p.matchVal(TokenType.KEYWORD, "where") == false) { return }
+
+    loop {
+        let name = p.current()
+        p.expectToken(TokenType.IDENTIFIER, "type parameter name in `where`")
+
+        let param = findGenericParamNamed(owner.genericInfo, name.value)
+        if (nodeIsNull(node_to_ptr(param))) {
+            p.fatal(strConcat(strConcat("`where` names `", name.value),
+                              "`, which is not a type parameter of this declaration"))
+        }
+
+        p.expectVal(TokenType.SEPARATOR, ":", "`where` bound")
+        loop {
+            appendTraitRefTo(param, parseTraitRef(p))
+            if (p.matchVal(TokenType.ARITHMETIC_OPERATOR, "+") == false) { break }
+        }
+
+        if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
+    }
+}
+
+private fn findGenericParamNamed(infoPtr: Ptr, name: String) -> ASTNode {
+    let mut p = infoPtr
+    while (nodeExists(p)) {
+        let param = ptr_to_node(p)
+        if (param.kind == NodeKind.GENERIC_PARAM and strEquals(param.s1, name)) { return param }
+        p = param.next
+    }
+    return ptr_to_node(ptr_null())
+}
+
+private fn appendTraitRefTo(param: ASTNode, bound: ASTNode) {
+    if (nodeIsNull(param.child1)) {
+        param.child1 = node_to_ptr(bound)
+        return
+    }
+    let mut p = param.child1
+    loop {
+        let existing = ptr_to_node(p)
+        if (nodeIsNull(existing.next)) {
+            existing.next = node_to_ptr(bound)
+            return
+        }
+        p = existing.next
+    }
+}
+
+// `type` is **contextual, not reserved**. It is an ordinary identifier almost
+// everywhere -- `extern fn ir_alloca(type: String, ...)` and 178 others spell it
+// that way -- and reserving it to gain an associated type would have been a
+// rename across the compiler for a word that is only special in two places.
+//
+// A trait or `impl` body holds `fn`, `let` and `type` members, so `type`
+// followed by a name is unambiguous exactly here and nowhere else.
+private fn parseAtAssocType(p: Parser) -> Bool {
+    if (p.checkVal(TokenType.IDENTIFIER, "type") == false) { return false }
+    return p.peek().type == TokenType.IDENTIFIER
+}
+
+// `type Item` in a trait states the obligation; `type Item = Int` in an `impl`
+// discharges it. The value is required on exactly one side, for the reason
+// parseAssocConst gives.
+private fn parseAssocType(p: Parser, requireValue: Bool) -> ASTNode {
+    let typeNode = p.node(NodeKind.ASSOC_TYPE)
+    p.advance()
+
+    let name = p.current()
+    typeNode.s1 = name.value
+    p.expectToken(TokenType.IDENTIFIER, "associated type name")
+
+    if (requireValue) {
+        p.expectVal(TokenType.ASSIGNMENT_OPERATOR, "=", "associated type value")
+        typeNode.child1 = node_to_ptr(parseTypeAnnotation(p))
+    } else {
+        if (p.checkVal(TokenType.ASSIGNMENT_OPERATOR, "=")) {
+            p.fatal("a `trait` names an associated type; the choice belongs in each `impl`")
+        }
+    }
+
+    return typeNode
 }

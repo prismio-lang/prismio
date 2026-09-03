@@ -2711,10 +2711,16 @@ def run_aif_rc_test():
     The negative half is the load-bearing one. An OPAQUE site must never be
     refcounted -- the pointer came back from a function this compilation cannot
     see, so there is no header in front of it and `rc_release` would decrement
-    whatever the real allocator put there. Every one of the compiler's 37 T3 sites
-    is an opaque extern return, so `src/main.psm` must emit **zero** calls to
-    rc_alloc while still declaring it. That makes this the only check that the
-    exclusion holds on the one program large enough to violate it.
+    whatever the real allocator put there. `src/main.psm` is the one program
+    large enough to violate that, so the exclusion is checked there.
+
+    It is checked directly rather than by counting. This used to assert zero
+    calls to rc_alloc in the compiler, which was a proxy justified by every T3
+    site there being an opaque extern return. UMS has since added T3 sites that
+    are ordinary struct allocations and *are* supposed to be counted, so the
+    proxy began firing on correct code. What is asserted now is the property
+    itself: a refcounted allocation must be sized from a declared Prismio struct,
+    which is the one shape a pointer from foreign code cannot take.
     """
     print(f"\n{BLUE}--- Running aif_rc ---{RESET}")
     problems = []
@@ -2740,11 +2746,22 @@ def run_aif_rc_test():
     else:
         cir = compiler_out.read_text(encoding="utf-8", errors="replace")
         cleanup_files(compiler_out)
-        n = len(re.findall(r"call ptr @rc_alloc\b", cir))
-        if n:
-            problems.append(f"{n} call(s) to rc_alloc in the compiler -- every T3 "
-                            "site there is an opaque extern return, and a header "
-                            "in front of one of those is memory we never allocated")
+        declared = set(re.findall(r"^(%[\w.$]+) = type \{", cir, re.M))
+        counted = 0
+        for line in cir.splitlines():
+            if "call ptr @rc_alloc" not in line:
+                continue
+            counted += 1
+            m = re.search(r"getelementptr \((%[\w.$]+), ptr null, i32 1\)", line)
+            if not m:
+                problems.append("rc_alloc in the compiler is not sized from a struct: "
+                                + line.strip()
+                                + " -- a header in front of memory we never allocated")
+            elif m.group(1) not in declared:
+                problems.append(f"rc_alloc in the compiler allocates {m.group(1)}, "
+                                "which is not a declared struct type")
+        if counted and not problems:
+            print(f"  {counted} refcounted allocation(s) in the compiler, all struct-sized")
 
     if problems:
         print(f"{RED}[FAIL] refcounting is not where it should be{RESET}")

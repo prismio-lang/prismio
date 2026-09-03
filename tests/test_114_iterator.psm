@@ -1,0 +1,65 @@
+// `Iterator`, and `for ... in` over anything that implements it.
+
+import std.io
+import std.iter
+import std.string
+
+// A stream with no backing collection: nothing here could be iterated by index.
+struct Countdown { remaining: Int }
+
+impl Iterator for Countdown {
+    type Item = Int
+    fn hasNext(self) -> Bool { return self.remaining > 0 }
+    fn next(inout self) -> Self.Item {
+        self.remaining = self.remaining - 1
+        return self.remaining
+    }
+}
+
+// A second implementation with a different Item, to prove the associated type
+// is per-implementation.
+struct Letters { left: Int }
+
+impl Iterator for Letters {
+    type Item = String
+    fn hasNext(self) -> Bool { return self.left > 0 }
+    fn next(inout self) -> Self.Item {
+        self.left = self.left - 1
+        return "x"
+    }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut c = Countdown { remaining: 4 }
+    let mut total = 0
+    for x in c {
+        total = total + x
+    }
+    if (total != 6) { return fail("for over an Iterator") }
+
+    let mut l = Letters { left: 3 }
+    let mut joined = ""
+    for s in l {
+        joined = strConcat(joined, s)
+    }
+    if (strEquals(joined, "xxx") == false) { return fail("second Item type") }
+
+    // A String still iterates as it always did. It is bound first because the
+    // collection in a `for ... in` must be a name, which is a pre-existing rule
+    // and not something the Iterator path changed.
+    let word = "abc"
+    let mut chars = 0
+    for ch in word {
+        chars = chars + 1
+    }
+    if (chars != 3) { return fail("String iteration is unchanged") }
+
+    println("test_114 ok")
+    return 0
+}

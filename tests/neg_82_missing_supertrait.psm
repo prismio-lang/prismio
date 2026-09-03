@@ -1,0 +1,16 @@
+// expect-error: must also implement `Named`
+// Implementing the child without the parent is the case supertraits exist to
+// catch.
+import std.string
+
+trait Named { fn label(self) -> String }
+
+trait Described: Named {
+    fn detail(self) -> String
+}
+
+impl Described for String {
+    fn detail(self) -> String { return "d" }
+}
+
+fn main() -> Int { return 0 }

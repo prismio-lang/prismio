@@ -1,0 +1,14 @@
+// expect-error: no `type Item`
+// An associated type is part of the contract exactly as a method is.
+trait Container {
+    type Item
+    fn size(self) -> Int
+}
+
+struct Bag { n: Int }
+
+impl Container for Bag {
+    fn size(self) -> Int { return self.n }
+}
+
+fn main() -> Int { return 0 }

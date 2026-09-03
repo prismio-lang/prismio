@@ -1,10 +1,19 @@
-// expect-error: blanket trait `impl` blocks over a bare type parameter are not supported yet
+// expect-error: overlapping impl `Named`
+// A blanket implementation applies to every type that satisfies its bounds, so a
+// concrete implementation of the same trait overlaps it. Which one a call should
+// select is not decidable without specialization, so the pair is refused.
+struct Dog { n: Int }
+
 trait Named {
     fn name(self) -> Int
 }
 
 impl<T> Named for T {
     fn name(self) -> Int { return 0 }
+}
+
+impl Named for Dog {
+    fn name(self) -> Int { return 1 }
 }
 
 fn main() -> Int { return 0 }

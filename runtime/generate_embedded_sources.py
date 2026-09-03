@@ -47,10 +47,12 @@ def add_c_string(lines: list, name: str, content: bytes) -> None:
 EMBEDDED_FILES = [
     ("prismio_platform.h", "prismio_embedded_prismio_platform_h"),
     ("prismio_runtime.h", "prismio_embedded_prismio_runtime_h"),
+    ("aif_containers.h", "prismio_embedded_aif_containers_h"),
     ("lang_runtime.c", "prismio_embedded_lang_runtime_c"),
     ("program_support.c", "prismio_embedded_program_support_c"),
     ("build_driver.c", "prismio_embedded_build_driver_c"),
     ("ir_symbols.c", "prismio_embedded_ir_symbols_c"),
+    ("aif_containers.c", "prismio_embedded_aif_containers_c"),
     ("aif_support.c", "prismio_embedded_aif_support_c"),
     ("diagnostics.c", "prismio_embedded_diagnostics_c"),
     ("llvm-api-backend.c", "prismio_embedded_llvm_api_backend_c"),

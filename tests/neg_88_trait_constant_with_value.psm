@@ -1,0 +1,9 @@
+// expect-error: the value belongs in each `impl`
+// A trait states the obligation; a value there would be a default the rest of
+// the design does not yet have.
+trait Bounded {
+    let MAX: Int = 5
+    fn current(self) -> Int
+}
+
+fn main() -> Int { return 0 }

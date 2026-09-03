@@ -1,0 +1,11 @@
+// expect-error: has an associated type
+// An object would have to fix the associated type at the use site, and there is
+// no spelling for that yet, so the trait cannot be made into one.
+trait Container {
+    type Item
+    fn size(self) -> Int
+}
+
+fn f(v: dyn Container) -> Int { return 0 }
+
+fn main() -> Int { return 0 }

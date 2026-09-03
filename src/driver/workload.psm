@@ -1,0 +1,184 @@
+// The workload profiling pass: build the program once under a driver, measure
+// what it actually allocates, and hand the recording to the real build.
+//
+// The pass runs a *second* codegen over the same AST, which is why every exit
+// below goes back through endWorkloadPass -- a half-reset IR context makes the
+// real build skip the declarations the profiling pass registered, and the
+// failure lands in generateModule with nothing pointing here.
+
+import std.io
+import lexer.scanner
+import lexer.token
+import common.text
+import ast.nodes
+import parse.*
+import ir.*
+import sema.*
+import common.diagnostics
+import ast.dump
+import aif.*
+import std.string
+import std.option
+import driver.imports
+
+extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
+extern fn compiler_publish_file(fromPath: String, toPath: String) -> Int
+// LAYOUT 3.2. Runs a workload driver with no argv and a wall-clock bound, so W2's
+// "times out" is a case that can actually occur rather than a clause nothing
+// implements.
+extern fn compiler_run_workload(exeFile: String, timeoutSeconds: Int) -> Int
+// SPEC 7.3. Tells the build to compile the runtime with its own allocator
+// pointed at the verify shims, so the strings and lists it allocates are in the
+// same accounting as everything ir_alloc_object handed out.
+extern fn compiler_set_verify_mode(on: Int)
+// Forces the driver's link to compile the runtime rather than take an installed
+// runtime.lib, which may predate rt_profile_*. See the note at g_workload_mode.
+extern fn compiler_set_workload_mode(on: Int)
+// Same ".prismio-<stem>-<suffix>" convention as compiler_temp_ir_path, and the
+// same malloc'd result.
+extern fn compiler_temp_path_for(sourcePath: String, suffix: String) -> String produce(free)
+// The same, with the pid in the name. For a temporary that must not be shared
+// between two compiles of one source -- RESULTS-layout 7, where sharing three of
+// them made the IR differential report a false difference under any concurrent
+// load. `compiler_publish_file` is how the one artifact that *is* supposed to
+// have a predictable name gets there afterwards.
+extern fn compiler_temp_private_path(sourcePath: String, suffix: String) -> String produce(free)
+extern fn delete_file(path: String) -> Int
+extern fn file_exists(path: String) -> Int
+
+fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> String {
+    let count = moduleWorkloadCount(module)
+    if (count == 0) { return "" }
+
+    // LAYOUT 3.1 permits several workloads, merged by summation. One runner
+    // handles one; the sum of several needs a merge step this does not have, so
+    // the honest thing is to run the first and say so rather than silently
+    // measure one and present it as all of them.
+    if (count > 1) {
+        diag_warning_code("P1006", "this module declares more than one workload; only the first is measured (profiles are not merged yet)")
+    }
+
+    let wl = findWorkload(module)
+
+    // RESULTS-layout 7. All three were predictable paths, which made them shared
+    // state between two compiles of the same source: the driver executable one
+    // process ran could be the one another process had just overwritten, and a
+    // build that read someone else's profile.txt chose a different field order
+    // with no warning and no fallback -- so the IR differential, which is this
+    // project's definition of a behaviour-preserving change, reported a false
+    // difference whenever anything else was compiling.
+    //
+    // Nothing here wants to be predictable except the profile, and only as an
+    // *artifact* (LAYOUT 2.2, checked in beside the manifest). So the build
+    // writes and reads its own copy and publishes that one afterwards.
+    let driverIr = compiler_temp_private_path(sourcePath, "workload.ll")
+    let driverExe = compiler_temp_private_path(sourcePath, "workload.exe")
+    let profilePath = compiler_temp_private_path(sourcePath, "profile.txt")
+    let publishedProfile = compiler_temp_path_for(sourcePath, "profile.txt")
+
+    // A stale profile from a previous build would be loaded as this build's if
+    // the run below failed to write one -- the failure would then look like a
+    // success, which is the one way W2's fallback can go wrong silently. Now
+    // that the path carries the pid a leftover is someone else's rather than
+    // this build's, which is a stronger reason to delete it rather than a
+    // weaker one: it cannot be ours, so it can only mislead.
+    delete_file(profilePath)
+
+    ir_reset()
+    // A verify build swaps the allocator names; the driver must not inherit that,
+    // or its counters measure a program with different allocation behaviour from
+    // the one being built.
+    compiler_set_verify_mode(0)
+    compiler_set_workload_mode(1)
+
+    // The instrumented pass runs the analysis over a module whose `main` is the
+    // driver, so the workload's own allocations are tiered like any other code.
+    // The layout search runs too and is *ignored*: its input is the static
+    // estimate, and its output is overwritten by the real pass. Suppressing it
+    // would be a second code path for no gain.
+    aifRun(module, true, false, AIF_DEFAULT_ROUNDS)
+
+    irSetProfileMode(true, profilePath)
+    generateModule(module)
+    irSetProfileMode(false, "")
+
+    // **Every exit below goes through endWorkloadPass, and it has to.** This
+    // function leaves three pieces of global state behind it -- the workload
+    // build mode, the verify mode it cleared, and a struct registry the driver's
+    // generateModule filled -- and W2 means most of its exits are failures. An
+    // early `return ""` that skipped the restore would hand the real build a
+    // registry that already has every struct in it, and generateStructDecl
+    // returns early on an already-registered struct: the shipped program would
+    // lose its type bodies because a *workload* failed to link.
+    //
+    // The language has no `defer`, so the discipline is one helper and a rule:
+    // nothing in this function returns without calling it.
+    let mut failure = ""
+    if (ir_write_file(driverIr) != 0) {
+        failure = "could not write the workload driver's IR; using the static profile"
+    }
+
+    if (strEquals(failure, "")) {
+        if (compiler_build_executable(driverIr, driverExe) != 0) {
+            // The driver's IR is deliberately *kept* when it fails to build, and
+            // named in the warning. A workload that will not compile is a compiler
+            // bug far more often than a user one -- the driver is generated code --
+            // and deleting the only artifact that shows why would leave nothing to
+            // read but a linker's opinion of a file that no longer exists.
+            failure = strConcat(strConcat("the workload failed to build; using the static profile (driver IR kept at ",
+                                             driverIr), ")")
+        } else {
+            delete_file(driverIr)
+
+            // 60 seconds. A build-time budget has to be short enough that a
+            // runaway workload is an inconvenience rather than a hung CI job, and
+            // long enough that instrumentation -- a call per field access -- does
+            // not time out a workload that would finish. `repeat` is the knob for
+            // the second half.
+            let ran = compiler_run_workload(driverExe, 60)
+            delete_file(driverExe)
+            if (ran != 0) {
+                failure = "the workload exited with a failure status or timed out; using the static profile"
+            } else if (file_exists(profilePath) == 0) {
+                failure = "the workload ran but wrote no profile; using the static profile"
+            }
+        }
+    }
+
+    endWorkloadPass(verifyMode)
+
+    if (strEquals(failure, "") == false) {
+        diag_warning_code("P1007", failure)
+        return ""
+    }
+
+    // Published, not moved: this build still reads its own copy. Best-effort --
+    // a profile that cannot be copied is an artifact nobody gets, not a build
+    // that fails, which is the same W2 posture as everything else here.
+    compiler_publish_file(profilePath, publishedProfile)
+    return profilePath
+}
+
+// The private half of the profile (RESULTS-layout 7). The published copy is the
+// durable artifact; this one exists only so the read cannot race, and it carries
+// this process's pid -- so no later build will ever clean it up and every
+// consumer of the path runWorkloadProfile returns has to.
+fn discardWorkloadProfile(profilePath: String) {
+    if (strEquals(profilePath, "") == false) {
+        delete_file(profilePath)
+    }
+}
+
+// Restores everything runWorkloadProfile disturbed. Called on every path out of
+// it, success or failure.
+//
+// `ir_reset` is the load-bearing one: the driver's generateModule filled the
+// struct registry and named every string global, and the real build's
+// generateModule would then skip the structs it thinks it has already emitted.
+private fn endWorkloadPass(verifyMode: Bool) {
+    ir_reset()
+    compiler_set_workload_mode(0)
+    if (verifyMode) {
+        compiler_set_verify_mode(1)
+    }
+}
