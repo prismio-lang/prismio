@@ -645,8 +645,38 @@ char* str_clone(const char* s) {
 // a `select` would have to evaluate both arms. `word` is the pair's length word;
 // bit 31 is the inline tag (llvm-api-backend.c).
 char* str_own(const char* data, long long word) {
-    if (!(word & 0x80000000LL)) return (char*)data;
-    return str_clone(data);
+    // Neither an inline pair nor a view owns a block a container could take, and
+    // neither can be copied with `str_clone`: a view is not NUL-terminated -- it
+    // ends where its length says, inside a longer buffer -- so the copy has to be
+    // by length. The inline case reaches here with `data` pointing at the
+    // caller's scratch, which is NUL-terminated but about to go out of scope, so
+    // it needs the copy just as much.
+    if (!(word & 0x180000000LL)) return (char*)data;
+    int len = (int)(word & 0x7FFFFFFFLL);
+    char* result = (char*)rt_alloc((size_t)len + 1);
+    memcpy(result, data, (size_t)len);
+    result[len] = '\0';
+    return result;
+}
+
+// A NUL-terminated copy of `n` bytes, for a string that has no terminator of its
+// own. The view class's cost, paid at the FFI boundary and nowhere else.
+char* str_clone_n(const char* s, int n) {
+    if (n < 0) n = 0;
+    char* result = (char*)rt_alloc((size_t)n + 1);
+    memcpy(result, s, (size_t)n);
+    result[n] = '\0';
+    return result;
+}
+
+// Equality by length rather than by terminator.
+//
+// `str_equals` is a `strcmp`, and a view has no terminator to stop at. Codegen
+// has both lengths in the pairs and has already established they agree, so this
+// takes the one it knows.
+int str_equals_n(const char* a, const char* b, int n) {
+    if (n <= 0) return 1;
+    return memcmp(a, b, (size_t)n) == 0 ? 1 : 0;
 }
 
 // Helpers for type punning ASTNode pointers in Prismio

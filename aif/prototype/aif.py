@@ -112,6 +112,9 @@ FFI_CONTRACTS = {
     # entry in FFI_RETURNS_PRODUCE that produces without allocating -- the German
     # short form is sixteen bytes of value with nothing behind it.
     '__builtin_string_inline': {0: 'borrow'},
+    # The view form. Retains nothing of its own; that the result points into
+    # argument 0 is a return contract, not a parameter one.
+    '__builtin_string_view': {0: 'borrow'},
     'print':          {0: 'borrow'},
     'println':        {0: 'borrow'},
     # v0.1 concurrency. `chan_send` **consumes** its message rather than

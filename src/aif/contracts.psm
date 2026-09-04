@@ -78,6 +78,9 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     // string it was cut from, and therefore what makes this a borrow rather than
     // a view. See `aifFfiProduces` for the other half of its contract.
     if (name.equals("__builtin_string_inline")) { return AIF_FFI_BORROW }
+    // The view retains nothing *of its own*; that its result points into the
+    // first argument is the return contract, answered by `aifFfiAliasOf`.
+    if (name.equals("__builtin_string_view")) { return AIF_FFI_BORROW }
     if (name.equals("slice_len")) { return AIF_FFI_BORROW }
     if (name.equals("slice_set")) {
         if (index == 2) { return AIF_FFI_RETAIN_IN_BASE + 0 }
@@ -232,6 +235,14 @@ internal fn aifFfiAliasOf(name: String) -> Int {
     // Caller, and the unwrapped value would stop being reclaimable by whatever
     // owned the optional.
     if (name.equals("expect")) { return 0 }
+    // **The view class's lifetime, carried by the existing alias machinery.**
+    // `__builtin_string_view` hands back a pointer into its first argument with a
+    // length, allocating nothing -- so the result *is* that argument's storage,
+    // and modelling it as the argument's sites is what stops the base being
+    // released while a view of it is still live. Umbra leaves this to the
+    // programmer ("copy it if you need it later"); here it is the same fact the
+    // analysis already knows how to state.
+    if (name.equals("__builtin_string_view")) { return 0 }
     return 0 - 1
 }
 

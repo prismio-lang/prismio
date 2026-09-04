@@ -155,9 +155,11 @@ fn strSubstring(s: String, start: Int, length: Int) -> String {
     // `count` itself, for the same reason `__builtin_string_byte_at` does not
     // bound its index.
     if (count <= 12) { return __builtin_string_inline(s, first, count) }
-    let out = str_with_capacity(count)
-    strCopyRangeInto(out, 0, s, first, count)
-    return out
+    // Longer than the pair can hold, so it becomes a **view**: a pointer into `s`
+    // and a length, with no allocation and no copy at all. `count > 12` is what
+    // makes this sound -- a source with that many bytes to give cannot itself be
+    // the inline form, so it has a pointer to offset.
+    return __builtin_string_view(s, first, count)
 }
 
 fn strFromChar(c: Char) -> String {
@@ -1781,11 +1783,9 @@ impl String {
         if (stop > slen) { stop = slen }
         if (stop < first) { stop = first }
         let count = stop - first
-        // The same short-form cut as `strSubstring`; see the note there.
+        // The same two cuts as `strSubstring`; see the notes there.
         if (count <= 12) { return __builtin_string_inline(self, first, count) }
-        let out = str_with_capacity(count)
-        strCopyRangeInto(out, 0, self, first, count)
-        return out
+        return __builtin_string_view(self, first, count)
     }
 
     // The byte at `index`, or NUL when out of range. Out-of-range is not an
@@ -1832,22 +1832,18 @@ impl String {
     }
 
     // The body lives here rather than in a prefixed free function: `equals` is
-    // the public spelling, and `==` reaches the same answer through the
-    // `__builtin_string_eq` lowering rather than through this.
+    // the public spelling, and `==` reaches the same answer.
     //
-    // Deliberately the portable byte loop and **not** that builtin. The
-    // committed bootstrap seed does not know `__builtin_string_eq`, and
-    // std/string.psm has to compile under the seed for the bootstrap to work at
-    // all. Length is compared first, which the builtin's strcmp cannot do.
+    // **This was a byte loop, and the reason it was one is gone.** The note here
+    // said the builtin could not be used because the committed seed did not know
+    // `__builtin_string_eq` and std has to compile under the seed -- true when it
+    // was written, and no longer true since the seed was refreshed for
+    // `__builtin_string_inline`. It also said the loop compared lengths first
+    // "which the builtin's strcmp cannot do"; the lowering compares lengths out
+    // of the pair now, and for two short strings answers from the pairs alone
+    // without touching memory at all.
     fn equals(self, other: String) -> Bool {
-        let alen = __builtin_string_len(self)
-        if (alen != __builtin_string_len(other)) { return false }
-        let mut i = 0
-        while (i < alen) {
-            if (__builtin_string_byte_at(self, i) != __builtin_string_byte_at(other, i)) { return false }
-            i = i + 1
-        }
-        return true
+        return __builtin_string_eq(self, other)
     }
     fn equalsIgnoreCase(self, other: String) -> Bool {
         return strEqualsIgnoreCase(self, other)

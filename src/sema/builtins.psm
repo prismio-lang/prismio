@@ -21,6 +21,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // with a prefixed name -- the prefix is implementation, not surface.
     if (name.equals("__builtin_string_eq")) { return typeBool() }
     if (name.equals("__builtin_string_inline")) { return typeString() }
+    if (name.equals("__builtin_string_view")) { return typeString() }
 
     // REQUIREMENTS 4. The narrowing half. `T?` cannot be used as a `T` -- that
     // is what the type buys -- so there has to be one way across, and this is it.
@@ -190,6 +191,20 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         semaCheckValue(module, i0, typeString(), "inline string source")
         semaCheckValue(module, i1, typeInt(), "inline string start")
         semaCheckValue(module, ptr_to_node(i1.next), typeInt(), "inline string length")
+        return true
+    }
+
+    // The view form. **`count > 12` is the caller's obligation**, for the same
+    // reason the inline form's `count <= 12` is: `strSubstring` establishes it one
+    // line above, and a source with more than twelve bytes to give cannot be the
+    // inline representation -- which is what makes offsetting its pointer sound.
+    if (name.equals("__builtin_string_view")) {
+        if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
+        let w0 = ptr_to_node(argPtr)
+        let w1 = ptr_to_node(w0.next)
+        semaCheckValue(module, w0, typeString(), "string view source")
+        semaCheckValue(module, w1, typeInt(), "string view start")
+        semaCheckValue(module, ptr_to_node(w1.next), typeInt(), "string view length")
         return true
     }
 

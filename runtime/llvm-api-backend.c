@@ -101,6 +101,17 @@ static int g_declaring; // 1 while building a `declare`, 0 for a definition
 // Call being assembled.
 typedef struct {
     LLVMValueRef args[MAX_CALL_ARGS];
+    // FFI 5.2 `borrow`, per argument: RUNTIME.md's table defines it as "the
+    // callee reads the argument and does not retain it", which is exactly what
+    // LLVM spells `readonly nocapture`. Recorded here and applied to the call in
+    // ir_call_end.
+    int borrow[MAX_CALL_ARGS];
+    // NUL-terminated copies made for this call and owned by it. A view has no
+    // terminator of its own, so one is made on the way into C and released on the
+    // way out -- see ir_call_arg_cstr. Null entries are the common case and
+    // `rt_free` takes them.
+    LLVMValueRef temps[MAX_CALL_ARGS];
+    int temp_count;
     int count;
 } CallFrame;
 static CallFrame g_calls[MAX_CALL_DEPTH];
@@ -435,6 +446,33 @@ static LLVMValueRef resolve_value(const char *s, const char *type_key) {
 #define PRISMIO_STR_INLINE_TAG 0x80000000ULL
 #define PRISMIO_STR_INLINE_MAX 12
 
+// The third storage class: a **view**, Umbra's `transient`.
+//
+// Bit 32, which is data for a short string and unused for a long one, so it is
+// only meaningful when INLINE is clear. A view's field 0 is a real pointer into
+// somebody else's buffer -- the string it was cut from -- and it owns nothing:
+// no allocation on the way in, no release on the way out, and no copy of the
+// bytes at all.
+//
+// Umbra leaves "is that buffer still alive?" to the programmer, with the advice
+// to copy if you need the value later. Prismio does not have to: a view is
+// produced by `__builtin_string_view`, declared to alias its first argument
+// (`aifFfiAliasOf`), so the result carries the base's sites and the ownership
+// analysis already keeps the base alive for exactly as long as the view is used.
+// That is the whole reason this class is safe here and advisory there.
+//
+// **A view is not NUL-terminated.** It ends where its length says, in the middle
+// of a longer buffer, so it can be read and compared by length but never handed
+// to a C function as a `char*` without a copy. That is the cost of the class and
+// it is paid at exactly two places: `str_own`, when one enters a container, and
+// the FFI boundary.
+#define PRISMIO_STR_VIEW_TAG 0x100000000ULL
+
+// Neither an owned heap block nor anything the deallocator can take: INLINE
+// dominates, so testing both bits at once is correct even though bit 32 is data
+// when INLINE is set.
+#define PRISMIO_STR_UNOWNED (PRISMIO_STR_INLINE_TAG | PRISMIO_STR_VIEW_TAG)
+
 // A fresh 16-byte scratch slot in the entry block.
 //
 // **Fresh per call site, deliberately.** One buffer per function would be a
@@ -488,6 +526,13 @@ static LLVMValueRef str_data_ptr(LLVMValueRef v) {
     LLVMValueRef inlined = LLVMBuildICmp(g_builder, LLVMIntNE, tag,
                                          LLVMConstInt(i64, 0, 0), "");
 
+    // **A `select` over unconditional stores, and a branch was tried instead.**
+    // Putting the materialisation behind a `br` so the long form reaches the load
+    // with no store on its path is the obvious fix for LICM not lifting these out
+    // of a byte loop -- and it measured 328 us against 262 us on the tokenizer
+    // pass, because the control flow costs more than the stores it avoids. The
+    // stores are dead for a long string and the scratch never escapes, so they
+    // are cheap; what they cost is only that LICM leaves them in the loop.
     LLVMValueRef buf = str_scratch_slot();
     LLVMBuildStore(g_builder, LLVMBuildPtrToInt(g_builder, heap, i64, ""), buf);
     LLVMValueRef hi = LLVMBuildTrunc(
@@ -1538,11 +1583,11 @@ static void ir_release_call(const char *value, const char *fn_name) {
     if (is_prismio_str(raw) && !LLVMIsConstant(raw)) {
         LLVMValueRef word = LLVMBuildExtractValue(g_builder, raw, 1, "");
         LLVMValueRef tag = LLVMBuildAnd(g_builder, word,
-                                        LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), "");
-        LLVMValueRef inlined = LLVMBuildICmp(g_builder, LLVMIntNE, tag,
+                                        LLVMConstInt(i64, PRISMIO_STR_UNOWNED, 0), "");
+        LLVMValueRef unowned = LLVMBuildICmp(g_builder, LLVMIntNE, tag,
                                              LLVMConstInt(i64, 0, 0), "");
         LLVMValueRef heap = LLVMBuildExtractValue(g_builder, raw, 0, "");
-        arg = LLVMBuildSelect(g_builder, inlined, LLVMConstNull(ptr), heap, "");
+        arg = LLVMBuildSelect(g_builder, unowned, LLVMConstNull(ptr), heap, "");
     } else {
         arg = coerce_for(resolve_value(value, "ptr"), "ptr");
     }
@@ -2461,14 +2506,154 @@ int ir_fptoui(const char *from_type, const char *value, const char *to_type) {
 void ir_call_begin(void) {
     if (g_call_depth >= MAX_CALL_DEPTH) backend_fail("call nesting too deep", NULL);
     g_calls[g_call_depth].count = 0;
+    g_calls[g_call_depth].temp_count = 0;
     g_call_depth++;
+}
+
+// A String argument crossing into C, as a `char*` the callee can read to a NUL.
+//
+// **The one place a view has to be copied.** The other two storage classes
+// already end in a terminator -- an owned block carries one and an inline pair
+// gets one written into the scratch -- but a view ends where its length says,
+// inside a buffer that continues, so handing its pointer to a C function would
+// read past it. The copy is made here, recorded on the call, and released as soon
+// as the call returns.
+//
+// Behind a branch so the common path pays nothing: two of the three classes
+// reach the callee with the pointer they already had.
+static LLVMValueRef str_cstr_for_call(LLVMValueRef pair, LLVMValueRef *owned_out) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+
+    LLVMValueRef bytes = str_data_ptr(pair);
+    LLVMValueRef word = LLVMBuildExtractValue(g_builder, pair, 1, "");
+    LLVMValueRef is_view = LLVMBuildAnd(
+        g_builder,
+        LLVMBuildICmp(g_builder, LLVMIntNE,
+            LLVMBuildAnd(g_builder, word, LLVMConstInt(i64, PRISMIO_STR_VIEW_TAG, 0), ""),
+            LLVMConstInt(i64, 0, 0), ""),
+        LLVMBuildICmp(g_builder, LLVMIntEQ,
+            LLVMBuildAnd(g_builder, word, LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), ""),
+            LLVMConstInt(i64, 0, 0), ""), "");
+
+    LLVMBasicBlockRef copy = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.cstr");
+    LLVMBasicBlockRef join = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.cstrdone");
+    LLVMBasicBlockRef from = LLVMGetInsertBlock(g_builder);
+    LLVMBuildCondBr(g_builder, is_view, copy, join);
+
+    LLVMPositionBuilderAtEnd(g_builder, copy);
+    LLVMValueRef n = LLVMBuildTrunc(
+        g_builder, LLVMBuildAnd(g_builder, word, LLVMConstInt(i64, 0x7FFFFFFFULL, 0), ""),
+        i32, "");
+    LLVMTypeRef cargs[2] = {ptr, i32};
+    LLVMTypeRef cty = LLVMFunctionType(ptr, cargs, 2, 0);
+    LLVMValueRef cfn = LLVMGetNamedFunction(g_module, "str_clone_n");
+    if (!cfn) cfn = LLVMAddFunction(g_module, "str_clone_n", cty);
+    LLVMValueRef call_args[2] = {bytes, n};
+    LLVMValueRef made = LLVMBuildCall2(g_builder, cty, cfn, call_args, 2, "");
+    LLVMBasicBlockRef from_copy = LLVMGetInsertBlock(g_builder);
+    LLVMBuildBr(g_builder, join);
+
+    LLVMPositionBuilderAtEnd(g_builder, join);
+    LLVMValueRef arg = LLVMBuildPhi(g_builder, ptr, "");
+    LLVMValueRef av[2] = {made, bytes};
+    LLVMBasicBlockRef ab[2] = {from_copy, from};
+    LLVMAddIncoming(arg, av, ab, 2);
+
+    LLVMValueRef owned = LLVMBuildPhi(g_builder, ptr, "");
+    LLVMValueRef ov[2] = {made, LLVMConstNull(ptr)};
+    LLVMAddIncoming(owned, ov, ab, 2);
+    *owned_out = owned;
+    return arg;
+}
+
+void ir_call_arg_cstr(const char *arg_value, int is_borrow) {
+    if (g_call_depth <= 0) backend_fail("call argument outside a call", arg_value);
+    CallFrame *f = &g_calls[g_call_depth - 1];
+    if (f->count >= MAX_CALL_ARGS) backend_fail("too many call arguments", NULL);
+    LLVMValueRef pair = resolve_value(arg_value, "struct:prismio.str");
+    if (!is_prismio_str(pair)) {
+        // A folded literal pair, which is always the long form and already
+        // terminated.
+        f->borrow[f->count] = is_borrow;
+        f->args[f->count++] = coerce_for(resolve_value(arg_value, "ptr"), "ptr");
+        return;
+    }
+    LLVMValueRef owned = NULL;
+    LLVMValueRef arg = str_cstr_for_call(pair, &owned);
+    if (owned) f->temps[f->temp_count++] = owned;
+    f->borrow[f->count] = is_borrow;
+    f->args[f->count++] = arg;
 }
 
 void ir_call_arg(const char *arg_type, const char *arg_value) {
     if (g_call_depth <= 0) backend_fail("call argument outside a call", arg_value);
     CallFrame *f = &g_calls[g_call_depth - 1];
     if (f->count >= MAX_CALL_ARGS) backend_fail("too many call arguments", NULL);
+    f->borrow[f->count] = 0;
     f->args[f->count++] = coerce_for(resolve_value(arg_value, arg_type), arg_type);
+}
+
+// The same, for an argument whose `extern fn` declares it `borrow`.
+//
+// **This is the contract being spent rather than merely checked.** Without it,
+// LLVM has to assume a foreign call writes through every pointer it is handed,
+// so the materialisation of a short String cannot be lifted out of a loop that
+// calls one -- `strIndexOfFrom` calls `str_find_byte_pair` per candidate, and
+// `string_search` measured 0.90x because those stores stayed in the loop.
+// `borrow` already says the callee only reads, and every one of the sixteen
+// `String borrow` parameters in std is a path or a text the runtime reads.
+void ir_call_arg_borrow(const char *arg_type, const char *arg_value) {
+    if (g_call_depth <= 0) backend_fail("call argument outside a call", arg_value);
+    CallFrame *f = &g_calls[g_call_depth - 1];
+    if (f->count >= MAX_CALL_ARGS) backend_fail("too many call arguments", NULL);
+    f->borrow[f->count] = 1;
+    f->args[f->count++] = coerce_for(resolve_value(arg_value, arg_type), arg_type);
+}
+
+// `readonly nocapture` on the borrowed arguments of one call. Pointers only:
+// LLVM rejects both attributes on anything else, and a `borrow` on a scalar says
+// nothing an optimiser did not already know.
+// The NUL-terminated copies this call made for its view arguments, released now
+// that the callee has returned. `borrow` says the callee kept nothing, and no
+// other contract reaches here with a view -- one being consumed or aliased was
+// materialised into an owned string before it ever became an argument.
+static void release_call_temps(const CallFrame *f) {
+    if (f->temp_count <= 0) return;
+    LLVMTypeRef voidty = LLVMVoidTypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    // Through `g_free_fn`, not a literal `rt_free`. A `--verify` build compiles
+    // the runtime with PRISMIO_AIF_VERIFY, where `rt_free` is a macro and no such
+    // symbol exists -- naming it directly linked cleanly in a release build and
+    // failed with "Undefined symbols: _rt_free" under `--verify`. The seam is
+    // there so that both halves of a pairing swap together, and this is a
+    // release like any other: the ledger must see it.
+    LLVMTypeRef fty = LLVMFunctionType(voidty, &ptr, 1, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, g_free_fn);
+    if (!fn) fn = LLVMAddFunction(g_module, g_free_fn, fty);
+    for (int i = 0; i < f->temp_count; i++) {
+        LLVMValueRef args[1] = {f->temps[i]};
+        LLVMBuildCall2(g_builder, fty, fn, args, 1, "");
+    }
+}
+
+static void apply_borrow_attrs(LLVMValueRef call, const CallFrame *f) {
+    unsigned ro = LLVMGetEnumAttributeKindForName("readonly", 8);
+    unsigned nc = LLVMGetEnumAttributeKindForName("nocapture", 9);
+    if (!ro && !nc) return;
+    for (int i = 0; i < f->count; i++) {
+        if (!f->borrow[i]) continue;
+        if (LLVMGetTypeKind(LLVMTypeOf(f->args[i])) != LLVMPointerTypeKind) continue;
+        if (ro) {
+            LLVMAddCallSiteAttribute(call, (unsigned)(i + 1),
+                                     LLVMCreateEnumAttribute(g_ctx, ro, 0));
+        }
+        if (nc) {
+            LLVMAddCallSiteAttribute(call, (unsigned)(i + 1),
+                                     LLVMCreateEnumAttribute(g_ctx, nc, 0));
+        }
+    }
 }
 
 int ir_call_end(const char *ret_type, const char *func_name) {
@@ -2500,6 +2685,8 @@ int ir_call_end(const char *ret_type, const char *func_name) {
 
     LLVMTypeRef fnty = LLVMGlobalGetValueType(fn);
     LLVMValueRef call = LLVMBuildCall2(g_builder, fnty, fn, f->args, (unsigned)f->count, "");
+    apply_borrow_attrs(call, f);
+    release_call_temps(f);
 
     return is_void ? -1 : intern_value(call);
 }
@@ -2775,6 +2962,149 @@ int ir_str_byte_at(const char *base, const char *index) {
     return intern_value(LLVMBuildSelect(g_builder, inlined, from_pair, from_heap, ""));
 }
 
+// String equality, with the comparison the representation makes free.
+//
+// **Two short strings are equal exactly when their pairs are bit-identical.**
+// That is not an approximation, it is an invariant the layout maintains: the
+// length and tag occupy the low half of word 1, the bytes occupy field 0 and the
+// top half, and everything past the length is zero because `ir_str_inline` zeroes
+// its buffer and then writes exactly `[0, count)`. So the whole comparison is two
+// integer compares in registers -- no dereference, no call, no length walk.
+//
+// **The four-byte prefix German strings carry for the long case is not here, and
+// it is not an omission.** A prefix has to be computed when a string is
+// complete, and a Prismio long string is never complete at any single point:
+// `str_with_capacity` hands back an *uninitialised* buffer and the caller fills
+// it byte by byte, which is what `strCopyRangeInto` and every builder in
+// std/string.psm do. A database materialises a value once and can stamp a prefix
+// on the way; a language that lets you build one incrementally has nowhere to put
+// that hook. What is here instead is the length test, which the pair already
+// carries and which rejects most unequal pairs just as cheaply.
+//
+// The slow path is what it always was: `str_equals` on two canonical pointers,
+// reached only when the lengths agree and at least one side is long.
+int ir_str_eq(const char *lhs, const char *rhs) {
+    LLVMTypeRef i1 = LLVMInt1TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+
+    LLVMValueRef a = resolve_value(lhs, "struct:prismio.str");
+    LLVMValueRef b = resolve_value(rhs, "struct:prismio.str");
+    if (!is_prismio_str(a) || !is_prismio_str(b)) {
+        // A literal pair folded to a constant, or something that is not the
+        // representation at all. The general path is always correct.
+        LLVMValueRef pa = coerce_for(resolve_value(lhs, "ptr"), "ptr");
+        LLVMValueRef pb = coerce_for(resolve_value(rhs, "ptr"), "ptr");
+        LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+        LLVMTypeRef args[2] = {ptr, ptr};
+        LLVMTypeRef fty = LLVMFunctionType(i32, args, 2, 0);
+        LLVMValueRef fn = LLVMGetNamedFunction(g_module, "str_equals");
+        if (!fn) fn = LLVMAddFunction(g_module, "str_equals", fty);
+        LLVMValueRef call_args[2] = {pa, pb};
+        LLVMValueRef r = LLVMBuildCall2(g_builder, fty, fn, call_args, 2, "");
+        return intern_value(
+            LLVMBuildICmp(g_builder, LLVMIntNE, r, LLVMConstInt(i32, 0, 0), ""));
+    }
+
+    LLVMValueRef wa = LLVMBuildExtractValue(g_builder, a, 1, "");
+    LLVMValueRef wb = LLVMBuildExtractValue(g_builder, b, 1, "");
+    LLVMValueRef fa = LLVMBuildPtrToInt(
+        g_builder, LLVMBuildExtractValue(g_builder, a, 0, ""), i64, "");
+    LLVMValueRef fb = LLVMBuildPtrToInt(
+        g_builder, LLVMBuildExtractValue(g_builder, b, 0, ""), i64, "");
+
+    LLVMValueRef both_short = LLVMBuildICmp(
+        g_builder, LLVMIntNE,
+        LLVMBuildAnd(g_builder, LLVMBuildAnd(g_builder, wa, wb, ""),
+                     LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), ""),
+        LLVMConstInt(i64, 0, 0), "");
+    LLVMValueRef bits_equal = LLVMBuildAnd(
+        g_builder,
+        LLVMBuildICmp(g_builder, LLVMIntEQ, wa, wb, ""),
+        LLVMBuildICmp(g_builder, LLVMIntEQ, fa, fb, ""), "");
+    // The length only: the tag differs between a short and a long string of the
+    // same length, and that pair still has to reach the byte comparison.
+    LLVMValueRef len_mask = LLVMConstInt(i64, 0x7FFFFFFFULL, 0);
+    LLVMValueRef len_equal = LLVMBuildICmp(
+        g_builder, LLVMIntEQ,
+        LLVMBuildAnd(g_builder, wa, len_mask, ""),
+        LLVMBuildAnd(g_builder, wb, len_mask, ""), "");
+
+    LLVMBasicBlockRef check = LLVMAppendBasicBlockInContext(g_ctx, g_function, "streq.check");
+    LLVMBasicBlockRef slow = LLVMAppendBasicBlockInContext(g_ctx, g_function, "streq.slow");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(g_ctx, g_function, "streq.done");
+
+    LLVMBasicBlockRef from_short = LLVMGetInsertBlock(g_builder);
+    LLVMBuildCondBr(g_builder, both_short, done, check);
+
+    LLVMPositionBuilderAtEnd(g_builder, check);
+    LLVMBuildCondBr(g_builder, len_equal, slow, done);
+
+    LLVMPositionBuilderAtEnd(g_builder, slow);
+    // **By length, not by terminator.** A view ends where its length says, in the
+    // middle of a longer buffer, so `strcmp` would run past it. The lengths are
+    // known equal on this path -- that is what `check` established -- so the one
+    // in the pair is the bound, and `coerce_for` hands back a pointer valid for
+    // exactly that many bytes for all three storage classes.
+    LLVMValueRef pa = coerce_for(resolve_value(lhs, "ptr"), "ptr");
+    LLVMValueRef pb = coerce_for(resolve_value(rhs, "ptr"), "ptr");
+    LLVMValueRef n = LLVMBuildTrunc(
+        g_builder, LLVMBuildAnd(g_builder, wa, len_mask, ""), i32, "");
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef args[3] = {ptr, ptr, i32};
+    LLVMTypeRef fty = LLVMFunctionType(i32, args, 3, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "str_equals_n");
+    if (!fn) fn = LLVMAddFunction(g_module, "str_equals_n", fty);
+    LLVMValueRef call_args[3] = {pa, pb, n};
+    LLVMValueRef slow_r = LLVMBuildICmp(
+        g_builder, LLVMIntNE,
+        LLVMBuildCall2(g_builder, fty, fn, call_args, 3, ""),
+        LLVMConstInt(i32, 0, 0), "");
+    LLVMBasicBlockRef from_slow = LLVMGetInsertBlock(g_builder);
+    LLVMBuildBr(g_builder, done);
+
+    LLVMPositionBuilderAtEnd(g_builder, done);
+    LLVMValueRef phi = LLVMBuildPhi(g_builder, i1, "");
+    LLVMValueRef vals[3] = {bits_equal, LLVMConstInt(i1, 0, 0), slow_r};
+    LLVMBasicBlockRef blocks[3] = {from_short, check, from_slow};
+    LLVMAddIncoming(phi, vals, blocks, 3);
+    return intern_value(phi);
+}
+
+// A **view**: `count` bytes of `base` from `start`, owning nothing.
+//
+// No allocation, no copy, no release -- the pair points into the string it was
+// cut from and carries only a length. This is Umbra's `transient` class, and the
+// lifetime it leaves to the programmer there is carried here by declaring the
+// builtin an alias of its first argument (`aifFfiAliasOf` in
+// src/aif/contracts.psm), so the result holds the base's sites and the ownership
+// analysis keeps the base alive for as long as the view is.
+//
+// **The caller must have established that `base` is not the inline form.** A
+// short string keeps its bytes in field 0 rather than behind it, so there is no
+// address to offset. `strSubstring` establishes it by construction: it only
+// reaches here when `count > 12`, and a source with twelve or more bytes to give
+// cannot itself be inline.
+int ir_str_view(const char *base, const char *start, const char *count) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+
+    LLVMValueRef src = resolve_value(base, "ptr");
+    LLVMValueRef off = resolve_value(start, "i32");
+    LLVMValueRef n = resolve_value(count, "i32");
+
+    LLVMValueRef at = byte_gep(src, off);
+    LLVMValueRef word = LLVMBuildOr(
+        g_builder, LLVMBuildZExt(g_builder, n, i64, ""),
+        LLVMConstInt(i64, PRISMIO_STR_VIEW_TAG, 0), "");
+
+    LLVMTypeRef sty = named_struct("prismio.str");
+    LLVMValueRef pair = LLVMGetUndef(sty);
+    pair = LLVMBuildInsertValue(g_builder, pair, at, 0, "");
+    pair = LLVMBuildInsertValue(g_builder, pair, word, 1, "");
+    return intern_value(pair);
+}
+
 // The canonical `const char*` for a String value, for the handful of frontend
 // sites that need the pointer half as a *value* rather than as a call argument.
 // `ir_call_arg("ptr", …)` already coerces on its way through `resolve_value`;
@@ -2816,19 +3146,93 @@ int ir_str_inline(const char *base, const char *start, const char *count) {
     LLVMValueRef at8 = byte_gep(buf, LLVMConstInt(i32, 8, 0));
     LLVMBuildStore(g_builder, LLVMConstInt(i64, 0, 0), buf);
     LLVMBuildStore(g_builder, LLVMConstInt(i64, 0, 0), at8);
-    // **This is still a call to libc `memcpy`, for a copy of at most twelve
-    // bytes, once per short string.** Masking the length to four bits first was
-    // tried, on the theory that a provable bound of 15 would let LLVM expand it
-    // inline; the call is still there in the disassembly, so the hint was
-    // removed rather than left in looking like it did something. What would
-    // remove it is the classic small-copy ladder -- two overlapping i64 loads
-    // for 8..12 bytes, two i32 for 4..7, three bytes below that, all in bounds
-    // because the source has `count` valid bytes -- and that needs branches,
-    // which means basic blocks built inside a backend entry point. Worth about
-    // 47 us of the 54 000-token pass, which is most of what still separates the
-    // token half from C++'s (134 us against 87 us).
-    LLVMBuildMemCpy(g_builder, buf, 1, byte_gep(src, off), 1,
-                    LLVMBuildZExt(g_builder, n, i64, ""));
+
+    // The small-copy ladder, in place of a call to libc `memcpy` for a copy of
+    // at most twelve bytes.
+    //
+    // This is the shape musl and Folly both use below their vector thresholds:
+    // for a run of `n` bytes, read the first word and the *last* word and store
+    // both. The two overlap when `n` is not a whole number of words, so some
+    // bytes are written twice -- which is cheaper than the arithmetic and
+    // branching needed to avoid it, and is why there are three cases here rather
+    // than a loop.
+    //
+    // **Every load is inside the source range by construction.** `wide` runs only
+    // when `n >= 8`, so `[off, off+8)` and `[off+n-8, off+n)` both lie inside
+    // `[off, off+n)`; `mid` says the same with four; `tiny` reads only indices 0,
+    // `n>>1` and `n-1`, all below `n`. The stores land inside the sixteen-byte
+    // scratch for the same reason with `n <= 12` -- the caller's obligation,
+    // established by `strSubstring` in std/string.psm.
+    //
+    // And the union of what each case writes is exactly `[0, n)`, so the zeroed
+    // tail survives: `[0,8) u [n-8,n)` is contiguous for `n <= 12` because
+    // `n-8 <= 4`, and likewise for the four-byte case. That matters beyond
+    // tidiness -- two equal short strings have to be bit-identical pairs for the
+    // comparison fast path to be sound.
+    //
+    // Blocks built inside a backend entry point are safe here because codegen is
+    // alloca-based and emits no PHIs: nothing in the frontend records which block
+    // it was in, and the builder is left at the end of an unterminated `done`,
+    // which is exactly where the next instruction belongs.
+    {
+        LLVMBasicBlockRef wide = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.cp8");
+        LLVMBasicBlockRef try4 = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.try4");
+        LLVMBasicBlockRef mid = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.cp4");
+        LLVMBasicBlockRef try1 = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.try1");
+        LLVMBasicBlockRef tiny = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.cp1");
+        LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.cpdone");
+
+        LLVMValueRef from = byte_gep(src, off);
+
+        LLVMBuildCondBr(g_builder,
+                        LLVMBuildICmp(g_builder, LLVMIntUGE, n, LLVMConstInt(i32, 8, 0), ""),
+                        wide, try4);
+
+        LLVMPositionBuilderAtEnd(g_builder, wide);
+        {
+            LLVMValueRef tail = LLVMBuildSub(g_builder, n, LLVMConstInt(i32, 8, 0), "");
+            LLVMValueRef a = LLVMBuildLoad2(g_builder, i64, from, "");
+            LLVMValueRef b = LLVMBuildLoad2(g_builder, i64, byte_gep(from, tail), "");
+            LLVMBuildStore(g_builder, a, buf);
+            LLVMBuildStore(g_builder, b, byte_gep(buf, tail));
+            LLVMBuildBr(g_builder, done);
+        }
+
+        LLVMPositionBuilderAtEnd(g_builder, try4);
+        LLVMBuildCondBr(g_builder,
+                        LLVMBuildICmp(g_builder, LLVMIntUGE, n, LLVMConstInt(i32, 4, 0), ""),
+                        mid, try1);
+
+        LLVMPositionBuilderAtEnd(g_builder, mid);
+        {
+            LLVMValueRef tail = LLVMBuildSub(g_builder, n, LLVMConstInt(i32, 4, 0), "");
+            LLVMValueRef a = LLVMBuildLoad2(g_builder, i32, from, "");
+            LLVMValueRef b = LLVMBuildLoad2(g_builder, i32, byte_gep(from, tail), "");
+            LLVMBuildStore(g_builder, a, buf);
+            LLVMBuildStore(g_builder, b, byte_gep(buf, tail));
+            LLVMBuildBr(g_builder, done);
+        }
+
+        LLVMPositionBuilderAtEnd(g_builder, try1);
+        LLVMBuildCondBr(g_builder,
+                        LLVMBuildICmp(g_builder, LLVMIntUGE, n, LLVMConstInt(i32, 1, 0), ""),
+                        tiny, done);
+
+        LLVMPositionBuilderAtEnd(g_builder, tiny);
+        {
+            LLVMValueRef half = LLVMBuildLShr(g_builder, n, LLVMConstInt(i32, 1, 0), "");
+            LLVMValueRef last = LLVMBuildSub(g_builder, n, LLVMConstInt(i32, 1, 0), "");
+            LLVMValueRef c0 = LLVMBuildLoad2(g_builder, i8, from, "");
+            LLVMValueRef c1 = LLVMBuildLoad2(g_builder, i8, byte_gep(from, half), "");
+            LLVMValueRef c2 = LLVMBuildLoad2(g_builder, i8, byte_gep(from, last), "");
+            LLVMBuildStore(g_builder, c0, buf);
+            LLVMBuildStore(g_builder, c1, byte_gep(buf, half));
+            LLVMBuildStore(g_builder, c2, byte_gep(buf, last));
+            LLVMBuildBr(g_builder, done);
+        }
+
+        LLVMPositionBuilderAtEnd(g_builder, done);
+    }
 
     // data[0..7] become the pair's first field, read as an address only by the
     // long form -- an inline pair's field 0 is never dereferenced, because

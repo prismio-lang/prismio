@@ -174,6 +174,9 @@ def write_html_report(report, path, raw_data_name):
       --bad-bg: rgba(255, 110, 127, 0.12);
       --neutral: #8e9cae;
       --neutral-bg: rgba(142, 156, 174, 0.12);
+
+      --card-accent: var(--border);
+      --lang: var(--prismio);
     }
 
     html[data-theme="dark"] {
@@ -373,6 +376,7 @@ def write_html_report(report, path, raw_data_name):
     }
 
     .kpi-card {
+      --card-accent: var(--border);
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 16px;
@@ -1168,6 +1172,19 @@ def write_html_report(report, path, raw_data_name):
       border-radius: 50%;
       opacity: 0.8;
     }
+
+    .sample-dot.prismio { background: var(--prismio); }
+    .sample-dot.cpp { background: var(--cpp); }
+    .sample-dot.rust { background: var(--rust); }
+
+    .sample-plot-label {
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .sample-plot-label.prismio { color: var(--prismio); }
+    .sample-plot-label.cpp { color: var(--cpp); }
+    .sample-plot-label.rust { color: var(--rust); }
 
     .sample-median-marker {
       position: absolute;
@@ -1980,11 +1997,11 @@ def write_html_report(report, path, raw_data_name):
                       const med = median(item, lang);
                       return `
                         <div class="sample-plot-line">
-                          <span style="font-size:11px; font-weight:600; color:var(--${lang});">${labels[lang]}</span>
+                          <span class="sample-plot-label ${lang}">${labels[lang]}</span>
                           <div class="sample-dots-track" title="${labels[lang]}: min ${duration(min)}, median ${duration(med)}, max ${duration(max)}">
                             ${samples.map(s => {
                               const pct = max > min ? ((s - min) / (max - min)) * 92 + 4 : 50;
-                              return `<div class="sample-dot" style="left:${pct.toFixed(1)}%; background:var(--${lang});"></div>`;
+                              return `<div class="sample-dot ${lang}" style="left:${pct.toFixed(1)}%;"></div>`;
                             }).join("")}
                             <div class="sample-median-marker" style="left:${(max > min ? ((med - min) / (max - min)) * 92 + 4 : 50).toFixed(1)}%; background:var(--text);"></div>
                           </div>

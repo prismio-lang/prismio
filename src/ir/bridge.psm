@@ -326,6 +326,28 @@ extern fn ir_str_data(value: String) -> Int
 // materialising a short string to get a pointer puts three stores in the caller's
 // byte loop that LICM cannot lift, which measured 0.63x on `line_processing`.
 extern fn ir_str_byte_at(base: String, index: String) -> Int
+// String equality. Two short strings are equal exactly when their pairs are
+// bit-identical, so the common case is two integer compares and no call at all;
+// unequal lengths are rejected from the pair too. See `ir_str_eq` in
+// runtime/llvm-api-backend.c for why there is no four-byte prefix here.
+extern fn ir_str_eq(lhs: String, rhs: String) -> Int
+
+// An argument whose `extern fn` declares it `borrow`, which RUNTIME.md defines
+// as "the callee reads the argument and does not retain it" -- LLVM's
+// `readonly nocapture`. Saying so is what lets a short String's materialisation
+// leave a loop that calls a foreign function per iteration.
+extern fn ir_call_arg_borrow(argType: String, argValue: String)
+
+// A String argument crossing into C. A **view** has no terminator of its own --
+// it ends where its length says, inside a longer buffer -- so this makes the
+// NUL-terminated copy the callee needs and releases it when the call returns.
+// The other two storage classes reach the callee with the pointer they had.
+extern fn ir_call_arg_cstr(argValue: String, isBorrow: Int)
+
+// A view: `count` bytes of `base` from `start`, owning nothing and copying
+// nothing. **The caller must have established that `base` is not the inline
+// form** -- see `ir_str_view` in runtime/llvm-api-backend.c.
+extern fn ir_str_view(base: String, start: String, count: String) -> Int
 extern fn ir_str_inline(base: String, start: String, count: String) -> Int
 extern fn ir_global_str_var(name: String, strGlobal: String, length: Int)
 

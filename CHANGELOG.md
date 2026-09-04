@@ -125,6 +125,103 @@
   Impl parameters may be constrained by the trait side (`impl<T> From<T> for
   String`), and arity mismatches receive declaration-directed diagnostics.
 
+### The view storage class
+
+- **A substring longer than the pair can hold is now a view, not a copy.** Umbra's
+  third storage class: the pair holds a pointer into the string it was cut from
+  and a length, with no allocation, no copy and nothing to release.
+  `strSubstring` and `String.slice` take it whenever `count > 12`, which is
+  exactly when the alternative was a `str_with_capacity` and a byte loop.
+
+  **The lifetime is proved, not promised.** Umbra's advice for a transient string
+  is "copy it if you need it later"; here `__builtin_string_view` is declared an
+  alias of its first argument (`aifFfiAliasOf`), so the result carries the base's
+  sites and the ownership analysis already keeps the base alive for as long as
+  the view is — the same fact `aif_fn_may_return_view_of_param` was introduced
+  for. Nothing new had to be inferred.
+
+  Three places pay for it, and only three. A view has no terminator of its own —
+  it ends where its length says, inside a buffer that continues — so equality
+  compares by length (`str_equals_n`) rather than by `strcmp`; `str_own` copies
+  one entering a container, by length rather than with `str_clone`; and a view
+  crossing into C gets a NUL-terminated copy that is released as soon as the call
+  returns. Everything else is unchanged: byte access already reads through field
+  0, and the release already answers "not mine" from the tag.
+
+  **`tokenization` runs 1.30x faster again** and now sits at **0.81x of C++** and
+  0.23x of Rust — 218,042 ns against C++'s 269,375, median of 31 alternating
+  runs. Most of that is not the tokens themselves, which are all twelve bytes or
+  fewer and were already inline: it is that `strSubstring` no longer contains an
+  allocation on any path, so it inlines whole into its caller and the release
+  disappears with it.
+
+  Across all 34 workloads: one 1.31x faster, 31 within 3%, and `fft` and
+  `knapsack` at 0.91x and 0.90x — both verified as pure code layout, with
+  byte-identical instruction sequences in both builds and only their addresses
+  moved. Suite 285/285 with the compiler self-hosting on views, fixpoint reached,
+  `--verify` clean.
+
+  One bug worth recording: the temporary release was emitted as a literal
+  `rt_free`, which links in a release build and fails under `--verify` with
+  "Undefined symbols: _rt_free", because the runtime compiles `rt_free` as a
+  macro there. It goes through `g_free_fn` now — the seam exists so that both
+  halves of a pairing swap together, and a temporary release is a release like
+  any other.
+
+### String performance, second pass
+
+- **The small-copy ladder replaces `memcpy` in the short-string constructor.**
+  `ir_str_inline` was calling libc for a copy of at most twelve bytes, once per
+  short string. It now uses the shape musl and Folly both use below their vector
+  thresholds: read the first word and the last word and store both, overlapping
+  in the middle. Three cases (8..12 as two i64, 4..7 as two i32, 1..3 as three
+  bytes), every load inside the source range by construction, and the union of
+  what each writes is exactly `[0, n)` so the zeroed tail survives — which the
+  equality fast path below depends on. **1.107x on `tokenization`**, verified
+  against a byte-by-byte reference at every length and offset (403 slices).
+
+- **String equality answers from the pair.** Two short strings are equal exactly
+  when their sixteen bytes match, so `==` is two integer compares with no
+  dereference and no call; unequal lengths are rejected from the pair too, and
+  `str_equals` is reached only when the lengths agree and at least one side is
+  long. Measured at **48x** on a short-string comparison loop — 193 us against
+  9.35 ms for four million compares. `String.equals` is one line now instead of a
+  byte loop: the note saying it could not use the builtin because the seed did
+  not know `__builtin_string_eq` stopped being true when the seed was refreshed.
+
+  **The four-byte prefix German strings carry is deliberately absent.** A prefix
+  has to be computed when a string is complete, and a Prismio long string never
+  is at any single point — `str_with_capacity` hands back an uninitialised buffer
+  and the caller fills it. A database materialises a value once and can stamp a
+  prefix on the way; a language that lets you build one incrementally has nowhere
+  to put that hook.
+
+- **`borrow` lowers to LLVM `readonly`.** RUNTIME.md's contract table has always
+  defined it as "the callee reads the argument and does not retain it", and that
+  is what LLVM spells `readonly nocapture`; without saying so, a foreign call is
+  assumed to write through every pointer it is handed. Measured on the shape it
+  targets — a short haystack searched in a loop, where the materialisation is
+  loop-invariant and only the assumed writes pin it — at **min 5.28 ms to
+  4.84 ms**. It does not show on the suite, because `string_search`'s haystack is
+  long and already resolved once at the parameter. (`nocapture` is spelled
+  `captures(none)` in LLVM 22 and does not map through the C API's enum lookup;
+  `readonly` is the half that matters here.)
+
+- **Together: `tokenization` is 1.078x faster again, and now runs ahead of C++**
+  — 274,042 ns against 278,375, median of 31 alternating runs, from 1.06x at the
+  start of this pass. Against Rust it is 0.28x. Per 54,000-token pass with the
+  text hoisted, the token half is now 103 us against C++'s 91 us; the scan is
+  160 us against 129 us, and that 30 us is now 71% of everything still separating
+  the two.
+
+  **Two scan-gap hypotheses were tested and both are wrong.** Putting the
+  short-string materialisation behind a branch, so the long form reaches its load
+  with no store on its path, measured **328 us against 262 us** — the control flow
+  costs more than the stores it avoids, and it is reverted. And `charAt`'s bounds
+  check, which C++ does not pay, is free: swapping it for the unchecked `byteAt`
+  over the same 204 KB reads 229/214, 229/229, 194/194 us, because LLVM proves
+  the index from the loop guard.
+
 ### The String representation
 
 - **`String` is a German string.** The 16-byte `{ptr, i64}` pair now carries a tag

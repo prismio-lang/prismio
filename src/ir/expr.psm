@@ -2111,6 +2111,27 @@ internal fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
+        // A view of another string: no allocation, no copy, nothing to release.
+        //
+        // `strSubstring` takes this whenever the result is longer than the twelve
+        // bytes the pair can hold, which is exactly when the alternative was a
+        // `str_with_capacity` and a byte copy. The lifetime is not a promise the
+        // programmer makes here as it is in Umbra: the builtin is declared an
+        // alias of its first argument, so AIF holds the base alive.
+        if (funcName.equals("__builtin_string_view")
+            and nodeExists(expr.child2)) {
+            let v0 = ptr_to_node(expr.child2)
+            if (nodeExists(v0.next)) {
+                let v1 = ptr_to_node(v0.next)
+                if (nodeExists(v1.next)) {
+                    let vbase = generateExpression(v0)
+                    let vfrom = generateExpression(v1)
+                    let vcount = generateExpression(ptr_to_node(v1.next))
+                    return ir_get_temp_name(ir_str_view(vbase, vfrom, vcount))
+                }
+            }
+        }
+
         // `a == b` on String. The pointer half of each fat pair goes to the
         // runtime's str_equals, whose strcmp the C library vectorises; the i32 it
         // answers becomes the i1 the language wants.
@@ -2120,16 +2141,12 @@ internal fn generateExpression(expr: ASTNode) -> String {
             if (nodeExists(e0.next)) {
                 let lhsVal = generateExpression(e0)
                 let rhsVal = generateExpression(ptr_to_node(e0.next))
-                // Canonicalised, not field 0: a short string's first field is
-                // twelve bytes of text, and strcmp on it compares the characters
-                // as if they were an address.
-                let lhsPtr = ir_get_temp_name(ir_str_data(lhsVal))
-                let rhsPtr = ir_get_temp_name(ir_str_data(rhsVal))
-                ir_call_begin()
-                ir_call_arg("ptr", lhsPtr)
-                ir_call_arg("ptr", rhsPtr)
-                let same = ir_get_temp_name(ir_call_end("i32", "str_equals"))
-                return ir_get_temp_name(ir_icmp_ne("i32", same, "0"))
+                // The backend compares the pairs first. Two short strings are
+                // equal exactly when their sixteen bytes match, which the layout
+                // guarantees and which costs two register compares; `str_equals`
+                // is reached only when the lengths agree and at least one side
+                // keeps its bytes behind a pointer.
+                return ir_get_temp_name(ir_str_eq(lhsVal, rhsVal))
             }
         }
 
@@ -2215,8 +2232,19 @@ internal fn generateExpression(expr: ASTNode) -> String {
                     // the scratch buffer's address in the list, and the release at
                     // teardown was a free of the stack.
                     ir_call_arg("ptr", scalarToSlot("struct:prismio.str", argVal))
+                } else if (aif_extern_contract(funcName, argIndex).equals("borrow")) {
+                    // **The contract, spent rather than merely checked.**
+                    // RUNTIME.md defines `borrow` as "the callee reads the
+                    // argument and does not retain it", which is what LLVM
+                    // spells `readonly nocapture`. Without saying so, LLVM must
+                    // assume the callee writes through the pointer, and the
+                    // materialisation of a short String cannot be lifted out of
+                    // a loop that calls one: `strIndexOfFrom` calls
+                    // `str_find_byte_pair` per candidate, and `string_search`
+                    // measured 0.90x with those stores stuck in the loop.
+                    ir_call_arg_cstr(argVal, 1)
                 } else {
-                    ir_call_arg("ptr", ir_get_temp_name(ir_str_data(argVal)))
+                    ir_call_arg_cstr(argVal, 0)
                 }
             } else {
                 if (argIndex == elemArg) {

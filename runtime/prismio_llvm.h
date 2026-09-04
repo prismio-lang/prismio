@@ -310,6 +310,10 @@ typedef struct LLVMOpaqueAttributeRef *LLVMAttributeRef;
 unsigned LLVMGetEnumAttributeKindForName(const char *Name, size_t SLen);
 LLVMAttributeRef LLVMCreateEnumAttribute(LLVMContextRef, unsigned KindID, unsigned long long Val);
 void LLVMAddAttributeAtIndex(LLVMValueRef F, unsigned Idx, LLVMAttributeRef A);
+// Attributes on one call rather than on the callee. A foreign function's
+// contract is written at its `extern fn` declaration in Prismio, and the place
+// codegen can act on it is the call it is emitting -- see ir_call_arg_borrow.
+void LLVMAddCallSiteAttribute(LLVMValueRef C, unsigned Idx, LLVMAttributeRef A);
 typedef struct LLVMOpaqueTargetData *LLVMTargetDataRef;
 LLVMTargetDataRef LLVMGetModuleDataLayout(LLVMModuleRef M);
 unsigned LLVMABIAlignmentOfType(LLVMTargetDataRef, LLVMTypeRef Ty);
