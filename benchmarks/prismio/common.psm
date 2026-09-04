@@ -1,0 +1,38 @@
+import std.string
+
+extern fn clock_gettime(clk: Int, stamp: BenchTimespec) -> Int
+extern fn prismio_rt_print(text: String borrow)
+extern fn prismio_rt_println(text: String borrow)
+
+fn benchPrint(text: String) { prismio_rt_print(text) }
+fn benchPrintln(text: String) { prismio_rt_println(text) }
+fn benchPrintln(value: Int) { prismio_rt_println(value.toString()) }
+
+struct BenchTimespec {
+    seconds: I64,
+    nanoseconds: I64
+}
+
+fn benchNow() -> I64 {
+    let stamp = BenchTimespec { seconds: 0, nanoseconds: 0 }
+    clock_gettime(4, stamp)
+    return stamp.seconds * 1000000000 + stamp.nanoseconds
+}
+
+struct BenchBucket {
+    values: List<Int>
+}
+
+struct BenchBand {
+    seed: Int,
+    steps: Int
+}
+
+enum BenchTree {
+    Empty,
+    Node(BenchTree, Int, BenchTree)
+}
+
+fn benchRandom(seed: Int) -> Int {
+    return (seed * 25173 + 13849) % 65521
+}

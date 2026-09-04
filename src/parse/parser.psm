@@ -31,11 +31,29 @@ extern fn exit(code: Int)
 struct Parser {
     current: Ptr, // Token pointer
     allowStructLit: Int,
-    implType: Ptr // ASTNode (IMPL_DECL with child3 IMPL_HEADER), or null
+    implType: Ptr, // ASTNode (IMPL_DECL with child3 IMPL_HEADER), or null
+    // T16 argument position. `fn f(v: impl Show)` *is* `fn f<T: Show>(v: T)`, but
+    // the generic parameter list is parsed before the parameter list that reveals
+    // it, so the synthesised GENERIC_PARAM cannot be attached where it is created.
+    // It waits here until the declaration that owns it drains this chain --
+    // parseImplTraitParams -- immediately after its parameters are parsed.
+    //
+    // A chain rather than one slot because `fn f(a: impl Show, b: impl Ord)`
+    // synthesises two, and the sequence numbers them so they cannot collide.
+    implParams: Ptr, // ASTNode (GENERIC_PARAM chain), or null
+    implParamSeq: Int,
+    // Where an `impl Trait` currently being parsed is allowed to mean something.
+    // 0 nowhere, 1 argument position, 2 return position. The two positions are
+    // different constructs -- argument is a generic parameter the caller picks,
+    // return is one concrete type the body picks -- so the type parser cannot
+    // decide between them from the token alone, and anywhere else is an error
+    // rather than a third meaning.
+    implPosition: Int
 }
 
 fn parserCreate(tokens: Token) -> Parser {
-    return Parser { current: token_to_ptr(tokens), allowStructLit: 1, implType: ptr_null() }
+    return Parser { current: token_to_ptr(tokens), allowStructLit: 1, implType: ptr_null(),
+                    implParams: ptr_null(), implParamSeq: 0, implPosition: 0 }
 }
 impl Parser {
 
@@ -62,7 +80,7 @@ impl Parser {
 
     internal fn checkVal(self, t: TokenType, val: String) -> Bool {
         let current = self.current()
-        return current.type == t and strEquals(current.value, val)
+        return current.type == t and current.value.equals(val)
     }
 
     internal fn matchToken(self, t: TokenType) -> Bool {
@@ -158,21 +176,21 @@ impl Parser {
     // Whether this keyword can only begin a construct, and so is a safe place for
     // recovery to resume.
     private fn startsConstruct(word: String) -> Bool {
-        if (strEquals(word, "fn")) { return true }
-        if (strEquals(word, "let")) { return true }
-        if (strEquals(word, "struct")) { return true }
-        if (strEquals(word, "enum")) { return true }
-        if (strEquals(word, "extern")) { return true }
-        if (strEquals(word, "import")) { return true }
-        if (strEquals(word, "impl")) { return true }
-        if (strEquals(word, "trait")) { return true }
-        if (strEquals(word, "if")) { return true }
-        if (strEquals(word, "while")) { return true }
-        if (strEquals(word, "for")) { return true }
-        if (strEquals(word, "loop")) { return true }
-        if (strEquals(word, "match")) { return true }
-        if (strEquals(word, "return")) { return true }
-        if (strEquals(word, "region")) { return true }
+        if (word.equals("fn")) { return true }
+        if (word.equals("let")) { return true }
+        if (word.equals("struct")) { return true }
+        if (word.equals("enum")) { return true }
+        if (word.equals("extern")) { return true }
+        if (word.equals("import")) { return true }
+        if (word.equals("impl")) { return true }
+        if (word.equals("trait")) { return true }
+        if (word.equals("if")) { return true }
+        if (word.equals("while")) { return true }
+        if (word.equals("for")) { return true }
+        if (word.equals("loop")) { return true }
+        if (word.equals("match")) { return true }
+        if (word.equals("return")) { return true }
+        if (word.equals("region")) { return true }
         return false
     }
 
@@ -190,7 +208,7 @@ impl Parser {
         loop {
             let tok = self.current()
             if (tok.type == TokenType.EOF) { break }
-            if (tok.type == TokenType.SEPARATOR and strEquals(tok.value, "}")) { break }
+            if (tok.type == TokenType.SEPARATOR and tok.value.equals("}")) { break }
             if (tok.type == TokenType.KEYWORD and startsConstruct(tok.value)) { break }
             self.advance()
         }

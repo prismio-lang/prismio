@@ -17,10 +17,10 @@ fn main() -> Int {
         umsDiagnosticsPrint(workspace.diagnostics)
         return umsTestFail("valid fixture should load")
     }
-    if (strEquals(workspace.project.metadata.name, "http") == false) {
+    if (workspace.project.metadata.name.equals("http") == false) {
         return umsTestFail("project name should be lowered")
     }
-    if (strEquals(workspace.project.metadata.version, "1.0.0") == false) {
+    if (workspace.project.metadata.version.equals("1.0.0") == false) {
         return umsTestFail("project version should be lowered")
     }
 
@@ -28,12 +28,10 @@ fn main() -> Int {
         "project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" description = \"HTTP client library\" license = \"MIT\" authors = [\"Saksham Jaiswal\", \"Prismio Contributors\",] } targets { executable(\"http\") { entry = \"src/main.psm\" } }",
         "memory:package-metadata", "ums/tests/fixtures/valid", "debug")
     if (packageMetadata.valid == false or
-        strEquals(packageMetadata.project.metadata.description,
-                  "HTTP client library") == false or
-        strEquals(packageMetadata.project.metadata.license, "MIT") == false or
+        packageMetadata.project.metadata.description.equals("HTTP client library") == false or
+        packageMetadata.project.metadata.license.equals("MIT") == false or
         list_len(packageMetadata.project.metadata.authors) != 2 or
-        strEquals(list_get(packageMetadata.project.metadata.authors, 0),
-                  "Saksham Jaiswal") == false) {
+        list_get(packageMetadata.project.metadata.authors, 0).equals("Saksham Jaiswal") == false) {
         return umsTestFail("optional package metadata and string arrays should lower")
     }
 
@@ -41,8 +39,7 @@ fn main() -> Int {
         "project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" licenseFile = \"../../../../LICENSE\" } targets { executable(\"http\") { entry = \"src/main.psm\" } }",
         "memory:license-file", "ums/tests/fixtures/valid", "debug")
     if (licenseFileMetadata.valid == false or
-        strEquals(licenseFileMetadata.project.metadata.licenseFile,
-                  "../../../../LICENSE") == false) {
+        licenseFileMetadata.project.metadata.licenseFile.equals("../../../../LICENSE") == false) {
         return umsTestFail("a project-relative license file should lower and validate")
     }
 
@@ -66,7 +63,7 @@ fn main() -> Int {
     if (target.kind != UmsTargetKind.EXECUTABLE) {
         return umsTestFail("target kind should be executable")
     }
-    if (strEquals(target.entry, "src/main.psm") == false) {
+    if (target.entry.equals("src/main.psm") == false) {
         return umsTestFail("target entry should be preserved")
     }
     if (list_len(workspace.project.dependencies) != 1) {
@@ -86,11 +83,10 @@ fn main() -> Int {
     let compilerTarget = compilerProject.target(0)
     if (compilerProject.valid == false or compilerProject.targetCount() != 1 or
         compilerTarget.kind != UmsTargetKind.EXECUTABLE or
-        strEquals(compilerTarget.name, "prismio") == false or
+        compilerTarget.name.equals("prismio") == false or
         list_len(compilerTarget.links) != 5 or
         umsTargetHasComponent(compilerTarget, "prismio.backend") == false or
-        strEquals(compilerProject.project.toolchain.host,
-                  ".prismio/build/debug/prismio") == false) {
+        compilerProject.project.toolchain.host.equals(".prismio/build/debug/prismio") == false) {
         return umsTestFail("an executable should preserve its ordered native link inputs")
     }
 
@@ -189,7 +185,7 @@ fn main() -> Int {
     if (commentedEdit.changed == false or list_len(commentedDiagnostics) != 0) {
         return umsTestFail("a valid commented manifest should accept an edit")
     }
-    if (strEquals(commentedEdit.text, commentedExpected) == false) {
+    if (commentedEdit.text.equals(commentedExpected) == false) {
         return umsTestFail("the writer changed formatting or comments around an existing block")
     }
 
@@ -204,7 +200,7 @@ fn main() -> Int {
     if (appendedEdit.changed == false or list_len(appendedDiagnostics) != 0) {
         return umsTestFail("a valid manifest without dependencies should accept an edit")
     }
-    if (strEquals(appendedEdit.text, appendedExpected) == false) {
+    if (appendedEdit.text.equals(appendedExpected) == false) {
         return umsTestFail("the writer did not append and escape a dependency block exactly")
     }
     let appendedWorkspace = umsLoadText(
@@ -214,8 +210,8 @@ fn main() -> Int {
         return umsTestFail("the appended manifest should parse and lower again")
     }
     let appendedDependency = list_get(appendedWorkspace.project.dependencies, 0)
-    if (strEquals(appendedDependency.constraint, "^1.0\tbeta") == false or
-        strEquals(appendedDependency.path, "..\\localdep") == false) {
+    if (appendedDependency.constraint.equals("^1.0\tbeta") == false or
+        appendedDependency.path.equals("..\\localdep") == false) {
         return umsTestFail("written dependency strings should round-trip through the lexer")
     }
 
@@ -228,7 +224,7 @@ fn main() -> Int {
         inlineSource, "memory:inline", UmsDependencyScope.API,
         "net", "2", "", inlineDiagnostics)
     if (inlineEdit.changed == false or list_len(inlineDiagnostics) != 0 or
-        strEquals(inlineEdit.text, inlineExpected) == false) {
+        inlineEdit.text.equals(inlineExpected) == false) {
         return umsTestFail("an inline dependency block should receive one inline declaration")
     }
 
@@ -239,7 +235,7 @@ fn main() -> Int {
         inlineSource, "memory:duplicate", UmsDependencyScope.IMPLEMENTATION,
         "json", "2", "", duplicateDiagnostics)
     if (duplicateEdit.changed or list_len(duplicateDiagnostics) != 1 or
-        strEquals(duplicateEdit.text, inlineSource) == false) {
+        duplicateEdit.text.equals(inlineSource) == false) {
         return umsTestFail("a duplicate dependency should refuse the edit without changing source")
     }
 
@@ -249,7 +245,7 @@ fn main() -> Int {
         malformedSource, "memory:malformed", UmsDependencyScope.IMPLEMENTATION,
         "json", "1", "", malformedDiagnostics)
     if (malformedEdit.changed or list_len(malformedDiagnostics) == 0 or
-        strEquals(malformedEdit.text, malformedSource) == false) {
+        malformedEdit.text.equals(malformedSource) == false) {
         return umsTestFail("a malformed manifest should refuse the edit without changing source")
     }
 
@@ -272,14 +268,14 @@ fn main() -> Int {
     }
 
     let ship = commandsWorkspace.command(0)
-    if (strEquals(ship.description, "build then package") == false or
+    if (ship.description.equals("build then package") == false or
         list_len(ship.steps) != 2) {
         return umsTestFail("a command should keep its description and every step")
     }
     if (list_get(ship.steps, 0).kind != UmsCommandStepKind.BUILD or
-        strEquals(list_get(ship.steps, 0).subject, "app") == false or
+        list_get(ship.steps, 0).subject.equals("app") == false or
         list_get(ship.steps, 1).kind != UmsCommandStepKind.SHELL or
-        strEquals(list_get(ship.steps, 1).subject, "tools/pack.sh") == false) {
+        list_get(ship.steps, 1).subject.equals("tools/pack.sh") == false) {
         return umsTestFail("steps should keep their kind, subject and declaration order")
     }
 
@@ -290,7 +286,7 @@ fn main() -> Int {
         list_get(packArguments, 0).forwarded or
         list_get(packArguments, 1).forwarded == false or
         list_get(packArguments, 2).forwarded or
-        strEquals(list_get(packArguments, 0).text, "--out") == false) {
+        list_get(packArguments, 0).text.equals("--out") == false) {
         return umsTestFail("`args` should keep its position among shell arguments")
     }
 
@@ -323,6 +319,38 @@ fn main() -> Int {
         "memory:rejected-step", "ums/tests/fixtures/valid", "debug")
     if (rejectedStep.valid or list_len(rejectedStep.diagnostics) != 1) {
         return umsTestFail("a rejected step should report once, not twice")
+    }
+
+    // `run` resolves its subject rather than offering a step kind per launcher.
+    // A .psm in the fixture stands in for a project's own tool; it takes
+    // arguments exactly as a shell step does, which `build` deliberately does not.
+    let runScript = umsLoadText(
+        strConcat(commandBase,
+            "commands { command(\"tool\") { run(\"src/main.psm\", \"--once\", args) } }"),
+        "memory:run-script", "ums/tests/fixtures/valid", "debug")
+    if (runScript.valid == false) {
+        umsDiagnosticsPrint(runScript.diagnostics)
+        return umsTestFail("run should accept a .psm under the project root")
+    }
+    let toolStep = list_get(runScript.command(0).steps, 0)
+    if (toolStep.kind != UmsCommandStepKind.RUN or
+        list_len(toolStep.arguments) != 2 or
+        list_get(toolStep.arguments, 1).forwarded == false) {
+        return umsTestFail("a run step should carry its arguments and the args marker")
+    }
+
+    let runUnknownKind = umsLoadText(
+        strConcat(commandBase, "commands { command(\"a\") { run(\"tools/thing.sh\") } }"),
+        "memory:run-unknown-kind", "ums/tests/fixtures/valid", "debug")
+    if (runUnknownKind.valid or list_len(runUnknownKind.diagnostics) != 1) {
+        return umsTestFail("run should refuse a subject it cannot start")
+    }
+
+    let runMissingScript = umsLoadText(
+        strConcat(commandBase, "commands { command(\"a\") { run(\"src/absent.py\") } }"),
+        "memory:run-missing-script", "ums/tests/fixtures/valid", "debug")
+    if (runMissingScript.valid or list_len(runMissingScript.diagnostics) != 1) {
+        return umsTestFail("run should refuse a script that is not there")
     }
 
     let emptyCommand = umsLoadText(

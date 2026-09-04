@@ -4,9 +4,9 @@
     python3 tools/ir_snapshot.py --compiler build/t3 --out /tmp/base
 
 A behaviour-preserving change must produce byte-identical IR (CODE_STYLE), and
-the usual check covers `tests/` and `aif/corpus/` -- `aif/evidence/` is not in
-either. This walks all three, so a change that moves only the measurement
-programs cannot pass unnoticed.
+the usual check covers `tests/` and `aif/corpus/`. This also compiles the root
+benchmark suite, so a change that moves only performance programs cannot pass
+unnoticed.
 
 Programs that do not build (a module with no `main`, or a `neg_*` fixture that is
 supposed to fail) are recorded in `SKIPPED` rather than dropped, so a program
@@ -25,7 +25,7 @@ def programs():
     found = []
     for pat in ("tests/*.psm",
                 "aif/corpus/*.psm",
-                "aif/evidence/xlang/prismio/*.psm",
+                "benchmarks/prismio/*.psm",
                 "src/main.psm"):
         found += glob.glob(os.path.join(REPO, pat))
     return sorted(set(found))

@@ -40,14 +40,14 @@ fn main() -> Int {
     if (strStartsWith(joined, dir) == false) {
         return fail("joinPath should begin with the directory")
     }
-    if (strEquals(directoryOf(joined), dir) == false) {
+    if (directoryOf(joined).equals(dir) == false) {
         return fail("directoryOf should undo joinPath")
     }
 
     // A POSIX separator is understood on every host: get_directory scans for
     // both '/' and '\\' deliberately, so this stays a literal.
     let parent = directoryOf("/a/b/c.psm")
-    if (strEquals(parent, "/a/b") == false) {
+    if (parent.equals("/a/b") == false) {
         return fail("directoryOf should drop the final component and the separator")
     }
 

@@ -16,7 +16,7 @@
 // ambiguity in the same place.
 import std.io
 import std.string.strTrim
-import std.string.strEquals
+import std.string.equals
 import selective.wholesale
 
 fn fail(message: String) -> Int {
@@ -27,13 +27,13 @@ fn fail(message: String) -> Int {
 
 fn main() -> Int {
     // Both selected names resolve, and two selections from one module coexist.
-    if (strEquals(strTrim("  hi  "), "hi") == false) { return fail("strTrim") }
+    if (strTrim("  hi  ").equals("hi") == false) { return fail("strTrim") }
 
     // selective/wholesale.psm imported the whole of `std.string`, so this file's
     // selection does not reach into it. `strToUpper` also being callable
     // somewhere is what keeps neg_55 from passing vacuously: without it, that
     // test would pass just as well if the name did not exist at all.
-    if (strEquals(shoutUpper("ok"), "OK") == false) { return fail("wholesale helper") }
+    if (shoutUpper("ok").equals("OK") == false) { return fail("wholesale helper") }
 
     println("test_94 ok")
     return 0

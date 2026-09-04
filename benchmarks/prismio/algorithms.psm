@@ -1,0 +1,335 @@
+import common
+import std.string
+
+fn benchGcd(a0: Int, b0: Int) -> Int {
+    let mut a = a0
+    let mut b = b0
+    while (b != 0) {
+        let t = a % b
+        a = b
+        b = t
+    }
+    return a
+}
+
+fn benchFibonacci(scale: Int) -> Int {
+    let limit = 1000000 * scale
+    let mut a = 1
+    let mut b = 1
+    let mut checksum = 0
+    let mut i = 0
+    while (i < limit) {
+        let c = (a + b) % 1000003
+        a = b
+        b = c
+        checksum = (checksum + c) % 1000000007
+        i = i + 1
+    }
+    return checksum
+}
+
+fn benchPrimeSieve(scale: Int) -> Int {
+    let n = 100000 * scale
+    let mut prime: List<Bool> = list_new_with_capacity(n + 1)
+    let mut i = 0
+    while (i <= n) {
+        list_push(prime, true)
+        i = i + 1
+    }
+    list_set(prime, 0, false)
+    list_set(prime, 1, false)
+    let mut p = 2
+    while (p * p <= n) {
+        if (list_get(prime, p)) {
+            let mut multiple = p * p
+            while (multiple <= n) {
+                list_set(prime, multiple, false)
+                multiple = multiple + p
+            }
+        }
+        p = p + 1
+    }
+    let mut count = 0
+    let mut sum = 0
+    let mut k = 2
+    while (k <= n) {
+        if (list_get(prime, k)) {
+            count = count + 1
+            sum = (sum + k) % 1000000007
+        }
+        k = k + 1
+    }
+    return (sum + count) % 1000000007
+}
+
+fn benchGcdLcm(scale: Int) -> Int {
+    let limit = 300000 * scale
+    let mut checksum = 0
+    let mut i = 1
+    while (i <= limit) {
+        let a = i % 30000 + 1
+        let b = (i * 17) % 30000 + 1
+        let g = benchGcd(a, b)
+        let l = (a / g) * b
+        checksum = (checksum + g + l) % 1000000007
+        i = i + 1
+    }
+    return checksum
+}
+
+fn benchBinarySearch(scale: Int) -> Int {
+    let n = 100000 * scale
+    let queries = 500000 * scale
+    let mut values: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(values, i * 2)
+        i = i + 1
+    }
+    let mut found = 0
+    let mut seed = 7
+    let mut q = 0
+    while (q < queries) {
+        seed = benchRandom(seed)
+        let needle = seed % (n * 2)
+        let mut low = 0
+        let mut high = n - 1
+        let mut hit = false
+        while (low <= high) {
+            let mid = low + (high - low) / 2
+            let value = list_get(values, mid)
+            if (value == needle) {
+                hit = true
+                low = high + 1
+            } else if (value < needle) {
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        if (hit) { found = found + 1 }
+        q = q + 1
+    }
+    return found
+}
+
+fn benchSwap(values: List<Int>, a: Int, b: Int) {
+    let x = list_get(values, a)
+    let y = list_get(values, b)
+    list_set(values, a, y)
+    list_set(values, b, x)
+}
+
+fn benchQuickRange(values: List<Int>, low: Int, high: Int) {
+    if (low >= high) { return }
+    let pivot = list_get(values, low + (high - low) / 2)
+    let mut i = low
+    let mut j = high
+    while (i <= j) {
+        while (list_get(values, i) < pivot) { i = i + 1 }
+        while (list_get(values, j) > pivot) { j = j - 1 }
+        if (i <= j) {
+            benchSwap(values, i, j)
+            i = i + 1
+            j = j - 1
+        }
+    }
+    if (low < j) { benchQuickRange(values, low, j) }
+    if (i < high) { benchQuickRange(values, i, high) }
+}
+
+fn benchQuicksort(scale: Int) -> Int {
+    let n = 25000 * scale
+    let mut values: List<Int> = list_new_with_capacity(n)
+    let mut seed = 19
+    let mut i = 0
+    while (i < n) {
+        seed = benchRandom(seed)
+        list_push(values, seed)
+        i = i + 1
+    }
+    benchQuickRange(values, 0, n - 1)
+    let mut checksum = 0
+    let mut k = 0
+    while (k < n) {
+        checksum = (checksum + list_get(values, k)) % 1000000007
+        k = k + 97
+    }
+    return checksum + list_get(values, n - 1)
+}
+
+fn benchMergeRange(values: List<Int>, scratch: List<Int>, low: Int, high: Int) {
+    if (high - low <= 1) { return }
+    let mid = low + (high - low) / 2
+    benchMergeRange(values, scratch, low, mid)
+    benchMergeRange(values, scratch, mid, high)
+    let mut left = low
+    let mut right = mid
+    let mut out = low
+    while (left < mid and right < high) {
+        if (list_get(values, left) <= list_get(values, right)) {
+            list_set(scratch, out, list_get(values, left))
+            left = left + 1
+        } else {
+            list_set(scratch, out, list_get(values, right))
+            right = right + 1
+        }
+        out = out + 1
+    }
+    while (left < mid) {
+        list_set(scratch, out, list_get(values, left))
+        left = left + 1
+        out = out + 1
+    }
+    while (right < high) {
+        list_set(scratch, out, list_get(values, right))
+        right = right + 1
+        out = out + 1
+    }
+    let mut i = low
+    while (i < high) {
+        list_set(values, i, list_get(scratch, i))
+        i = i + 1
+    }
+}
+
+fn benchMergesort(scale: Int) -> Int {
+    let n = 25000 * scale
+    let mut values: List<Int> = list_new_with_capacity(n)
+    let mut scratch: List<Int> = list_new_with_capacity(n)
+    let mut seed = 19
+    let mut i = 0
+    while (i < n) {
+        seed = benchRandom(seed)
+        list_push(values, seed)
+        list_push(scratch, 0)
+        i = i + 1
+    }
+    benchMergeRange(values, scratch, 0, n)
+    let mut checksum = 0
+    let mut k = 0
+    while (k < n) {
+        checksum = (checksum + list_get(values, k)) % 1000000007
+        k = k + 97
+    }
+    return checksum + list_get(values, n - 1)
+}
+
+fn benchStringSearch(scale: Int) -> Int {
+    let text = "alpha beta gamma delta needle omega ".repeat(2000 * scale)
+    let mut from = 0
+    let mut count = 0
+    let mut positions = 0
+    loop {
+        let at = text.indexOf("needle", from)
+        if (at < 0) { break }
+        count = count + 1
+        positions = (positions + at) % 1000000007
+        from = at + 6
+    }
+    return positions + count
+}
+
+fn benchGraphBfs(scale: Int) -> Int {
+    let width = 120 * scale
+    let total = width * width
+    let mut seen: List<Bool> = list_new_with_capacity(total)
+    let mut queue: List<Int> = list_new_with_capacity(total)
+    let mut i = 0
+    while (i < total) {
+        list_push(seen, false)
+        i = i + 1
+    }
+    list_push(queue, 0)
+    list_set(seen, 0, true)
+    let mut head = 0
+    let mut checksum = 0
+    while (head < list_len(queue)) {
+        let node = list_get(queue, head)
+        head = head + 1
+        checksum = (checksum + node) % 1000000007
+        let x = node % width
+        let y = node / width
+        if (x > 0) {
+            let next = node - 1
+            if (list_get(seen, next) == false) {
+                list_set(seen, next, true)
+                list_push(queue, next)
+            }
+        }
+        if (x + 1 < width) {
+            let next = node + 1
+            if (list_get(seen, next) == false) {
+                list_set(seen, next, true)
+                list_push(queue, next)
+            }
+        }
+        if (y > 0) {
+            let next = node - width
+            if (list_get(seen, next) == false) {
+                list_set(seen, next, true)
+                list_push(queue, next)
+            }
+        }
+        if (y + 1 < width) {
+            let next = node + width
+            if (list_get(seen, next) == false) {
+                list_set(seen, next, true)
+                list_push(queue, next)
+            }
+        }
+    }
+    return checksum + head
+}
+
+fn benchKnapsack(scale: Int) -> Int {
+    let capacity = 800 * scale
+    let items = 180
+    let mut best: List<Int> = list_new_with_capacity(capacity + 1)
+    let mut c = 0
+    while (c <= capacity) {
+        list_push(best, 0)
+        c = c + 1
+    }
+    let mut i = 1
+    while (i <= items) {
+        let weight = (i * 37) % 97 + 1
+        let value = (i * 53) % 211 + 1
+        let mut at = capacity
+        while (at >= weight) {
+            let candidate = list_get(best, at - weight) + value
+            if (candidate > list_get(best, at)) { list_set(best, at, candidate) }
+            at = at - 1
+        }
+        i = i + 1
+    }
+    return list_get(best, capacity)
+}
+
+fn benchBuildTree(depth: Int, seed: Int) -> BenchTree {
+    if (depth == 0) { return BenchTree.Empty }
+    return BenchTree.Node(benchBuildTree(depth - 1, seed * 2), seed,
+                          benchBuildTree(depth - 1, seed * 2 + 1))
+}
+
+fn benchTreeSum(tree: BenchTree) -> Int {
+    match (tree) {
+        BenchTree.Empty => { return 0 }
+        BenchTree.Node(left, value, right) => {
+            return (benchTreeSum(left) + value + benchTreeSum(right)) % 1000000007
+        }
+    }
+    return 0
+}
+
+fn benchTreeTraversal(scale: Int) -> Int {
+    let depth = 13 + scale / 4
+    let tree = benchBuildTree(depth, 1)
+    let mut checksum = 0
+    let mut i = 0
+    while (i < 8 * scale) {
+        checksum = (checksum + benchTreeSum(tree)) % 1000000007
+        i = i + 1
+    }
+    return checksum
+}

@@ -42,7 +42,7 @@ fn main() -> Int {
     }
 
     let label = "local"
-    if (strEquals(label, "local") == false) {
+    if (label.equals("local") == false) {
         return fail("string local should shadow the global")
     }
 
@@ -55,7 +55,7 @@ fn main() -> Int {
         }
     } else {
         let v: String = "unused"
-        if (strEquals(v, "unused") == false) {
+        if (v.equals("unused") == false) {
             return fail("String binding in the else-branch")
         }
     }

@@ -1,0 +1,19 @@
+// expect-error: unterminated block comment
+// expect-error: aborting due to 1 previous error
+//
+// The span points at the `/*` that was opened, not at the end of the file --
+// every unterminated comment reaches the end of the file, so that position
+// identifies nothing. The opening delimiter is the only part a reader can act on.
+//
+// This case is the one nesting introduces: a single `*/` closes the inner
+// comment and leaves the outer one open. Without the depth counter the file
+// would lex clean and the code after it would silently vanish.
+
+import std.io
+
+/* outer /* inner */
+
+fn main() -> Int {
+    println("unreachable")
+    return 0
+}

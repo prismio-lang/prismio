@@ -1,0 +1,83 @@
+import common
+import std.map
+
+fn benchHashMap(scale: Int) -> Int {
+    let n = 50000 * scale
+    let map: Map<Int, Int> = mapNew<Int, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(map, i, (i * 31) % 1000003)
+        i = i + 1
+    }
+    let mut checksum = 0
+    let mut seed = 23
+    let mut q = 0
+    while (q < n * 4) {
+        seed = benchRandom(seed)
+        let key = seed % n
+        checksum = (checksum + mapGetOr(map, key, 0)) % 1000000007
+        q = q + 1
+    }
+    return checksum + mapLen(map)
+}
+
+fn benchVectorGrowth(scale: Int) -> Int {
+    let n = 1000000 * scale
+    let mut values: List<Int> = list_new()
+    let mut checksum = 0
+    let mut i = 0
+    while (i < n) {
+        let value = i % 997
+        list_push(values, value)
+        checksum = (checksum + value) % 1000000007
+        i = i + 1
+    }
+    return checksum + list_len(values)
+}
+
+fn benchVectorIteration(scale: Int) -> Int {
+    let n = 1000000 * scale
+    let mut values: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(values, i % 1009)
+        i = i + 1
+    }
+    let mut checksum = 0
+    let mut round = 0
+    while (round < 8) {
+        let mut k = 0
+        while (k < n) {
+            checksum = (checksum + list_get(values, k)) % 1000000007
+            k = k + 1
+        }
+        round = round + 1
+    }
+    return checksum
+}
+
+fn benchKeyValueUpdate(scale: Int) -> Int {
+    let n = 20000 * scale
+    let map: Map<Int, Int> = mapNew<Int, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(map, i, i % 101)
+        i = i + 1
+    }
+    let mut round = 0
+    while (round < 20) {
+        let mut k = 0
+        while (k < n) {
+            mapSet(map, k, mapGetOr(map, k, 0) + 1)
+            k = k + 1
+        }
+        round = round + 1
+    }
+    let mut checksum = 0
+    let mut q = 0
+    while (q < n) {
+        checksum = (checksum + mapGetOr(map, q, 0)) % 1000000007
+        q = q + 1
+    }
+    return checksum
+}

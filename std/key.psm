@@ -107,7 +107,7 @@ impl Key for Bool {
 // operator would compare pointers, which is why a String key was unwritable.
 impl Key for String {
     fn hash(self) -> Int { return keyHashBytes(self) }
-    fn eq(self, other: Self) -> Bool { return strEquals(self, other) }
+    fn eq(self, other: Self) -> Bool { return self.equals(other) }
 }
 
 // **`Float` deliberately has no impl, and that is a decision.** NaN is not equal

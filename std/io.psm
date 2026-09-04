@@ -5,6 +5,8 @@
 
 extern fn prismio_rt_print(text: String borrow)
 extern fn prismio_rt_println(text: String borrow)
+extern fn prismio_rt_eprint(text: String borrow)
+extern fn prismio_rt_eprintln(text: String borrow)
 extern fn prismio_rt_print_float(value: Float)
 extern fn prismio_rt_println_float(value: Float)
 extern fn str_with_capacity(length: Int) -> String produce(free)
@@ -139,6 +141,19 @@ fn print(value: Char) {
 
 fn println(value: String) {
     prismio_rt_println(value)
+}
+
+// Status and progress text belongs here rather than on stdout, so that a
+// program whose stdout is a format -- a manifest, JSON diagnostics, a pipe into
+// another tool -- can still say something to the person watching without
+// corrupting it. Only `String` is overloaded: every other `print` overload
+// exists to render a number, and no such caller has appeared for stderr.
+fn eprint(value: String) {
+    prismio_rt_eprint(value)
+}
+
+fn eprintln(value: String) {
+    prismio_rt_eprintln(value)
 }
 
 fn println(value: Int) {

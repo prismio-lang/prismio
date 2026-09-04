@@ -26,7 +26,7 @@ struct Slot {
 
 fn reads_as_empty(tag: Int) -> Bool {
     let s = Slot { tag: tag, value: 99 }
-    return strEquals(node_to_ptr(s), "")
+    return node_to_ptr(s).equals("")
 }
 
 fn main() -> Int {

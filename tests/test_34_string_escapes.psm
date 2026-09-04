@@ -65,7 +65,7 @@ fn main() -> Int {
 
     // a windows-style path round-trips
     let path = "C:\\dir\\file.txt"
-    if (strEquals(path, "C:\\dir\\file.txt") == false) {
+    if (path.equals("C:\\dir\\file.txt") == false) {
         return fail("path with escaped backslashes did not round-trip")
     }
     if (__builtin_string_len(path) != 15) {

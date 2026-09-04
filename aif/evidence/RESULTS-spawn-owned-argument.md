@@ -105,7 +105,7 @@ bash tools/bootstrap.sh --compiler build/own-gen2 --out build/own-gen3 --keep
 cmp build/.bootstrap-own-gen2/compiler.ll build/.bootstrap-own-gen3/compiler.ll
 PRISMIO=$PWD/build/own-gen3 python3 tests/test_runner.py
 python3 tools/aif_differential.py --compiler build/own-gen3
-bash tools/release_gate.sh --rc build/own-gen3 --old build/flat-gen3
+python tools/release_gate.py --rc build/own-gen3 --old build/flat-gen3
 ./build/own-gen3 build aif/evidence/xlang/prismio/g9_helper_leak.psm -o /tmp/leak --verify && /tmp/leak
 ```
 

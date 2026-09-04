@@ -48,7 +48,7 @@ fn main() -> Int {
     for s in l {
         joined = strConcat(joined, s)
     }
-    if (strEquals(joined, "xxx") == false) { return fail("second Item type") }
+    if (joined.equals("xxx") == false) { return fail("second Item type") }
 
     // A String still iterates as it always did. It is bound first because the
     // collection in a `for ... in` must be a name, which is a pre-existing rule

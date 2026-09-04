@@ -92,33 +92,33 @@ fn main() -> Int {
     // Bound receivers -- correct before the fix as well, and the control.
     let heldBox = makeBox()
     let fromBound = boxText(heldBox)
-    if (strEquals(fromBound, "abc") == false) { return fail("bound struct field") }
+    if (fromBound.equals("abc") == false) { return fail("bound struct field") }
 
     let heldHolder = makeHolder()
     let holderBound = holderText(heldHolder, "!")
-    if (strEquals(holderBound, "abc") == false) { return fail("bound enum payload") }
+    if (holderBound.equals("abc") == false) { return fail("bound enum payload") }
 
     let heldOption = makeOption()
     let optionBound = optionOr(heldOption, "!")
-    if (strEquals(optionBound, "abc") == false) { return fail("bound Option payload") }
+    if (optionBound.equals("abc") == false) { return fail("bound Option payload") }
 
     // Unbound temporaries -- every one of these read freed memory and answered
     // "" before the view provenance existed.
     let fromTemp = boxText(makeBox())
-    if (strEquals(fromTemp, "abc") == false) { return fail("struct field of an unbound temporary") }
+    if (fromTemp.equals("abc") == false) { return fail("struct field of an unbound temporary") }
 
     let holderTemp = holderText(makeHolder(), "!")
-    if (strEquals(holderTemp, "abc") == false) { return fail("enum payload of an unbound temporary") }
+    if (holderTemp.equals("abc") == false) { return fail("enum payload of an unbound temporary") }
 
     let optionTemp = optionOr(makeOption(), "!")
-    if (strEquals(optionTemp, "abc") == false) { return fail("Option payload of an unbound temporary") }
+    if (optionTemp.equals("abc") == false) { return fail("Option payload of an unbound temporary") }
 
     // Passed straight into a call rather than bound at all, which is the exact
     // shape the defect was reported in.
-    if (strEquals(boxText(makeBox()), "abc") == false) {
+    if (boxText(makeBox()).equals("abc") == false) {
         return fail("struct field passed straight into a call")
     }
-    if (strEquals(optionOr(makeOption(), "!"), "abc") == false) {
+    if (optionOr(makeOption(), "!").equals("abc") == false) {
         return fail("Option payload passed straight into a call")
     }
 
@@ -130,7 +130,7 @@ fn main() -> Int {
     // The absent arms still take the fallback rather than a stale payload.
     let empty = Holder.Empty
     let emptyText = holderText(empty, "none")
-    if (strEquals(emptyText, "none") == false) { return fail("empty arm fallback") }
+    if (emptyText.equals("none") == false) { return fail("empty arm fallback") }
 
     println("test_92 ok")
     return 0

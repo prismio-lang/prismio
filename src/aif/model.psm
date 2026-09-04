@@ -560,37 +560,37 @@ internal fn aifBaseType(ty: String) -> String {
 // enums do not: they are registers, they are copied, and there is nothing to
 // reclaim.
 internal fn aifIsRef(ty: String) -> Bool {
-    if (strEquals(ty, "")) { return false }
-    if (strEquals(ty, "Int")) { return false }
-    if (strEquals(ty, "I8")) { return false }
-    if (strEquals(ty, "I16")) { return false }
-    if (strEquals(ty, "I32")) { return false }
-    if (strEquals(ty, "I64")) { return false }
-    if (strEquals(ty, "U8")) { return false }
-    if (strEquals(ty, "U16")) { return false }
-    if (strEquals(ty, "U32")) { return false }
-    if (strEquals(ty, "U64")) { return false }
-    if (strEquals(ty, "Isize")) { return false }
-    if (strEquals(ty, "Usize")) { return false }
-    if (strEquals(ty, "Float")) { return false }
-    if (strEquals(ty, "Bool")) { return false }
-    if (strEquals(ty, "Char")) { return false }
-    if (strEquals(ty, "Void")) { return false }
+    if (ty.equals("")) { return false }
+    if (ty.equals("Int")) { return false }
+    if (ty.equals("I8")) { return false }
+    if (ty.equals("I16")) { return false }
+    if (ty.equals("I32")) { return false }
+    if (ty.equals("I64")) { return false }
+    if (ty.equals("U8")) { return false }
+    if (ty.equals("U16")) { return false }
+    if (ty.equals("U32")) { return false }
+    if (ty.equals("U64")) { return false }
+    if (ty.equals("Isize")) { return false }
+    if (ty.equals("Usize")) { return false }
+    if (ty.equals("Float")) { return false }
+    if (ty.equals("Bool")) { return false }
+    if (ty.equals("Char")) { return false }
+    if (ty.equals("Void")) { return false }
     if (aif_is_enum(ty) == 1) { return false }
     return true
 }
 
 private fn aifKindOf(ty: String) -> Int {
     if (aif_is_struct(ty) == 1) { return AIF_KIND_STRUCT }
-    if (strEquals(ty, "String")) { return AIF_KIND_STRING }
-    if (strEquals(aifBaseType(ty), "List")) { return AIF_KIND_LIST }
+    if (ty.equals("String")) { return AIF_KIND_STRING }
+    if (aifBaseType(ty).equals("List")) { return AIF_KIND_LIST }
     // A DataView has the same analysis-relevant resource shape as a List: it is
     // affine, dynamically sized, owns subordinate storage, cannot become T0,
     // and is not arena-placed. Codegen still selects its distinct release from
     // the semantic TypeKind.
-    if (strEquals(aifBaseType(ty), "DataView")) { return AIF_KIND_LIST }
+    if (aifBaseType(ty).equals("DataView")) { return AIF_KIND_LIST }
     if (strStartsWith(ty, "[")) { return AIF_KIND_ARRAY }
-    if (strEquals(ty, "Array")) { return AIF_KIND_ARRAY }
+    if (ty.equals("Array")) { return AIF_KIND_ARRAY }
     return AIF_KIND_OPAQUE
 }
 

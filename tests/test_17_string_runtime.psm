@@ -15,7 +15,7 @@ fn main() -> Int {
         return fail("string length builtin should read the native length")
     }
 
-    if (strEquals(strSubstring(text, 0, 5), "Hello") == false) {
+    if (strSubstring(text, 0, 5).equals("Hello") == false) {
         return fail("str_substring should extract the requested slice")
     }
 
@@ -35,11 +35,11 @@ fn main() -> Int {
         return fail("str_index_of should return the substring offset")
     }
 
-    if (strEquals(strConcat("Hello, ", "World"), "Hello, World") == false) {
+    if (strConcat("Hello, ", "World").equals("Hello, World") == false) {
         return fail("str_concat should join strings")
     }
 
-    if (strEquals(strFromInt(42), "42") == false) {
+    if (strFromInt(42).equals("42") == false) {
         return fail("int_to_str should format integers")
     }
 

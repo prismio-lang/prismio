@@ -59,26 +59,26 @@ internal fn aifTypeBytes(ann: ASTNode) -> Int {
     if (ann.i2 == 1) { return targetPointerBytes() }
 
     let n = ann.s1
-    if (strEquals(n, "I8")) { return 1 }
-    if (strEquals(n, "U8")) { return 1 }
-    if (strEquals(n, "Char")) { return 1 }
-    if (strEquals(n, "Bool")) { return 1 }
-    if (strEquals(n, "I16")) { return 2 }
-    if (strEquals(n, "U16")) { return 2 }
-    if (strEquals(n, "Int")) { return 4 }
-    if (strEquals(n, "I32")) { return 4 }
-    if (strEquals(n, "U32")) { return 4 }
-    if (strEquals(n, "I64")) { return 8 }
-    if (strEquals(n, "U64")) { return 8 }
-    if (strEquals(n, "Isize")) { return targetPointerBytes() }
-    if (strEquals(n, "Usize")) { return targetPointerBytes() }
+    if (n.equals("I8")) { return 1 }
+    if (n.equals("U8")) { return 1 }
+    if (n.equals("Char")) { return 1 }
+    if (n.equals("Bool")) { return 1 }
+    if (n.equals("I16")) { return 2 }
+    if (n.equals("U16")) { return 2 }
+    if (n.equals("Int")) { return 4 }
+    if (n.equals("I32")) { return 4 }
+    if (n.equals("U32")) { return 4 }
+    if (n.equals("I64")) { return 8 }
+    if (n.equals("U64")) { return 8 }
+    if (n.equals("Isize")) { return targetPointerBytes() }
+    if (n.equals("Usize")) { return targetPointerBytes() }
     // These two are *not* target questions, which is why they are literals and
     // stay literals. `Float` lowers to `double` (src/ir/types.psm) and an enum
     // falls through to `i32`; both are the same width on every target LLVM
     // emits for. Routing them through the target would suggest a variation that
     // does not exist. If either lowering ever changes, this is the line to change
     // with it.
-    if (strEquals(n, "Float")) { return 8 }
+    if (n.equals("Float")) { return 8 }
     if (aif_is_enum(n) == 1) { return 4 }
 
     // String, Ptr, and a struct field that is a reference edge: one pointer.
@@ -153,7 +153,7 @@ private fn aifComputeStructSize(decl: ASTNode, module: ASTNode) {
         let mut width = aif_layout_field_bytes(decl.s1, i)
         let mut align = width
         let chosen = aif_layout_field(decl.s1, i)
-        if (strEquals(chosen, "") == false) {
+        if (chosen.equals("") == false) {
             let f = findStructField(decl, chosen)
             if (nodeExists(node_to_ptr(f))) {
                 if (nodeExists(f.child1)) {
@@ -230,7 +230,7 @@ private fn aifComputeSizesOf(module: ASTNode, d: ASTNode) {
                 let ann = ptr_to_node(f.child1)
                 if (typeAnnIsPod(module, ann, 0)) {
                     if (ir_is_struct_type_name(ann.s1) == 1) {
-                        if (strEquals(ann.s1, d.s1) == false) {
+                        if (ann.s1.equals(d.s1) == false) {
                             let dep = findStructDeclNamed(module, ann.s1)
                             if (nodeExists(node_to_ptr(dep))) {
                                 aifComputeSizesOf(module, dep)
@@ -399,7 +399,7 @@ internal fn aifLayoutVetoListElements(module: ASTNode) {
                 let f = ptr_to_node(fp)
                 if (f.kind == NodeKind.STRUCT_FIELD and nodeExists(f.child1)) {
                     let ann = ptr_to_node(f.child1)
-                    if (ann.i2 == 1 and strEquals(ann.s1, "List")
+                    if (ann.i2 == 1 and ann.s1.equals("List")
                             and nodeExists(ann.child1)) {
                         let elem = ptr_to_node(ann.child1)
                         if (typeAnnIsPodIn(module, elem, 0, true)) {
@@ -424,7 +424,7 @@ internal fn aifLayoutVetoDataViews(nodePtr: Ptr) {
     if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)
         and nodeExists(node.child2)) {
         let callee = ptr_to_node(node.child1)
-        if (strEquals(callee.s1, "soa")) {
+        if (callee.s1.equals("soa")) {
             let sourceT = nodeGetType(ptr_to_node(node.child2))
             if (sourceT.kind == TypeKind.LIST and nodeExists(sourceT.child)) {
                 let elemT = ptr_to_type(sourceT.child)

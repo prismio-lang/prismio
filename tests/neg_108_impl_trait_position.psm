@@ -1,0 +1,21 @@
+// expect-error: `impl Trait` is only a type in a parameter or a return type
+// expect-error: aborting due to 1 previous error
+//
+// `impl Trait` means two different things in the two positions that accept it --
+// a parameter the caller chooses, a return type the body chooses -- and neither
+// reading makes sense for a struct field. A field would have to store one
+// concrete type chosen by nobody.
+//
+// Rejected in the parser rather than in sema, because the parser is the only
+// place that knows which position it is reading; by sema it is just a type name.
+
+import std.io
+
+trait Show { fn show(self) -> String }
+
+struct Holder { v: impl Show }
+
+fn main() -> Int {
+    println("unreachable")
+    return 0
+}

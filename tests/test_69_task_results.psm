@@ -65,7 +65,7 @@ fn int_result() -> Int {
 
 fn string_result() -> Int {
     let t = spawn name_span(Job { lo: 0, hi: 4 })
-    if (strEquals(join t, "span-4")) {
+    if ((join t).equals("span-4")) {
         return 1
     }
     return 0
@@ -89,7 +89,7 @@ fn void_result() -> Int {
 fn result_type_survives_a_binding() -> Int {
     let t = spawn name_span(Job { lo: 0, hi: 7 })
     let u = t
-    if (strEquals(join u, "span-7")) {
+    if ((join u).equals("span-7")) {
         return 1
     }
     return 0

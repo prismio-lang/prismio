@@ -90,24 +90,24 @@ private fn visibilityLevel(p: Parser) -> Int {
     // v0.1 is unreleased, so nothing outside this tree can be holding it, and two
     // spellings for one level is surface that would have to be documented,
     // diagnosed and kept in step forever to save a single rename.
-    if (strEquals(current.value, "private")) { level = 1 }
-    if (strEquals(current.value, "public")) { level = 0 }
-    if (strEquals(current.value, "internal")) { level = 2 }
+    if (current.value.equals("private")) { level = 1 }
+    if (current.value.equals("public")) { level = 0 }
+    if (current.value.equals("internal")) { level = 2 }
     if (level < 0) { return -1 }
 
     let next = p.peek()
     if (next.type != TokenType.KEYWORD) { return -1 }
-    if (strEquals(next.value, "fn")) { return level }
-    if (strEquals(next.value, "extern")) { return level }
-    if (strEquals(next.value, "struct")) { return level }
-    if (strEquals(next.value, "enum")) { return level }
-    if (strEquals(next.value, "let")) { return level }
+    if (next.value.equals("fn")) { return level }
+    if (next.value.equals("extern")) { return level }
+    if (next.value.equals("struct")) { return level }
+    if (next.value.equals("enum")) { return level }
+    if (next.value.equals("let")) { return level }
     return -1
 }
 
 private fn privateTakesFunction(p: Parser) -> Bool {
     let next = p.peek()
-    return strEquals(next.value, "fn") or strEquals(next.value, "extern")
+    return next.value.equals("fn") or next.value.equals("extern")
 }
 
 // ---------------------------------------------------------
@@ -129,7 +129,7 @@ private fn privateTakesFunction(p: Parser) -> Bool {
 // had written one.
 private fn expectCloseAngle(p: Parser, context: String) {
     let current = p.current()
-    if (strEquals(current.value, ">>")) {
+    if (current.value.equals(">>")) {
         current.value = ">"
         current.type = TokenType.RELATIONAL_OPERATOR
         return
@@ -183,6 +183,100 @@ private fn parseTraitRefArgs(p: Parser, traitRef: ASTNode) {
     p.expectCloseAngle("trait argument list")
 }
 
+// One `impl Trait` written in argument position. The caller has consumed the
+// `impl`; this consumes the `+`-joined bounds and returns the synthesised
+// parameter's name, having parked the parameter itself on the parser.
+//
+// The bound list is built by the same parseTraitRef loop parseGenericParams
+// uses, so `impl A + B` and `<T: A + B>` produce structurally identical bounds
+// and neither conformance nor coherence can tell them apart afterwards.
+private fn parseImplTraitParam(p: Parser, site: ASTNode) -> String {
+    let synthesized = strConcat("impl$", strFromInt(p.implParamSeq))
+    p.implParamSeq = p.implParamSeq + 1
+
+    let genericParam = createNode(NodeKind.GENERIC_PARAM)
+    nodeSpanFrom(genericParam, site)
+    genericParam.s1 = strClone(synthesized)
+
+    let bounds = nodeList()
+    loop {
+        nodeListPush(bounds, parseTraitRef(p))
+        if (p.matchVal(TokenType.ARITHMETIC_OPERATOR, "+") == false) { break }
+    }
+    genericParam.child1 = bounds.head
+
+    // Appended, not prepended: the parameters have to reach `s2` in the order
+    // they were written, because a caller may still pass type arguments
+    // explicitly and position is what identifies them.
+    if (nodeExists(p.implParams) == false) {
+        p.implParams = node_to_ptr(genericParam)
+    } else {
+        let mut tail = ptr_to_node(p.implParams)
+        while (nodeExists(tail.next)) { tail = ptr_to_node(tail.next) }
+        tail.next = node_to_ptr(genericParam)
+    }
+    return synthesized
+}
+
+// One `impl Trait` written in return position. The caller has consumed the
+// `impl`; this consumes the bounds and returns the opaque type's name.
+//
+// **Not a generic parameter, and not a trait object.** `fn make() -> impl Show`
+// names one concrete type chosen by the body -- the caller cannot write it, but
+// the compiler knows it, so the call stays statically dispatched and costs
+// nothing. A generic parameter would let the *caller* choose, which is the
+// opposite of what this means, and a `dyn` would erase the type this deliberately
+// keeps.
+//
+// Named `opaque$Show`, so a pass that has not been taught about opacity sees an
+// unknown named type and says so, rather than silently treating it as a struct.
+// The bounds hang on child2, where sema reads them back to check the body's
+// concrete type against every one of them.
+private fn parseOpaqueReturn(p: Parser, site: ASTNode) -> String {
+    let bounds = nodeList()
+    loop {
+        nodeListPush(bounds, parseTraitRef(p))
+        if (p.matchVal(TokenType.ARITHMETIC_OPERATOR, "+") == false) { break }
+    }
+    site.child2 = bounds.head
+    return strConcat("opaque$", ptr_to_node(bounds.head).s1)
+}
+
+// Moves everything `impl Trait` synthesised for this declaration onto it, and
+// returns the generic-parameter-name string the declaration should carry.
+//
+// `existing` is what parseGenericParams already returned, so a declaration may
+// mix the two spellings: `fn f<T: Ord>(a: T, b: impl Show)` is legal and ends up
+// with `T,impl$0`. Draining unconditionally is what keeps one declaration's
+// synthesised parameters out of the next one.
+private fn drainImplTraitParams(p: Parser, owner: ASTNode, existing: String) -> String {
+    if (nodeExists(p.implParams) == false) { return existing }
+
+    let mut names = existing
+    let mut param = ptr_to_node(p.implParams)
+    loop {
+        if (names.equals("")) {
+            names = strClone(param.s1)
+        } else {
+            names = strConcat(strConcat(names, ","), param.s1)
+        }
+        if (nodeExists(param.next) == false) { break }
+        param = ptr_to_node(param.next)
+    }
+
+    if (nodeExists(owner.genericInfo) == false) {
+        owner.genericInfo = p.implParams
+    } else {
+        let mut tail = ptr_to_node(owner.genericInfo)
+        while (nodeExists(tail.next)) { tail = ptr_to_node(tail.next) }
+        tail.next = p.implParams
+    }
+
+    p.implParams = ptr_null()
+    p.implParamSeq = 0
+    return names
+}
+
 // The declaration keeps comma-joined parameter names for substitution and
 // mangling, while genericInfo owns one GENERIC_PARAM node per name and structural
 // TRAIT_REF nodes for its bounds. The split is intentional: names are a flat
@@ -209,7 +303,7 @@ private fn parseGenericParams(p: Parser, owner: ASTNode) -> String {
         }
         nodeListPush(genericParams, genericParam)
 
-        if (strEquals(params, "")) {
+        if (params.equals("")) {
             params = strClone(name.value)
         } else {
             params = strConcat(strConcat(params, ","), name.value)
@@ -361,7 +455,7 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
         // cannot collide, and every pass that resolves a named type resolves
         // this one without being taught anything -- the struct it names is
         // synthesised in sema.
-        if (strEquals(name.value, "dyn") and p.peek().type == TokenType.IDENTIFIER) {
+        if (name.value.equals("dyn") and p.peek().type == TokenType.IDENTIFIER) {
             p.advance()
             let traitName = p.current()
             typeNode.s1 = strConcat("dyn$", traitName.value)
@@ -370,7 +464,35 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
             return typeNode
         }
 
-        if (strEquals(name.value, "Self") and nodeExists(p.implType)
+        // `impl Show` -- T16 argument position, which is not a new kind of type
+        // but a shorter spelling of one that exists: `fn f(v: impl Show)` means
+        // `fn f<T: Show>(v: T)` and lowers to exactly that. The parameter is
+        // synthesised here and parked on the parser until the declaration drains
+        // it, because the `<...>` list it belongs to was parsed already.
+        //
+        // Named `impl$N`. `$` cannot occur in a source identifier, so a
+        // synthesised name can never collide with a written one, and every pass
+        // that substitutes a generic parameter substitutes this one already --
+        // the same reason `dyn$Show` above is spelled that way.
+        //
+        // Return position is deliberately *not* handled here. `-> impl Show` is
+        // a different construct: it names one concrete type chosen by the body,
+        // not a parameter chosen by the caller, so it cannot become a generic
+        // parameter. parseFunctionDecl marks it and sema infers it.
+        if (name.value.equals("impl") and p.peek().type == TokenType.IDENTIFIER) {
+            p.advance()
+            if (p.implPosition == 1) {
+                typeNode.s1 = parseImplTraitParam(p, typeNode)
+            } else if (p.implPosition == 2) {
+                typeNode.s1 = parseOpaqueReturn(p, typeNode)
+            } else {
+                p.fatal("`impl Trait` is only a type in a parameter or a return type")
+            }
+            if (p.matchVal(TokenType.SEPARATOR, "?")) { typeNode.i3 = 1 }
+            return typeNode
+        }
+
+        if (name.value.equals("Self") and nodeExists(p.implType)
             and ptr_to_node(p.implType).kind == NodeKind.IMPL_DECL) {
             copyTypeAnnotationInto(typeNode, implTargetAnnotation(p))
         } else {
@@ -393,7 +515,7 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
     // not have to be known to the parser -- which is the whole point: `List` was
     // the only generic type because it was the only name this test admitted.
     if (p.matchVal(TokenType.RELATIONAL_OPERATOR, "<")) {
-        if (strEquals(name.value, "Self") and nodeExists(p.implType)
+        if (name.value.equals("Self") and nodeExists(p.implType)
             and ptr_to_node(p.implType).kind == NodeKind.IMPL_DECL) {
             p.fatal("`Self` already denotes the complete impl target and cannot take type arguments")
         }
@@ -444,11 +566,11 @@ internal fn atAnnotation(p: Parser, name: String) -> Bool {
     if (p.check(TokenType.IDENTIFIER) == false) { return false }
 
     let current = p.current()
-    if (strEquals(current.value, name) == false) { return false }
+    if (current.value.equals(name) == false) { return false }
 
     let next = p.peek()
-    if (strEquals(name, "pin")) {
-        return strEquals(next.value, "(")
+    if (name.equals("pin")) {
+        return next.value.equals("(")
     }
     return next.type == TokenType.IDENTIFIER
 }
@@ -507,13 +629,13 @@ private fn parseAifAnnotations(p: Parser, node: ASTNode) {
 // at all -- there is no static-root invalidation to switch off. They trail the
 // declaration, so adding them later breaks nothing.
 private fn isFfiContractName(name: String) -> Bool {
-    if (strEquals(name, "borrow")) { return true }
-    if (strEquals(name, "retain")) { return true }
-    if (strEquals(name, "retain_in")) { return true }
-    if (strEquals(name, "consume")) { return true }
-    if (strEquals(name, "out")) { return true }
-    if (strEquals(name, "alias")) { return true }
-    if (strEquals(name, "produce")) { return true }
+    if (name.equals("borrow")) { return true }
+    if (name.equals("retain")) { return true }
+    if (name.equals("retain_in")) { return true }
+    if (name.equals("consume")) { return true }
+    if (name.equals("out")) { return true }
+    if (name.equals("alias")) { return true }
+    if (name.equals("produce")) { return true }
     return false
 }
 
@@ -521,8 +643,8 @@ private fn isFfiContractName(name: String) -> Bool {
 // `borrow(3)` is a syntax error where it is written rather than a silently
 // ignored suffix.
 private fn ffiContractTakesArgument(name: String) -> Bool {
-    if (strEquals(name, "retain_in")) { return true }
-    if (strEquals(name, "produce")) { return true }
+    if (name.equals("retain_in")) { return true }
+    if (name.equals("produce")) { return true }
     return false
 }
 
@@ -626,7 +748,7 @@ internal fn parseParameter(p: Parser, isExtern: Bool) -> ASTNode {
     // any other, and inside one a parameter still has to be first-and-untyped to
     // mean the receiver. Which position it is in is sema's business, not the
     // parser's; see semaImplDecl.
-    if (nodeExists(p.implType) and strEquals(param.s1, "self")
+    if (nodeExists(p.implType) and param.s1.equals("self")
         and p.checkVal(TokenType.SEPARATOR, ":") == false) {
         let receiver = parserNodeFrom(NodeKind.TYPE_ANNOTATION, name)
         let owner = ptr_to_node(p.implType)
@@ -698,11 +820,18 @@ private fn parseFunctionDecl(p: Parser) -> ASTNode {
     p.expectToken(TokenType.IDENTIFIER, "function name")
 
     fnNode.s2 = parseGenericParams(p, fnNode)
+    p.implPosition = 1
     fnNode.child1 = parseParameterList(p, false)
+    // After the parameters, because that is where an argument-position
+    // `impl Trait` can appear, and before the return annotation, which means
+    // something else entirely.
+    fnNode.s2 = drainImplTraitParams(p, fnNode, fnNode.s2)
 
+    p.implPosition = 2
     if (p.matchVal(TokenType.ARROW, "->")) {
         fnNode.child3 = node_to_ptr(parseTypeAnnotation(p))
     }
+    p.implPosition = 0
     parseWhereClause(p, fnNode)
     fnNode.child2 = node_to_ptr(parseBlock(p))
 
@@ -857,7 +986,7 @@ private fn implParamNameAt(params: String, index: Int) -> String {
 }
 
 private fn implParamCount(params: String) -> Int {
-    if (strEquals(params, "")) { return 0 }
+    if (params.equals("")) { return 0 }
     let mut count = 1
     let mut i = 0
     while (i < __builtin_string_len(params)) {
@@ -870,7 +999,7 @@ private fn implParamCount(params: String) -> Int {
 private fn implParamsContain(params: String, name: String) -> Bool {
     let mut i = 0
     while (i < implParamCount(params)) {
-        if (strEquals(implParamNameAt(params, i), name)) { return true }
+        if (implParamNameAt(params, i).equals(name)) { return true }
         i = i + 1
     }
     return false
@@ -881,7 +1010,7 @@ private fn implTargetContainsParam(annotationPtr: Ptr, name: String) -> Bool {
     while (nodeExists(p)) {
         let annotation = ptr_to_node(p)
         if (annotation.i1 == 0 and annotation.i2 == 0
-            and strEquals(annotation.s1, name)) { return true }
+            and annotation.s1.equals(name)) { return true }
         if (implTargetContainsParam(annotation.child1, name)) { return true }
         p = annotation.next
     }
@@ -899,7 +1028,7 @@ private fn parseImplCheckTarget(p: Parser, implNode: ASTNode) {
     // blanket implementation, which is allowed: the trait names it, and coherence
     // decides whether it may coexist with any other implementation.
     if (target.i2 == 0 and implParamsContain(header.s1, target.s1)
-        and strEquals(implNode.s2, "")) {
+        and implNode.s2.equals("")) {
         p.fatal("an inherent `impl` target must have a nominal type constructor, not a type parameter")
     }
 
@@ -919,7 +1048,7 @@ private fn parseImplCheckTarget(p: Parser, implNode: ASTNode) {
 }
 
 private fn parseImplMethodParams(p: Parser, implParams: String, methodParams: String) -> String {
-    if (strEquals(implParams, "")) { return methodParams }
+    if (implParams.equals("")) { return methodParams }
 
     let mut i = 0
     while (i < implParamCount(methodParams)) {
@@ -931,7 +1060,7 @@ private fn parseImplMethodParams(p: Parser, implParams: String, methodParams: St
         i = i + 1
     }
 
-    if (strEquals(methodParams, "")) { return strClone(implParams) }
+    if (methodParams.equals("")) { return strClone(implParams) }
     return strConcat(strConcat(implParams, ","), methodParams)
 }
 
@@ -1120,7 +1249,7 @@ private fn parseTraitSignature(p: Parser) -> ASTNode {
 private fn atWorkload(p: Parser) -> Bool {
     if (p.check(TokenType.IDENTIFIER) == false) { return false }
     let current = p.current()
-    if (strEquals(current.value, "workload") == false) { return false }
+    if (current.value.equals("workload") == false) { return false }
     return p.peek().type == TokenType.IDENTIFIER
 }
 
@@ -1159,20 +1288,20 @@ private fn parseWorkloadDecl(p: Parser) -> ASTNode {
         }
 
         let clause = p.current()
-        if (strEquals(clause.value, "setup")) {
+        if (clause.value.equals("setup")) {
             p.advance()
             if (nodeExists(node.child1)) {
                 p.error("duplicate `setup` in this workload")
             }
             node.child1 = node_to_ptr(parseBlock(p))
-        } else if (strEquals(clause.value, "measure")) {
+        } else if (clause.value.equals("measure")) {
             p.advance()
             if (sawMeasure) {
                 p.error("duplicate `measure` in this workload")
             }
             sawMeasure = true
             node.child2 = node_to_ptr(parseBlock(p))
-        } else if (strEquals(clause.value, "repeat")) {
+        } else if (clause.value.equals("repeat")) {
             p.advance()
             node.i1 = parseWorkloadCount(p, "repeat")
         } else {
@@ -1323,7 +1452,7 @@ private fn findGenericParamNamed(infoPtr: Ptr, name: String) -> ASTNode {
     let mut p = infoPtr
     while (nodeExists(p)) {
         let param = ptr_to_node(p)
-        if (param.kind == NodeKind.GENERIC_PARAM and strEquals(param.s1, name)) { return param }
+        if (param.kind == NodeKind.GENERIC_PARAM and param.s1.equals(name)) { return param }
         p = param.next
     }
     return ptr_to_node(ptr_null())

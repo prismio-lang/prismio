@@ -9,7 +9,7 @@ extern fn file_exists(path: String borrow) -> Int
 fn umsDiscoverManifest(startDirectory: String,
                        diagnostics: List<UmsDiagnostic>) -> String {
     let mut directory = startDirectory
-    if (__builtin_string_len(directory) == 0 or strEquals(directory, ".")) {
+    if (__builtin_string_len(directory) == 0 or directory.equals(".")) {
         directory = current_directory()
     }
 
@@ -18,7 +18,7 @@ fn umsDiscoverManifest(startDirectory: String,
         if (file_exists(candidate) == 1) { return candidate }
 
         let parent = get_directory(directory)
-        if (strEquals(parent, directory) or strEquals(parent, ".")) {
+        if (parent.equals(directory) or parent.equals(".")) {
             break
         }
         directory = parent

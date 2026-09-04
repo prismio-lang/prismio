@@ -62,6 +62,15 @@ private fn umsValidLicenseExpression(value: String) -> Bool {
     return true
 }
 
+// What `run` can execute besides a declared target. Deliberately two extensions
+// and not "anything on disk": the toolchain has to know how to start it, and it
+// knows exactly these two -- an interpreter for one, its own compiler for the
+// other. A shell script is not on the list because there is no portable way to
+// start one, which is the whole reason `shell` exists as a separate step.
+private fn umsRunnableScript(value: String) -> Bool {
+    return strEndsWith(value, ".py") or strEndsWith(value, ".psm")
+}
+
 private fn umsAbsolutePath(value: String) -> Bool {
     let length = __builtin_string_len(value)
     if (length == 0) { return false }
@@ -188,7 +197,7 @@ impl UmsProjectModel {
                         input.line, input.col, input.len,
                         "link inputs cannot be empty")
                 } else if (input.kind == UmsLinkKind.COMPONENT and
-                           strEquals(input.value, "prismio.backend") == false) {
+                           input.value.equals("prismio.backend") == false) {
                     umsDiagnosticAdd(diagnostics, "UMS2315", self.manifestPath,
                         input.line, input.col, input.len,
                         strConcat(strConcat("unknown toolchain component '", input.value),
@@ -246,17 +255,30 @@ impl UmsProjectModel {
                     }
                 } else {
                     let referenced = umsTargetFind(self.targets, step.subject)
-                    if (referenced < 0) {
+                    if (referenced >= 0) {
+                        if (step.kind == UmsCommandStepKind.RUN and
+                            list_get(self.targets, referenced).kind != UmsTargetKind.EXECUTABLE) {
+                            umsDiagnosticAdd(diagnostics, "UMS2604", self.manifestPath,
+                                step.line, step.col, step.len,
+                                strConcat(strConcat("run needs an executable target, and '",
+                                           step.subject), "' is not one"))
+                        }
+                    } else if (step.kind == UmsCommandStepKind.BUILD) {
                         umsDiagnosticAdd(diagnostics, "UMS2603", self.manifestPath,
                             step.line, step.col, step.len,
                             strConcat(strConcat("no target named '", step.subject),
                                        "' is declared in this project"))
-                    } else if (step.kind == UmsCommandStepKind.RUN and
-                               list_get(self.targets, referenced).kind != UmsTargetKind.EXECUTABLE) {
-                        umsDiagnosticAdd(diagnostics, "UMS2604", self.manifestPath,
+                    } else if (umsRunnableScript(step.subject) == false) {
+                        umsDiagnosticAdd(diagnostics, "UMS2606", self.manifestPath,
                             step.line, step.col, step.len,
-                            strConcat(strConcat("run needs an executable target, and '",
-                                       step.subject), "' is not one"))
+                            strConcat(strConcat("run names no declared target, and '",
+                                       step.subject),
+                                       "' is not a .py or .psm file; use shell for anything else"))
+                    } else if (file_exists(join_path(self.root, step.subject)) == 0) {
+                        umsDiagnosticAdd(diagnostics, "UMS2607", self.manifestPath,
+                            step.line, step.col, step.len,
+                            strConcat(strConcat("run cannot find '", step.subject),
+                                       "' under the project root"))
                     }
                 }
                 stepIndex = stepIndex + 1

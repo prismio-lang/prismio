@@ -32,7 +32,7 @@ fn pick<T: Container>(c: T) -> T.Item {
 
 // Projection in parameter position.
 fn same(c: Bag, value: Int) -> Bool { return c.n == value }
-fn same(c: Sack, value: String) -> Bool { return strEquals(c.s, value) }
+fn same(c: Sack, value: String) -> Bool { return c.s.equals(value) }
 
 fn matches<T: Container>(c: T, value: T.Item) -> Bool {
     return same(c, value)
@@ -69,7 +69,7 @@ fn fail(message: String) -> Int {
 
 fn main() -> Int {
     if (pick(Bag { n: 7 }) != 7) { return fail("Int projection") }
-    if (strEquals(pick(Sack { s: "abcd" }), "abcd") == false) { return fail("String projection") }
+    if (pick(Sack { s: "abcd" }).equals("abcd") == false) { return fail("String projection") }
     if (matches(Bag { n: 3 }, 3) == false) { return fail("projection in parameter position") }
     if (matches(Sack { s: "hi" }, "hi") == false) { return fail("second parameter instance") }
     if (tag(Cell<Int> { value: 1 }) != 1) { return fail("associated type on a generic impl") }

@@ -17,14 +17,6 @@ extern fn ir_module_end()
 // and `common` is the only package both it and `ir` may import.
 extern fn ir_module_set_target(triple: String borrow, layout: String borrow)
 
-// Types
-extern fn ir_type_void() -> String alias
-extern fn ir_type_i1() -> String alias
-extern fn ir_type_i8() -> String alias
-extern fn ir_type_i32() -> String alias
-extern fn ir_type_i64() -> String alias
-extern fn ir_type_i8_ptr() -> String alias
-
 // Function Builders
 extern fn ir_declare_function_begin(name: String, retType: String)
 extern fn ir_declare_function_param(paramType: String)

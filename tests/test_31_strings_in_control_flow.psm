@@ -29,7 +29,7 @@ fn main() -> Int {
     let mut seen = 0
     for i in 0..3 {
         let tag = "in-for"
-        if (strEquals(tag, "in-for") == false) {
+        if (tag.equals("in-for") == false) {
             return fail("string literal in for body was corrupted")
         }
         seen = seen + 1
@@ -42,7 +42,7 @@ fn main() -> Int {
     let mut spins = 0
     loop {
         let tag = "in-loop"
-        if (strEquals(tag, "in-loop") == false) {
+        if (tag.equals("in-loop") == false) {
             return fail("string literal in loop body was corrupted")
         }
         spins = spins + 1
@@ -55,13 +55,13 @@ fn main() -> Int {
     }
 
     // literals in match arms, including the wildcard
-    if (strEquals(label_for(0), "zero") == false) {
+    if (label_for(0).equals("zero") == false) {
         return fail("match arm 0 returned the wrong string")
     }
-    if (strEquals(label_for(1), "one") == false) {
+    if (label_for(1).equals("one") == false) {
         return fail("match arm 1 returned the wrong string")
     }
-    if (strEquals(label_for(7), "many") == false) {
+    if (label_for(7).equals("many") == false) {
         return fail("match wildcard arm returned the wrong string")
     }
 
@@ -69,12 +69,12 @@ fn main() -> Int {
     for j in 0..2 {
         match (j) {
             0 => {
-                if (strEquals("nested-zero", "nested-zero") == false) {
+                if ("nested-zero".equals("nested-zero") == false) {
                     return fail("nested match arm string was corrupted")
                 }
             }
             _ => {
-                if (strEquals("nested-other", "nested-other") == false) {
+                if ("nested-other".equals("nested-other") == false) {
                     return fail("nested wildcard string was corrupted")
                 }
             }

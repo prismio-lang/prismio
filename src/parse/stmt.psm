@@ -183,7 +183,7 @@ private fn parseMatchStatement(p: Parser) -> ASTNode {
 private fn parseReturnStatement(p: Parser) -> ASTNode {
     let retNode = p.node(NodeKind.RETURN_STATEMENT)
     let next = p.current()
-    if (next.type != TokenType.SEPARATOR or strEquals(next.value, "}") == false) {
+    if (next.type != TokenType.SEPARATOR or next.value.equals("}") == false) {
         retNode.child1 = node_to_ptr(parseExpression(p, 0))
     }
     return retNode

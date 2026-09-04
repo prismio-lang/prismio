@@ -57,10 +57,10 @@ fn main() -> Int {
     if ((v1 < v2) == false) { return fail("relational through Ord") }
 
     // Display, on a user type and on builtins, through a bound.
-    if (strEquals(describe(a), "#1") == false) { return fail("Display on a user type") }
-    if (strEquals(describe(42), "42") == false) { return fail("Display on Int") }
-    if (strEquals(describe(true), "true") == false) { return fail("Display on Bool") }
-    if (strEquals(describe("hi"), "hi") == false) { return fail("Display on String") }
+    if (describe(a).equals("#1") == false) { return fail("Display on a user type") }
+    if (describe(42).equals("42") == false) { return fail("Display on Int") }
+    if (describe(true).equals("true") == false) { return fail("Display on Bool") }
+    if (describe("hi").equals("hi") == false) { return fail("Display on String") }
 
     if (same(1, 1) == false) { return fail("Eq on a builtin") }
     if (same("a", "b")) { return fail("Eq on String compares by value") }

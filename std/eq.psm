@@ -42,4 +42,4 @@ impl Eq for Float  { fn eq(self, other: Self) -> Bool { return self == other } }
 
 // By value, not by address. Comparing two Strings with `==` is the mistake this
 // exists to make unnecessary.
-impl Eq for String { fn eq(self, other: Self) -> Bool { return strEquals(self, other) } }
+impl Eq for String { fn eq(self, other: Self) -> Bool { return self.equals(other) } }

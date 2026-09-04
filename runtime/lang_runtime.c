@@ -111,6 +111,23 @@ void prismio_rt_println(const char* str) {
     println(str);
 }
 
+// Status output that must not land in a machine-readable stdout. The host
+// routing banner used to go through println, which prefixed `aif --manifest`
+// with a human status line and broke the one guarantee that manifest makes --
+// that its first line is `aif-manifest 1`. stderr is where a line describing
+// *which compiler is running* belongs, and keeping it unbuffered here means it
+// still interleaves correctly with the stdout it is no longer part of.
+void prismio_rt_eprint(const char* str) {
+    fputs(str, stderr);
+    fflush(stderr);
+}
+
+void prismio_rt_eprintln(const char* str) {
+    fputs(str, stderr);
+    fputc('\n', stderr);
+    fflush(stderr);
+}
+
 void prismio_rt_print_float(double value) {
     print_float(value);
 }

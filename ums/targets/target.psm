@@ -74,7 +74,7 @@ fn umsTargetHasComponent(target: UmsTarget, name: String) -> Bool {
     let mut i = 0
     while (i < list_len(target.links)) {
         let input = list_get(target.links, i)
-        if (input.kind == UmsLinkKind.COMPONENT and strEquals(input.value, name)) {
+        if (input.kind == UmsLinkKind.COMPONENT and input.value.equals(name)) {
             return true
         }
         i = i + 1
@@ -85,7 +85,7 @@ fn umsTargetHasComponent(target: UmsTarget, name: String) -> Bool {
 fn umsTargetFind(targets: List<UmsTarget>, name: String) -> Int {
     let mut i = 0
     while (i < list_len(targets)) {
-        if (strEquals(list_get(targets, i).name, name)) { return i }
+        if (list_get(targets, i).name.equals(name)) { return i }
         i = i + 1
     }
     return -1

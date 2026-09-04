@@ -6,7 +6,7 @@ fn choose(value: Int) -> Int {
 }
 
 fn choose(value: String) -> Int {
-    if (strEquals(value, "x")) {
+    if (value.equals("x")) {
         return 20
     }
     return 0

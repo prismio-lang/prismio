@@ -42,7 +42,7 @@ private fn semaAnnotationHas(encoded: String, name: String) -> Bool {
 // pass knows and AIF would have to be handed.
 internal fn semaCheckAnnotations(stmt: ASTNode, varT: TypeInfo) {
     let encoded = stmt.s2
-    if (strEquals(encoded, "")) { return }
+    if (encoded.equals("")) { return }
 
     if (semaAnnotationHas(encoded, "unique")) {
         // A Copyable value has no ownership to be unique about, so the axiom
@@ -138,13 +138,13 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
         // `let t: Task<Int> = spawn describe(j)` type-checked against a
         // Task<String>. A type nobody can spell is a type nobody can get wrong;
         // one that resolves to Invalid is worse than either.
-        if (strEquals(tn.s1, "Task")) {
+        if (tn.s1.equals("Task")) {
             if (nodeExists(tn.child1)) {
                 return typeTask(semaAnnotationType(module, ptr_to_node(tn.child1)))
             }
             return typeTask(typeInvalid())
         }
-        if (strEquals(tn.s1, "List")) {
+        if (tn.s1.equals("List")) {
             if (nodeExists(tn.child1)) {
                 return typeList(semaAnnotationType(module, ptr_to_node(tn.child1)))
             }
@@ -155,50 +155,50 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
         // monoInstantiateStruct would resolve it to Invalid -- which matches
         // everything, so a `Channel<Job>` annotation would accept a
         // `Channel<Result>`.
-        if (strEquals(tn.s1, "Channel")) {
+        if (tn.s1.equals("Channel")) {
             if (nodeExists(tn.child1)) {
                 return typeChannel(semaAnnotationType(module, ptr_to_node(tn.child1)))
             }
             return typeChannel(typeInvalid())
         }
-        if (strEquals(tn.s1, "Slice")) {
+        if (tn.s1.equals("Slice")) {
             if (nodeExists(tn.child1)) {
                 return typeSlice(semaAnnotationType(module, ptr_to_node(tn.child1)))
             }
             return typeSlice(typeInvalid())
         }
-        if (strEquals(tn.s1, "DataView")) {
+        if (tn.s1.equals("DataView")) {
             if (nodeExists(tn.child1)) {
                 return typeDataView(semaAnnotationType(module, ptr_to_node(tn.child1)))
             }
             return typeDataView(typeInvalid())
         }
         let instantiated = monoInstantiateStruct(module, tn)
-        if (strEquals(instantiated, "") == false) { return typeStruct(instantiated) }
+        if (instantiated.equals("") == false) { return typeStruct(instantiated) }
         return typeInvalid()
     }
 
-    if (strEquals(tn.s1, "Int")) { return typeInt() }
-    if (strEquals(tn.s1, "Float")) { return typeFloat() }
-    if (strEquals(tn.s1, "Bool")) { return typeBool() }
-    if (strEquals(tn.s1, "String")) { return typeString() }
+    if (tn.s1.equals("Int")) { return typeInt() }
+    if (tn.s1.equals("Float")) { return typeFloat() }
+    if (tn.s1.equals("Bool")) { return typeBool() }
+    if (tn.s1.equals("String")) { return typeString() }
     // Kept in step with typeFromAnnotation in src/ast/types.psm, which is the
     // other half of this list. That one resolves; this one resolves *and*
     // reports an unknown name, so a type added to only one of them is a type the
     // compiler understands everywhere except where a user writes it -- which is
     // exactly how `Ptr` behaved until now.
-    if (strEquals(tn.s1, "Ptr")) { return typePtr() }
-    if (strEquals(tn.s1, "Char")) { return typeChar() }
-    if (strEquals(tn.s1, "I8")) { return typeI8() }
-    if (strEquals(tn.s1, "I16")) { return typeI16() }
-    if (strEquals(tn.s1, "I64")) { return typeI64() }
-    if (strEquals(tn.s1, "Isize")) { return typeIsize() }
-    if (strEquals(tn.s1, "U8")) { return typeU8() }
-    if (strEquals(tn.s1, "U16")) { return typeU16() }
-    if (strEquals(tn.s1, "U32")) { return typeU32() }
-    if (strEquals(tn.s1, "U64")) { return typeU64() }
-    if (strEquals(tn.s1, "Usize")) { return typeUsize() }
-    if (strEquals(tn.s1, "")) { return typeVoid() }
+    if (tn.s1.equals("Ptr")) { return typePtr() }
+    if (tn.s1.equals("Char")) { return typeChar() }
+    if (tn.s1.equals("I8")) { return typeI8() }
+    if (tn.s1.equals("I16")) { return typeI16() }
+    if (tn.s1.equals("I64")) { return typeI64() }
+    if (tn.s1.equals("Isize")) { return typeIsize() }
+    if (tn.s1.equals("U8")) { return typeU8() }
+    if (tn.s1.equals("U16")) { return typeU16() }
+    if (tn.s1.equals("U32")) { return typeU32() }
+    if (tn.s1.equals("U64")) { return typeU64() }
+    if (tn.s1.equals("Usize")) { return typeUsize() }
+    if (tn.s1.equals("")) { return typeVoid() }
     if (semaHasEnum(module, tn.s1)) { return typeEnum(tn.s1) }
     if (semaHasStruct(module, tn.s1)) { return typeStruct(tn.s1) }
 
@@ -224,7 +224,7 @@ internal fn semaDeclaredReturnType(module: ASTNode, retChild: Ptr) -> TypeInfo {
 private fn semaEnumMatchesInt(a: TypeInfo, b: TypeInfo) -> Bool {
     if (a.kind != TypeKind.ENUM) { return false }
     if (b.kind != TypeKind.INT) { return false }
-    return strEquals(b.name, "Int")
+    return b.name.equals("Int")
 }
 
 internal fn semaTypesMatch(expected: TypeInfo, actual: TypeInfo) -> Bool {
@@ -272,7 +272,7 @@ internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: St
             let mut fieldPtr = stmt.child1
             while (nodeExists(fieldPtr)) {
                 let field = ptr_to_node(fieldPtr)
-                if (strEquals(field.s1, fieldName)) {
+                if (field.s1.equals(fieldName)) {
                     return semaAnnotationType(module, ptr_to_node(field.child1))
                 }
                 fieldPtr = field.next
@@ -298,7 +298,7 @@ internal fn semaStructHasField(structName: String, fieldName: String) -> Bool {
             let mut fieldPtr = stmt.child1
             while (nodeExists(fieldPtr)) {
                 let field = ptr_to_node(fieldPtr)
-                if (strEquals(field.s1, fieldName)) { return true }
+                if (field.s1.equals(fieldName)) { return true }
                 fieldPtr = field.next
             }
         }
@@ -316,7 +316,7 @@ internal fn semaEnumHasVariant(module: ASTNode, enumName: String, variantName: S
             let mut variantPtr = stmt.child1
             while (nodeExists(variantPtr)) {
                 let variant = ptr_to_node(variantPtr)
-                if (strEquals(variant.s1, variantName)) {
+                if (variant.s1.equals(variantName)) {
                     return true
                 }
                 variantPtr = variant.next
@@ -356,7 +356,7 @@ private fn semaLiteralHasField(expr: ASTNode, name: String) -> Bool {
     let mut p = expr.child1
     while (nodeExists(p)) {
         let field = ptr_to_node(p)
-        if (strEquals(field.s1, name)) { return true }
+        if (field.s1.equals(name)) { return true }
         p = field.next
     }
     return false

@@ -47,6 +47,11 @@ extern fn compiler_link_search(path: String borrow) -> Int
 extern fn compiler_promote_executable(candidateFile: String borrow,
                                       activeFile: String borrow) -> Int
 extern fn compiler_run_executable(exeFile: String) -> Int
+// The same, with an already-quoted argument tail. Only the command position
+// needs the driver's separator fix, so the tail is appended rather than requoted.
+extern fn compiler_run_executable_with(exeFile: String, arguments: String borrow) -> Int
+extern fn compiler_default_exe_path(sourcePath: String) -> String produce(free)
+extern fn host_is_windows() -> Int
 extern fn current_directory() -> String produce(free)
 extern fn delete_file(path: String) -> Int
 extern fn executable_directory() -> String produce(free)
@@ -84,7 +89,7 @@ private fn pathLeaf(path: String) -> String {
 fn initUmsProject(nameArg: String) -> Int {
     let mut root = "."
     let mut name = ""
-    if (strEquals(nameArg, "")) {
+    if (nameArg.equals("")) {
         name = pathLeaf(current_directory())
     } else {
         root = strClone(nameArg)
@@ -151,7 +156,7 @@ fn initUmsProject(nameArg: String) -> Int {
     print("  ")
     println(ignorePath)
     println("")
-    if (strEquals(nameArg, "")) {
+    if (nameArg.equals("")) {
         println("build it with `prismio run`")
     } else {
         print("build it with `cd ")
@@ -285,9 +290,9 @@ fn projectProfile(startIndex: Int) -> String {
     let mut i = startIndex
     while (i < cli_arg_count()) {
         let flag = cli_arg(i)
-        if (strEquals(flag, "--release")) {
+        if (flag.equals("--release")) {
             profile = "release"
-        } else if (strEquals(flag, "--debug-profile")) {
+        } else if (flag.equals("--debug-profile")) {
             profile = "debug"
         } else {
             diag_error_code("P1019", strConcat("unknown argument ", diagQuote(flag)))
@@ -373,6 +378,25 @@ private fn promoteUmsCompilerCandidate(candidate: String, active: String) -> Int
 // it is currently running, it leaves a checked sibling for the global parent to
 // promote after this process exits. That ordering is required on Windows and
 // also means a failed edit never displaces the last known-good compiler.
+// Whether this invocation's output is a *format* rather than prose.
+//
+// The host-routing banner is status, and status has no stream it can safely use
+// when the answer is machine-readable: on stdout it prefixed `aif --manifest`
+// and broke that format's "first line is `aif-manifest 1`" guarantee, and on
+// stderr it prefixes `--diagnostic-format=json`, whose JSON Lines go there. So
+// the stream was never the question -- the banner simply must not be printed
+// when something is going to parse what comes back.
+private fn cliWantsMachineOutput() -> Bool {
+    let mut i = 1
+    while (i < cli_arg_count()) {
+        let flag = cli_arg(i)
+        if (flag.equals("--manifest")) { return true }
+        if (strStartsWith(flag, "--diagnostic-format=")) { return true }
+        i = i + 1
+    }
+    return false
+}
+
 private fn buildUmsHostTarget(target: UmsTarget) -> Int {
     let candidate = strConcat(strClone(target.outputPath), ".next")
     if (file_exists(candidate) == 1) { delete_file(candidate) }
@@ -384,9 +408,9 @@ private fn buildUmsHostTarget(target: UmsTarget) -> Int {
         diag_note("run `prismio build` through the installed global compiler")
         return 1
     }
-    if (compiler_is_hosted() == 0) {
-        print("compiler host: stage-0 ")
-        println(currentPath)
+    if (compiler_is_hosted() == 0 and cliWantsMachineOutput() == false) {
+        eprint("compiler host: stage-0 ")
+        eprintln(currentPath)
     }
 
     let built = compileSource(target.sourcePath, strClone(candidate),
@@ -410,7 +434,7 @@ private fn buildUmsHostTarget(target: UmsTarget) -> Int {
 // redirect, which keeps fixed-point checks and PRISMIO=<path> deterministic.
 private fn isGlobalLauncher() -> Bool {
     let name = pathLeaf(cli_arg(0))
-    return strEquals(name, "prismio") or strEquals(name, "prismio.exe")
+    return name.equals("prismio") or name.equals("prismio.exe")
 }
 
 // Returns -1 when the current compiler should process the command itself.
@@ -433,8 +457,10 @@ fn dispatchToUmsHost() -> Int {
     let candidate = strConcat(strClone(host), ".next")
     if (file_exists(candidate) == 1) { delete_file(candidate) }
 
-    print("compiler host: project-local ")
-    println(host)
+    if (cliWantsMachineOutput() == false) {
+        eprint("compiler host: project-local ")
+        eprintln(host)
+    }
     let result = compiler_forward_cli(host)
     if (result != 0) {
         if (file_exists(candidate) == 1) { delete_file(candidate) }
@@ -444,7 +470,7 @@ fn dispatchToUmsHost() -> Int {
     // The hosted process intentionally leaves its running compiler alone. The
     // launcher owns the two operations that require that process to have exited:
     // promoting a successful self-build and deleting the host during `clean`.
-    if (cli_arg_count() > 1 and strEquals(cli_arg(1), "clean")) {
+    if (cli_arg_count() > 1 and cli_arg(1).equals("clean")) {
         if (file_exists(host) == 1 and delete_file(host) != 0) {
             diag_error_code("P1056", "could not remove the project compiler after clean")
             return 1
@@ -468,8 +494,7 @@ fn dispatchToUmsHost() -> Int {
 // replaces and `toolchain.host` names a file rather than a target.
 private fn isUmsHostTarget(workspace: UmsWorkspace, target: UmsTarget) -> Bool {
     if (__builtin_string_len(workspace.project.toolchain.host) == 0) { return false }
-    return strEquals(target.outputPath,
-                     join_path(workspace.project.root, workspace.project.toolchain.host))
+    return target.outputPath.equals(join_path(workspace.project.root, workspace.project.toolchain.host))
 }
 
 private fn buildUmsTarget(workspace: UmsWorkspace, target: UmsTarget) -> Int {
@@ -572,13 +597,13 @@ fn buildUmsProject(profile: String, runAfterBuild: Bool) -> Int {
 // Saying so when the manifest loads beats a project finding out the day the
 // toolchain gains a verb.
 private fn umsReservedCommandName(name: String) -> Bool {
-    return strEquals(name, "init") or strEquals(name, "build") or
-           strEquals(name, "run") or strEquals(name, "test") or
-           strEquals(name, "clean") or strEquals(name, "check") or
-           strEquals(name, "bootstrap") or strEquals(name, "aif") or
-           strEquals(name, "dump-ast") or strEquals(name, "runtime-hash") or
-           strEquals(name, "--help") or strEquals(name, "-h") or
-           strEquals(name, "--version") or strEquals(name, "-V")
+    return name.equals("init") or name.equals("build") or
+           name.equals("run") or name.equals("test") or
+           name.equals("clean") or name.equals("check") or
+           name.equals("bootstrap") or name.equals("aif") or
+           name.equals("dump-ast") or name.equals("runtime-hash") or
+           name.equals("--help") or name.equals("-h") or
+           name.equals("--version") or name.equals("-V")
 }
 
 private fn rejectReservedCommandNames(workspace: UmsWorkspace) -> Int {
@@ -587,7 +612,7 @@ private fn rejectReservedCommandNames(workspace: UmsWorkspace) -> Int {
     while (index < workspace.commandCount()) {
         let declared = workspace.command(index)
         if (umsReservedCommandName(declared.name)) {
-            diag_error_code("P1058",
+            diag_error_code("P1062",
                 strConcat("a project command cannot be named ", diagQuote(declared.name)))
             diag_note("that name is a built-in command and built-ins win; rename it in build.ums")
             rejected = 1
@@ -603,7 +628,7 @@ private fn rejectReservedCommandNames(workspace: UmsWorkspace) -> Int {
 private fn umsCommandProfile(startIndex: Int) -> String {
     let mut i = startIndex
     while (i < cli_arg_count()) {
-        if (strEquals(cli_arg(i), "--release")) { return "release" }
+        if (cli_arg(i).equals("--release")) { return "release" }
         i = i + 1
     }
     return "debug"
@@ -624,39 +649,81 @@ private fn umsShellProgram(root: String, program: String) -> String {
 }
 
 // Every argument is quoted, the forwarded ones included: what the user typed
-// after the command name reaches the shell as arguments and never as syntax.
-private fn umsShellCommandLine(root: String, step: UmsCommandStep,
-                               forwardFrom: Int) -> String {
-    let mut line = command_quote_arg(umsShellProgram(root, step.subject))
+// after the command name reaches the process as arguments and never as syntax.
+private fn umsStepArguments(step: UmsCommandStep, forwardFrom: Int) -> String {
+    let mut tail = ""
     let mut index = 0
     while (index < list_len(step.arguments)) {
         let argument = list_get(step.arguments, index)
         if (argument.forwarded) {
             let mut forwarded = forwardFrom
             while (forwarded < cli_arg_count()) {
-                line = strConcat(line, " ", command_quote_arg(cli_arg(forwarded)))
+                tail = strConcat(tail, " ", command_quote_arg(cli_arg(forwarded)))
                 forwarded = forwarded + 1
             }
         } else {
-            line = strConcat(line, " ", command_quote_arg(argument.text))
+            tail = strConcat(tail, " ", command_quote_arg(argument.text))
         }
         index = index + 1
     }
-    return line
+    return tail
+}
+
+// What this host calls Python.
+//
+// Windows ships the interpreter as `python` and generally has no `python3`;
+// every other platform has had `python` mean Python 2 often enough that `python3`
+// is the only safe spelling there. The repository's own CI installs Python and
+// then calls `python` on all three, which works because the action puts it on
+// PATH -- a user running a project command has no such guarantee.
+private fn umsPythonInterpreter() -> String {
+    if (host_is_windows() == 1) { return "python" }
+    return "python3"
+}
+
+// A `.py` or `.psm` named by a `run` step. Validation proved the file exists
+// under the project root and that the extension is one of these two.
+//
+// The `.psm` case compiles into the profile's artifact directory rather than
+// beside the source: a tool built by a command is build output, and `clean` owns
+// that directory. It is not a declared target and deliberately does not become
+// one -- a target is something the project builds every time, and a tool is
+// something it runs when asked.
+private fn runUmsScriptStep(workspace: UmsWorkspace, step: UmsCommandStep,
+                            forwardFrom: Int) -> Int {
+    let scriptPath = umsNativePath(workspace.project.root, step.subject)
+
+    if (strEndsWith(step.subject, ".py")) {
+        let line = strConcat(umsPythonInterpreter(), " ",
+                             command_quote_arg(scriptPath),
+                             umsStepArguments(step, forwardFrom))
+        return execute_command(line)
+    }
+
+    let toolPath = join_path(workspace.plan.artifactRoot,
+                             join_path(workspace.project.build.profile,
+                                       compiler_default_exe_path(pathLeaf(step.subject))))
+    if (compileSource(scriptPath, strClone(toolPath),
+                      false, false, false, false, false, false, false) != 0) {
+        return 1
+    }
+    return compiler_run_executable_with(toolPath, umsStepArguments(step, forwardFrom))
 }
 
 private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
                              forwardFrom: Int) -> Int {
     if (step.kind == UmsCommandStepKind.SHELL) {
-        return execute_command(umsShellCommandLine(workspace.project.root, step, forwardFrom))
+        let line = strConcat(command_quote_arg(umsShellProgram(workspace.project.root, step.subject)),
+                             umsStepArguments(step, forwardFrom))
+        return execute_command(line)
     }
 
-    // UMS2603 already proved this name resolves, so a miss here is a bug in this
-    // file rather than in the manifest.
     let index = umsTargetFind(workspace.project.targets, step.subject)
     if (index < 0) {
-        diag_error_code("P1060", strConcat("step names no target: ", diagQuote(step.subject)))
-        return 1
+        // UMS2606 and UMS2607 proved a `run` subject that is not a target is a
+        // script that exists; `build` never reaches here, because UMS2603 makes
+        // a build step naming no target a manifest error.
+        return runUmsScriptStep(workspace, step, forwardFrom)
     }
     let target = list_get(workspace.project.targets, index)
 
@@ -672,8 +739,9 @@ private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
     }
     if (buildUmsTarget(workspace, target) != 0) { return 1 }
     if (step.kind == UmsCommandStepKind.BUILD) { return 0 }
-    if (compiler_run_executable(target.outputPath) != 0) {
-        diag_error_code("P1023", strConcat(target.outputPath, " exited with a failure status"))
+    if (compiler_run_executable_with(target.outputPath,
+                                     umsStepArguments(step, forwardFrom)) != 0) {
+        diag_error_code("P1063", strConcat(target.outputPath, " exited with a failure status"))
         return 1
     }
     return 0

@@ -55,7 +55,7 @@ impl UmsProjectModel {
             if (property.kind != UmsAstStatementKind.ASSIGNMENT) {
                 self.lowerError(diagnostics, property, "UMS2003",
                               "project metadata contains properties, not nested DSL calls")
-            } else if (strEquals(property.name, "name")) {
+            } else if (property.name.equals("name")) {
                 if (self.lowerString(diagnostics, property, "project.name")) {
                     if (__builtin_string_len(self.metadata.name) > 0) {
                         self.lowerError(diagnostics, property, "UMS2002",
@@ -64,7 +64,7 @@ impl UmsProjectModel {
                         self.metadata.name = strClone(property.value.text)
                     }
                 }
-            } else if (strEquals(property.name, "version")) {
+            } else if (property.name.equals("version")) {
                 if (self.lowerString(diagnostics, property, "project.version")) {
                     if (__builtin_string_len(self.metadata.version) > 0) {
                         self.lowerError(diagnostics, property, "UMS2002",
@@ -73,7 +73,7 @@ impl UmsProjectModel {
                         self.metadata.version = strClone(property.value.text)
                     }
                 }
-            } else if (strEquals(property.name, "prismio")) {
+            } else if (property.name.equals("prismio")) {
                 if (self.lowerString(diagnostics, property, "project.prismio")) {
                     if (__builtin_string_len(self.metadata.prismioVersion) > 0) {
                         self.lowerError(diagnostics, property, "UMS2002",
@@ -82,7 +82,7 @@ impl UmsProjectModel {
                         self.metadata.prismioVersion = strClone(property.value.text)
                     }
                 }
-            } else if (strEquals(property.name, "description")) {
+            } else if (property.name.equals("description")) {
                 if (self.metadata.descriptionDeclared) {
                     self.lowerError(diagnostics, property, "UMS2002",
                                   "project.description is declared more than once")
@@ -92,7 +92,7 @@ impl UmsProjectModel {
                         self.metadata.description = strClone(property.value.text)
                     }
                 }
-            } else if (strEquals(property.name, "license")) {
+            } else if (property.name.equals("license")) {
                 if (self.metadata.licenseDeclared) {
                     self.lowerError(diagnostics, property, "UMS2002",
                                   "project.license is declared more than once")
@@ -102,7 +102,7 @@ impl UmsProjectModel {
                         self.metadata.license = strClone(property.value.text)
                     }
                 }
-            } else if (strEquals(property.name, "licenseFile")) {
+            } else if (property.name.equals("licenseFile")) {
                 if (self.metadata.licenseFileDeclared) {
                     self.lowerError(diagnostics, property, "UMS2002",
                                   "project.licenseFile is declared more than once")
@@ -112,7 +112,7 @@ impl UmsProjectModel {
                         self.metadata.licenseFile = strClone(property.value.text)
                     }
                 }
-            } else if (strEquals(property.name, "authors")) {
+            } else if (property.name.equals("authors")) {
                 if (self.metadata.authorsDeclared) {
                     self.lowerError(diagnostics, property, "UMS2002",
                                   "project.authors is declared more than once")
@@ -135,7 +135,7 @@ impl UmsProjectModel {
         while (i < list_len(block.children)) {
             let property = list_get(document.statements, list_get(block.children, i))
             if (property.kind != UmsAstStatementKind.ASSIGNMENT or
-                strEquals(property.name, "host") == false) {
+                property.name.equals("host") == false) {
                 self.lowerError(diagnostics, property, "UMS2401",
                     "toolchain contains only the optional 'host' property")
             } else if (self.lowerString(diagnostics, property, "toolchain.host")) {
@@ -173,11 +173,11 @@ impl UmsProjectModel {
             let declaration = list_get(document.statements,
                                        list_get(block.children, i))
             let mut kind = UmsLinkKind.UNKNOWN
-            if (strEquals(declaration.name, "library")) { kind = UmsLinkKind.LIBRARY }
-            else if (strEquals(declaration.name, "search")) { kind = UmsLinkKind.SEARCH }
-            else if (strEquals(declaration.name, "file")) { kind = UmsLinkKind.FILE }
-            else if (strEquals(declaration.name, "framework")) { kind = UmsLinkKind.FRAMEWORK }
-            else if (strEquals(declaration.name, "component")) { kind = UmsLinkKind.COMPONENT }
+            if (declaration.name.equals("library")) { kind = UmsLinkKind.LIBRARY }
+            else if (declaration.name.equals("search")) { kind = UmsLinkKind.SEARCH }
+            else if (declaration.name.equals("file")) { kind = UmsLinkKind.FILE }
+            else if (declaration.name.equals("framework")) { kind = UmsLinkKind.FRAMEWORK }
+            else if (declaration.name.equals("component")) { kind = UmsLinkKind.COMPONENT }
 
             if (declaration.kind != UmsAstStatementKind.CALL or
                 declaration.hasBlock or kind == UmsLinkKind.UNKNOWN) {
@@ -207,7 +207,7 @@ impl UmsProjectModel {
         while (i < list_len(call.children)) {
             let property = list_get(document.statements, list_get(call.children, i))
             if (property.kind == UmsAstStatementKind.CALL and
-                property.hasBlock and strEquals(property.name, "link")) {
+                property.hasBlock and property.name.equals("link")) {
                 linkBlocks = linkBlocks + 1
                 if (linkBlocks > 1) {
                     self.lowerError(diagnostics, property, "UMS2110",
@@ -216,7 +216,7 @@ impl UmsProjectModel {
                     self.lowerLinkBlock(document, property, target, diagnostics)
                 }
             } else if (property.kind != UmsAstStatementKind.ASSIGNMENT or
-                       strEquals(property.name, "entry") == false) {
+                       property.name.equals("entry") == false) {
                 self.lowerError(diagnostics, property, "UMS2101",
                     strConcat(strConcat("unknown target property '", property.name),
                                "'; expected 'entry' or 'link'"))
@@ -237,13 +237,13 @@ impl UmsProjectModel {
                       call: UmsAstStatement,
                       diagnostics: List<UmsDiagnostic>) {
         let mut kind = UmsTargetKind.UNKNOWN
-        if (strEquals(call.name, "executable")) { kind = UmsTargetKind.EXECUTABLE }
-        else if (strEquals(call.name, "library")) { kind = UmsTargetKind.LIBRARY }
+        if (call.name.equals("executable")) { kind = UmsTargetKind.EXECUTABLE }
+        else if (call.name.equals("library")) { kind = UmsTargetKind.LIBRARY }
         // A test target is an ordinary program that exits 0 when it passes.
         // Prismio has no test framework and this deliberately does not invent
         // one: the exit status is the whole protocol, which is what a language
         // with no assertion library can actually promise.
-        else if (strEquals(call.name, "test")) { kind = UmsTargetKind.TEST }
+        else if (call.name.equals("test")) { kind = UmsTargetKind.TEST }
         else {
             self.lowerError(diagnostics, call, "UMS2103",
                 strConcat(strConcat("unknown target kind '", call.name), "'"))
@@ -293,8 +293,8 @@ impl UmsProjectModel {
     // standing for what the user typed after the command name. The marker keeps
     // its position in the list, so a command can put forwarded arguments in the
     // middle of a fixed argument list rather than only at the end.
-    private fn lowerShellArguments(self, call: UmsAstStatement, step: UmsCommandStep,
-                              diagnostics: List<UmsDiagnostic>) {
+    private fn lowerStepArguments(self, call: UmsAstStatement, step: UmsCommandStep,
+                             diagnostics: List<UmsDiagnostic>) {
         let mut i = 1
         while (i < list_len(call.arguments)) {
             let argument = list_get(call.arguments, i)
@@ -302,13 +302,13 @@ impl UmsProjectModel {
                 list_push(step.arguments, umsCommandArgument(false, argument.text,
                           argument.line, argument.col, argument.len))
             } else if (argument.kind == UmsAstValueKind.IDENTIFIER and
-                       strEquals(argument.text, "args")) {
+                       argument.text.equals("args")) {
                 list_push(step.arguments, umsCommandArgument(true, "",
                           argument.line, argument.col, argument.len))
             } else {
                 umsDiagnosticAdd(diagnostics, "UMS2508", self.manifestPath,
                                  argument.line, argument.col, argument.len,
-                                 "a shell argument is a string literal or the bare word `args`")
+                                 "a step argument is a string literal or the bare word `args`")
             }
             i = i + 1
         }
@@ -321,9 +321,9 @@ impl UmsProjectModel {
     private fn lowerCommandStep(self, call: UmsAstStatement, command: UmsCommand,
                            diagnostics: List<UmsDiagnostic>) {
         let mut kind = UmsCommandStepKind.UNKNOWN
-        if (strEquals(call.name, "build")) { kind = UmsCommandStepKind.BUILD }
-        else if (strEquals(call.name, "run")) { kind = UmsCommandStepKind.RUN }
-        else if (strEquals(call.name, "shell")) { kind = UmsCommandStepKind.SHELL }
+        if (call.name.equals("build")) { kind = UmsCommandStepKind.BUILD }
+        else if (call.name.equals("run")) { kind = UmsCommandStepKind.RUN }
+        else if (call.name.equals("shell")) { kind = UmsCommandStepKind.SHELL }
 
         if (call.kind != UmsAstStatementKind.CALL or call.hasBlock or
             kind == UmsCommandStepKind.UNKNOWN) {
@@ -336,9 +336,9 @@ impl UmsProjectModel {
             self.lowerError(diagnostics, call, "UMS2505",
                 strConcat(call.name, " requires a string as its first argument"))
             kind = UmsCommandStepKind.UNKNOWN
-        } else if (kind != UmsCommandStepKind.SHELL and list_len(call.arguments) != 1) {
+        } else if (kind == UmsCommandStepKind.BUILD and list_len(call.arguments) != 1) {
             self.lowerError(diagnostics, call, "UMS2506",
-                strConcat(call.name, " takes exactly one target name"))
+                          "build takes exactly one target name")
             kind = UmsCommandStepKind.UNKNOWN
         }
 
@@ -350,8 +350,8 @@ impl UmsProjectModel {
 
         let subject = list_get(call.arguments, 0)
         let step = umsCommandStep(kind, subject.text, call.line, call.col, call.len)
-        if (kind == UmsCommandStepKind.SHELL) {
-            self.lowerShellArguments(call, step, diagnostics)
+        if (kind != UmsCommandStepKind.BUILD) {
+            self.lowerStepArguments(call, step, diagnostics)
         }
         list_push(command.steps, step)
     }
@@ -359,7 +359,7 @@ impl UmsProjectModel {
     private fn lowerCommand(self, document: UmsAstDocument,
                        call: UmsAstStatement,
                        diagnostics: List<UmsDiagnostic>) {
-        if (strEquals(call.name, "command") == false or call.hasBlock == false) {
+        if (call.name.equals("command") == false or call.hasBlock == false) {
             self.lowerError(diagnostics, call, "UMS2501",
                 strConcat(strConcat("unknown commands declaration '", call.name),
                            "'; expected command(\"name\") { ... }"))
@@ -390,7 +390,7 @@ impl UmsProjectModel {
             let child = list_get(document.statements, list_get(call.children, i))
             if (child.kind != UmsAstStatementKind.ASSIGNMENT) {
                 self.lowerCommandStep(child, command, diagnostics)
-            } else if (strEquals(child.name, "description") == false) {
+            } else if (child.name.equals("description") == false) {
                 self.lowerError(diagnostics, child, "UMS2504",
                     strConcat(strConcat("unknown command property '", child.name),
                                "'; expected 'description'"))
@@ -426,11 +426,11 @@ impl UmsProjectModel {
 }
 
 private fn umsDependencyScope(name: String) -> UmsDependencyScope {
-    if (strEquals(name, "implementation")) {
+    if (name.equals("implementation")) {
         return UmsDependencyScope.IMPLEMENTATION
     }
-    if (strEquals(name, "api")) { return UmsDependencyScope.API }
-    if (strEquals(name, "testImplementation")) {
+    if (name.equals("api")) { return UmsDependencyScope.API }
+    if (name.equals("testImplementation")) {
         return UmsDependencyScope.TEST_IMPLEMENTATION
     }
     return UmsDependencyScope.UNKNOWN
@@ -512,12 +512,12 @@ internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPat
             list_len(block.arguments) != 0) {
             project.lowerError(diagnostics, block, "UMS2005",
                           "top-level elements must be named blocks")
-        } else if (strEquals(block.name, "project")) {
+        } else if (block.name.equals("project")) {
             projectBlocks = projectBlocks + 1
             if (projectBlocks == 1) {
                 project.lowerMetadata(document, block, diagnostics)
             }
-        } else if (strEquals(block.name, "toolchain")) {
+        } else if (block.name.equals("toolchain")) {
             toolchainBlocks = toolchainBlocks + 1
             if (i != 0) {
                 project.lowerError(diagnostics, block, "UMS2403",
@@ -526,17 +526,17 @@ internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPat
             if (toolchainBlocks == 1) {
                 project.lowerToolchain(document, block, diagnostics)
             }
-        } else if (strEquals(block.name, "targets")) {
+        } else if (block.name.equals("targets")) {
             targetBlocks = targetBlocks + 1
             if (targetBlocks == 1) {
                 project.lowerTargets(document, block, diagnostics)
             }
-        } else if (strEquals(block.name, "commands")) {
+        } else if (block.name.equals("commands")) {
             commandBlocks = commandBlocks + 1
             if (commandBlocks == 1) {
                 project.lowerCommands(document, block, diagnostics)
             }
-        } else if (strEquals(block.name, "dependencies")) {
+        } else if (block.name.equals("dependencies")) {
             dependencyBlocks = dependencyBlocks + 1
             if (dependencyBlocks == 1) {
                 project.lowerDependencies(document, block, diagnostics)

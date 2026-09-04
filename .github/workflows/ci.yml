@@ -150,19 +150,14 @@ jobs:
       - name: Run AddressSanitizer smoke suite
         if: runner.os == 'Linux'
         shell: bash
-        run: tools/sanitizer_smoke.sh --compiler build/gen2
+        run: python tools/sanitizer_smoke.py --compiler build/gen2
 
-      # Compare emitted-program performance with the compiler built from the
-      # committed seed. Interleaved A/B runs reduce hosted-runner drift; the
-      # corpus median and repeated per-program regressions are hard failures.
-      - name: Run milestone benchmark gate
+      # Build the maintained three-language matrix and validate every supported
+      # workload checksum. Hosted-runner timings are recorded, not gated.
+      - name: Run benchmark validation smoke
         if: runner.os == 'Linux'
         shell: bash
-        run: |
-          python tools/milestone_bench.py \
-            --old build/gen0 --new build/gen2 --runs 5 --skip-baselines \
-            --tolerance 20 --median-tolerance 10 \
-            --label ci-seed-vs-fixpoint --json build/ci-benchmark.json
+        run: python benchmarks/run.py --compiler build/gen2 --runs 1 --output build/ci-benchmark.json
 
       # The AIF engine exists twice on purpose: once in the compiler and once as
       # aif/prototype/aif.py, sharing no code. A transfer function that is subtly
@@ -197,11 +192,7 @@ jobs:
         run: |
           set -e
           EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            pwsh -File tools/package.ps1 -Compiler "build/gen2$EXT" -Out dist/Prismio
-          else
-            tools/package.sh --compiler "build/gen2$EXT" --out dist/Prismio
-          fi
+          python tools/package.py --compiler "build/gen2$EXT" --out dist/Prismio
 
       # The separation this asserts is not cosmetic: a compiled program links
       # runtime.a only, so no `ir_*` backend symbol may reach a user binary. It
@@ -211,11 +202,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            pwsh -File tools/verify_separation.ps1 -Dist dist/Prismio
-          else
-            tools/verify_separation.sh --dist dist/Prismio
-          fi
+          python tools/verify_separation.py --dist dist/Prismio
 
       # A *clean* environment: the packaged compiler, moved away from the
       # checkout, building a program that is not in the checkout either. This is

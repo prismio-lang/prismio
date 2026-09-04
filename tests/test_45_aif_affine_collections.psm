@@ -195,14 +195,14 @@ fn main() -> Int {
     bad = bad + check("borrows", borrows(owned), 8)
     bad = bad + check("reborrow", reborrow(owned), 16)
     // Still intact after two calls that only borrowed it.
-    if (strEquals(owned, "borrowed") == false) {
+    if (owned.equals("borrowed") == false) {
         println("FAIL borrowed value was modified or released by the callee")
         bad = bad + 1
     }
 
     let holder = Named { name: strConcat("hel", "lo") }
     bad = bad + check("reassigned_from_borrow", reassigned_from_borrow(holder), 5)
-    if (strEquals(holder.name, "hello") == false) {
+    if (holder.name.equals("hello") == false) {
         println("FAIL a reassigned binding freed the value its slot was pointing at")
         bad = bad + 1
     }

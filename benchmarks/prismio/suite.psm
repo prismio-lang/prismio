@@ -1,0 +1,69 @@
+import algorithms
+import common
+import compute
+import data_structures
+import io
+import memory
+import std.process
+import std.string
+
+fn benchRun(name: String, scale: Int, inputPath: String, outputPath: String) -> Int {
+    if (name.equals("fibonacci")) { return benchFibonacci(scale) }
+    if (name.equals("prime_sieve")) { return benchPrimeSieve(scale) }
+    if (name.equals("gcd_lcm")) { return benchGcdLcm(scale) }
+    if (name.equals("binary_search")) { return benchBinarySearch(scale) }
+    if (name.equals("quicksort")) { return benchQuicksort(scale) }
+    if (name.equals("mergesort")) { return benchMergesort(scale) }
+    if (name.equals("string_search")) { return benchStringSearch(scale) }
+    if (name.equals("graph_bfs")) { return benchGraphBfs(scale) }
+    if (name.equals("knapsack")) { return benchKnapsack(scale) }
+    if (name.equals("tree_traversal")) { return benchTreeTraversal(scale) }
+    if (name.equals("hashmap_insert_lookup")) { return benchHashMap(scale) }
+    if (name.equals("vector_growth")) { return benchVectorGrowth(scale) }
+    if (name.equals("vector_iteration")) { return benchVectorIteration(scale) }
+    if (name.equals("key_value_update")) { return benchKeyValueUpdate(scale) }
+    if (name.equals("matrix_multiply")) { return benchMatrixMultiply(scale) }
+    if (name.equals("mandelbrot")) { return benchMandelbrot(scale) }
+    if (name.equals("fft")) { return benchFft(scale) }
+    if (name.equals("numerical_integration")) { return benchNumericalIntegration(scale) }
+    if (name.equals("vector_dot")) { return benchVectorDot(scale) }
+    if (name.equals("convolution")) { return benchConvolution(scale) }
+    if (name.equals("monte_carlo")) { return benchMonteCarlo(scale) }
+    if (name.equals("polynomial_evaluation")) { return benchPolynomial(scale) }
+    if (name.equals("ecs_component_update")) { return benchEcsUpdate(scale) }
+    if (name.equals("parallel_reduction")) { return benchParallelReduction(scale) }
+    if (name.equals("transient_allocation")) { return benchTransientAllocation(scale) }
+    if (name.equals("struct_creation")) { return benchStructCreation(scale) }
+    if (name.equals("allocation_mutation")) { return benchAllocationMutation(scale) }
+    if (name.equals("nested_collection")) { return benchNestedCollection(scale) }
+    if (name.equals("large_buffer_copy")) { return benchLargeBufferCopy(scale) }
+    if (name.equals("recursive_tree_rebuild")) { return benchRecursiveTreeRebuild(scale) }
+    if (name.equals("file_read")) { return benchFileRead(inputPath) }
+    if (name.equals("file_write")) { return benchFileWrite(scale, outputPath) }
+    if (name.equals("line_processing")) { return benchLineProcessing(inputPath) }
+    if (name.equals("tokenization")) { return benchTokenization(scale) }
+    return -1
+}
+
+fn main() -> Int {
+    if (argCount() < 2) {
+        benchPrintln("usage: suite <benchmark> [input] [output]")
+        return 2
+    }
+    let name = arg(1)
+    let scale = 4
+    let inputPath = arg(2)
+    let outputPath = arg(3)
+    let t0 = benchNow()
+    let result = benchRun(name, scale, inputPath, outputPath)
+    let t1 = benchNow()
+    if (result < 0) {
+        benchPrintln("unknown or failed benchmark")
+        return 2
+    }
+    benchPrint("result: ")
+    benchPrintln(result)
+    benchPrint("elapsed_ns: ")
+    benchPrintln((t1 - t0) as Int)
+    return 0
+}

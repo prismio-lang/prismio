@@ -1,6 +1,11 @@
 # G5 hand-tuned Prismio vs hand-tuned Rust: structural-gap handoff
 
 **Date:** 2026-08-30  
+**Status:** historical record. Both sources named below were removed with
+`aif/evidence/xlang/` on 2026-09-03, superseded by `benchmarks/` and
+`prismio bench`; they are recoverable from `git log`. The structural finding
+still stands — it is about code generation, not about those two files — but no
+path here can be run as written.  
 **Scope:** `aif/evidence/xlang/prismio/g5_tuned.psm` against
 `aif/evidence/xlang/rust/g5_tuned.rs` on Apple Silicon.  
 **Goal:** hand-tuned Prismio must be at least at parity with hand-tuned Rust.

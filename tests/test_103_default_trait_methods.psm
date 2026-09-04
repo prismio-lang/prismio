@@ -73,9 +73,9 @@ fn main() -> Int {
     let dog = Dog { tag: 1 }
     let cat = Cat { tag: 2 }
 
-    if (strEquals(greet(dog), "hello dog") == false) { return fail("inherited default") }
-    if (strEquals(greet(cat), "meow") == false) { return fail("override wins") }
-    if (strEquals(greetThrough(dog), "hello dog") == false) { return fail("default through a bound") }
+    if (greet(dog).equals("hello dog") == false) { return fail("inherited default") }
+    if (greet(cat).equals("meow") == false) { return fail("override wins") }
+    if (greetThrough(dog).equals("hello dog") == false) { return fail("default through a bound") }
 
     let counter = Counter { n: 4 }
     if (bumped(counter).n != 5) { return fail("Self in a default's return type") }

@@ -7,30 +7,30 @@ import common.diagnostics
 import std.string
 
 private fn mapType(t: String) -> String {
-    if (strEquals(t, "Int")) { return "i32" }
-    if (strEquals(t, "Float")) { return "double" }
-    if (strEquals(t, "Bool")) { return "i1" }
+    if (t.equals("Int")) { return "i32" }
+    if (t.equals("Float")) { return "double" }
+    if (t.equals("Bool")) { return "i1" }
     // A String is a pointer *and* a length. The buffer stays NUL-terminated
     // (FFI 7.1), so crossing to C is still `.ptr` and still zero-copy -- see
     // ffiType below, which is what an `extern` declaration uses.
-    if (strEquals(t, "String")) { return "struct:prismio.str" }
+    if (t.equals("String")) { return "struct:prismio.str" }
     // The fourth and last of the type-name tables (the others are
     // typeFromAnnotation, semaAnnotationType and typeFromSemKey). Missing here,
     // `Ptr` fell through to this function's default and every extern taking one
     // was declared `i32` while its call site passed `ptr` -- which LLVM's
     // verifier catches, but only at the point of emission.
-    if (strEquals(t, "Ptr")) { return "ptr" }
-    if (strEquals(t, "Char")) { return "i8" }
-    if (strEquals(t, "I8")) { return "i8" }
-    if (strEquals(t, "I16")) { return "i16" }
-    if (strEquals(t, "I64")) { return "i64" }
-    if (strEquals(t, "Isize")) { return irPtrIntType() }
-    if (strEquals(t, "U8")) { return "i8" }
-    if (strEquals(t, "U16")) { return "i16" }
-    if (strEquals(t, "U32")) { return "i32" }
-    if (strEquals(t, "U64")) { return "i64" }
-    if (strEquals(t, "Usize")) { return irPtrIntType() }
-    if (strEquals(t, "")) { return "void" }
+    if (t.equals("Ptr")) { return "ptr" }
+    if (t.equals("Char")) { return "i8" }
+    if (t.equals("I8")) { return "i8" }
+    if (t.equals("I16")) { return "i16" }
+    if (t.equals("I64")) { return "i64" }
+    if (t.equals("Isize")) { return irPtrIntType() }
+    if (t.equals("U8")) { return "i8" }
+    if (t.equals("U16")) { return "i16" }
+    if (t.equals("U32")) { return "i32" }
+    if (t.equals("U64")) { return "i64" }
+    if (t.equals("Usize")) { return irPtrIntType() }
+    if (t.equals("")) { return "void" }
     return "i32"
 }
 
@@ -51,8 +51,8 @@ internal fn isStructTypeKey(t: String) -> Bool {
 // rather than a check that never fires. Everything else -- `ptr`, `double`,
 // `struct:` -- either has its own path above or cannot take `+`.
 internal fn isIntegerStorageKey(t: String) -> Bool {
-    return strEquals(t, "i8") or strEquals(t, "i16")
-        or strEquals(t, "i32") or strEquals(t, "i64")
+    return t.equals("i8") or t.equals("i16")
+        or t.equals("i32") or t.equals("i64")
 }
 
 // The fat String is the one key that answers `isStructTypeKey` while *not* being
@@ -63,18 +63,18 @@ internal fn isIntegerStorageKey(t: String) -> Bool {
 // pair -- so the field receives whatever follows it in .rodata as its pointer.
 // That reads as a plain segfault at the first use, a long way from here.
 internal fn isFatStringKey(t: String) -> Bool {
-    return strEquals(t, "struct:prismio.str")
+    return t.equals("struct:prismio.str")
 }
 
 // Built-in aggregates live in registers and fields by value. User structs use
 // the same `struct:` key for their pointee type, so every storage decision must
 // distinguish these two before treating a struct key as an address.
 private fn isSliceKey(t: String) -> Bool {
-    return strEquals(t, "struct:prismio.slice")
+    return t.equals("struct:prismio.slice")
 }
 
 private fn isDataElementKey(t: String) -> Bool {
-    return strEquals(t, "struct:prismio.data_element")
+    return t.equals("struct:prismio.data_element")
 }
 
 internal fn isValueStructKey(t: String) -> Bool {
@@ -104,7 +104,7 @@ internal fn mapTypeNode(tn: ASTNode) -> String {
     // kept as the fallback for a node sema never reached.
     if (nodeExists(tn.typeInfo)) {
         let resolved = typeIrKey(ptr_to_type(tn.typeInfo))
-        if (strEquals(resolved, "") == false) { return resolved }
+        if (resolved.equals("") == false) { return resolved }
     }
     // REQUIREMENTS 4. `T?` is one pointer and is deliberately *not* keyed as
     // `struct:T`: an optional slot must not reach ir_struct_field_ptr without an
@@ -113,7 +113,7 @@ internal fn mapTypeNode(tn: ASTNode) -> String {
     if (tn.i3 == 1) {
         return "ptr"
     }
-    if (tn.i2 == 1 and strEquals(tn.s1, "Slice")) {
+    if (tn.i2 == 1 and tn.s1.equals("Slice")) {
         return "struct:prismio.slice"
     }
     if (tn.i2 == 1) {
@@ -135,7 +135,7 @@ internal fn mapTypeNode(tn: ASTNode) -> String {
 }
 
 internal fn storageType(t: String) -> String {
-    if (strEquals(t, "ptrptr")) { return "ptr" }
+    if (t.equals("ptrptr")) { return "ptr" }
     // The fat String is a value, not a heap object reached by pointer, so it is
     // the one struct key that must survive this collapse.
     if (isValueStructKey(t)) { return t }
@@ -147,7 +147,7 @@ internal fn storageType(t: String) -> String {
 // pointer half, because the buffer is NUL-terminated and the length is Prismio's
 // bookkeeping rather than part of the ABI.
 internal fn ffiType(t: String) -> String {
-    if (strEquals(t, "struct:prismio.str")) { return "ptr" }
+    if (t.equals("struct:prismio.str")) { return "ptr" }
     return storageType(t)
 }
 
@@ -168,7 +168,7 @@ internal fn ffiType(t: String) -> String {
 // is reached. That is what gives the language a reference edge to spell a
 // recursive type with, and therefore what lets containment be required acyclic.
 internal fn fieldStorageType(t: String) -> String {
-    if (strEquals(t, "ptrptr")) { return "ptr" }
+    if (t.equals("ptrptr")) { return "ptr" }
     // A String field embeds the pair. Storing only the pointer would be one word
     // instead of two, but `ir_register_struct_field` records the *storage* type,
     // so a String field would come back indistinguishable from any other pointer
@@ -190,7 +190,7 @@ internal fn countListNodes(firstPtr: Ptr) -> Int {
 }
 
 internal fn functionSymbolName(func: ASTNode) -> String {
-    if (strEquals(func.s2, "") == false) {
+    if (func.s2.equals("") == false) {
         return func.s2
     }
     return func.s1
@@ -222,7 +222,7 @@ internal fn getExprType(expr: ASTNode) -> String {
     }
 
     if (expr.kind == NodeKind.UNARY_EXPR) {
-        if (strEquals(expr.s1, "!")) { return "i1" }
+        if (expr.s1.equals("!")) { return "i1" }
         return getExprType(ptr_to_node(expr.child1))
     }
 
@@ -233,17 +233,17 @@ internal fn getExprType(expr: ASTNode) -> String {
 
     if (expr.kind == NodeKind.BINARY_EXPR) {
         let op = expr.s1
-        if (strEquals(op, "==") or strEquals(op, "!=")) { return "i1" }
-        if (strEquals(op, "<") or strEquals(op, "<=")) { return "i1" }
-        if (strEquals(op, ">") or strEquals(op, ">=")) { return "i1" }
-        if (strEquals(op, "and") or strEquals(op, "or")) { return "i1" }
+        if (op.equals("==") or op.equals("!=")) { return "i1" }
+        if (op.equals("<") or op.equals("<=")) { return "i1" }
+        if (op.equals(">") or op.equals(">=")) { return "i1" }
+        if (op.equals("and") or op.equals("or")) { return "i1" }
         return getExprType(ptr_to_node(expr.child1))
     }
 
     if (expr.kind == NodeKind.CALL_EXPR) {
         let callee = ptr_to_node(expr.child1)
         let funcName = callee.s1
-        if (strEquals(expr.s2, "") == false) {
+        if (expr.s2.equals("") == false) {
             return ir_get_fn_return_type(expr.s2)
         }
         return ir_get_fn_return_type(funcName)
@@ -251,7 +251,7 @@ internal fn getExprType(expr: ASTNode) -> String {
 
     if (expr.kind == NodeKind.INDEX_EXPR) {
         let objType = getExprType(ptr_to_node(expr.child1))
-        if (strEquals(objType, "ptrptr")) {
+        if (objType.equals("ptrptr")) {
             return "ptr"
         }
         return "i32"
@@ -300,12 +300,12 @@ internal fn getExprType(expr: ASTNode) -> String {
 // bits of payload rather than a number to convert, so it bitcasts first -- an
 // `fptosi` here would round 0.5 to 0 and store that.
 private fn scalarBitsOf(t: String) -> Int {
-    if (strEquals(t, "i1")) { return 1 }
-    if (strEquals(t, "i8")) { return 8 }
-    if (strEquals(t, "i16")) { return 16 }
-    if (strEquals(t, "i32")) { return 32 }
-    if (strEquals(t, "i64")) { return 64 }
-    if (strEquals(t, "double")) { return 64 }
+    if (t.equals("i1")) { return 1 }
+    if (t.equals("i8")) { return 8 }
+    if (t.equals("i16")) { return 16 }
+    if (t.equals("i32")) { return 32 }
+    if (t.equals("i64")) { return 64 }
+    if (t.equals("double")) { return 64 }
     return 0
 }
 
@@ -330,18 +330,18 @@ internal fn scalarInlineBytes(t: String) -> Int {
 }
 
 internal fn scalarToSlot(storeType: String, value: String) -> String {
-    if (strEquals(storeType, "ptr")) { return value }
+    if (storeType.equals("ptr")) { return value }
     // A String in a container slot is its pointer. The length is not stored --
     // it is recovered on the way out, from the NUL the buffer always carries
     // (FFI 7.1), which is one `strlen` per read against a word per element in
     // every container. Widening the pair into a slot is what `zext
     // %prismio.str to i64` was.
-    if (strEquals(storeType, "struct:prismio.str")) {
+    if (storeType.equals("struct:prismio.str")) {
         return ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 0))
     }
     let pi = irPtrIntType()
 
-    if (strEquals(storeType, "double")) {
+    if (storeType.equals("double")) {
         let bits = ir_get_temp_name(ir_bitcast("double", value, "i64"))
         return ir_get_temp_name(ir_int_to_ptr("i64", bits))
     }
@@ -354,10 +354,10 @@ internal fn scalarToSlot(storeType: String, value: String) -> String {
 }
 
 internal fn slotToScalar(storeType: String, value: String) -> String {
-    if (strEquals(storeType, "ptr")) { return value }
+    if (storeType.equals("ptr")) { return value }
     let pi = irPtrIntType()
 
-    if (strEquals(storeType, "double")) {
+    if (storeType.equals("double")) {
         let bits = ir_get_temp_name(ir_ptr_to_int(value, "i64"))
         return ir_get_temp_name(ir_bitcast("i64", bits, "double"))
     }
@@ -373,9 +373,9 @@ internal fn slotToScalar(storeType: String, value: String) -> String {
 // the one that has to cross into a pointer-sized slot; the list handle and the
 // index are already the widths the runtime declares.
 internal fn listElementArgIndex(funcName: String) -> Int {
-    if (strEquals(funcName, "list_push")) { return 1 }
-    if (strEquals(funcName, "list_set")) { return 2 }
-    if (strEquals(funcName, "list_set_exclusive")) { return 2 }
+    if (funcName.equals("list_push")) { return 1 }
+    if (funcName.equals("list_set")) { return 2 }
+    if (funcName.equals("list_set_exclusive")) { return 2 }
     return -1
 }
 

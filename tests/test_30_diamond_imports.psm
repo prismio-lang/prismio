@@ -36,7 +36,7 @@ fn main() -> Int {
         return fail("right_value should reach the same shared_double")
     }
 
-    if (strEquals("abcd", "abcd") == false) {
+    if ("abcd".equals("abcd") == false) {
         return fail("extern declared in three modules should collapse to one")
     }
 

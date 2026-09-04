@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "benchmarks": [
+    {"name":"fibonacci","category":"algorithms","status":"implemented","profile":"cpu"},
+    {"name":"prime_sieve","category":"algorithms","status":"implemented","profile":"cpu-memory"},
+    {"name":"gcd_lcm","category":"algorithms","status":"implemented","profile":"cpu"},
+    {"name":"binary_search","category":"algorithms","status":"implemented","profile":"cpu-memory"},
+    {"name":"quicksort","category":"algorithms","status":"implemented","profile":"cpu-memory"},
+    {"name":"mergesort","category":"algorithms","status":"implemented","profile":"cpu-memory"},
+    {"name":"string_search","category":"algorithms","status":"implemented","profile":"cpu-allocation"},
+    {"name":"graph_bfs","category":"algorithms","status":"implemented","profile":"memory"},
+    {"name":"knapsack","category":"algorithms","status":"implemented","profile":"cpu-memory"},
+    {"name":"tree_traversal","category":"algorithms","status":"implemented","profile":"memory"},
+
+    {"name":"hashmap_insert_lookup","category":"data_structures","status":"implemented","profile":"memory-allocation"},
+    {"name":"vector_growth","category":"data_structures","status":"implemented","profile":"allocation"},
+    {"name":"vector_iteration","category":"data_structures","status":"implemented","profile":"memory"},
+    {"name":"key_value_update","category":"data_structures","status":"implemented","profile":"memory"},
+    {"name":"linked_list","category":"data_structures","status":"unsupported","profile":"allocation"},
+    {"name":"binary_search_tree","category":"data_structures","status":"unsupported","profile":"memory-allocation"},
+    {"name":"priority_queue","category":"data_structures","status":"unsupported","profile":"cpu-memory"},
+    {"name":"mixed_map_removal","category":"data_structures","status":"unsupported","profile":"memory-allocation"},
+
+    {"name":"matrix_multiply","category":"compute","status":"implemented","profile":"cpu"},
+    {"name":"mandelbrot","category":"compute","status":"implemented","profile":"cpu"},
+    {"name":"fft","category":"compute","status":"implemented","profile":"cpu"},
+    {"name":"numerical_integration","category":"compute","status":"implemented","profile":"cpu"},
+    {"name":"vector_dot","category":"compute","status":"implemented","profile":"cpu-memory"},
+    {"name":"convolution","category":"compute","status":"implemented","profile":"cpu-memory"},
+    {"name":"monte_carlo","category":"compute","status":"implemented","profile":"cpu"},
+    {"name":"polynomial_evaluation","category":"compute","status":"implemented","profile":"cpu"},
+    {"name":"ecs_component_update","category":"compute","status":"implemented","profile":"memory"},
+    {"name":"parallel_reduction","category":"compute","status":"implemented","profile":"cpu-concurrency"},
+
+    {"name":"transient_allocation","category":"memory","status":"implemented","profile":"allocation"},
+    {"name":"struct_creation","category":"memory","status":"implemented","profile":"allocation"},
+    {"name":"allocation_mutation","category":"memory","status":"implemented","profile":"allocation-memory"},
+    {"name":"nested_collection","category":"memory","status":"implemented","profile":"allocation-memory"},
+    {"name":"large_buffer_copy","category":"memory","status":"implemented","profile":"memory"},
+    {"name":"recursive_tree_rebuild","category":"memory","status":"implemented","profile":"allocation"},
+
+    {"name":"file_read","category":"io","status":"implemented","profile":"io"},
+    {"name":"file_write","category":"io","status":"implemented","profile":"io-allocation"},
+    {"name":"line_processing","category":"io","status":"implemented","profile":"io-allocation"},
+    {"name":"tokenization","category":"io","status":"implemented","profile":"cpu-allocation"},
+    {"name":"json_parse","category":"io","status":"unsupported","profile":"cpu-allocation"},
+    {"name":"json_serialize","category":"io","status":"unsupported","profile":"cpu-allocation"}
+  ]
+}

@@ -74,59 +74,59 @@ fn typeToString(t: TokenType) -> String {
 // identifier, and building a table would mean str_concat calls that allocate on
 // the hottest path in the scanner.
 internal fn isKeyword(word: String) -> Bool {
-    if (strEquals(word, "import")) { return true }
+    if (word.equals("import")) { return true }
 
-    if (strEquals(word, "match")) { return true }
-    if (strEquals(word, "if")) { return true }
-    if (strEquals(word, "else")) { return true }
-    if (strEquals(word, "and")) { return true }
-    if (strEquals(word, "or")) { return true }
+    if (word.equals("match")) { return true }
+    if (word.equals("if")) { return true }
+    if (word.equals("else")) { return true }
+    if (word.equals("and")) { return true }
+    if (word.equals("or")) { return true }
 
-    if (strEquals(word, "true")) { return true }
-    if (strEquals(word, "false")) { return true }
+    if (word.equals("true")) { return true }
+    if (word.equals("false")) { return true }
 
-    if (strEquals(word, "break")) { return true }
-    if (strEquals(word, "continue")) { return true }
-    if (strEquals(word, "return")) { return true }
-    if (strEquals(word, "throw")) { return true }
+    if (word.equals("break")) { return true }
+    if (word.equals("continue")) { return true }
+    if (word.equals("return")) { return true }
+    if (word.equals("throw")) { return true }
 
-    if (strEquals(word, "while")) { return true }
-    if (strEquals(word, "loop")) { return true }
-    if (strEquals(word, "for")) { return true }
-    if (strEquals(word, "in")) { return true }
+    if (word.equals("while")) { return true }
+    if (word.equals("loop")) { return true }
+    if (word.equals("for")) { return true }
+    if (word.equals("in")) { return true }
 
-    if (strEquals(word, "let")) { return true }
-    if (strEquals(word, "struct")) { return true }
-    if (strEquals(word, "impl")) { return true }
-    if (strEquals(word, "enum")) { return true }
-    if (strEquals(word, "trait")) { return true }
-    if (strEquals(word, "where")) { return true }
-    if (strEquals(word, "fn")) { return true }
-    if (strEquals(word, "extern")) { return true }
+    if (word.equals("let")) { return true }
+    if (word.equals("struct")) { return true }
+    if (word.equals("impl")) { return true }
+    if (word.equals("enum")) { return true }
+    if (word.equals("trait")) { return true }
+    if (word.equals("where")) { return true }
+    if (word.equals("fn")) { return true }
+    if (word.equals("extern")) { return true }
 
-    if (strEquals(word, "mut")) { return true }
-    if (strEquals(word, "as")) { return true }
+    if (word.equals("mut")) { return true }
+    if (word.equals("as")) { return true }
 
     // Parameter conventions: ownership and borrows.
-    if (strEquals(word, "inout")) { return true }
-    if (strEquals(word, "sink")) { return true }
+    if (word.equals("inout")) { return true }
+    if (word.equals("sink")) { return true }
 
     // SPEC 5.2: pins an arena at this scope. Unlike the FFI contract names, which
     // are contextual, this one opens a statement and so has to be a real keyword.
-    if (strEquals(word, "region")) { return true }
+    if (word.equals("region")) { return true }
 
     // REQUIREMENTS 4. The absent reference. A real keyword rather than a
     // contextual name, unlike `unique` and `pin`: those are annotations, and
     // SPEC 5 requires that deleting one leave a working program. `none` is a
     // *value* -- deleting it leaves a hole -- so the obligation does not apply
     // and a keyword is the honest spelling.
-    if (strEquals(word, "none")) { return true }
+    if (word.equals("none")) { return true }
 
     return false
 }
 
 internal fn isBoolean(word: String) -> Bool {
-    if (strEquals(word, "true")) { return true }
-    if (strEquals(word, "false")) { return true }
+    if (word.equals("true")) { return true }
+    if (word.equals("false")) { return true }
     return false
 }

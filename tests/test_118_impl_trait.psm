@@ -1,0 +1,103 @@
+// T16 -- `impl Trait` in argument and return position.
+//
+// The two are different constructs that share a spelling. In argument position
+// `impl Show` is a generic parameter the *caller* chooses, and lowers to exactly
+// the `<T: Show>` the programmer did not write. In return position it is one
+// concrete type the *body* chooses, which the caller cannot name; sema resolves
+// it and rewrites the annotation, so the call stays statically dispatched.
+//
+// What this fixture is really guarding is that both remain ordinary code
+// afterwards: monomorphisation, overload resolution, method calls and ownership
+// all see a normal generic function and a normal concrete return.
+
+import std.io
+import std.string
+
+trait Show {
+    fn show(self) -> String
+}
+
+trait Weigh {
+    fn weigh(self) -> Int
+}
+
+struct Point { x: Int, y: Int }
+
+impl Show for Point {
+    fn show(self) -> String { return strConcat("P", strFromInt(self.x)) }
+}
+
+impl Weigh for Point {
+    fn weigh(self) -> Int { return self.x + self.y }
+}
+
+struct Tag { name: String }
+
+impl Show for Tag {
+    fn show(self) -> String { return strClone(self.name) }
+}
+
+// Argument position: sugar for `fn describe<T: Show>(v: T) -> String`.
+fn describe(v: impl Show) -> String {
+    return v.show()
+}
+
+// Two synthesised parameters in one signature. They must not collide, and they
+// must instantiate independently -- `a` and `b` are different types here.
+fn pair(a: impl Show, b: impl Show) -> String {
+    return strConcat(strConcat(a.show(), "+"), b.show())
+}
+
+// Several bounds on one synthesised parameter, the `impl A + B` spelling.
+fn heavy(v: impl Show + Weigh) -> Int {
+    if (v.show().equals("")) { return 0 }
+    return v.weigh()
+}
+
+// A written type parameter alongside a synthesised one. The declaration ends up
+// carrying both, and the written one still comes first.
+fn tagged<T: Show>(first: T, second: impl Show) -> String {
+    return strConcat(strConcat(first.show(), "/"), second.show())
+}
+
+// Return position. The caller cannot write this type; the compiler knows it.
+fn makePoint() -> impl Show {
+    return Point { x: 7, y: 2 }
+}
+
+// Two `return`s that agree are fine -- it is disagreement that is the error.
+fn choose(flag: Bool) -> impl Show {
+    if (flag) { return Point { x: 1, y: 1 } }
+    return Point { x: 2, y: 2 }
+}
+
+// A return-position opaque whose value flows straight into an argument-position
+// one. Both sides are concrete by the time this is checked.
+fn roundTrip() -> String {
+    return describe(makePoint())
+}
+
+fn fail(what: String) -> Int {
+    print("FAIL: ")
+    println(what)
+    return 1
+}
+
+fn main() -> Int {
+    let p = Point { x: 3, y: 4 }
+    let t = Tag { name: "tag" }
+
+    if (describe(p).equals("P3") == false) { return fail("argument position, struct") }
+    if (describe(t).equals("tag") == false) { return fail("argument position, second type") }
+    if (pair(p, t).equals("P3+tag") == false) { return fail("two synthesised parameters") }
+    if (heavy(p) != 7) { return fail("multiple bounds on one `impl Trait`") }
+    if (tagged(p, t).equals("P3/tag") == false) { return fail("written and synthesised together") }
+
+    if (makePoint().show().equals("P7") == false) { return fail("return position") }
+    if (choose(true).show().equals("P1") == false) { return fail("agreeing returns, first") }
+    if (choose(false).show().equals("P2") == false) { return fail("agreeing returns, second") }
+    if (roundTrip().equals("P7") == false) { return fail("opaque return into opaque argument") }
+
+    println("test_118 ok")
+    return 0
+}

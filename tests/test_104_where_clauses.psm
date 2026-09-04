@@ -66,14 +66,14 @@ fn fail(message: String) -> Int {
 }
 
 fn main() -> Int {
-    if (strEquals(render(7), "7") == false) { return fail("where on a function") }
-    if (strEquals(render(true), "yes") == false) { return fail("second instance") }
-    if (strEquals(renderBoth(1, false), "1no") == false) { return fail("two clauses") }
+    if (render(7).equals("7") == false) { return fail("where on a function") }
+    if (render(true).equals("yes") == false) { return fail("second instance") }
+    if (renderBoth(1, false).equals("1no") == false) { return fail("two clauses") }
     if (heavy(21) != 42) { return fail("clause unions with a list bound") }
     if (both(5) != 11) { return fail("`+` inside a clause") }
-    if (strEquals(describe(Box<Int> { value: 3 }), "3") == false) { return fail("where on an impl") }
+    if (describe(Box<Int> { value: 3 }).equals("3") == false) { return fail("where on an impl") }
     let w = Wrapper<Int> { inner: 9 }
-    if (strEquals(show(w.inner), "9") == false) { return fail("where on a struct") }
+    if (show(w.inner).equals("9") == false) { return fail("where on a struct") }
     println("test_104 ok")
     return 0
 }

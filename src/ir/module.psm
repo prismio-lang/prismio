@@ -18,7 +18,7 @@ private fn moduleTreeUsesSlice(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let node = ptr_to_node(nodePtr)
     if (node.kind == NodeKind.SLICE_EXPR) { return true }
-    if (node.kind == NodeKind.TYPE_ANNOTATION and strEquals(node.s1, "Slice")) {
+    if (node.kind == NodeKind.TYPE_ANNOTATION and node.s1.equals("Slice")) {
         return true
     }
     if (moduleTreeUsesSlice(node.child1)) { return true }
@@ -30,13 +30,13 @@ private fn moduleTreeUsesSlice(nodePtr: Ptr) -> Bool {
 private fn moduleTreeUsesDataView(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let node = ptr_to_node(nodePtr)
-    if (node.kind == NodeKind.TYPE_ANNOTATION and strEquals(node.s1, "DataView")) {
+    if (node.kind == NodeKind.TYPE_ANNOTATION and node.s1.equals("DataView")) {
         return true
     }
     if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)) {
         let callee = ptr_to_node(node.child1)
-        if (strEquals(callee.s1, "soa") or strEquals(callee.s1, "aos")
-            or strEquals(callee.s1, "data_len")) {
+        if (callee.s1.equals("soa") or callee.s1.equals("aos")
+            or callee.s1.equals("data_len")) {
             return true
         }
     }
@@ -57,7 +57,7 @@ private fn generateFunction(func: ASTNode) {
     }
 
     let mut isMain = 0
-    if (strEquals(funcName, "main")) {
+    if (funcName.equals("main")) {
         retType = "i32"
         isMain = 1
     }
@@ -162,7 +162,7 @@ private fn generateFunction(func: ASTNode) {
     ir_scope_pop()
 
     if (ir_has_returned() == 0) {
-        if (strEquals(retSigType, "void")) {
+        if (retSigType.equals("void")) {
             ir_ret_void()
         } else {
             if (isMain == 1) {
@@ -194,14 +194,14 @@ internal fn functionHasStringParam(func: ASTNode) -> Bool {
 internal fn taskFunctionForCall(call: ASTNode) -> Ptr {
     let callee = ptr_to_node(call.child1)
     let mut symbol = callee.s1
-    if (strEquals(call.s2, "") == false) { symbol = call.s2 }
+    if (call.s2.equals("") == false) { symbol = call.s2 }
 
     let count = ir_decl_count(callee.s1)
     let mut i = 0
     while (i < count) {
         let decl = ptr_to_node(ir_decl_at(callee.s1, i))
         if (decl.kind == NodeKind.FUNCTION) {
-            if (strEquals(functionSymbolName(decl), symbol)) {
+            if (functionSymbolName(decl).equals(symbol)) {
                 return node_to_ptr(decl)
             }
         }
@@ -225,7 +225,7 @@ private fn countFunctionCallsitesNode(nodePtr: Ptr, callerSymbol: String) {
         let targetPtr = taskFunctionForCall(node)
         if (nodeExists(targetPtr)) {
             let target = ptr_to_node(targetPtr)
-            let recursive = strEquals(functionSymbolName(target), callerSymbol)
+            let recursive = functionSymbolName(target).equals(callerSymbol)
             if (target.i1 == 0 and recursive == false) {
                 target.i1 = 1
             } else {
@@ -410,7 +410,7 @@ private fn generateTaskThunk(func: ASTNode) {
         j = j + 1
     }
 
-    if (strEquals(retType, "void")) {
+    if (retType.equals("void")) {
         ir_call_end("void", functionSymbolName(func))
         ir_ret_void()
     } else {
@@ -544,16 +544,16 @@ private fn irRuntimeProvides(name: String) -> Bool {
     if (strStartsWith(name, "arena_")) { return true }
     if (strStartsWith(name, "cyc_")) { return true }
     if (strStartsWith(name, "aif_verify_")) { return true }
-    if (strEquals(name, "int_to_str")) { return true }
-    if (strEquals(name, "float_to_str")) { return true }
-    if (strEquals(name, "char_code")) { return true }
-    if (strEquals(name, "malloc")) { return true }
-    if (strEquals(name, "free")) { return true }
+    if (name.equals("int_to_str")) { return true }
+    if (name.equals("float_to_str")) { return true }
+    if (name.equals("char_code")) { return true }
+    if (name.equals("malloc")) { return true }
+    if (name.equals("free")) { return true }
     // `exit` is deliberately provided. A workload that exits early has measured
     // whatever ran before it, which is a smaller sample and not a broken one --
     // stubbing it would turn a program that stops into one that runs on past the
     // point its author meant it to stop, which is worse.
-    if (strEquals(name, "exit")) { return true }
+    if (name.equals("exit")) { return true }
     return false
 }
 
@@ -581,9 +581,9 @@ private fn generateExternStub(ext: ASTNode) {
     ir_call_arg("ptr", ir_get_temp_name(ir_const_cstring(ext.s1)))
     ir_call_end("i64", "rt_workload_stub")
 
-    if (strEquals(retSig, "void")) {
+    if (retSig.equals("void")) {
         ir_ret_void()
-    } else if (strEquals(retSig, "ptr")) {
+    } else if (retSig.equals("ptr")) {
         ir_ret("ptr", "null")
     } else {
         ir_ret(retSig, "0")
@@ -748,12 +748,12 @@ private fn externSignatureHasRawPtr(func: ASTNode) -> Bool {
     // EXTERN_FUNCTION stores its return annotation in child2 (an ordinary
     // FUNCTION uses child3 because child2 is its body).
     if (nodeExists(func.child2)) {
-        if (strEquals(mapTypeNode(ptr_to_node(func.child2)), "ptr")) { return true }
+        if (mapTypeNode(ptr_to_node(func.child2)).equals("ptr")) { return true }
     }
     let mut paramPtr = func.child1
     while (nodeExists(paramPtr)) {
         let param = ptr_to_node(paramPtr)
-        if (strEquals(mapTypeNode(ptr_to_node(param.child1)), "ptr")) { return true }
+        if (mapTypeNode(ptr_to_node(param.child1)).equals("ptr")) { return true }
         paramPtr = param.next
     }
     return false
@@ -809,7 +809,7 @@ private fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
         let depType = fieldTypeFor(module, ptr_to_node(depField.child1))
         if (isStructTypeKey(depType)) {
             let depName = structTypeName(depType)
-            if (strEquals(depName, structNode.s1) == false) {
+            if (depName.equals(structNode.s1) == false) {
                 let depDecl = findStructDeclNamed(module, depName)
                 if (nodeExists(node_to_ptr(depDecl))) {
                     generateStructDecl(depDecl, module)
@@ -837,7 +837,7 @@ private fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
     let mut emitted = 0
     while (i < irFieldCountOf(structNode)) {
         let chosen = aif_layout_field(structNode.s1, i)
-        if (strEquals(chosen, "") == false) {
+        if (chosen.equals("") == false) {
             let field = findStructField(structNode, chosen)
             if (nodeExists(node_to_ptr(field))) {
                 let fieldType = fieldTypeFor(module, ptr_to_node(field.child1))
@@ -933,7 +933,7 @@ private fn generateReleaseFn(structNode: ASTNode) {
                 foundLastRelease = true
                 if (disp == AIF_ELEM_TYPED) {
                     let ftype = ptr_to_node(field.child1)
-                    if (strEquals(ftype.s1, tname)) { tailSelfIndex = scan }
+                    if (ftype.s1.equals(tname)) { tailSelfIndex = scan }
                 }
             }
         }
@@ -1110,7 +1110,7 @@ fn findStructField(structNode: ASTNode, name: String) -> ASTNode {
     let mut p = structNode.child1
     while (nodeExists(p)) {
         let f = ptr_to_node(p)
-        if (strEquals(f.s1, name)) { return f }
+        if (f.s1.equals(name)) { return f }
         p = f.next
     }
     return ptr_to_node(ptr_null())
@@ -1365,6 +1365,14 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_param("ptr")
     ir_declare_function_param("i64")
     ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    // `__builtin_string_eq`'s target. strcmp in the C library is vectorised and
+    // beats a byte loop emitted here; the Prismio-side `strEquals` remains for
+    // the compilers that predate the builtin.
+    ir_declare_function_begin("str_equals", "i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("ptr")
     ir_declare_function_end()
 
     ir_declare_function_begin("list_get_inline_scalar", "i64")
@@ -1702,7 +1710,7 @@ fn generateModule(module: ASTNode) {
             // A String global is a constant *pair*, which cannot be spelled in
             // the text initialiser every other type uses -- so it goes to
             // ir_global_str_var, which builds the constant instead.
-            if (strEquals(storageType(varType), "struct:prismio.str")) {
+            if (storageType(varType).equals("struct:prismio.str")) {
                 ir_global_str_var(stmt.s1, globalStrName, globalStrLen)
             } else {
                 ir_global_var(stmt.s1, storageType(varType), initVal, 0)
@@ -1721,7 +1729,7 @@ fn generateModule(module: ASTNode) {
 
         if (stmt.kind == NodeKind.FUNCTION) {
             let mut retType = getDeclaredReturnType(stmt, stmt.child3)
-            if (strEquals(stmt.s1, "main")) {
+            if (stmt.s1.equals("main")) {
                 retType = "i32"
             }
             ir_set_fn_return_type(functionSymbolName(stmt), retType)
@@ -1743,7 +1751,7 @@ fn generateModule(module: ASTNode) {
             // is skipped rather than emitted and shadowed. Two definitions of one
             // symbol is a link error, and picking which one wins by link order is
             // exactly the kind of thing that works until it does not.
-            if (irProfileMode and strEquals(stmt2.s1, "main")) {
+            if (irProfileMode and stmt2.s1.equals("main")) {
                 // replaced by generateWorkloadDriver
             } else {
                 generateFunction(stmt2)
@@ -1884,7 +1892,7 @@ private fn irFindTrait(module: ASTNode, name: String) -> ASTNode {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.TRAIT_DECL and strEquals(stmt.s1, name)) { return stmt }
+        if (stmt.kind == NodeKind.TRAIT_DECL and stmt.s1.equals(name)) { return stmt }
         p = stmt.next
     }
     return ptr_to_node(ptr_null())
@@ -1894,10 +1902,10 @@ private fn irFindImplForVtable(module: ASTNode, traitName: String, vtableName: S
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, traitName)) {
+        if (stmt.kind == NodeKind.IMPL_DECL and stmt.s2.equals(traitName)) {
             let candidate = strConcat(strConcat("vtable$", traitName),
                                       strConcat("$", stmt.s1))
-            if (strEquals(candidate, vtableName)) { return stmt }
+            if (candidate.equals(vtableName)) { return stmt }
         }
         p = stmt.next
     }
@@ -1911,7 +1919,7 @@ private fn irImplMethodSymbol(module: ASTNode, implNode: ASTNode, methodName: St
     let mut recordPtr = implNode.child2
     while (nodeExists(recordPtr)) {
         let record = ptr_to_node(recordPtr)
-        if (record.kind == NodeKind.IMPL_METHOD and strEquals(record.s1, methodName)) {
+        if (record.kind == NodeKind.IMPL_METHOD and record.s1.equals(methodName)) {
             let mut fnPtr = module.child1
             while (nodeExists(fnPtr)) {
                 let fnNode = ptr_to_node(fnPtr)

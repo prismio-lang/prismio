@@ -140,13 +140,13 @@ fn umsProjectHost(startDirectory: String) -> String {
     while (i < list_len(document.roots)) {
         let block = list_get(document.statements, list_get(document.roots, i))
         if (block.kind == UmsAstStatementKind.CALL and block.hasBlock and
-            list_len(block.arguments) == 0 and strEquals(block.name, "toolchain")) {
+            list_len(block.arguments) == 0 and block.name.equals("toolchain")) {
             let mut childIndex = 0
             while (childIndex < list_len(block.children)) {
                 let property = list_get(document.statements,
                                         list_get(block.children, childIndex))
                 if (property.kind == UmsAstStatementKind.ASSIGNMENT and
-                    strEquals(property.name, "host") and
+                    property.name.equals("host") and
                     property.value.kind == UmsAstValueKind.STRING and
                     __builtin_string_len(property.value.text) > 0) {
                     return join_path(root, property.value.text)

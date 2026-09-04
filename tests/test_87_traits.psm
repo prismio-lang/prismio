@@ -83,7 +83,7 @@ fn main() -> Int {
     // One template, three instantiations, each resolving `cmp` to a different
     // `impl`.
     if (maxOf(3, 9) != 9) { return fail("maxOf at Int") }
-    if (strEquals(maxOf("apple", "pear"), "pear") == false) { return fail("maxOf at String") }
+    if (maxOf("apple", "pear").equals("pear") == false) { return fail("maxOf at String") }
 
     // A trait on a user struct, and a trait method that calls the trait method
     // for another type. Asserted through `cmp` rather than through `maxOf`: a
@@ -116,7 +116,7 @@ fn main() -> Int {
     list_push(names, "pear")
     list_push(names, "apple")
     sortInPlace(names)
-    if (strEquals(list_get(names, 0), "apple") == false) { return fail("sortInPlace at String") }
+    if (list_get(names, 0).equals("apple") == false) { return fail("sortInPlace at String") }
 
     println("test_87 ok")
     return 0

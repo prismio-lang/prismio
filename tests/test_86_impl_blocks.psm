@@ -80,7 +80,7 @@ fn main() -> Int {
     // v0.1 3.6. A postfix `.` directly on a literal used to be a parse error,
     // which made `impl String` unusable for exactly the expressions it exists
     // for. The receiver no longer has to be a name.
-    if (strEquals("  hi  ".trimmed(), "hi") == false) { return fail("literal receiver") }
+    if (("  hi  ".trimmed()).equals("hi") == false) { return fail("literal receiver") }
 
     // The same gap in its other two spellings.
     if ((p.shifted(1, 1)).sum() != 5) { return fail("parenthesised receiver") }
@@ -89,10 +89,10 @@ fn main() -> Int {
     // v0.1 3.2's `Update`: the standard library's own method surface. These are
     // wrappers over `str*`, so what is asserted is that the wrapper is the same
     // function -- not that `strTrim` still works, which test_75 covers.
-    if (strEquals("  pad  ".trim(), "pad") == false) { return fail("String.trim") }
+    if (("  pad  ".trim()).equals("pad") == false) { return fail("String.trim") }
     if ("prismio".startsWith("pris") == false) { return fail("String.startsWith") }
     if ("prismio".indexOf("mio") != 4) { return fail("String.indexOf") }
-    if (strEquals("a-b".replaceAll("-", "+"), "a+b") == false) { return fail("String.replaceAll") }
+    if (("a-b".replaceAll("-", "+")).equals("a+b") == false) { return fail("String.replaceAll") }
     // Bound rather than nested. An owned temporary passed straight into a call
     // is not released -- the same leak `list_len(strSplit(...))` has had all
     // along, and unrelated to `impl`; binding it keeps this fixture clean under
@@ -108,7 +108,7 @@ fn main() -> Int {
     // side street -- but it predates this change and the leak is byte-for-byte
     // the one `strReverse(strToUpper("ab"))` already had.
     let upper = "ab".toUpper()
-    if (strEquals(upper.reverse(), "BA") == false) { return fail("chained String methods") }
+    if (upper.reverse().equals("BA") == false) { return fail("chained String methods") }
 
     println("test_86 ok")
     return 0

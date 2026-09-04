@@ -102,26 +102,23 @@ def bootstrap_sh_list():
     return m.group(1).split()
 
 
-def package_ps1_lists():
-    text = read(TOOLS / "package.ps1")
-    m = re.search(r"\$libraries\s*=\s*@\((.*?)\n\)", text, re.S)
+def package_lists():
+    """The LIBRARIES table in tools/package.py.
+
+    Parsed rather than imported, for the reason every other reader here is
+    parsed: this script is the thing that catches a packaging list drifting from
+    prismio_toolchain_files[], and importing the module under test would let a
+    syntax error in it read as "no lists to compare" instead of a failure.
+    """
+    text = read(TOOLS / "package.py")
+    m = re.search(r"^LIBRARIES = \{(.*?)^\}", text, re.S | re.M)
     if not m:
-        raise Failure("could not find $libraries in package.ps1")
+        raise Failure("could not find LIBRARIES in package.py")
     out = {}
-    for name, sources in re.findall(
-        r"Name\s*=\s*'(\w+)';\s*Sources\s*=\s*@\((.*?)\)", m.group(1), re.S
-    ):
-        out[name] = re.findall(r"'([^']+)'", sources)
-    return out
-
-
-def package_sh_lists():
-    text = read(TOOLS / "package.sh")
-    out = {}
-    for name, sources in re.findall(r"^build_archive\s+(\w+)\s+(.*)$", text, re.M):
-        out[name] = sources.split()
+    for name, sources in re.findall(r'"(\w+)":\s*\[(.*?)\]', m.group(1), re.S):
+        out[name] = re.findall(r'"([^"]+)"', sources)
     if not out:
-        raise Failure("could not find build_archive calls in package.sh")
+        raise Failure("LIBRARIES in package.py lists no archives")
     return out
 
 
@@ -174,11 +171,9 @@ def main() -> int:
         compare("tools/bootstrap.ps1 $runtimeSources", bootstrap_ps1_list(), compiled)
         compare("tools/bootstrap.sh RUNTIME_SOURCES", bootstrap_sh_list(), compiled)
 
-        ps1 = package_ps1_lists()
-        sh = package_sh_lists()
+        packaged = package_lists()
         for name, expected in (("runtime", runtime_lib), ("backend", backend)):
-            compare(f"tools/package.ps1 {name} library", ps1.get(name, []), expected)
-            compare(f"tools/package.sh {name} archive", sh.get(name, []), expected)
+            compare(f"tools/package.py {name} archive", packaged.get(name, []), expected)
 
     except Failure as exc:
         print(f"FAILED: {exc}")

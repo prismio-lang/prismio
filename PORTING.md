@@ -60,11 +60,11 @@ cmp /tmp/a.ll /tmp/b.ll && echo "fixed point reached"
 ```sh
 PRISMIO=build/gen2 python3 tests/test_runner.py     # expect 202/202, never fewer
 
-tools/package.sh --compiler build/gen2 --out dist/Prismio
-tools/verify_separation.sh --dist dist/Prismio      # expect 11/11
+python tools/package.py --compiler build/gen2 --out dist/Prismio
+python tools/verify_separation.py --dist dist/Prismio   # expect 11/11
 ```
 
-`package.sh` produces the installed layout the compiler discovers at runtime,
+`package.py` produces the installed layout the compiler discovers at runtime,
 relative to its own location — no environment variables, no hardcoded prefixes:
 
 ```

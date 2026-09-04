@@ -2320,19 +2320,33 @@ int compiler_run_workload(const char* exe_file, int timeout_seconds) {
     return result;
 }
 
-int compiler_run_executable(const char* exe_file) {
+// `arguments` is an already-quoted tail, or NULL/"" for none. It is appended
+// rather than quoted here because only the *command* position needs
+// run_command_path's separator fix -- an argument is passed through by cmd.exe
+// untouched, and re-quoting a tail the caller already quoted would nest the
+// quotes one level deeper every time.
+int compiler_run_executable_with(const char* exe_file, const char* arguments) {
     char* normalized = run_command_path(exe_file);
     if (!normalized) return 1;
 
     char* q_exe = command_quote_arg(normalized);
-    int command_len = (int)strlen(q_exe) + 8;
+    int tail_len = arguments ? (int)strlen(arguments) : 0;
+    int command_len = (int)strlen(q_exe) + tail_len + 8;
     char* command = (char*)malloc(command_len);
 
-    snprintf(command, command_len, "%s", q_exe);
+    if (tail_len > 0) {
+        snprintf(command, command_len, "%s %s", q_exe, arguments);
+    } else {
+        snprintf(command, command_len, "%s", q_exe);
+    }
     int result = run_build_command(command);
 
     free(command);
     free(q_exe);
     free(normalized);
     return result;
+}
+
+int compiler_run_executable(const char* exe_file) {
+    return compiler_run_executable_with(exe_file, "");
 }

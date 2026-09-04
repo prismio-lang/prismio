@@ -8,14 +8,18 @@ import common.diagnostics
 import std.string
 
 internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
-    if (strEquals(name, "drop")) { return typeVoid() }
+    if (name.equals("drop")) { return typeVoid() }
 
     // String's irreducible representation operations. These are compiler
     // builtins, not foreign functions: sema owns their signatures and codegen
     // replaces their call-shaped syntax with field/GEP operations.
-    if (strEquals(name, "__builtin_string_len")) { return typeInt() }
-    if (strEquals(name, "__builtin_string_byte_at")) { return typeChar() }
-    if (strEquals(name, "__builtin_string_put_byte")) { return typeVoid() }
+    if (name.equals("__builtin_string_len")) { return typeInt() }
+    if (name.equals("__builtin_string_byte_at")) { return typeChar() }
+    if (name.equals("__builtin_string_put_byte")) { return typeVoid() }
+    // The lowering target for `==` on String. A builtin rather than a call to
+    // `strEquals`, so that the operator does not depend on a public function
+    // with a prefixed name -- the prefix is implementation, not surface.
+    if (name.equals("__builtin_string_eq")) { return typeBool() }
 
     // REQUIREMENTS 4. The narrowing half. `T?` cannot be used as a `T` -- that
     // is what the type buys -- so there has to be one way across, and this is it.
@@ -26,7 +30,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // fails loudly where narrowing would have failed silently. It is also the
     // idiom the compiler already writes by hand -- `if (nodeExists(p)) { let n =
     // ptr_to_node(p) }` is exactly this shape.
-    if (strEquals(name, "expect")) {
+    if (name.equals("expect")) {
         if (nodeExists(argPtr)) {
             let ot = nodeGetType(ptr_to_node(argPtr))
             if (ot.kind == TypeKind.OPTIONAL) { return typeOptionalInner(ot) }
@@ -38,8 +42,8 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // type comes from the endpoint argument, exactly as `list_get`'s comes from
     // the list -- the one exception is `chan_new`, which like `list_new` has
     // nothing to read it from and takes it from the annotation.
-    if (strEquals(name, "chan_new")) { return typeChannel(typeInvalid()) }
-    if (strEquals(name, "chan_share")) {
+    if (name.equals("chan_new")) { return typeChannel(typeInvalid()) }
+    if (name.equals("chan_share")) {
         if (nodeExists(argPtr)) {
             let ct = nodeGetType(ptr_to_node(argPtr))
             if (typeIsChannel(ct)) { return ct }
@@ -49,7 +53,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // `T?`, and that is the whole of receive-after-close: a drained closed
     // channel answers `none`, so a receiving loop ends without a sentinel value
     // and without a second call to ask whether it should have received.
-    if (strEquals(name, "chan_recv")) {
+    if (name.equals("chan_recv")) {
         if (nodeExists(argPtr)) {
             let ct = nodeGetType(ptr_to_node(argPtr))
             if (typeIsChannel(ct)) { return typeOptional(typeChannelElem(ct)) }
@@ -59,21 +63,21 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // 1 delivered, 0 dropped because the channel was already closed. `Int`
     // rather than `Bool` because the C returns `int` and the declaration is
     // emitted from this type; see the contract note in semaCheckBuiltinCall.
-    if (strEquals(name, "chan_send")) { return typeInt() }
-    if (strEquals(name, "chan_len")) { return typeInt() }
-    if (strEquals(name, "chan_close")) { return typeVoid() }
-    if (strEquals(name, "chan_free")) { return typeVoid() }
+    if (name.equals("chan_send")) { return typeInt() }
+    if (name.equals("chan_len")) { return typeInt() }
+    if (name.equals("chan_close")) { return typeVoid() }
+    if (name.equals("chan_free")) { return typeVoid() }
 
-    if (strEquals(name, "list_new")) { return typeList(typeInvalid()) }
-    if (strEquals(name, "list_new_with_capacity")) { return typeList(typeInvalid()) }
-    if (strEquals(name, "list_len")) { return typeInt() }
-    if (strEquals(name, "list_push")) { return typeVoid() }
-    if (strEquals(name, "list_set")) { return typeVoid() }
-    if (strEquals(name, "list_set_exclusive")) { return typeVoid() }
-    if (strEquals(name, "slice_len")) { return typeInt() }
-    if (strEquals(name, "slice_set")) { return typeVoid() }
-    if (strEquals(name, "data_len")) { return typeInt() }
-    if (strEquals(name, "soa")) {
+    if (name.equals("list_new")) { return typeList(typeInvalid()) }
+    if (name.equals("list_new_with_capacity")) { return typeList(typeInvalid()) }
+    if (name.equals("list_len")) { return typeInt() }
+    if (name.equals("list_push")) { return typeVoid() }
+    if (name.equals("list_set")) { return typeVoid() }
+    if (name.equals("list_set_exclusive")) { return typeVoid() }
+    if (name.equals("slice_len")) { return typeInt() }
+    if (name.equals("slice_set")) { return typeVoid() }
+    if (name.equals("data_len")) { return typeInt() }
+    if (name.equals("soa")) {
         if (nodeExists(argPtr)) {
             let lt = nodeGetType(ptr_to_node(argPtr))
             if (lt.kind == TypeKind.LIST and nodeExists(lt.child)) {
@@ -82,7 +86,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
         }
         return typeInvalid()
     }
-    if (strEquals(name, "aos")) {
+    if (name.equals("aos")) {
         if (nodeExists(argPtr)) {
             let vt = nodeGetType(ptr_to_node(argPtr))
             if (vt.kind == TypeKind.DATAVIEW and nodeExists(vt.child)) {
@@ -91,7 +95,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
         }
         return typeInvalid()
     }
-    if (strEquals(name, "list_get")) {
+    if (name.equals("list_get")) {
         if (nodeExists(argPtr)) {
             let lt = nodeGetType(ptr_to_node(argPtr))
             if (lt.kind == TypeKind.LIST and nodeExists(lt.child)) {
@@ -106,7 +110,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
 internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     // drop(x): deterministic, safe free. Consumes (moves) an owned value, so
     // use-after-drop and double-drop are caught by move tracking.
-    if (strEquals(name, "drop")) {
+    if (name.equals("drop")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let mut arg = ptr_to_node(argPtr)
         let mut t = semaExpr(module, arg)
@@ -123,7 +127,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
     // held, so it transfers no ownership and the optional stays usable. Treating
     // it as a move would make `if (p != none) { use(expect(p)) }` fail on the
     // second visit to a loop body.
-    if (strEquals(name, "expect")) {
+    if (name.equals("expect")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let ot = semaExpr(module, a0)
@@ -138,13 +142,13 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
-    if (strEquals(name, "__builtin_string_len")) {
+    if (name.equals("__builtin_string_len")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         semaCheckValue(module, ptr_to_node(argPtr), typeString(), "string length operand")
         return true
     }
 
-    if (strEquals(name, "__builtin_string_byte_at")) {
+    if (name.equals("__builtin_string_byte_at")) {
         if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         semaCheckValue(module, a0, typeString(), "string byte operand")
@@ -152,7 +156,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
-    if (strEquals(name, "__builtin_string_put_byte")) {
+    if (name.equals("__builtin_string_put_byte")) {
         if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let a1 = ptr_to_node(a0.next)
@@ -162,19 +166,27 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
-    if (strEquals(name, "list_new")) {
+    if (name.equals("__builtin_string_eq")) {
+        if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
+        let e0 = ptr_to_node(argPtr)
+        semaCheckValue(module, e0, typeString(), "string equality operand")
+        semaCheckValue(module, ptr_to_node(e0.next), typeString(), "string equality operand")
+        return true
+    }
+
+    if (name.equals("list_new")) {
         semaCheckArity(call, name, argPtr, 0)
         return true
     }
     // Vec::with_capacity. A hint, not a bound -- the list still doubles past it --
     // so there is nothing here for the analysis to trust and no annotation budget
     // to spend. Worth 0.926x on g2's per-frame list; see runtime/lang_runtime.c.
-    if (strEquals(name, "list_new_with_capacity")) {
+    if (name.equals("list_new_with_capacity")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         semaCheckValue(module, ptr_to_node(argPtr), typeInt(), "list_new_with_capacity")
         return true
     }
-    if (strEquals(name, "list_len")) {
+    if (name.equals("list_len")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
@@ -188,7 +200,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
     // `soa(rows)`, the rows live in columns and the old List handle is gone;
     // after `aos(view)`, the reverse is true. Restrict the first boundary to
     // flat structs so a byte copy never duplicates an owned pointer.
-    if (strEquals(name, "soa")) {
+    if (name.equals("soa")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let rows = ptr_to_node(argPtr)
         let lt = semaExpr(module, rows)
@@ -211,7 +223,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
-    if (strEquals(name, "aos")) {
+    if (name.equals("aos")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let view = ptr_to_node(argPtr)
         let vt = semaExpr(module, view)
@@ -223,7 +235,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
-    if (strEquals(name, "data_len")) {
+    if (name.equals("data_len")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let view = ptr_to_node(argPtr)
         let vt = semaExpr(module, view)
@@ -232,7 +244,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         }
         return true
     }
-    if (strEquals(name, "list_get")) {
+    if (name.equals("list_get")) {
         if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
@@ -269,12 +281,12 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
     // every task the endpoint was shared with. The join is the synchronisation
     // edge that makes the free safe, which is the same edge that keeps the
     // element counts non-atomic.
-    if (strEquals(name, "chan_new")) {
+    if (name.equals("chan_new")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         semaCheckValue(module, ptr_to_node(argPtr), typeInt(), "chan_new capacity")
         return true
     }
-    if (strEquals(name, "chan_send")) {
+    if (name.equals("chan_send")) {
         if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let ct = semaExpr(module, a0)
@@ -291,7 +303,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         semaConsumeOperand(valueNode)
         return true
     }
-    if (strEquals(name, "chan_recv")) {
+    if (name.equals("chan_recv")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let ct = semaExpr(module, a0)
@@ -300,8 +312,8 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         }
         return true
     }
-    if (strEquals(name, "chan_share") or strEquals(name, "chan_close")
-        or strEquals(name, "chan_len") or strEquals(name, "chan_free")) {
+    if (name.equals("chan_share") or name.equals("chan_close")
+        or name.equals("chan_len") or name.equals("chan_free")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let ct = semaExpr(module, a0)
@@ -312,7 +324,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
-    if (strEquals(name, "list_push")) {
+    if (name.equals("list_push")) {
         if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
@@ -346,7 +358,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         semaConsumeOperand(ptr_to_node(a0.next))
         return true
     }
-    if (strEquals(name, "list_set")) {
+    if (name.equals("list_set")) {
         if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
@@ -378,7 +390,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
     // no element, Slice, or arbitrary callee has observed it. That is Swift's
     // exclusive-access rule expressed as a small typestate fact; it does not
     // pretend Prismio already has Rust-style CFG borrow liveness.
-    if (strEquals(name, "list_set_exclusive")) {
+    if (name.equals("list_set_exclusive")) {
         if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
@@ -408,7 +420,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
-    if (strEquals(name, "slice_len")) {
+    if (name.equals("slice_len")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let slice = ptr_to_node(argPtr)
         let st = semaExpr(module, slice)
@@ -421,7 +433,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
     // Mutable views use an explicit operation in v0.1. Two overlapping slices
     // may both call it; the handle is resolved at each access, so list growth
     // cannot strand either one and no aliasing promise is made.
-    if (strEquals(name, "slice_set")) {
+    if (name.equals("slice_set")) {
         if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
         let slice = ptr_to_node(argPtr)
         let st = semaExpr(module, slice)

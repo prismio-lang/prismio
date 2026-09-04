@@ -103,7 +103,7 @@ impl UmsLexer {
         }
         let value = self.slice(start, self.pos - start)
         let mut kind = UmsTokenKind.IDENTIFIER
-        if (strEquals(value, "true") or strEquals(value, "false")) {
+        if (value.equals("true") or value.equals("false")) {
             kind = UmsTokenKind.BOOLEAN
         }
         self.addToken(kind, value, start, line, col)

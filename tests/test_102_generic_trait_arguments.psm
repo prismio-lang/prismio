@@ -81,7 +81,7 @@ fn fail(message: String) -> Int {
 
 fn main() -> Int {
     let made = make<Label>(7)
-    if (strEquals(made.text, "made") == false) { return fail("generic impl solved from trait argument") }
+    if (made.text.equals("made") == false) { return fail("generic impl solved from trait argument") }
     if (scaleWithInt<Label>(Label { text: "abcd" }) != 7) { return fail("ScaleBy<Int>") }
     if (scaleWithBool<Label>(Label { text: "abcd" }) != 104) { return fail("ScaleBy<Bool>") }
     if (acceptsWrapped<Label>(Label { text: "x" }) == false) { return fail("nested trait argument") }

@@ -100,7 +100,7 @@ import std.option
 // because the loop form leaks -- which capped these functions at 150 000
 // characters. The write builtin does not check its upper bound; every use below
 // is immediately after a `str_with_capacity` whose length bounds the loop.
-extern fn str_with_capacity(length: Int) -> String produce(free)
+extern fn str_with_capacity(length: Int) -> String produce (free )
 
 // Optional search accelerators, not part of the irreducible String core.
 // `str_find_byte` delegates a one-byte scan to libc. `str_find_byte_pair` is a
@@ -108,10 +108,10 @@ extern fn str_with_capacity(length: Int) -> String produce(free)
 // policy, verification, Two-Way factorisation, and effectiveness tracking stay
 // in Prismio below; the runtime primitive only supplies the vector operation
 // the language cannot spell yet.
-extern fn str_find_byte(s: String borrow, from: Int, b: Char) -> Int
-extern fn str_find_byte_pair(s: String borrow, from: Int, last: Int,
-                             offset1: Int, byte1: Char,
-                             offset2: Int, byte2: Char) -> Int
+extern fn str_find_byte(s: String borrow , from: Int, b: Char) -> Int
+extern fn str_find_byte_pair(s: String borrow , from: Int, last: Int,
+offset1: Int, byte1: Char,
+offset2: Int, byte2: Char) -> Int
 
 // Byte length, not character count. `Char` is a byte here and there is no
 // Unicode scalar type yet, so a multi-byte UTF-8 character counts as its bytes.
@@ -133,23 +133,13 @@ fn strByteAt(s: String, index: Int) -> Int {
 
 // Content equality. `==` on two Strings compares *pointers* and sema rejects it
 // with a message naming this operation, so this is the only content comparison.
-fn strEquals(a: String, b: String) -> Bool {
-    let alen = __builtin_string_len(a)
-    if (alen != __builtin_string_len(b)) { return false }
-    let mut i = 0
-    while (i < alen) {
-        if (__builtin_string_byte_at(a, i) != __builtin_string_byte_at(b, i)) { return false }
-        i = i + 1
-    }
-    return true
-}
 
 // Negative, zero, or positive, ordering by byte value.
 fn strCompare(a: String, b: String) -> Int {
     let alen = __builtin_string_len(a)
     let blen = __builtin_string_len(b)
     let mut n = alen
-    if ( blen < n ) { n = blen }
+    if (blen < n) { n = blen }
     let mut i = 0
     while (i < n) {
         let av = __builtin_string_byte_at(a, i) as U8 as Int
@@ -391,7 +381,7 @@ fn strEndsWith(s: String, suffix: String) -> Bool {
 // ordering: the two least common needle bytes make the strongest SIMD filter.
 private fn strSearchByteRank(c: Char) -> Int {
     let mut b = c
-    if (charIsUpper(b)) { b = ((b as U8) + 32) as Char }
+    if (charIsUpper(b)) { b =((b as U8) + 32) as Char }
     if (b == 'a') { return 249 }
     if (b == 'b') { return 216 }
     if (b == 'c') { return 238 }
@@ -437,7 +427,7 @@ private fn strMaximalSuffix(needle: String, nlen: Int, orderGreater: Bool) -> I6
         let a = __builtin_string_byte_at(needle, right + offset)
         let b = __builtin_string_byte_at(needle, left + offset)
         if ((a < b and orderGreater == false) or
-            (a > b and orderGreater)) {
+        (a > b and orderGreater)) {
             right = right + offset + 1
             offset = 0
             period = right - left
@@ -455,7 +445,7 @@ private fn strMaximalSuffix(needle: String, nlen: Int, orderGreater: Bool) -> I6
             period = 1
         }
     }
-    return ((left as I64) << 32) | (period as I64)
+    return ((left as I64) << 32) |(period as I64)
 }
 
 // Crochemore-Perrin Two-Way search. This is the linear-time core used by
@@ -464,13 +454,13 @@ private fn strMaximalSuffix(needle: String, nlen: Int, orderGreater: Bool) -> I6
 // period that cannot hide a match. A 64-bit byteset cheaply rejects tails that
 // occur nowhere in the relevant part of the needle.
 private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
-                                   slen: Int, nlen: Int,
-                                   pairIndex1: Int, pairByte1: Char,
-                                   pairIndex2: Int, pairByte2: Char) -> Int {
+slen: Int, nlen: Int,
+pairIndex1: Int, pairByte1: Char,
+pairIndex2: Int, pairByte2: Char) -> Int {
     let suffixLess = strMaximalSuffix(needle, nlen, false)
     let suffixGreater = strMaximalSuffix(needle, nlen, true)
-    let lessPosition = (suffixLess >> 32) as Int
-    let greaterPosition = (suffixGreater >> 32) as Int
+    let lessPosition =(suffixLess >> 32) as Int
+    let greaterPosition =(suffixGreater >> 32) as Int
     let mut critical = greaterPosition
     let mut period = suffixGreater as Int
     if (lessPosition > greaterPosition) {
@@ -485,7 +475,7 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
     let mut prefixAt = 0
     while (exactPeriod and prefixAt < critical) {
         if (__builtin_string_byte_at(needle, prefixAt) !=
-            __builtin_string_byte_at(needle, period + prefixAt)) {
+        __builtin_string_byte_at(needle, period + prefixAt)) {
             exactPeriod = false
         }
         prefixAt = prefixAt + 1
@@ -501,8 +491,8 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
     let mut byteset: U64 = 0 as U64
     let mut setAt = 0
     while (setAt < bytesetEnd) {
-        let bit = (__builtin_string_byte_at(needle, setAt) as U8 as Int) & 63
-        byteset = byteset | ((1 as U64) << (bit as U64))
+        let bit =(__builtin_string_byte_at(needle, setAt) as U8 as Int) & 63
+        byteset = byteset |((1 as U64) <<(bit as U64))
         setAt = setAt + 1
     }
 
@@ -519,9 +509,9 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
             if (prefilterActive) {
                 let before = position
                 let candidate = str_find_byte_pair(s, before, lastStart,
-                                                    pairIndex1, pairByte1,
-                                                    pairIndex2, pairByte2)
-                if (candidate < 0) { return -1 }
+                pairIndex1, pairByte1,
+                pairIndex2, pairByte2)
+                if (candidate < 0) { return - 1 }
                 position = candidate
                 memory = 0
                 prefilterSkips = prefilterSkips + 1
@@ -534,15 +524,15 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
                     prefilterDistance = 0
                 }
             }
-            let tailBit = (__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
-            if (((byteset >> (tailBit as U64)) & (1 as U64)) == (0 as U64)) {
+            let tailBit =(__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
+            if (((byteset >>(tailBit as U64)) &(1 as U64)) ==(0 as U64)) {
                 position = position + nlen
                 memory = 0
             } else {
                 let mut rightAt = critical
                 if (memory > rightAt) { rightAt = memory }
                 while (rightAt < nlen and
-                       __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
+                __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
                     rightAt = rightAt + 1
                 }
                 if (rightAt < nlen) {
@@ -554,7 +544,7 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
                     while (leftAt > memory and leftMismatch == false) {
                         leftAt = leftAt - 1
                         if (__builtin_string_byte_at(needle, leftAt) !=
-                            __builtin_string_byte_at(s, position + leftAt)) {
+                        __builtin_string_byte_at(s, position + leftAt)) {
                             leftMismatch = true
                         }
                     }
@@ -564,7 +554,7 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
                 }
             }
         }
-        return -1
+        return - 1
     }
 
     // Long-period CP2 never memorises a matched prefix. Keeping this separate
@@ -573,9 +563,9 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
         if (prefilterActive) {
             let before = position
             let candidate = str_find_byte_pair(s, before, lastStart,
-                                                pairIndex1, pairByte1,
-                                                pairIndex2, pairByte2)
-            if (candidate < 0) { return -1 }
+            pairIndex1, pairByte1,
+            pairIndex2, pairByte2)
+            if (candidate < 0) { return - 1 }
             position = candidate
             prefilterSkips = prefilterSkips + 1
             prefilterDistance = prefilterDistance + candidate - before
@@ -587,13 +577,13 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
                 prefilterDistance = 0
             }
         }
-        let tailBit = (__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
-        if (((byteset >> (tailBit as U64)) & (1 as U64)) == (0 as U64)) {
+        let tailBit =(__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
+        if (((byteset >>(tailBit as U64)) &(1 as U64)) ==(0 as U64)) {
             position = position + nlen
         } else {
             let mut rightAt = critical
             while (rightAt < nlen and
-                   __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
+            __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
                 rightAt = rightAt + 1
             }
             if (rightAt < nlen) {
@@ -604,7 +594,7 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
                 while (leftAt > 0 and leftMismatch == false) {
                     leftAt = leftAt - 1
                     if (__builtin_string_byte_at(needle, leftAt) !=
-                        __builtin_string_byte_at(s, position + leftAt)) {
+                    __builtin_string_byte_at(s, position + leftAt)) {
                         leftMismatch = true
                     }
                 }
@@ -613,7 +603,7 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
             }
         }
     }
-    return -1
+    return - 1
 }
 
 // The unprefiltered specialization used after a short needle produces dense
@@ -622,11 +612,11 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
 // case. Keeping the compact Two-Way loop separate restores Rust-std parity and
 // also avoids carrying four unused pair arguments through the hot function.
 private fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
-                        slen: Int, nlen: Int) -> Int {
+slen: Int, nlen: Int) -> Int {
     let suffixLess = strMaximalSuffix(needle, nlen, false)
     let suffixGreater = strMaximalSuffix(needle, nlen, true)
-    let lessPosition = (suffixLess >> 32) as Int
-    let greaterPosition = (suffixGreater >> 32) as Int
+    let lessPosition =(suffixLess >> 32) as Int
+    let greaterPosition =(suffixGreater >> 32) as Int
     let mut critical = greaterPosition
     let mut period = suffixGreater as Int
     if (lessPosition > greaterPosition) {
@@ -638,7 +628,7 @@ private fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
     let mut prefixAt = 0
     while (exactPeriod and prefixAt < critical) {
         if (__builtin_string_byte_at(needle, prefixAt) !=
-            __builtin_string_byte_at(needle, period + prefixAt)) {
+        __builtin_string_byte_at(needle, period + prefixAt)) {
             exactPeriod = false
         }
         prefixAt = prefixAt + 1
@@ -654,8 +644,8 @@ private fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
     let mut byteset: U64 = 0 as U64
     let mut setAt = 0
     while (setAt < bytesetEnd) {
-        let bit = (__builtin_string_byte_at(needle, setAt) as U8 as Int) & 63
-        byteset = byteset | ((1 as U64) << (bit as U64))
+        let bit =(__builtin_string_byte_at(needle, setAt) as U8 as Int) & 63
+        byteset = byteset |((1 as U64) <<(bit as U64))
         setAt = setAt + 1
     }
 
@@ -663,15 +653,15 @@ private fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
     if (exactPeriod) {
         let mut memory = 0
         while (position + nlen <= slen) {
-            let tailBit = (__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
-            if (((byteset >> (tailBit as U64)) & (1 as U64)) == (0 as U64)) {
+            let tailBit =(__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
+            if (((byteset >>(tailBit as U64)) &(1 as U64)) ==(0 as U64)) {
                 position = position + nlen
                 memory = 0
             } else {
                 let mut rightAt = critical
                 if (memory > rightAt) { rightAt = memory }
                 while (rightAt < nlen and
-                       __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
+                __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
                     rightAt = rightAt + 1
                 }
                 if (rightAt < nlen) {
@@ -683,7 +673,7 @@ private fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
                     while (leftAt > memory and leftMismatch == false) {
                         leftAt = leftAt - 1
                         if (__builtin_string_byte_at(needle, leftAt) !=
-                            __builtin_string_byte_at(s, position + leftAt)) {
+                        __builtin_string_byte_at(s, position + leftAt)) {
                             leftMismatch = true
                         }
                     }
@@ -693,17 +683,17 @@ private fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
                 }
             }
         }
-        return -1
+        return - 1
     }
 
     while (position + nlen <= slen) {
-        let tailBit = (__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
-        if (((byteset >> (tailBit as U64)) & (1 as U64)) == (0 as U64)) {
+        let tailBit =(__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
+        if (((byteset >>(tailBit as U64)) &(1 as U64)) ==(0 as U64)) {
             position = position + nlen
         } else {
             let mut rightAt = critical
             while (rightAt < nlen and
-                   __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
+            __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
                 rightAt = rightAt + 1
             }
             if (rightAt < nlen) {
@@ -714,7 +704,7 @@ private fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
                 while (leftAt > 0 and leftMismatch == false) {
                     leftAt = leftAt - 1
                     if (__builtin_string_byte_at(needle, leftAt) !=
-                        __builtin_string_byte_at(s, position + leftAt)) {
+                    __builtin_string_byte_at(s, position + leftAt)) {
                         leftMismatch = true
                     }
                 }
@@ -723,7 +713,7 @@ private fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
             }
         }
     }
-    return -1
+    return - 1
 }
 
 // The first index at or after `from` where `needle` occurs, or -1.
@@ -740,13 +730,13 @@ fn strIndexOfFrom(s: String, needle: String, from: Int) -> Int {
     if (i < 0) { i = 0 }
     if (nlen == 0) {
         if (i <= slen) { return i }
-        return -1
+        return - 1
     }
-    if (i + nlen > slen) { return -1 }
+    if (i + nlen > slen) { return - 1 }
     if (nlen == 1) {
         let hit = str_find_byte(s, i, __builtin_string_byte_at(needle, 0))
         if (hit <= slen - 1) { return hit }
-        return -1
+        return - 1
     }
 
     // Select the two least-common needle bytes once. For short needles they
@@ -801,8 +791,8 @@ fn strIndexOfFrom(s: String, needle: String, from: Int) -> Int {
         let mut candidateDistance = 0
         while (i <= lastStart) {
             let hit = str_find_byte_pair(s, i, lastStart,
-                                         index1, byte1, index2, byte2)
-            if (hit < 0) { return -1 }
+            index1, byte1, index2, byte2)
+            if (hit < 0) { return - 1 }
             if (strMatchesAtIn(s, needle, hit, slen, nlen)) { return hit }
             candidateCount = candidateCount + 1
             candidateDistance = candidateDistance + hit - i
@@ -811,14 +801,14 @@ fn strIndexOfFrom(s: String, needle: String, from: Int) -> Int {
                 return strTwoWayIndexOfFrom(s, needle, i, slen, nlen)
             }
         }
-        return -1
+        return - 1
     }
 
     // Large needles use the same pair scan as a prefilter around Two-Way. Its
     // 50-skip/8-byte effectiveness window makes dense inputs fall back to pure
     // Two-Way while selective inputs retain memory-bandwidth SIMD scanning.
     return strPrefilteredTwoWayIndexOfFrom(s, needle, i, slen, nlen,
-                                           index1, byte1, index2, byte2)
+    index1, byte1, index2, byte2)
 }
 
 fn strIndexOf(s: String, needle: String) -> Int {
@@ -833,7 +823,7 @@ fn strLastIndexOf(s: String, needle: String) -> Int {
         if (strMatchesAtIn(s, needle, i, slen, nlen)) { return i }
         i = i - 1
     }
-    return -1
+    return - 1
 }
 
 fn strContains(s: String, needle: String) -> Bool {
@@ -1029,7 +1019,7 @@ fn strReplaceAll(s: String, old: String, new: String) -> String {
 
     let newLen = __builtin_string_len(new)
     let count = strCountOf(s, old)
-    let out = str_with_capacity(slen + count * (newLen - oldLen))
+    let out = str_with_capacity(slen + count *(newLen - oldLen))
     let mut readAt = 0
     let mut writeAt = 0
     let mut matchAt = strIndexOf(s, old)
@@ -1140,7 +1130,7 @@ fn strJoin(parts: List<String>, sep: String) -> String {
     let n = list_len(parts)
     let seplen = __builtin_string_len(sep)
     let mut total = 0
-    if (n > 0) { total = seplen * (n - 1) }
+    if (n > 0) { total = seplen *(n - 1) }
     let mut i = 0
     while (i < n) {
         total = total + __builtin_string_len(list_get(parts, i))
@@ -1256,14 +1246,14 @@ fn strFromUnsigned(value: U64) -> String {
     let mut v = value
     let mut i = digits - 1
     while (v >= 100) {
-        let pair = ((v % 100) as Int) * 2
+        let pair =((v % 100) as Int) * 2
         __builtin_string_put_byte(out, i, __builtin_string_byte_at(table, pair + 1))
         __builtin_string_put_byte(out, i - 1, __builtin_string_byte_at(table, pair))
         i = i - 2
         v = v / 100
     }
     // One or two digits left, and the same table serves both.
-    let pair = ((v % 100) as Int) * 2
+    let pair =((v % 100) as Int) * 2
     __builtin_string_put_byte(out, i, __builtin_string_byte_at(table, pair + 1))
     if (i > 0) {
         __builtin_string_put_byte(out, i - 1, __builtin_string_byte_at(table, pair))
@@ -1288,7 +1278,7 @@ fn strFromUnsigned(value: U64) -> String {
 fn strFromInt(value: Int) -> String {
     let negative = value < 0
     let mut v = value as U64
-    if (negative) { v = (0 as U64) - (value as I64 as U64) }
+    if (negative) { v =(0 as U64) -(value as I64 as U64) }
 
     let digits = strDigitCount(v)
     let mut offset = 0
@@ -1300,13 +1290,13 @@ fn strFromInt(value: Int) -> String {
     let table = strTwoDigitTable()
     let mut i = offset + digits - 1
     while (v >= 100) {
-        let pair = ((v % 100) as Int) * 2
+        let pair =((v % 100) as Int) * 2
         __builtin_string_put_byte(out, i, __builtin_string_byte_at(table, pair + 1))
         __builtin_string_put_byte(out, i - 1, __builtin_string_byte_at(table, pair))
         i = i - 2
         v = v / 100
     }
-    let pair = ((v % 100) as Int) * 2
+    let pair =((v % 100) as Int) * 2
     __builtin_string_put_byte(out, i, __builtin_string_byte_at(table, pair + 1))
     if (i > offset) {
         __builtin_string_put_byte(out, i - 1, __builtin_string_byte_at(table, pair))
@@ -1815,7 +1805,24 @@ impl String {
     }
     fn slice(self, start: Int, end: Int) -> String { return strSlice(self, start, end) }
 
-    fn equals(self, other: String) -> Bool { return strEquals(self, other) }
+    // The body lives here rather than in a prefixed free function: `equals` is
+    // the public spelling, and `==` reaches the same answer through the
+    // `__builtin_string_eq` lowering rather than through this.
+    //
+    // Deliberately the portable byte loop and **not** that builtin. The
+    // committed bootstrap seed does not know `__builtin_string_eq`, and
+    // std/string.psm has to compile under the seed for the bootstrap to work at
+    // all. Length is compared first, which the builtin's strcmp cannot do.
+    fn equals(self, other: String) -> Bool {
+        let alen = __builtin_string_len(self)
+        if (alen != __builtin_string_len(other)) { return false }
+        let mut i = 0
+        while (i < alen) {
+            if (__builtin_string_byte_at(self, i) != __builtin_string_byte_at(other, i)) { return false }
+            i = i + 1
+        }
+        return true
+    }
     fn equalsIgnoreCase(self, other: String) -> Bool {
         return strEqualsIgnoreCase(self, other)
     }

@@ -68,7 +68,7 @@ private fn enumShadowFind(module: ASTNode, name: String) -> ASTNode {
     let mut p = module.child3
     while (nodeExists(p)) {
         let decl = ptr_to_node(p)
-        if (strEquals(decl.s1, name)) { return decl }
+        if (decl.s1.equals(name)) { return decl }
         p = decl.next
     }
     return ptr_to_node(ptr_null())
@@ -83,7 +83,7 @@ private fn enumVariantNode(enumDecl: ASTNode, variantName: String) -> ASTNode {
     let mut p = enumDecl.child1
     while (nodeExists(p)) {
         let variant = ptr_to_node(p)
-        if (strEquals(variant.s1, variantName)) { return variant }
+        if (variant.s1.equals(variantName)) { return variant }
         p = variant.next
     }
     return ptr_to_node(ptr_null())
@@ -102,7 +102,7 @@ private fn enumVariantTag(enumDecl: ASTNode, variantName: String) -> Int {
     let mut index = 0
     while (nodeExists(p)) {
         let variant = ptr_to_node(p)
-        if (strEquals(variant.s1, variantName)) { return index + 1 }
+        if (variant.s1.equals(variantName)) { return index + 1 }
         index = index + 1
         p = variant.next
     }
@@ -308,7 +308,7 @@ private fn enumConcreteName(module: ASTNode, enumName: String, variantName: Stri
 internal fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: String, variantName: String,
                            argPtr: Ptr, explicitArgs: Ptr) -> Bool {
     let concrete = enumConcreteName(module, enumName, variantName, argPtr, explicitArgs)
-    if (strEquals(concrete, "")) {
+    if (concrete.equals("")) {
         // Naming the fix rather than letting this fall through as "unknown
         // function `Ok`", which is what it looked like before and says nothing
         // about the actual problem.
@@ -463,7 +463,7 @@ private fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, e
 private fn semaMatchHasWildcard(stmt: ASTNode) -> Bool {
     let mut armPtr = stmt.child2
     while (nodeExists(armPtr)) {
-        if (strEquals(ptr_to_node(armPtr).s1, "_")) { return true }
+        if (ptr_to_node(armPtr).s1.equals("_")) { return true }
         armPtr = ptr_to_node(armPtr).next
     }
     return false
@@ -476,7 +476,7 @@ private fn semaMatchCoversTag(stmt: ASTNode, tag: Int) -> Bool {
     let mut armPtr = stmt.child2
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
-        if (strEquals(arm.s1, "_") == false and arm.i1 == tag) { return true }
+        if (arm.s1.equals("_") == false and arm.i1 == tag) { return true }
         armPtr = arm.next
     }
     return false
@@ -506,7 +506,7 @@ private fn semaCheckExhaustive(stmt: ASTNode, shadow: ASTNode) {
     while (nodeExists(p)) {
         let variant = ptr_to_node(p)
         if (semaMatchCoversTag(stmt, index + 1) == false) {
-            if (strEquals(missing, "")) {
+            if (missing.equals("")) {
                 missing = variant.s1
             } else {
                 missing = strConcat(strConcat(missing, ", "), variant.s1)
@@ -516,7 +516,7 @@ private fn semaCheckExhaustive(stmt: ASTNode, shadow: ASTNode) {
         p = variant.next
     }
 
-    if (strEquals(missing, "") == false) {
+    if (missing.equals("") == false) {
         semaErrorAt(stmt, strConcat(strConcat(strConcat(
             "this match does not cover ", missing),
             " of "), strConcat(diagQuote(shadow.s1), "; add the missing arms or a `_` arm")))
@@ -534,7 +534,7 @@ private fn semaTagCoveredBefore(stmt: ASTNode, before: Int, tag: Int) -> Bool {
     let mut i = 0
     while (nodeExists(p) and i < before) {
         let arm = ptr_to_node(p)
-        if (strEquals(arm.s1, "_") == false and arm.i1 == tag) { return true }
+        if (arm.s1.equals("_") == false and arm.i1 == tag) { return true }
         i = i + 1
         p = arm.next
     }
@@ -550,7 +550,7 @@ private fn semaCheckDuplicateArms(stmt: ASTNode) {
     let mut position = 0
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
-        if (strEquals(arm.s1, "_") == false and semaTagCoveredBefore(stmt, position, arm.i1)) {
+        if (arm.s1.equals("_") == false and semaTagCoveredBefore(stmt, position, arm.i1)) {
             semaErrorAt(arm, strConcat(strConcat(
                 "this arm is unreachable: an earlier arm already matches ",
                 diagQuote(arm.s2)), ""))
@@ -565,7 +565,7 @@ internal fn semaMatchPayloadArms(module: ASTNode, stmt: ASTNode, scrutT: TypeInf
     let mut armPtr = stmt.child2
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
-        if (strEquals(arm.s1, "_")) {
+        if (arm.s1.equals("_")) {
             semaBlock(module, ptr_to_node(arm.child2), expectedReturn)
         } else {
             semaCheckPayloadArm(module, arm, shadow, expectedReturn)

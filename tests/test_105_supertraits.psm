@@ -54,10 +54,10 @@ fn fail(message: String) -> Int {
 
 fn main() -> Int {
     let item = Item { n: 3 }
-    if (strEquals(label(item), "item") == false) { return fail("supertrait method") }
-    if (strEquals(detail(item), "item!") == false) { return fail("child method") }
-    if (strEquals(report(item), "item!3") == false) { return fail("transitive chain") }
-    if (strEquals(describeAny(item), "itemitem!") == false) { return fail("parent through a child bound") }
+    if (label(item).equals("item") == false) { return fail("supertrait method") }
+    if (detail(item).equals("item!") == false) { return fail("child method") }
+    if (report(item).equals("item!3") == false) { return fail("transitive chain") }
+    if (describeAny(item).equals("itemitem!") == false) { return fail("parent through a child bound") }
     println("test_105 ok")
     return 0
 }

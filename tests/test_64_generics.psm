@@ -49,11 +49,11 @@ fn main() -> Int {
     let bi = Box<Int> { value: 7 }
     let bs = Box<String> { value: "seven" }
     if (bi.value != 7) { return fail("Box<Int> did not keep its value") }
-    if (strEquals(bs.value, "seven") == false) { return fail("Box<String> did not keep its value") }
+    if (bs.value.equals("seven") == false) { return fail("Box<String> did not keep its value") }
 
     let p = Pair<Int, String> { key: 3, value: "three" }
     if (p.key != 3) { return fail("Pair key") }
-    if (strEquals(p.value, "three") == false) { return fail("Pair value") }
+    if (p.value.equals("three") == false) { return fail("Pair value") }
 
     // Nested: the inner instantiation has to exist before the outer one can be
     // named, because the outer one's name is built from the inner one's.
@@ -69,7 +69,7 @@ fn main() -> Int {
 
     // Inference from the argument type.
     if (identity(41) != 41) { return fail("inferred identity on Int") }
-    if (strEquals(identity("text"), "text") == false) { return fail("inferred identity on String") }
+    if (identity("text").equals("text") == false) { return fail("inferred identity on String") }
 
     // Written out, for the case inference cannot reach.
     if (identity<Int>(5) != 5) { return fail("explicit identity<Int>") }

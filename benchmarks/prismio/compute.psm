@@ -1,0 +1,309 @@
+import common
+
+extern fn cos(value: Float) -> Float
+extern fn sin(value: Float) -> Float
+
+struct BenchParticle {
+    x: Float,
+    y: Float,
+    vx: Float,
+    vy: Float,
+    life: Int
+}
+
+fn benchMatrixMultiply(scale: Int) -> Int {
+    let n = 32 * scale
+    let count = n * n
+    let mut a: List<Int> = list_new_with_capacity(count)
+    let mut b: List<Int> = list_new_with_capacity(count)
+    let mut c: List<Int> = list_new_with_capacity(count)
+    let mut i = 0
+    while (i < count) {
+        list_push(a, (i * 17) % 101)
+        list_push(b, (i * 29) % 103)
+        list_push(c, 0)
+        i = i + 1
+    }
+    let mut row = 0
+    while (row < n) {
+        let mut col = 0
+        while (col < n) {
+            let mut sum = 0
+            let mut k = 0
+            while (k < n) {
+                sum = (sum + list_get(a, row * n + k) * list_get(b, k * n + col)) % 1000000007
+                k = k + 1
+            }
+            list_set(c, row * n + col, sum)
+            col = col + 1
+        }
+        row = row + 1
+    }
+    let mut checksum = 0
+    let mut at = 0
+    while (at < count) {
+        checksum = (checksum + list_get(c, at)) % 1000000007
+        at = at + 1
+    }
+    return checksum
+}
+
+fn benchMandelbrot(scale: Int) -> Int {
+    let side = 96 * scale
+    let mut inside = 0
+    let mut py = 0
+    while (py < side) {
+        let cy = (py as Float) * 2.0 / (side as Float) - 1.0
+        let mut px = 0
+        while (px < side) {
+            let cx = (px as Float) * 3.0 / (side as Float) - 2.0
+            let mut x = 0.0
+            let mut y = 0.0
+            let mut iter = 0
+            while (x * x + y * y <= 4.0 and iter < 60) {
+                let nextX = x * x - y * y + cx
+                y = 2.0 * x * y + cy
+                x = nextX
+                iter = iter + 1
+            }
+            if (iter == 60) { inside = inside + 1 }
+            px = px + 1
+        }
+        py = py + 1
+    }
+    return inside
+}
+
+fn benchFftTransform(real: List<Float>, imag: List<Float>, n: Int) {
+    let mut j = 0
+    let mut i = 1
+    while (i < n) {
+        let mut bit = n / 2
+        while (j >= bit) {
+            j = j - bit
+            bit = bit / 2
+        }
+        j = j + bit
+        if (i < j) {
+            let realSwap = list_get(real, i)
+            let imagSwap = list_get(imag, i)
+            list_set(real, i, list_get(real, j))
+            list_set(imag, i, list_get(imag, j))
+            list_set(real, j, realSwap)
+            list_set(imag, j, imagSwap)
+        }
+        i = i + 1
+    }
+
+    let mut length = 2
+    while (length <= n) {
+        let angle = -6.283185307179586 / (length as Float)
+        let stepReal = cos(angle)
+        let stepImag = sin(angle)
+        let half = length / 2
+        let mut block = 0
+        while (block < n) {
+            let mut weightReal = 1.0
+            let mut weightImag = 0.0
+            let mut offset = 0
+            while (offset < half) {
+                let left = block + offset
+                let right = left + half
+                let rightReal = list_get(real, right)
+                let rightImag = list_get(imag, right)
+                let valueReal = rightReal * weightReal - rightImag * weightImag
+                let valueImag = rightReal * weightImag + rightImag * weightReal
+                let leftReal = list_get(real, left)
+                let leftImag = list_get(imag, left)
+                list_set(real, left, leftReal + valueReal)
+                list_set(imag, left, leftImag + valueImag)
+                list_set(real, right, leftReal - valueReal)
+                list_set(imag, right, leftImag - valueImag)
+                let nextReal = weightReal * stepReal - weightImag * stepImag
+                weightImag = weightReal * stepImag + weightImag * stepReal
+                weightReal = nextReal
+                offset = offset + 1
+            }
+            block = block + length
+        }
+        length = length * 2
+    }
+}
+
+fn benchFft(scale: Int) -> Int {
+    let mut n = 1024 * scale
+    if (scale == 12) { n = 16384 }
+    let mut real: List<Float> = list_new_with_capacity(n)
+    let mut imag: List<Float> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(real, 1.0)
+        list_push(imag, 0.0)
+        i = i + 1
+    }
+    let rounds = 20 * scale
+    let mut checksum = 0
+    let mut round = 0
+    while (round < rounds) {
+        let mut k = 0
+        while (k < n) {
+            list_set(real, k, 1.0)
+            list_set(imag, k, 0.0)
+            k = k + 1
+        }
+        benchFftTransform(real, imag, n)
+        checksum = checksum + (list_get(real, 0) as Int)
+        round = round + 1
+    }
+    return checksum
+}
+
+fn benchNumericalIntegration(scale: Int) -> Int {
+    let steps = 1000000 * scale
+    let width = 1.0 / (steps as Float)
+    let mut sum = 0.0
+    let mut i = 0
+    while (i < steps) {
+        let x = ((i as Float) + 0.5) * width
+        sum = sum + (4.0 / (1.0 + x * x))
+        i = i + 1
+    }
+    return (sum * width * 100000000.0) as Int
+}
+
+fn benchVectorDot(scale: Int) -> Int {
+    let n = 1000000 * scale
+    let mut a: List<Int> = list_new_with_capacity(n)
+    let mut b: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(a, i % 101)
+        list_push(b, (i * 3) % 103)
+        i = i + 1
+    }
+    let mut sum = 0
+    let mut k = 0
+    while (k < n) {
+        sum = (sum + list_get(a, k) * list_get(b, k)) % 1000000007
+        k = k + 1
+    }
+    return sum
+}
+
+fn benchConvolution(scale: Int) -> Int {
+    let n = 300000 * scale
+    let mut input: List<Int> = list_new_with_capacity(n)
+    let mut output: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(input, i % 251)
+        list_push(output, 0)
+        i = i + 1
+    }
+    let mut at = 3
+    while (at + 3 < n) {
+        let value = list_get(input, at - 3) + 2 * list_get(input, at - 2)
+            + 3 * list_get(input, at - 1) + 4 * list_get(input, at)
+            + 3 * list_get(input, at + 1) + 2 * list_get(input, at + 2)
+            + list_get(input, at + 3)
+        list_set(output, at, value)
+        at = at + 1
+    }
+    let mut checksum = 0
+    let mut k = 0
+    while (k < n) {
+        checksum = (checksum + list_get(output, k)) % 1000000007
+        k = k + 1
+    }
+    return checksum
+}
+
+fn benchMonteCarlo(scale: Int) -> Int {
+    let samples = 2000000 * scale
+    let mut seed = 31
+    let mut inside = 0
+    let mut i = 0
+    while (i < samples) {
+        seed = benchRandom(seed)
+        let x = seed % 10000
+        seed = benchRandom(seed)
+        let y = seed % 10000
+        if (x * x + y * y <= 100000000) { inside = inside + 1 }
+        i = i + 1
+    }
+    return inside
+}
+
+fn benchPolynomial(scale: Int) -> Int {
+    let evaluations = 2000000 * scale
+    let mut checksum = 0
+    let mut i = 0
+    while (i < evaluations) {
+        let x = i % 97
+        let mut value = 3
+        value = (value * x + 5) % 1000003
+        value = (value * x + 7) % 1000003
+        value = (value * x + 11) % 1000003
+        value = (value * x + 13) % 1000003
+        value = (value * x + 17) % 1000003
+        checksum = (checksum + value) % 1000000007
+        i = i + 1
+    }
+    return checksum
+}
+
+fn benchEcsUpdate(scale: Int) -> Int {
+    let n = 50000 * scale
+    let rounds = 20
+    let mut particles: List<BenchParticle> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(particles, BenchParticle {
+            x: (i % 1000) as Float, y: (i % 500) as Float,
+            vx: ((i % 7) + 1) as Float, vy: ((i % 11) + 1) as Float,
+            life: 100
+        })
+        i = i + 1
+    }
+    let mut round = 0
+    while (round < rounds) {
+        let mut k = 0
+        while (k < n) {
+            let p = list_get(particles, k)
+            p.x = p.x + p.vx * 0.016
+            p.y = p.y + p.vy * 0.016
+            p.life = p.life - 1
+            k = k + 1
+        }
+        round = round + 1
+    }
+    let mut checksum = 0
+    let mut q = 0
+    while (q < n) {
+        let p = list_get(particles, q)
+        checksum = (checksum + (p.x as Int) + (p.y as Int) + p.life) % 1000000007
+        q = q + 1
+    }
+    return checksum
+}
+
+fn benchBandSum(band: BenchBand) -> Int {
+    let mut state = band.seed
+    let mut sum = 0
+    let mut i = 0
+    while (i < band.steps) {
+        state = benchRandom(state)
+        sum = (sum + state) % 1000000007
+        i = i + 1
+    }
+    return sum
+}
+
+fn benchParallelReduction(scale: Int) -> Int {
+    let steps = 500000 * scale
+    let w0 = spawn benchBandSum(BenchBand { seed: 1, steps: steps })
+    let w1 = spawn benchBandSum(BenchBand { seed: 101, steps: steps })
+    let w2 = spawn benchBandSum(BenchBand { seed: 1001, steps: steps })
+    let w3 = spawn benchBandSum(BenchBand { seed: 10001, steps: steps })
+    return (((join w0 + join w1) % 1000000007) + ((join w2 + join w3) % 1000000007)) % 1000000007
+}

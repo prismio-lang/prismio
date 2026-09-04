@@ -31,7 +31,7 @@ fn add(a: String, b: String) -> String {
 fn main() -> Int {
     // Unqualified resolution is unchanged.
     if (add(2, 4) != 6) { return fail("unqualified add") }
-    if (strEquals(add("a", "b"), "ab") == false) { return fail("unqualified overload") }
+    if (add("a", "b").equals("ab") == false) { return fail("unqualified overload") }
 
     // Module-qualified.
     if (utils.add(2, 4) != 6) { return fail("utils.add") }
@@ -42,7 +42,7 @@ fn main() -> Int {
     // import path is the qualifier: the leaf alone is ambiguous across
     // `src/{ir,parse}/expr.psm`, and it is not even stable, because the installed
     // layout stores `std/string.psm` at `stdlib/string.psm`.
-    if (strEquals(std.string.strTrim("  x  "), "x") == false) { return fail("std.string.strTrim") }
+    if (std.string.strTrim("  x  ").equals("x") == false) { return fail("std.string.strTrim") }
     if (std.string.strLength("abcd") != 4) { return fail("std.string.strLength") }
 
     // `priv` is visible inside its own file: `visibleScale` is declared beside

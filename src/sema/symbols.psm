@@ -50,14 +50,14 @@ private fn semaParamSignature(module: ASTNode, paramPtr: Ptr) -> String {
     while (nodeExists(curr)) {
         let mut param = ptr_to_node(curr)
         let paramT = semaAnnotationType(module, ptr_to_node(param.child1))
-        if (strEquals(sig, "")) {
+        if (sig.equals("")) {
             sig = semaMangleType(paramT)
         } else {
             sig = strConcat(strConcat(sig, "_"), semaMangleType(paramT))
         }
         curr = param.next
     }
-    if (strEquals(sig, "")) { return "Void" }
+    if (sig.equals("")) { return "Void" }
     return sig
 }
 
@@ -65,7 +65,7 @@ internal fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
     if (fnNode.kind == NodeKind.EXTERN_FUNCTION) {
         return fnNode.s1
     }
-    if (strEquals(fnNode.s1, "main")) {
+    if (fnNode.s1.equals("main")) {
         return "main"
     }
 
@@ -76,7 +76,7 @@ internal fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
     // asked for. An inherent method and a free function are unchanged.
     let owner = semaOwningTrait(module, fnNode)
     let signature = semaParamSignature(module, fnNode.child1)
-    if (strEquals(owner, "") == false) {
+    if (owner.equals("") == false) {
         return strConcat(strConcat(owner, "_"),
                          strConcat(fnNode.s1, strConcat("__", signature)))
     }
@@ -97,7 +97,7 @@ private fn semaBuildTraitMethodIndex(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, "") == false) {
+        if (stmt.kind == NodeKind.IMPL_DECL and stmt.s2.equals("") == false) {
             let mut recordPtr = stmt.child2
             while (nodeExists(recordPtr)) {
                 let record = ptr_to_node(recordPtr)
@@ -175,7 +175,7 @@ internal fn semaFirstFunctionWithSymbol(module: ASTNode, fnNode: ASTNode) -> AST
     while (i < count) {
         let stmt = ptr_to_node(ir_decl_at(name, i))
         if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
-            if (strEquals(stmt.s2, symbol)) {
+            if (stmt.s2.equals(symbol)) {
                 return stmt
             }
         }
@@ -240,7 +240,7 @@ private fn semaDefaultLiteralScore(module: ASTNode, fnNode: ASTNode, argPtr: Ptr
         let paramNode = ptr_to_node(param)
         let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
         if (semaIsIntLiteral(argNode) and paramT.kind == TypeKind.INT
-            and strEquals(paramT.name, "Int")) {
+            and paramT.name.equals("Int")) {
             score = score + 1
         }
         arg = argNode.next
@@ -318,7 +318,7 @@ internal fn semaModuleWithLeaf(leaf: String) -> String {
         if (dot >= 0) {
             let tail = strSubstring(qualifier, dot + 1,
                                     __builtin_string_len(qualifier) - dot - 1)
-            if (strEquals(tail, leaf)) { return qualifier }
+            if (tail.equals(leaf)) { return qualifier }
         }
         file = file + 1
     }
@@ -333,7 +333,7 @@ internal fn semaModuleDeclares(qualifier: String, name: String) -> Bool {
     let mut i = 0
     while (i < count) {
         let decl = ptr_to_node(ir_decl_at(name, i))
-        if (strEquals(semaFileQualifier(decl.file), qualifier)) { return true }
+        if (semaFileQualifier(decl.file).equals(qualifier)) { return true }
         i = i + 1
     }
     return false
@@ -351,7 +351,7 @@ internal fn semaQualifierNamesModule(qualifier: String) -> Bool {
     let count = diag_file_count()
     let mut file = 0
     while (file < count) {
-        if (strEquals(semaFileQualifier(file), qualifier)) { return true }
+        if (semaFileQualifier(file).equals(qualifier)) { return true }
         file = file + 1
     }
     return false
@@ -386,7 +386,7 @@ private fn semaDeclVisibleFrom(decl: ASTNode, atFile: Int) -> Bool {
     if (decl.i2 == 1) { return decl.file == atFile }
     let declPackage = semaPackageOf(semaFileQualifier(decl.file))
     let atPackage = semaPackageOf(semaFileQualifier(atFile))
-    return strEquals(declPackage, atPackage)
+    return declPackage.equals(atPackage)
 }
 
 internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> ASTNode {
@@ -422,7 +422,7 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
     // qualifier is a trait is a property of the qualifier, so it is asked once
     // here rather than once per candidate.
     let mut traitQualified = false
-    if (strEquals(qualifier, "") == false) {
+    if (qualifier.equals("") == false) {
         traitQualified = semaIsTraitName(module, qualifier)
     }
 
@@ -441,12 +441,12 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         if (stmt.kind == NodeKind.EXTERN_FUNCTION and definitionExists == false) {
             isCandidate = true
         }
-        if (isCandidate and strEquals(qualifier, "") == false) {
+        if (isCandidate and qualifier.equals("") == false) {
             if (traitQualified) {
-                if (strEquals(semaOwningTrait(module, stmt), qualifier) == false) {
+                if (semaOwningTrait(module, stmt).equals(qualifier) == false) {
                     isCandidate = false
                 }
-            } else if (strEquals(semaFileQualifier(stmt.file), qualifier) == false) {
+            } else if (semaFileQualifier(stmt.file).equals(qualifier) == false) {
                 isCandidate = false
             }
         }
@@ -525,7 +525,7 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         diag_note("drop `internal` from its declaration to make it part of that package's surface")
         return createNode(NodeKind.MODULE)
     }
-    if (strEquals(qualifier, "") == false) {
+    if (qualifier.equals("") == false) {
         // A qualifier is a module or a trait, and saying the wrong one sends the
         // reader to check their imports for a name that is a trait's.
         let mut kind = "module "
@@ -569,7 +569,7 @@ internal fn semaIsTraitName(module: ASTNode, name: String) -> Bool {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.TRAIT_DECL and strEquals(stmt.s1, name)) { return true }
+        if (stmt.kind == NodeKind.TRAIT_DECL and stmt.s1.equals(name)) { return true }
         p = stmt.next
     }
     return false
@@ -586,8 +586,8 @@ private fn semaNoteTraitQualifiers(module: ASTNode, call: ASTNode, name: String,
         let stmt = ptr_to_node(ir_decl_at(name, i))
         if (stmt.kind == NodeKind.FUNCTION and semaSignatureMatchesCall(module, stmt, argPtr)) {
             let owner = semaOwningTrait(module, stmt)
-            if (strEquals(owner, "") == false) {
-                if (strEquals(suggestion, "") == false) {
+            if (owner.equals("") == false) {
+                if (suggestion.equals("") == false) {
                     suggestion = strConcat(suggestion, " or ")
                 }
                 suggestion = strConcat(suggestion,
@@ -597,7 +597,7 @@ private fn semaNoteTraitQualifiers(module: ASTNode, call: ASTNode, name: String,
         }
         i = i + 1
     }
-    if (strEquals(suggestion, "") == false) {
+    if (suggestion.equals("") == false) {
         diag_note_at(call.file, call.line, call.col, call.len,
                      strConcat("name the trait: write ", suggestion))
     }

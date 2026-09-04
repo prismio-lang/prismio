@@ -13,7 +13,7 @@ private fn matchBindsPayload(stmt: ASTNode) -> Bool {
     let mut armPtr = stmt.child2
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
-        if (strEquals(arm.s2, "") == false) { return true }
+        if (arm.s2.equals("") == false) { return true }
         armPtr = arm.next
     }
     return false
@@ -26,7 +26,7 @@ private fn expressionMovesName(nodePtr: Ptr, name: String) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let node = ptr_to_node(nodePtr)
     if (node.kind == NodeKind.IDENTIFIER_EXPR
-        and node.i3 == 1 and strEquals(node.s1, name)) {
+        and node.i3 == 1 and node.s1.equals(name)) {
         return true
     }
     if (expressionMovesName(node.child1, name)) { return true }
@@ -45,7 +45,7 @@ private fn sinkParameterIndex(name: String) -> Int {
     let mut index = 0
     while (nodeExists(paramPtr)) {
         let param = ptr_to_node(paramPtr)
-        if (strEquals(param.s1, name) and strEquals(param.s2, "sink")) {
+        if (param.s1.equals(name) and param.s2.equals("sink")) {
             return index
         }
         index = index + 1
@@ -71,7 +71,7 @@ private fn reusableArmConstructor(arm: ASTNode, structName: String) -> Ptr {
 
     let constructor = ptr_to_node(ret.child1)
     if (constructor.kind != NodeKind.STRUCT_LITERAL_EXPR
-        or strEquals(constructor.s1, structName) == false) {
+        or constructor.s1.equals(structName) == false) {
         return ptr_null()
     }
 
@@ -82,10 +82,10 @@ private fn reusableArmConstructor(arm: ASTNode, structName: String) -> Ptr {
     let mut fieldPtr = constructor.child1
     while (nodeExists(fieldPtr)) {
         let field = ptr_to_node(fieldPtr)
-        if (strEquals(field.s1, "$tag") and nodeExists(field.child1)) {
+        if (field.s1.equals("$tag") and nodeExists(field.child1)) {
             let tag = ptr_to_node(field.child1)
             if (tag.kind == NodeKind.LITERAL_EXPR
-                and strEquals(tag.s1, strFromInt(arm.i1))) {
+                and tag.s1.equals(strFromInt(arm.i1))) {
                 sameTag = true
             }
         }
@@ -632,7 +632,7 @@ private fn generateStatement(stmt: ASTNode) {
         let mut armPtr = stmt.child2
         while (nodeExists(armPtr)) {
             let arm = ptr_to_node(armPtr)
-            if (payloadMatch and strEquals(arm.s1, "_") == false) {
+            if (payloadMatch and arm.s1.equals("_") == false) {
                 let cmp = ir_icmp_eq("i32", stmt.s2, strFromInt(arm.i1))
                 let armLabel = ir_get_label()
                 let nextLabel = ir_get_label()
@@ -649,7 +649,7 @@ private fn generateStatement(stmt: ASTNode) {
                 ir_label_numbered(nextLabel)
                 needsFinalBr = true
                 armPtr = arm.next
-            } else if (strEquals(arm.s1, "_")) {
+            } else if (arm.s1.equals("_")) {
                 // wildcard: runs in the current fall-through block
                 if (payloadMatch) {
                     beginArmReuse(stmt, arm, structTypeName(scrutType))
@@ -780,11 +780,11 @@ private fn generateScopeDrops(floor: Int) {
         // rely on the existing field/caller agreement, and suppressing their
         // caller release regresses test_49.
         let mut duplicate = "0"
-        if (strEquals(storeType, "ptr")) {
+        if (storeType.equals("ptr")) {
             let mut j = 0
             while (j < i) {
                 let earlierType = storageType(ir_drop_type(floor, j))
-                if (strEquals(earlierType, "ptr")) {
+                if (earlierType.equals("ptr")) {
                     let earlier = ir_get_temp_name(ir_load("ptr", ir_drop_slot(floor, j)))
                     let same = ir_get_temp_name(ir_icmp_eq("ptr", value, earlier))
                     duplicate = ir_get_temp_name(ir_or("i1", duplicate, same))
@@ -795,7 +795,7 @@ private fn generateScopeDrops(floor: Int) {
 
         let releaseLabel = ir_get_label()
         let doneLabel = ir_get_label()
-        if (strEquals(duplicate, "0")) {
+        if (duplicate.equals("0")) {
             ir_br_numbered(releaseLabel)
         } else {
             ir_cond_br_numbered(duplicate, doneLabel, releaseLabel)

@@ -125,7 +125,7 @@ private fn umsManifestDependencyBlock(document: UmsAstDocument) -> Int {
         let index = list_get(document.roots, i)
         let statement = list_get(document.statements, index)
         if (statement.kind == UmsAstStatementKind.CALL and
-            strEquals(statement.name, "dependencies")) {
+            statement.name.equals("dependencies")) {
             return index
         }
         i = i + 1

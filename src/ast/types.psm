@@ -113,11 +113,11 @@ fn typeUsize() -> TypeInfo { return typeMake(TypeKind.INT, "Usize", targetPtrInt
 // Bit width of an integer type, from its LLVM spelling. Casting needs it to
 // choose between truncation and extension.
 fn typeIntBits(t: TypeInfo) -> Int {
-    if (strEquals(t.llvm, "i1")) { return 1 }
-    if (strEquals(t.llvm, "i8")) { return 8 }
-    if (strEquals(t.llvm, "i16")) { return 16 }
-    if (strEquals(t.llvm, "i32")) { return 32 }
-    if (strEquals(t.llvm, "i64")) { return 64 }
+    if (t.llvm.equals("i1")) { return 1 }
+    if (t.llvm.equals("i8")) { return 8 }
+    if (t.llvm.equals("i16")) { return 16 }
+    if (t.llvm.equals("i32")) { return 32 }
+    if (t.llvm.equals("i64")) { return 64 }
     return 0
 }
 
@@ -159,7 +159,7 @@ fn typeStruct(name: String) -> TypeInfo {
 //
 // **`none` is a null pointer, and that choice is the whole of the punned-slot
 // question.** This compiler already has a way to spell "this slot is empty": a
-// pointer to the empty string, tested with `strEquals(p, "")`. That encoding
+// pointer to the empty string, tested with `p.equals("")`. That encoding
 // reads the *first byte of the pointed-to struct*, so a live value whose first
 // field is zero is byte-for-byte an empty slot -- which is why NodeKind and
 // TypeKind both reserve ordinal 0, why the layout search pins field 0, and what
@@ -346,10 +346,10 @@ fn typeDisplay(t: TypeInfo) -> String {
 fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
     if (a.kind != b.kind) { return false }
     if (a.kind == TypeKind.STRUCT or a.kind == TypeKind.ENUM) {
-        return strEquals(a.name, b.name)
+        return a.name.equals(b.name)
     }
     if (a.kind == TypeKind.INT) {
-        return strEquals(a.name, b.name)
+        return a.name.equals(b.name)
     }
     if (a.kind == TypeKind.ARRAY) {
         if (nodeIsNull(a.child) or nodeIsNull(b.child)) {
@@ -515,7 +515,7 @@ fn typeSemKey(t: TypeInfo) -> String {
 
 private fn typeStorageKey(t: TypeInfo) -> String {
     let key = typeIrKey(t)
-    if (strEquals(key, "ptrptr")) { return "ptr" }
+    if (key.equals("ptrptr")) { return "ptr" }
     if (strStartsWith(key, "struct:")) { return "ptr" }
     return key
 }
@@ -528,35 +528,35 @@ private fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
         return typeArray(typeInvalid())
     }
 
-    if (tn.i2 == 1 and strEquals(tn.s1, "Slice")) {
+    if (tn.i2 == 1 and tn.s1.equals("Slice")) {
         if (nodeExists(tn.child1)) {
             return typeSlice(typeFromAnnotation(ptr_to_node(tn.child1)))
         }
         return typeSlice(typeInvalid())
     }
-    if (tn.i2 == 1 and strEquals(tn.s1, "DataView")) {
+    if (tn.i2 == 1 and tn.s1.equals("DataView")) {
         if (nodeExists(tn.child1)) {
             return typeDataView(typeFromAnnotation(ptr_to_node(tn.child1)))
         }
         return typeDataView(typeInvalid())
     }
-    if (tn.i2 == 1 and strEquals(tn.s1, "List")) {
+    if (tn.i2 == 1 and tn.s1.equals("List")) {
         if (nodeExists(tn.child1)) {
             return typeList(typeFromAnnotation(ptr_to_node(tn.child1)))
         }
         return typeList(typeInvalid())
     }
-    if (tn.i2 == 1 and strEquals(tn.s1, "Channel")) {
+    if (tn.i2 == 1 and tn.s1.equals("Channel")) {
         if (nodeExists(tn.child1)) {
             return typeChannel(typeFromAnnotation(ptr_to_node(tn.child1)))
         }
         return typeChannel(typeInvalid())
     }
 
-    if (strEquals(tn.s1, "Int")) { return typeInt() }
-    if (strEquals(tn.s1, "Float")) { return typeFloat() }
-    if (strEquals(tn.s1, "Bool")) { return typeBool() }
-    if (strEquals(tn.s1, "String")) { return typeString() }
+    if (tn.s1.equals("Int")) { return typeInt() }
+    if (tn.s1.equals("Float")) { return typeFloat() }
+    if (tn.s1.equals("Bool")) { return typeBool() }
+    if (tn.s1.equals("String")) { return typeString() }
     // An opaque, copyable machine pointer. `typeFromSemKey` has resolved this
     // name since `Task<R>` needed it; the *annotation* path never did, so `Ptr`
     // was a type the compiler could produce and nobody could write.
@@ -569,30 +569,30 @@ private fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
     // `typeIsMoveOnly`, so naming one twice is a copy, not a move), and `String`
     // stops having to be a machine word -- which is what a fat `{ptr, len}`
     // String needs.
-    if (strEquals(tn.s1, "Ptr")) { return typePtr() }
-    if (strEquals(tn.s1, "Char")) { return typeChar() }
-    if (strEquals(tn.s1, "I8")) { return typeI8() }
-    if (strEquals(tn.s1, "I16")) { return typeI16() }
-    if (strEquals(tn.s1, "I64")) { return typeI64() }
-    if (strEquals(tn.s1, "Isize")) { return typeIsize() }
-    if (strEquals(tn.s1, "U8")) { return typeU8() }
-    if (strEquals(tn.s1, "U16")) { return typeU16() }
-    if (strEquals(tn.s1, "U32")) { return typeU32() }
-    if (strEquals(tn.s1, "U64")) { return typeU64() }
-    if (strEquals(tn.s1, "Usize")) { return typeUsize() }
-    if (strEquals(tn.s1, "")) { return typeVoid() }
+    if (tn.s1.equals("Ptr")) { return typePtr() }
+    if (tn.s1.equals("Char")) { return typeChar() }
+    if (tn.s1.equals("I8")) { return typeI8() }
+    if (tn.s1.equals("I16")) { return typeI16() }
+    if (tn.s1.equals("I64")) { return typeI64() }
+    if (tn.s1.equals("Isize")) { return typeIsize() }
+    if (tn.s1.equals("U8")) { return typeU8() }
+    if (tn.s1.equals("U16")) { return typeU16() }
+    if (tn.s1.equals("U32")) { return typeU32() }
+    if (tn.s1.equals("U64")) { return typeU64() }
+    if (tn.s1.equals("Usize")) { return typeUsize() }
+    if (tn.s1.equals("")) { return typeVoid() }
     return typeStruct(tn.s1)
 }
 
 private fn typeFromIrKey(key: String) -> TypeInfo {
-    if (strEquals(key, "i32")) { return typeInt() }
-    if (strEquals(key, "double")) { return typeFloat() }
-    if (strEquals(key, "i1")) { return typeBool() }
-    if (strEquals(key, "i8")) { return typeChar() }
-    if (strEquals(key, "ptr")) { return typePtr() }
-    if (strEquals(key, "void")) { return typeVoid() }
-    if (strEquals(key, "struct:prismio.slice")) { return typeSlice(typeInvalid()) }
-    if (strEquals(key, "struct:prismio.data_element")) {
+    if (key.equals("i32")) { return typeInt() }
+    if (key.equals("double")) { return typeFloat() }
+    if (key.equals("i1")) { return typeBool() }
+    if (key.equals("i8")) { return typeChar() }
+    if (key.equals("ptr")) { return typePtr() }
+    if (key.equals("void")) { return typeVoid() }
+    if (key.equals("struct:prismio.slice")) { return typeSlice(typeInvalid()) }
+    if (key.equals("struct:prismio.data_element")) {
         return typeDataElement(typeInvalid())
     }
     if (strStartsWith(key, "struct:")) {
@@ -602,22 +602,22 @@ private fn typeFromIrKey(key: String) -> TypeInfo {
 }
 
 fn typeFromSemKey(key: String) -> TypeInfo {
-    if (strEquals(key, "Int")) { return typeInt() }
-    if (strEquals(key, "Float")) { return typeFloat() }
-    if (strEquals(key, "Bool")) { return typeBool() }
-    if (strEquals(key, "Char")) { return typeChar() }
-    if (strEquals(key, "String")) { return typeString() }
-    if (strEquals(key, "Ptr")) { return typePtr() }
-    if (strEquals(key, "Void")) { return typeVoid() }
-    if (strEquals(key, "I8")) { return typeI8() }
-    if (strEquals(key, "I16")) { return typeI16() }
-    if (strEquals(key, "I64")) { return typeI64() }
-    if (strEquals(key, "Isize")) { return typeIsize() }
-    if (strEquals(key, "U8")) { return typeU8() }
-    if (strEquals(key, "U16")) { return typeU16() }
-    if (strEquals(key, "U32")) { return typeU32() }
-    if (strEquals(key, "U64")) { return typeU64() }
-    if (strEquals(key, "Usize")) { return typeUsize() }
+    if (key.equals("Int")) { return typeInt() }
+    if (key.equals("Float")) { return typeFloat() }
+    if (key.equals("Bool")) { return typeBool() }
+    if (key.equals("Char")) { return typeChar() }
+    if (key.equals("String")) { return typeString() }
+    if (key.equals("Ptr")) { return typePtr() }
+    if (key.equals("Void")) { return typeVoid() }
+    if (key.equals("I8")) { return typeI8() }
+    if (key.equals("I16")) { return typeI16() }
+    if (key.equals("I64")) { return typeI64() }
+    if (key.equals("Isize")) { return typeIsize() }
+    if (key.equals("U8")) { return typeU8() }
+    if (key.equals("U16")) { return typeU16() }
+    if (key.equals("U32")) { return typeU32() }
+    if (key.equals("U64")) { return typeU64() }
+    if (key.equals("Usize")) { return typeUsize() }
     if (strStartsWith(key, "struct:")) {
         return typeStruct(strSubstring(key, 7, __builtin_string_len(key) - 7))
     }
@@ -674,7 +674,7 @@ fn nodeSetType(node: ASTNode, t: TypeInfo) {
     node.typeInfo = type_to_ptr(t)
 }
 
-// `nodeExists` rather than `strEquals(typeInfo, "")`: a TypeInfo begins with
+// `nodeExists` rather than `typeInfo.equals("")`: a TypeInfo begins with
 // its `kind`, and `TypeKind.INVALID` is 0, so a node carrying an invalid type
 // used to report as carrying none. That happened to be harmless -- nodeGetType
 // returns typeInvalid() on both paths -- but it was the same latent bug as the
@@ -814,8 +814,8 @@ fn typeAnnIsPodIn(module: ASTNode, ann: ASTNode, depth: Int, byDecl: Bool) -> Bo
     if (named) {
         return structDeclIsPodIn(module, ann.s1, depth + 1, byDecl)
     }
-    if (strEquals(ann.s1, "String")) { return false }
-    if (strEquals(ann.s1, "Ptr")) { return false }
+    if (ann.s1.equals("String")) { return false }
+    if (ann.s1.equals("Ptr")) { return false }
     return true
 }
 

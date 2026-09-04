@@ -157,11 +157,11 @@ private fn semaContractArgument(encoded: String) -> String {
 }
 
 private fn semaIsParameterContract(name: String) -> Bool {
-    if (strEquals(name, "borrow")) { return true }
-    if (strEquals(name, "retain")) { return true }
-    if (strEquals(name, "retain_in")) { return true }
-    if (strEquals(name, "consume")) { return true }
-    if (strEquals(name, "out")) { return true }
+    if (name.equals("borrow")) { return true }
+    if (name.equals("retain")) { return true }
+    if (name.equals("retain_in")) { return true }
+    if (name.equals("consume")) { return true }
+    if (name.equals("out")) { return true }
     return false
 }
 
@@ -171,11 +171,11 @@ private fn semaIsParameterContract(name: String) -> Bool {
 // passing the private `{ handle, offset, length }` aggregate as though it were
 // a stable foreign ABI.
 private fn semaExternTypeIsSlice(annotation: ASTNode) -> Bool {
-    return annotation.i2 == 1 and strEquals(annotation.s1, "Slice")
+    return annotation.i2 == 1 and annotation.s1.equals("Slice")
 }
 
 private fn semaExternTypeIsDataView(annotation: ASTNode) -> Bool {
-    return annotation.i2 == 1 and strEquals(annotation.s1, "DataView")
+    return annotation.i2 == 1 and annotation.s1.equals("DataView")
 }
 
 internal fn semaCheckExternContracts(extNode: ASTNode) {
@@ -211,7 +211,7 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
                 diag_note("materialise ordinary AoS storage with aos(view) before the call")
             }
 
-            if (strEquals(encoded, "") == false) {
+            if (encoded.equals("") == false) {
                 let name = semaContractName(encoded)
 
                 if (semaIsParameterContract(name) == false) {
@@ -220,7 +220,7 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
                                    " is a return contract and cannot appear on parameter "),
                                    diagQuote(param.s1)))
                     diag_note("parameters take `borrow`, `retain`, `retain_in(k)`, `consume` or `out`")
-                } else if (strEquals(name, "retain_in")) {
+                } else if (name.equals("retain_in")) {
                     let target = optionOr(strParseInt(semaContractArgument(encoded)), 0)
                     if (target < 0 or target >= arity) {
                         diag_error_at_code("P4104", param.file, param.line, param.col, __builtin_string_len(param.s1),
@@ -253,15 +253,15 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
                 "DataView cannot cross an extern boundary")
             diag_note("return ordinary AoS storage and construct the DataView inside Prismio")
         }
-        if (strEquals(ret.s2, "") == false) {
+        if (ret.s2.equals("") == false) {
             let name = semaContractName(ret.s2)
-            if (strEquals(name, "alias") == false and strEquals(name, "produce") == false) {
+            if (name.equals("alias") == false and name.equals("produce") == false) {
                 diag_error_at_code("P4108", extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
                     strConcat(diagQuote(name),
                                " is a parameter contract and cannot appear on a return type"))
                 diag_note("returns take `alias` or `produce(free_fn)`")
-            } else if (strEquals(name, "produce")) {
-                if (strEquals(semaContractArgument(ret.s2), "")) {
+            } else if (name.equals("produce")) {
+                if (semaContractArgument(ret.s2).equals("")) {
                     diag_error_at_code("P4109", extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
                         "`produce` requires the name of the function that releases the value")
                     diag_note("FFI 5.2: calling `free` on something from a custom allocator is the bug this prevents")

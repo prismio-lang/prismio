@@ -361,6 +361,18 @@ char* command_quote_arg(const char* arg) {
     return result;
 }
 
+// Which host is running this compiler, not which target it is building for --
+// `ir_target_triple` answers the other question. A project command that runs a
+// script needs the first: the interpreter on PATH is a property of the machine,
+// and on Windows it is `python` where every other platform has `python3`.
+int host_is_windows(void) {
+#ifdef _WIN32
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 int execute_command(const char* command) {
 #ifdef _WIN32
     int command_len = (int)strlen(command) + 16;

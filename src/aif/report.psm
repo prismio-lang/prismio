@@ -48,7 +48,7 @@ private fn aifPlacement(tier: Int, site: Int) -> String {
     // value the arena bump-allocates would be the manifest describing a build
     // that did not happen, which is the whole reason `rc:none` exists below.
     let placed = aif_region_name_at_site(site)
-    if (strEquals(placed, "") == false) { return strConcat("region:", placed) }
+    if (placed.equals("") == false) { return strConcat("region:", placed) }
 
     if (tier == 1) {
         // `region:none`, not `region:scope`, and the rename is the whole point.
@@ -192,7 +192,7 @@ private fn aifPrepareOrder() {
 }
 
 private fn aifIsEntrySite(site: Int, sourcePath: String) -> Bool {
-    return strEquals(diag_file_path(aif_site_file(site)), sourcePath)
+    return diag_file_path(aif_site_file(site)).equals(sourcePath)
 }
 
 private fn aifEntrySiteCount(sourcePath: String) -> Int {
@@ -221,7 +221,7 @@ private fn aifReportPathLeaf(path: String) -> String {
 private fn aifFriendlyPosition(site: Int) -> String {
     let file = aif_site_file(site)
     let mut label = aifReportPathLeaf(diag_file_path(file))
-    if (strEquals(diag_file_module(file), "") == false) {
+    if (diag_file_module(file).equals("") == false) {
         label = strClone(diag_file_module(file))
     }
     return strConcat(strConcat(label, ":"), strConcat(strFromInt(aif_site_line(site)),
@@ -232,7 +232,7 @@ private fn aifFriendlyPosition(site: Int) -> String {
 // a bracketed call can be bump-allocated in its caller's arena while retaining
 // the T2 facts it derived in the callee.
 private fn aifStorageClass(site: Int) -> Int {
-    if (strEquals(aif_region_name_at_site(site), "") == false) { return 1 }
+    if (aif_region_name_at_site(site).equals("") == false) { return 1 }
     let tier = aif_tier_of(site)
     if (tier == 0) { return 0 }
     if (tier == 1) { return 2 }
@@ -264,7 +264,7 @@ private fn aifStorageClassCount(kind: Int) -> Int {
 
 private fn aifHumanStorage(site: Int) -> String {
     let regionName = aif_region_name_at_site(site)
-    if (strEquals(regionName, "") == false) { return strConcat("arena:", regionName) }
+    if (regionName.equals("") == false) { return strConcat("arena:", regionName) }
 
     let tier = aif_tier_of(site)
     if (tier == 0) { return "stack" }
@@ -284,7 +284,7 @@ private fn aifHumanStorage(site: Int) -> String {
 }
 
 private fn aifShortReason(site: Int) -> String {
-    if (strEquals(aif_region_name_at_site(site), "") == false) {
+    if (aif_region_name_at_site(site).equals("") == false) {
         if (aif_site_is_bracketed(site) == 1) { return "caller region selected" }
         return "lifetime fits the region"
     }
@@ -303,9 +303,9 @@ private fn aifShortReason(site: Int) -> String {
     let mut i = 0
     while (i < n) {
         let rule = aif_rule_name(aif_cause_rule(i))
-        if (strEquals(rule, "E-RETURN")) { return "returned to the caller" }
-        if (strEquals(rule, "E-STATIC")) { return "stored in static state" }
-        if (strEquals(rule, "E-OPAQUE")) { return "foreign lifetime is unknown" }
+        if (rule.equals("E-RETURN")) { return "returned to the caller" }
+        if (rule.equals("E-STATIC")) { return "stored in static state" }
+        if (rule.equals("E-OPAQUE")) { return "foreign lifetime is unknown" }
         i = i + 1
     }
     return "unique value escapes its scope"
@@ -1018,7 +1018,7 @@ fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
     // search reads them. Loading it earlier would write into a table aif_reset
     // has emptied; later would search the estimate and then change the numbers
     // underneath the answer.
-    if (strEquals(profilePath, "") == false) {
+    if (profilePath.equals("") == false) {
         if (aif_profile_load(profilePath) == 0) {
             // A file that exists but names nothing this module declares. Stale
             // against a rename, most likely (LAYOUT 10.3). W2's fallback, and it
@@ -1109,25 +1109,25 @@ fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
 // nothing -- rather than in cycles, which would be a modelled number pretending
 // to be a measured one.
 private fn aifRepairFor(rule: Int) -> String {
-    if (strEquals(aif_rule_name(rule), "E-STATIC")) {
+    if (aif_rule_name(rule).equals("E-STATIC")) {
         return "make the destination region-scoped instead of static     restores T1, no runtime cost"
     }
-    if (strEquals(aif_rule_name(rule), "E-RETURN")) {
+    if (aif_rule_name(rule).equals("E-RETURN")) {
         return "have the caller allocate and pass it in                  restores T1, no runtime cost"
     }
-    if (strEquals(aif_rule_name(rule), "E-OPAQUE")) {
+    if (aif_rule_name(rule).equals("E-OPAQUE")) {
         return "declare the extern's return contract (FFI 5.2)           restores T2, no runtime cost"
     }
-    if (strEquals(aif_rule_name(rule), "A-STORE")) {
+    if (aif_rule_name(rule).equals("A-STORE")) {
         return "store a copy instead of the value                        restores T2, +1 copy per store"
     }
-    if (strEquals(aif_rule_name(rule), "A-RETAIN")) {
+    if (aif_rule_name(rule).equals("A-RETAIN")) {
         return "declare the parameter `borrow` if the callee keeps nothing  restores T2, no runtime cost"
     }
-    if (strEquals(aif_rule_name(rule), "A-COPY")) {
+    if (aif_rule_name(rule).equals("A-COPY")) {
         return "make the type move-only so a second holder is a move     restores T2, no runtime cost"
     }
-    if (strEquals(aif_rule_name(rule), "E-BIND")) {
+    if (aif_rule_name(rule).equals("E-BIND")) {
         return "declare the binding inside the scope that uses it        restores T1, no runtime cost"
     }
     return ""
@@ -1176,7 +1176,7 @@ private fn aifEmitPlacement(site: Int) {
     println("  placement")
 
     let regionName = aif_region_name_at_site(site)
-    if (strEquals(regionName, "") == false) {
+    if (regionName.equals("") == false) {
         print("    region:")
         print(regionName)
         println("  -- bump-allocated, and released in bulk when the region exits")
@@ -1405,7 +1405,7 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
     let mut j = n - 1
     while (j >= 0) {
         let repair = aifRepairFor(aif_cause_rule(j))
-        if (strEquals(repair, "") == false) {
+        if (repair.equals("") == false) {
             print("    ")
             print(strFromInt(rank))
             print(". ")
@@ -1457,7 +1457,7 @@ fn aifExplain(selector: String, sourcePath: String, converged: Bool) -> Int {
     let total = aif_site_count()
     let mut i = 0
     while (i < total) {
-        if (strEquals(aifSymbolOf(i), selector)) {
+        if (aifSymbolOf(i).equals(selector)) {
             aifEmitCause(i, sourcePath, converged, true)
             return 1
         }
@@ -1514,7 +1514,7 @@ private fn aifRegionExists(name: String) -> Bool {
     let n = aif_budget_count()
     let mut s = 0
     while (s < n) {
-        if (strEquals(aif_scope_region(s), name)) { return true }
+        if (aif_scope_region(s).equals(name)) { return true }
         s = s + 1
     }
     return false
@@ -1560,7 +1560,7 @@ private fn aifReportPlacementPin(i: Int) -> Int {
         return 1
     }
 
-    if (strEquals(got, "") == false) {
+    if (got.equals("") == false) {
         diag_note(strConcat(strConcat("it is served by region:", got),
                              " -- a nested region takes the values that die earlier"))
         return 1
@@ -1656,7 +1656,7 @@ fn aifReportInertRegions() {
     let mut s = 0
     while (s < n) {
         let name = aif_scope_region(s)
-        if (strEquals(name, "") == false and aif_region_serves(s) == 0) {
+        if (name.equals("") == false and aif_region_serves(s) == 0) {
             diag_warning_at_code("P5007", aif_scope_region_file(s), aif_scope_region_line(s),
                             aif_scope_region_col(s), 0,
                             strConcat(strConcat("region ", name),

@@ -1,10 +1,17 @@
 # Prismio structural-gap and performance handoff
 
 **Prepared:** 2026-08-30  
+**Last verified:** 2026-09-03 — see *Status* below; five of the ten gaps have
+since closed, and the numbers in *Current measured position* predate them.
 **Repository:** `/Users/vibrant/Desktop/Projects/Prismio/prismio`  
 **Target:** make Prismio's natural and tuned programs consistently match or beat
 equivalent Rust programs without weakening ownership, representation, or checksum
 correctness.
+
+> Historical handoff: the g1-g9 apparatus and its specialized milestone tools
+> were retired when the maintained three-language suite moved to root
+> `benchmarks/`. Paths below describe the experiments as originally run; use
+> `python3 benchmarks/run.py` for current measurements.
 
 This document is the starting brief for the next AI session. It separates
 compiler/runtime gaps from benchmark source-algorithm gaps because treating them
@@ -70,11 +77,42 @@ and they are where to work. A change that improves a natural arm while leaving a
 tuned arm behind has not moved the ceiling.
 
 **Corollary, learned the hard way twice:** run the five-arm and read the tuned
-rows after *every* change. `milestone_bench.py` and `release_gate.sh` build only
+rows after *every* change. `milestone_bench.py` and `release_gate.py` build only
 the natural programs, so a tuned-only regression passes both — a 46% regression
 on `g4_tuned` and a 27% regression on `g6` both reached a green gate this way.
-`release_gate.sh` now mnemonic-diffs the tuned arms as well, which catches the
+`release_gate.py` now mnemonic-diffs the tuned arms as well, which catches the
 shape of such a change but not its cost.
+
+## Status, 2026-09-03
+
+Verified against the tree rather than against the notes that preceded it: every
+row below was checked by reading the evidence file *and* re-running the thing it
+claims. Four gaps are closed, one is closed as a negative result, and the rest
+are open or partial.
+
+| gap | state | what settled it |
+|---|---|---|
+| 1 · owner facts at calls, `spawn`, FFI | **closed** | `RESULTS-spawn-owned-argument.md`, `-extern-alias-escape`, `-passthrough-escape`, `-owned-temporary-argument`, `-pointer-return-temporary`, `-owned-return-depth2` — all GREEN |
+| 2 · flat-list representation per element | **closed, with one open gate** | `RESULTS-flat-list-view.md`, `-flat-list-loop-guard` GREEN; `-scalar-list-storage` LANDED closes the scalar half and the 2.31x read regression it exposed. The gate "tests also pass with `PRISMIO_INLINE_ELEMS=0`" is still unmet — see below |
+| 3 · workloads do not guide LLVM | partial | `RESULTS-loop-unswitch.md` GREEN. The g4-only instrumentation-PGO prototype was never built |
+| 4 · channel endpoint topology | **closed as negative** | `RESULTS-g9-channel-topology.md` is a NEGATIVE RESULT. Do not re-open it without new evidence |
+| 5 · loop fusion / bufferization | open | no evidence file exists |
+| 6 · functional-update reuse | **closed** | `RESULTS-M2-reuse-token.md` LANDED. Re-verified on 2026-09-03, on the last day `g8_tree_rebuild` existed in the tree: **2,049 allocated / 2,049 released / 0 leaked**, checksum **528891**. The program went with `xlang/`; the measurement stands and is not repeatable as written |
+| 7 · temporary allocation extents | partial | `RESULTS-M3-nonlexical.md`; caller/callee region polymorphism unfinished |
+| 8 · recursive data layout | partial | the *ownership* half is done — `RESULTS-recursive-payload-leak.md` FIXED, `-recursive-release-depth` LANDED. The factored layout itself is untouched |
+| 9 · DataView policy | open | `RESULTS-M4-dataview-{a,b,c}.md` are investigation, not a policy |
+| 10 · curated dependency closure | **closed** | `RESULTS-curate-scalar-write.md` LANDED at 15 curated operations |
+
+**The one gate still open on gap 2.** `PRISMIO_INLINE_ELEMS=0` — the boxed
+fallback — fails **4 of 283** fixtures: a 1,784-allocation release imbalance,
+DataView conversion invariants, generic layout specialization, and a `--verify`
+fact. `KNOWN_ISSUES.md` records five; it is four now, and the difference has not
+been attributed. The fallback is the thing that makes the flat path safe to
+keep, so this is the first thing to fix before building further on gap 2.
+
+**Suite state.** 283/283 with the default representation (279 before T16 added
+four `impl Trait` fixtures). It read 273/279 until 2026-09-03, and the six were
+not performance defects — see *Measurement traps*.
 
 ## Read this first
 
@@ -82,36 +120,39 @@ shape of such a change but not its cost.
 2. Use Graphify first for codebase questions, as required by `CLAUDE.md`.
 3. Read `KNOWN_ISSUES.md` and
    `aif/evidence/RESULTS-loop-unswitch.md` before choosing a change.
-4. Preserve the current worktree. At handoff it contains:
-
-   ```text
-    M KNOWN_ISSUES.md
-    M aif/evidence/README.md
-    M runtime/build_driver.c
-    M runtime/embedded_sources.h
-   ?? aif/evidence/RESULTS-loop-unswitch.md
-   ```
-
-   These are the accepted loop-unswitch experiment and its evidence. Do not
-   reset, discard, or overwrite them. Inspect the diff and build on it.
+4. Preserve the current worktree. The loop-unswitch experiment named by the
+   2026-08-30 edition of this list is committed; the tree has moved on twice
+   since and is large and uncommitted (~50 paths at the 2026-09-03 check).
+   Read `git status` and `git diff` rather than any list written here — a
+   worktree inventory in a document is stale the day after it is written, which
+   is why this item no longer carries one. Do not reset or discard.
 5. Do one bounded hypothesis at a time. Record rejected experiments as well as
    wins. Do not make a performance claim from fewer than 25 balanced runs.
 
 ## Where the hand-tuned controls are
 
-The five-arm harness is `tools/five_arm_bench.py`. It deliberately builds all of
-these in one balanced rotation and checks that their checksums agree.
+**Superseded on 2026-09-03.** The cross-language suite is now `prismio bench`
+(`benchmarks/`, covering Prismio, C++ and Rust), and the `aif/evidence/xlang`
+tree it replaced — `g1.psm` through `g9.psm`, their `_tuned` arms, the Rust and
+Swift ports, `bench.py`, and the five-arm and milestone scripts — was removed
+from the working tree. `benchmarks/README.md` explains the mapping: the workload
+*intent* survives under descriptive names, the sources are recoverable from Git
+history, and the narrative `RESULTS-*.md` files are historical evidence rather
+than inputs to the new runner.
 
-- Natural Prismio: `aif/evidence/xlang/prismio/g1.psm` through `g9.psm`
-  (the measured set is g1, g2, g3, g4, g5, g6, and g9).
-- Hand-tuned Prismio: `aif/evidence/xlang/prismio/g*_tuned.psm`.
-- The g1 expert arm is `aif/evidence/xlang/prismio/g1_dataview_tuned.psm`.
-- Idiomatic Rust: `aif/evidence/xlang/rust/g*_idiomatic.rs`.
-- Hand-tuned Rust: `aif/evidence/xlang/rust/g*_tuned.rs`.
+```bash
+prismio bench            # medium size, five runs
+prismio bench --list
+```
 
-Do not compare a natural source in one language to a tuned source in the other.
-The useful comparisons are natural/idiomatic, tuned/tuned, and old/new for the
-same Prismio source.
+Everything below this line that names a `gN` program is therefore a record of a
+measurement, not a path you can run today. The numbers stay because the
+*conclusions* are still what the gap analysis rests on; re-measuring any of them
+means expressing the workload in `benchmarks/` first.
+
+The methodology rule outlives the harness: do not compare a natural source in one
+language to a tuned source in the other. The useful comparisons are
+natural/idiomatic, tuned/tuned, and old/new for the same Prismio source.
 
 ## Current measured position
 
@@ -152,18 +193,24 @@ source-algorithm gaps.
 
 | priority | structural gap | why it matters | first bounded deliverable |
 |---|---|---|---|
-| P0 | Owned temporaries crossing `spawn` can leak | correctness precedes aggressive reuse | owner/release fact and regression for `spawn f(g(x))` |
-| P0 | `extern alias` pass-through and overly broad pointer-return withholding | blocks sound ownership/reuse decisions | per-argument return-alias fact with tests |
-| P1 | Flat-list representation branch remains in hot loops | direct, robust g4 opportunity | one guarded flat-list loop view in Prismio IR |
-| P1 | General MPMC channel used for statically SPSC endpoints | explains most remaining tuned g9 gap | bounded SPSC runtime path selected from endpoint facts |
+| ~~P0~~ **done** | Owned temporaries crossing `spawn` can leak | correctness precedes aggressive reuse | owner/release fact and regression for `spawn f(g(x))` |
+| ~~P0~~ **done** | `extern alias` pass-through and overly broad pointer-return withholding | blocks sound ownership/reuse decisions | per-argument return-alias fact with tests |
+| ~~P1~~ **done**, one gate open | Flat-list representation branch remains in hot loops | direct, robust g4 opportunity | one guarded flat-list loop view in Prismio IR |
+| ~~P1~~ **negative** | General MPMC channel used for statically SPSC endpoints | explains most remaining tuned g9 gap | bounded SPSC runtime path selected from endpoint facts |
 | P1 | Hotness information reaches layout but not LLVM optimization | global unswitch pays compile/code-size cost broadly | g4-only LLVM instrumentation-PGO prototype |
 | P2 | No conservative loop fusion/bufferization pass | tuned g4/g5/g6 win by doing less work | fuse one proven-safe g4 loop pair |
-| P2 | Destructure/rebuild has no reset/reuse token | g8 is the real functional-update trigger | frame-limited same-size reuse on unique g8 path |
+| ~~P2~~ **done** | Destructure/rebuild has no reset/reuse token | g8 is the real functional-update trigger | frame-limited same-size reuse on unique g8 path |
 | P2 | Temporary allocation extents stop at coarse regions/FFI | g2 retains repeated buffer allocation patterns | non-lexical sub-block extent probe |
 | P3 | Recursive ADTs stay pointer-chasing layouts | future g3/g8 traversal ceiling | factored-layout prototype only after ownership is sound |
 | P3 | DataView choice is not a stable source/annotation contract | automatic cost model can mispredict | explicit `soa`/DataView policy and diagnostics |
-| P3 | Curated functions cannot carry private constants | blocks safe runtime curation/debugging | copy constant dependency closure or decline curation |
+| ~~P3~~ **done** | Curated functions cannot carry private constants | blocks safe runtime curation/debugging | copy constant dependency closure or decline curation |
 | P4 | Windows self-host exports and wasm runtime absent | portability, not current Rust benchmark gap | implement only on a verifiable target runner |
+
+Struck rows are closed; *Status, 2026-09-03* above names the evidence for each.
+What is left, in the order the evidence supports: the `PRISMIO_INLINE_ELEMS=0`
+gate on gap 2, then loop fusion (gap 5), extents (gap 7), PGO (gap 3), and the
+recursive *layout* half of gap 8. Gap 4 is closed as a negative result and
+should not be reopened without new evidence.
 
 ## Gap 1: sound owner facts at calls, `spawn`, and FFI
 
@@ -583,7 +630,40 @@ After any edit to `runtime/*.c`, regenerate embedded sources:
 ```sh
 python3 runtime/generate_embedded_sources.py
 python3 tools/check_source_lists.py
+python3 tools/check_externs.py
 ```
+
+`check_externs.py` is new on 2026-09-03. It asserts that every `extern fn` in
+`src/`, `std/` and `ums/` has a defining symbol in the packaged archives, which
+six `ir_type_*` declarations in `src/ir/bridge.psm` did not. It reads `nm` on
+`dist/Prismio/lib/*.a` rather than scanning the C, because a regex over
+`runtime/*.c` reports 40 undefined names and 33 of them are real functions the
+`BINOP`/`CMPOP` macros generate. It exits 2, not 1, when no dist is built.
+
+### Measurement traps in the harness itself
+
+Four of these were live on 2026-09-03 and each one produces a *confident wrong
+answer* rather than an error.
+
+1. **The suite does not test the compiler you just built.** `tests/test_runner.py`
+   resolves the compiler as `$PRISMIO`, and falls back to `which prismio` — an
+   installed toolchain, on this machine `/opt/homebrew/opt/prismio/bin/prismio`.
+   Always `PRISMIO=<your build> python3 tests/test_runner.py`.
+2. **...but the project-local host is what actually compiles.** A launcher that
+   finds `build.ums` forwards to `.prismio/build/debug/prismio`. Replacing that
+   file changes results even when `$PRISMIO` points somewhere else, so an A/B
+   that varies only `$PRISMIO` can measure one compiler twice.
+3. **The fixpoint check needs the same output basename.** Two generations built
+   to different `-o` paths differ in 49 bytes of a 2.1 MB binary — the embedded
+   output path, not codegen. Build both to the same file name in different
+   directories, then `cmp`. Done that way the compiler does reach a fixpoint.
+4. **`std.*` resolution was depth-limited, and it failed silently as "did not
+   build".** `standardModulePath` searched beside the entry, *one* directory up,
+   then the toolchain root. Under the project-local host that root is
+   `.prismio/build`, which carries neither `stdlib/` nor `std/`, so everything
+   two directories deep — all 32 corpus programs — could not resolve `std.io`.
+   Fixed on 2026-09-03 by walking every enclosing directory. If corpus programs
+   ever report "did not build" again, check resolution before codegen.
 
 Build through a fixed point, not just one generation:
 
@@ -601,7 +681,7 @@ Run correctness gates before benchmarks:
 ```sh
 PRISMIO=build/next-gen3 python3 tests/test_runner.py
 python3 tools/aif_differential.py --compiler build/next-gen3
-bash tools/release_gate.sh --rc build/next-gen3 --old build/unswitch-gen4
+python tools/release_gate.py --rc build/next-gen3 --old build/unswitch-gen4
 git diff --check
 ```
 

@@ -132,7 +132,7 @@ allocating once here.
 
 ## 7 · What the gate could not see, and what to do about it
 
-Neither `milestone_bench.py` nor `release_gate.sh` builds the hand-tuned arm, so
+Neither `milestone_bench.py` nor `release_gate.py` builds the hand-tuned arm, so
 a change that only regresses tuned code passes both. That is how a 46%
 regression on g4_tuned survived a green release gate. Until the gate covers it,
 **run `tools/five_arm_bench.py` before believing a container or loop change**,

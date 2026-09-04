@@ -34,7 +34,7 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
         // read again by the branches below -- a move here would poison it for
         // every one of them, because move state is per name over the whole body.
         let mut sname = e.s1
-        if (strEquals(sname, "")) { sname = aifNodeType(e) }
+        if (sname.equals("")) { sname = aifNodeType(e) }
 
         let sid = aifNewSite(sname, fnId, scope, nodePtr)
         let owner = aifVsOfSite(sid)
@@ -62,7 +62,7 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
 
     if (e.kind == NodeKind.ARRAY_LITERAL_EXPR) {
         let mut aname = aifNodeType(e)
-        if (strEquals(aname, "")) { aname = "Array" }
+        if (aname.equals("")) { aname = "Array" }
 
         let sid = aifNewSite(aname, fnId, scope, nodePtr)
         let owner = aifVsOfSite(sid)
@@ -87,7 +87,7 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
         // static, immortal, zero cost -- so it has no place on a ladder that
         // ranks ways of reclaiming heap memory. Counted so the exclusion is
         // visible in the manifest rather than silent.
-        if (strEquals(ty, "String")) {
+        if (ty.equals("String")) {
             aifLiteralStrings = aifLiteralStrings + 1
         }
         return aifVsEmpty()
@@ -124,7 +124,7 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
         let baseNode = ptr_to_node(e.child1)
         let baseTy = aifNodeType(baseNode)
         let baseKind = aifBaseType(baseTy)
-        if (strEquals(baseKind, "List") or strEquals(baseKind, "Slice")) {
+        if (baseKind.equals("List") or baseKind.equals("Slice")) {
             let collection = aifSitesOf(e.child1, fnId, scope)
             aifSitesOf(e.child2, fnId, scope)
             let element = aifVsOfKey(aifElemKey(aifElementContainerType(baseTy)))
@@ -263,7 +263,7 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     if (nodeExists(e.child1)) {
         let target = ptr_to_node(e.child1)
         plain = target.s1
-        if (strEquals(callee, "")) { callee = target.s1 }
+        if (callee.equals("")) { callee = target.s1 }
     }
 
     let calleeId = aif_fn_lookup(callee)
@@ -296,7 +296,7 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     // about the one builtin whose effect the model knows exactly.
     if (known) {
         aif_call_edge(fnId, calleeId, scope)
-    } else if (strEquals(plain, "drop") == false) {
+    } else if (plain.equals("drop") == false) {
         if (aifCallIsSummarised(plain, argc) == false) {
             aif_call_opaque(fnId, scope)
         }
@@ -305,7 +305,7 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     // `drop(x)` lowers to a free, and a stack slot cannot be freed. Suppress T0
     // for whatever it names -- see aif_con_no_stack for why this is a codegen
     // constraint rather than a fact.
-    if (strEquals(plain, "drop")) {
+    if (plain.equals("drop")) {
         if (argc > 0) {
             aif_con_no_stack(aif_argv_get(base, 0))
         }
@@ -427,7 +427,7 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     // nothing to place, count or release, and `chan_free` is where it goes.
     // `chan_share` hands back the same endpoint, which is what makes it a second
     // *reference* and not a second owner.
-    if (strEquals(plain, "chan_new") or strEquals(plain, "chan_share")) {
+    if (plain.equals("chan_new") or plain.equals("chan_share")) {
         return aifVsEmpty()
     }
 
@@ -528,22 +528,22 @@ private fn aifIsStatementKind(k: NodeKind) -> Bool {
 // either a tier or a region, and a region that does not exist or does not serve
 // the value is refuted by aif_check_placement_pins, which is an error.
 private fn aifTierFromName(name: String) -> Int {
-    if (strEquals(name, "T0")) { return 0 }
-    if (strEquals(name, "T1")) { return 1 }
-    if (strEquals(name, "T2")) { return 2 }
-    if (strEquals(name, "T3")) { return 3 }
-    if (strEquals(name, "T4b")) { return 4 }
+    if (name.equals("T0")) { return 0 }
+    if (name.equals("T1")) { return 1 }
+    if (name.equals("T2")) { return 2 }
+    if (name.equals("T3")) { return 3 }
+    if (name.equals("T4b")) { return 4 }
     // REQUIREMENTS 15. `pin(T4a)` asks for an atomic count, and it is honoured
     // wherever the derived tier is cheaper -- raising a tier is always sound, so
     // this is the one direction a pin can go without the facts backing it.
     // `pin(T4b)` on a site the solver put at T4a goes the other way and is
     // refuted, which is what the ordinal order buys.
-    if (strEquals(name, "T4a")) { return 5 }
+    if (name.equals("T4a")) { return 5 }
     return 0 - 1
 }
 
 private fn aifApplyAnnotations(decl: ASTNode, vs: Int) {
-    if (strEquals(decl.s2, "")) { return }
+    if (decl.s2.equals("")) { return }
 
     if (strContains(decl.s2, "unique ")) {
         aif_con_unique(vs)
@@ -665,7 +665,7 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
             if (init.kind == NodeKind.CALL_EXPR) {
                 if (nodeExists(init.child1)) {
                     let callee = ptr_to_node(init.child1)
-                    if (strEquals(callee.s1, "list_get")) {
+                    if (callee.s1.equals("list_get")) {
                         aif_traversal_elem(aifBaseType(aifNodeType(n)), 1)
                     }
                 }
@@ -782,7 +782,7 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
 // a variant, which is every arm of a match that is not over a payload enum.
 private fn aifBindPayloadArm(arm: ASTNode, scrutType: String, scrutinee: Int,
                              fnId: Int, scope: Int) {
-    if (strEquals(arm.s2, "")) { return }
+    if (arm.s2.equals("")) { return }
     if (nodeIsNull(arm.child1)) { return }
     let pattern = ptr_to_node(arm.child1)
     if (pattern.kind != NodeKind.CALL_EXPR) { return }
@@ -814,7 +814,7 @@ private fn aifExprHasJoinOf(ptr: Ptr, name: String) -> Bool {
     if (n.kind == NodeKind.JOIN_EXPR) {
         if (nodeExists(n.child1)) {
             let target = ptr_to_node(n.child1)
-            if (target.kind == NodeKind.IDENTIFIER_EXPR and strEquals(target.s1, name)) {
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and target.s1.equals(name)) {
                 return true
             }
         }
@@ -1090,7 +1090,7 @@ internal fn aifDeclare(module: ASTNode) {
                 if (param.kind == NodeKind.FUNCTION_PARAMETER) {
                     if (nodeExists(param.child1)) {
                         let ann = ptr_to_node(param.child1)
-                        if (strEquals(ann.s2, "") == false) {
+                        if (ann.s2.equals("") == false) {
                             aif_extern_contract_set(d.s1, index, ann.s2)
                         }
                     }
@@ -1100,7 +1100,7 @@ internal fn aifDeclare(module: ASTNode) {
             }
             if (nodeExists(d.child2)) {
                 let ret = ptr_to_node(d.child2)
-                if (strEquals(ret.s2, "") == false) {
+                if (ret.s2.equals("") == false) {
                     aif_extern_contract_set(d.s1, 0 - 1, ret.s2)
                 }
             }
@@ -1110,7 +1110,7 @@ internal fn aifDeclare(module: ASTNode) {
             // that has not been through sema, which is a debugging convenience
             // rather than a supported path.
             let mut sym = d.s2
-            if (strEquals(sym, "")) { sym = d.s1 }
+            if (sym.equals("")) { sym = d.s1 }
             aif_fn_new(sym, d.s1, d.file)
         }
 
@@ -1136,7 +1136,7 @@ internal fn aifBuild(module: ASTNode) {
         let d = ptr_to_node(q)
         if (d.kind == NodeKind.FUNCTION) {
             let mut sym = d.s2
-            if (strEquals(sym, "")) { sym = d.s1 }
+            if (sym.equals("")) { sym = d.s1 }
             let fid = aif_fn_lookup(sym)
 
             if (fid >= 0) {
@@ -1153,11 +1153,11 @@ internal fn aifBuild(module: ASTNode) {
                         aif_var_note_scope(fid, param.s1, root)
                         // Declared `sink`: the call moved it, so the caller has
                         // no owner left for the guard to protect.
-                        if (strEquals(param.s2, "sink")) {
+                        if (param.s2.equals("sink")) {
                             aif_note_param_consuming(fid, index)
                         }
                         let mut pty = aifNodeType(param)
-                        if (strEquals(pty, "")) {
+                        if (pty.equals("")) {
                             if (nodeExists(param.child1)) {
                                 let ann = ptr_to_node(param.child1)
                                 pty = ann.s1

@@ -171,7 +171,7 @@ bash tools/bootstrap.sh --compiler build/flat-gen2 --out build/flat-gen3 --keep
 cmp build/.bootstrap-flat-gen2/compiler.ll build/.bootstrap-flat-gen3/compiler.ll
 PRISMIO=$PWD/build/flat-gen3 python3 tests/test_runner.py
 python3 tools/aif_differential.py --compiler build/flat-gen3
-bash tools/release_gate.sh --rc build/flat-gen3 --old build/unswitch-gen4
+python tools/release_gate.py --rc build/flat-gen3 --old build/unswitch-gen4
 python3 tools/milestone_bench.py --old build/unswitch-gen4 --new build/flat-gen3 \
     --runs 25 --calibrate --skip-baselines
 python3 tools/milestone_bench.py --old build/unswitch-gen4 --new build/flat-gen3 \

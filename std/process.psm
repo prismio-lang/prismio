@@ -25,6 +25,7 @@ import std.string
 extern fn cli_arg_count() -> Int
 extern fn cli_arg(index: Int) -> String alias
 extern fn execute_command(command: String borrow) -> Int
+extern fn host_is_windows() -> Int
 extern fn command_quote_arg(arg: String borrow) -> String produce(free)
 
 private fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
@@ -108,4 +109,13 @@ fn runCommand(command: String) -> Bool {
 // from a path or from user input before it goes into `runCommand`.
 fn quoteArg(argument: String) -> String {
     return command_quote_arg(argument)
+}
+
+// True on Windows, false everywhere else.
+//
+// The host, not the build target: a program asking this wants to know about the
+// machine it is running on -- which shell will parse `runCommand`, which
+// interpreter is on PATH -- and a cross build's target says nothing about that.
+fn isWindows() -> Bool {
+    return host_is_windows() == 1
 }

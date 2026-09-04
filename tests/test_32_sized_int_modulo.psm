@@ -47,7 +47,7 @@ fn main() -> Int {
     }
 
     // a global initialized from a string literal
-    if (strEquals(greeting, "hello from a global") == false) {
+    if (greeting.equals("hello from a global") == false) {
         return fail("global string initializer was corrupted")
     }
 

@@ -53,7 +53,7 @@ internal fn semaWarningAt(node: ASTNode, message: String) {
 // which is the one class of bug a task runtime must not have.
 private fn semaTaskResultAllowed(t: TypeInfo) -> Bool {
     if (t.kind == TypeKind.VOID) { return true }
-    if (t.kind == TypeKind.INT) { return strEquals(t.name, "Int") }
+    if (t.kind == TypeKind.INT) { return t.name.equals("Int") }
     if (t.kind == TypeKind.STRUCT) { return true }
     if (t.kind == TypeKind.STRING) { return true }
     if (t.kind == TypeKind.LIST) { return true }
@@ -98,7 +98,7 @@ private fn semaCheckUniqueArgs(expr: ASTNode, fnNode: ASTNode, name: String) {
                 let b = ptr_to_node(innerArg)
                 let pb = ptr_to_node(innerParam)
                 if (pb.i2 == 1 and b.kind == NodeKind.IDENTIFIER_EXPR) {
-                    if (strEquals(a.s1, b.s1)) {
+                    if (a.s1.equals(b.s1)) {
                         semaErrorAt(b, strConcat(strConcat("`", a.s1),
                             strConcat("` is passed to two `unique` parameters of ", diagQuote(name))))
                         diag_note("`unique` asserts exactly one reference exists, and this call makes two")
@@ -129,7 +129,7 @@ private fn semaDottedModulePath(node: ASTNode) -> String {
     }
     if (node.kind == NodeKind.MEMBER_ACCESS_EXPR) {
         let inner = semaDottedModulePath(ptr_to_node(node.child1))
-        if (strEquals(inner, "")) { return "" }
+        if (inner.equals("")) { return "" }
         // Bound rather than nested: an intermediate passed straight into another
         // call has its release withheld (KNOWN_ISSUES.md, argument-position
         // release), so
@@ -239,23 +239,23 @@ private fn semaStringSugarAvailable(expr: ASTNode, fnName: String, what: String)
     return false
 }
 
-// `a == b` is `strEquals(a, b)`; `a != b` is its negation; the four orderings are
+// `a == b` is `__builtin_string_eq(a, b)`; `a != b` is its negation; the four orderings are
 // the sign of `strCompare` against zero, compared by the very operator being
 // rewritten -- which is why the ordering case re-enters semaExpr on a node whose
 // operands are now Int, and so cannot come back here.
 private fn semaStringComparison(module: ASTNode, expr: ASTNode, op: String,
                                 leftNode: ASTNode, rightNode: ASTNode) -> TypeInfo {
-    if (strEquals(op, "==")) {
-        semaBecomeCall(expr, "strEquals", semaCallArgs2(leftNode, rightNode))
+    if (op.equals("==")) {
+        semaBecomeCall(expr, "__builtin_string_eq", semaCallArgs2(leftNode, rightNode))
         return semaExpr(module, expr)
     }
 
-    if (strEquals(op, "!=")) {
+    if (op.equals("!=")) {
         // The call becomes a *new* node and this one becomes the negation, not
         // the other way round: `expr` is the node the parent already points at.
         let inner = createNode(NodeKind.CALL_EXPR)
         nodeSpanFrom(inner, expr)
-        semaBecomeCall(inner, "strEquals", semaCallArgs2(leftNode, rightNode))
+        semaBecomeCall(inner, "__builtin_string_eq", semaCallArgs2(leftNode, rightNode))
 
         expr.kind = NodeKind.UNARY_EXPR
         expr.s1 = "!"
@@ -289,7 +289,7 @@ private fn semaStringComparison(module: ASTNode, expr: ASTNode, op: String,
 // semaExpr over an expression is idempotent, which is what the whole rewrite
 // scheme already relies on.
 private fn semaConcatSpineIsString(module: ASTNode, expr: ASTNode) -> Bool {
-    if (expr.kind == NodeKind.BINARY_EXPR and strEquals(expr.s1, "+")) {
+    if (expr.kind == NodeKind.BINARY_EXPR and expr.s1.equals("+")) {
         if (semaConcatSpineIsString(module, ptr_to_node(expr.child1)) == false) { return false }
         return semaConcatSpineIsString(module, ptr_to_node(expr.child2))
     }
@@ -450,7 +450,7 @@ private fn semaNameNode(at: ASTNode, name: String) -> ASTNode {
 // intermediate BINARY_EXPR nodes are simply abandoned; the AST is arena memory
 // and nothing else points at them once this node has been rewritten.
 private fn semaConcatParts(expr: ASTNode, parts: NodeList) {
-    if (expr.kind == NodeKind.BINARY_EXPR and strEquals(expr.s1, "+")) {
+    if (expr.kind == NodeKind.BINARY_EXPR and expr.s1.equals("+")) {
         semaConcatParts(ptr_to_node(expr.child1), parts)
         semaConcatParts(ptr_to_node(expr.child2), parts)
         return
@@ -642,13 +642,13 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         let operandT = semaExpr(module, operand)
         let uop = expr.s1
 
-        if (strEquals(uop, "!")) {
+        if (uop.equals("!")) {
             semaExpectAssignable(operand, "operator `!`", typeBool(), operandT)
             nodeSetType(expr, typeBool())
             return typeBool()
         }
 
-        if (strEquals(uop, "~")) {
+        if (uop.equals("~")) {
             if (operandT.kind != TypeKind.INT and operandT.kind != TypeKind.CHAR) {
                 semaErrorAt(operand, "unary `~` requires an integer operand")
             }
@@ -656,7 +656,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             return operandT
         }
 
-        if (strEquals(uop, "-")) {
+        if (uop.equals("-")) {
             if (typeIsNumeric(operandT) == false) {
                 semaErrorAt(operand, "unary `-` requires a numeric operand")
             }
@@ -682,7 +682,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         // rewrites the inner `+` into its `strConcat` call, after which the spine
         // is no longer visible and the chain lowers pairwise -- which is the
         // leaking form. Measured in exactly that shape: 2 allocated, 1 released.
-        if (strEquals(expr.s1, "+") and semaConcatSpineIsString(module, expr)) {
+        if (expr.s1.equals("+") and semaConcatSpineIsString(module, expr)) {
             return semaStringConcatChain(module, expr)
         }
 
@@ -705,14 +705,14 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
         let op = expr.s1
 
-        if (strEquals(op, "and") or strEquals(op, "or")) {
+        if (op.equals("and") or op.equals("or")) {
             semaExpectAssignable(leftNode, "boolean operator left operand", typeBool(), leftT)
             semaExpectAssignable(rightNode, "boolean operator right operand", typeBool(), rightT)
             nodeSetType(expr, typeBool())
             return typeBool()
         }
 
-        if (strEquals(op, "+") or strEquals(op, "-") or strEquals(op, "*") or strEquals(op, "/")) {
+        if (op.equals("+") or op.equals("-") or op.equals("*") or op.equals("/")) {
             if (typeIsNumeric(leftT) == false) {
                 semaErrorAt(leftNode, strConcat(strConcat("operator ", diagQuote(op)), " requires numeric operands"))
             }
@@ -726,7 +726,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         // typeInt() here rejected `u % 7` for any u that was not a plain Int,
         // even though codegen has always emitted the right urem/srem for it.
         // Still integer-only -- there is no frem in codegen.
-        if (strEquals(op, "%")) {
+        if (op.equals("%")) {
             if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.ENUM) {
                 semaErrorAt(leftNode, "operator `%` requires integer operands")
             }
@@ -736,7 +736,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         }
 
         // Bitwise and/or/xor: integer-shaped operands of the same type.
-        if (strEquals(op, "&") or strEquals(op, "|") or strEquals(op, "^")) {
+        if (op.equals("&") or op.equals("|") or op.equals("^")) {
             if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.ENUM and leftT.kind != TypeKind.CHAR) {
                 semaErrorAt(leftNode, strConcat(strConcat("bitwise operator ", diagQuote(op)), " requires integer operands"))
             }
@@ -747,7 +747,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
         // Shifts. The result takes the left operand's type, and the shift amount
         // is an independent integer rather than something that has to match it.
-        if (strEquals(op, "<<") or strEquals(op, ">>")) {
+        if (op.equals("<<") or op.equals(">>")) {
             if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.CHAR) {
                 semaErrorAt(leftNode, strConcat(strConcat("shift ", diagQuote(op)), " requires an integer left operand"))
             }
@@ -758,7 +758,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             return leftT
         }
 
-        if (strEquals(op, "==") or strEquals(op, "!=") or strEquals(op, "<") or strEquals(op, "<=") or strEquals(op, ">") or strEquals(op, ">=")) {
+        if (op.equals("==") or op.equals("!=") or op.equals("<") or op.equals("<=") or op.equals(">") or op.equals(">=")) {
             // REQUIREMENTS 4. `x == none` is the presence test, and it is
             // checked before the String and struct rejections below -- a
             // `String?` compared against `none` is a null test and not the
@@ -768,7 +768,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // comparing addresses, which is exactly the silent wrong answer the
             // next two rules are about.
             if (leftT.kind == TypeKind.OPTIONAL or rightT.kind == TypeKind.OPTIONAL) {
-                if (strEquals(op, "==") == false and strEquals(op, "!=") == false) {
+                if (op.equals("==") == false and op.equals("!=") == false) {
                     semaErrorAt(expr, strConcat(strConcat("cannot order optional values with ",
                                                               diagQuote(op)),
                                                    "; compare with `none` instead"))
@@ -791,8 +791,13 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // but that the operator now means the call instead of the address --
             // there is no longer an address comparison to fall into.
             if (leftT.kind == TypeKind.STRING and rightT.kind == TypeKind.STRING) {
+                // The probe is a *public* name, because that is what the import
+                // brings in. `==` lowers to `__builtin_string_eq` and needs
+                // nothing from std.string at all now, but requiring the import
+                // anyway keeps one rule for every String operator instead of an
+                // exception a reader has to know about.
                 let mut cmpFn = "strCompare"
-                if (strEquals(op, "==") or strEquals(op, "!=")) { cmpFn = "strEquals" }
+                if (op.equals("==") or op.equals("!=")) { cmpFn = "equals" }
                 if (semaStringSugarAvailable(expr, cmpFn,
                         strConcat(strConcat("comparing String values with ", diagQuote(op)), "")) == false) {
                     nodeSetType(expr, typeBool())
@@ -883,7 +888,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // semaExpr and monoCopyOne's copy, which is what makes this
             // idempotent and instantiation-safe.
             let modulePath = semaDottedModulePath(target)
-            if (strEquals(modulePath, "") == false
+            if (modulePath.equals("") == false
                 and semaModuleDeclares(modulePath, callee.s1)) {
                 let qualifiedName = createNode(NodeKind.IDENTIFIER_EXPR)
                 qualifiedName.s1 = strClone(callee.s1)
@@ -915,7 +920,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // method rewrite -- and `text.nosuch()` becoming `nosuch(text)`
             // reports "unknown function `nosuch`", which sends the reader to
             // check their spelling when the answer is their imports.
-            if (strEquals(modulePath, "") == false
+            if (modulePath.equals("") == false
                 and semaQualifierNamesModule(modulePath)) {
                 semaErrorAt(callee, strConcat(strConcat("module ", diagQuote(modulePath)),
                                               strConcat(" declares no ", diagQuote(callee.s1))))
@@ -929,10 +934,10 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // older spelling -- and the fall-through answer for it is "unknown
             // identifier `string`", which sends the reader looking for a variable
             // they never declared instead of at the name of their import.
-            if (strEquals(modulePath, "") == false
+            if (modulePath.equals("") == false
                 and semaQualifierNamesModule(modulePath) == false) {
                 let suggestion = semaModuleWithLeaf(modulePath)
-                if (strEquals(suggestion, "") == false) {
+                if (suggestion.equals("") == false) {
                     semaErrorAt(target, strConcat("no module ", diagQuote(modulePath)))
                     diag_note(strConcat(strConcat("a module is qualified by its full import path -- did you mean ",
                                                   diagQuote(suggestion)),
@@ -1023,7 +1028,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             semaBuildDynIfNeeded(module, argNode, paramT)
             semaCheckValue(module, argNode, paramT, strConcat(diagQuote(name), " argument"))
             // Only `sink` parameters take ownership; `let`/`inout` borrow.
-            if (strEquals(paramNode.s2, "sink")) {
+            if (paramNode.s2.equals("sink")) {
                 semaConsumeOperand(argNode)
             } else if (argNode.kind == NodeKind.IDENTIFIER_EXPR
                        and nodeGetType(argNode).kind == TypeKind.LIST) {
@@ -1040,7 +1045,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         let mut retT = typeVoid()
         if (fnNode.kind == NodeKind.FUNCTION) {
             retT = semaDeclaredReturnType(module, fnNode.child3)
-            if (strEquals(name, "main")) { retT = typeInt() }
+            if (name.equals("main")) { retT = typeInt() }
         } else {
             retT = semaDeclaredReturnType(module, fnNode.child2)
         }
@@ -1050,7 +1055,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         // find a method's owning trait. That turned one walk per declaration
         // into one per call, and it is where the trait work showed up as compile
         // time. Cloned rather than aliased: the node owns its symbol.
-        if (strEquals(fnNode.s2, "")) {
+        if (fnNode.s2.equals("")) {
             expr.s2 = semaFunctionSymbol(module, fnNode)
         } else {
             expr.s2 = strClone(fnNode.s2)
@@ -1084,7 +1089,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         // not give it an address. Naming the reason matters -- it is the thing
         // that would have to change to lift the ceiling, and it is not the task
         // model.
-        if (strEquals(call.s2, "")) {
+        if (call.s2.equals("")) {
             semaErrorAt(expr, "`spawn` needs a named Prismio function; a builtin has no address to hand a task")
         }
 
@@ -1353,7 +1358,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         if (nodeExists(expr.child2)) {
             let instantiated = monoInstantiateStruct(module, ptr_to_node(expr.child2))
             expr.child2 = ptr_null()
-            if (strEquals(instantiated, "")) {
+            if (instantiated.equals("")) {
                 semaErrorAt(expr, strConcat("unknown generic struct ", diagQuote(expr.s1)))
                 nodeSetType(expr, typeInvalid())
                 return typeInvalid()
@@ -1453,8 +1458,8 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
             let init = ptr_to_node(stmt.child2)
             if (init.kind == NodeKind.CALL_EXPR and nodeExists(init.child1)) {
                 let callee = ptr_to_node(init.child1)
-                if (strEquals(callee.s1, "list_new")
-                    or strEquals(callee.s1, "list_new_with_capacity")) {
+                if (callee.s1.equals("list_new")
+                    or callee.s1.equals("list_new_with_capacity")) {
                     ir_mark_list_exclusive(stmt.s1)
                 }
             }
@@ -1505,8 +1510,8 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
             let replacement = ptr_to_node(stmt.child2)
             if (replacement.kind == NodeKind.CALL_EXPR and nodeExists(replacement.child1)) {
                 let callee = ptr_to_node(replacement.child1)
-                if (strEquals(callee.s1, "list_new")
-                    or strEquals(callee.s1, "list_new_with_capacity")) {
+                if (callee.s1.equals("list_new")
+                    or callee.s1.equals("list_new_with_capacity")) {
                     ir_mark_list_exclusive(target.s1)
                 }
             }
@@ -1656,7 +1661,7 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
         let mut armPtr = stmt.child2
         while (nodeExists(armPtr)) {
             let arm = ptr_to_node(armPtr)
-            if (strEquals(arm.s1, "_") == false) {
+            if (arm.s1.equals("_") == false) {
                 semaCheckValue(module, ptr_to_node(arm.child1), patExpected, "match pattern")
             }
             semaBlock(module, ptr_to_node(arm.child2), expectedReturn)
@@ -1704,7 +1709,7 @@ internal fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
     let mut retT = typeVoid()
     if (fnNode.kind == NodeKind.FUNCTION) {
         retT = semaDeclaredReturnType(module, fnNode.child3)
-        if (strEquals(fnNode.s1, "main")) { retT = typeInt() }
+        if (fnNode.s1.equals("main")) { retT = typeInt() }
     } else {
         retT = semaDeclaredReturnType(module, fnNode.child2)
     }
@@ -1782,17 +1787,17 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
     ir_scope_push()
 
     let mut expectedReturn = semaDeclaredReturnType(module, fnNode.child3)
-    if (strEquals(fnNode.s1, "main")) { expectedReturn = typeInt() }
+    if (fnNode.s1.equals("main")) { expectedReturn = typeInt() }
 
     let mut paramPtr = fnNode.child1
     while (nodeExists(paramPtr)) {
         let mut param = ptr_to_node(paramPtr)
         let paramT = semaAnnotationType(module, ptr_to_node(param.child1))
-        if (strEquals(param.s2, "inout") and typeIsMoveOnly(paramT) == false) {
+        if (param.s2.equals("inout") and typeIsMoveOnly(paramT) == false) {
             semaErrorAt(param, strConcat(strConcat("inout parameter ", diagQuote(param.s1)), " must be a struct (reference) type"))
         }
         // let/inout params are non-owning borrows; sink params own their value.
-        if (strEquals(param.s2, "sink") == false) {
+        if (param.s2.equals("sink") == false) {
             ir_mark_borrowed(param.s1)
         }
         ir_set_var_type(param.s1, typeSemKey(paramT))
@@ -1841,7 +1846,7 @@ private fn semaCheckImplBlocks(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, "") == false) {
+        if (stmt.kind == NodeKind.IMPL_DECL and stmt.s2.equals("") == false) {
             let first = semaFirstOverlappingTraitImpl(module, stmt)
             if (first.file != stmt.file or first.line != stmt.line or first.col != stmt.col) {
                 let targetText = semaAnnotationText(ptr_to_node(stmt.child3).child1)
@@ -1887,6 +1892,172 @@ private fn semaCheckImplBlocks(module: ASTNode) {
 // Built as an ordinary struct because Prismio already passes structs by pointer,
 // so every existing path -- parameters, locals, field access, codegen's layout
 // table -- carries one without a special case.
+// T16 return position. `fn make() -> impl Show` names one concrete type that the
+// body chooses and the caller cannot write. The parser leaves `opaque$Show` with
+// the bounds on child2; this resolves it to the concrete type and **rewrites the
+// annotation in place**, so predeclaration, checking, codegen and AIF all see an
+// ordinary function returning an ordinary type.
+//
+// Rewriting is what makes the dispatch static. A trait object would erase the
+// type and pay an indirect call; a generic parameter would let the caller choose
+// it, which is the opposite of what this construct means. Neither is correct
+// here, and neither is what this emits.
+//
+// Ordered before the predeclaration loop because a caller reads the callee's
+// return type out of the registry that loop fills. Resolving afterwards would
+// register the placeholder and every call would disagree with the definition.
+private fn semaResolveOpaqueReturns(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.FUNCTION and nodeExists(stmt.child3)) {
+            let annotation = ptr_to_node(stmt.child3)
+            if (annotation.kind == NodeKind.TYPE_ANNOTATION
+                and strStartsWith(annotation.s1, "opaque$")) {
+                semaResolveOneOpaqueReturn(module, stmt, annotation)
+            }
+        }
+        p = stmt.next
+    }
+}
+
+private fn semaResolveOneOpaqueReturn(module: ASTNode, fnNode: ASTNode, annotation: ASTNode) {
+    // The returns are walked in place rather than collected. A RETURN_STATEMENT
+    // is already linked into its block through `next`, so pushing one onto a
+    // NodeList would splice the body's statement chain into that list and lose
+    // whatever followed it.
+    let firstPtr = semaFindFirstReturn(fnNode.child2)
+    if (nodeExists(firstPtr) == false) {
+        semaErrorAt(annotation,
+                    "a function returning `impl Trait` must return a value on some path")
+        return
+    }
+
+    let opaqueBounds = annotation.child2
+    let first = ptr_to_node(firstPtr)
+    let concrete = semaOpaqueConcreteName(module, first)
+    if (concrete.equals("")) { return }
+
+    // The bounds are checked against the concrete type before the annotation is
+    // rewritten, because afterwards nothing records what was promised. The
+    // opaque spelling is kept for the same reason -- it is what tells the shared
+    // bound diagnostic that this was a return type and not a type parameter.
+    let opaqueName = strClone(annotation.s1)
+    let concreteAnnotation = createNode(NodeKind.TYPE_ANNOTATION)
+    nodeSpanFrom(concreteAnnotation, annotation)
+    concreteAnnotation.s1 = strClone(concrete)
+    let concreteT = semaAnnotationType(module, concreteAnnotation)
+
+    // Rewritten before the remaining checks, and unconditionally. Every failure
+    // below has already been reported here, and leaving `opaque$Show` in place
+    // turned one mistake into six: the annotation is an unknown type, so the
+    // function's return type is invalid, so every call and every method on the
+    // result fails too. One wrong answer beats five consequences of no answer.
+    annotation.s1 = strClone(concrete)
+    annotation.child2 = ptr_null()
+
+    if (semaReturnsAgree(module, fnNode.child2, concrete, first) == false) { return }
+
+    let mut bounds = opaqueBounds
+    while (nodeExists(bounds)) {
+        let bound = ptr_to_node(bounds)
+        if (monoCheckOneBound(module, concreteAnnotation, fnNode.s1, opaqueName,
+                              bound, concreteT) == false) {
+            return
+        }
+        bounds = bound.next
+    }
+}
+
+private fn semaFindFirstReturn(ptr: Ptr) -> Ptr {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.RETURN_STATEMENT) { return p }
+        let inChild1 = semaFindFirstReturn(node.child1)
+        if (nodeExists(inChild1)) { return inChild1 }
+        let inChild2 = semaFindFirstReturn(node.child2)
+        if (nodeExists(inChild2)) { return inChild2 }
+        let inChild3 = semaFindFirstReturn(node.child3)
+        if (nodeExists(inChild3)) { return inChild3 }
+        p = node.next
+    }
+    return ptr_null()
+}
+
+// Every `return` has to name the same type, and the first one is what the rest
+// are measured against so the diagnostic can point at both.
+private fn semaReturnsAgree(module: ASTNode, ptr: Ptr, expected: String, first: ASTNode) -> Bool {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.RETURN_STATEMENT and semaSamePosition(node, first) == false) {
+            let otherName = semaOpaqueConcreteName(module, node)
+            if (otherName.equals("")) { return false }
+            if (otherName.equals(expected) == false) {
+                semaErrorAt(node, strConcat(
+                    strConcat("every `return` in a function returning `impl Trait` must return the same type, but this one returns ",
+                              diagQuote(otherName)),
+                    strConcat(" and an earlier one returns ", diagQuote(expected))))
+                diag_note_at(first.file, first.line, first.col, first.len,
+                             "the earlier `return` is here")
+                diag_note("an opaque return names one type; `dyn Trait` is the spelling for several")
+                return false
+            }
+        }
+        if (semaReturnsAgree(module, node.child1, expected, first) == false) { return false }
+        if (semaReturnsAgree(module, node.child2, expected, first) == false) { return false }
+        if (semaReturnsAgree(module, node.child3, expected, first) == false) { return false }
+        p = node.next
+    }
+    return true
+}
+
+// The concrete type a single `return` produces, or "" having reported why it
+// could not be determined.
+//
+// Deliberately syntactic. This runs before any body is checked -- it has to, so
+// that callers see the right signature -- so an inferred type is not available
+// and the two forms below are the ones whose type is written in the source.
+private fn semaOpaqueConcreteName(module: ASTNode, returnStatement: ASTNode) -> String {
+    if (nodeExists(returnStatement.child1) == false) {
+        semaErrorAt(returnStatement,
+                    "a function returning `impl Trait` cannot `return` without a value")
+        return ""
+    }
+    let expr = ptr_to_node(returnStatement.child1)
+
+    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) { return strClone(expr.s1) }
+
+    if (expr.kind == NodeKind.CALL_EXPR) {
+        let calleePtr = semaFindConcreteFunction(module, expr.s1)
+        if (nodeExists(calleePtr)) {
+            let callee = ptr_to_node(calleePtr)
+            if (nodeExists(callee.child3)) {
+                let calleeReturn = ptr_to_node(callee.child3)
+                if (strStartsWith(calleeReturn.s1, "opaque$") == false) {
+                    return strClone(calleeReturn.s1)
+                }
+            }
+        }
+    }
+
+    semaErrorAt(expr,
+                "the concrete type behind `impl Trait` must be apparent in the `return`")
+    diag_note("write a struct literal, or call a function whose return type is written out")
+    return ""
+}
+
+private fn semaFindConcreteFunction(module: ASTNode, name: String) -> Ptr {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.FUNCTION and stmt.s1.equals(name)) { return p }
+        p = stmt.next
+    }
+    return ptr_null()
+}
+
 private fn semaSynthesiseDynStructs(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {
@@ -1917,7 +2088,7 @@ private fn semaEnsureDynStruct(module: ASTNode, annotation: ASTNode) {
     let mut existing = module.child1
     while (nodeExists(existing)) {
         let stmt = ptr_to_node(existing)
-        if (stmt.kind == NodeKind.STRUCT_DECL and strEquals(stmt.s1, name)) { return }
+        if (stmt.kind == NodeKind.STRUCT_DECL and stmt.s1.equals(name)) { return }
         existing = stmt.next
     }
 
@@ -1970,7 +2141,7 @@ private fn semaTraitIsObjectSafe(module: ASTNode, traitDecl: ASTNode, at: ASTNod
     let mut sigPtr = traitDecl.child1
     while (nodeExists(sigPtr)) {
         let signature = ptr_to_node(sigPtr)
-        if (strEquals(signature.s2, "") == false) {
+        if (signature.s2.equals("") == false) {
             semaErrorAt(at, strConcat(strConcat("`", traitDecl.s1),
                         strConcat("` cannot be a `dyn` object: ",
                                   strConcat(diagQuote(signature.s1), " is generic"))))
@@ -2009,7 +2180,7 @@ private fn semaAnnotationMentionsSelf(ptr: Ptr) -> Bool {
     let mut p = ptr
     while (nodeExists(p)) {
         let node = ptr_to_node(p)
-        if (node.kind == NodeKind.TYPE_ANNOTATION and strEquals(node.s1, "Self")) { return true }
+        if (node.kind == NodeKind.TYPE_ANNOTATION and node.s1.equals("Self")) { return true }
         if (semaAnnotationMentionsSelf(node.child1)) { return true }
         p = node.next
     }
@@ -2064,7 +2235,7 @@ private fn semaTraitMethodIndex(traitDecl: ASTNode, name: String) -> Int {
     let mut p = traitDecl.child1
     while (nodeExists(p)) {
         let signature = ptr_to_node(p)
-        if (strEquals(signature.s1, name)) { return index }
+        if (signature.s1.equals(name)) { return index }
         index = index + 1
         p = signature.next
     }
@@ -2170,7 +2341,7 @@ private fn semaCheckOrphan(module: ASTNode, implNode: ASTNode) {
 
     let traitDecl = semaFindTrait(module, traitRef.s1)
     if (nodeIsNull(node_to_ptr(traitDecl)) == false
-        and strEquals(semaFileQualifier(traitDecl.file), here)) { return }
+        and semaFileQualifier(traitDecl.file).equals(here)) { return }
 
     if (semaModuleDeclaresType(module, semaAnnotationBaseName(header.child1), here)) { return }
 
@@ -2193,7 +2364,7 @@ private fn semaAnnotationBaseName(annotationPtr: Ptr) -> String {
 // implements a foreign trait for it looks like an orphan if only the concrete
 // declarations are searched.
 private fn semaModuleDeclaresType(module: ASTNode, name: String, qualifier: String) -> Bool {
-    if (strEquals(name, "")) { return false }
+    if (name.equals("")) { return false }
     if (semaChainDeclaresType(module.child1, name, qualifier)) { return true }
     return semaChainDeclaresType(module.child2, name, qualifier)
 }
@@ -2203,8 +2374,8 @@ private fn semaChainDeclaresType(ptr: Ptr, name: String, qualifier: String) -> B
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
         if ((stmt.kind == NodeKind.STRUCT_DECL or stmt.kind == NodeKind.ENUM_DECL)
-            and strEquals(stmt.s1, name)
-            and strEquals(semaFileQualifier(stmt.file), qualifier)) { return true }
+            and stmt.s1.equals(name)
+            and semaFileQualifier(stmt.file).equals(qualifier)) { return true }
         p = stmt.next
     }
     return false
@@ -2232,7 +2403,7 @@ private fn semaChainDeclaresType(ptr: Ptr, name: String, qualifier: String) -> B
 private fn semaRouteStructComparison(module: ASTNode, expr: ASTNode, op: String,
                                      leftT: TypeInfo, rightT: TypeInfo) -> Bool {
     if (leftT.kind != TypeKind.STRUCT or rightT.kind != TypeKind.STRUCT) { return false }
-    if (strEquals(leftT.name, rightT.name) == false) { return false }
+    if (leftT.name.equals(rightT.name) == false) { return false }
 
     // `==` prefers `Eq` and falls back to `Ord`. **Equality never depends on
     // having written the right one of the two**: a type that can be ordered can
@@ -2242,7 +2413,7 @@ private fn semaRouteStructComparison(module: ASTNode, expr: ASTNode, op: String,
     // Without the fallback, splitting `Eq` out of `Ord` would have taken `==`
     // away from every type that had it through `Ord` alone -- a feature removal
     // dressed up as a refinement.
-    let equality = strEquals(op, "==") or strEquals(op, "!=")
+    let equality = op.equals("==") or op.equals("!=")
     let mut traitName = "Ord"
     let mut method = "cmp"
     if (equality and semaTypeImplementsNamedTrait(module, leftT.name, "Eq")) {
@@ -2268,7 +2439,7 @@ private fn semaRouteStructComparison(module: ASTNode, expr: ASTNode, op: String,
 
     let comparand = createNode(NodeKind.LITERAL_EXPR)
     nodeSpanFrom(comparand, expr)
-    if (strEquals(traitName, "Eq")) {
+    if (traitName.equals("Eq")) {
         // Both compare against `true`, and **the operator is left alone**:
         // `eq(a,b) == true` is equality and `eq(a,b) != true` is its negation, so
         // one comparand serves both without a negation node and without
@@ -2291,8 +2462,8 @@ internal fn semaTypeImplementsNamedTrait(module: ASTNode, typeName: String,
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, traitName)
-            and strEquals(stmt.s1, typeName)) { return true }
+        if (stmt.kind == NodeKind.IMPL_DECL and stmt.s2.equals(traitName)
+            and stmt.s1.equals(typeName)) { return true }
         p = stmt.next
     }
     return false
@@ -2302,7 +2473,7 @@ private fn semaImplParam(params: String, name: String) -> Bool {
     let count = monoParamCount(params)
     let mut i = 0
     while (i < count) {
-        if (strEquals(monoParamName(params, i), name)) { return true }
+        if (monoParamName(params, i).equals(name)) { return true }
         i = i + 1
     }
     return false
@@ -2323,7 +2494,7 @@ private fn semaImplTargetsMayOverlap(aPtr: Ptr, aParams: String,
     if (aVariable or bVariable) { return true }
 
     if (a.i1 != b.i1 or a.i2 != b.i2 or a.i3 != b.i3) { return false }
-    if (strEquals(a.s1, b.s1) == false) { return false }
+    if (a.s1.equals(b.s1) == false) { return false }
 
     let mut aArg = a.child1
     let mut bArg = b.child1
@@ -2362,7 +2533,7 @@ private fn semaCollectImplParamConstraints(patternPtr: Ptr, patternParams: Strin
     let pattern = ptr_to_node(patternPtr)
     let other = ptr_to_node(otherPtr)
 
-    if (pattern.i1 == 0 and pattern.i2 == 0 and strEquals(pattern.s1, paramName)) {
+    if (pattern.i1 == 0 and pattern.i2 == 0 and pattern.s1.equals(paramName)) {
         if (semaAnnotationHasImplParam(otherPtr, otherParams)) { return }
         if (nodeIsNull(state.child1)) {
             state.child1 = otherPtr
@@ -2412,7 +2583,7 @@ private fn semaImplParamConstraintsAgree(aHeader: ASTNode, bHeader: ASTNode) -> 
 }
 
 private fn semaImplsOverlap(a: ASTNode, b: ASTNode) -> Bool {
-    if (strEquals(a.s2, b.s2) == false) { return false }
+    if (a.s2.equals(b.s2) == false) { return false }
     let aHeader = ptr_to_node(a.child3)
     let bHeader = ptr_to_node(b.child3)
     if (semaImplTargetsMayOverlap(aHeader.child1, aHeader.s1,
@@ -2436,7 +2607,7 @@ private fn semaAnnotationsExactlyAgree(aPtr: Ptr, bPtr: Ptr) -> Bool {
     let a = ptr_to_node(aPtr)
     let b = ptr_to_node(bPtr)
     if (a.i1 != b.i1 or a.i2 != b.i2 or a.i3 != b.i3) { return false }
-    if (strEquals(a.s1, b.s1) == false) { return false }
+    if (a.s1.equals(b.s1) == false) { return false }
 
     let mut aArg = a.child1
     let mut bArg = b.child1
@@ -2452,7 +2623,7 @@ private fn semaAnnotationsExactlyAgree(aPtr: Ptr, bPtr: Ptr) -> Bool {
 private fn semaImplsExactlyAgree(a: ASTNode, b: ASTNode) -> Bool {
     let aHeader = ptr_to_node(a.child3)
     let bHeader = ptr_to_node(b.child3)
-    if (strEquals(aHeader.s1, bHeader.s1) == false) { return false }
+    if (aHeader.s1.equals(bHeader.s1) == false) { return false }
     return semaAnnotationsExactlyAgree(aHeader.child1, bHeader.child1)
         and semaAnnotationsExactlyAgree(aHeader.child2, bHeader.child2)
 }
@@ -2476,7 +2647,7 @@ private fn semaFindTrait(module: ASTNode, name: String) -> ASTNode {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.TRAIT_DECL and strEquals(stmt.s1, name)) { return stmt }
+        if (stmt.kind == NodeKind.TRAIT_DECL and stmt.s1.equals(name)) { return stmt }
         p = stmt.next
     }
     return ptr_to_node(ptr_null())
@@ -2589,7 +2760,7 @@ private fn semaFindImplMember(header: ASTNode, name: String, kind: NodeKind) -> 
     let mut p = header.child3
     while (nodeExists(p)) {
         let member = ptr_to_node(p)
-        if (member.kind == kind and strEquals(member.s1, name)) { return p }
+        if (member.kind == kind and member.s1.equals(name)) { return p }
         p = member.next
     }
     return ptr_null()
@@ -2625,7 +2796,7 @@ private fn semaFindAssocConstValue(module: ASTNode, typeName: String, constName:
         let stmt = ptr_to_node(p)
         if (stmt.kind == NodeKind.IMPL_DECL) {
             let header = ptr_to_node(stmt.child3)
-            if (strEquals(semaAnnotationText(header.child1), typeName)) {
+            if (semaAnnotationText(header.child1).equals(typeName)) {
                 let found = semaFindImplMember(header, constName, NodeKind.ASSOC_CONST)
                 if (nodeIsNull(found) == false) { return ptr_to_node(found).child2 }
             }
@@ -2675,10 +2846,10 @@ private fn semaTargetImplementsTrait(module: ASTNode, targetText: String,
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, "") == false) {
+        if (stmt.kind == NodeKind.IMPL_DECL and stmt.s2.equals("") == false) {
             let header = ptr_to_node(stmt.child3)
-            if (strEquals(semaAnnotationText(header.child1), targetText)
-                and strEquals(monoTraitRefText(header.child2), wanted)) { return true }
+            if (semaAnnotationText(header.child1).equals(targetText)
+                and monoTraitRefText(header.child2).equals(wanted)) { return true }
         }
         p = stmt.next
     }
@@ -2706,7 +2877,7 @@ private fn semaTraitReaches(module: ASTNode, superPtr: Ptr, targetName: String,
     let mut p = superPtr
     while (nodeExists(p)) {
         let superRef = ptr_to_node(p)
-        if (strEquals(superRef.s1, targetName)) { return true }
+        if (superRef.s1.equals(targetName)) { return true }
         let parent = semaFindTrait(module, superRef.s1)
         if (nodeIsNull(node_to_ptr(parent)) == false) {
             if (semaTraitReaches(module, parent.child2, targetName, depth + 1)) { return true }
@@ -2743,7 +2914,7 @@ private fn semaCheckMethodConventions(signature: ASTNode, candidate: ASTNode) {
     while (nodeExists(want) and nodeExists(have)) {
         let wantParam = ptr_to_node(want)
         let haveParam = ptr_to_node(have)
-        if (strEquals(wantParam.s2, haveParam.s2) == false) {
+        if (wantParam.s2.equals(haveParam.s2) == false) {
             semaErrorAt(haveParam,
                         strConcat(strConcat("parameter ", diagQuote(haveParam.s1)),
                                   strConcat(strConcat(" is ", semaConventionText(wantParam.s2)),
@@ -2758,8 +2929,8 @@ private fn semaCheckMethodConventions(signature: ASTNode, candidate: ASTNode) {
 }
 
 private fn semaConventionText(convention: String) -> String {
-    if (strEquals(convention, "sink")) { return "`sink`" }
-    if (strEquals(convention, "inout")) { return "`inout`" }
+    if (convention.equals("sink")) { return "`sink`" }
+    if (convention.equals("inout")) { return "`inout`" }
     return "a borrow"
 }
 
@@ -2795,7 +2966,7 @@ private fn semaFindConformingMethod(module: ASTNode, implNode: ASTNode,
     let mut recordPtr = implNode.child2
     while (nodeExists(recordPtr)) {
         let record = ptr_to_node(recordPtr)
-        if (strEquals(record.s1, signature.s1)) {
+        if (record.s1.equals(signature.s1)) {
             let count = ir_decl_count(record.s1)
             let mut i = 0
             while (i < count) {
@@ -2821,11 +2992,11 @@ private fn semaFindConformingMethod(module: ASTNode, implNode: ASTNode,
             while (nodeExists(templatePtr)) {
                 let candidate = ptr_to_node(templatePtr)
                 if (candidate.kind == NodeKind.FUNCTION
-                    and strEquals(candidate.s1, record.s1)
+                    and candidate.s1.equals(record.s1)
                     and candidate.file == record.file
                     and candidate.line == record.line
                     and candidate.col == record.col
-                    and strEquals(candidate.s2, header.s1)
+                    and candidate.s2.equals(header.s1)
                     and semaSignaturesAgree(header.child1, traitDecl.s2,
                                             ptr_to_node(header.child2).child1,
                                             signature, candidate)) {
@@ -2891,7 +3062,7 @@ private fn semaAppliedAnnotationAgrees(suffixOptional: Bool,
     if (applied.i1 != have.i1 or applied.i2 != have.i2) { return false }
     let expectedOptional = applied.i3 == 1 or suffixOptional
     if (expectedOptional != (have.i3 == 1)) { return false }
-    if (strEquals(applied.s1, have.s1) == false) { return false }
+    if (applied.s1.equals(have.s1) == false) { return false }
     return semaAnnotationsExactlyAgree(applied.child1, have.child1)
 }
 
@@ -2902,7 +3073,7 @@ private fn semaAnnotationsAgree(targetPtr: Ptr, traitParams: String, traitArgs: 
 
     let want = ptr_to_node(wantPtr)
     let have = ptr_to_node(havePtr)
-    if (strEquals(want.s1, "Self")) {
+    if (want.s1.equals("Self")) {
         return semaAppliedAnnotationAgrees(want.i3 == 1, targetPtr, havePtr)
     }
 
@@ -2916,7 +3087,7 @@ private fn semaAnnotationsAgree(targetPtr: Ptr, traitParams: String, traitArgs: 
     }
 
     if (want.i1 != have.i1 or want.i2 != have.i2 or want.i3 != have.i3) { return false }
-    if (strEquals(want.s1, have.s1) == false) {
+    if (want.s1.equals(have.s1) == false) {
         return false
     }
 
@@ -3029,7 +3200,7 @@ private fn semaClosureNamesParam(paramsPtr: Ptr, name: String) -> Bool {
     let mut p = paramsPtr
     while (nodeExists(p)) {
         let param = ptr_to_node(p)
-        if (strEquals(param.s1, name)) { return true }
+        if (param.s1.equals(name)) { return true }
         p = param.next
     }
     return false
@@ -3039,7 +3210,7 @@ private fn semaClosureHasCapture(captures: NodeList, name: String) -> Bool {
     let mut p = captures.head
     while (nodeExists(p)) {
         let field = ptr_to_node(p)
-        if (strEquals(field.s1, name)) { return true }
+        if (field.s1.equals(name)) { return true }
         p = field.next
     }
     return false
@@ -3254,6 +3425,14 @@ fn analyzeModule(module: ASTNode) {
     semaSynthesiseDynStructs(module)
 
     semaRegisterNamedTypes(module)
+
+    // T16. Before the predeclaration loop below, which is what fills the return
+    // type registry a call site reads. An `impl Trait` return resolved after
+    // that point would register the placeholder and every call would disagree
+    // with the definition. After semaRegisterNamedTypes, because resolving the
+    // concrete type asks the registry what it is.
+    semaResolveOpaqueReturns(module)
+
     semaCacheFunctionSymbols(module)
     indexModuleDeclarations(module)
 

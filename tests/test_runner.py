@@ -24,13 +24,27 @@ RESET = '\033[0m'
 TEST_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TEST_DIR.parent
 
-def find_prismio_exe():
-    # $PRISMIO wins, so a freshly bootstrapped compiler can be tested without
-    # installing it first. Without this the runner silently exercises whatever
-    # older prismio happens to be on PATH, and reports its failures as yours.
+def find_prismio_exe(explicit=None):
+    # --compiler wins, then $PRISMIO, so a freshly bootstrapped compiler can be
+    # tested without installing it first. Without this the runner silently
+    # exercises whatever older prismio happens to be on PATH, and reports its
+    # failures as yours -- which is exactly what happened when `prismio verify`
+    # ran the suite through build.ums and got the installed toolchain instead of
+    # the project host. `run()` cannot set an environment variable, so the
+    # manifest passes --compiler.
+    if explicit:
+        # Absolute, because several fixtures run the compiler as a subprocess
+        # from a directory of their own -- a relative path resolves against the
+        # wrong root there and vanishes.
+        path = Path(explicit).resolve()
+        if path.is_file():
+            return path
+        print(f"{RED}[FAIL] --compiler is not a file: {explicit}{RESET}")
+        sys.exit(1)
+
     override = os.environ.get("PRISMIO")
     if override:
-        path = Path(override)
+        path = Path(override).resolve()
         if path.is_file():
             return path
         print(f"{RED}[FAIL] $PRISMIO is set but not a file: {override}{RESET}")
@@ -71,6 +85,10 @@ def parse_runner_args():
         "--list",
         action="store_true",
         help="list file fixtures without running them",
+    )
+    parser.add_argument(
+        "--compiler",
+        help="compiler to test; wins over $PRISMIO and over `prismio` on PATH",
     )
     return parser.parse_args()
 
@@ -402,8 +420,12 @@ def run_corpus_test():
     print(f"\n{BLUE}--- Running corpus ---{RESET}")
 
     NO_MAIN = {"g6_engine", "g6_engine_tuned"}
-    roots = [PROJECT_ROOT / "aif" / "evidence" / "xlang" / "prismio",
-             PROJECT_ROOT / "aif" / "corpus"]
+    # `aif/evidence/xlang/prismio` was the other root until 2026-09-03, when that
+    # tree was superseded by `benchmarks/` and `prismio bench`. It is not listed
+    # any more: the glob below skips a missing directory silently, so leaving it
+    # would have looked like coverage rather than the 25 programs it stopped
+    # contributing.
+    roots = [PROJECT_ROOT / "aif" / "corpus"]
     sources = sorted(p for r in roots if r.is_dir() for p in r.glob("*.psm"))
     if not sources:
         print(f"{RED}[FAIL] corpus: no programs found{RESET}")
@@ -457,6 +479,50 @@ def run_corpus_test():
     note = f", {skipped_platform} skipped (macOS-only clock)" if skipped_platform else ""
     print(f"{GREEN}[PASS] corpus: {ran} programs build and run{note}{RESET}")
     return True
+
+
+@contextlib.contextmanager
+def preserved_project_host():
+    """Put `.prismio/build/debug/prismio` back after a test that destroys it.
+
+    The compiler is described by the repository's own `build.ums`, so the only
+    honest way to test host routing is against the real project: the launcher
+    protocol, upward discovery and the `component("prismio.backend")` link are
+    properties of *that* manifest, and a fixture cannot stand in for them.
+
+    The cost is that this test's scratch space is the developer's working
+    compiler. It deletes that binary, overwrites it with garbage to force the
+    corrupt-host fallback, and finally asserts a hosted `clean` removed it --
+    each of those is the behaviour under test, and each leaves the developer with
+    no project host. `prismio build` then silently drops to stage 0, which is a
+    slow and confusing way to find out that a test suite ran.
+
+    So the binary is moved aside and restored. In a `finally`, not as a tidy-up
+    at the end, because every check in the test returns early on failure.
+    """
+    artifact = PROJECT_ROOT / ".prismio" / "build" / "debug" / "prismio"
+    candidate = artifact.with_name(artifact.name + ".next")
+
+    saved = None
+    if artifact.exists():
+        handle, saved = tempfile.mkstemp(prefix="prismio-host-")
+        os.close(handle)
+        # copy2 rather than copy: the executable bit has to survive the round trip.
+        shutil.copy2(artifact, saved)
+
+    try:
+        for leftover in (artifact, candidate):
+            if leftover.exists():
+                leftover.unlink()
+        yield artifact, candidate
+    finally:
+        for leftover in (artifact, candidate):
+            if leftover.exists():
+                leftover.unlink()
+        if saved is not None:
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(saved, artifact)
+            os.unlink(saved)
 
 
 def run_ums_test():
@@ -583,14 +649,12 @@ def run_ums_test():
     # Build from a descendant directory to cover upward discovery and,
     # crucially, executable("prismio")'s backend component/LLVM link path. A
     # model-only assertion cannot cover whether that component really links.
-    compiler_artifact = PROJECT_ROOT / ".prismio" / "build" / "debug" / "prismio"
-    compiler_candidate = compiler_artifact.with_name(compiler_artifact.name + ".next")
-    if compiler_artifact.exists():
-        compiler_artifact.unlink()
-    if compiler_candidate.exists():
-        compiler_candidate.unlink()
-
-    with tempfile.TemporaryDirectory(prefix="prismio-launcher-") as launcher_dir:
+    # The routing banner is asserted on stderr. It says which compiler is
+    # running, which is status rather than output, and while it went to stdout
+    # it prefixed `aif --manifest` with a human line and broke that format's
+    # one guarantee: that its first line is `aif-manifest 1`.
+    with preserved_project_host() as (compiler_artifact, compiler_candidate), \
+            tempfile.TemporaryDirectory(prefix="prismio-launcher-") as launcher_dir:
         launcher = Path(launcher_dir) / ("prismio.exe" if os.name == "nt" else "prismio")
         shutil.copy2(PRISMIO_EXE, launcher)
 
@@ -599,7 +663,7 @@ def run_ums_test():
             cwd=str(PROJECT_ROOT / "ums"),
         )
         if (project_build.returncode != 0 or not compiler_artifact.exists()
-                or "compiler host: stage-0" not in project_build.stdout):
+                or "compiler host: stage-0" not in project_build.stderr):
             print(f"{RED}[FAIL] ums: stage 0 did not build the first project host{RESET}")
             print(project_build.stdout or project_build.stderr)
             return False
@@ -609,7 +673,7 @@ def run_ums_test():
             cwd=str(PROJECT_ROOT / "ums"),
         )
         if (local_build.returncode != 0
-                or "compiler host: project-local" not in local_build.stdout
+                or "compiler host: project-local" not in local_build.stderr
                 or "staged project compiler:" not in local_build.stdout
                 or "promoted project compiler:" not in local_build.stdout):
             print(f"{RED}[FAIL] ums: the complete build command was not hosted{RESET}")
@@ -621,7 +685,7 @@ def run_ums_test():
             cwd=str(PROJECT_ROOT),
         )
         if (forwarded_version.returncode != 0
-                or "compiler host: project-local" not in forwarded_version.stdout
+                or "compiler host: project-local" not in forwarded_version.stderr
                 or "prismio 0.1.0" not in forwarded_version.stdout):
             print(f"{RED}[FAIL] ums: a non-build command was not forwarded to the host{RESET}")
             print(forwarded_version.stdout or forwarded_version.stderr)
@@ -658,7 +722,7 @@ def run_ums_test():
             cwd=str(PROJECT_ROOT / "ums"),
         )
         if (clean.returncode != 0 or compiler_artifact.exists()
-                or "compiler host: project-local" not in clean.stdout):
+                or "compiler host: project-local" not in clean.stderr):
             print(f"{RED}[FAIL] ums: hosted clean did not remove the compiler after it exited{RESET}")
             print(clean.stdout or clean.stderr)
             return False
@@ -1205,12 +1269,18 @@ def run_oracle_vocabulary_test():
     contracts = (PROJECT_ROOT / "src" / "aif" / "contracts.psm").read_text(encoding="utf-8")
     oracle_src = (PROJECT_ROOT / "aif" / "prototype" / "aif.py").read_text(encoding="utf-8")
 
-    # `strEquals` returns Bool, so the C-era `== 1` is gone. This scraper is the
-    # thing the check depends on seeing, so when the compiler moved off the C
-    # string layer in 2026-08 this pattern stopped matching and the check
-    # correctly reported itself blind rather than passing on an empty set.
+    # This scraper is the thing the check depends on seeing, and it has now gone
+    # blind twice: once when the compiler moved off the C string layer in 2026-08
+    # and `== 1` disappeared, and again on 2026-09-03 when `strEquals(name, "x")`
+    # became `name.equals("x")`. Both times it reported itself blind rather than
+    # passing on an empty set, which is the whole reason the `not produces` guard
+    # below is part of the failure condition. Accepts either spelling, so the
+    # remaining `strEquals` call sites elsewhere in the tree can migrate without
+    # breaking it a third time.
     produces = set(re.findall(
-        r'strEquals\(name,\s*"([a-z_0-9]+)"\)\)\s*\{\s*return true\s*\}', contracts))
+        r'(?:strEquals\(name,\s*"([a-z_0-9]+)"\)|name\.equals\("([a-z_0-9]+)"\))'
+        r'\)\s*\{\s*return true\s*\}', contracts))
+    produces = {a or b for a, b in produces}
     at = oracle_src.find("FFI_RETURNS_PRODUCE = {")
     if at < 0 or not produces:
         print(f"{RED}[FAIL] could not locate both produce lists -- this check has "
@@ -4115,7 +4185,7 @@ def run_jit_test():
 def run_runtime_library_test():
     """A packaged toolchain links the prebuilt runtime archive, and a foreign target does not.
 
-    `tools/package.sh` builds `lib/runtime.a` and, until this test, nothing in the
+    `tools/package.py` builds `lib/runtime.a` and, until this test, nothing in the
     tree linked against one. A dev checkout runs the compiler out of `build/`,
     where `find_in_lib_dir` looks in `build/../lib` and `build/lib` and finds
     nothing, so every build in this suite took the `build_from_toolchain_sources`
@@ -4159,7 +4229,7 @@ def run_runtime_library_test():
          installed runtime was compiled without `-DPRISMIO_AIF_VERIFY` and half
          the allocations would be outside the accounting.
       6. *A freshly packaged toolchain is not stale*, checked from the repository
-         root where the sources are visible. This is what keeps `package.sh` and
+         root where the sources are visible. This is what keeps `package.py` and
          `compiler_runtime_source_hash` agreeing about how the hash is derived;
          they cannot disagree by construction, because packaging asks the
          compiler for it, and this is what makes a change to that arrangement
@@ -4185,16 +4255,7 @@ def run_runtime_library_test():
     print(f"\n{BLUE}--- Running runtime_library ---{RESET}")
     problems = []
 
-    if os.name == "nt":
-        shell = which("pwsh") or which("powershell")
-        if not shell:
-            print(f"{RED}[FAIL] runtime_library: no PowerShell to run "
-                  f"tools/package.ps1{RESET}")
-            return False
-        package = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                   str(PROJECT_ROOT / "tools" / "package.ps1")]
-    else:
-        package = ["bash", str(PROJECT_ROOT / "tools" / "package.sh")]
+    package = [sys.executable, str(PROJECT_ROOT / "tools" / "package.py")]
 
     with tempfile.TemporaryDirectory(prefix="prismio-runtime-lib-") as tmp:
         wd = Path(tmp)
@@ -4213,10 +4274,11 @@ def run_runtime_library_test():
                          '}\n')
 
         compiler = Path(PRISMIO_EXE).resolve()
-        if os.name == "nt":
-            package += ["-Compiler", str(compiler), "-OutDir", str(dist)]
-        else:
-            package += ["--compiler", str(compiler), "--out", str(dist)]
+        # One argument spelling on every platform. This used to branch, because
+        # packaging was a .sh/.ps1 pair and PowerShell took `-Compiler`; the
+        # Windows arm outlived the script it was written for and would have
+        # failed there against tools/package.py.
+        package += ["--compiler", str(compiler), "--out", str(dist)]
 
         packaged = subprocess.run(package, capture_output=True, text=True,
                                   cwd=str(PROJECT_ROOT))
@@ -4230,10 +4292,29 @@ def run_runtime_library_test():
                             or f"exit {packaged.returncode}, no runtime archive"))
             return False
 
-        def build(args, cwd=wd):
+        # The same binary under a name that is not the launcher's.
+        #
+        # `isGlobalLauncher` is a test on argv[0]: a binary called `prismio`
+        # forwards the whole command to the project host named by the nearest
+        # `build.ums`. Checks 6 and 7 build from the repository root, where that
+        # manifest is *this* project's -- so under its installed name the packaged
+        # compiler hands the command to `.prismio/build/debug/prismio` and the
+        # freshness guard it is being asked about never runs.
+        #
+        # That went unnoticed because `run_ums_test` deletes the project host and
+        # used to leave it deleted, so by the time this test ran there was nothing
+        # to forward to. The checks passed on an accident of ordering. Naming the
+        # probe copy something else is the same trick the repository already uses
+        # for `build/gen1` and `build/gen2`, and for the same reason: a named
+        # generation is an exact tool, not a launcher.
+        exe_suffix = ".exe" if os.name == "nt" else ""
+        probe_compiler = installed.with_name("prismio-probe" + exe_suffix)
+        shutil.copy2(installed, probe_compiler)
+
+        def build(args, cwd=wd, compiler=None):
             env = dict(os.environ, PRISMIO_OBJ_CACHE_DIR=str(cache),
                        PRISMIO_OBJ_CACHE_TRACE="1")
-            return subprocess.run([str(installed), "build", str(probe)] + args,
+            return subprocess.run([str(compiler or installed), "build", str(probe)] + args,
                                   capture_output=True, text=True, cwd=str(cwd),
                                   env=env)
 
@@ -4241,8 +4322,6 @@ def run_runtime_library_test():
         # off. Any of the three means the archive was not what got linked.
         def from_source(r):
             return "[objcache" in (r.stderr or "")
-
-        exe_suffix = ".exe" if os.name == "nt" else ""
 
         # 1. The archive is linked, and what comes out runs.
         exe = wd / ("probe" + exe_suffix)
@@ -4406,7 +4485,7 @@ def run_runtime_library_test():
                             "installed runtime cannot be detected at all")
         else:
             fresh = build(["-o", str(wd / ("probe_fresh" + exe_suffix))],
-                          cwd=PROJECT_ROOT)
+                          cwd=PROJECT_ROOT, compiler=probe_compiler)
             if fresh.returncode != 0 or "stale" in (fresh.stdout or "") + (fresh.stderr or ""):
                 problems.append("a toolchain packaged from these very sources was "
                                 "reported stale against them: packaging and "
@@ -4417,7 +4496,7 @@ def run_runtime_library_test():
             bogus = "1" * 16 if recorded.strip().startswith("0") else "0" * 16
             hash_file.write_text(bogus)
             stale = build(["-o", str(wd / ("probe_stale" + exe_suffix))],
-                          cwd=PROJECT_ROOT)
+                          cwd=PROJECT_ROOT, compiler=probe_compiler)
             hash_file.write_text(recorded)
             said = (stale.stdout or "") + (stale.stderr or "")
             if stale.returncode == 0 or "stale" not in said:
@@ -4441,15 +4520,9 @@ def run_runtime_library_test():
         # step* pulled in only the runtime: a linked binary's symbol table says
         # nothing about which static-archive members were folded into it, so nm
         # cannot answer that one at all.
-        if os.name == "nt":
-            script = PROJECT_ROOT / "tools" / "verify_separation.ps1"
-            symbols = which("llvm-nm")
-            command = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass",
-                       "-File", str(script), "-Dist", str(dist)]
-        else:
-            script = PROJECT_ROOT / "tools" / "verify_separation.sh"
-            symbols = which("llvm-nm") or which("nm")
-            command = ["bash", str(script), "--dist", str(dist)]
+        script = PROJECT_ROOT / "tools" / "verify_separation.py"
+        symbols = which("llvm-nm") or (None if os.name == "nt" else which("nm"))
+        command = [sys.executable, str(script), "--dist", str(dist)]
 
         if not symbols:
             # The script exits 1 for a missing nm exactly as it does for a failed
@@ -6372,7 +6445,7 @@ def main():
             print(test_file.stem)
         return
 
-    PRISMIO_EXE = find_prismio_exe()
+    PRISMIO_EXE = find_prismio_exe(args.compiler)
     if not PRISMIO_EXE.exists():
         print(f"{RED}[FAIL] Compiler not found at {PRISMIO_EXE}{RESET}")
         sys.exit(1)

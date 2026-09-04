@@ -16,15 +16,15 @@ fn main() -> Int {
         return fail("string length should count characters")
     }
 
-    if (strEquals(hello, "Hello") == false) {
+    if (hello.equals("Hello") == false) {
         return fail("identical string literals should compare equal")
     }
 
-    if (strEquals(hello, world)) {
+    if (hello.equals(world)) {
         return fail("different string literals should not compare equal")
     }
 
-    if (strEquals(phrase, "Hello, World") == false) {
+    if (phrase.equals("Hello, World") == false) {
         return fail("string concatenation should preserve order")
     }
 

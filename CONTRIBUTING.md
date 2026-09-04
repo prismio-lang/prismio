@@ -129,7 +129,7 @@ resolves, which is the fastest way to check you are running what you think.
 ### Before opening a pull request
 
 ```bash
-bash tools/release_gate.sh --rc build/gen2
+python tools/release_gate.py --rc build/gen2
 ```
 
 Fourteen gates in one command: source lists, two-generation bootstrap, IR
@@ -268,9 +268,9 @@ python3 tools/format_sources.py --check
 python3 tools/lint.py
 ```
 
-`tools/sanitizer_smoke.sh --compiler build/gen2` links representative ownership
-and concurrency programs with AddressSanitizer. `tools/milestone_bench.py` runs
-the interleaved milestone regression gate against an explicitly named baseline.
+`python tools/sanitizer_smoke.py --compiler build/gen2` links representative ownership
+and concurrency programs with AddressSanitizer. `python3 benchmarks/run.py`
+builds, validates, and measures the Prismio/C++/Rust performance suite.
 
 All tests must pass before a PR can be merged.
 

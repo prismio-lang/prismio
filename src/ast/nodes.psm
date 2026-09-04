@@ -227,7 +227,7 @@ extern fn node_to_ptr(node: ASTNode borrow) -> Ptr alias
 
 // Is there a node here?
 //
-// **Use these two rather than spelling out `strEquals(ptr, "")`.** Not because
+// **Use these two rather than spelling out `ptr.equals("")`.** Not because
 // the spelling is long, but because it is only correct under an invariant that
 // has to be written down somewhere, and this is that place.
 //

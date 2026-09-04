@@ -51,7 +51,7 @@ fn umsDependencyFind(dependencies: List<UmsDependency>, scope: UmsDependencyScop
     let mut i = 0
     while (i < list_len(dependencies)) {
         let dependency = list_get(dependencies, i)
-        if (dependency.scope == scope and strEquals(dependency.name, name)) {
+        if (dependency.scope == scope and dependency.name.equals(name)) {
             return i
         }
         i = i + 1

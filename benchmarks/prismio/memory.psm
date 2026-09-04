@@ -1,0 +1,174 @@
+import common
+
+struct BenchMemoryParticle {
+    x: Float,
+    y: Float,
+    vx: Float,
+    vy: Float,
+    life: Int
+}
+
+fn benchBuildMemoryTree(depth: Int, seed: Int) -> BenchTree {
+    if (depth == 0) { return BenchTree.Empty }
+    return BenchTree.Node(
+        benchBuildMemoryTree(depth - 1, (seed * 3 + 1) % 1009),
+        seed,
+        benchBuildMemoryTree(depth - 1, (seed * 5 + 7) % 1009)
+    )
+}
+
+fn benchMemoryTreeSum(tree: BenchTree) -> Int {
+    match (tree) {
+        BenchTree.Empty => { return 0 }
+        BenchTree.Node(left, value, right) => {
+            return (value + benchMemoryTreeSum(left) + benchMemoryTreeSum(right)) % 1000000007
+        }
+    }
+    return 0
+}
+
+fn benchTransientAllocation(scale: Int) -> Int {
+    let rounds = 200 * scale
+    let mut checksum = 0
+    let mut r = 0
+    while (r < rounds) {
+        let mut values: List<Int> = list_new()
+        let mut i = 0
+        while (i < 4000) {
+            list_push(values, (i + r) % 997)
+            i = i + 1
+        }
+        checksum = (checksum + list_get(values, r % 4000)) % 1000000007
+        drop(values)
+        r = r + 1
+    }
+    return checksum
+}
+
+fn benchStructCreation(scale: Int) -> Int {
+    let n = 250000 * scale
+    let mut particles: List<BenchMemoryParticle> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(particles, BenchMemoryParticle {
+            x: i as Float, y: (i % 31) as Float, vx: 1.0, vy: 2.0, life: i % 100
+        })
+        i = i + 1
+    }
+    let mut checksum = 0
+    let mut k = 0
+    while (k < n) {
+        let p = list_get(particles, k)
+        checksum = (checksum + (p.x as Int) + p.life) % 1000000007
+        k = k + 1
+    }
+    return checksum
+}
+
+fn benchAllocationMutation(scale: Int) -> Int {
+    let n = 100000 * scale
+    let mut particles: List<BenchMemoryParticle> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(particles, BenchMemoryParticle { x: 0.0, y: 0.0, vx: 1.0, vy: 2.0, life: 50 })
+        i = i + 1
+    }
+    let mut round = 0
+    while (round < 20) {
+        let mut k = 0
+        while (k < n) {
+            let p = list_get(particles, k)
+            p.x = p.x + p.vx
+            p.y = p.y + p.vy
+            p.life = p.life - 1
+            k = k + 1
+        }
+        round = round + 1
+    }
+    let mut checksum = 0
+    let mut q = 0
+    while (q < n) {
+        let p = list_get(particles, q)
+        checksum = (checksum + (p.x as Int) + (p.y as Int) + p.life) % 1000000007
+        q = q + 1
+    }
+    return checksum
+}
+
+fn benchNestedCollection(scale: Int) -> Int {
+    let bucketsCount = 200 * scale
+    let mut buckets: List<BenchBucket> = list_new_with_capacity(bucketsCount)
+    let mut b = 0
+    while (b < bucketsCount) {
+        let mut values: List<Int> = list_new_with_capacity(1000)
+        let mut i = 0
+        while (i < 1000) {
+            list_push(values, (b + i) % 1021)
+            i = i + 1
+        }
+        list_push(buckets, BenchBucket { values: values })
+        b = b + 1
+    }
+    let mut checksum = 0
+    let mut x = 0
+    while (x < bucketsCount) {
+        let bucket = list_get(buckets, x)
+        let mut y = 0
+        while (y < list_len(bucket.values)) {
+            checksum = (checksum + list_get(bucket.values, y)) % 1000000007
+            y = y + 1
+        }
+        x = x + 1
+    }
+    return checksum
+}
+
+fn benchLargeBufferCopy(scale: Int) -> Int {
+    let n = 500000 * scale
+    let mut source: List<Int> = list_new_with_capacity(n)
+    let mut target: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(source, i % 4093)
+        list_push(target, 0)
+        i = i + 1
+    }
+    let mut round = 0
+    while (round < 8) {
+        let mut k = 0
+        while (k < n) {
+            list_set(target, k, list_get(source, k))
+            k = k + 1
+        }
+        round = round + 1
+    }
+    let mut checksum = 0
+    let mut q = 0
+    while (q < n) {
+        checksum = (checksum + list_get(target, q)) % 1000000007
+        q = q + 1
+    }
+    return checksum
+}
+
+fn benchTreeAdd(sink tree: BenchTree, amount: Int) -> BenchTree {
+    match (tree) {
+        BenchTree.Empty => { return BenchTree.Empty }
+        BenchTree.Node(left, value, right) => {
+            return BenchTree.Node(benchTreeAdd(left, amount), value + amount,
+                                  benchTreeAdd(right, amount))
+        }
+    }
+    return BenchTree.Empty
+}
+
+fn benchTreePasses(sink tree: BenchTree, passes: Int) -> BenchTree {
+    if (passes == 0) { return tree }
+    return benchTreePasses(benchTreeAdd(tree, 1), passes - 1)
+}
+
+fn benchRecursiveTreeRebuild(scale: Int) -> Int {
+    let tree = benchBuildMemoryTree(12 + scale / 4, 1)
+    let done = benchTreePasses(tree, 4 * scale)
+    return benchMemoryTreeSum(done)
+}

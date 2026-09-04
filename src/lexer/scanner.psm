@@ -96,6 +96,52 @@ private fn lexerNewline(lex: Lexer) {
     lex.col = 0
 }
 
+// `/* ... */`, and they nest.
+//
+// **Nesting is the whole point.** The C form cannot comment out a region that
+// already contains a comment, which is the one thing anybody reaches for a block
+// comment to do -- the inner `*/` ends the outer comment and the rest of the
+// region becomes code again, usually without a syntax error to say so. Rust and
+// Swift nest for this reason. The depth counter is why this is a loop with an
+// explicit exit rather than a scan for the first `*/`.
+//
+// Skipped rather than tokenized, like `//`: the parser never sees a comment, so
+// there is no token kind to add and nothing downstream to teach.
+private fn lexerSkipBlockComment(lex: Lexer) {
+    let line = lex.line
+    let col = lex.col
+
+    lexerAdvance(lex)
+    lexerAdvance(lex)
+
+    let mut depth = 1
+    while (depth > 0) {
+        let current = lexerCurrent(lex)
+
+        // Reported where the comment *opened*, not at the end of the file. The
+        // position of the unclosed `/*` is the only part of this a reader can act
+        // on; the end of the file is where every unterminated comment lands.
+        if (current == '\0') {
+            lexerFatal(lex, line, col, "unterminated block comment")
+            return
+        }
+
+        if (current == '\n') { lexerNewline(lex) }
+
+        if (current == '/' and lexerPeek(lex, 1) == '*') {
+            depth = depth + 1
+            lexerAdvance(lex)
+            lexerAdvance(lex)
+        } else if (current == '*' and lexerPeek(lex, 1) == '/') {
+            depth = depth - 1
+            lexerAdvance(lex)
+            lexerAdvance(lex)
+        } else {
+            lexerAdvance(lex)
+        }
+    }
+}
+
 private fn lexerSkipWhitespace(lex: Lexer) {
     loop {
         if (isSpace(lexerCurrent(lex))) {
@@ -105,6 +151,8 @@ private fn lexerSkipWhitespace(lex: Lexer) {
             while (lexerCurrent(lex) != '\n' and lexerCurrent(lex) != '\0') {
                 lexerAdvance(lex)
             }
+        } else if (lexerCurrent(lex) == '/' and lexerPeek(lex, 1) == '*') {
+            lexerSkipBlockComment(lex)
         } else {
             break
         }
@@ -309,12 +357,12 @@ private fn isTwoCharOperator(first: Char, second: Char) -> Bool {
 }
 
 private fn twoCharOperatorType(value: String) -> TokenType {
-    if (strEquals(value, "==") or strEquals(value, "!=")
-        or strEquals(value, "<=") or strEquals(value, ">=")) {
+    if (value.equals("==") or value.equals("!=")
+        or value.equals("<=") or value.equals(">=")) {
         return TokenType.RELATIONAL_OPERATOR
     }
-    if (strEquals(value, "=>")) { return TokenType.FAT_ARROW }
-    if (strEquals(value, "->")) { return TokenType.ARROW }
+    if (value.equals("=>")) { return TokenType.FAT_ARROW }
+    if (value.equals("->")) { return TokenType.ARROW }
 
     // `x op= y` is an assignment: the second character is '=' and the first is
     // not, which distinguishes it from ==, !=, <= and >= handled above.

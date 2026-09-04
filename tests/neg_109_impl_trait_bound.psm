@@ -1,0 +1,23 @@
+// expect-error: does not implement
+// expect-error: the return type is written `impl Show`
+//
+// The bound in a return-position `impl Trait` is a promise the function makes to
+// every caller, so it is checked against the concrete type the body returns
+// rather than assumed. The note names the *return type*, not a type parameter:
+// there is no parameter here, and pointing at one would describe a declaration
+// that does not exist in the source.
+
+import std.io
+
+trait Show { fn show(self) -> String }
+
+struct NoShow { z: Int }
+
+fn make() -> impl Show {
+    return NoShow { z: 1 }
+}
+
+fn main() -> Int {
+    println(make().show())
+    return 0
+}

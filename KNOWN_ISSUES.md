@@ -8,6 +8,14 @@ Detail for any of these — the reproducer, what was tried, what was refuted —
 in `git log`, which is where this project keeps its record. Commit messages carry
 their own evidence.
 
+**Paths under `aif/evidence/xlang/` named below no longer exist.** That tree was
+superseded by `benchmarks/` and `prismio bench` on 2026-09-03 and removed; the
+sources are recoverable from Git history. Two entries name a file there as their
+*regression guard* — `pointer_return_temp.psm` and `extern_alias_escape.psm` —
+and those guards went with it. Neither issue changed; what changed is that
+nothing in the tree now watches them, so re-express them under `tests/` before
+relying on either being caught.
+
 ## Ownership
 
 **A value read out of a parameter is a view of it, and the caller no longer frees
@@ -215,12 +223,71 @@ versioning result. `!invariant.load` on the `List` header is still **unsound**
 because `list_push` rewrites it. See `aif/evidence/RESULTS-flat-list-view.md`
 and `aif/evidence/RESULTS-loop-unswitch.md`.
 
-**Five tests fail under `PRISMIO_INLINE_ELEMS=0`.** The boxed fallback is
-correct — checksums agree with it set — but the suite reports 197/202 rather
-than 202/202: an allocation ledger that releases 0 of 1784, a forced-split
-object count, DataView conversion invariants, generic layout specialization, and
-a `--verify` fact. They reproduce identically on `build/unswitch-gen4`, so they
-predate the flat-list view and are about the opt-out path rather than about it.
+**Four tests fail under `PRISMIO_INLINE_ELEMS=0`.** The boxed fallback is
+correct — checksums agree with it set — but the suite reports 279/283 rather
+than 283/283: an allocation ledger that releases 0 of 1784, DataView conversion
+invariants, generic layout specialization, and a `--verify` fact. They reproduce
+identically on `build/unswitch-gen4`, so they predate the flat-list view and are
+about the opt-out path rather than about it.
+
+Re-measured 2026-09-03: **four**, not five. The forced-split object count listed
+here no longer fails, and *why* has not been established — nothing in the
+interval targeted it. Attribute it before trusting the remaining four, because
+an entry that drifts without explanation is evidence the list is being counted
+rather than read.
+
+## Traits
+
+All 21 trait milestones are implemented and documented in `../docs`
+(`content/language/traits.md` and `generics.md`). What follows is what was
+deliberately left out, migrated here when `TRAIT_SYSTEM_ROADMAP.md` was retired
+on 2026-09-03 — the roadmap was session scaffolding and the docs are now the
+description of the system.
+
+**Trait objects are borrowed-only.** Storing or returning a `dyn Trait` needs a
+destructor slot in every vtable, an indirect call on release, and AIF learning a
+type whose release it cannot see. The representation — a fat pointer with
+relative 4-byte vtable offsets — was chosen so this is an addition rather than a
+change.
+
+**An unqualified call still resolves through the global overload set.** Methods
+no longer collide and have a qualified spelling, but the unqualified form does
+not resolve through in-scope traits.
+
+**`dyn Trait<Item = Int>` is refused.** Object safety rejects any trait with an
+associated type. Pinning it at the use site costs nothing at run time and would
+make `Iterator` object-safe; the equality-constraint machinery already exists.
+
+**There is no `Drop`-shaped trait.** Deliberately left out of the standard
+vocabulary: it interacts with AIF's release placement and needs its own design
+pass rather than an entry in a trait list.
+
+**`Eq` covers the builtins only.** `std/eq.psm` has no instance for `Map` or
+`List`.
+
+**An `impl Trait` return type must be apparent in the `return`** — a struct
+literal, or a call to a function whose return type is written out. The pass that
+resolves it runs before any body is checked, which it must, so it has no
+inferred types to read.
+
+**`impl Trait` opacity is not enforced against the caller.** The concrete type is
+resolved and the annotation rewritten, so `let p: Point = makePoint()` still
+type-checks. Dispatch is static and correct; the abstraction barrier is what is
+missing, and closing it means keeping the return type distinct through checking
+rather than rewriting it.
+
+**Compile time is +4.3% against the T06 baseline**, residual and diffuse. Three
+optimizations were tried and are recorded in `git log` with the hypotheses that
+were wrong; profile before attempting a fourth.
+
+**`prismio suite` cannot run the ums host-routing fixture.** That fixture
+deletes `.prismio/build/debug/prismio` and re-promotes it to exercise stage-0 ->
+project-local promotion, and the `prismio` process running the command is using
+that file. It reports 282/283; `python3 tools/run_suite.py` reports 283/283 and
+is the release gate. `run_suite.py` already tests a *copy* of the compiler,
+which is what fixed the other three fixtures with the same shape (object cache,
+cold build, `--target`); this one needs the outer process not to be the compiler
+at all.
 
 ## Platform
 
@@ -250,9 +317,9 @@ no iterator protocol.
 
 ## Measurement, if you are benchmarking this
 
-**g5 is not measurable at this granularity.** An A/A calibration — `build/tbaa3`
-against *itself* — reports `1.266x REGRESSED`. Every g5 number this project has
-recorded sits inside that spread. Run
-`python3 tools/milestone_bench.py --calibrate --only g5 --skip-baselines` before
-reading any A/B of it, and diff the functions with `tools/fn_mnemonic_diff.py`
-before believing any harness on any program.
+**The historical g5 benchmark was not measurable at its original granularity.**
+An A/A calibration reported `1.266x REGRESSED`, so the maintained root suite
+does not carry that compound workload forward. Its useful axes are isolated as
+`hashmap_insert_lookup`, `key_value_update`, and `nested_collection` under
+`benchmarks/`; use their cross-language checksums and repeated medians instead
+of interpreting an old g5 result.

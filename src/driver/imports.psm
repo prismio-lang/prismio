@@ -54,7 +54,7 @@ let mut mergeTailPtr: Ptr
 
 private fn sameTopLevelName(a: ASTNode, b: ASTNode) -> Bool {
     if (a.kind != b.kind) { return false }
-    if (strEquals(a.s1, b.s1) == false) { return false }
+    if (a.s1.equals(b.s1) == false) { return false }
     if (a.kind == NodeKind.FUNCTION) {
         return false
     }
@@ -150,7 +150,7 @@ private fn moduleRelativePath(moduleName: String) -> String {
 // thing written anywhere in the tree. The `.` case exists because there is
 // nothing to join to.
 private fn resolveUnder(baseDir: String, relative: String) -> String {
-    if (strEquals(baseDir, ".")) {
+    if (baseDir.equals(".")) {
         return relative
     }
     return join_path(baseDir, relative)
@@ -165,7 +165,7 @@ private fn resolveUnder(baseDir: String, relative: String) -> String {
 
 
 private fn importBaseDir(baseDir: String, moduleName: String) -> String {
-    if (strEquals(moduleName, "ums") or strStartsWith(moduleName, "ums.")) {
+    if (moduleName.equals("ums") or strStartsWith(moduleName, "ums.")) {
         return get_directory(baseDir)
     }
     return baseDir
@@ -233,7 +233,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     let seen = strConcat(visited, key)
 
     let content = read_file(importPath)
-    if (strEquals(content, "") and file_exists(importPath) == 0) {
+    if (content.equals("") and file_exists(importPath) == 0) {
         diag_error_at_code("P1001", site.file, site.line, site.col, site.len,
             strConcat(strConcat("cannot read imported module ", diagQuote(moduleName)),
                        strConcat(": no such file ", importPath)))
@@ -267,7 +267,7 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
     let dirPath = joinImportDir(baseDir, site.s1)
     let listing = list_modules(dirPath)
 
-    if (strEquals(listing, "")) {
+    if (listing.equals("")) {
         diag_error_at_code("P1002", site.file, site.line, site.col, site.len,
             strConcat(strConcat("package ", diagQuote(site.s1)),
                        strConcat(" contains no modules: ", dirPath)))
@@ -336,8 +336,28 @@ fn standardModulePath(baseDir: String, leaf: String) -> String {
     let besideEntry = join_path(baseDir, strConcat("std/", leaf))
     if (file_exists(besideEntry) == 1) { return besideEntry }
 
-    let inSourceTree = join_path(get_directory(baseDir), strConcat("std/", leaf))
-    if (file_exists(inSourceTree) == 1) { return inSourceTree }
+    // Then each enclosing directory, nearest first. One level was enough for as
+    // long as everything that imported `std.*` sat directly under the checkout
+    // root. `aif/corpus/` is two deep, and its programs stopped resolving
+    // `std.io` when the project-local host became the compiler that builds them:
+    // that host lives in `.prismio/build/debug/`, whose toolchain root carries
+    // neither `stdlib/` nor `std/`, so neither branch below can answer either.
+    //
+    // Bounded rather than open: `get_directory` is a string operation whose
+    // fixed points are "." and the filesystem root, so the stop condition is a
+    // parent that equals its child, and the hop count is the backstop for a path
+    // shape that never reaches one.
+    let mut dir = get_directory(baseDir)
+    let mut hops = 0
+    while (hops < 64) {
+        if (file_exists(join_path(dir, strConcat("std/", leaf))) == 1) {
+            return join_path(dir, strConcat("std/", leaf))
+        }
+        let parent = get_directory(dir)
+        if (parent.equals(dir)) { break }
+        dir = parent
+        hops = hops + 1
+    }
 
     let toolchainRoot = get_directory(executable_directory())
 
@@ -370,7 +390,7 @@ private fn resolveImportPath(baseDir: String, moduleName: String) -> String {
         return joinImportPath(baseDir, moduleName)
     }
     let leaf = strConcat(strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm")
-    if (strEquals(standardModulePath(baseDir, leaf), "")) {
+    if (standardModulePath(baseDir, leaf).equals("")) {
         return joinImportPath(baseDir, moduleName)
     }
     return standardModulePath(baseDir, strConcat(strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm"))

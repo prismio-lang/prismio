@@ -86,7 +86,13 @@ something executable. Which names are still available is CLI policy, so
 `src/main.psm` owns the list and reports `P1058`. UMS embedded by another
 Prismio tool would have a different verb list and the same manifest rules.
 
-Steps run in declaration order and stop at the first failure. A `build` step may
+Steps run in declaration order and stop at the first failure. `run` resolves its
+subject -- a declared target, a `.py`, or a `.psm` -- rather than offering three
+step kinds, because the manifest author's question is "run this", not "which
+launcher does this need". Anything the toolchain cannot start is a manifest error
+rather than a guess, and `shell` remains for the cases it genuinely cannot: there
+is no portable way to start a `.sh`, which is why the project's own tools are
+Python. A `build` step may
 not name the `toolchain.host` target: the rebuilt host is promoted by the global
 parent only after this process exits, so later steps would still be running the
 previous compiler. That is `P1061`, and it is checked at execution rather than

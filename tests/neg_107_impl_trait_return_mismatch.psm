@@ -1,0 +1,31 @@
+// expect-error: must return the same type
+// expect-error: the earlier `return` is here
+//
+// An opaque return names *one* type. Two `return`s picking different types is
+// the case the construct cannot represent, and the diagnostic has to point at
+// both of them -- knowing that this return disagrees is useless without knowing
+// what it disagrees with.
+//
+// `dyn Trait` is the spelling for several types, so the note offers it. That is
+// the whole distinction between the two features and is worth stating at the
+// point somebody has just tried to use one for the other.
+
+import std.io
+
+trait Show { fn show(self) -> String }
+
+struct A { x: Int }
+struct B { y: Int }
+
+impl Show for A { fn show(self) -> String { return "a" } }
+impl Show for B { fn show(self) -> String { return "b" } }
+
+fn pick(flag: Bool) -> impl Show {
+    if (flag) { return A { x: 1 } }
+    return B { y: 2 }
+}
+
+fn main() -> Int {
+    println(pick(true).show())
+    return 0
+}

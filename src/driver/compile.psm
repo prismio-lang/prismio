@@ -67,16 +67,16 @@ private fn reportForcedLayouts() {
 // or a file copy does not read as a change.
 private fn checkRuntimeFreshness() {
     let installed = compiler_installed_runtime_hash()
-    if (strEquals(installed, "")) {
+    if (installed.equals("")) {
         return
     }
 
     let current = compiler_runtime_source_hash()
-    if (strEquals(current, "")) {
+    if (current.equals("")) {
         return
     }
 
-    if (strEquals(installed, current)) {
+    if (installed.equals(current)) {
         return
     }
 
@@ -110,7 +110,7 @@ private fn checkRuntimeFreshness() {
 // `kind`, of which MODULE is 0. See ast.psm.
 private fn analyzedModule(path: String) -> ASTNode {
     let content = read_file(path)
-    if (strEquals(content, "") and file_exists(path) == 0) {
+    if (content.equals("") and file_exists(path) == 0) {
         diag_error_code("P1005", strConcat("cannot read ", path))
         return createNode(NodeKind.MODULE)
     }
@@ -195,7 +195,7 @@ fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: 
     // That last clause was false while ownedCollections defaulted to off: the
     // derivation explained a tier from a model the build does not use, and
     // A-COPY was the answer to every "why is this T3" the compiler could ask.
-    if (strEquals(why, "") == false) {
+    if (why.equals("") == false) {
         let converged = aifRunProfiled(merged, ownedCollections, thetaFields, budget,
                                         profilePath)
         discardWorkloadProfile(profilePath)
@@ -249,7 +249,7 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
     }
 
     let content = read_file(path)
-    if (strEquals(content, "") and file_exists(path) == 0) {
+    if (content.equals("") and file_exists(path) == 0) {
         diag_error_code("P1008", strConcat("cannot read ", path))
         if (bootstrapMode) {
             println("  bootstrap compiles the Prismio compiler from a source checkout.")

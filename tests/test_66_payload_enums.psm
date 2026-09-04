@@ -50,8 +50,8 @@ fn main() -> Int {
     if (area(Shape.Dot) != 0) { return fail("payload-free variant") }
 
     // A wildcard arm alongside variant arms.
-    if (strEquals(describe(Shape.Circle(1)), "circle") == false) { return fail("variant arm") }
-    if (strEquals(describe(Shape.Dot), "other") == false) { return fail("wildcard arm") }
+    if (describe(Shape.Circle(1)).equals("circle") == false) { return fail("variant arm") }
+    if (describe(Shape.Dot).equals("other") == false) { return fail("wildcard arm") }
 
     // The fieldless enum still compares as an integer, and match on it is the
     // path this feature must not have disturbed.

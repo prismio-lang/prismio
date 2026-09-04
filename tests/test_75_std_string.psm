@@ -51,11 +51,11 @@ fn referenceIndexOf(haystack: String, needle: String) -> Int {
 
 fn main() -> Int {
     let nativeConcat = strConcat("left", "right")
-    if (strEquals(nativeConcat, "leftright") == false) {
+    if (nativeConcat.equals("leftright") == false) {
         return fail("strConcat should append both inputs")
     }
     let nativeEmptyConcat = strConcat("", "")
-    if (strEquals(nativeEmptyConcat, "") == false) {
+    if (nativeEmptyConcat.equals("") == false) {
         return fail("strConcat should accept two empty inputs")
     }
 
@@ -65,10 +65,10 @@ fn main() -> Int {
     if (strCharAt("abc", 3) != '\0') {
         return fail("strCharAt should return NUL out of range")
     }
-    if (strEquals("same", "same") == false) {
+    if ("same".equals("same") == false) {
         return fail("strEquals should accept equal input")
     }
-    if (strEquals("same", "some")) {
+    if ("same".equals("some")) {
         return fail("strEquals should reject unequal input")
     }
     if (strCompare("abc", "abd") >= 0) {
@@ -79,23 +79,23 @@ fn main() -> Int {
     }
 
     let nativeSlice = strSubstring("abcdef", 2, 3)
-    if (strEquals(nativeSlice, "cde") == false) {
+    if (nativeSlice.equals("cde") == false) {
         return fail("strSubstring should copy the requested range")
     }
     drop(nativeSlice)
     let nativeClampedSlice = strSubstring("abcdef", 4, 99)
-    if (strEquals(nativeClampedSlice, "ef") == false) {
+    if (nativeClampedSlice.equals("ef") == false) {
         return fail("strSubstring should clamp at the end")
     }
     drop(nativeClampedSlice)
     let nativeMissingSlice = strSubstring("abcdef", 99, 2)
-    if (strEquals(nativeMissingSlice, "") == false) {
+    if (nativeMissingSlice.equals("") == false) {
         return fail("strSubstring should be empty when start is out of range")
     }
     drop(nativeMissingSlice)
 
     let nativeChar = strFromChar('Q')
-    if (strEquals(nativeChar, "Q") == false) {
+    if (nativeChar.equals("Q") == false) {
         return fail("strFromChar should produce one byte")
     }
     let nativeNulChar = strFromChar('\0')
@@ -103,37 +103,37 @@ fn main() -> Int {
         return fail("strFromChar should map NUL to the empty string")
     }
     let nativeClone = strClone("copy")
-    if (strEquals(nativeClone, "copy") == false) {
+    if (nativeClone.equals("copy") == false) {
         return fail("strClone should return an equal fresh string")
     }
     let nativeEmpty = strEmpty()
-    if (strEquals(nativeEmpty, "") == false) {
+    if (nativeEmpty.equals("") == false) {
         return fail("strEmpty should return an owned empty string")
     }
 
     let trimmedPadded = strTrim("  x  ")
-    if (strEquals(trimmedPadded, "x") == false) {
+    if (trimmedPadded.equals("x") == false) {
         return fail("strTrim should remove padding")
     }
     let trimmedEmpty = strTrim("")
-    if (strEquals(trimmedEmpty, "") == false) {
+    if (trimmedEmpty.equals("") == false) {
         return fail("strTrim should accept empty input")
     }
     let trimmedWhitespace = strTrim("   ")
-    if (strEquals(trimmedWhitespace, "") == false) {
+    if (trimmedWhitespace.equals("") == false) {
         return fail("strTrim should empty all-whitespace input")
     }
     let trimmedPlain = strTrim("none")
-    if (strEquals(trimmedPlain, "none") == false) {
+    if (trimmedPlain.equals("none") == false) {
         return fail("strTrim should preserve unpadded input")
     }
 
     let replacedFirst = strReplaceFirst("a-b-c", "-", "+")
-    if (strEquals(replacedFirst, "a+b-c") == false) {
+    if (replacedFirst.equals("a+b-c") == false) {
         return fail("strReplaceFirst should replace only the first match")
     }
     let replacedMissing = strReplaceFirst("hello", "z", "Z")
-    if (strEquals(replacedMissing, "hello") == false) {
+    if (replacedMissing.equals("hello") == false) {
         return fail("strReplaceFirst should preserve input when the pattern is absent")
     }
 
@@ -212,15 +212,15 @@ fn main() -> Int {
     }
 
     let formattedZero = strFromInt(0)
-    if (strEquals(formattedZero, "0") == false) {
+    if (formattedZero.equals("0") == false) {
         return fail("strFromInt should format zero")
     }
     let formattedNegative = strFromInt(-4321)
-    if (strEquals(formattedNegative, "-4321") == false) {
+    if (formattedNegative.equals("-4321") == false) {
         return fail("strFromInt should format a negative number")
     }
     let formattedMax = strFromInt(2147483647)
-    if (strEquals(formattedMax, "2147483647") == false) {
+    if (formattedMax.equals("2147483647") == false) {
         return fail("strFromInt should format the 32-bit maximum")
     }
 
@@ -228,11 +228,11 @@ fn main() -> Int {
     if (list_len(parts) != 3) {
         return fail("strSplit should produce one part per separator, plus one")
     }
-    if (strEquals(list_get(parts, 2), "ccc") == false) {
+    if (list_get(parts, 2).equals("ccc") == false) {
         return fail("strSplit should keep the final part")
     }
     let rejoined = strJoin(parts, ",")
-    if (strEquals(rejoined, "a,bb,ccc") == false) {
+    if (rejoined.equals("a,bb,ccc") == false) {
         return fail("strJoin should invert strSplit on the same separator")
     }
     drop(parts)
@@ -252,11 +252,11 @@ fn main() -> Int {
     // Every occurrence, and without rescanning what the replacement inserted --
     // `a` -> `aa` terminates rather than looping.
     let replacedAll = strReplaceAll("a-b-c", "-", "+")
-    if (strEquals(replacedAll, "a+b+c") == false) {
+    if (replacedAll.equals("a+b+c") == false) {
         return fail("strReplaceAll should replace every occurrence")
     }
     let replacementGrowth = strReplaceAll("aa", "a", "aa")
-    if (strEquals(replacementGrowth, "aaaa") == false) {
+    if (replacementGrowth.equals("aaaa") == false) {
         return fail("strReplaceAll should not rescan its own replacement")
     }
 
@@ -291,35 +291,35 @@ fn main() -> Int {
     drop(parsedEmpty)
 
     let repeated = strRepeat("ab", 3)
-    if (strEquals(repeated, "ababab") == false) {
+    if (repeated.equals("ababab") == false) {
         return fail("strRepeat should concatenate n copies")
     }
     let repeatedEmpty = strRepeat("ab", 0)
-    if (strEquals(repeatedEmpty, "") == false) {
+    if (repeatedEmpty.equals("") == false) {
         return fail("strRepeat should produce an empty string for a count of zero")
     }
     let reversed = strReverse("abcd")
-    if (strEquals(reversed, "dcba") == false) {
+    if (reversed.equals("dcba") == false) {
         return fail("strReverse should reverse the bytes")
     }
     let upper = strToUpper("aBc1")
-    if (strEquals(upper, "ABC1") == false) {
+    if (upper.equals("ABC1") == false) {
         return fail("strToUpper should upcase letters and leave other bytes alone")
     }
     let lower = strToLower("AbC1")
-    if (strEquals(lower, "abc1") == false) {
+    if (lower.equals("abc1") == false) {
         return fail("strToLower should downcase letters and leave other bytes alone")
     }
     let paddedStart = strPadStart("7", 3, '0')
-    if (strEquals(paddedStart, "007") == false) {
+    if (paddedStart.equals("007") == false) {
         return fail("strPadStart should pad on the left to the requested width")
     }
     let paddedEnd = strPadEnd("7", 3, '.')
-    if (strEquals(paddedEnd, "7..") == false) {
+    if (paddedEnd.equals("7..") == false) {
         return fail("strPadEnd should pad on the right to the requested width")
     }
     let unchangedPad = strPadStart("long", 2, '0')
-    if (strEquals(unchangedPad, "long") == false) {
+    if (unchangedPad.equals("long") == false) {
         return fail("strPadStart should not truncate a string wider than the target")
     }
     if (strCountOf("abcabc", "abc") != 2) {

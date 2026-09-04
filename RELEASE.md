@@ -11,7 +11,7 @@ compiler; everything after it is documentation and repository cleanup. Check it:
 
 ```bash
 git log --oneline -1                                    # the commit CI will run on
-bash tools/release_gate.sh --rc build/v0.1-rc           # must be green on it
+python tools/release_gate.py --rc build/v0.1-rc         # must be green on it
 ```
 
 Verified: a clean checkout of the RC commit, bootstrapped once, emits
@@ -24,7 +24,7 @@ is the only thing that makes the tag mean what the release notes say it means.
 ## 1 · The local gate — done
 
 ```bash
-bash tools/release_gate.sh --rc build/v0.1-rc
+python tools/release_gate.py --rc build/v0.1-rc
 ```
 
 Fourteen checks, all green. `--old <compiler>` adds a per-function mnemonic diff
@@ -62,7 +62,7 @@ this file changes.
 Run on **each** platform, against that platform's own gate-green build:
 
 ```bash
-bash tools/release.sh --compiler build/v0.1-rc --version 0.1.0 --out dist/release
+python tools/release.py --compiler build/v0.1-rc --version 0.1.0 --out dist/release
 ```
 
 It refuses to build from a compiler that is not a fixpoint, packages, runs the
@@ -84,7 +84,7 @@ why this sentence exists.
 
 **Signing.** This project does not sign artifacts today and the release notes do
 not claim it does. The checksum is the integrity story; if signing is added it
-belongs in `tools/release.sh` beside the checksum, not in a separate manual step.
+belongs in `tools/release.py` beside the checksum, not in a separate manual step.
 
 ## 4 · Clean-environment smoke test
 

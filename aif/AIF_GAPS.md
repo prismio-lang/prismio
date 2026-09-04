@@ -138,8 +138,9 @@ error: parameter `self` is `sink` in the trait, and a borrow
 
 Covered by `tests/test_109_trait_ownership.psm` (a trait each for `sink`,
 `inout` and a borrow, all honoured) and `neg_95` / `neg_96` (each convention
-quietly weakened to a borrow). Shipped as milestone **T18** in
-[TRAIT_SYSTEM_ROADMAP.md](../TRAIT_SYSTEM_ROADMAP.md).
+quietly weakened to a borrow). Shipped as trait milestone **T18**; the system it belonged to is described in
+`../docs` (`content/language/traits.md`, "Ownership in a trait") now that the
+roadmap that tracked its delivery has been retired.
 
 **Still open, deliberately.** Return-position `produce`/`alias` contracts are
 not yet part of conformance — only parameter conventions are. A trait cannot yet

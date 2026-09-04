@@ -18,18 +18,18 @@ import std.string
 // to inherit it, and the ordering below makes the natural reading the correct one.
 // Everything else follows C.
 private fn getOperatorPrecedence(t: Token) -> Int {
-    if (strEquals(t.value, "or")) { return 1 }
-    if (strEquals(t.value, "and")) { return 2 }
+    if (t.value.equals("or")) { return 1 }
+    if (t.value.equals("and")) { return 2 }
     if (t.type == TokenType.KEYWORD) { return 0 }
 
-    if (strEquals(t.value, "==") or strEquals(t.value, "!=")) { return 3 }
-    if (strEquals(t.value, "<") or strEquals(t.value, ">") or strEquals(t.value, "<=") or strEquals(t.value, ">=")) { return 4 }
-    if (strEquals(t.value, "|")) { return 5 }
-    if (strEquals(t.value, "^")) { return 6 }
-    if (strEquals(t.value, "&")) { return 7 }
-    if (strEquals(t.value, "<<") or strEquals(t.value, ">>")) { return 8 }
-    if (strEquals(t.value, "+") or strEquals(t.value, "-")) { return 9 }
-    if (strEquals(t.value, "*") or strEquals(t.value, "/") or strEquals(t.value, "%")) { return 10 }
+    if (t.value.equals("==") or t.value.equals("!=")) { return 3 }
+    if (t.value.equals("<") or t.value.equals(">") or t.value.equals("<=") or t.value.equals(">=")) { return 4 }
+    if (t.value.equals("|")) { return 5 }
+    if (t.value.equals("^")) { return 6 }
+    if (t.value.equals("&")) { return 7 }
+    if (t.value.equals("<<") or t.value.equals(">>")) { return 8 }
+    if (t.value.equals("+") or t.value.equals("-")) { return 9 }
+    if (t.value.equals("*") or t.value.equals("/") or t.value.equals("%")) { return 10 }
 
     return 0
 }
@@ -37,7 +37,7 @@ private fn getOperatorPrecedence(t: Token) -> Int {
 private fn isBinaryOperator(t: Token) -> Bool {
     if (t.type == TokenType.ARITHMETIC_OPERATOR) { return true }
     if (t.type == TokenType.RELATIONAL_OPERATOR) { return true }
-    return strEquals(t.value, "and") or strEquals(t.value, "or")
+    return t.value.equals("and") or t.value.equals("or")
 }
 
 internal fn parseExpression(p: Parser, precedence: Int) -> ASTNode {
@@ -108,9 +108,9 @@ private fn foldNegativeLiteral(operand: ASTNode, minus: Token) -> Bool {
 private fn parseUnary(p: Parser) -> ASTNode {
     let current = p.current()
 
-    let isNegate = current.type == TokenType.ARITHMETIC_OPERATOR and strEquals(current.value, "-")
-    let isNot = current.type == TokenType.NEGATION and strEquals(current.value, "!")
-    let isComplement = current.type == TokenType.ARITHMETIC_OPERATOR and strEquals(current.value, "~")
+    let isNegate = current.type == TokenType.ARITHMETIC_OPERATOR and current.value.equals("-")
+    let isNot = current.type == TokenType.NEGATION and current.value.equals("!")
+    let isComplement = current.type == TokenType.ARITHMETIC_OPERATOR and current.value.equals("~")
 
     if (isNegate == false and isNot == false and isComplement == false) {
         return parsePostfix(p)
@@ -120,7 +120,7 @@ private fn parseUnary(p: Parser) -> ASTNode {
     p.advance()
     let operand = parseUnary(p)
 
-    if (strEquals(op, "-") and foldNegativeLiteral(operand, current)) {
+    if (op.equals("-") and foldNegativeLiteral(operand, current)) {
         return operand
     }
 
@@ -160,7 +160,7 @@ private fn parsePostfix(p: Parser) -> ASTNode {
 private fn looksLikeTypeArgs(p: Parser, opener: String) -> Bool {
     let mut tok = ptr_to_token(p.current).tokNext
     if (nodeIsNull(tok)) { return false }
-    if (strEquals(ptr_to_token(tok).value, "<") == false) { return false }
+    if (ptr_to_token(tok).value.equals("<") == false) { return false }
 
     let mut depth = 1
     tok = ptr_to_token(tok).tokNext
@@ -168,19 +168,19 @@ private fn looksLikeTypeArgs(p: Parser, opener: String) -> Bool {
         let current = ptr_to_token(tok)
         if (current.type == TokenType.IDENTIFIER) {
             // nothing to do: a type name
-        } else if (strEquals(current.value, "<")) {
+        } else if (current.value.equals("<")) {
             depth = depth + 1
-        } else if (strEquals(current.value, ">")) {
+        } else if (current.value.equals(">")) {
             depth = depth - 1
-        } else if (strEquals(current.value, ">>")) {
+        } else if (current.value.equals(">>")) {
             depth = depth - 2
-        } else if (strEquals(current.value, ",")) {
+        } else if (current.value.equals(",")) {
             // nothing to do: an argument separator
-        } else if (strEquals(current.value, "[")) {
+        } else if (current.value.equals("[")) {
             // nothing to do: an array element type
-        } else if (strEquals(current.value, "]")) {
+        } else if (current.value.equals("]")) {
             // nothing to do
-        } else if (strEquals(current.value, "?")) {
+        } else if (current.value.equals("?")) {
             // nothing to do: an optional suffix
         } else {
             return false
@@ -190,7 +190,7 @@ private fn looksLikeTypeArgs(p: Parser, opener: String) -> Bool {
 
     if (depth != 0) { return false }
     if (nodeIsNull(tok)) { return false }
-    return strEquals(ptr_to_token(tok).value, opener)
+    return ptr_to_token(tok).value.equals(opener)
 }
 
 // The cursor is on the `{`. Both callers have consumed the name already -- the
@@ -314,7 +314,7 @@ private fn parseSuffixes(p: Parser, base: ASTNode) -> ASTNode {
 private fn parseClosureExpr(p: Parser) -> ASTNode {
     let node = p.node(NodeKind.CLOSURE_EXPR)
     let opener = p.current()
-    let empty = strEquals(opener.value, "||")
+    let empty = opener.value.equals("||")
     p.advance()
 
     let params = nodeList()
@@ -336,7 +336,7 @@ private fn parseClosureExpr(p: Parser) -> ASTNode {
 private fn atClosure(p: Parser) -> Bool {
     let current = p.current()
     if (current.type != TokenType.ARITHMETIC_OPERATOR) { return false }
-    return strEquals(current.value, "|") or strEquals(current.value, "||")
+    return current.value.equals("|") or current.value.equals("||")
 }
 
 private fn isLiteralToken(t: Token) -> Bool {
@@ -356,7 +356,7 @@ private fn parsePrimary(p: Parser) -> ASTNode {
     // REQUIREMENTS 4. The absent reference. A keyword rather than an identifier,
     // so it cannot be shadowed by a binding -- `let none = 5` would otherwise
     // make the literal mean something else halfway down a file.
-    if (current.type == TokenType.KEYWORD and strEquals(current.value, "none")) {
+    if (current.type == TokenType.KEYWORD and current.value.equals("none")) {
         let noneLiteral = p.node(NodeKind.NONE_LITERAL_EXPR)
         p.advance()
         return noneLiteral
@@ -400,7 +400,7 @@ private fn parsePrimary(p: Parser) -> ASTNode {
         // access reaches its name through `.` and never comes through here at
         // all. No existing spelling is claimed.
         if (next.type == TokenType.IDENTIFIER) {
-            if (strEquals(current.value, "spawn")) {
+            if (current.value.equals("spawn")) {
                 let spawnNode = p.node(NodeKind.SPAWN_EXPR)
                 p.advance()
                 let callee = parsePrimary(p)
@@ -411,7 +411,7 @@ private fn parsePrimary(p: Parser) -> ASTNode {
                 spawnNode.child1 = node_to_ptr(callee)
                 return spawnNode
             }
-            if (strEquals(current.value, "join")) {
+            if (current.value.equals("join")) {
                 let joinNode = p.node(NodeKind.JOIN_EXPR)
                 p.advance()
                 joinNode.child1 = node_to_ptr(parsePrimary(p))
@@ -419,7 +419,7 @@ private fn parsePrimary(p: Parser) -> ASTNode {
             }
         }
 
-        let opensStruct = next.type == TokenType.SEPARATOR and strEquals(next.value, "{")
+        let opensStruct = next.type == TokenType.SEPARATOR and next.value.equals("{")
         if (opensStruct and p.allowStructLit == 1) {
             p.advance()
             return parseStructLiteral(p, current)

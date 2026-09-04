@@ -119,7 +119,7 @@ internal fn debugTypeName(annotation: Ptr, initializer: Ptr) -> String {
         if (typeNode.i1 == 1 or typeNode.i2 == 1 or typeNode.i3 == 1) {
             return ""
         }
-        if (strEquals(typeNode.s1, "") == false) {
+        if (typeNode.s1.equals("") == false) {
             return typeNode.s1
         }
     }

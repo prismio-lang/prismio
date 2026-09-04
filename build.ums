@@ -6,7 +6,7 @@ project {
     name = "prismio"
     version = "0.1.0"
     prismio = "0.1.0"
-    description = "The Prismio programming language and compiler"
+    description = "Prismio compiler"
     license = "Apache-2.0"
     authors = [
         "Saksham Jaiswal"
@@ -25,13 +25,43 @@ targets {
 commands {
     command("dist") {
         description = "Package an installable toolchain and check the runtime/backend split"
-        shell("tools/package.sh", "--compiler", ".prismio/build/debug/prismio",
-              "--out", "dist/Prismio")
-        shell("tools/verify_separation.sh", "--dist", "dist/Prismio")
+        run("tools/package.py", "--compiler", ".prismio/build/debug/prismio",
+            "--out", "dist/Prismio")
+        run("tools/verify_separation.py", "--dist", "dist/Prismio")
     }
 
+    // Both go through tools/run_suite.py, which tests a *copy* of the compiler.
+    //
+    // **One fixture cannot pass through `prismio suite`.** The ums host-routing
+    // test deletes `.prismio/build/debug/prismio` and re-promotes it, which the
+    // outer `prismio` process running this command is holding. It reports
+    // 282/283 here and 283/283 from `python3 tools/run_suite.py`. Use the direct
+    // form as the release gate; this one is for the fast loop.
+    // The ums fixture deletes the project host and re-promotes it to exercise
+    // host routing, and the object-cache fixtures assert what a build
+    // recompiles; neither survives being run by the same binary under test.
+    // Run `prismio dist` first when the compiler has changed.
     command("suite") {
-        description = "Run the compiler test suite against the project compiler"
-        shell("python3", "tests/test_runner.py", args)
+        description = "Run the compiler test suite against the packaged compiler"
+        run("tools/run_suite.py", args)
+    }
+
+    command("bench") {
+        description = "Run the cross-language performance benchmark suite"
+        run("benchmarks/run.py", "--compiler", ".prismio/build/debug/prismio", args)
+    }
+
+    command("lists") {
+        description = "Check the hand-maintained source lists and that every extern has a definition"
+        run("tools/check_source_lists.py")
+        run("tools/check_externs.py", "--dist", "dist/Prismio")
+    }
+
+    command("verify") {
+        description = "The full acceptance gate: suite, source lists, externs, AIF differential"
+        run("tools/run_suite.py")
+        run("tools/check_source_lists.py")
+        run("tools/check_externs.py", "--dist", "dist/Prismio")
+        run("tools/aif_differential.py", "--compiler", "dist/Prismio/bin/prismio")
     }
 }

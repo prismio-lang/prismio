@@ -7,7 +7,7 @@ differential 19/19, 30 corpus programs built *and run*, ASan and TSan clean,
 Reproduce the whole of it with one command:
 
 ```bash
-bash tools/release_gate.sh --old build/tbaa3 --rc build/v0.1-rc
+python tools/release_gate.py --old build/tbaa3 --rc build/v0.1-rc
 ```
 
 ## What the gate ran

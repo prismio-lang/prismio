@@ -114,7 +114,7 @@ private fn parseForceLayout(flag: String) -> Bool {
     if (colon < 1) { return false }
     let typeName = strSubstring(value, 0, colon)
     let hotText = strSubstring(value, colon + 1, __builtin_string_len(value) - colon - 1)
-    if (strEquals(hotText, "")) { return false }
+    if (hotText.equals("")) { return false }
     // str_to_int answers 0 for a non-numeric string, which is also the value a
     // hot count can never legally take -- field 0 is pinned hot, so every real
     // candidate keeps at least one field. One check covers both.
@@ -156,7 +156,7 @@ private fn cliVersion() -> Int {
     println(executable_directory())
     let stdRoot = standardModulePath(".", "string.psm")
     print("stdlib ")
-    if (strEquals(stdRoot, "")) {
+    if (stdRoot.equals("")) {
         println("(none found)")
     } else {
         println(get_directory(stdRoot))
@@ -170,7 +170,7 @@ private fn cliVersion() -> Int {
 // packaging script.
 private fn cliRuntimeHash() -> Int {
     let sourceHash = compiler_runtime_source_hash()
-    if (strEquals(sourceHash, "")) {
+    if (sourceHash.equals("")) {
         diag_error_code("P1024", "cannot find the Prismio runtime sources to hash")
         return 1
     }
@@ -188,7 +188,7 @@ private fn cliCheck() -> Int {
     let mut checkArg = 3
     while (checkArg < cli_arg_count()) {
         let option = cli_arg(checkArg)
-        if (strEquals(option, "--diagnostic-format=json")) {
+        if (option.equals("--diagnostic-format=json")) {
             diag_set_json_mode(1)
         } else {
             diag_error_code("P1026", strConcat("unknown argument ", diagQuote(option)))
@@ -241,14 +241,14 @@ private fn cliAif() -> Int {
     let mut aifArg = 3
     while (aifArg < cli_arg_count()) {
         let flag = cli_arg(aifArg)
-        if (strEquals(flag, "--summary")) {
+        if (flag.equals("--summary")) {
             aifSummary = true
-        } else if (strEquals(flag, "--manifest")) {
+        } else if (flag.equals("--manifest")) {
             // The stable, compiler-facing form that `prismio aif` printed
             // before the interactive report became the default. CI and
             // manifest diffs opt into it explicitly.
             aifManifest = true
-        } else if (strEquals(flag, "--layout")) {
+        } else if (flag.equals("--layout")) {
             // LAYOUT 7.2's argmin and 8's ranked top-k. Acted on since
             // 2026-08-17: the `emitted` column says which candidate the binary
             // actually contains, which is what makes the table checkable
@@ -274,25 +274,25 @@ private fn cliAif() -> Int {
                 diag_error_code("P1030", "--budget= must be at least 1 round")
                 return 1
             }
-        } else if (strEquals(flag, "--theta-fields")) {
+        } else if (flag.equals("--theta-fields")) {
             // Approximate Theta_stack by field count instead of bytes, the
             // way aif/prototype/aif.py must because a JSON dump carries no
             // layout. tools/aif_differential.py passes this so the two are
             // compared on their inference rather than on a threshold only
             // one of them can evaluate.
             aifThetaFields = true
-        } else if (strEquals(flag, "--owned-collections")) {
+        } else if (flag.equals("--owned-collections")) {
             // The default since Level 4 made String and List move-only.
             // Accepted so existing scripts keep working, and because saying
             // so explicitly costs nothing.
             aifOwned = true
-        } else if (strEquals(flag, "--copyable-collections")) {
+        } else if (flag.equals("--copyable-collections")) {
             // The pre-Level-4 language, where only structs were move-only.
             // Kept because it is the differential's second arm, not because
             // anything still compiles that way -- `prismio build` always
             // analyses with collections owned (see aifRun below).
             aifOwned = false
-        } else if (strEquals(flag, "--target")) {
+        } else if (flag.equals("--target")) {
             // The layout model is target-dependent -- a String field, a
             // reference edge, an `Isize`, a `[T]` and a `List<T>` are all one
             // pointer, and a pointer is four bytes on wasm32. Without this
@@ -334,7 +334,7 @@ private fn cliBootstrap() -> Int {
         // Every flag `bootstrap` accepts has to be named here too, or it
         // is taken for the source path and the build silently compiles a
         // file called `-g`.
-        if (strEquals(candidate, "-o") == false and strEquals(candidate, "-g") == false) {
+        if (candidate.equals("-o") == false and candidate.equals("-g") == false) {
             path = candidate
             argIndex = 3
         }
@@ -345,14 +345,14 @@ private fn cliBootstrap() -> Int {
 
     while (argIndex < cli_arg_count()) {
         let barg = cli_arg(argIndex)
-        if (strEquals(barg, "-o")) {
+        if (barg.equals("-o")) {
             if (argIndex + 1 >= cli_arg_count()) {
                 diag_error_code("P1034", "`-o` requires an output path")
                 return 1
             }
             outputFile = cli_arg(argIndex + 1)
             argIndex = argIndex + 2
-        } else if (strEquals(barg, "-g")) {
+        } else if (barg.equals("-g")) {
             // The compiler is the largest Prismio program there is, and it
             // was the one program that could not be stepped through.
             bootstrapDebugInfo = true
@@ -389,33 +389,33 @@ fn main() -> Int {
 
     let first = cli_arg(1)
 
-    if (strEquals(first, "--help") or strEquals(first, "-h")) {
+    if (first.equals("--help") or first.equals("-h")) {
         printUsage()
         return 0
     }
 
     // Reports the LLVM actually loaded rather than the one built against, so a
     // version mismatch is visible without having to provoke it.
-    if (strEquals(first, "--version") or strEquals(first, "-V")) { return cliVersion() }
+    if (first.equals("--version") or first.equals("-V")) { return cliVersion() }
     // Reports the hash of the runtime sources on disk. tools/package.ps1 records it
     // beside the packaged libraries so later builds can detect drift, and it keeps
     // that hash defined in exactly one place -- here, in C -- rather than
     // reimplemented in the packaging script.
-    if (strEquals(first, "runtime-hash")) { return cliRuntimeHash() }
-    if (strEquals(first, "check")) { return cliCheck() }
+    if (first.equals("runtime-hash")) { return cliRuntimeHash() }
+    if (first.equals("check")) { return cliCheck() }
     // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and
     // touches no codegen, so it cannot affect what `build` generates. Exists for
     // the AIF memory-model work, which analyses the real AST out-of-process.
-    if (strEquals(first, "dump-ast")) { return cliDumpAst() }
+    if (first.equals("dump-ast")) { return cliDumpAst() }
     // The memory model. `--summary` prints the tier distribution in the form
     // aif/prototype/aif.py prints it, so the two can be compared directly --
     // that comparison is the only real defence against a transfer function that
     // is subtly wrong and yields a silently wrong tier rather than a crash.
-    if (strEquals(first, "aif")) { return cliAif() }
+    if (first.equals("aif")) { return cliAif() }
     // Compiler development. The command itself selects the build mode -- there is no
     // flag and no environment variable -- so a single binary can build user programs
     // against the installed runtime and still bootstrap against repository sources.
-    if (strEquals(first, "bootstrap")) { return cliBootstrap() }
+    if (first.equals("bootstrap")) { return cliBootstrap() }
     // `build`, `run` and `clean` are each two commands wearing one name: with a
     // source they act on that file, and with none they act on the project
     // `build.ums` describes. What tells them apart is whether the next argument
@@ -423,7 +423,7 @@ fn main() -> Int {
     // what lets `prismio build --release` be the project build it reads as.
     let projectMode = cli_arg_count() <= 2 or strStartsWith(cli_arg(2), "-")
 
-    if (strEquals(first, "init")) {
+    if (first.equals("init")) {
         if (cli_arg_count() > 3) {
             diag_error_code("P1036", "`init` takes at most one name")
             return 1
@@ -432,37 +432,37 @@ fn main() -> Int {
         return initUmsProject("")
     }
 
-    if (strEquals(first, "test")) {
+    if (first.equals("test")) {
         let profile = projectProfile(2)
-        if (strEquals(profile, "")) { return 1 }
+        if (profile.equals("")) { return 1 }
         return testUmsProject(profile)
     }
 
-    if (strEquals(first, "clean")) {
+    if (first.equals("clean")) {
         if (projectMode == false) {
             diag_error_code("P1037", "`clean` acts on the project and takes no source file")
             return 1
         }
         let profile = projectProfile(2)
-        if (strEquals(profile, "")) { return 1 }
+        if (profile.equals("")) { return 1 }
         return cleanUmsProject(profile)
     }
 
-    if (strEquals(first, "build") or strEquals(first, "run")) {
+    if (first.equals("build") or first.equals("run")) {
         if (projectMode) {
             let profile = projectProfile(2)
-            if (strEquals(profile, "")) { return 1 }
-            return buildUmsProject(profile, strEquals(first, "run"))
+            if (profile.equals("")) { return 1 }
+            return buildUmsProject(profile, first.equals("run"))
         }
 
         // `cli_arg(1)` again rather than naming `first` twice: `cli_arg` is
         // declared `alias`, so a second call is a second borrow of `argv`, where
         // a second *name* would be a move (CODE_STYLE, affine strings).
         command = cli_arg(1)
-        runAfterBuild = strEquals(first, "run")
+        runAfterBuild = first.equals("run")
         argIndex = 3
         path = cli_arg(2)
-        if (strEquals(path, "run") or strEquals(path, "build")) {
+        if (path.equals("run") or path.equals("build")) {
             diag_error_code("P1038", "use either `build` or `run`, not both")
             return 1
         }
@@ -496,7 +496,7 @@ fn main() -> Int {
     while (argIndex < cli_arg_count()) {
         let mut arg = cli_arg(argIndex)
 
-        if (strEquals(arg, "-o")) {
+        if (arg.equals("-o")) {
             if (argIndex + 1 >= cli_arg_count()) {
                 diag_error_code("P1040", "`-o` requires an output path")
                 return 1
@@ -514,7 +514,7 @@ fn main() -> Int {
             ir_set_opt_level(level)
             optimized = level > 0
             argIndex = argIndex + 1
-        } else if (strEquals(arg, "--target")) {
+        } else if (arg.equals("--target")) {
             if (argIndex + 1 >= cli_arg_count()) {
                 diag_error_code("P1042", "`--target` requires an LLVM target triple (e.g. x86_64-apple-macos)")
                 return 1
@@ -536,19 +536,19 @@ fn main() -> Int {
                 return 1
             }
             argIndex = argIndex + 2
-        } else if (strEquals(arg, "--sysroot")) {
+        } else if (arg.equals("--sysroot")) {
             if (argIndex + 1 >= cli_arg_count()) {
                 diag_error_code("P1045", "`--sysroot` requires a path to the target's SDK")
                 return 1
             }
             compiler_set_sysroot(cli_arg(argIndex + 1))
             argIndex = argIndex + 2
-        } else if (strEquals(arg, "--verify")) {
+        } else if (arg.equals("--verify")) {
             // SPEC 7.3. Slower and heavier by design: the mode exists to be run
             // by CI, not by users.
             verifyMode = true
             argIndex = argIndex + 1
-        } else if (strEquals(arg, "--overflow-checks")) {
+        } else if (arg.equals("--overflow-checks")) {
             // RFC 0560's model: check in debug, wrap in release. `Int` is signed
             // 32-bit and wraps -- decided by measurement, RESULTS-int-width.md --
             // and this is what makes the wrap a diagnostic rather than a silence.
@@ -564,12 +564,12 @@ fn main() -> Int {
             // every arithmetic site reads it and none of them decides it.
             ir_set_overflow_checks(1)
             argIndex = argIndex + 1
-        } else if (strEquals(arg, "--jit")) {
+        } else if (arg.equals("--jit")) {
             // `run` without the clang compile and the link. Off by default and
             // scoped to `run`, so codegen and every emission path are untouched:
             // this adds a way of executing the module, not a way of producing
             // one. See ir_jit_run_main in runtime/llvm-api-backend.c.
-            if (strEquals(command, "run") == false) {
+            if (command.equals("run") == false) {
                 diag_error_code("P1046", "`--jit` is only meaningful with `prismio run`")
                 diag_note("`build` produces an object; there is nothing to run in this process")
                 return 1
@@ -581,7 +581,7 @@ fn main() -> Int {
             }
             jitMode = true
             argIndex = argIndex + 1
-        } else if (strEquals(arg, "-g")) {
+        } else if (arg.equals("-g")) {
             // Source-level debug info, and nothing else -- not an analysis level
             // and not an optimisation setting at the Prismio end. Named `-g`
             // because that is what every compiler in the world spells it; the
@@ -590,7 +590,7 @@ fn main() -> Int {
             // released flag over.
             debugInfo = true
             argIndex = argIndex + 1
-        } else if (strEquals(arg, "--debug")) {
+        } else if (arg.equals("--debug")) {
             // SPEC 7.1/7.2's zero-analysis level. `max` is deliberately not
             // offered: with today's engine it would be byte-identical to
             // `release` -- the bounds it raises are never reached and there is no
@@ -607,12 +607,12 @@ fn main() -> Int {
             }
             argIndex = argIndex + 1
         } else {
-            if (strEquals(arg, "build") or strEquals(arg, "run")) {
+            if (arg.equals("build") or arg.equals("run")) {
                 diag_error_code("P1049", "use either `build` or `run`, not both")
                 return 1
             }
 
-            if (strEquals(command, "build") and argIndex == 2) {
+            if (command.equals("build") and argIndex == 2) {
                 // Re-read rather than `outputFile = arg`: that moves `arg`, and
                 // move state is per name for the whole body, so the `else` below
                 // would report a use of a moved value on a path that never ran.

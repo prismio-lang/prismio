@@ -47,7 +47,7 @@ commands {
     command("dist") {
         description = "Package a release archive"
         build("http")
-        shell("tools/package.sh", "--out", "dist", args)
+        run("tools/package.py", "--out", "dist", args)
     }
 }
 ```
@@ -103,27 +103,39 @@ commands {
     command("dist") {
         description = "Package a release archive"
         build("http")
-        shell("tools/package.sh", "--out", "dist", args)
+        run("tools/package.py", "--out", "dist", args)
     }
 }
 ```
 
-Three step forms:
+Two step forms.
 
-- `build("target")` builds a declared target.
-- `run("target")` builds a declared executable target and then runs it. It
-  builds on its own, so a `build` step for the same target before it is
-  redundant.
-- `shell("program", "arg", ...)` runs an external program. Every argument is
-  quoted for the platform's shell, so an argument containing spaces or shell
-  metacharacters stays one argument. A program written with a path separator
-  resolves against the project root, because `build.ums` is discovered upward
-  and the working directory is wherever the user stood; a bare name is left to
-  `PATH`.
+**`build("target")`** builds a declared target, and takes nothing else.
 
-The bare word `args` inside a `shell` step splices in whatever the user typed
-after the command name, keeping its position among the fixed arguments. It is
-the only identifier a step argument accepts.
+**`run(subject, "arg", ...)`** runs one thing, and works out how from the
+subject:
+
+| Subject | What happens |
+|---|---|
+| a declared target | it is built, then executed |
+| a `.py` file | run under this host's Python (`python` on Windows, `python3` elsewhere) |
+| a `.psm` file | compiled into the profile's build directory, then executed |
+
+Anything else is a manifest error rather than a guess, because the toolchain has
+to know how to start what it is given. A `.psm` tool is not a declared target and
+deliberately does not become one: a target is something the project builds every
+time, a tool is something it runs when asked.
+
+**`shell("program", "arg", ...)`** is the escape hatch, and you own its
+portability. A program written with a path separator resolves against the project
+root; a bare name is left to `PATH`. Reach for it when `run` cannot help -- `git`,
+`clang`, a platform-specific script -- and remember that a `.sh` step is a broken
+step on Windows, where the line is handed to `cmd /S /C`.
+
+Every argument of every step is quoted for the platform's shell, so an argument
+containing spaces or metacharacters stays one argument. The bare word `args`
+splices in whatever the user typed after the command name, keeping its position
+among the fixed arguments; it is the only identifier a step argument accepts.
 
 `--release` among those arguments selects the profile the command's build steps
 use, and is still forwarded, so one flag reaches both halves of
@@ -137,8 +149,8 @@ rebuilt.
 
 Built-in commands win. A manifest that names one of `init`, `build`, `run`,
 `test`, `clean`, `check`, `bootstrap`, `aif`, `dump-ast` or `runtime-hash` is
-rejected when it loads, rather than silently declaring a command that could
-never be dispatched. Which names are reserved is CLI policy and lives in
+rejected when it loads (`P1062`), rather than silently declaring a command
+that could never be dispatched. Which names are reserved is CLI policy and lives in
 `src/main.psm`; UMS validates a command's shape and does not know the verb list.
 
 ## Manifest edits

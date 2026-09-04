@@ -22,9 +22,9 @@ fn fail(message: String) -> Int {
 fn main() -> Int {
     // pointers
     let words = ["alpha", "beta", "gamma"]
-    if (strEquals(words[0], "alpha") == false) { return fail("String array index 0") }
-    if (strEquals(words[1], "beta") == false) { return fail("String array index 1") }
-    if (strEquals(words[2], "gamma") == false) { return fail("String array index 2") }
+    if (words[0].equals("alpha") == false) { return fail("String array index 0") }
+    if (words[1].equals("beta") == false) { return fail("String array index 1") }
+    if (words[2].equals("gamma") == false) { return fail("String array index 2") }
 
     // doubles
     let reals = [1.5, 2.5, 3.5]

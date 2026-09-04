@@ -36,8 +36,8 @@ fn fail(message: String) -> Int {
 fn main() -> Int {
     if (Gauge.MAX != 100) { return fail("constant on the first type") }
     if (Dial.MAX != 12) { return fail("same name on a second type") }
-    if (strEquals(Gauge.LABEL, "gauge") == false) { return fail("String-typed constant") }
-    if (strEquals(Dial.LABEL, "dial") == false) { return fail("second String constant") }
+    if (Gauge.LABEL.equals("gauge") == false) { return fail("String-typed constant") }
+    if (Dial.LABEL.equals("dial") == false) { return fail("second String constant") }
 
     // Usable in ordinary expressions.
     let headroom = Gauge.MAX - current(Gauge { n: 40 })

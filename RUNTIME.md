@@ -114,7 +114,7 @@ violations.
 
 | Module | Import | Covers |
 |---|---|---|
-| `std/io.psm` | `import std.io` | `print` / `println` overloads |
+| `std/io.psm` | `import std.io` | `print` / `println` overloads, and `eprint` / `eprintln` for stderr |
 | `std/string.psm` | `import std.string` | strings, characters, parsing — **and the String operators** |
 | `std/fs.psm` | `import std.fs` | files, paths, directory listing |
 | `std/process.psm` | `import std.process` | arguments, subprocesses |
@@ -131,6 +131,13 @@ violations.
 **There is no prelude.** `std.io` is an ordinary import: a program that prints
 nothing carries no I/O, which is what lets a target with no stdout link at all.
 See the comment above `resolveImports` in `src/driver/imports.psm`.
+
+`eprint` and `eprintln` take a `String` and nothing else. They exist so that a
+program whose stdout carries a *format* -- `aif --manifest`, JSON diagnostics, a
+pipe into another tool -- can still report status without corrupting it. The
+compiler's own host-routing banner uses them for exactly that reason: while it
+printed to stdout, it prefixed the manifest with a human line and broke that
+format's one guarantee, that its first line is `aif-manifest 1`.
 
 This is why `a == b`, `a + b`, `s[i]`, `s[a..b]` and `for c in s` on a String all
 need `import std.string`: each is rewritten in sema into the `std.string` call it
@@ -357,8 +364,9 @@ fn worker(jobs: Channel<Job>, results: Channel<Answer>) -> Int {
 There is **no executor, no future and no `await`**. A send blocks while the
 channel is full and a receive blocks until a message arrives or the channel
 closes; that is the whole surface, and it is what keeps a worker pool alive
-across frames. `aif/evidence/xlang/prismio/g9_tuned.psm` is the worked example
-and `aif/evidence/RESULTS-v01-channels.md` is the measurement.
+across frames. `aif/evidence/RESULTS-v01-channels.md` records the original
+measurement; the maintained concurrency workload is `parallel_reduction` in
+`benchmarks/prismio/suite.psm`.
 
 ---
 
@@ -366,8 +374,10 @@ and `aif/evidence/RESULTS-v01-channels.md` is the measurement.
 
 Measured 2026-08-24 against **pure C and pure Rust programs** — not Prismio
 calling C. Each program times its own loop, mutates an input to defeat hoisting,
-and the harness rejects variants whose checksums disagree. Reproduce from
-`aif/evidence/xlang/strings`. The table reports best of three interleaved runs.
+and the harness rejects variants whose checksums disagree. These are historical
+results; the maintained `string_search` and `tokenization` workloads now run
+through `python3 benchmarks/run.py`. The table reports the original best of
+three interleaved runs.
 
 | workload | C | Rust std | Rust `memchr` 2.8.3 | Prismio |
 |---|---:|---:|---:|---:|

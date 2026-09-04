@@ -201,7 +201,7 @@ private fn dumpFileTable() {
     let mut first = true
     while (i < 4096) {
         let path = diag_file_path(i)
-        if (strEquals(path, "") or strEquals(path, "<unknown>")) {
+        if (path.equals("") or path.equals("<unknown>")) {
             i = 4096
         } else {
             if (first == false) { print(",") }

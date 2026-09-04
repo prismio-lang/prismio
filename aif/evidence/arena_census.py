@@ -77,10 +77,7 @@ BRACKET = [
 
 
 def programs():
-    found = sorted(set(
-        glob.glob(os.path.join(REPO, "aif", "corpus", "*.psm")) +
-        glob.glob(os.path.join(REPO, "aif", "evidence", "xlang", "prismio", "*.psm"))
-    ))
+    found = sorted(set(glob.glob(os.path.join(REPO, "aif", "corpus", "*.psm"))))
     return found
 
 

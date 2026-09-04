@@ -118,7 +118,7 @@ fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> 
         failure = "could not write the workload driver's IR; using the static profile"
     }
 
-    if (strEquals(failure, "")) {
+    if (failure.equals("")) {
         if (compiler_build_executable(driverIr, driverExe) != 0) {
             // The driver's IR is deliberately *kept* when it fails to build, and
             // named in the warning. A workload that will not compile is a compiler
@@ -147,7 +147,7 @@ fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> 
 
     endWorkloadPass(verifyMode)
 
-    if (strEquals(failure, "") == false) {
+    if (failure.equals("") == false) {
         diag_warning_code("P1007", failure)
         return ""
     }
@@ -164,7 +164,7 @@ fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> 
 // this process's pid -- so no later build will ever clean it up and every
 // consumer of the path runWorkloadProfile returns has to.
 fn discardWorkloadProfile(profilePath: String) {
-    if (strEquals(profilePath, "") == false) {
+    if (profilePath.equals("") == false) {
         delete_file(profilePath)
     }
 }

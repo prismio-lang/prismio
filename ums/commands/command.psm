@@ -81,7 +81,7 @@ fn umsCommandArgument(forwarded: Bool, text: String,
 fn umsCommandFind(commands: List<UmsCommand>, name: String) -> Int {
     let mut i = 0
     while (i < list_len(commands)) {
-        if (strEquals(list_get(commands, i).name, name)) { return i }
+        if (list_get(commands, i).name.equals(name)) { return i }
         i = i + 1
     }
     return -1

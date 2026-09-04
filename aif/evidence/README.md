@@ -17,6 +17,16 @@ because nothing has measured them.
 > their own evidence. A citation to either is a pointer into history, not a broken
 > link to something that should exist.
 
+> **The same applies to `aif/evidence/xlang/`.** Every `gN` program these documents
+> measure — `g1.psm` through `g9.psm`, their `_tuned` arms, the Rust and Swift
+> ports, `bench.py`, and the five-arm and milestone scripts — was superseded by
+> `benchmarks/` and `prismio bench` on 2026-09-03 and removed from the working
+> tree. The measurements stand as recorded; the paths are history, recoverable
+> from `git log`. `benchmarks/README.md` explains where each workload's intent
+> now lives. Re-measuring any figure below means expressing that workload in
+> `benchmarks/` first — do not cite a `gN` number as if it were reproducible by
+> checking out the tree.
+
 | Document | Establishes |
 |---|---|
 | [RESULTS-L0-tiers.md](RESULTS-L0-tiers.md) | Tier distribution over six programs. **100% T0–T2 with affine collections**; the entire residue traces to one language decision. Also: FFI defaults worth 33 points; handles appear to eliminate T3. |
@@ -40,7 +50,7 @@ because nothing has measured them.
 | [RESULTS-curate-list-get-inline.md](RESULTS-curate-list-get-inline.md) | The accessor codegen actually emits, `list_get_inline`, was never in the curated set — a real `bl` per element access for a whole milestone. **Corpus median 0.861×**; the standing against idiomatic Rust goes **0.90×–3.09× → 0.92×–1.80×**. Found by disassembly, against a record that blamed representation. |
 | [RESULTS-owned-return-depth2.md](RESULTS-owned-return-depth2.md) | Ownership now survives a second return: **12/7/5 → 12/12/0**. Predicted to need a fixed point and did not — returning a value already implies not dropping it, so only the parameter-passthrough hazard needed asking. Freed `test_72` to migrate to native `std.string` at last. |
 | [RESULTS-M6-struct-path-tbaa.md](RESULTS-M6-struct-path-tbaa.md) | Ordinary struct fields carry clang-shaped paths from the LLVM record's real target offsets, including reordered and split hot/cold layouts. g4 **0.963×**, g6 **0.993×** — and the shorter code it produced on g2 was **1.68× slower**. Byte-patching the merged 128-bit store into the *old* binary at unchanged addresses reproduced all of it: the merge is a **0.76× win** where the optimiser sees the destination and a **2.74× loss** against `list_push_slot`. Literal initialisers now decline the tag; every other program is unchanged. |
-| [RESULTS-v01-release-candidate.md](RESULTS-v01-release-candidate.md) | The complete v0.1 gate, reproducible as `tools/release_gate.sh`: fourteen checks, suite 202/202, differential 19/19, corpus 30/30 run, ASan and TSan clean. Corpus median **1.001×**. **g5 is demonstrated unmeasurable** — an A/A of one binary against itself reads **1.266× REGRESSED** — which retires three sessions of arguing about its clock. |
+| [RESULTS-v01-release-candidate.md](RESULTS-v01-release-candidate.md) | The complete v0.1 gate, reproducible as `tools/release_gate.py`: fourteen checks, suite 202/202, differential 19/19, corpus 30/30 run, ASan and TSan clean. Corpus median **1.001×**. **g5 is demonstrated unmeasurable** — an A/A of one binary against itself reads **1.266× REGRESSED** — which retires three sessions of arguing about its clock. |
 | [RESULTS-v01-channels.md](RESULTS-v01-channels.md) | v0.1's blocking typed `Channel<T>` — seven builtins, four rules, no executor. g9 gets the hand-tuned arm that was **not writable** before: **1.15× against hand-tuned Rust**, replacing a 1.45× that compared unlike arms. Three model changes it forced, each found by a failing check, and a **data race in `--verify` itself** that made its own counts irreproducible. |
 | [RESULTS-loop-unswitch.md](RESULTS-loop-unswitch.md) | LLVM loop versioning moves the flat/boxed List choice out of hot loops without deleting the sound fallback. Corpus median **0.999x**; g4 improves **0.889x**, reproduced at **0.857x** in the five-arm run. Records why the remaining tuned-Rust gaps divide into representation dispatch, program transformations, and runtime algorithms. |
 | [RESULTS-flat-list-view.md](RESULTS-flat-list-view.md) | Codegen keeps the element stride it already computed: `list_get` on a flat element type emits its own GEP under an `elem_size == stride` guard whose false arm is `list_get_inline`. g4 **0.852x against the pre-unswitch compiler**, corpus median **0.986x**. Prices the cost honestly — g2/g6 pay +58% compile time and +34% binary — and records why a `select` beat the more faithful branch, and why the A/A floor and mnemonic diff overturned a first run that called this a regression. |

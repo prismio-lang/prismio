@@ -51,7 +51,7 @@ fn flatMatches(items: List<Flat>, x: Int, weight: Float) -> Bool {
 
 fn namedMatches(items: List<Named>, label: String, value: Int) -> Bool {
     let item = genericGet(items, 0)
-    return strEquals(item.label, label) and item.value == value
+    return item.label.equals(label) and item.value == value
 }
 
 fn fail(message: String) -> Int {

@@ -28,12 +28,12 @@ import std.option
 // to the runtime table and then to the default.
 private fn aifDeclaredContract(name: String, index: Int) -> Int {
     let text = aif_extern_contract(name, index)
-    if (strEquals(text, "")) { return 0 - 1 }
+    if (text.equals("")) { return 0 - 1 }
 
-    if (strEquals(text, "borrow")) { return AIF_FFI_BORROW }
-    if (strEquals(text, "retain")) { return AIF_FFI_RETAIN }
-    if (strEquals(text, "consume")) { return AIF_FFI_CONSUME }
-    if (strEquals(text, "out")) { return AIF_FFI_OUT }
+    if (text.equals("borrow")) { return AIF_FFI_BORROW }
+    if (text.equals("retain")) { return AIF_FFI_RETAIN }
+    if (text.equals("consume")) { return AIF_FFI_CONSUME }
+    if (text.equals("out")) { return AIF_FFI_OUT }
 
     if (strStartsWith(text, "retain_in:")) {
         let k = optionOr(strParseInt(strSubstring(text, 10, __builtin_string_len(text) - 10)), 0)
@@ -48,20 +48,26 @@ private fn aifDeclaredContract(name: String, index: Int) -> Int {
 
 // Compiler builtins are visible to AIF as call-shaped AST nodes but disappear
 // before LLVM. Their effects therefore belong here, separately from the foreign
-// runtime table below: all three inspect or modify storage only for the duration
-// of the operation and retain nothing.
+// runtime table below: each of the string builtins inspects or modifies storage
+// only for the duration of the operation and retains nothing.
+//
+// That "retains nothing" is why `__builtin_string_eq` could be added without
+// touching AIF's producing paths, and it is exactly what a concat builtin would
+// *not* satisfy: it returns a fresh allocation the caller owns, which is a
+// return contract and not a parameter one. Nothing here can express that yet.
 private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
-    if (strEquals(name, "__builtin_string_len")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "__builtin_string_byte_at")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "__builtin_string_put_byte")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "slice_len")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "slice_set")) {
+    if (name.equals("__builtin_string_len")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_string_byte_at")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_string_put_byte")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_string_eq")) { return AIF_FFI_BORROW }
+    if (name.equals("slice_len")) { return AIF_FFI_BORROW }
+    if (name.equals("slice_set")) {
         if (index == 2) { return AIF_FFI_RETAIN_IN_BASE + 0 }
         return AIF_FFI_BORROW
     }
-    if (strEquals(name, "soa")) { return AIF_FFI_CONSUME }
-    if (strEquals(name, "aos")) { return AIF_FFI_CONSUME }
-    if (strEquals(name, "data_len")) { return AIF_FFI_BORROW }
+    if (name.equals("soa")) { return AIF_FFI_CONSUME }
+    if (name.equals("aos")) { return AIF_FFI_CONSUME }
+    if (name.equals("data_len")) { return AIF_FFI_BORROW }
     return AIF_FFI_UNKNOWN
 }
 
@@ -79,7 +85,7 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
 // `list_push`: without it every element pushed into a list appears never to
 // escape, which is optimistic and therefore unsound.
 private fn aifRuntimeContract(name: String, index: Int) -> Int {
-    if (strEquals(name, "list_push")) {
+    if (name.equals("list_push")) {
         if (index == 1) { return AIF_FFI_RETAIN_IN_BASE + 0 }
         return AIF_FFI_BORROW
     }
@@ -91,8 +97,8 @@ private fn aifRuntimeContract(name: String, index: Int) -> Int {
     // on a wrong answer. Latent until Level 5, when a stored value that appeared
     // not to escape took a stack slot and list_set wrote a frame pointer into a
     // container that outlives the frame.
-    if (strEquals(name, "list_set")
-        or strEquals(name, "list_set_exclusive")) {
+    if (name.equals("list_set")
+        or name.equals("list_set_exclusive")) {
         if (index == 2) { return AIF_FFI_RETAIN_IN_BASE + 0 }
         return AIF_FFI_BORROW
     }
@@ -115,30 +121,30 @@ private fn aifRuntimeContract(name: String, index: Int) -> Int {
     // not -- see the chan_new arm in aifCallSites. It is a runtime object this
     // compilation did not allocate, so there is nothing to place, count or
     // release, and `chan_free` is the program saying when it goes.
-    if (strEquals(name, "chan_send")) {
+    if (name.equals("chan_send")) {
         if (index == 1) { return AIF_FFI_CONSUME }
         return AIF_FFI_BORROW
     }
-    if (strEquals(name, "chan_new")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "chan_recv")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "chan_share")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "chan_close")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "chan_len")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "chan_free")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "list_get")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "list_len")) { return AIF_FFI_BORROW }
+    if (name.equals("chan_new")) { return AIF_FFI_BORROW }
+    if (name.equals("chan_recv")) { return AIF_FFI_BORROW }
+    if (name.equals("chan_share")) { return AIF_FFI_BORROW }
+    if (name.equals("chan_close")) { return AIF_FFI_BORROW }
+    if (name.equals("chan_len")) { return AIF_FFI_BORROW }
+    if (name.equals("chan_free")) { return AIF_FFI_BORROW }
+    if (name.equals("list_get")) { return AIF_FFI_BORROW }
+    if (name.equals("list_len")) { return AIF_FFI_BORROW }
     // The C string layer is native Prismio now, so only the calls that are still
     // real runtime boundaries have contracts here. str_char_at, str_contains,
     // str_starts_with, str_ends_with, str_index_of and str_from_char were removed
     // from lang_runtime.c in 2026-08 and their contracts went with them: a
     // contract for a symbol nothing can link is a rule that can only ever fire on
     // a typo.
-    if (strEquals(name, "str_concat")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "str_equals")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "str_substring")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "str_slice")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "print")) { return AIF_FFI_BORROW }
-    if (strEquals(name, "println")) { return AIF_FFI_BORROW }
+    if (name.equals("str_concat")) { return AIF_FFI_BORROW }
+    if (name.equals("str_equals")) { return AIF_FFI_BORROW }
+    if (name.equals("str_substring")) { return AIF_FFI_BORROW }
+    if (name.equals("str_slice")) { return AIF_FFI_BORROW }
+    if (name.equals("print")) { return AIF_FFI_BORROW }
+    if (name.equals("println")) { return AIF_FFI_BORROW }
     // AIF_FFI_UNKNOWN rather than the default, and the distinction is the whole
     // point: FFI 5.1's default is a *guess* that the callee does not retain, and
     // a guess is exactly what call-site bracketing must not build on. Every
@@ -181,7 +187,7 @@ internal fn aifCallIsSummarised(name: String, argc: Int) -> Bool {
     if (aifCompilerBuiltinContract(name, 0) != AIF_FFI_UNKNOWN) { return true }
     if (aifRuntimeContract(name, 0) != AIF_FFI_UNKNOWN) { return true }
     if (aifFfiProduces(name)) { return true }
-    if (strEquals(aif_extern_contract(name, 0 - 1), "")) { return false }
+    if (aif_extern_contract(name, 0 - 1).equals("")) { return false }
     let mut i = 0
     while (i < argc) {
         if (aifDeclaredContract(name, i) < 0) { return false }
@@ -207,7 +213,7 @@ internal fn aifFfiAliasOf(name: String) -> Int {
     // this it reads as an opaque extern return: a fresh site, escape raised to
     // Caller, and the unwrapped value would stop being reclaimable by whatever
     // owned the optional.
-    if (strEquals(name, "expect")) { return 0 }
+    if (name.equals("expect")) { return 0 }
     return 0 - 1
 }
 
@@ -215,7 +221,7 @@ internal fn aifFfiAliasOf(name: String) -> Int {
 // `retain_in(k)` on the way out: one says a value was stored into the container
 // at k, this says the result came back out of it.
 internal fn aifFfiReadsElement(name: String) -> Int {
-    if (strEquals(name, "list_get")) { return 0 }
+    if (name.equals("list_get")) { return 0 }
     return 0 - 1
 }
 
@@ -243,7 +249,7 @@ internal fn aifDeclaredReturnIsProduce(name: String) -> Bool {
 }
 
 internal fn aifDeclaredReturnIsAlias(name: String) -> Bool {
-    return strEquals(aif_extern_contract(name, 0 - 1), "alias")
+    return aif_extern_contract(name, 0 - 1).equals("alias")
 }
 
 // FFI 5.2 `produce`: a fresh owned value the caller must release. Anything
@@ -259,7 +265,7 @@ internal fn aifDeclaredReturnIsAlias(name: String) -> Bool {
 // frame slot (T0) nor an arena chunk can be where it lives, and saying otherwise
 // takes the site off the drop list and reclaims nothing in its place.
 internal fn aifFfiTransfersExisting(name: String) -> Bool {
-    return strEquals(name, "chan_recv")
+    return name.equals("chan_recv")
 }
 
 internal fn aifFfiProduces(name: String) -> Bool {
@@ -267,20 +273,20 @@ internal fn aifFfiProduces(name: String) -> Bool {
     // frame's from here on -- the same shape as `read_file`, with the allocation
     // on another thread instead of in libc. Without this the received value has
     // no site, nothing releases it, and every message leaks.
-    if (strEquals(name, "chan_recv")) { return true }
-    if (strEquals(name, "list_new")) { return true }
-    if (strEquals(name, "list_new_with_capacity")) { return true }
-    if (strEquals(name, "soa")) { return true }
-    if (strEquals(name, "aos")) { return true }
-    if (strEquals(name, "str_concat")) { return true }
-    if (strEquals(name, "str_substring")) { return true }
+    if (name.equals("chan_recv")) { return true }
+    if (name.equals("list_new")) { return true }
+    if (name.equals("list_new_with_capacity")) { return true }
+    if (name.equals("soa")) { return true }
+    if (name.equals("aos")) { return true }
+    if (name.equals("str_concat")) { return true }
+    if (name.equals("str_substring")) { return true }
     // Same contract as str_substring, and for the same reason: **every**
     // path allocates, including the out-of-range one, which returns an
     // owned one-byte string rather than the literal "".
-    if (strEquals(name, "str_slice")) { return true }
-    if (strEquals(name, "int_to_str")) { return true }
-    if (strEquals(name, "read_file")) { return true }
-    if (strEquals(name, "get_directory")) { return true }
-    if (strEquals(name, "join_path")) { return true }
+    if (name.equals("str_slice")) { return true }
+    if (name.equals("int_to_str")) { return true }
+    if (name.equals("read_file")) { return true }
+    if (name.equals("get_directory")) { return true }
+    if (name.equals("join_path")) { return true }
     return false
 }

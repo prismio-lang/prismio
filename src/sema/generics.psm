@@ -34,7 +34,7 @@ internal fn monoSeparator() -> String { return "$" }
 private fn monoIsTemplate(stmt: ASTNode) -> Bool {
     if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.STRUCT_DECL
         or stmt.kind == NodeKind.ENUM_DECL) {
-        return strEquals(stmt.s2, "") == false
+        return stmt.s2.equals("") == false
     }
     return false
 }
@@ -71,7 +71,7 @@ internal fn monoFindTypeTemplate(module: ASTNode, name: String) -> ASTNode {
     let mut p = module.child2
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (strEquals(stmt.s1, name)) {
+        if (stmt.s1.equals(name)) {
             if (stmt.kind == NodeKind.STRUCT_DECL or stmt.kind == NodeKind.ENUM_DECL) {
                 return stmt
             }
@@ -85,7 +85,7 @@ private fn monoFindTemplate(module: ASTNode, name: String, kind: NodeKind) -> AS
     let mut p = module.child2
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == kind and strEquals(stmt.s1, name)) { return stmt }
+        if (stmt.kind == kind and stmt.s1.equals(name)) { return stmt }
         p = stmt.next
     }
     return ptr_to_node(ptr_null())
@@ -169,7 +169,7 @@ private fn monoCopyChain(ptr: Ptr) -> Ptr {
 // ---------------------------------------------------------
 
 internal fn monoParamCount(params: String) -> Int {
-    if (strEquals(params, "")) { return 0 }
+    if (params.equals("")) { return 0 }
     let mut count = 1
     let mut i = 0
     let n = __builtin_string_len(params)
@@ -204,7 +204,7 @@ internal fn monoParamIndex(params: String, name: String) -> Int {
     let count = monoParamCount(params)
     let mut i = 0
     while (i < count) {
-        if (strEquals(monoParamName(params, i), name)) { return i }
+        if (monoParamName(params, i).equals(name)) { return i }
         i = i + 1
     }
     return -1
@@ -222,7 +222,7 @@ private fn monoFindTrait(module: ASTNode, traitName: String) -> ASTNode {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.TRAIT_DECL and strEquals(stmt.s1, traitName)) { return stmt }
+        if (stmt.kind == NodeKind.TRAIT_DECL and stmt.s1.equals(traitName)) { return stmt }
         p = stmt.next
     }
     return ptr_to_node(ptr_null())
@@ -289,7 +289,7 @@ private fn monoTraitRefHasValidArity(module: ASTNode, traitRef: ASTNode) -> Bool
 }
 
 private fn monoTraitRefsEqual(module: ASTNode, a: ASTNode, b: ASTNode) -> Bool {
-    if (strEquals(a.s1, b.s1) == false) { return false }
+    if (a.s1.equals(b.s1) == false) { return false }
     let mut aArg = a.child1
     let mut bArg = b.child1
     loop {
@@ -353,11 +353,11 @@ private fn monoImplApplies(module: ASTNode, implNode: ASTNode,
     let header = ptr_to_node(implNode.child3)
     if (nodeIsNull(header.child1) or nodeIsNull(header.child2)) { return false }
     let implTrait = ptr_to_node(header.child2)
-    if (strEquals(implTrait.s1, traitRef.s1) == false) { return false }
+    if (implTrait.s1.equals(traitRef.s1) == false) { return false }
 
     let params = header.s1
     let target = ptr_to_node(header.child1)
-    if (strEquals(params, "")) {
+    if (params.equals("")) {
         return typeEquals(semaAnnotationType(module, target), actual)
             and monoTraitRefsEqual(module, implTrait, traitRef)
     }
@@ -401,7 +401,7 @@ private fn monoImplements(module: ASTNode, actual: TypeInfo, traitRef: ASTNode) 
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, traitRef.s1)) {
+        if (stmt.kind == NodeKind.IMPL_DECL and stmt.s2.equals(traitRef.s1)) {
             if (monoImplApplies(module, stmt, actual, traitRef)) {
                 return monoConstraintsHold(module, stmt, traitRef)
             }
@@ -486,7 +486,7 @@ private fn monoFirstReportOfBound(typeName: String, bound: String) -> Bool {
     return true
 }
 
-private fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param: String,
+internal fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param: String,
                      bound: ASTNode, argT: TypeInfo) -> Bool {
     // An invalid argument type is the result of an error already reported; a
     // second one about a bound it cannot possibly satisfy is noise. Answered
@@ -518,8 +518,20 @@ private fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param: 
 
     semaErrorAt(at, strConcat(strConcat(typeDisplay(argT), " does not implement "),
                               diagQuote(boundText)))
-    diag_note(strConcat(strConcat(diagQuote(name), " requires it: the type parameter is declared "),
-                        strConcat(strConcat(param, ": "), boundText)))
+    // A parameter the user never wrote is quoted the way they wrote it. `impl$0`
+    // is T16's synthesised name for an argument-position `impl Trait`, and
+    // naming it here would point at a declaration that does not appear in the
+    // source. The bound is the same either way; only the spelling differs.
+    if (strStartsWith(param, "opaque$")) {
+        diag_note(strConcat(strConcat(diagQuote(name), " promises it: the return type is written "),
+                            strConcat(strConcat("`impl ", boundText), "`")))
+    } else if (strStartsWith(param, "impl$")) {
+        diag_note(strConcat(strConcat(diagQuote(name), " requires it: the parameter is written "),
+                            strConcat(strConcat("`impl ", boundText), "`")))
+    } else {
+        diag_note(strConcat(strConcat(diagQuote(name), " requires it: the type parameter is declared "),
+                            strConcat(strConcat(param, ": "), boundText)))
+    }
     diag_note(strConcat(strConcat("write `impl ", boundText),
                         strConcat(strConcat(" for ", argT.name), " { ... }`")))
     return false
@@ -817,7 +829,7 @@ internal fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, param
     // `T` to be solved from a parameter that can actually determine it.
     if (tn.kind == NodeKind.ASSOC_TYPE_REF) { return ptr_to_node(ptr_null()) }
 
-    if (tn.i1 == 0 and tn.i2 == 0 and strEquals(tn.s1, paramName)) {
+    if (tn.i1 == 0 and tn.i2 == 0 and tn.s1.equals(paramName)) {
         if (typeIsValid(actual) == false) { return ptr_to_node(ptr_null()) }
         return monoAnnotationFromType(actual)
     }
@@ -944,7 +956,7 @@ internal fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: A
     let mut templatePtr = module.child2
     while (nodeExists(templatePtr)) {
         let template = ptr_to_node(templatePtr)
-        if (template.kind == NodeKind.FUNCTION and strEquals(template.s1, callee.s1)) {
+        if (template.kind == NodeKind.FUNCTION and template.s1.equals(callee.s1)) {
             let params = template.s2
             let count = monoParamCount(params)
             let solvedArgs = nodeList()
@@ -996,7 +1008,7 @@ fn monoExpandDefaultMethods(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.IMPL_DECL and strEquals(stmt.s2, "") == false) {
+        if (stmt.kind == NodeKind.IMPL_DECL and stmt.s2.equals("") == false) {
             monoExpandOneImpl(module, stmt)
         }
         p = stmt.next
@@ -1033,7 +1045,7 @@ private fn monoImplDeclaresMethod(implNode: ASTNode, name: String) -> Bool {
     let mut p = implNode.child2
     while (nodeExists(p)) {
         let record = ptr_to_node(p)
-        if (record.kind == NodeKind.IMPL_METHOD and strEquals(record.s1, name)) { return true }
+        if (record.kind == NodeKind.IMPL_METHOD and record.s1.equals(name)) { return true }
         p = record.next
     }
     return false
@@ -1170,12 +1182,12 @@ private fn monoFindAssocType(module: ASTNode, targetText: String, member: String
         let stmt = ptr_to_node(p)
         if (stmt.kind == NodeKind.IMPL_DECL) {
             let header = ptr_to_node(stmt.child3)
-            if (strEquals(monoAnnotationText(header.child1), targetText)) {
+            if (monoAnnotationText(header.child1).equals(targetText)) {
                 let mut memberPtr = header.child3
                 while (nodeExists(memberPtr)) {
                     let candidate = ptr_to_node(memberPtr)
                     if (candidate.kind == NodeKind.ASSOC_TYPE
-                        and strEquals(candidate.s1, member)) {
+                        and candidate.s1.equals(member)) {
                         return candidate.child1
                     }
                     memberPtr = candidate.next
@@ -1202,8 +1214,7 @@ private fn monoConstraintsHold(module: ASTNode, implNode: ASTNode, traitRef: AST
         let wanted = ptr_to_node(p)
         let chosenPtr = monoImplAssocTypeAnnotation(header, wanted.s1)
         if (nodeIsNull(chosenPtr)) { return false }
-        if (strEquals(monoAnnotationText(chosenPtr),
-                      monoAnnotationText(wanted.child1)) == false) { return false }
+        if (monoAnnotationText(chosenPtr).equals(monoAnnotationText(wanted.child1)) == false) { return false }
         p = wanted.next
     }
     return true
@@ -1213,7 +1224,7 @@ private fn monoImplAssocTypeAnnotation(header: ASTNode, name: String) -> Ptr {
     let mut p = header.child3
     while (nodeExists(p)) {
         let member = ptr_to_node(p)
-        if (member.kind == NodeKind.ASSOC_TYPE and strEquals(member.s1, name)) {
+        if (member.kind == NodeKind.ASSOC_TYPE and member.s1.equals(name)) {
             return member.child1
         }
         p = member.next

@@ -1,0 +1,85 @@
+// Block comments, and the reason they nest.
+//
+// The C form cannot comment out a region that already contains a comment: the
+// inner `*/` closes the outer comment and everything after it becomes code
+// again, usually without a syntax error to say so. Prismio counts depth, so the
+// region in `main` below survives being wrapped.
+//
+// What nesting does *not* do, here or in Rust: a `//` inside a block comment is
+// not treated as a line comment, so it neither hides a `*/` nor protects a
+// stray `/*`. Depth counts delimiters and nothing else.
+
+import std.io
+
+/* An ordinary block comment. */
+
+/*
+   Spanning lines, and holding /* a nested comment */ that does not end it.
+*/
+
+/* Nested three deep: /* two /* three */ two */ one */
+
+// Any number of stars. The depth counter reacts to the two-character sequences
+// `/*` and `*/` and to nothing else, so `/**` is the opener plus one ordinary
+// character of content -- which is what makes the doc-comment shape below an
+// ordinary comment rather than a special case anyone had to add.
+
+/**
+
+*/
+
+/***/
+
+/** on one line */
+
+/**
+ * Shaped like a documentation comment, with a leading star per line.
+ * The compiler has no documentation syntax; this is just a comment.
+ */
+
+/**** four stars ****/
+
+fn doubled(n: Int) -> Int {
+    return n /* inline, mid-expression */ * 2
+}
+
+fn main() -> Int {
+    /* A commented-out region that already had a comment in it. This is the
+       case the C form gets wrong.
+    fn unused() -> Int {
+        /* an inner block */
+        return 0
+    }
+    */
+
+    if (doubled(21) != 42) {
+        println("FAIL: block comments")
+        return 1
+    }
+
+    // `/**/` is a complete comment: the second `*` pairs with the `/` to close
+    // it, leaving nothing behind. If the trailing `/` leaked, this would not add
+    // up to two.
+    let adjacent = 1 /**/ + 1
+    if (adjacent != 2) {
+        println("FAIL: empty block comment")
+        return 1
+    }
+
+    let starred = 1 /***/ + 1
+    if (starred != 2) {
+        println("FAIL: /***/ did not close")
+        return 1
+    }
+
+    // A block comment is whitespace, so it may sit anywhere whitespace may.
+    let mut total = 0
+    while /* condition follows */ (total < 3) { total = total + 1 }
+    if (total != 3) {
+        println("FAIL: block comment between keyword and condition")
+        return 1
+    }
+
+    println("PASS: block comments")
+    return 0
+}
