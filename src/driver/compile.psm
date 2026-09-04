@@ -50,11 +50,10 @@ private fn reportForcedLayouts() {
     let mut i = 0
     while (i < aif_layout_forced_count()) {
         if (aif_layout_force_applied(i) == 0) {
-            diag_warning_code("P1003", strConcat(strConcat(strConcat(
-                "--force-layout did not apply: no candidate of ",
-                diagQuote(aif_layout_forced_type(i))),
-                strConcat(" keeps ", strFromInt(aif_layout_forced_hot(i)))),
-                " fields hot (see `aif --layout` for the candidates)"))
+            diag_warning_code("P1003", "--force-layout did not apply: no candidate of ".concat(diagQuote(aif_layout_forced_type(i)),
+                                                                                               " keeps ",
+                                                                                               strFromInt(aif_layout_forced_hot(i)),
+                                                                                               " fields hot (see `aif --layout` for the candidates)"))
         }
         i = i + 1
     }
@@ -111,7 +110,7 @@ private fn checkRuntimeFreshness() {
 private fn analyzedModule(path: String) -> ASTNode {
     let content = read_file(path)
     if (content.equals("") and file_exists(path) == 0) {
-        diag_error_code("P1005", strConcat("cannot read ", path))
+        diag_error_code("P1005", "cannot read ".concat(path))
         return createNode(NodeKind.MODULE)
     }
 
@@ -250,7 +249,7 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
 
     let content = read_file(path)
     if (content.equals("") and file_exists(path) == 0) {
-        diag_error_code("P1008", strConcat("cannot read ", path))
+        diag_error_code("P1008", "cannot read ".concat(path))
         if (bootstrapMode) {
             println("  bootstrap compiles the Prismio compiler from a source checkout.")
             println("  Run it from the repository root, or give the source path explicitly:")
@@ -384,7 +383,7 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
     // variable may have been folded away. Claiming otherwise is exactly the kind
     // of small lie ir/debug.psm exists to prevent.
     if (debugInfo) {
-        irSetDebugInfo(true, strConcat("prismio ", PRISMIO_VERSION), path, optimized)
+        irSetDebugInfo(true, "prismio ".concat(PRISMIO_VERSION), path, optimized)
         compiler_set_debug_info(1)
     }
 
@@ -401,14 +400,14 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
         // That is also what makes the two comparable in run_jit_test.
         let status = ir_jit_run_main(path)
         if (status != 0) {
-            diag_error_code("P1009", strConcat(path, " exited with a failure status"))
+            diag_error_code("P1009", path.concat(" exited with a failure status"))
             return 1
         }
         return 0
     }
 
     if (ir_write_file(outFile) != 0) {
-        diag_error_code("P1010", strConcat("cannot write LLVM IR to ", outFile))
+        diag_error_code("P1010", "cannot write LLVM IR to ".concat(outFile))
         return 1
     }
 
@@ -438,7 +437,7 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
 
     if (runAfterBuild) {
         if (compiler_run_executable(outputFile) != 0) {
-            diag_error_code("P1012", strConcat(outputFile, " exited with a failure status"))
+            diag_error_code("P1012", outputFile.concat(" exited with a failure status"))
             return 1
         }
     }

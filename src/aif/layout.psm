@@ -353,7 +353,7 @@ internal fn aifLayoutVetoInline(module: ASTNode) {
     }
 }
 
-// LAYOUT 6, the container clause -- **written, measured, and not enabled.**
+// LAYOUT 6, the container clause.
 //
 // A split type is not flat, `ir_struct_is_flat` refuses it, and a non-flat
 // element cannot live inline in a `List` -- so the container boxes it: a pointer
@@ -361,7 +361,7 @@ internal fn aifLayoutVetoInline(module: ASTNode) {
 // constant stride. LAYOUT 7.2's argmin scores footprint and traversal and never
 // prices that.
 //
-// Vetoing the split for every list element type was tried. It is a large win on
+// Vetoing the split for every list element type was tried. It was a large win on
 // two programs and a large loss on a third, all measured against an A/A control
 // in the same run:
 //
@@ -375,43 +375,36 @@ internal fn aifLayoutVetoInline(module: ASTNode) {
 // indirection, where boxing is a cache miss per element and the split's density
 // buys nothing.
 //
-// **The distinguishing fact is the access pattern, not the type.** Sequential
-// indexing tolerates boxing because the pointer array and the objects are walked
-// in order; indexed-through-another-list does not. Neither the argmin nor this
-// veto knows which it is, so pricing the boxing cost needs an access-pattern fact
-// the model does not have -- LAYOUT 2's profile already measures traversals and
-// is where that fact would come from.
-//
-// Kept here unwired so the next attempt starts from the measurement rather than
-// from the idea. Enable by calling it from src/aif/report.psm beside
-// aifLayoutVetoInline. See aif/evidence/RESULTS-list-element-split-veto.md.
+// **The distinguishing fact is the access pattern, not the type.** The guard is
+// therefore narrower than that experiment: it applies only when AIF has one
+// proven sequential element traversal that consumes every field of the row.
+// A narrow hot scan such as g4_tuned keeps its profitable split. An all-field
+// mutation such as BenchMemoryParticle stays flat and avoids a cold allocation
+// for every List element. See aif/evidence/RESULTS-list-element-split-veto.md.
 //
 // Only a type that would otherwise be inline is considered: one with a pointer
 // inside is boxed whatever its layout, so splitting it costs the container
-// nothing and the footprint win is real.
-internal fn aifLayoutVetoListElements(module: ASTNode) {
-    let mut p = module.child1
-    while (nodeExists(p)) {
-        let d = ptr_to_node(p)
-        if (d.kind == NodeKind.STRUCT_DECL) {
-            let mut fp = d.child1
-            while (nodeExists(fp)) {
-                let f = ptr_to_node(fp)
-                if (f.kind == NodeKind.STRUCT_FIELD and nodeExists(f.child1)) {
-                    let ann = ptr_to_node(f.child1)
-                    if (ann.i2 == 1 and ann.s1.equals("List")
-                            and nodeExists(ann.child1)) {
-                        let elem = ptr_to_node(ann.child1)
-                        if (typeAnnIsPodIn(module, elem, 0, true)) {
-                            aif_layout_no_split(elem.s1)
-                        }
-                    }
-                }
-                fp = f.next
-            }
+// nothing and the footprint win is real. Walk the whole tree because benchmark
+// and application lists are commonly local bindings, not struct fields.
+private fn aifLayoutVetoListElementsAt(nodePtr: Ptr, module: ASTNode) {
+    if (nodeIsNull(nodePtr)) { return }
+    let node = ptr_to_node(nodePtr)
+    if (node.kind == NodeKind.TYPE_ANNOTATION and node.i2 == 1
+        and node.s1.equals("List") and nodeExists(node.child1)) {
+        let elem = ptr_to_node(node.child1)
+        if (typeAnnIsPodIn(module, elem, 0, true)
+            and aif_layout_all_fields_sequential(elem.s1) == 1) {
+            aif_layout_no_split_list_full_scan(elem.s1)
         }
-        p = d.next
     }
+    aifLayoutVetoListElementsAt(node.child1, module)
+    aifLayoutVetoListElementsAt(node.child2, module)
+    aifLayoutVetoListElementsAt(node.child3, module)
+    aifLayoutVetoListElementsAt(node.next, module)
+}
+
+internal fn aifLayoutVetoListElements(module: ASTNode) {
+    aifLayoutVetoListElementsAt(module.child1, module)
 }
 
 // M4.3's column offsets are read from the unsplit LLVM struct. A hot/cold split

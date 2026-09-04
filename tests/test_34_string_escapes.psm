@@ -24,7 +24,7 @@ fn main() -> Int {
     if (__builtin_string_len(nl) != 3) {
         return fail("\\n should decode to a single character")
     }
-    if (strCharAt(nl, 1) != '\n') {
+    if (nl.charAt(1) != '\n') {
         return fail("\\n decoded to the wrong character")
     }
 
@@ -33,7 +33,7 @@ fn main() -> Int {
     if (__builtin_string_len(tab) != 3) {
         return fail("\\t should decode to a single character")
     }
-    if (strCharAt(tab, 1) != '\t') {
+    if (tab.charAt(1) != '\t') {
         return fail("\\t decoded to the wrong character")
     }
 
@@ -42,7 +42,7 @@ fn main() -> Int {
     if (__builtin_string_len(back) != 3) {
         return fail("\\\\ should decode to a single backslash")
     }
-    if (strCharAt(back, 1) != '\\') {
+    if (back.charAt(1) != '\\') {
         return fail("\\\\ decoded to the wrong character")
     }
 
@@ -51,15 +51,15 @@ fn main() -> Int {
     if (__builtin_string_len(quoted) != 8) {
         return fail("escaped quotes should not end the literal")
     }
-    if (strCharAt(quoted, 4) != '"') {
+    if (quoted.charAt(4) != '"') {
         return fail("\\\" decoded to the wrong character")
     }
 
     // \r and \'
-    if (strCharAt("x\ry", 1) != '\r') {
+    if ("x\ry".charAt(1) != '\r') {
         return fail("\\r decoded to the wrong character")
     }
-    if (strCharAt("x\'y", 1) != '\'') {
+    if ("x\'y".charAt(1) != '\'') {
         return fail("\\' decoded to the wrong character")
     }
 

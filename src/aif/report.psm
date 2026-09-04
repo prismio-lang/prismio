@@ -48,7 +48,7 @@ private fn aifPlacement(tier: Int, site: Int) -> String {
     // value the arena bump-allocates would be the manifest describing a build
     // that did not happen, which is the whole reason `rc:none` exists below.
     let placed = aif_region_name_at_site(site)
-    if (placed.equals("") == false) { return strConcat("region:", placed) }
+    if (placed.equals("") == false) { return "region:".concat(placed) }
 
     if (tier == 1) {
         // `region:none`, not `region:scope`, and the rename is the whole point.
@@ -147,10 +147,10 @@ private fn aifPad(s: String, width: Int) -> String {
     // Already at or past the column: one space, so the fields stay separable.
     // Tested before the loop, because after it `n >= width` always holds and
     // padding every field by one more character would shift the whole table.
-    if (n >= width) { return strConcat(s, " ") }
+    if (n >= width) { return s.concat(" ") }
     let mut out = s
     while (n < width) {
-        out = strConcat(out, " ")
+        out = out.concat(" ")
         n = n + 1
     }
     return out
@@ -163,8 +163,10 @@ private fn aifKv(key: String, value: String) {
 
 private fn aifSitePosition(site: Int) -> String {
     let path = diag_file_path(aif_site_file(site))
-    return strConcat(strConcat(path, ":"), strConcat(strFromInt(aif_site_line(site)),
-           strConcat(":", strFromInt(aif_site_col(site)))))
+    return path.concat(":",
+                       strFromInt(aif_site_line(site)),
+                       ":",
+                       strFromInt(aif_site_col(site)))
 }
 
 // The manifest's record name. Numbering within the declaring function rather
@@ -175,7 +177,7 @@ private fn aifSymbolOf(site: Int) -> String {
     let owner = aif_site_fn(site)
     let mut base = "<module>"
     if (owner >= 0) { base = aif_fn_symbol(owner) }
-    return strConcat(strConcat(base, "#"), strFromInt(aif_site_ordinal(site)))
+    return base.concat("#", strFromInt(aif_site_ordinal(site)))
 }
 
 // Both the human report and the manifest need a stable record order. The native
@@ -224,8 +226,10 @@ private fn aifFriendlyPosition(site: Int) -> String {
     if (diag_file_module(file).equals("") == false) {
         label = strClone(diag_file_module(file))
     }
-    return strConcat(strConcat(label, ":"), strConcat(strFromInt(aif_site_line(site)),
-           strConcat(":", strFromInt(aif_site_col(site)))))
+    return label.concat(":",
+                        strFromInt(aif_site_line(site)),
+                        ":",
+                        strFromInt(aif_site_col(site)))
 }
 
 // Human storage groups. Placement wins over tier: a T2 allocation reached from
@@ -264,7 +268,7 @@ private fn aifStorageClassCount(kind: Int) -> Int {
 
 private fn aifHumanStorage(site: Int) -> String {
     let regionName = aif_region_name_at_site(site)
-    if (regionName.equals("") == false) { return strConcat("arena:", regionName) }
+    if (regionName.equals("") == false) { return "arena:".concat(regionName) }
 
     let tier = aif_tier_of(site)
     if (tier == 0) { return "stack" }
@@ -460,7 +464,7 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
     // analysis, not a build. SPEC 7.3's verify mode changes the allocator names
     // and nothing the inference does, so the facts here are the same either way.
     aifKv("build", "release")
-    aifKv("budget", strConcat(strFromInt(aifBudget), " rounds"))
+    aifKv("budget", strFromInt(aifBudget).concat(" rounds"))
     if (converged) {
         aifKv("converged", "yes")
     } else {
@@ -469,15 +473,16 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
     // Split because the two phases truncate very differently: a budget that
     // stops the points-to phase leaves the whole graph unproven, one that stops
     // the fact phase leaves only a frontier.
-    aifKv("rounds", strConcat(strConcat(strFromInt(aif_rounds()), " (points-to "),
-                                strConcat(strFromInt(aif_pt_rounds()), ")")))
+    aifKv("rounds", strFromInt(aif_rounds()).concat(" (points-to ",
+                                                    strFromInt(aif_pt_rounds()),
+                                                    ")"))
     // SPEC 4.2 requires the implementation document its Theta_stack. This is
     // where it does it.
     let mut thetaUnit = " bytes"
     if (aif_theta_mode() == 1) { thetaUnit = " fields (oracle-parity mode)" }
-    aifKv("theta-stack", strConcat(strFromInt(aif_theta_stack()), thetaUnit))
+    aifKv("theta-stack", strFromInt(aif_theta_stack()).concat(thetaUnit))
     aifKv("ffi-default", "borrow")
-    aifKv("compiler", strConcat("prismio ", version))
+    aifKv("compiler", "prismio ".concat(version))
     aifKv("llvm", ir_llvm_version())
     aifKv("source", sourcePath)
     aifKv("sites", strFromInt(total))
@@ -491,11 +496,11 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
     // layout, a string's is its length, and a fabricated per-string constant
     // would make the `pin` gate turn on a number nobody computed.
     let unsized = aif_arena_unsized_sites()
-    let mut budgetNote = strConcat(strFromInt(aif_arena_high_water()), " bytes peak arena (est.)")
+    let mut budgetNote = strFromInt(aif_arena_high_water()).concat(" bytes peak arena (est.)")
     if (unsized > 0) {
-        budgetNote = strConcat(budgetNote,
-                                 strConcat(strConcat(", ", strFromInt(unsized)),
-                                            " dynamically-sized site(s) excluded"))
+        budgetNote = budgetNote.concat(", ",
+                                       strFromInt(unsized),
+                                       " dynamically-sized site(s) excluded")
     }
     aifKv("peak-bytes", budgetNote)
 
@@ -511,9 +516,10 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
     if (sccTypes == 0) {
         aifKv("cycles", "none")
     } else {
-        aifKv("cycles", strConcat(strConcat("collector (", strFromInt(sccTypes)),
-                                    strConcat(" cyclic type(s), ",
-                                    strConcat(strFromInt(aif_t4b_site_count()), " T4b site(s))"))))
+        aifKv("cycles", "collector (".concat(strFromInt(sccTypes),
+                                             " cyclic type(s), ",
+                                             strFromInt(aif_t4b_site_count()),
+                                             " T4b site(s))"))
     }
     println("#")
     println("# symbol                                      tier  thread       placement         type            layout      origin            site")
@@ -575,8 +581,10 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
         if (aif_layout_reordered(aif_site_type(site)) == 1) { grouping = "AoS*" }
         let hotCount = aif_layout_hot_count(aif_site_type(site))
         if (hotCount > 0) {
-            grouping = strConcat(grouping, strConcat("+", strConcat(strFromInt(hotCount),
-                        strConcat("/", strFromInt(aif_struct_nfields(aif_site_type(site)))))))
+            grouping = grouping.concat("+",
+                                       strFromInt(hotCount),
+                                       "/",
+                                       strFromInt(aif_struct_nfields(aif_site_type(site))))
         }
         print(aifPad(grouping, 12))
         print(aifPad(origin, 18))
@@ -610,12 +618,13 @@ private fn aifEmitBrackets() {
         let scope = aif_bracket_scope(i)
         print("#   ")
         print(aifPad(aif_fn_name(aif_bracket_callee(i)), 30))
-        print(aifPad(strConcat("region:", aif_scope_region(scope)), 24))
-        print(aifPad(strConcat(strFromInt(aif_bracket_served(i)), " site(s) served"), 20))
+        print(aifPad("region:".concat(aif_scope_region(scope)), 24))
+        print(aifPad(strFromInt(aif_bracket_served(i)).concat(" site(s) served"), 20))
         let path = diag_file_path(aif_scope_region_file(scope))
-        println(strConcat(strConcat(path, ":"),
-                strConcat(strFromInt(aif_scope_region_line(scope)),
-                strConcat(":", strFromInt(aif_scope_region_col(scope))))))
+        println(path.concat(":",
+                            strFromInt(aif_scope_region_line(scope)),
+                            ":",
+                            strFromInt(aif_scope_region_col(scope))))
         i = i + 1
     }
 }
@@ -674,15 +683,15 @@ private fn aifEmitPackingAdvice(module: ASTNode) {
                                     println("# type.field                    declared  observed range        fits in")
                                 }
                                 print("# ")
-                                print(aifPad(strConcat(strConcat(d.s1, "."), f.s1), 30))
-                                print(aifPad(strConcat(strFromInt(declared), " bytes"), 10))
+                                print(aifPad(d.s1.concat(".", f.s1), 30))
+                                print(aifPad(strFromInt(declared).concat(" bytes"), 10))
                                 // Narrowed to Int for printing, which is exact
                                 // here and only here: this branch runs when the
                                 // range fits in 1 or 2 bytes, so both ends are
                                 // inside i32 by the test just above.
-                                print(aifPad(strConcat(strConcat(strFromInt(lo as Int), ".."),
-                                                         strFromInt(hi as Int)), 22))
-                                println(strConcat(strFromInt(needed), " bytes"))
+                                print(aifPad(strFromInt(lo as Int).concat("..",
+                                                                          strFromInt(hi as Int)), 22))
+                                println(strFromInt(needed).concat(" bytes"))
                                 shown = shown + 1
                             }
                         }
@@ -763,12 +772,12 @@ private fn aifEmitSummary(sourcePath: String, converged: Bool) {
         print("  ")
         print(aifPad(aifTierName(t), 5))
         print(aifPad(strFromInt(n), 8))
-        print(aifPad(strConcat(strFromInt(100 * n / denom), "%"), 6))
+        print(aifPad(strFromInt(100 * n / denom).concat("%"), 6))
         let mut bar = ""
         let mut b = 0
         let width = 60 * n / denom
         while (b < width) {
-            bar = strConcat(bar, "#")
+            bar = bar.concat("#")
             b = b + 1
         }
         println(bar)
@@ -1051,6 +1060,7 @@ fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
     // budget of zero rounds and its row also says "layout search: none".
     if (budget > 0) {
         aifLayoutVetoInline(module)
+        aifLayoutVetoListElements(module)
         aifLayoutVetoDataViews(module.child1)
         aif_layout_split_select()
     }
@@ -1489,7 +1499,7 @@ fn aifReportPins() -> Int {
             let want = aifTierName(aif_site_pin_tier(i))
             let got = aifTierName(aif_site_derived_tier(i))
             diag_error_at_code("P5002", aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
-                          strConcat(strConcat(strConcat("pin(", want), ") cannot hold: this value is "), got))
+                          "pin(".concat(want, ") cannot hold: this value is ", got))
             diag_note("inference converged, so this is a proven-false assertion rather than a limit of the analysis")
             errors = errors + 1
         }
@@ -1497,7 +1507,7 @@ fn aifReportPins() -> Int {
         if (verdict == AIF_PIN_UNPROVEN) {
             let want = aifTierName(aif_site_pin_tier(i))
             diag_warning_at_code("P5003", aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
-                            strConcat(strConcat("pin(", want), ") is unproven: the analysis budget ran out"))
+                            "pin(".concat(want, ") is unproven: the analysis budget ran out"))
             diag_note("raising --budget may settle it; the derived tier is used meanwhile")
         }
 
@@ -1546,23 +1556,23 @@ private fn aifReportPlacementPin(i: Int) -> Int {
         // arena away from sites a converged run keeps it for. Refusing the build
         // on that would fail a program for the budget it was given.
         diag_warning_at_code("P5004", aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
-                        strConcat(strConcat("pin(", want), ") is unproven: the analysis budget ran out"))
+                        "pin(".concat(want, ") is unproven: the analysis budget ran out"))
         diag_note("raising --budget may settle it; placement is unchanged meanwhile")
         return 0
     }
 
     diag_error_at_code("P5005", aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
-                  strConcat(strConcat("pin(", want), ") cannot hold: this value is not served by that arena"))
+                  "pin(".concat(want, ") cannot hold: this value is not served by that arena"))
 
     if (aifRegionExists(want) == false) {
-        diag_note(strConcat(strConcat("no `region` in this program is named ", diagQuote(want)),
-                             "; a tier pin is one of T0, T1, T2, T3, T4b, T4a"))
+        diag_note("no `region` in this program is named ".concat(diagQuote(want),
+                                                                 "; a tier pin is one of T0, T1, T2, T3, T4b, T4a"))
         return 1
     }
 
     if (got.equals("") == false) {
-        diag_note(strConcat(strConcat("it is served by region:", got),
-                             " -- a nested region takes the values that die earlier"))
+        diag_note("it is served by region:".concat(got,
+                                                   " -- a nested region takes the values that die earlier"))
         return 1
     }
 
@@ -1575,21 +1585,20 @@ private fn aifReportPlacementPin(i: Int) -> Int {
     let f = aif_site_fn(i)
     let mask = aif_fn_bracket_blockers(f)
     if (f >= 0 and mask / AIF_BR_B_SHARED_BODY % 2 == 1) {
-        diag_note(strConcat(strConcat("the call that reached it was bracketed into ", want),
-                             " (SPEC 5.2.1.1 regime (a)) and no longer is:"))
-        diag_note(strConcat(aif_fn_name(f),
-                             " reaches a body that is also called from outside the region"))
+        diag_note("the call that reached it was bracketed into ".concat(want,
+                                                                        " (SPEC 5.2.1.1 regime (a)) and no longer is:"))
+        diag_note(aif_fn_name(f).concat(" reaches a body that is also called from outside the region"))
         return 1
     }
     // MULTI_CALL on its own is not an answer -- more than one call site is fine
     // while they are all in the same region -- so the note names what a reader
     // has to go and check rather than asserting the count is the fault.
     if (f >= 0 and mask / AIF_BR_B_MULTI_CALL % 2 == 1) {
-        diag_note(strConcat(strConcat("the call that reached it was bracketed into ", want),
-                             " (SPEC 5.2.1.1 regime (a)) and no longer is:"))
-        diag_note(strConcat(strConcat(aif_fn_name(f), " has "),
-                  strConcat(strFromInt(aif_fn_call_sites(f)),
-                             " call sites, and a bracketed callee may have exactly one outside the region")))
+        diag_note("the call that reached it was bracketed into ".concat(want,
+                                                                        " (SPEC 5.2.1.1 regime (a)) and no longer is:"))
+        diag_note(aif_fn_name(f).concat(" has ",
+                                        strFromInt(aif_fn_call_sites(f)),
+                                        " call sites, and a bracketed callee may have exactly one outside the region"))
         return 1
     }
 
@@ -1617,11 +1626,12 @@ fn aifReportBudgets(converged: Bool) -> Int {
         if (cap > 0) {
             let served = aif_scope_served(s)
             if (served > cap) {
+                let asserted = strFromInt(cap).concat(" asserted")
                 diag_error_at_code("P5006", aif_scope_budget_file(s), aif_scope_budget_line(s),
                               aif_scope_budget_col(s), 0,
-                              strConcat(strConcat(strConcat("region ", aif_scope_region(s)),
-                                         strConcat(" exceeds its budget: ", strFromInt(served))),
-                                         strConcat(" bytes estimated, ", strConcat(strFromInt(cap), " asserted"))))
+                              "region ".concat(aif_scope_region(s), " exceeds its budget: ",
+                                               strFromInt(served), " bytes estimated, ",
+                                               asserted))
                 diag_note("the estimate counts statically sized allocations only; a string's length is a run-time value")
                 errors = errors + 1
             }
@@ -1659,8 +1669,8 @@ fn aifReportInertRegions() {
         if (name.equals("") == false and aif_region_serves(s) == 0) {
             diag_warning_at_code("P5007", aif_scope_region_file(s), aif_scope_region_line(s),
                             aif_scope_region_col(s), 0,
-                            strConcat(strConcat("region ", name),
-                                       " serves no allocation; it costs an arena push and pop per entry and reclaims nothing"))
+                            "region ".concat(name,
+                                             " serves no allocation; it costs an arena push and pop per entry and reclaims nothing"))
             diag_note("an arena serves a value allocated in the same function, or one in a callee whose call this region brackets; a callee called from more than one place, or a region holding a call this compilation cannot see through, cannot reach it")
         }
         s = s + 1
@@ -1695,8 +1705,7 @@ private fn aifEmitLayout(module: ASTNode, sourcePath: String) {
     println("#")
     println("# LAYOUT 7.2 argmin over candidates(tau). `*` is the model's choice;")
     println("# `emitted` is what codegen actually produced. The two differ when a")
-    println("# type is vetoed -- embedded inline in another struct, or in a")
-    println("# non-trivial SCC (see aif_layout_split_select) -- and when")
+    println("# type is vetoed -- for representation cost or soundness -- and when")
     println("# --force-layout names a different candidate (LAYOUT 8).")
     println("#")
     println("# type                      fields  trav  candidate      hot B  cold B  modelled  emitted")
@@ -1719,10 +1728,9 @@ private fn aifEmitLayout(module: ASTNode, sourcePath: String) {
                     let total = aif_struct_nfields(d.s1)
                     let mut label = "unsplit"
                     if (hot < total) {
-                        label = strConcat("split ", strConcat(strFromInt(hot),
-                                 strConcat("/", strFromInt(total))))
+                        label = "split ".concat(strFromInt(hot), "/", strFromInt(total))
                     }
-                    if (i == best) { label = strConcat(label, " *") }
+                    if (i == best) { label = label.concat(" *") }
                     let mut emitted = ""
                     if (emittedHot == 0) {
                         if (hot == total) { emitted = "emitted" }
@@ -1748,6 +1756,10 @@ private fn aifEmitLayout(module: ASTNode, sourcePath: String) {
                 // model was never given anything to prefer it for".
                 if (trav == 0) {
                     println("#   ^ no traversal recorded: ranked on footprint alone")
+                }
+                let veto = aif_layout_veto_reason(d.s1)
+                if (veto.equals("") == false) {
+                    println("# veto: ".concat(d.s1, ": ", veto))
                 }
             }
         }

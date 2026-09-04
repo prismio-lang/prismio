@@ -191,7 +191,7 @@ private fn cliCheck() -> Int {
         if (option.equals("--diagnostic-format=json")) {
             diag_set_json_mode(1)
         } else {
-            diag_error_code("P1026", strConcat("unknown argument ", diagQuote(option)))
+            diag_error_code("P1026", "unknown argument ".concat(diagQuote(option)))
             printUsage()
             return 1
         }
@@ -303,12 +303,12 @@ private fn cliAif() -> Int {
                 return 1
             }
             if (targetSelect(cli_arg(aifArg + 1)) == false) {
-                diag_error_code("P1032", strConcat("unknown target triple ", diagQuote(cli_arg(aifArg + 1))))
+                diag_error_code("P1032", "unknown target triple ".concat(diagQuote(cli_arg(aifArg + 1))))
                 return 1
             }
             aifArg = aifArg + 1
         } else {
-            diag_error_code("P1033", strConcat("unknown argument ", diagQuote(flag)))
+            diag_error_code("P1033", "unknown argument ".concat(diagQuote(flag)))
             printUsage()
             return 1
         }
@@ -358,7 +358,7 @@ private fn cliBootstrap() -> Int {
             bootstrapDebugInfo = true
             argIndex = argIndex + 1
         } else {
-            diag_error_code("P1035", strConcat("unknown argument ", diagQuote(barg)))
+            diag_error_code("P1035", "unknown argument ".concat(diagQuote(barg)))
             printUsage()
             return 1
         }
@@ -482,7 +482,7 @@ fn main() -> Int {
 
         // `first` is moved into `path` by the branch above, so the name is read
         // again from argv rather than reused here.
-        diag_error_code("P1039", strConcat("unknown command ", diagQuote(cli_arg(1))))
+        diag_error_code("P1039", "unknown command ".concat(diagQuote(cli_arg(1))))
         diag_note("commands: init, build, run, test, clean, check, aif, dump-ast, bootstrap, runtime-hash")
         listUmsProjectCommands()
         return 1
@@ -508,7 +508,7 @@ fn main() -> Int {
             // is written; without it the output keeps a load/store per binding.
             let level = optionOr(strParseInt(strSubstring(arg, 2, 1)), 0)
             if (level < 0 or level > 3) {
-                diag_error_code("P1041", strConcat("unknown optimization level ", diagQuote(arg)))
+                diag_error_code("P1041", "unknown optimization level ".concat(diagQuote(arg)))
                 return 1
             }
             ir_set_opt_level(level)
@@ -523,7 +523,7 @@ fn main() -> Int {
             // here: a list would be a second copy of what LLVM knows, and the
             // failure mode of a stale entry is a miscompile.
             if (targetSelect(cli_arg(argIndex + 1)) == false) {
-                diag_error_code("P1043", strConcat("unknown target triple ", diagQuote(cli_arg(argIndex + 1))))
+                diag_error_code("P1043", "unknown target triple ".concat(diagQuote(cli_arg(argIndex + 1))))
                 return 1
             }
             // A contradiction rather than a combination: the JIT emits code for
@@ -619,7 +619,7 @@ fn main() -> Int {
                 outputFile = cli_arg(argIndex)
                 argIndex = argIndex + 1
             } else {
-                diag_error_code("P1050", strConcat("unknown argument ", diagQuote(arg)))
+                diag_error_code("P1050", "unknown argument ".concat(diagQuote(arg)))
                 printUsage()
                 return 1
             }

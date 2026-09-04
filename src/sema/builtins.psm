@@ -20,6 +20,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // `strEquals`, so that the operator does not depend on a public function
     // with a prefixed name -- the prefix is implementation, not surface.
     if (name.equals("__builtin_string_eq")) { return typeBool() }
+    if (name.equals("__builtin_string_inline")) { return typeString() }
 
     // REQUIREMENTS 4. The narrowing half. `T?` cannot be used as a `T` -- that
     // is what the type buys -- so there has to be one way across, and this is it.
@@ -115,7 +116,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let mut arg = ptr_to_node(argPtr)
         let mut t = semaExpr(module, arg)
         if (typeIsMoveOnly(t) == false) {
-            semaErrorAt(arg, strConcat("drop requires an owned (move-only) value, found ", typeDisplay(t)))
+            semaErrorAt(arg, "drop requires an owned (move-only) value, found ".concat(typeDisplay(t)))
             return true
         }
         semaConsumeOperand(arg)
@@ -132,8 +133,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let ot = semaExpr(module, a0)
         if (ot.kind != TypeKind.OPTIONAL) {
-            semaErrorAt(a0, strConcat("expect requires an optional value, found ",
-                                         typeDisplay(ot)))
+            semaErrorAt(a0, "expect requires an optional value, found ".concat(typeDisplay(ot)))
             return true
         }
         if (nodeIsNull(ot.child)) {
@@ -174,6 +174,25 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
+    // The German-string short form: `count` bytes of the first operand from
+    // `start`, held in the returned pair rather than allocated.
+    //
+    // **`count <= 12` is the caller's obligation and is not checked here**, for
+    // the same reason `__builtin_string_byte_at` does not bound its index: the
+    // one caller in std/string.psm establishes it two lines above, and a test
+    // here would be a second one on the hot path of every substring. Over the
+    // bound, the bytes past twelve are silently dropped -- so this is a builtin
+    // for std to reach, not a spelling for a program to use.
+    if (name.equals("__builtin_string_inline")) {
+        if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
+        let i0 = ptr_to_node(argPtr)
+        let i1 = ptr_to_node(i0.next)
+        semaCheckValue(module, i0, typeString(), "inline string source")
+        semaCheckValue(module, i1, typeInt(), "inline string start")
+        semaCheckValue(module, ptr_to_node(i1.next), typeInt(), "inline string length")
+        return true
+    }
+
     if (name.equals("list_new")) {
         semaCheckArity(call, name, argPtr, 0)
         return true
@@ -191,7 +210,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, strConcat("list_len expects a List, found ", typeDisplay(lt)))
+            semaErrorAt(a0, "list_len expects a List, found ".concat(typeDisplay(lt)))
         }
         return true
     }
@@ -205,18 +224,17 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let rows = ptr_to_node(argPtr)
         let lt = semaExpr(module, rows)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(rows, strConcat("soa expects a List, found ", typeDisplay(lt)))
+            semaErrorAt(rows, "soa expects a List, found ".concat(typeDisplay(lt)))
             return true
         }
         let elemT = semaListElementType(lt)
         if (elemT.kind != TypeKind.STRUCT) {
-            semaErrorAt(rows, strConcat("soa requires a List of flat structs, found ", typeDisplay(lt)))
+            semaErrorAt(rows, "soa requires a List of flat structs, found ".concat(typeDisplay(lt)))
             return true
         }
         if (structDeclIsPodIn(module, elemT.name, 0, true) == false) {
-            semaErrorAt(rows, strConcat(strConcat("soa requires a flat struct with no owned fields; ",
-                                                     elemT.name),
-                                          " contains non-flat storage"))
+            semaErrorAt(rows, "soa requires a flat struct with no owned fields; ".concat(elemT.name,
+                                                                                         " contains non-flat storage"))
             return true
         }
         semaConsumeOperand(rows)
@@ -228,7 +246,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let view = ptr_to_node(argPtr)
         let vt = semaExpr(module, view)
         if (vt.kind != TypeKind.DATAVIEW) {
-            semaErrorAt(view, strConcat("aos expects a DataView, found ", typeDisplay(vt)))
+            semaErrorAt(view, "aos expects a DataView, found ".concat(typeDisplay(vt)))
             return true
         }
         semaConsumeOperand(view)
@@ -240,7 +258,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let view = ptr_to_node(argPtr)
         let vt = semaExpr(module, view)
         if (vt.kind != TypeKind.DATAVIEW) {
-            semaErrorAt(view, strConcat("data_len expects a DataView, found ", typeDisplay(vt)))
+            semaErrorAt(view, "data_len expects a DataView, found ".concat(typeDisplay(vt)))
         }
         return true
     }
@@ -249,7 +267,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, strConcat("list_get expects a List, found ", typeDisplay(lt)))
+            semaErrorAt(a0, "list_get expects a List, found ".concat(typeDisplay(lt)))
             return true
         }
         semaCheckValue(module, ptr_to_node(a0.next), typeInt(), "list_get index")
@@ -291,7 +309,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let ct = semaExpr(module, a0)
         if (typeIsChannel(ct) == false) {
-            semaErrorAt(a0, strConcat("chan_send expects a Channel, found ", typeDisplay(ct)))
+            semaErrorAt(a0, "chan_send expects a Channel, found ".concat(typeDisplay(ct)))
             return true
         }
         let valueNode = ptr_to_node(a0.next)
@@ -308,7 +326,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let ct = semaExpr(module, a0)
         if (typeIsChannel(ct) == false) {
-            semaErrorAt(a0, strConcat("chan_recv expects a Channel, found ", typeDisplay(ct)))
+            semaErrorAt(a0, "chan_recv expects a Channel, found ".concat(typeDisplay(ct)))
         }
         return true
     }
@@ -318,8 +336,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let ct = semaExpr(module, a0)
         if (typeIsChannel(ct) == false) {
-            semaErrorAt(a0, strConcat(name, strConcat(" expects a Channel, found ",
-                                                      typeDisplay(ct))))
+            semaErrorAt(a0, name.concat(" expects a Channel, found ", typeDisplay(ct)))
         }
         return true
     }
@@ -329,7 +346,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, strConcat("list_push expects a List, found ", typeDisplay(lt)))
+            semaErrorAt(a0, "list_push expects a List, found ".concat(typeDisplay(lt)))
             return true
         }
         let valueNode = ptr_to_node(a0.next)
@@ -363,7 +380,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, strConcat("list_set expects a List, found ", typeDisplay(lt)))
+            semaErrorAt(a0, "list_set expects a List, found ".concat(typeDisplay(lt)))
             return true
         }
         let a1 = ptr_to_node(a0.next)
@@ -395,7 +412,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, strConcat("list_set_exclusive expects a List, found ", typeDisplay(lt)))
+            semaErrorAt(a0, "list_set_exclusive expects a List, found ".concat(typeDisplay(lt)))
             return true
         }
         let a1 = ptr_to_node(a0.next)
@@ -425,7 +442,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let slice = ptr_to_node(argPtr)
         let st = semaExpr(module, slice)
         if (st.kind != TypeKind.SLICE) {
-            semaErrorAt(slice, strConcat("slice_len expects a Slice, found ", typeDisplay(st)))
+            semaErrorAt(slice, "slice_len expects a Slice, found ".concat(typeDisplay(st)))
         }
         return true
     }
@@ -438,7 +455,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let slice = ptr_to_node(argPtr)
         let st = semaExpr(module, slice)
         if (st.kind != TypeKind.SLICE) {
-            semaErrorAt(slice, strConcat("slice_set expects a Slice, found ", typeDisplay(st)))
+            semaErrorAt(slice, "slice_set expects a Slice, found ".concat(typeDisplay(st)))
             return true
         }
         let index = ptr_to_node(slice.next)

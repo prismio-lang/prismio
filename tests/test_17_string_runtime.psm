@@ -19,7 +19,7 @@ fn main() -> Int {
         return fail("str_substring should extract the requested slice")
     }
 
-    if (strCharAt(text, 7) != 'W') {
+    if (text.charAt(7) != 'W') {
         return fail("str_char_at should read the requested character")
     }
 
@@ -35,7 +35,7 @@ fn main() -> Int {
         return fail("str_index_of should return the substring offset")
     }
 
-    if (strConcat("Hello, ", "World").equals("Hello, World") == false) {
+    if ("Hello, ".concat("World").equals("Hello, World") == false) {
         return fail("str_concat should join strings")
     }
 

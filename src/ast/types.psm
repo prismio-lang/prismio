@@ -182,7 +182,7 @@ fn typeStruct(name: String) -> TypeInfo {
 fn typeNone() -> TypeInfo { return typeMake(TypeKind.OPTIONAL, "none", "ptr") }
 
 fn typeOptional(inner: TypeInfo) -> TypeInfo {
-    let t = typeMake(TypeKind.OPTIONAL, strConcat(inner.name, "?"), "ptr")
+    let t = typeMake(TypeKind.OPTIONAL, inner.name.concat("?"), "ptr")
     t.child = type_to_ptr(inner)
     return t
 }
@@ -196,7 +196,7 @@ fn typeOptional(inner: TypeInfo) -> TypeInfo {
 // What the name and the `child` add is the one thing a bare `Ptr` could not
 // carry -- what comes back out of the join.
 fn typeTask(result: TypeInfo) -> TypeInfo {
-    let mut t = typeMake(TypeKind.PTR, strConcat("Task<", strConcat(result.name, ">")), "ptr")
+    let mut t = typeMake(TypeKind.PTR, "Task<".concat(result.name, ">"), "ptr")
     t.child = type_to_ptr(result)
     return t
 }
@@ -224,7 +224,7 @@ fn typeTaskResult(t: TypeInfo) -> TypeInfo {
 // per message and `chan_recv` answers `T?`, which REQUIREMENTS 4 defines only for
 // a reference. `Channel<Int>` is refused in sema rather than boxed silently.
 fn typeChannel(elem: TypeInfo) -> TypeInfo {
-    let mut t = typeMake(TypeKind.PTR, strConcat("Channel<", strConcat(elem.name, ">")), "ptr")
+    let mut t = typeMake(TypeKind.PTR, "Channel<".concat(elem.name, ">"), "ptr")
     t.child = type_to_ptr(elem)
     return t
 }
@@ -299,44 +299,44 @@ fn typeDisplay(t: TypeInfo) -> String {
         // occur in a source identifier -- so printing the internal name shows the
         // reader a type they did not write and cannot spell.
         if (strStartsWith(t.name, "dyn$")) {
-            return strConcat("dyn ", strSubstring(t.name, 4, __builtin_string_len(t.name) - 4))
+            return "dyn ".concat(strSubstring(t.name, 4, __builtin_string_len(t.name) - 4))
         }
         return t.name
     }
     if (t.kind == TypeKind.ENUM) { return t.name }
     if (t.kind == TypeKind.ARRAY) {
         if (nodeExists(t.child)) {
-            return strConcat(strConcat("[", typeDisplay(ptr_to_type(t.child))), "]")
+            return "[".concat(typeDisplay(ptr_to_type(t.child)), "]")
         }
         return "[Invalid]"
     }
     if (t.kind == TypeKind.LIST) {
         if (nodeExists(t.child)) {
-            return strConcat(strConcat("List<", typeDisplay(ptr_to_type(t.child))), ">")
+            return "List<".concat(typeDisplay(ptr_to_type(t.child)), ">")
         }
         return "List"
     }
     if (t.kind == TypeKind.SLICE) {
         if (nodeExists(t.child)) {
-            return strConcat(strConcat("Slice<", typeDisplay(ptr_to_type(t.child))), ">")
+            return "Slice<".concat(typeDisplay(ptr_to_type(t.child)), ">")
         }
         return "Slice"
     }
     if (t.kind == TypeKind.DATAVIEW) {
         if (nodeExists(t.child)) {
-            return strConcat(strConcat("DataView<", typeDisplay(ptr_to_type(t.child))), ">")
+            return "DataView<".concat(typeDisplay(ptr_to_type(t.child)), ">")
         }
         return "DataView"
     }
     if (t.kind == TypeKind.DATAELEMENT) {
         if (nodeExists(t.child)) {
-            return strConcat(strConcat("DataElement<", typeDisplay(ptr_to_type(t.child))), ">")
+            return "DataElement<".concat(typeDisplay(ptr_to_type(t.child)), ">")
         }
         return "DataElement"
     }
     if (t.kind == TypeKind.OPTIONAL) {
         if (nodeExists(t.child)) {
-            return strConcat(typeDisplay(ptr_to_type(t.child)), "?")
+            return typeDisplay(ptr_to_type(t.child)).concat("?")
         }
         return "none"
     }
@@ -428,7 +428,7 @@ fn typeIrKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.STRING) { return "struct:prismio.str" }
     if (t.kind == TypeKind.PTR) { return "ptr" }
     if (t.kind == TypeKind.ENUM) { return "i32" }
-    if (t.kind == TypeKind.STRUCT) { return strConcat("struct:", t.name) }
+    if (t.kind == TypeKind.STRUCT) { return "struct:".concat(t.name) }
     if (t.kind == TypeKind.LIST) { return "ptr" }
     if (t.kind == TypeKind.SLICE) { return "struct:prismio.slice" }
     if (t.kind == TypeKind.DATAVIEW) { return "ptr" }
@@ -462,51 +462,51 @@ fn typeSemKey(t: TypeInfo) -> String {
     // optionals fell into, which is why this case was written with its decoder.
     if (t.kind == TypeKind.PTR) {
         if (typeIsTask(t) and nodeExists(t.child)) {
-            return strConcat("task:", typeSemKey(ptr_to_type(t.child)))
+            return "task:".concat(typeSemKey(ptr_to_type(t.child)))
         }
         // Same hole, same fix: a channel endpoint that came back as a bare `Ptr`
         // would make `chan_send(c, v)` report "expects a Channel, found Ptr" one
         // statement after the binding that gave it its type.
         if (typeIsChannel(t) and nodeExists(t.child)) {
-            return strConcat("chan:", typeSemKey(ptr_to_type(t.child)))
+            return "chan:".concat(typeSemKey(ptr_to_type(t.child)))
         }
         return "Ptr"
     }
-    if (t.kind == TypeKind.STRUCT) { return strConcat("struct:", t.name) }
-    if (t.kind == TypeKind.ENUM) { return strConcat("enum:", t.name) }
+    if (t.kind == TypeKind.STRUCT) { return "struct:".concat(t.name) }
+    if (t.kind == TypeKind.ENUM) { return "enum:".concat(t.name) }
     if (t.kind == TypeKind.ARRAY) {
         if (nodeExists(t.child)) {
-            return strConcat("array:", typeSemKey(ptr_to_type(t.child)))
+            return "array:".concat(typeSemKey(ptr_to_type(t.child)))
         }
         return "array:Invalid"
     }
     if (t.kind == TypeKind.LIST) {
         if (nodeExists(t.child)) {
-            return strConcat("list:", typeSemKey(ptr_to_type(t.child)))
+            return "list:".concat(typeSemKey(ptr_to_type(t.child)))
         }
         return "list:Invalid"
     }
     if (t.kind == TypeKind.SLICE) {
         if (nodeExists(t.child)) {
-            return strConcat("slice:", typeSemKey(ptr_to_type(t.child)))
+            return "slice:".concat(typeSemKey(ptr_to_type(t.child)))
         }
         return "slice:Invalid"
     }
     if (t.kind == TypeKind.DATAVIEW) {
         if (nodeExists(t.child)) {
-            return strConcat("view:", typeSemKey(ptr_to_type(t.child)))
+            return "view:".concat(typeSemKey(ptr_to_type(t.child)))
         }
         return "view:Invalid"
     }
     if (t.kind == TypeKind.DATAELEMENT) {
         if (nodeExists(t.child)) {
-            return strConcat("dataelem:", typeSemKey(ptr_to_type(t.child)))
+            return "dataelem:".concat(typeSemKey(ptr_to_type(t.child)))
         }
         return "dataelem:Invalid"
     }
     if (t.kind == TypeKind.OPTIONAL) {
         if (nodeExists(t.child)) {
-            return strConcat("opt:", typeSemKey(ptr_to_type(t.child)))
+            return "opt:".concat(typeSemKey(ptr_to_type(t.child)))
         }
         return "opt:Invalid"
     }

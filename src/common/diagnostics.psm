@@ -61,5 +61,5 @@ extern fn diag_reset()
 // Quotes a name the way every message in the compiler quotes one, so the style
 // cannot drift between call sites.
 fn diagQuote(name: String) -> String {
-    return strConcat(strConcat("`", name), "`")
+    return "`".concat(name, "`")
 }

@@ -46,7 +46,7 @@ fn main() -> Int {
     let mut l = Letters { left: 3 }
     let mut joined = ""
     for s in l {
-        joined = strConcat(joined, s)
+        joined = joined.concat(s)
     }
     if (joined.equals("xxx") == false) { return fail("second Item type") }
 

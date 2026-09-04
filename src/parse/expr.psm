@@ -92,7 +92,7 @@ private fn foldNegativeLiteral(operand: ASTNode, minus: Token) -> Bool {
     let isNumber = operand.i1 == TokenType.NUMBER_LITERAL or operand.i1 == TokenType.FLOAT_LITERAL
     if (isNumber == false or strStartsWith(operand.s1, "-")) { return false }
 
-    operand.s1 = strConcat("-", operand.s1)
+    operand.s1 = "-".concat(operand.s1)
     // The folded literal's span still covered only the digits, so a diagnostic
     // about `-42` underlined `42`. Widen it to include the sign that is now part
     // of its value.
@@ -498,7 +498,9 @@ private fn parsePrimary(p: Parser) -> ASTNode {
         return parseSuffixes(p, parseArrayLiteral(p))
     }
 
-    p.fatal(strConcat(strConcat("expected an expression, found ", parserDescribe(current)),
-                               strConcat(" (a ", strConcat(typeToString(current.type), ")"))))
+    p.fatal("expected an expression, found ".concat(parserDescribe(current),
+                                                    " (a ",
+                                                    typeToString(current.type),
+                                                    ")"))
     return p.node(NodeKind.ERROR_NODE)
 }

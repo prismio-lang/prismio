@@ -84,7 +84,7 @@ private fn generateFunction(func: ASTNode) {
         // asserts exactly the fact `noalias` states, so lowering it is a use of
         // an existing annotation rather than a fifth one.
         let pStore = storageType(mapTypeNode(pTypeNode))
-        let pName = strConcat("p_", paramNode.s1)
+        let pName = "p_".concat(paramNode.s1)
         if (paramNode.i2 == 1) {
             ir_function_param_unique(pStore, pName)
         } else {
@@ -132,7 +132,16 @@ private fn generateFunction(func: ASTNode) {
         ir_set_var_type(paramNode.s1, pTypeStr)
         let pSlot = ir_get_var_slot(paramNode.s1)
         ir_alloca(pStoreType, pSlot)
-        ir_store(pStoreType, strConcat("%p_", paramNode.s1), pSlot)
+        ir_store(pStoreType, "%p_".concat(paramNode.s1), pSlot)
+
+        // The German-string representation, resolved once in the entry block --
+        // which dominates the whole body, so every byte read in it can index a
+        // pointer rather than ask per character where the bytes are. Parameters
+        // are borrows and cannot be reassigned, so the answer cannot go stale.
+        // See `data_ptr` in runtime/ir_symbols.c.
+        if (isFatStringKey(pStoreType)) {
+            ir_set_var_data(paramNode.s1, ir_str_data("%p_".concat(paramNode.s1)))
+        }
 
         // The *declared* key, not the storage one: `struct:Point` is what says
         // the slot holds a Point and not an unlabelled address. argc/argv are
@@ -211,7 +220,7 @@ internal fn taskFunctionForCall(call: ASTNode) -> Ptr {
 }
 
 internal fn taskThunkName(func: ASTNode) -> String {
-    return strConcat(functionSymbolName(func), "__task")
+    return functionSymbolName(func).concat("__task")
 }
 
 // First pass: count every direct source callsite, capped at two. A unique
@@ -388,7 +397,7 @@ private fn generateTaskThunk(func: ASTNode) {
     let mut paramPtr = func.child1
     let mut i = 0
     while (nodeExists(paramPtr)) {
-        ir_function_param("ptr", strConcat("p_task", strFromInt(i)))
+        ir_function_param("ptr", "p_task".concat(strFromInt(i)))
         paramPtr = ptr_to_node(paramPtr).next
         i = i + 1
     }
@@ -400,7 +409,7 @@ private fn generateTaskThunk(func: ASTNode) {
     while (nodeExists(argPtr)) {
         let param = ptr_to_node(argPtr)
         let paramType = storageType(mapTypeNode(ptr_to_node(param.child1)))
-        let raw = strConcat("%p_task", strFromInt(j))
+        let raw = "%p_task".concat(strFromInt(j))
         if (isFatStringKey(paramType)) {
             ir_call_arg(paramType, fatFromPtr(raw))
         } else {
@@ -424,7 +433,7 @@ private fn generateTaskThunk(func: ASTNode) {
 internal fn collectStringsExpr(expr: ASTNode) {
     if (expr.kind == NodeKind.LITERAL_EXPR) {
         if (expr.i1 == TokenType.STRING_LITERAL) {
-            let strName = strConcat(".str.s", strFromInt(irStringCounter))
+            let strName = ".str.s".concat(strFromInt(irStringCounter))
             irStringCounter = irStringCounter + 1
             ir_global_string(strName, expr.s1)
             expr.s2 = strName
@@ -571,7 +580,7 @@ private fn generateExternStub(ext: ASTNode) {
     while (nodeExists(paramPtr)) {
         let paramNode = ptr_to_node(paramPtr)
         let pTypeNode = ptr_to_node(paramNode.child1)
-        ir_function_param(storageType(mapTypeNode(pTypeNode)), strConcat("p_s", strFromInt(i)))
+        ir_function_param(storageType(mapTypeNode(pTypeNode)), "p_s".concat(strFromInt(i)))
         i = i + 1
         paramPtr = paramNode.next
     }
@@ -881,7 +890,7 @@ private fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
 // Named rather than numbered so the IR reads, and so two builds of the same
 // program name the same function -- the manifest is diffed and so is the IR.
 internal fn releaseFnName(typeName: String) -> String {
-    return strConcat("__aif_release_", typeName)
+    return "__aif_release_".concat(typeName)
 }
 
 // The release disposition after applying the layout veto shared by both the
@@ -1052,7 +1061,7 @@ private fn generateReleaseFn(structNode: ASTNode) {
 // the skeleton into the string and token graphs hanging off it, which are
 // usually far larger.
 internal fn cyclicChildrenFnName(typeName: String) -> String {
-    return strConcat("__aif_cyclic_children_", typeName)
+    return "__aif_cyclic_children_".concat(typeName)
 }
 
 private fn generateCyclicChildrenFn(structNode: ASTNode) {
@@ -1303,11 +1312,16 @@ fn generateModule(module: ASTNode) {
     ir_global_var("prismio_argv", "ptr", "null", 0)
 
     // Declare runtime functions
+    //
+    // `malloc` allocates and `rt_free` releases -- see `g_alloc_fn` in
+    // runtime/llvm-api-backend.c for why those are not the same family. The
+    // width on the allocator is what `tests/target_cross.psm` reads to prove the
+    // size argument follows the target's pointer width.
     ir_declare_function_begin("malloc", "ptr")
     ir_declare_function_param(irPtrIntType())
     ir_declare_function_end()
 
-    ir_declare_function_begin("free", "void")
+    ir_declare_function_begin("rt_free", "void")
     ir_declare_function_param("ptr")
     ir_declare_function_end()
 
@@ -1693,7 +1707,7 @@ fn generateModule(module: ASTNode) {
                         collectStringsExpr(initNode)
                         globalStrName = initNode.s2
                         globalStrLen = __builtin_string_len(initNode.s1)
-                        initVal = strConcat("@", initNode.s2)
+                        initVal = "@".concat(initNode.s2)
                     } else {
                         initVal = initNode.s1
                     }
@@ -1823,9 +1837,9 @@ private fn generateVtableDeclarationsFrom(module: ASTNode, ptr: Ptr) {
     while (nodeExists(p)) {
         let node = ptr_to_node(p)
         if (node.kind == NodeKind.DYN_MAKE) {
-            let marker = strConcat(node.s2, ";")
+            let marker = node.s2.concat(";")
             if (strContains(irEmittedVtables, marker) == false) {
-                irEmittedVtables = strConcat(irEmittedVtables, marker)
+                irEmittedVtables = irEmittedVtables.concat(marker)
                 let traitName = strSubstring(node.s1, 4, __builtin_string_len(node.s1) - 4)
                 let traitDecl = irFindTrait(module, traitName)
                 if (nodeIsNull(node_to_ptr(traitDecl)) == false) {
@@ -1864,9 +1878,9 @@ private fn generateVtablesFrom(module: ASTNode, ptr: Ptr) {
 
 private fn generateOneVtable(module: ASTNode, make: ASTNode) {
     let name = make.s2
-    let marker = strConcat(name, ";")
+    let marker = name.concat(";")
     if (strContains(irEmittedVtables, marker)) { return }
-    irEmittedVtables = strConcat(irEmittedVtables, marker)
+    irEmittedVtables = irEmittedVtables.concat(marker)
 
     let traitName = strSubstring(make.s1, 4, __builtin_string_len(make.s1) - 4)
     let traitDecl = irFindTrait(module, traitName)
@@ -1903,8 +1917,7 @@ private fn irFindImplForVtable(module: ASTNode, traitName: String, vtableName: S
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
         if (stmt.kind == NodeKind.IMPL_DECL and stmt.s2.equals(traitName)) {
-            let candidate = strConcat(strConcat("vtable$", traitName),
-                                      strConcat("$", stmt.s1))
+            let candidate = "vtable$".concat(traitName, "$", stmt.s1)
             if (candidate.equals(vtableName)) { return stmt }
         }
         p = stmt.next

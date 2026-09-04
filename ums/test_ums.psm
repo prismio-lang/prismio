@@ -254,8 +254,7 @@ fn main() -> Int {
     let commandBase = "project { name = \"app\" version = \"1.0.0\" prismio = \"1.0\" } targets { executable(\"app\") { entry = \"src/main.psm\" } test(\"probe\") { entry = \"src/main.psm\" } } "
 
     let commandsWorkspace = umsLoadText(
-        strConcat(commandBase,
-            "commands { command(\"ship\") { description = \"build then package\" build(\"app\") shell(\"tools/pack.sh\", \"--out\", args, \"--tail\") } }"),
+        commandBase.concat("commands { command(\"ship\") { description = \"build then package\" build(\"app\") shell(\"tools/pack.sh\", \"--out\", args, \"--tail\") } }"),
         "memory:commands", "ums/tests/fixtures/valid", "debug")
     if (commandsWorkspace.valid == false) {
         umsDiagnosticsPrint(commandsWorkspace.diagnostics)
@@ -291,22 +290,21 @@ fn main() -> Int {
     }
 
     let duplicateCommand = umsLoadText(
-        strConcat(commandBase,
-            "commands { command(\"a\") { shell(\"x\") } command(\"a\") { shell(\"y\") } }"),
+        commandBase.concat("commands { command(\"a\") { shell(\"x\") } command(\"a\") { shell(\"y\") } }"),
         "memory:duplicate-command", "ums/tests/fixtures/valid", "debug")
     if (duplicateCommand.valid) {
         return umsTestFail("a command name declared twice should be rejected")
     }
 
     let unknownStepTarget = umsLoadText(
-        strConcat(commandBase, "commands { command(\"a\") { build(\"nope\") } }"),
+        commandBase.concat("commands { command(\"a\") { build(\"nope\") } }"),
         "memory:unknown-step-target", "ums/tests/fixtures/valid", "debug")
     if (unknownStepTarget.valid) {
         return umsTestFail("a step naming no declared target should be rejected")
     }
 
     let runNeedsExecutable = umsLoadText(
-        strConcat(commandBase, "commands { command(\"a\") { run(\"probe\") } }"),
+        commandBase.concat("commands { command(\"a\") { run(\"probe\") } }"),
         "memory:run-needs-executable", "ums/tests/fixtures/valid", "debug")
     if (runNeedsExecutable.valid) {
         return umsTestFail("a run step should refuse a target it cannot execute")
@@ -315,7 +313,7 @@ fn main() -> Int {
     // One mistake, one diagnostic. The rejected step is still recorded, so the
     // command is not *also* reported as declaring none.
     let rejectedStep = umsLoadText(
-        strConcat(commandBase, "commands { command(\"a\") { deploy(\"x\") } }"),
+        commandBase.concat("commands { command(\"a\") { deploy(\"x\") } }"),
         "memory:rejected-step", "ums/tests/fixtures/valid", "debug")
     if (rejectedStep.valid or list_len(rejectedStep.diagnostics) != 1) {
         return umsTestFail("a rejected step should report once, not twice")
@@ -325,8 +323,7 @@ fn main() -> Int {
     // A .psm in the fixture stands in for a project's own tool; it takes
     // arguments exactly as a shell step does, which `build` deliberately does not.
     let runScript = umsLoadText(
-        strConcat(commandBase,
-            "commands { command(\"tool\") { run(\"src/main.psm\", \"--once\", args) } }"),
+        commandBase.concat("commands { command(\"tool\") { run(\"src/main.psm\", \"--once\", args) } }"),
         "memory:run-script", "ums/tests/fixtures/valid", "debug")
     if (runScript.valid == false) {
         umsDiagnosticsPrint(runScript.diagnostics)
@@ -340,21 +337,21 @@ fn main() -> Int {
     }
 
     let runUnknownKind = umsLoadText(
-        strConcat(commandBase, "commands { command(\"a\") { run(\"tools/thing.sh\") } }"),
+        commandBase.concat("commands { command(\"a\") { run(\"tools/thing.sh\") } }"),
         "memory:run-unknown-kind", "ums/tests/fixtures/valid", "debug")
     if (runUnknownKind.valid or list_len(runUnknownKind.diagnostics) != 1) {
         return umsTestFail("run should refuse a subject it cannot start")
     }
 
     let runMissingScript = umsLoadText(
-        strConcat(commandBase, "commands { command(\"a\") { run(\"src/absent.py\") } }"),
+        commandBase.concat("commands { command(\"a\") { run(\"src/absent.py\") } }"),
         "memory:run-missing-script", "ums/tests/fixtures/valid", "debug")
     if (runMissingScript.valid or list_len(runMissingScript.diagnostics) != 1) {
         return umsTestFail("run should refuse a script that is not there")
     }
 
     let emptyCommand = umsLoadText(
-        strConcat(commandBase, "commands { command(\"a\") { description = \"nothing\" } }"),
+        commandBase.concat("commands { command(\"a\") { description = \"nothing\" } }"),
         "memory:empty-command", "ums/tests/fixtures/valid", "debug")
     if (emptyCommand.valid or list_len(emptyCommand.diagnostics) != 1) {
         return umsTestFail("a command with no steps should be rejected once")

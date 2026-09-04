@@ -21,7 +21,7 @@ impl UmsProjectModel {
                       statement: UmsAstStatement, description: String) -> Bool {
         if (statement.value.kind == UmsAstValueKind.STRING) { return true }
         self.lowerError(diagnostics, statement, "UMS2001",
-                      strConcat(description, " must be a string literal"))
+                      description.concat(" must be a string literal"))
         return false
     }
 
@@ -122,7 +122,7 @@ impl UmsProjectModel {
                 }
             } else {
                 self.lowerError(diagnostics, property, "UMS2004",
-                    strConcat(strConcat("unknown project property '", property.name), "'"))
+                    "unknown project property '".concat(property.name, "'"))
             }
             i = i + 1
         }
@@ -145,9 +145,9 @@ impl UmsProjectModel {
                 } else if (__builtin_string_len(property.value.text) == 0) {
                     self.lowerError(diagnostics, property, "UMS2404",
                                   "toolchain.host cannot be empty")
-                } else if (strCharAt(property.value.text, 0) == '/' or
-                           strCharAt(property.value.text, 0) == '\\' or
-                           strCharAt(property.value.text, 1) == ':') {
+                } else if (property.value.text.charAt(0) == '/' or
+                           property.value.text.charAt(0) == '\\' or
+                           property.value.text.charAt(1) == ':') {
                     self.lowerError(diagnostics, property, "UMS2405",
                                   "toolchain.host must be relative to the project root")
                 } else {
@@ -182,12 +182,12 @@ impl UmsProjectModel {
             if (declaration.kind != UmsAstStatementKind.CALL or
                 declaration.hasBlock or kind == UmsLinkKind.UNKNOWN) {
                 self.lowerError(diagnostics, declaration, "UMS2108",
-                    strConcat(strConcat("unknown link declaration '", declaration.name),
-                              "'; expected library, search, file, framework or component"))
+                    "unknown link declaration '".concat(declaration.name,
+                                                        "'; expected library, search, file, framework or component"))
             } else if (list_len(declaration.arguments) != 1 or
                        list_get(declaration.arguments, 0).kind != UmsAstValueKind.STRING) {
                 self.lowerError(diagnostics, declaration, "UMS2109",
-                    strConcat(declaration.name, " requires exactly one string argument"))
+                    declaration.name.concat(" requires exactly one string argument"))
             } else {
                 let value = list_get(declaration.arguments, 0)
                 list_push(target.links, umsLinkInput(kind, value.text,
@@ -218,8 +218,8 @@ impl UmsProjectModel {
             } else if (property.kind != UmsAstStatementKind.ASSIGNMENT or
                        property.name.equals("entry") == false) {
                 self.lowerError(diagnostics, property, "UMS2101",
-                    strConcat(strConcat("unknown target property '", property.name),
-                               "'; expected 'entry' or 'link'"))
+                    "unknown target property '".concat(property.name,
+                                                       "'; expected 'entry' or 'link'"))
             } else if (self.lowerString(diagnostics, property, "target entry")) {
                 if (__builtin_string_len(entry) > 0) {
                     self.lowerError(diagnostics, property, "UMS2102",
@@ -246,25 +246,25 @@ impl UmsProjectModel {
         else if (call.name.equals("test")) { kind = UmsTargetKind.TEST }
         else {
             self.lowerError(diagnostics, call, "UMS2103",
-                strConcat(strConcat("unknown target kind '", call.name), "'"))
+                "unknown target kind '".concat(call.name, "'"))
             return
         }
 
         if (list_len(call.arguments) != 1) {
             self.lowerError(diagnostics, call, "UMS2104",
-                          strConcat(call.name, " requires exactly one string name"))
+                          call.name.concat(" requires exactly one string name"))
             return
         }
         let argument = list_get(call.arguments, 0)
         if (argument.kind != UmsAstValueKind.STRING) {
             self.lowerError(diagnostics, call, "UMS2104",
-                          strConcat(call.name, " requires exactly one string name"))
+                          call.name.concat(" requires exactly one string name"))
             return
         }
         let targetName = strClone(argument.text)
         if (umsTargetFind(self.targets, targetName) >= 0) {
             self.lowerError(diagnostics, call, "UMS2105",
-                strConcat(strConcat("target '", targetName), "' is declared more than once"))
+                "target '".concat(targetName, "' is declared more than once"))
             return
         }
         let target = umsTarget(kind, targetName, "",
@@ -328,13 +328,12 @@ impl UmsProjectModel {
         if (call.kind != UmsAstStatementKind.CALL or call.hasBlock or
             kind == UmsCommandStepKind.UNKNOWN) {
             self.lowerError(diagnostics, call, "UMS2504",
-                strConcat(strConcat("unknown command step '", call.name),
-                           "'; expected build, run or shell"))
+                "unknown command step '".concat(call.name, "'; expected build, run or shell"))
             kind = UmsCommandStepKind.UNKNOWN
         } else if (list_len(call.arguments) == 0 or
                    list_get(call.arguments, 0).kind != UmsAstValueKind.STRING) {
             self.lowerError(diagnostics, call, "UMS2505",
-                strConcat(call.name, " requires a string as its first argument"))
+                call.name.concat(" requires a string as its first argument"))
             kind = UmsCommandStepKind.UNKNOWN
         } else if (kind == UmsCommandStepKind.BUILD and list_len(call.arguments) != 1) {
             self.lowerError(diagnostics, call, "UMS2506",
@@ -361,8 +360,8 @@ impl UmsProjectModel {
                        diagnostics: List<UmsDiagnostic>) {
         if (call.name.equals("command") == false or call.hasBlock == false) {
             self.lowerError(diagnostics, call, "UMS2501",
-                strConcat(strConcat("unknown commands declaration '", call.name),
-                           "'; expected command(\"name\") { ... }"))
+                "unknown commands declaration '".concat(call.name,
+                                                        "'; expected command(\"name\") { ... }"))
             return
         }
         if (list_len(call.arguments) != 1) {
@@ -379,7 +378,7 @@ impl UmsProjectModel {
         let commandName = strClone(argument.text)
         if (umsCommandFind(self.commands, commandName) >= 0) {
             self.lowerError(diagnostics, call, "UMS2503",
-                strConcat(strConcat("command '", commandName), "' is declared more than once"))
+                "command '".concat(commandName, "' is declared more than once"))
             return
         }
 
@@ -392,8 +391,7 @@ impl UmsProjectModel {
                 self.lowerCommandStep(child, command, diagnostics)
             } else if (child.name.equals("description") == false) {
                 self.lowerError(diagnostics, child, "UMS2504",
-                    strConcat(strConcat("unknown command property '", child.name),
-                               "'; expected 'description'"))
+                    "unknown command property '".concat(child.name, "'; expected 'description'"))
             } else if (self.lowerString(diagnostics, child, "command description")) {
                 descriptions = descriptions + 1
                 if (descriptions > 1) {
@@ -447,15 +445,14 @@ impl UmsProjectModel {
             let scope = umsDependencyScope(call.name)
             if (call.kind != UmsAstStatementKind.CALL or scope == UmsDependencyScope.UNKNOWN) {
                 self.lowerError(diagnostics, call, "UMS2201",
-                    strConcat(strConcat("unknown dependency declaration '", call.name), "'"))
+                    "unknown dependency declaration '".concat(call.name, "'"))
             } else if (list_len(call.arguments) < 2 or list_len(call.arguments) > 3) {
                 // Two arguments is a registry dependency; a third is the local path
                 // it resolves to instead. Positional rather than named, because the
                 // DSL's calls are positional and a `path =` form would be new grammar
                 // for one argument.
                 self.lowerError(diagnostics, call, "UMS2202",
-                              strConcat(call.name,
-                                         " requires package name and version constraint strings, and an optional local path"))
+                              call.name.concat(" requires package name and version constraint strings, and an optional local path"))
             } else {
                 let name = list_get(call.arguments, 0)
                 let constraint = list_get(call.arguments, 1)
@@ -472,12 +469,11 @@ impl UmsProjectModel {
                 if (name.kind != UmsAstValueKind.STRING or
                     constraint.kind != UmsAstValueKind.STRING or pathOk == false) {
                     self.lowerError(diagnostics, call, "UMS2202",
-                                  strConcat(call.name,
-                                             " requires package name and version constraint strings, and an optional local path"))
+                                  call.name.concat(" requires package name and version constraint strings, and an optional local path"))
                 } else if (umsDependencyFind(self.dependencies, scope, name.text) >= 0) {
                     self.lowerError(diagnostics, call, "UMS2203",
-                        strConcat(strConcat("dependency '", name.text),
-                                   "' is declared more than once in this scope"))
+                        "dependency '".concat(name.text,
+                                              "' is declared more than once in this scope"))
                 } else {
                     list_push(self.dependencies, UmsDependency {
                         scope: scope,
@@ -543,7 +539,7 @@ internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPat
             }
         } else {
             project.lowerError(diagnostics, block, "UMS2006",
-                strConcat(strConcat("unknown top-level block '", block.name), "'"))
+                "unknown top-level block '".concat(block.name, "'"))
         }
         i = i + 1
     }

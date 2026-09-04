@@ -1,0 +1,47 @@
+// An owned temporary handed to a call whose result cannot alias it -- the
+// regression guard for the argument-position release that used to be withheld
+// on the return's *kind*.
+//
+// `wrap(make())` returns a fresh `Box`. It cannot be the `String` it was handed:
+// different allocation, different type, and `wrap` keeps nothing. The release
+// was withheld anyway, because the third clause of codegen's `releaseTemps` read
+// "the result carries a pointer" -- true of every struct and every `ptr` -- and
+// this leaked **100 of 100** allocations under `--verify`.
+//
+// That clause was standing in for a case the points-to fact genuinely misses: a
+// callee returning a *view* of a parameter carries provenance rather than the
+// parameter's sites (SPEC 8.4), so `aif_fn_may_return_param` answers a truthful
+// no to a question that is not quite the one being asked. The view case now has
+// its own fact and the stand-in is gone. See
+// `aif/evidence/RESULTS-pointer-return-temporary.md`.
+//
+// The loop runs 100 times so the ledger reads as a rate rather than a single
+// allocation, which is what makes a partial regression visible.
+//
+// Asserted by `run_aif_verify_test`'s table. It lived under
+// `aif/evidence/xlang/` until that tree was superseded on 2026-09-03, where it
+// was built and run for its exit status -- which a leak of 100 of 100 does not
+// change, so the guard was watching nothing it could see.
+import std.io
+import std.string
+
+struct Box { n: Int }
+
+fn make() -> String { return "hello".concat(" world") }
+
+// Returns a freshly allocated Box. Its result cannot be the String argument --
+// different type, different allocation -- but the release of the temporary is
+// withheld on the broad "the result carries a pointer" test.
+fn wrap(s: String) -> Box {
+    return Box { n: strLength(s) }
+}
+
+fn main() -> Int {
+    let mut i = 0
+    while (i < 100) {
+        let b = wrap(make())
+        i = i + b.n - b.n + 1
+    }
+    println("done")
+    return 0
+}

@@ -35,7 +35,7 @@ private fn mapType(t: String) -> String {
 }
 
 private fn structTypeKey(name: String) -> String {
-    return strConcat("struct:", name)
+    return "struct:".concat(name)
 }
 
 internal fn isStructTypeKey(t: String) -> Bool {
@@ -87,7 +87,7 @@ internal fn structTypeName(t: String) -> String {
 
 private fn llvmTypeName(t: String) -> String {
     if (isStructTypeKey(t)) {
-        return strConcat("%", structTypeName(t))
+        return "%".concat(structTypeName(t))
     }
     return t
 }
@@ -337,7 +337,18 @@ internal fn scalarToSlot(storeType: String, value: String) -> String {
     // every container. Widening the pair into a slot is what `zext
     // %prismio.str to i64` was.
     if (storeType.equals("struct:prismio.str")) {
-        return ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 0))
+        // Through `str_own`, not a field read. A slot is one word and the
+        // container frees what it holds, so a short string -- twelve bytes in the
+        // pair, no address of its own -- has to be copied to the heap on the way
+        // in. A long one passes straight through and transfers ownership as
+        // before; the runtime tests the tag rather than the caller, because the
+        // copy is conditional and a select would run both arms.
+        let data = ir_get_temp_name(ir_str_data(value))
+        let word = ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 1))
+        ir_call_begin()
+        ir_call_arg("ptr", data)
+        ir_call_arg("i64", word)
+        return ir_get_temp_name(ir_call_end("ptr", "str_own"))
     }
     let pi = irPtrIntType()
 

@@ -29,7 +29,7 @@ impl Ord for Int {
 // the implementing type, so this and the block above declare the same shape.
 impl Ord for String {
     fn cmp(self, other: Self) -> Int {
-        return strCompare(self, other)
+        return self.compare(other)
     }
 }
 

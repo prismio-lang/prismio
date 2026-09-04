@@ -5,7 +5,7 @@
 // anything but a single hardcoded element type.
 //
 // **`cmp` returns an Int, not a three-valued enum**, and the reason is that every
-// caller of a comparison immediately branches on the sign. `strCompare` already
+// caller of a comparison immediately branches on the sign. `String.compare` already
 // answers this way, C's `qsort` comparator answers this way, and an enum would
 // mean a `match` at the innermost point of every sort. The contract is the usual
 // one: negative when `self` sorts first, zero when the two are equivalent,
@@ -127,11 +127,11 @@ impl Ord for Float {
     }
 }
 
-// Lexicographic by byte, which is what strCompare already does. `String ==`
-// compares pointers and is rejected by sema, so this is the only correct
-// spelling and not a convenience.
+// Lexicographic by byte, which is what `String.compare` already does. `==` on
+// two Strings is content equality via the `__builtin_string_eq` lowering, and
+// carries no ordering, so this is the only spelling of the order.
 impl Ord for String {
     fn cmp(self, other: Self) -> Int {
-        return strCompare(self, other)
+        return self.compare(other)
     }
 }

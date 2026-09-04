@@ -174,7 +174,7 @@ internal fn monoParamCount(params: String) -> Int {
     let mut i = 0
     let n = __builtin_string_len(params)
     while (i < n) {
-        if (strCharAt(params, i) == ',') { count = count + 1 }
+        if (params.charAt(i) == ',') { count = count + 1 }
         i = i + 1
     }
     return count
@@ -186,7 +186,7 @@ internal fn monoParamAt(params: String, index: Int) -> String {
     let mut i = 0
     let n = __builtin_string_len(params)
     while (i <= n) {
-        if (i == n or strCharAt(params, i) == ',') {
+        if (i == n or params.charAt(i) == ',') {
             if (seen == index) { return strSubstring(params, start, i - start) }
             seen = seen + 1
             start = i + 1
@@ -232,22 +232,22 @@ private fn monoAnnotationText(annotationPtr: Ptr) -> String {
     if (nodeIsNull(annotationPtr)) { return "" }
     let annotation = ptr_to_node(annotationPtr)
     if (annotation.i1 == 1) {
-        return strConcat(strConcat("[", monoAnnotationText(annotation.child1)), "]")
+        return "[".concat(monoAnnotationText(annotation.child1), "]")
     }
     let mut text = strClone(annotation.s1)
     if (annotation.i2 == 1) {
-        text = strConcat(text, "<")
+        text = text.concat("<")
         let mut argPtr = annotation.child1
         let mut first = true
         while (nodeExists(argPtr)) {
-            if (first == false) { text = strConcat(text, ", ") }
+            if (first == false) { text = text.concat(", ") }
             first = false
-            text = strConcat(text, monoAnnotationText(argPtr))
+            text = text.concat(monoAnnotationText(argPtr))
             argPtr = ptr_to_node(argPtr).next
         }
-        text = strConcat(text, ">")
+        text = text.concat(">")
     }
-    if (annotation.i3 == 1) { text = strConcat(text, "?") }
+    if (annotation.i3 == 1) { text = text.concat("?") }
     return text
 }
 
@@ -256,13 +256,13 @@ internal fn monoTraitRefText(traitRefPtr: Ptr) -> String {
     let traitRef = ptr_to_node(traitRefPtr)
     if (traitRef.i2 == 0) { return strClone(traitRef.s1) }
 
-    let mut text = strConcat(traitRef.s1, "<")
+    let mut text = traitRef.s1.concat("<")
     let mut argPtr = traitRef.child1
     let mut first = true
     while (nodeExists(argPtr)) {
-        if (first == false) { text = strConcat(text, ", ") }
+        if (first == false) { text = text.concat(", ") }
         first = false
-        text = strConcat(text, monoAnnotationText(argPtr))
+        text = text.concat(monoAnnotationText(argPtr))
         argPtr = ptr_to_node(argPtr).next
     }
 
@@ -273,13 +273,12 @@ internal fn monoTraitRefText(traitRefPtr: Ptr) -> String {
     let mut constraintPtr = traitRef.child2
     while (nodeExists(constraintPtr)) {
         let constraint = ptr_to_node(constraintPtr)
-        if (first == false) { text = strConcat(text, ", ") }
+        if (first == false) { text = text.concat(", ") }
         first = false
-        text = strConcat(text, strConcat(constraint.s1,
-                                         strConcat(" = ", monoAnnotationText(constraint.child1))))
+        text = text.concat(constraint.s1, " = ", monoAnnotationText(constraint.child1))
         constraintPtr = constraint.next
     }
-    return strConcat(text, ">")
+    return text.concat(">")
 }
 
 private fn monoTraitRefHasValidArity(module: ASTNode, traitRef: ASTNode) -> Bool {
@@ -480,9 +479,9 @@ let mut monoReportedBounds = ""
 let MONO_MAX_TYPE_DEPTH = 32
 
 private fn monoFirstReportOfBound(typeName: String, bound: String) -> Bool {
-    let marker = strConcat(strConcat("|", typeName), strConcat(":", strConcat(bound, "|")))
+    let marker = "|".concat(typeName, ":", bound, "|")
     if (strContains(monoReportedBounds, marker)) { return false }
-    monoReportedBounds = strConcat(monoReportedBounds, marker)
+    monoReportedBounds = monoReportedBounds.concat(marker)
     return true
 }
 
@@ -497,18 +496,22 @@ internal fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param:
     let boundText = monoTraitRefText(node_to_ptr(bound))
     if (nodeIsNull(node_to_ptr(traitDecl))) {
         if (monoFirstReportOfBound(argT.name, boundText)) {
-            semaErrorAt(at, strConcat(strConcat(diagQuote(boundText), " is not a trait, so `"),
-                                      strConcat(strConcat(param, ": "), strConcat(boundText, "` cannot be a bound"))))
+            semaErrorAt(at, diagQuote(boundText).concat(" is not a trait, so `",
+                                                        param,
+                                                        ": ",
+                                                        boundText,
+                                                        "` cannot be a bound"))
         }
         return false
     }
 
     if (monoChainLength(bound.child1) != monoParamCount(traitDecl.s2)) {
         if (monoFirstReportOfBound(argT.name, boundText)) {
-            semaErrorAt(at, strConcat(strConcat(diagQuote(bound.s1), " takes trait arguments <"),
-                                      strConcat(strConcat(traitDecl.s2,
-                                                ">, and the arguments in bound "),
-                                                strConcat(diagQuote(boundText), " do not match"))))
+            semaErrorAt(at, diagQuote(bound.s1).concat(" takes trait arguments <",
+                                                       traitDecl.s2,
+                                                       ">, and the arguments in bound ",
+                                                       diagQuote(boundText),
+                                                       " do not match"))
         }
         return false
     }
@@ -516,24 +519,28 @@ internal fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param:
     if (monoImplements(module, argT, bound)) { return true }
     if (monoFirstReportOfBound(argT.name, boundText) == false) { return false }
 
-    semaErrorAt(at, strConcat(strConcat(typeDisplay(argT), " does not implement "),
-                              diagQuote(boundText)))
+    semaErrorAt(at, typeDisplay(argT).concat(" does not implement ", diagQuote(boundText)))
     // A parameter the user never wrote is quoted the way they wrote it. `impl$0`
     // is T16's synthesised name for an argument-position `impl Trait`, and
     // naming it here would point at a declaration that does not appear in the
     // source. The bound is the same either way; only the spelling differs.
     if (strStartsWith(param, "opaque$")) {
-        diag_note(strConcat(strConcat(diagQuote(name), " promises it: the return type is written "),
-                            strConcat(strConcat("`impl ", boundText), "`")))
+        diag_note(diagQuote(name).concat(" promises it: the return type is written ",
+                                         "`impl ",
+                                         boundText,
+                                         "`"))
     } else if (strStartsWith(param, "impl$")) {
-        diag_note(strConcat(strConcat(diagQuote(name), " requires it: the parameter is written "),
-                            strConcat(strConcat("`impl ", boundText), "`")))
+        diag_note(diagQuote(name).concat(" requires it: the parameter is written ",
+                                         "`impl ",
+                                         boundText,
+                                         "`"))
     } else {
-        diag_note(strConcat(strConcat(diagQuote(name), " requires it: the type parameter is declared "),
-                            strConcat(strConcat(param, ": "), boundText)))
+        diag_note(diagQuote(name).concat(" requires it: the type parameter is declared ",
+                                         param,
+                                         ": ",
+                                         boundText))
     }
-    diag_note(strConcat(strConcat("write `impl ", boundText),
-                        strConcat(strConcat(" for ", argT.name), " { ... }`")))
+    diag_note("write `impl ".concat(boundText, " for ", argT.name, " { ... }`"))
     return false
 }
 
@@ -611,7 +618,7 @@ private fn monoMangledName(module: ASTNode, base: String, argsPtr: Ptr) -> Strin
     while (nodeExists(p)) {
         let arg = ptr_to_node(p)
         let argT = semaAnnotationType(module, arg)
-        name = strConcat(strConcat(name, monoSeparator()), semaMangleType(argT))
+        name = name.concat(monoSeparator(), semaMangleType(argT))
         p = arg.next
     }
     return name
@@ -666,9 +673,9 @@ internal fn monoAnnotationFromType(t: TypeInfo) -> ASTNode {
 // Names the parameters rather than counting them: the list says what to write,
 // where a count only says how many.
 private fn monoArityError(node: ASTNode, name: String, params: String) {
-    semaErrorAt(node, strConcat(strConcat(strConcat(
-        diagQuote(name), " takes type parameters <"), params),
-        ">, and the type arguments written here do not match"))
+    semaErrorAt(node, diagQuote(name).concat(" takes type parameters <",
+                                             params,
+                                             ">, and the type arguments written here do not match"))
 }
 
 // `Box<Int>` -> the name of an ordinary struct, instantiating it if this is the
@@ -855,7 +862,7 @@ internal fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, param
         // match whenever it had the same arity. `$` cannot occur in a source
         // identifier, so this prefix tests the constructor without trying to
         // parse type arguments back out of the mangled name.
-        let constructorPrefix = strConcat(tn.s1, monoSeparator())
+        let constructorPrefix = tn.s1.concat(monoSeparator())
         if (strStartsWith(actual.name, constructorPrefix) == false) {
             return ptr_to_node(ptr_null())
         }
@@ -1260,10 +1267,10 @@ private fn monoArgsTooDeep(at: ASTNode, name: String, argsPtr: Ptr) -> Bool {
     let mut p = argsPtr
     while (nodeExists(p)) {
         if (monoTypeDepth(p) > MONO_MAX_TYPE_DEPTH) {
-            semaErrorAt(at, strConcat(strConcat("instantiating ", diagQuote(name)),
-                        strConcat(" does not terminate: its type argument ",
-                                  strConcat(diagQuote(monoElide(monoAnnotationText(p))),
-                                            " grows at every step"))))
+            semaErrorAt(at, "instantiating ".concat(diagQuote(name),
+                                                    " does not terminate: its type argument ",
+                                                    diagQuote(monoElide(monoAnnotationText(p))),
+                                                    " grows at every step"))
             diag_note("a generic that instantiates itself with a larger type has no fixpoint; take the recursive argument by a type that does not grow")
             return true
         }
@@ -1273,12 +1280,12 @@ private fn monoArgsTooDeep(at: ASTNode, name: String, argsPtr: Ptr) -> Bool {
 }
 
 private fn monoSeparatorCount(name: String) -> Int {
-    let separator = strCharAt(monoSeparator(), 0)
+    let separator = monoSeparator().charAt(0)
     let mut count = 0
     let mut i = 0
     let n = __builtin_string_len(name)
     while (i < n) {
-        if (strCharAt(name, i) == separator) { count = count + 1 }
+        if (name.charAt(i) == separator) { count = count + 1 }
         i = i + 1
     }
     return count
@@ -1293,8 +1300,8 @@ private fn monoElide(text: String) -> String {
     let mut head = ""
     let mut i = 0
     while (i < 48) {
-        head = strConcat(head, strFromChar(strCharAt(text, i)))
+        head = head.concat(strFromChar(text.charAt(i)))
         i = i + 1
     }
-    return strConcat(head, "...")
+    return head.concat("...")
 }

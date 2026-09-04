@@ -5,7 +5,7 @@ import std.io
 import std.string
 
 fn main() -> Int {
-    let a = strConcat("ab", "cd")
+    let a = "ab".concat("cd")
     let b = a
     return __builtin_string_len(a)
 }

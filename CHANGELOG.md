@@ -13,6 +13,53 @@
   *copy* of the compiler — the ums, object-cache and cold-build fixtures all
   assert what a build does, and none of them survives being run by the binary
   under test.
+- `tools/run_suite.py --compiler` accepts a relative path. It resolved the
+  argument only for the banner, which reported it relative to the repository and
+  raised `ValueError` there before running anything — so the documented way to
+  test a compiler you just built failed on the spelling you would naturally use.
+- **The two ownership regression guards are back under `tests/`, and asserted
+  rather than merely run.** `pointer_return_temp.psm` and
+  `extern_alias_escape.psm` went with `aif/evidence/xlang/` when that tree was
+  superseded; `run_corpus_test` had built and run them for an exit status, which
+  neither defect changes — the first leaked 100 of 100 while exiting 0, the second
+  printed an empty line and exited 0 while double-owning a string.
+  `run_aif_verify_test`'s table reads their ledgers now. The corpus sweep is 8
+  sources and 7 runnable, down from 33 and 30, and its docstring says so.
+- **`PRISMIO_INLINE_ELEMS=0` is diagnosed, and the count that drifted is
+  explained.** Four fixtures fail under it, all leaks with no violations and
+  unchanged checksums. The fifth entry the list used to carry was never a gate
+  failure: `test_62_split_release` reads the same ledger with the gate on and off
+  on three compilers, including the one the original count was taken on. The
+  remaining four are one shape — the switch is a `getenv` read at run time, while
+  the element disposition, the arena placement and whether a site allocates at all
+  are compile-time decisions, so one binary is being asked to be correct under two
+  placements. See `aif/evidence/RESULTS-inline-elems-gate.md`.
+- **`strConcat`, `strCharAt`, `strSlice` and `strCompare` are gone from the
+  public API**, which finishes what `strEquals` started: no String operator now
+  lowers to a call on a prefixed library function. `+`, `s[i]`, `s[a..b]` and the
+  four orderings are rewritten into `concat`, `charAt`, `slice` and `compare` in
+  `impl String`, and those five carry the implementations. 797 call sites across
+  `src/`, `ums/` and `tests/` moved to the method spelling.
+
+  **Not a builtin, and the recorded reason for that was wrong twice over.** The
+  note in `src/aif/contracts.psm` said a producing builtin could not be expressed;
+  it can — `aifFfiProduces` answers return contracts and already serves
+  `list_new`, `soa` and `aos`. What actually forced the design is the pass-through
+  rule: a function whose `return` is another function's allocation gets its caller
+  no drop as soon as an argument is itself owned, so a method delegating to a
+  `str*` helper leaks both operands. Measured over 1,000 iterations of
+  `let t = f("a","b"); let u = f(t,"c")`: delegating reads **2,001 allocated / 1
+  released / 2,000 leaked**, owning the body reads **2,001 / 2,001 / 0**. The
+  obvious probe — literal arguments only — reads 1,001 / 1,001 / 0 either way and
+  says nothing. See `aif/evidence/RESULTS-string-operator-targets.md`.
+
+  Nested spines were flattened rather than transcribed, so `strConcat(strConcat(a,
+  b), c)` became `a.concat(b, c)` and not the chained form, which leaks worse than
+  the nest did. **297 intermediate allocations the compiler used to leak on itself
+  are no longer created.** `concat` gains three- to six-argument overloads for it.
+  `run_string_operator_ledger_test` asserts the fixture's `--verify` ledger,
+  because every value assertion in it passes against the leaking arrangement.
+
 - **`strEquals` is gone from the public API**; `a == b` and `a.equals(b)` are
   both valid and both correct. `==` no longer lowers to a call to a prefixed
   library function — it lowers to a new `__builtin_string_eq`, backed by the
@@ -77,6 +124,133 @@
   arguments participate in conformance, generic applicability, and coherence.
   Impl parameters may be constrained by the trait side (`impl<T> From<T> for
   String`), and arity mismatches receive declaration-directed diagnostics.
+
+### The String representation
+
+- **`String` is a German string.** The 16-byte `{ptr, i64}` pair now carries a tag
+  in bit 31 of its length word, and a tagged pair holds its bytes instead of an
+  address: 12 of them, in field 0 and the top half of field 1. This is the Umbra
+  layout (CIDR 2020) that Arrow, DuckDB, Velox and Polars call a StringView.
+
+  Sized from what this language actually allocates rather than from what libc++
+  chose. Histogramming `length` at `str_with_capacity` across
+  `prismio check src/main.psm` — 444,798 string allocations — puts **53.3% at four
+  bytes or fewer**, 74.6% at eight and 81.3% at twelve. libc++'s 22 reaches 96.5%
+  but costs a 24-byte string, and the traffic past twelve is mostly substrings,
+  which the storage classes this layout leaves room for can take to zero rather
+  than to inline.
+
+  `strSubstring` and `String.slice` take the short form whenever the result fits,
+  through a new `__builtin_string_inline`. On `tokenization` that is **every**
+  token: the workload's allocation count falls from 54,033 to 33 — C++, which has
+  been the thing to beat there, makes 29 — and the row runs **3.53x faster than
+  at the start of this work** (1,036,625 ns to 294,042 ns, median of 31
+  alternating runs), of which the recycler was 1.65x and this is 2.14x. Against
+  C++ it moves 3.88x → **1.10x**; against Rust 1.08x → **0.31x**.
+
+  Three things carry the change:
+
+  - The tag sits at **bit 31, not 63**, so the whole top half of the length word
+    stays data. At 63 the twelfth byte would have to share and the layout would
+    reach ~80% instead of 81.3%. It costs one `and` on `__builtin_string_len`.
+  - **The representation is resolved once per binding, not once per byte.** Which
+    half of the pair holds the bytes costs five instructions to ask, and asking
+    per character put all five inside every scan loop — LLVM unswitches a
+    one-site loop cleanly, which is why this looked fine in isolation, but
+    declines on a loop the size of `benchTokenization`'s. A `let` and a parameter
+    now resolve it where they are bound, which dominates every use, and a byte
+    read is the GEP and load it always was. Worth 234 us → 161 us on the scan
+    alone; `strCountOfChar` vectorises again (`dup.16b`, 64 bytes an iteration).
+    Immutable bindings only: a reassignment inside a loop would define the
+    replacement in a block that need not dominate a later use.
+    `ir_str_byte_at` stays as the fallback for every operand that is not a
+    binding, and reads the byte straight out of the pair rather than
+    materialising it.
+  - **A container slot still owns one word**, so a short string is copied to the
+    heap on the way into a list or a slice, through the runtime's new `str_own`.
+    Struct fields are unaffected: a String field already embeds the whole pair.
+
+  `--verify` is unchanged and every ledger balances; the seed was refreshed for
+  the new builtin, the compiler is at a fixpoint, and the suite is 285/285.
+
+  **One regression, and it is understood.** `string_search` reads **0.90x**. Its
+  inner loop calls `str_find_byte_pair`, and every foreign call still materialises
+  a `char*` — correctly, but once per call, and LLVM will not hoist the stores out
+  of the loop because it must assume the callee writes through the pointer it was
+  handed. RUNTIME.md's own contract table says otherwise: `borrow` means "the
+  callee reads the argument and does not retain it", which is precisely LLVM's
+  `readonly nocapture`. Lowering the contract to those attributes is the fix and
+  is not in this change. Of the other 33 workloads, two are faster, 30 are within
+  3%, and none is below 0.95x.
+
+  **What is left, measured.** Per 54,000-token pass: Prismio scans in 161 us
+  against C++'s 126 us and materialises its tokens in 134 us against 87 us. The
+  token half is one `bl _memcpy` per short string — a libc call for a copy of at
+  most twelve bytes, which the small-copy ladder musl and Folly both use would
+  remove (two overlapping 8-byte loads for 8..12, two 4-byte for 4..7, three
+  bytes below that; all in bounds because the source has `count` valid bytes).
+  Masking the length to a provable 15 first was tried and did not move the call.
+
+  **And the prefix is still unused.** The top 32 bits of a long string's length
+  word are reserved for it and hold nothing. Storing the first four bytes there
+  is what the layout is *for* on the comparison side: published microbenchmarks
+  put equality at 3-3.5x with the prefix enabled, short-circuiting ~95% of
+  comparisons before any dereference. Two equal short strings are already
+  bit-identical pairs — the buffer is zeroed before the copy precisely so that
+  holds — so `==` between two of them can be two integer compares and no call at
+  all.
+
+### Performance
+
+- **The runtime recycles small blocks, and codegen releases through it.**
+  `rt_base_alloc`/`rt_free` are functions rather than macros over `malloc`/`free`
+  now, and hold freed blocks of up to 128 bytes on eight size-class free lists;
+  `g_free_fn` in `runtime/llvm-api-backend.c` names `rt_free` so that a program's
+  releases and the runtime's own reach the same pool. **`tokenization` runs
+  1.77x faster** — 1,061,708 ns to 600,042 ns, median of 31 alternating runs —
+  which moves it from 3.93x of C++ to 2.22x, and from 1.10x of Rust to 0.62x.
+
+  The gap it closes was never in the generated code. With token materialisation
+  removed, the same scan runs in 148 us against clang -O3's 149 us; the 54 000
+  one-to-eight-byte tokens the workload cuts cost 54 033 mallocs against C++'s
+  29, because libc++ holds 22 bytes inline and never reaches the heap. `sample`
+  put 67% of the run inside libmalloc's free path and over half of *that* inside
+  `mach_absolute_time`, which macOS's allocator calls on every free.
+
+  Three things make it safe rather than clever. Buckets are recovered by asking
+  the allocator for the block's usable size, not from a header, so a block from
+  `rt_base_alloc` and a block from plain `malloc` stay interchangeable in both
+  directions. That query is not cheap — `malloc_size` measures ~14 ns — so the
+  held-block cap is tested *before* it, and a shape that gets nothing from the
+  pool (build a tree, free all of it at teardown) fills the cap in a few hundred
+  frees and skips the query for the rest. And the pool is used only while the
+  program is single-threaded: `prismio_task_spawn` publishes
+  `prismio_memory_threads_enable()` before the OS can run the new thread, so once
+  a second thread exists nothing touches it again.
+
+  `--verify` is unaffected: there the seam is still the two ledger macros, the
+  recycler is not compiled at all, and the same program reports the same
+  13502/13501 as before.
+
+  **The allocator half stays `malloc` deliberately.** Naming the seam there too
+  was tried and reverted: it buys nothing (`struct_creation` and
+  `transient_allocation` both 1.00x, because the allocations that benefit are
+  made inside the runtime, which already calls `rt_base_alloc` directly) and it
+  costs — `malloc` is a name LLVM's TargetLibraryInfo knows, so the call carries
+  `noalias` and `allocsize` for free, and `tree_traversal` measured 0.88x with
+  the swap against 1.00x without it.
+
+  Across all 34 implemented workloads, alternating against a compiler built from
+  the previous commit, no checksum moved. **One regression is real and one
+  workload wide:** `tree_traversal` reads 0.946x at both min and p10 over 61
+  paired runs. It builds 32 799 nodes and frees all of them at teardown with
+  nothing to reuse them, so every free pays the gate's load and branch and enters
+  the pool for none of it — about 1 ns per block, which is what the delta divides
+  out to. The other readings in that band are noise and were checked rather than
+  assumed: `fft` and `graph_bfs` first measured 0.958x and 0.997x, and they make
+  38 and 44 allocations in the whole run, so the recycler cannot be what moved
+  them; over 61 paired runs `fft` reads 1.003x. Treat +/-4% on a single pass of
+  this suite as the floor.
 
 ### Developer tooling
 

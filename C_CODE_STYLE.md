@@ -25,10 +25,18 @@ The seam is in [`prismio_runtime.h`](runtime/prismio_runtime.h):
 ```c
 #ifdef PRISMIO_AIF_VERIFY
 #define rt_base_alloc(n) aif_verify_alloc(n)
+#define rt_free(p)       aif_verify_release(p)
 #else
-#define rt_base_alloc(n) malloc(n)
+void* rt_base_alloc(size_t size);   // recycles small blocks; lang_runtime.c
+void  rt_free(void* p);
 #endif
 ```
+
+The ordinary branch is a pair of functions rather than macros over `malloc`/`free`
+because it recycles small blocks between them, and **`rt_free` is also the symbol
+codegen emits for every release** (`g_alloc_fn`/`g_free_fn` in
+`llvm-api-backend.c`). Both halves of that pairing have to name the seam: a
+release emitted as libc `free` hands the pool a block it never gets back.
 
 A bare `malloc` whose pointer is returned to Prismio does not leak. It reports as
 `release of a pointer that is not live` — a **violation**, which reads as

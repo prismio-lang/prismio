@@ -309,6 +309,24 @@ extern fn ir_undef(type: String) -> Int
 extern fn ir_insert_value(aggType: String, agg: String, value: String, valueType: String, index: Int) -> Int
 extern fn ir_extract_value(aggType: String, agg: String, index: Int) -> Int
 extern fn ir_const_str(globalName: String, length: Int) -> Int
+
+// The German-string pair, read and written.
+//
+// `ir_str_data` is the pointer half *canonicalised*: a short string keeps its
+// twelve bytes in the pair and has no address to give, so this materialises one.
+// Reading field 0 directly is only correct for a pair known to be the long form,
+// which since the representation landed is only a string literal.
+//
+// `ir_str_inline` is the producer: `count` bytes of `base` from `start`, held in
+// the pair, with no allocation and nothing to release. **The caller must have
+// established `count <= 12`** -- strSubstring in std/string.psm does, and takes
+// str_with_capacity otherwise.
+extern fn ir_str_data(value: String) -> Int
+// One byte, read from wherever the pair keeps it. Not `ir_str_data` plus a load:
+// materialising a short string to get a pointer puts three stores in the caller's
+// byte loop that LICM cannot lift, which measured 0.63x on `line_processing`.
+extern fn ir_str_byte_at(base: String, index: String) -> Int
+extern fn ir_str_inline(base: String, start: String, count: String) -> Int
 extern fn ir_global_str_var(name: String, strGlobal: String, length: Int)
 
 extern fn ir_load_ptr(type: String, ptrValue: String) -> Int
@@ -432,6 +450,13 @@ extern fn ir_get_var_slot(name: String borrow) -> String alias
 extern fn ir_var_is_global(name: String) -> Int
 extern fn ir_mark_mutable(name: String)
 extern fn ir_var_is_mutable(name: String) -> Int
+// The resolved byte pointer for a String binding: asked once where the binding
+// is made, so a byte loop does not ask per character. `-1` when the binding has
+// none -- a mutable one never does, because the value replacing it would be
+// defined in a block that need not dominate a later use.
+extern fn ir_set_var_data(name: String borrow , value: Int)
+extern fn ir_get_var_data(name: String borrow ) -> Int
+
 extern fn ir_clear_var_types()
 extern fn ir_clear_local_var_types()
 extern fn ir_set_returned()

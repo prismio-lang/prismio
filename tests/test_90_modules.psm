@@ -25,7 +25,7 @@ fn fail(message: String) -> Int {
 // A local function with the same name as one in `utils`. Unqualified, this one
 // wins for these argument types; qualified, `utils.add` is reachable anyway.
 fn add(a: String, b: String) -> String {
-    return strConcat(a, b)
+    return a.concat(b)
 }
 
 fn main() -> Int {

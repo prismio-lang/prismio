@@ -412,10 +412,17 @@ def run_corpus_test():
     Building is not enough -- the failure was at run time -- so each program is
     executed and its exit status checked. `g6_engine` and `g6_engine_tuned` are
     library modules with no `main` and never link; they are skipped by name rather
-    than by tolerating link failures generally. That is **three files, not two**:
-    `g6_engine.psm` exists in both roots. 33 sources, 3 skipped, 30 run -- and the
-    count is printed rather than asserted, because a corpus that grows should not
-    need a test edit to stay green.
+    than by tolerating link failures generally. 8 sources, 1 skipped, 7 run -- and
+    the count is printed rather than asserted, because a corpus that grows should
+    not need a test edit to stay green.
+
+    **This is what is left of a 33-program sweep**, and the shrinkage is not a loss
+    of guard coverage. `aif/evidence/xlang/prismio` held 25 of them and was
+    superseded by `benchmarks/` on 2026-09-03; the two files in it that were
+    *regression guards* rather than benchmarks -- `pointer_return_temp.psm` and
+    `extern_alias_escape.psm` -- are under `tests/` now and are asserted by
+    `run_aif_verify_test`, which reads their ledgers. Being run here never checked
+    either defect: both exit 0 while failing.
     """
     print(f"\n{BLUE}--- Running corpus ---{RESET}")
 
@@ -5104,6 +5111,12 @@ def run_aif_drop_emission_test():
     `explicit` keeps its `free`, and that is not incidental either: an explicitly
     dropped value is barred from the arena, because `drop` emits a deallocator
     call and an arena pointer is not something a deallocator can take.
+
+    The deallocator is spelled `rt_free` rather than `free` since the small-block
+    recycler landed (lang_runtime.c): codegen emits the runtime's seam so that a
+    program's releases and the runtime's own reach the same pool. That is the
+    second time the *mechanism* moved without the counts moving, which is the
+    property this test exists to hold on to.
     """
     print(f"\n{BLUE}--- Running aif_drop_emission ---{RESET}")
     fixture = TEST_DIR / "test_43_aif_scope_drop.psm"
@@ -5121,7 +5134,7 @@ def run_aif_drop_emission_test():
         if m:
             current = m.group(1)
             counts.setdefault(current, {"free": 0, "pop": 0, "push": 0})
-        elif current and re.search(r"call void @free\(", line):
+        elif current and re.search(r"call void @rt_free\(", line):
             counts[current]["free"] += 1
         elif current and re.search(r"call void @arena_pop\(", line):
             counts[current]["pop"] += 1
@@ -5318,7 +5331,7 @@ def run_aif_struct_field_test():
         if line.startswith("define ") or line == "}":
             current = None
             continue
-        if re.search(r"call void @free\(", line):
+        if re.search(r"call void @rt_free\(", line):
             bodies[current]["free"] += 1
         elif re.search(r"call void @list_release\(", line):
             bodies[current]["list"] += 1
@@ -5626,6 +5639,24 @@ def run_aif_verify_test():
         # to make call-site bracketing decline, and without them no arena leaves
         # anything for this to own.
         "owned_temporary_argument": 0,
+        # The two guards that came back from `aif/evidence/xlang/` when that tree
+        # was superseded on 2026-09-03. **They are asserted here rather than run
+        # by the corpus test, and that is a promotion**: the corpus checks an exit
+        # status, and neither defect changes one. `pointer_return_temp` leaked
+        # 100 of 100 while exiting 0; `extern_alias_escape` printed an empty line
+        # and exited 0 while double-owning a string.
+        #
+        # `wrap(make())` returns a fresh `Box` that cannot be the `String` it was
+        # handed, so the argument-position release must fire. A rise to 100 is the
+        # kind test coming back -- codegen withholding the release for any result
+        # that carries a pointer. See RESULTS-pointer-return-temporary.md.
+        "pointer_return_temp": 0,
+        # `let t = make(); let x = <extern alias>(t); return x`. **Read
+        # `violations` here, not `leaked`**: the defect was one allocation with two
+        # owners, which reports as `release of a pointer that is not live` rather
+        # than as a leak, and the loop above fails the fixture on any violation.
+        # See RESULTS-extern-alias-escape.md.
+        "extern_alias_escape": 0,
     }
 
     exe = TEST_DIR / "aif_verify_probe.exe"
@@ -6142,6 +6173,77 @@ def run_task_release_test():
 
     print(f"{GREEN}[PASS] task release: emitted where the join is proved, "
           f"withheld for a copied handle and an unprovable join{RESET}")
+    return True
+
+
+def run_string_operator_ledger_test():
+    """The String operators lower to methods that own their allocations.
+
+    `a + b`, `s[i]`, `s[a..b]` and the four orderings are rewritten in
+    src/sema/checker.psm into `concat`, `charAt`, `slice` and `compare`. Those
+    five carry their bodies in `impl String` rather than delegating to a `str*`
+    free function, and that is load-bearing rather than tidy: a function whose
+    `return` is another function's allocation is a pass-through, so its caller
+    gets no drop as soon as an argument is itself owned -- the callee's one site
+    is then in the return's points-to set and in the parameter's at once.
+
+    **Nothing else in the suite can see a regression to delegation.** It
+    type-checks, it answers the same strings, and every value assertion in
+    test_91 still passes; only the ledger moves. Measured on a 1,000-iteration
+    `let t = f("a","b"); let u = f(t,"c")`: delegating reads 2,001 allocated /
+    1 released / 2,000 leaked, owning the body reads 2,001 / 2,001 / 0.
+
+    The fixture is ledger-clean by construction -- every owned result in it is
+    bound -- so `released == allocated` is the whole assertion, and the
+    owned-left-operand lines are the ones that would break. Asserted rather than
+    stated in a comment, because a comment is not a check.
+    """
+    print(f"\n{BLUE}--- Running string_operator_ledger ---{RESET}")
+
+    fixture = TEST_DIR / "test_91_string_ergonomics.psm"
+    with tempfile.TemporaryDirectory(prefix="prismio-string-ledger-") as td:
+        exe = os.path.join(td, "t91")
+        built = run_command([str(PRISMIO_EXE), "build", str(fixture),
+                             "--verify", "-o", exe])
+        if built.returncode != 0 or not os.path.exists(exe):
+            print(f"{RED}[FAIL] string operator ledger: the --verify build failed{RESET}")
+            print(f"{built.stdout}\n{built.stderr}"[:1200])
+            return False
+
+        ran = run_command([exe])
+        text = f"{ran.stdout}\n{ran.stderr}"
+        m = re.search(r"aif-verify:\s+(\d+) allocated,\s+(\d+) released,"
+                      r"\s+(\d+) leaked,\s+(\d+) violation", text)
+        if not m:
+            print(f"{RED}[FAIL] string operator ledger: no aif-verify ledger line, "
+                  f"so nothing was asserted{RESET}")
+            print(text[:1200])
+            return False
+
+        allocated, released, leaked, violations = (int(g) for g in m.groups())
+        # A ledger of nothing balances trivially. The fixture allocates through
+        # every one of the five, so a count this low means it stopped exercising
+        # them and the balance below proves nothing.
+        if allocated < 20:
+            print(f"{RED}[FAIL] string operator ledger: only {allocated} allocation(s), "
+                  f"so the fixture is no longer exercising the operators and a "
+                  f"balanced ledger says nothing{RESET}")
+            return False
+        if violations != 0:
+            print(f"{RED}[FAIL] string operator ledger: {violations} violation(s) -- "
+                  f"corruption, not a leak{RESET}")
+            return False
+        if leaked != 0 or released != allocated:
+            print(f"{RED}[FAIL] string operator ledger: {allocated} allocated, "
+                  f"{released} released, {leaked} leaked. An operator's lowering "
+                  f"target stopped owning its result -- check that `concat`, "
+                  f"`slice`, `charAt` and `compare` in std/string.psm still carry "
+                  f"their bodies instead of delegating to a `str*` function{RESET}")
+            return False
+
+    print(f"{GREEN}[PASS] string operator ledger: {allocated} allocated, "
+          f"{released} released, 0 leaked, 0 violations -- the five lowering "
+          f"targets own what they return{RESET}")
     return True
 
 
@@ -6715,6 +6817,11 @@ def main():
         failed += 1
 
     if run_task_release_test():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_string_operator_ledger_test():
         passed += 1
     else:
         failed += 1

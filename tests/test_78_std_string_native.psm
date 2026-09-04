@@ -4,12 +4,12 @@
 import std.string
 
 fn main() -> Int {
-    if (strCharAt("abc", 1) != 'b') { return 1 }
-    if (strCharAt("abc", 9) != '\0') { return 2 }
+    if ("abc".charAt(1) != 'b') { return 1 }
+    if ("abc".charAt(9) != '\0') { return 2 }
     if ("same".equals("same") == false) { return 3 }
     if ("same".equals("some")) { return 4 }
-    if (strCompare("abc", "abd") >= 0) { return 5 }
-    if (strCompare("abc", "ab") <= 0) { return 6 }
+    if ("abc".compare("abd") >= 0) { return 5 }
+    if ("abc".compare("ab") <= 0) { return 6 }
 
     let empty = strEmpty()
     if (strLength(empty) != 0) { return 7 }
@@ -19,7 +19,7 @@ fn main() -> Int {
     if (one.equals("Q") == false) { return 9 }
     let nul = strFromChar('\0')
     if (strLength(nul) != 0) { return 25 }
-    let joined = strConcat("left", "right")
+    let joined = "left".concat("right")
     if (joined.equals("leftright") == false) { return 10 }
 
     let slice = strSubstring("abcdef", 2, 3)

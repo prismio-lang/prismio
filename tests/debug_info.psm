@@ -77,7 +77,7 @@ fn scaled(r: Reading) -> Float {
 
 fn describe(r: Reading, prefix: String) -> String {
     let body = r.label
-    return strConcat(prefix, body)        // MARK describe-return
+    return prefix.concat(body)        // MARK describe-return
 }
 
 fn checkpointTotal(c: Checkpoint) -> I64 {
@@ -109,7 +109,7 @@ fn channelOf(pr: Probe) -> Int {
 fn scopeExit(prefix: String, flag: Bool) -> Int {
     let mut n = 0
     if (flag) {
-        let inner = strConcat(prefix, "!")
+        let inner = prefix.concat("!")
         n = 1
     }                                     // CLOSE scope-inner
     println(prefix)                       // MARK scope-call

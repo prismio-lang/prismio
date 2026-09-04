@@ -71,8 +71,9 @@ impl UmsProjectModel {
         if (exists == false) {
             umsDiagnosticAdd(diagnostics, "UMS2210", self.manifestPath,
                 dependency.line, dependency.col, dependency.len,
-                strConcat(strConcat(strConcat("path dependency '", dependency.name),
-                                     "' does not name a directory: "), candidate))
+                "path dependency '".concat(dependency.name,
+                                           "' does not name a directory: ",
+                                           candidate))
             return UmsResolution {
                 name: strClone(dependency.name),
                 scope: umsDependencyScopeName(dependency.scope),
@@ -101,9 +102,11 @@ impl UmsProjectModel {
                                 diagnostics: List<UmsDiagnostic>) -> UmsResolution {
         umsDiagnosticAdd(diagnostics, "UMS2211", self.manifestPath,
             dependency.line, dependency.col, dependency.len,
-            strConcat(strConcat(strConcat("no registry is configured, so '", dependency.name),
-                                 "' cannot be fetched; give it a local path as a third argument: "),
-                       strConcat(strConcat("implementation(\"", dependency.name), "\", \"...\", \"../path\")")))
+            "no registry is configured, so '".concat(dependency.name,
+                                                     "' cannot be fetched; give it a local path as a third argument: ",
+                                                     "implementation(\"",
+                                                     dependency.name,
+                                                     "\", \"...\", \"../path\")"))
         return UmsResolution {
             name: strClone(dependency.name),
             scope: umsDependencyScopeName(dependency.scope),
@@ -137,27 +140,26 @@ impl UmsProjectModel {
     // diffed in review -- a format that reorders or reflows on write produces a diff
     // nobody can read, which is how a lockfile stops being checked.
          fn lockfileContents(self, resolutions: List<UmsResolution>) -> String {
-        let mut out = strConcat(strConcat("# prismio lockfile v", umsLockfileVersion()),
-                                 "\n# generated from ")
-        out = strConcat(out, self.manifestPath)
-        out = strConcat(out, "\n# scope\tname\tconstraint\tsource\tresolved\n")
+        let mut out = "# prismio lockfile v".concat(umsLockfileVersion(), "\n# generated from ")
+        out = out.concat(self.manifestPath)
+        out = out.concat("\n# scope\tname\tconstraint\tsource\tresolved\n")
 
         let mut i = 0
         while (i < list_len(resolutions)) {
             let r = list_get(resolutions, i)
-            let mut row = strConcat(r.scope, "\t")
-            row = strConcat(row, strConcat(r.name, "\t"))
-            row = strConcat(row, strConcat(r.constraint, "\t"))
-            row = strConcat(row, strConcat(r.source, "\t"))
+            let mut row = r.scope.concat("\t")
+            row = row.concat(r.name, "\t")
+            row = row.concat(r.constraint, "\t")
+            row = row.concat(r.source, "\t")
             // An unresolved dependency is written as "-" rather than omitted, so the
             // row count matches the manifest and a failed fetch is visible in the
             // diff instead of absent from it.
             if (r.ok) {
-                row = strConcat(row, r.resolved)
+                row = row.concat(r.resolved)
             } else {
-                row = strConcat(row, "-")
+                row = row.concat("-")
             }
-            out = strConcat(out, strConcat(row, "\n"))
+            out = out.concat(row, "\n")
             i = i + 1
         }
         return out

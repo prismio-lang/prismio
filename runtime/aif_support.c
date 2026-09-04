@@ -373,6 +373,11 @@ typedef struct {
     int hot_count;
     int no_split;
     int no_split_unmodelled;
+    // A pointer-free List element whose complete row is consumed by at least
+    // one sequential traversal. Splitting would turn one contiguous body block
+    // into two allocations per element. A force may override this performance
+    // guard; unlike no_split, it is not a soundness restriction.
+    int no_split_list_full_scan;
     Bits hot;
 } Nominal;
 
@@ -433,6 +438,7 @@ static int nominal_intern(const char* name, int is_enum) {
     t->hot_count = 0;
     t->no_split = 0;
     t->no_split_unmodelled = 0;
+    t->no_split_list_full_scan = 0;
     t->hot.w = NULL;
     t->hot.nwords = 0;
     nominal_index_put(t->name, nominal_count);
@@ -1391,6 +1397,48 @@ void aif_layout_no_split_unmodelled(const char* type) {
     if (id >= 0) nominals[id].no_split_unmodelled = 1;
 }
 
+static int has_sequential_traversal(int id);
+
+// True only when one proven sequential traversal reads/writes every field of
+// the row. Requiring one complete traversal, rather than unioning fields across
+// unrelated loops, is the conservative distinction the blanket List-element
+// veto lacked: a narrow hot scan such as g4_tuned's one-field Sprite loop keeps
+// its split, while BenchMemoryParticle's five-field mutation loop exposes that
+// boxing the row buys no streaming reduction.
+int aif_layout_all_fields_sequential(const char* type) {
+    int id = nominal_find(type);
+    if (id < 0) return 0;
+    Nominal* t = &nominals[id];
+    for (int i = 0; i < traversal_count; i++) {
+        Traversal* tr = &traversals[i];
+        if (tr->type != t->name || !tr->sequential) continue;
+        int complete = 1;
+        for (int f = 0; f < t->nfields; f++) {
+            if (!bits_test(&tr->touched, f)) { complete = 0; break; }
+        }
+        if (complete) return 1;
+    }
+    return 0;
+}
+
+void aif_layout_no_split_list_full_scan(const char* type) {
+    int id = nominal_find(type);
+    if (id >= 0) nominals[id].no_split_list_full_scan = 1;
+}
+
+const char* aif_layout_veto_reason(const char* type) {
+    int id = nominal_find(type);
+    if (id < 0) return "";
+    Nominal* t = &nominals[id];
+    if (t->no_split) return "split is unsafe for an inline-contained type";
+    if (bits_test(&t->reaches, id)) return "split is unsafe for a cyclic type";
+    if (t->no_split_list_full_scan)
+        return "kept flat: a List traversal consumes the complete row";
+    if (t->no_split_unmodelled) return "split cost is not modelled for an inline field";
+    if (!has_sequential_traversal(id)) return "no sequential traversal evidence";
+    return "";
+}
+
 // Veto 4's test. `sequential` is set by aif_traversal_elem when a loop binds a
 // container element -- `let p = list_get(ps, i)` -- which is exactly the shape
 // layout_repr.c measured and the only shape the 0.87x is evidence for.
@@ -1413,6 +1461,7 @@ static int split_admissible(int id, int forced) {
     if (t->no_split) return 0;                     // veto 1, and veto 2 via the frontend
     if (bits_test(&t->reaches, id)) return 0;      // veto 2
     if (forced) return 1;
+    if (t->no_split_list_full_scan) return 0;      // container representation cost
     if (t->no_split_unmodelled) return 0;          // veto 5
     if (!has_sequential_traversal(id)) return 0;   // veto 4
     return 1;
@@ -5842,7 +5891,7 @@ static int elem_disposition_of(int id, int tier) {
     // property of the *binding*. The two coincided only while `std.string` was
     // C: an opaque `extern fn str_concat` gave every call site its own
     // extern-alloc value. Native `std` routes them all through the one
-    // `str_with_capacity` inside `strConcat`, so a single site now backs every
+    // `str_with_capacity` inside `String.concat`, so a single site now backs every
     // string binding in the program -- and one `drop(x)` anywhere returned
     // AIF_ELEM_NONE for all of them, cancelling the release of every other
     // binding and leaking each one. KNOWN_ISSUES.md carries the shape.

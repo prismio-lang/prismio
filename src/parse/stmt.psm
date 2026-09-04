@@ -93,8 +93,7 @@ private fn parseRegionStatement(p: Parser) -> ASTNode {
         regionNode.s1 = name.value
         p.advance()
     } else {
-        p.fatal(strConcat("expected a name for the region, found ",
-                                   parserDescribe(name)))
+        p.fatal("expected a name for the region, found ".concat(parserDescribe(name)))
     }
 
     // REQUIREMENTS 19. `region work pin(4096) { … }` asserts a byte cap on what
@@ -110,7 +109,7 @@ private fn parseRegionStatement(p: Parser) -> ASTNode {
         p.expectVal(TokenType.SEPARATOR, "(", "region budget")
         let cap = p.current()
         if (cap.type != TokenType.NUMBER_LITERAL) {
-            p.fatal(strConcat("expected a byte budget, found ", parserDescribe(cap)))
+            p.fatal("expected a byte budget, found ".concat(parserDescribe(cap)))
         }
         regionNode.i1 = optionOr(strParseInt(cap.value), 0)
         p.advance()
@@ -202,8 +201,8 @@ private fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: To
 
     if (target.kind != NodeKind.IDENTIFIER_EXPR) {
         diag_error_at_code("P3302", target.file, target.line, target.col, target.len,
-            strConcat(strConcat("compound assignment ", diagQuote(operatorToken.value)),
-                       " requires a plain variable on the left"))
+            "compound assignment ".concat(diagQuote(operatorToken.value),
+                                          " requires a plain variable on the left"))
         diag_note("the desugaring names the target twice, so a subexpression here would be evaluated twice; write the assignment out in full instead")
         diag_finish()
         exit(1)

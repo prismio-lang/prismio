@@ -17,7 +17,7 @@ import std.string
 // ---------------------------------------------------------------------------
 
 private fn semaAnnotationHas(encoded: String, name: String) -> Bool {
-    return strContains(encoded, strConcat(name, " "))
+    return strContains(encoded, name.concat(" "))
 }
 
 // The `pin:` argument used to be read back out here, by a copy of the three
@@ -48,7 +48,7 @@ internal fn semaCheckAnnotations(stmt: ASTNode, varT: TypeInfo) {
         // A Copyable value has no ownership to be unique about, so the axiom
         // asserts nothing and would silently do nothing.
         if (typeIsMoveOnly(varT) == false and typeIsValid(varT)) {
-            semaWarningAt(stmt, strConcat("`unique` has no effect on ", typeDisplay(varT)))
+            semaWarningAt(stmt, "`unique` has no effect on ".concat(typeDisplay(varT)))
             diag_note("only owned values -- structs, strings and lists -- carry an aliasing fact")
         }
     }
@@ -107,9 +107,8 @@ private fn semaAnnotationTypeOf(module: ASTNode, tn: ASTNode) -> TypeInfo {
         let inner = semaAnnotationInner(module, tn)
         if (typeCanBeOptional(inner) == false) {
             if (typeIsValid(inner)) {
-                semaErrorAt(tn, strConcat(strConcat("only a reference can be optional, and ",
-                                                        typeDisplay(inner)),
-                                             " is not one"))
+                semaErrorAt(tn, "only a reference can be optional, and ".concat(typeDisplay(inner),
+                                                                                " is not one"))
             }
             return inner
         }
@@ -202,7 +201,7 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     if (semaHasEnum(module, tn.s1)) { return typeEnum(tn.s1) }
     if (semaHasStruct(module, tn.s1)) { return typeStruct(tn.s1) }
 
-    semaErrorAt(tn, strConcat("unknown type ", diagQuote(tn.s1)))
+    semaErrorAt(tn, "unknown type ".concat(diagQuote(tn.s1)))
     return typeInvalid()
 }
 
@@ -281,8 +280,9 @@ internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: St
         i = i + 1
     }
 
-    semaErrorAt(at, strConcat(strConcat("struct ", diagQuote(structName)),
-                                 strConcat(" has no field ", diagQuote(fieldName))))
+    semaErrorAt(at, "struct ".concat(diagQuote(structName),
+                                     " has no field ",
+                                     diagQuote(fieldName)))
     return typeInvalid()
 }
 

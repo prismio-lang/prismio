@@ -156,9 +156,11 @@ impl Parser {
     internal fn expectToken(self, t: TokenType, context: String) {
         if (self.check(t) == false) {
             let tok = self.current()
-            self.fatal(strConcat(strConcat(strConcat("expected ", typeToString(t)),
-                         strConcat(" in ", context)),
-                         strConcat(", found ", parserDescribe(tok))))
+            self.fatal("expected ".concat(typeToString(t),
+                                          " in ",
+                                          context,
+                                          ", found ",
+                                          parserDescribe(tok)))
         }
         self.advance()
     }
@@ -166,9 +168,11 @@ impl Parser {
     internal fn expectVal(self, t: TokenType, val: String, context: String) {
         if (self.checkVal(t, val) == false) {
             let tok = self.current()
-            self.fatal(strConcat(strConcat(strConcat("expected ", diagQuote(val)),
-                         strConcat(" in ", context)),
-                         strConcat(", found ", parserDescribe(tok))))
+            self.fatal("expected ".concat(diagQuote(val),
+                                          " in ",
+                                          context,
+                                          ", found ",
+                                          parserDescribe(tok)))
         }
         self.advance()
     }
@@ -220,8 +224,7 @@ impl Parser {
     private fn parseModuleSegment(self) -> String {
         let segment = self.current()
         if (segment.type != TokenType.IDENTIFIER and segment.type != TokenType.KEYWORD) {
-            self.fatal(strConcat("expected a module name after `import`, found ",
-                                       parserDescribe(segment)))
+            self.fatal("expected a module name after `import`, found ".concat(parserDescribe(segment)))
         }
         self.advance()
         return segment.value
@@ -258,7 +261,7 @@ impl Parser {
                 importNode.i1 = 1
                 break
             }
-            importNode.s1 = strConcat(strConcat(importNode.s1, "."), parseModuleSegment(self))
+            importNode.s1 = importNode.s1.concat(".", parseModuleSegment(self))
         }
 
         importNode.len = endCol - importNode.col

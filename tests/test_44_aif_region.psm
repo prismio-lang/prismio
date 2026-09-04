@@ -13,7 +13,7 @@
 import std.io
 // Deliberately an extern rather than `std.string`: an opaque extern gives this
 // function its own allocation site, and the AIF facts asserted below are
-// per-site. Native `strConcat` shares one site across every caller.
+// per-site. Native `concat` shares one site across every caller.
 extern fn str_concat(s1: String, s2: String) -> String
 extern fn arena_objects() -> Int
 extern fn arena_regions() -> Int

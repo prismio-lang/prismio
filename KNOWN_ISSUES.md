@@ -8,13 +8,17 @@ Detail for any of these — the reproducer, what was tried, what was refuted —
 in `git log`, which is where this project keeps its record. Commit messages carry
 their own evidence.
 
-**Paths under `aif/evidence/xlang/` named below no longer exist.** That tree was
-superseded by `benchmarks/` and `prismio bench` on 2026-09-03 and removed; the
-sources are recoverable from Git history. Two entries name a file there as their
-*regression guard* — `pointer_return_temp.psm` and `extern_alias_escape.psm` —
-and those guards went with it. Neither issue changed; what changed is that
-nothing in the tree now watches them, so re-express them under `tests/` before
-relying on either being caught.
+**Paths under `aif/evidence/xlang/` no longer exist.** That tree was superseded
+by `benchmarks/` and `prismio bench` on 2026-09-03 and removed; the sources are
+recoverable from Git history. The two files in it that were *regression guards*
+rather than benchmarks are back under `tests/` and are stronger there than they
+were: `run_corpus_test` built and ran them for an exit status, and neither defect
+changes one — `pointer_return_temp` leaked 100 of 100 while exiting 0, and
+`extern_alias_escape` printed an empty line and exited 0 while double-owning a
+string. `run_aif_verify_test`'s table now reads their ledgers instead.
+
+The other 25 were benchmark programs and their coverage is genuinely thinner: the
+corpus sweep is 8 sources and 7 runnable, down from 33 and 30.
 
 ## Ownership
 
@@ -64,8 +68,8 @@ where the result provably could not alias the argument. The kind test was
 standing in for the case the points-to fact misses — a callee returning a *view*
 of a parameter, which carries provenance rather than sites — and that case now
 has its own fact, `aif_fn_may_return_view_of_param`. Guard:
-`aif/evidence/xlang/prismio/pointer_return_temp.psm`. See
-`aif/evidence/RESULTS-pointer-return-temporary.md`.
+`tests/pointer_return_temp.psm`, asserted at 0 leaked by
+`run_aif_verify_test`. See `aif/evidence/RESULTS-pointer-return-temporary.md`.
 
 **An escape through an `extern` declared `alias` was unsoundness, and is
 fixed.** A foreign function declared `alias` that returns its argument was not
@@ -76,8 +80,9 @@ now reads the **declared** return contract as well as asking
 `aif_fn_may_return_param` — a written `alias` is a stated fact about one
 function, where an unknown symbol is an abstention about all of them, which is
 why the neighbouring predicate must still answer no for the latter.
-`aif/evidence/xlang/prismio/extern_alias_escape.psm` is the regression guard and
-is run by `run_corpus_test` and the `--verify` sweep. See
+`tests/extern_alias_escape.psm` is the regression guard, and the number to read
+on it is `violations` rather than `leaked`: the defect was one allocation with two
+owners. `run_aif_verify_test` fails on any violation. See
 `aif/evidence/RESULTS-extern-alias-escape.md`.
 
 **A self-recursive producer leaked everything it built, and it is fixed.** A
@@ -123,6 +128,31 @@ recursion for earlier self fields. The same discriminator exits normally at
 stack bound through their non-tail branches; removing that requires an explicit
 worklist. See `aif/evidence/RESULTS-recursive-release-depth.md`.
 
+**A function cannot state that its return is its own allocation, and the
+workaround is to write the body twice.** `f(a, b) { return g(a, b) }` gets its
+caller no drop as soon as an argument is itself owned. A site is per function, so
+`f`'s return points at `g`'s one site, and passing a previous `f` result back in
+puts that same site in `f`'s parameter set; `fn_may_return_param` intersects the
+two, answers yes, and both operands leak.
+
+Measured over 1,000 iterations of `let t = f("a","b"); let u = f(t,"c")`, on the
+0.1 compiler: delegating reads **2,001 allocated / 1 released / 2,000 leaked**,
+and a version of `f` that allocates in its own body reads **2,001 / 2,001 / 0**.
+Free function or method makes no difference; builtin or native makes no
+difference. **The obvious probe does not see it** — with only literal arguments
+there is nothing in the parameter set to intersect, and both forms read
+1,001 / 1,001 / 0.
+
+This is why `std/string.psm` writes `strToUpper` and `strToLower` out twice, and
+why the five String operator targets carry their bodies rather than delegating
+(`aif/evidence/RESULTS-string-operator-targets.md`). `produce` says exactly this
+at the FFI boundary and has no native spelling. Closing it is either a return
+contract on `fn` — frontend syntax, so a seed refresh — or narrowing
+`fn_may_return_param` from a points-to intersection to a flow question: does any
+`return` derive from a parameter. The second is better and more dangerous, since
+this predicate is what stops a caller freeing a value it does not own, so a wrong
+narrowing is a double free rather than a leak.
+
 **UMS resolution releases nothing it allocates.** Not unsoundness — `violations`
 is 0 either side — but a real regression in allocation hygiene. The recorded fix
 moves the ledger by zero; the real shape is about eight lines, and the clause to
@@ -151,10 +181,25 @@ namespacing (v0.1 3.5), after which these become `string.isDigit`. Until then th
 are supported.
 
 A weaker alternative worth considering: let a user definition shadow a
-standard-library method of the same signature rather than collide with it. Nothing
-in `std` calls the unprefixed names — the methods delegate to the prefixed
-bodies — so shadowing would be safe, but it is a language semantics change and has
-not been made.
+standard-library method of the same signature rather than collide with it. It is a
+language semantics change and has not been made, and it is **no longer free**: it
+used to be safe because nothing in `std` called the unprefixed names, and five of
+them now carry the implementation rather than delegating.
+
+**Five of these names cannot be given up, and that is new.** `equals`, `concat`,
+`slice`, `charAt` and `compare` are what the String operators lower to, so a
+program that defines `fn concat(a: String, b: String) -> String` collides with the
+target of its own `+`. The prefixed spelling is not an escape any more — those
+five have no `str*` twin left. Namespacing is what fixes this too, and until then
+they are the smallest set of reserved unprefixed names the operator surface can
+have.
+
+**`strLength` is the sixth lowering target and is still a prefixed public name.**
+`for c in s` rewrites to a range loop over `strLength(s)`, so it is a compiler
+contract exactly as the other five were. It is left deliberately rather than
+overlooked: nothing forces it out, because `strLength` is not being removed and
+`s.length` already reads as a property. Moving it is the same one-word change in
+`semaForEachDesugar` plus a probe rename, whenever the prefix goes.
 
 **Scalar-element lists are inline now, and the read regression is closed.**
 `inlineElemSizeOfList` used to answer 0 for any element type that was not a
@@ -223,18 +268,52 @@ versioning result. `!invariant.load` on the `List` header is still **unsound**
 because `list_push` rewrites it. See `aif/evidence/RESULTS-flat-list-view.md`
 and `aif/evidence/RESULTS-loop-unswitch.md`.
 
-**Four tests fail under `PRISMIO_INLINE_ELEMS=0`.** The boxed fallback is
-correct — checksums agree with it set — but the suite reports 279/283 rather
-than 283/283: an allocation ledger that releases 0 of 1784, DataView conversion
-invariants, generic layout specialization, and a `--verify` fact. They reproduce
-identically on `build/unswitch-gen4`, so they predate the flat-list view and are
-about the opt-out path rather than about it.
+**Four tests fail under `PRISMIO_INLINE_ELEMS=0`, and the switch is the defect
+rather than the boxed path.** The suite reports 281/285: `test_49_aif_struct_fields`,
+`test_53_aif_views`, `test_80_data_view_conversion` and `test_82_generic_layout`.
+All four are **leaks with 0 violations**, and every leaked block is one element
+width — 4 bytes for `Item { value: Int }`, 16 for a two-field flat struct, 24 for
+a DataView row. Checksums agree throughout, so the boxed path computes the right
+answers.
 
-Re-measured 2026-09-03: **four**, not five. The forced-split object count listed
-here no longer fails, and *why* has not been established — nothing in the
-interval targeted it. Attribute it before trusting the remaining four, because
-an entry that drifts without explanation is evidence the list is being counted
-rather than read.
+**The attribution the previous version of this entry asked for is done, and the
+fifth was never a gate failure.** `test_62_split_release`'s ledger is identical
+with the gate on and off — 8205/8205 at a forced cut of 4, 4109/4109 at 12 — on
+today's compiler, on `build/aif-scalar-final`, *and* on `build/unswitch-gen4`,
+which is the compiler the original count was taken on. It is not exempt by
+declining inline storage either: it is stamped `list_set_elem_inline`, and it
+survives because codegen also emits `list_set_elem_owner`, so both
+representations are covered. The count went five to four because the list was
+recounted, not because anything changed.
+
+**Why the other four cannot be fixed by adding the missing disposition.**
+`list_inline_enabled()` is a `getenv`, read at run time; everything it
+invalidates — the element disposition, the arena placement, whether the site
+allocates at all — was decided at compile time. `test_49` allocates **3** blocks
+with the representation on and **78** with it off, from one binary, and its two
+lists that get no disposition are exactly the two the manifest places
+`region:auto`. Closing the gate means making the opt-out compile-time, or
+deleting it and keeping the `elem_size == stride` guard, which is the fallback
+that answers a fact about the program rather than about the environment. See
+`aif/evidence/RESULTS-inline-elems-gate.md`.
+
+**What is not established, and it is the next thing to settle.** That the missing
+`list_set_elem_owner` is *the* cause is inferred, not proven, and one measurement
+argues against the obvious fix. `aif --summary` on `test_49` reports **2 call
+sites bracketed, 9 sites now arena-served** — the arenas are live — and the `Item`
+site itself is `region:auto`. So under boxing those blocks *should* be
+arena-allocated and reclaimed in bulk, and they are not. Three candidates, in the
+order they are cheapest to test:
+
+1. the arena is never entered at run time on that path;
+2. it is, but `rt_alloc`'s arena hint is not set where the boxed push allocates;
+3. it is, and `--verify`'s ledger accounts for arena blocks in a way that reports
+   them as leaked.
+
+**Adding the disposition would not settle it either way**, because `list_release`
+returns on `l->arena` before it reaches the element loop — so for the two lists
+that lack a disposition, the loop that would use it never runs. Whoever picks
+this up should answer the three above before writing any codegen.
 
 ## Traits
 

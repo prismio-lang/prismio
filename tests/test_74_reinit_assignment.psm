@@ -85,17 +85,17 @@ fn main() -> Int {
 
     // A binding moved into a `sink` and then reused. Nothing to do with loops --
     // this is the half that made the *straight-line* form fail too.
-    let mut s = strConcat("ab", "cd")
+    let mut s = "ab".concat("cd")
     let mut total = consumeStr(s)
-    s = strConcat("ef", "gh")
+    s = "ef".concat("gh")
     total = total + consumeStr(s)
     if (total != 8) { failures = failures + fail("sink then rebind") }
 
     // Re-initialised in a loop, read after it.
-    let mut acc2 = strConcat("x", "y")
+    let mut acc2 = "x".concat("y")
     let mut j = 0
     while (j < 4) {
-        acc2 = strConcat(acc2, "z")
+        acc2 = acc2.concat("z")
         j = j + 1
     }
     if (__builtin_string_len(acc2) != 6) { failures = failures + fail("string accumulator after loop") }

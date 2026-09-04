@@ -44,7 +44,10 @@ def main() -> int:
     args, forwarded = parser.parse_known_args()
 
     if args.compiler:
-        source = Path(args.compiler)
+        # Resolved, because the banner below reports the path relative to the
+        # repository and a relative --compiler raised ValueError there rather
+        # than running anything.
+        source = Path(args.compiler).resolve()
         if not source.is_file():
             print(f"run_suite: --compiler is not a file: {source}")
             return 1
@@ -64,7 +67,11 @@ def main() -> int:
         shutil.copy2(source, copy)
         copy.chmod(0o755)
 
-        print(f"suite: testing a copy of {source.relative_to(REPO)}")
+        try:
+            shown = source.relative_to(REPO)
+        except ValueError:
+            shown = source
+        print(f"suite: testing a copy of {shown}")
         result = subprocess.run(
             [sys.executable, str(REPO / "tests" / "test_runner.py"),
              "--compiler", str(copy), *forwarded],

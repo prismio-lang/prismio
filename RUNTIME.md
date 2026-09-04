@@ -36,6 +36,20 @@ Allocation is a different category. `str_with_capacity` remains a real runtime
 call so verification and arena placement still observe it; codegen pairs its
 returned pointer with the length the caller supplied.
 
+**A String does not always have a pointer.** The 16-byte pair carries a tag in
+bit 31 of its length word, and a tagged pair holds up to twelve bytes of text
+itself — the German-string layout, described in full over `str_data_ptr` in
+`runtime/llvm-api-backend.c`. Three consequences reach this document:
+
+- `__builtin_string_len` masks the tag; the length is bits 0..30, so a String is
+  bounded at 2 GiB rather than 4.
+- Crossing into C is unchanged in shape and no longer free: codegen materialises
+  a NUL-terminated `char*` for a short string, into a scratch slot in the caller's
+  frame. Every entry point below still takes `const char*` and still gets one.
+- A container slot holds one word and frees it later, so a short string is copied
+  to the heap on the way in, through `str_own`. A struct *field* embeds the whole
+  pair and needs no copy.
+
 This follows the boundary used by production compilers: compiler operations get
 a reserved builtin/intrinsic identity, while ordinary stable APIs wrap them.
 [Clang exposes reserved `__builtin_*` operations][clang-builtins], and
@@ -222,7 +236,7 @@ is the guard, and it asserts values rather than the ledger for exactly that
 reason.
 
 **A chain of `+` is exempt, by construction.** `a + b + c` is lowered to a single
-`strConcat(a, b, c)` rather than to nested calls, precisely so that it has no
+`a.concat(b, c)` rather than to nested calls, precisely so that it has no
 unbound intermediate to lose. The pairwise form reads 2 allocated / 1 released.
 
 ### 3.2 Do not bind a container's element
@@ -267,6 +281,7 @@ Linked into every program: `runtime/lang_runtime.c` and
 | C symbol | Prismio | Contract |
 |---|---|---|
 | `str_with_capacity` | internal allocation seam for `std.string` | `produce(free)` |
+| `str_own` | codegen-only: a String on its way into a container slot | — |
 | `str_find_byte` `str_find_byte_pair` | internal bounded search accelerators | `borrow` |
 | `read_file` `get_directory` `join_path` | `readFile` `directoryOf` `joinPath` | `produce(free)` |
 | `current_directory` `executable_directory` | `currentDirectory` `executableDirectory` | `produce(free)` |
@@ -416,8 +431,8 @@ reads one byte from each input half of the result and puts all three languages
 within 4%. An older checksum observed only the first half, so C and Rust could
 delete the second copy and their apparent lead was not a concatenation result.
 Within Prismio, the legacy C compatibility function is still slower because it
-re-measures both inputs; native `strConcat` allocates once and fills from lengths
-already carried by the values.
+re-measures both inputs; native `String.concat` allocates once and fills from
+lengths already carried by the values.
 
 Two changes got here from a starting point of 30x slower than the C:
 
@@ -425,7 +440,7 @@ Two changes got here from a starting point of 30x slower than the C:
   `__builtin_string_put_byte` lower to a GEP plus a load or store rather than a
   call — user programs do not link with LTO, so the old ordinary externs cost a
   call per byte. Worth 1.85s → 0.56s on search alone.
-- **Checked character access is native too.** `strCharAt` tests the carried
+- **Checked character access is native too.** `String.charAt` tests the carried
   length and performs the same byte load as `strByteAt`, so both are O(1).
   Inner loops still use the unchecked form after establishing one shared bound.
 
@@ -434,7 +449,7 @@ Two changes got here from a starting point of 30x slower than the C:
 **The old recursion ceiling is gone.** `strToUpper`, `strToLower`, `strReverse`,
 `strRepeat`, `strPadStart` and `strJoin` used to recurse once per character —
 forced, because the loop form leaks: a reassigned binding is never droppable (see
-`ir_mark_droppable` in `src/ir/stmt.psm`), so `let mut out = ""` plus `strConcat`
+`ir_mark_droppable` in `src/ir/stmt.psm`), so `let mut out = ""` plus `concat`
 in a loop leaks one allocation per iteration. That cost n allocations, copied
 O(n²) bytes, and overflowed the stack at 200 000 characters.
 
@@ -444,7 +459,7 @@ allocation the function fills in one pass. Measured on an Apple-silicon host:
 allocations to 29.
 
 **Use the unchecked builtins only with an established bound.** `strLength`,
-`strCharAt` and `strByteAt` are O(1) now. The first two are safe; the internal
+`String.charAt` and `strByteAt` are O(1) now. The first two are safe; the internal
 byte read/write builtins deliberately omit an upper-bound check, so native
 builders use them only inside loops bounded by a carried String length.
 

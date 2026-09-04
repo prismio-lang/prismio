@@ -52,14 +52,32 @@ private fn aifDeclaredContract(name: String, index: Int) -> Int {
 // only for the duration of the operation and retains nothing.
 //
 // That "retains nothing" is why `__builtin_string_eq` could be added without
-// touching AIF's producing paths, and it is exactly what a concat builtin would
-// *not* satisfy: it returns a fresh allocation the caller owns, which is a
-// return contract and not a parameter one. Nothing here can express that yet.
+// touching AIF's producing paths.
+//
+// **This table is parameter-only, and a producing builtin is not blocked on
+// that** -- the note that stood here said it was, and it was wrong. A call's
+// return contract is answered next door by `aifFfiProduces`, keyed on the same
+// name, and three compiler builtins already use it: `list_new`, `soa` and `aos`
+// each hand back an allocation the caller owns. A producing string builtin would
+// be one entry there and one here. The cost of the shape is that a builtin's
+// contract is then written in two places, where index -1 is the return
+// everywhere else -- `aifDeclaredContract` reads it that way -- so this is a
+// factoring wart rather than a missing mechanism.
+//
+// Concatenation is not a builtin for an unrelated reason: it stays native
+// Prismio. What forced its move out of the `str*` surface was the pass-through
+// rule, not a contract this table could not spell. See the note over the five
+// operator targets in `impl String`, std/string.psm.
 private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     if (name.equals("__builtin_string_len")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_string_byte_at")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_string_put_byte")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_string_eq")) { return AIF_FFI_BORROW }
+    // Reads twelve bytes of its operand into the pair it returns and keeps no
+    // reference to it -- the copy is what makes the result independent of the
+    // string it was cut from, and therefore what makes this a borrow rather than
+    // a view. See `aifFfiProduces` for the other half of its contract.
+    if (name.equals("__builtin_string_inline")) { return AIF_FFI_BORROW }
     if (name.equals("slice_len")) { return AIF_FFI_BORROW }
     if (name.equals("slice_set")) {
         if (index == 2) { return AIF_FFI_RETAIN_IN_BASE + 0 }
@@ -257,7 +275,7 @@ internal fn aifDeclaredReturnIsAlias(name: String) -> Bool {
 // outlive this frame -- and is handled by the `opaque` constraint instead.
 // A produced return whose allocation did not happen here *at all*.
 //
-// The distinction matters because it is not the same as `produces`. `strConcat`
+// The distinction matters because it is not the same as `produces`. `String.concat`
 // produces, and its allocation goes through `rt_alloc`, which consults the arena
 // hint -- so a region really can serve it, and test_44 counts 209 objects that
 // prove it. `chan_recv` produces and allocates nothing: the block it hands back
@@ -285,6 +303,13 @@ internal fn aifFfiProduces(name: String) -> Bool {
     // owned one-byte string rather than the literal "".
     if (name.equals("str_slice")) { return true }
     if (name.equals("int_to_str")) { return true }
+    // **Produces without allocating**, which no other entry here does. The German
+    // short form is sixteen bytes of value with nothing behind it, so the release
+    // codegen pairs with this is a `select` to null and never reaches the
+    // deallocator. It is still declared producing, because the alternative is a
+    // `strSubstring` whose two paths disagree about who owns the result -- and an
+    // owned value that costs nothing to release is the conservative side of that.
+    if (name.equals("__builtin_string_inline")) { return true }
     if (name.equals("read_file")) { return true }
     if (name.equals("get_directory")) { return true }
     if (name.equals("join_path")) { return true }

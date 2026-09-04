@@ -1,6 +1,15 @@
 #ifndef PRISMIO_RUNTIME_H
 #define PRISMIO_RUNTIME_H
 
+// Runtime state that follows the executing task rather than the process. C11's
+// spelling works with clang/gcc; clang-cl accepts the MSVC spelling on the one
+// target where `_Thread_local` is not consistently available in the C runtime.
+#if defined(_MSC_VER)
+#define PRISMIO_THREAD_LOCAL __declspec(thread)
+#else
+#define PRISMIO_THREAD_LOCAL _Thread_local
+#endif
+
 // The verify allocator seam.
 //
 // See the note at the top of lang_runtime.c: strings are affine, so codegen
@@ -30,8 +39,8 @@
 // pairs with, which reads as a leak.
 #ifndef rt_base_alloc
 #include <stdlib.h>
-#ifdef PRISMIO_AIF_VERIFY
 #include <stddef.h>
+#ifdef PRISMIO_AIF_VERIFY
 void* aif_verify_alloc(size_t size);
 void  aif_verify_release(void* p);
 // Arms the ledger. Declared here with the other two rather than beside the one
@@ -40,8 +49,18 @@ void  aif_verify_arm(void);
 #define rt_base_alloc(n) aif_verify_alloc(n)
 #define rt_free(p)       aif_verify_release(p)
 #else
-#define rt_base_alloc(n) malloc(n)
-#define rt_free(p)       free(p)
+// Functions rather than macros over malloc/free, because the ordinary build
+// recycles small blocks between them -- see rt_base_alloc in lang_runtime.c for
+// why, and for what makes it safe.
+//
+// **`rt_free` is also the symbol codegen emits for every release**
+// (`g_free_fn` in llvm-api-backend.c). That is what puts a program's releases
+// and this runtime's own into the same pool; emitting libc `free` for one half
+// would hand the recycler blocks it never gets back. The verify branch above
+// keeps its own pairing for the same reason, and `--verify` overrides
+// `g_free_fn` to match it (src/driver/compile.psm).
+void* rt_base_alloc(size_t size);
+void  rt_free(void* p);
 #endif
 #endif
 
@@ -100,6 +119,15 @@ int   prismio_task_join(void* handle);
 void* prismio_task_join_p(void* handle);
 void  prismio_task_join_v(void* handle);
 void  prismio_task_release(void* handle);
+
+// Called around native task startup. The fast path stays process-local until a
+// program actually spawns, while every runtime-created worker gets isolated
+// arena state before it can execute generated code.
+void  prismio_memory_threads_enable(void);
+void  prismio_memory_thread_enter(void);
+// Drains that worker's allocator caches. An inline spawn fallback deliberately
+// does not call it because it is still executing on the parent's thread.
+void  prismio_memory_thread_cleanup(void);
 
 void* chan_new(int capacity);
 int   chan_send(void* handle, void* msg);

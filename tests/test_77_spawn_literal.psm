@@ -40,7 +40,7 @@ fn main() -> Int {
     }
 
     // And nested one level down, inside a call in the argument.
-    let u = spawn measure(strConcat("six", "six"))
+    let u = spawn measure("six".concat("six"))
     if (join u != 6) {
         return fail("a literal under a call in a spawn argument should be named too")
     }

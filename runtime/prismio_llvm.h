@@ -208,6 +208,20 @@ LLVMBasicBlockRef LLVMAppendBasicBlockInContext(LLVMContextRef C, LLVMValueRef F
 void LLVMPositionBuilderAtEnd(LLVMBuilderRef Builder, LLVMBasicBlockRef Block);
 void LLVMPositionBuilderBefore(LLVMBuilderRef Builder, LLVMValueRef Instr);
 LLVMBasicBlockRef LLVMGetInsertBlock(LLVMBuilderRef Builder);
+// The entry block's first instruction, which is where a scratch alloca has to go
+// -- one built at the current insert point inside a loop grows the stack every
+// iteration. See str_scratch_slot in llvm-api-backend.c.
+LLVMValueRef LLVMGetFirstInstruction(LLVMBasicBlockRef BB);
+// Navigating to a value's definition, for code that has to be placed there
+// rather than where it is first needed -- see str_data_ptr in
+// llvm-api-backend.c, which canonicalises a String once per pair and must
+// dominate every later use of it. The `IsA` pair are real exported symbols; the
+// real headers generate them from LLVM_FOR_EACH_VALUE_SUBCLASS, and both return
+// the value itself or NULL.
+LLVMValueRef LLVMIsAInstruction(LLVMValueRef Val);
+LLVMValueRef LLVMIsAPHINode(LLVMValueRef Val);
+LLVMValueRef LLVMGetNextInstruction(LLVMValueRef Inst);
+LLVMBasicBlockRef LLVMGetInstructionParent(LLVMValueRef Inst);
 LLVMValueRef LLVMGetBasicBlockTerminator(LLVMBasicBlockRef BB);
 LLVMValueRef LLVMGetBasicBlockParent(LLVMBasicBlockRef BB);
 

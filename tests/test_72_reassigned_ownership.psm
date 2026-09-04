@@ -1,7 +1,7 @@
 // The accumulator shape, which had no owner at all until AIF Level 4's
 // reassignment half.
 //
-// `let mut out = ""` then `out = strConcat(out, ...)` in a loop is the most
+// `let mut out = ""` then `out = out.concat(...)` in a loop is the most
 // common string idiom there is -- `buildSource` in the g7 benchmark is exactly
 // it -- and every value but the last leaked. Not for want of a free: the drop
 // list refused any reassigned binding, correctly, because the slot could hold a
@@ -62,7 +62,7 @@ fn returned_accumulator(n: Int) -> String {
     let mut out = ""
     let mut i = 0
     while (i < n) {
-        out = strConcat(out, "ab")
+        out = out.concat("ab")
         i = i + 1
     }
     return out
@@ -76,7 +76,7 @@ fn local_accumulator(n: Int) -> Int {
     let mut out = ""
     let mut i = 0
     while (i < n) {
-        out = strConcat(out, "xyz")
+        out = out.concat("xyz")
         i = i + 1
     }
     return __builtin_string_len(out)
@@ -90,11 +90,11 @@ fn local_accumulator(n: Int) -> Int {
 // function would exercise nothing. Returning it puts E at Caller, which keeps the
 // site on the heap and on the path under test.
 fn literal_mid_loop(n: Int) -> String {
-    let mut s = strConcat("seed", "ed")
+    let mut s = "seed".concat("ed")
     let mut i = 0
     while (i < n) {
         s = "reset"
-        s = strConcat(s, "tail")
+        s = s.concat("tail")
         i = i + 1
     }
     return s
@@ -104,7 +104,7 @@ fn literal_mid_loop(n: Int) -> String {
 // treated as owning its slot -- and the struct has to still hold its field
 // afterwards.
 fn borrow_reassign(h: Holder) -> Int {
-    let mut s = strConcat("own", "ed")
+    let mut s = "own".concat("ed")
     let first = __builtin_string_len(s)
     s = h.name
     return first + __builtin_string_len(s) + __builtin_string_len(h.name)
@@ -114,15 +114,15 @@ fn borrow_reassign(h: Holder) -> Int {
 // for the reason literal_mid_loop is. A release that read the wrong slot shows up
 // as a length that is no longer 4.
 fn two_accumulators(n: Int) -> String {
-    let mut a = strConcat("aa", "bb")
-    let mut b = strConcat("cc", "dd")
+    let mut a = "aa".concat("bb")
+    let mut b = "cc".concat("dd")
     let mut i = 0
     while (i < n) {
-        a = strConcat("ee", "ff")
-        b = strConcat(b, "")
+        a = "ee".concat("ff")
+        b = b.concat("")
         i = i + 1
     }
-    return strConcat(a, b)
+    return a.concat(b)
 }
 
 // M2.0b. The value comes from a *callee* rather than from an allocation in this
@@ -131,7 +131,7 @@ fn two_accumulators(n: Int) -> String {
 // `aif_owns_call_result_at_node` instead, and the values this loop displaces are
 // this scope's exactly as the extern-allocated ones above are.
 fn makePiece(i: Int) -> String {
-    return strConcat("pie", "ce")
+    return "pie".concat("ce")
 }
 
 fn callee_accumulator(n: Int) -> String {
@@ -152,8 +152,8 @@ fn callee_accumulator(n: Int) -> String {
 // pair and the bug disappears.
 fn cloned_literal_keeps_length() -> String {
     let mut s = "inferred"
-    if (__builtin_string_len(s) != 8) { return strConcat("bad", "") }
-    s = strConcat(s, "")
+    if (__builtin_string_len(s) != 8) { return "bad".concat("") }
+    s = s.concat("")
     return s
 }
 
@@ -189,7 +189,7 @@ fn main() -> Int {
         failures = failures + 1
     }
 
-    let h = Holder { name: strConcat("fie", "ld") }
+    let h = Holder { name: "fie".concat("ld") }
     // 5 for "owned", then 5 twice for "field"
     if (borrow_reassign(h) != 15) {
         println("FAIL borrow_reassign")

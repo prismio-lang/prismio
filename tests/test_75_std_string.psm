@@ -50,20 +50,20 @@ fn referenceIndexOf(haystack: String, needle: String) -> Int {
 }
 
 fn main() -> Int {
-    let nativeConcat = strConcat("left", "right")
+    let nativeConcat = "left".concat("right")
     if (nativeConcat.equals("leftright") == false) {
-        return fail("strConcat should append both inputs")
+        return fail("concat should append both inputs")
     }
-    let nativeEmptyConcat = strConcat("", "")
+    let nativeEmptyConcat = "".concat("")
     if (nativeEmptyConcat.equals("") == false) {
-        return fail("strConcat should accept two empty inputs")
+        return fail("concat should accept two empty inputs")
     }
 
-    if (strCharAt("abc", 1) != 'b') {
-        return fail("strCharAt should read an in-range byte")
+    if ("abc".charAt(1) != 'b') {
+        return fail("charAt should read an in-range byte")
     }
-    if (strCharAt("abc", 3) != '\0') {
-        return fail("strCharAt should return NUL out of range")
+    if ("abc".charAt(3) != '\0') {
+        return fail("charAt should return NUL out of range")
     }
     if ("same".equals("same") == false) {
         return fail("strEquals should accept equal input")
@@ -71,11 +71,11 @@ fn main() -> Int {
     if ("same".equals("some")) {
         return fail("strEquals should reject unequal input")
     }
-    if (strCompare("abc", "abd") >= 0) {
-        return fail("strCompare should order differing bytes")
+    if ("abc".compare("abd") >= 0) {
+        return fail("compare should order differing bytes")
     }
-    if (strCompare("abc", "abcd") >= 0) {
-        return fail("strCompare should order a prefix before the longer string")
+    if ("abc".compare("abcd") >= 0) {
+        return fail("compare should order a prefix before the longer string")
     }
 
     let nativeSlice = strSubstring("abcdef", 2, 3)

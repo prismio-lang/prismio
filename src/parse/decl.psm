@@ -33,8 +33,7 @@ internal fn parseDeclaration(p: Parser) -> ASTNode {
             // marker on a type or a global would be a promise the compiler does
             // not keep -- which is worse than an error.
             diag_error_at_code("P3001", marker.file, marker.line, marker.col, marker.len,
-                          strConcat(strConcat("`", markerText),
-                                    "` is only accepted on a function in v0.1"))
+                          "`".concat(markerText, "` is only accepted on a function in v0.1"))
             diag_note("a visibility marker on a type or a global is not enforced yet, and accepting it would promise that it is")
         }
         return declaration
@@ -55,8 +54,8 @@ internal fn parseDeclaration(p: Parser) -> ASTNode {
     // reports three errors instead of only the first.
     let bad = p.node(NodeKind.ERROR_NODE)
     let current = p.current()
-    p.error(strConcat(strConcat("expected a declaration, found ", parserDescribe(current)),
-                               " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`, `impl`, `trait`)"))
+    p.error("expected a declaration, found ".concat(parserDescribe(current),
+                                                    " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`, `impl`, `trait`)"))
     p.synchronize()
     return bad
 }
@@ -191,7 +190,7 @@ private fn parseTraitRefArgs(p: Parser, traitRef: ASTNode) {
 // uses, so `impl A + B` and `<T: A + B>` produce structurally identical bounds
 // and neither conformance nor coherence can tell them apart afterwards.
 private fn parseImplTraitParam(p: Parser, site: ASTNode) -> String {
-    let synthesized = strConcat("impl$", strFromInt(p.implParamSeq))
+    let synthesized = "impl$".concat(strFromInt(p.implParamSeq))
     p.implParamSeq = p.implParamSeq + 1
 
     let genericParam = createNode(NodeKind.GENERIC_PARAM)
@@ -239,7 +238,7 @@ private fn parseOpaqueReturn(p: Parser, site: ASTNode) -> String {
         if (p.matchVal(TokenType.ARITHMETIC_OPERATOR, "+") == false) { break }
     }
     site.child2 = bounds.head
-    return strConcat("opaque$", ptr_to_node(bounds.head).s1)
+    return "opaque$".concat(ptr_to_node(bounds.head).s1)
 }
 
 // Moves everything `impl Trait` synthesised for this declaration onto it, and
@@ -258,7 +257,7 @@ private fn drainImplTraitParams(p: Parser, owner: ASTNode, existing: String) -> 
         if (names.equals("")) {
             names = strClone(param.s1)
         } else {
-            names = strConcat(strConcat(names, ","), param.s1)
+            names = names.concat(",", param.s1)
         }
         if (nodeExists(param.next) == false) { break }
         param = ptr_to_node(param.next)
@@ -306,7 +305,7 @@ private fn parseGenericParams(p: Parser, owner: ASTNode) -> String {
         if (params.equals("")) {
             params = strClone(name.value)
         } else {
-            params = strConcat(strConcat(params, ","), name.value)
+            params = params.concat(",", name.value)
         }
         if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
     }
@@ -458,7 +457,7 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
         if (name.value.equals("dyn") and p.peek().type == TokenType.IDENTIFIER) {
             p.advance()
             let traitName = p.current()
-            typeNode.s1 = strConcat("dyn$", traitName.value)
+            typeNode.s1 = "dyn$".concat(traitName.value)
             p.advance()
             if (p.matchVal(TokenType.SEPARATOR, "?")) { typeNode.i3 = 1 }
             return typeNode
@@ -500,7 +499,7 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
         }
         p.advance()
     } else {
-        p.fatal(strConcat("expected a type name, found ", parserDescribe(name)))
+        p.fatal("expected a type name, found ".concat(parserDescribe(name)))
     }
 
     // A type constructor applied to arguments: `List<Int>`, `Map<String, Int>`.
@@ -582,14 +581,14 @@ private fn parseAifAnnotations(p: Parser, node: ASTNode) {
     loop {
         if (p.atAnnotation("unique")) {
             p.expectToken(TokenType.IDENTIFIER, "unique annotation")
-            node.s2 = strConcat(node.s2, "unique ")
+            node.s2 = node.s2.concat("unique ")
         } else if (p.atAnnotation("pin")) {
             p.expectToken(TokenType.IDENTIFIER, "pin annotation")
             p.expectVal(TokenType.SEPARATOR, "(", "pin tier")
             let tier = p.current()
             p.expectToken(TokenType.IDENTIFIER, "a tier name such as T1")
             p.expectVal(TokenType.SEPARATOR, ")", "pin tier")
-            node.s2 = strConcat(node.s2, strConcat(strConcat("pin:", tier.value), " "))
+            node.s2 = node.s2.concat("pin:", tier.value, " ")
         } else {
             break
         }
@@ -665,13 +664,13 @@ private fn parseFfiContract(p: Parser, annotation: ASTNode) {
         let argumentText = argument.value
         p.advance()
         p.expectVal(TokenType.SEPARATOR, ")", "contract argument")
-        annotation.s2 = strConcat(strConcat(name, ":"), argumentText)
+        annotation.s2 = name.concat(":", argumentText)
         return
     }
 
     if (p.checkVal(TokenType.SEPARATOR, "(")) {
         diag_error_at_code("P3002", current.file, current.line, current.col, __builtin_string_len(name),
-            strConcat(strConcat("the ", diagQuote(name)), " contract takes no argument"))
+            "the ".concat(diagQuote(name), " contract takes no argument"))
         diag_note("only `retain_in(k)` and `produce(free_fn)` are parameterised")
     }
 
@@ -926,8 +925,7 @@ private fn parseImplDecl(p: Parser) -> ASTNode {
         if (methodVisibility >= 0) { p.advance() }
 
         if (p.checkVal(TokenType.KEYWORD, "fn") == false) {
-            p.fatal(strConcat("an `impl` block holds `fn` and `let` declarations, found ",
-                                       parserDescribe(p.current())))
+            p.fatal("an `impl` block holds `fn` and `let` declarations, found ".concat(parserDescribe(p.current())))
         }
         let method = parseFunctionDecl(p)
         method.s2 = parseImplMethodParams(p, header.s1, method.s2)
@@ -973,7 +971,7 @@ private fn implParamNameAt(params: String, index: Int) -> String {
     let mut i = 0
     let n = __builtin_string_len(params)
     while (i <= n) {
-        if (i == n or strCharAt(params, i) == ',') {
+        if (i == n or params.charAt(i) == ',') {
             if (seen == index) {
                 return strSubstring(params, start, i - start)
             }
@@ -990,7 +988,7 @@ private fn implParamCount(params: String) -> Int {
     let mut count = 1
     let mut i = 0
     while (i < __builtin_string_len(params)) {
-        if (strCharAt(params, i) == ',') { count = count + 1 }
+        if (params.charAt(i) == ',') { count = count + 1 }
         i = i + 1
     }
     return count
@@ -1039,9 +1037,8 @@ private fn parseImplCheckTarget(p: Parser, implNode: ASTNode) {
             and (nodeIsNull(header.child2)
                  or implTargetContainsParam(ptr_to_node(header.child2).child1,
                                             implParamNameAt(header.s1, i)) == false)) {
-            p.fatal(strConcat(strConcat("unconstrained type parameter `",
-                                        implParamNameAt(header.s1, i)),
-                              "` in `impl`; every impl parameter must occur in its target or trait arguments"))
+            p.fatal("unconstrained type parameter `".concat(implParamNameAt(header.s1, i),
+                                                            "` in `impl`; every impl parameter must occur in its target or trait arguments"))
         }
         i = i + 1
     }
@@ -1054,14 +1051,14 @@ private fn parseImplMethodParams(p: Parser, implParams: String, methodParams: St
     while (i < implParamCount(methodParams)) {
         let name = implParamNameAt(methodParams, i)
         if (implParamsContain(implParams, name)) {
-            p.fatal(strConcat(strConcat("method type parameter `", name),
-                              "` duplicates an `impl` type parameter"))
+            p.fatal("method type parameter `".concat(name,
+                                                     "` duplicates an `impl` type parameter"))
         }
         i = i + 1
     }
 
     if (methodParams.equals("")) { return strClone(implParams) }
-    return strConcat(strConcat(implParams, ","), methodParams)
+    return implParams.concat(",", methodParams)
 }
 
 // A bare `self` has to be the *first* parameter, and that is a shape error in the
@@ -1153,8 +1150,7 @@ private fn parseTraitDecl(p: Parser) -> ASTNode {
             nodeListPush(constants, parseAssocType(p, false))
         } else {
             if (p.checkVal(TokenType.KEYWORD, "fn") == false) {
-                p.fatal(strConcat("a `trait` holds `fn` signatures, `let` constants and `type` members, found ",
-                                           parserDescribe(p.current())))
+                p.fatal("a `trait` holds `fn` signatures, `let` constants and `type` members, found ".concat(parserDescribe(p.current())))
             }
             let signature = parseTraitSignature(p)
             parseImplCheckReceiver(p, signature)
@@ -1305,9 +1301,8 @@ private fn parseWorkloadDecl(p: Parser) -> ASTNode {
             p.advance()
             node.i1 = parseWorkloadCount(p, "repeat")
         } else {
-            p.error(strConcat(strConcat("expected `setup`, `measure` or `repeat`, found ",
-                                                  parserDescribe(clause)),
-                                       " in this workload"))
+            p.error("expected `setup`, `measure` or `repeat`, found ".concat(parserDescribe(clause),
+                                                                             " in this workload"))
             p.synchronize()
             return node
         }
@@ -1327,7 +1322,7 @@ private fn parseWorkloadDecl(p: Parser) -> ASTNode {
 private fn parseWorkloadCount(p: Parser, clause: String) -> Int {
     let tok = p.current()
     if (tok.type != TokenType.NUMBER_LITERAL) {
-        p.fatal(strConcat(strConcat("expected a count after `", clause), "`"))
+        p.fatal("expected a count after `".concat(clause, "`"))
     }
     let n = optionOr(strParseInt(tok.value), 0)
     p.advance()
@@ -1336,7 +1331,7 @@ private fn parseWorkloadCount(p: Parser, clause: String) -> Int {
     // Rejecting here keeps W2's fallback meaning "the workload failed", not "the
     // workload was written to do nothing".
     if (n < 1) {
-        p.error(strConcat(strConcat("`", clause), "` must be at least 1"))
+        p.error("`".concat(clause, "` must be at least 1"))
         return 1
     }
     return n
@@ -1434,8 +1429,8 @@ private fn parseWhereClause(p: Parser, owner: ASTNode) {
 
         let param = findGenericParamNamed(owner.genericInfo, name.value)
         if (nodeIsNull(node_to_ptr(param))) {
-            p.fatal(strConcat(strConcat("`where` names `", name.value),
-                              "`, which is not a type parameter of this declaration"))
+            p.fatal("`where` names `".concat(name.value,
+                                             "`, which is not a type parameter of this declaration"))
         }
 
         p.expectVal(TokenType.SEPARATOR, ":", "`where` bound")

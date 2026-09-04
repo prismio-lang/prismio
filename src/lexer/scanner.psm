@@ -31,8 +31,8 @@ fn createLexer(input: String, file: Int) -> Lexer {
     // is garbage and the file fails with "Unknown declaration" -- a baffling
     // error for a file that looks perfectly fine.
     let mut start = 0
-    if (charCode(strCharAt(input, 0)) == 239) {
-        if (charCode(strCharAt(input, 1)) == 187 and charCode(strCharAt(input, 2)) == 191) {
+    if (charCode(input.charAt(0)) == 239) {
+        if (charCode(input.charAt(1)) == 187 and charCode(input.charAt(2)) == 191) {
             start = 3
         }
     }
@@ -177,10 +177,10 @@ private fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) 
     let n = __builtin_string_len(raw)
 
     while (i < n) {
-        let ch = strCharAt(raw, i)
+        let ch = raw.charAt(i)
 
         if (ch == '\\' and i + 1 < n) {
-            let esc = strCharAt(raw, i + 1)
+            let esc = raw.charAt(i + 1)
             let mut decoded = esc
             let mut known = true
 
@@ -198,13 +198,13 @@ private fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) 
 
             if (known == false) {
                 lexerFatal(lex, line, baseCol + i,
-                    strConcat("unknown escape sequence \\", strFromChar(esc)))
+                    "unknown escape sequence \\".concat(strFromChar(esc)))
             }
 
-            out = strConcat(out, strFromChar(decoded))
+            out = out.concat(strFromChar(decoded))
             i = i + 2
         } else {
-            out = strConcat(out, strFromChar(ch))
+            out = out.concat(strFromChar(ch))
             i = i + 1
         }
     }
@@ -366,7 +366,7 @@ private fn twoCharOperatorType(value: String) -> TokenType {
 
     // `x op= y` is an assignment: the second character is '=' and the first is
     // not, which distinguishes it from ==, !=, <= and >= handled above.
-    if (strCharAt(value, 1) == '=' and strCharAt(value, 0) != '=') {
+    if (value.charAt(1) == '=' and value.charAt(0) != '=') {
         return TokenType.ASSIGNMENT_OPERATOR
     }
 
@@ -429,7 +429,7 @@ private fn lexUnexpected(lex: Lexer, c: Char) -> Token {
     let start = lex.pos
 
     lexerAdvance(lex)
-    lexerFatal(lex, line, col, strConcat("unexpected character ", diagQuote(strFromChar(c))))
+    lexerFatal(lex, line, col, "unexpected character ".concat(diagQuote(strFromChar(c))))
     return lexerToken(lex, TokenType.UNKNOWN, "?", line, col, start)
 }
 

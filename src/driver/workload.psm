@@ -125,8 +125,8 @@ fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> 
             // bug far more often than a user one -- the driver is generated code --
             // and deleting the only artifact that shows why would leave nothing to
             // read but a linker's opinion of a file that no longer exists.
-            failure = strConcat(strConcat("the workload failed to build; using the static profile (driver IR kept at ",
-                                             driverIr), ")")
+            failure = "the workload failed to build; using the static profile (driver IR kept at ".concat(driverIr,
+                                                                                                          ")")
         } else {
             delete_file(driverIr)
 

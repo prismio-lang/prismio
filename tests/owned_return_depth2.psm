@@ -45,10 +45,10 @@ fn pieceDepthOne() -> String {
     return str_with_capacity(5)
 }
 
-// One level further down: the site now lives in `strConcat`, so the caller is
+// One level further down: the site now lives in `concat`, so the caller is
 // declined and nothing ever releases it.
 fn pieceDepthTwo() -> String {
-    return strConcat("pie", "ce")
+    return "pie".concat("ce")
 }
 
 fn depthOne(n: Int) -> Int {

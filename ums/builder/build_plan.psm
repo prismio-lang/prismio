@@ -14,7 +14,7 @@ private fn umsBuildProfileValid(profile: String) -> Bool {
     if (__builtin_string_len(profile) == 0) { return false }
     let mut i = 0
     while (i < __builtin_string_len(profile)) {
-        let current = strCharAt(profile, i)
+        let current = profile.charAt(i)
         if (umsIsAlnum(current) == false and current != '-' and current != '_') {
             return false
         }
@@ -27,7 +27,7 @@ fn umsBuildPlanCreate(project: UmsProjectModel,
                       diagnostics: List<UmsDiagnostic>) -> UmsBuildPlan {
     if (umsBuildProfileValid(project.build.profile) == false) {
         umsDiagnosticAdd(diagnostics, "UMS3001", project.manifestPath, 0, 0, 0,
-            strConcat(strConcat("invalid build profile '", project.build.profile), "'"))
+            "invalid build profile '".concat(project.build.profile, "'"))
         return UmsBuildPlan { stateRoot: strClone(""), artifactRoot: strClone("") }
     }
 

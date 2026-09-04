@@ -10,7 +10,7 @@ struct Cat { tag: Int }
 trait Greet {
     fn name(self) -> String
     // Written once. A default may call the trait's other methods on `Self`.
-    fn greet(self) -> String { return strConcat("hello ", name(self)) }
+    fn greet(self) -> String { return "hello ".concat(name(self)) }
 }
 
 impl Greet for Dog {

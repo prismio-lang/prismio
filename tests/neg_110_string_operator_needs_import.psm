@@ -1,0 +1,23 @@
+// expect-error: joining Strings with `+` needs `import std.string`
+// expect-error: indexing a String needs `import std.string`
+// expect-error: comparing String values with `<` needs `import std.string`
+//
+// Each String operator is rewritten into a method call -- `+` into `concat`,
+// `s[i]` into `charAt`, `s[a..b]` into `slice`, the orderings into `compare` --
+// and sema refuses the rewrite when the module that declares the target was not
+// imported.
+//
+// **This guards that the probe and the lowering target are the same name.** They
+// are two separate strings in src/sema/checker.psm, and nothing else notices when
+// they drift: probe a name that exists and the rewrite still emits the right
+// call, probe one that does not and *every* program's `+` fails with this message
+// however it was written. The failure mode is a compiler that rejects correct
+// programs, so it is worth a fixture of its own.
+fn main() -> Int {
+    let a = "one"
+    let b = "two"
+    let joined = a + b
+    let c = a[0]
+    if (a < b) { return 1 }
+    return 0
+}

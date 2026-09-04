@@ -68,8 +68,10 @@ private fn semaSpawnArgAllowed(t: TypeInfo) -> Bool {
 }
 
 internal fn semaTypeErrorAt(node: ASTNode, context: String, expected: TypeInfo, actual: TypeInfo) {
-    semaErrorAt(node, strConcat(strConcat(context, ": expected "),
-                  strConcat(typeDisplay(expected), strConcat(", found ", typeDisplay(actual)))))
+    semaErrorAt(node, context.concat(": expected ",
+                                     typeDisplay(expected),
+                                     ", found ",
+                                     typeDisplay(actual)))
 }
 
 // SPEC 5.1's `unique` on a parameter lowers to `noalias`, which makes it the one
@@ -99,8 +101,9 @@ private fn semaCheckUniqueArgs(expr: ASTNode, fnNode: ASTNode, name: String) {
                 let pb = ptr_to_node(innerParam)
                 if (pb.i2 == 1 and b.kind == NodeKind.IDENTIFIER_EXPR) {
                     if (a.s1.equals(b.s1)) {
-                        semaErrorAt(b, strConcat(strConcat("`", a.s1),
-                            strConcat("` is passed to two `unique` parameters of ", diagQuote(name))))
+                        semaErrorAt(b, "`".concat(a.s1,
+                                                  "` is passed to two `unique` parameters of ",
+                                                  diagQuote(name)))
                         diag_note("`unique` asserts exactly one reference exists, and this call makes two")
                     }
                 }
@@ -133,9 +136,9 @@ private fn semaDottedModulePath(node: ASTNode) -> String {
         // Bound rather than nested: an intermediate passed straight into another
         // call has its release withheld (KNOWN_ISSUES.md, argument-position
         // release), so
-        // `strConcat(strConcat(a, b), c)` leaks the inner result.
-        let head = strConcat(inner, ".")
-        return strConcat(head, node.s1)
+        // `a.concat(b).concat(c)` leaks the inner result.
+        let head = inner.concat(".")
+        return head.concat(node.s1)
     }
     return ""
 }
@@ -151,8 +154,8 @@ private fn semaDottedModulePath(node: ASTNode) -> String {
 // use, and the reason five operators cost one file rather than five passes.
 //
 // **The ownership consequence is the point, not a side effect.** `a + b`
-// allocates. Because the rewrite produces a real call to `strConcat`, the result
-// gets an owner exactly as `strConcat(a, b)` does, and RUNTIME.md 3.1's rule
+// allocates. Because the rewrite produces a real call to `concat`, the result
+// gets an owner exactly as `a.concat(b)` does, and RUNTIME.md 3.1's rule
 // applies to it unchanged: `println(a + b)` leaks and `let j = a + b` does not.
 // An operator lowered straight to IR would have had to re-derive that, and would
 // have got it wrong in a place no ledger points at.
@@ -235,14 +238,22 @@ private fn semaCallArgs3(a: ASTNode, b: ASTNode, c: ASTNode) -> Ptr {
 // rewrite was about to call.
 private fn semaStringSugarAvailable(expr: ASTNode, fnName: String, what: String) -> Bool {
     if (semaDeclaresFunction(fnName)) { return true }
-    semaErrorAt(expr, strConcat(what, " needs `import std.string`"))
+    semaErrorAt(expr, what.concat(" needs `import std.string`"))
     return false
 }
 
 // `a == b` is `__builtin_string_eq(a, b)`; `a != b` is its negation; the four orderings are
-// the sign of `strCompare` against zero, compared by the very operator being
+// the sign of `String.compare` against zero, compared by the very operator being
 // rewritten -- which is why the ordering case re-enters semaExpr on a node whose
 // operands are now Int, and so cannot come back here.
+//
+// **The targets are method names, and that is what took the `str*` spelling out
+// of the public API.** A lowering target has to resolve from any file that writes
+// the operator, so while `+` meant `strConcat` the prefixed name could not be
+// made `internal` -- marking it so was measured and failed every user program's
+// `+` with "`strConcat` is internal to the package that declares it", caret on
+// the operator. Pointing the rewrite at `concat` moved the contract onto the name
+// that was always meant to be the surface.
 private fn semaStringComparison(module: ASTNode, expr: ASTNode, op: String,
                                 leftNode: ASTNode, rightNode: ASTNode) -> TypeInfo {
     if (op.equals("==")) {
@@ -267,7 +278,7 @@ private fn semaStringComparison(module: ASTNode, expr: ASTNode, op: String,
 
     let cmp = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(cmp, expr)
-    semaBecomeCall(cmp, "strCompare", semaCallArgs2(leftNode, rightNode))
+    semaBecomeCall(cmp, "compare", semaCallArgs2(leftNode, rightNode))
 
     let zero = createNode(NodeKind.LITERAL_EXPR)
     zero.i1 = TokenType.NUMBER_LITERAL
@@ -284,7 +295,7 @@ private fn semaStringComparison(module: ASTNode, expr: ASTNode, op: String,
 //
 // Every leaf, not just the leftmost: `"n = " + count` must fall through to the
 // arithmetic arm and be reported as the missing conversion it is, rather than
-// reaching overload resolution as `strConcat("n = ", count)` and coming back as
+// reaching overload resolution as `"n = ".concat(count)` and coming back as
 // "no overload accepts these argument types". Typing a leaf here is free --
 // semaExpr over an expression is idempotent, which is what the whole rewrite
 // scheme already relies on.
@@ -301,7 +312,7 @@ private fn semaConcatSpineIsString(module: ASTNode, expr: ASTNode) -> Bool {
 //     for $c in 0..strLength(s) { let c = s[$c]   ... }
 //
 // The element read is built as an INDEX_EXPR rather than as a direct call, which
-// is deliberate: `s[$c]` re-enters the indexing arm, so a String gets `strCharAt`
+// is deliberate: `s[$c]` re-enters the indexing arm, so a String gets `charAt`
 // from the desugaring above and a `List` gets the existing element path
 // **including `ir_unmark_list_exclusive`** -- the bookkeeping that makes binding
 // an element safe. Emitting `list_get` by hand would have skipped it.
@@ -339,13 +350,12 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
                and semaTypeImplementsNamedTrait(module, sourceT.name, "Iterator")) {
         return semaForEachIterator(module, stmt, source)
     } else if (sourceT.kind != TypeKind.LIST) {
-        semaErrorAt(source, strConcat("`for ... in` needs a String, a List, or a type implementing `Iterator`, found ",
-                                      typeDisplay(sourceT)))
+        semaErrorAt(source, "`for ... in` needs a String, a List, or a type implementing `Iterator`, found ".concat(typeDisplay(sourceT)))
         diag_note("implement `Iterator` for it, or iterate by index -- `for i in 0..n`")
         return false
     }
 
-    let indexName = strConcat("$", stmt.s1)
+    let indexName = "$".concat(stmt.s1)
 
     // let <var> = <source>[<indexName>], prepended to the body the user wrote.
     let index = createNode(NodeKind.INDEX_EXPR)
@@ -459,21 +469,21 @@ private fn semaConcatParts(expr: ASTNode, parts: NodeList) {
     nodeListPush(parts, expr)
 }
 
-// `a + b + c` is **one** `strConcat`, not two.
+// `a + b + c` is **one** `concat`, not two.
 //
-// Nested `strConcat(strConcat(a, b), c)` allocates an intermediate that nothing
-// names, and RUNTIME.md 3.1 is that a value nothing names is a value nothing
-// frees -- measured at 2 allocated / 1 released, on the released 0.1 compiler
-// too, so it is the language's rule and not a regression. Lowering the chain
-// pairwise would therefore have made the obvious spelling of the obvious
-// operation leak once per `+`, which is not an operator worth having.
+// Nested `a.concat(b).concat(c)` allocates an intermediate that nothing names,
+// and RUNTIME.md 3.1 is that a value nothing names is a value nothing frees --
+// measured at 2 allocated / 1 released, on the released 0.1 compiler too, so it
+// is the language's rule and not a regression. Lowering the chain pairwise would
+// therefore have made the obvious spelling of the obvious operation leak once
+// per `+`, which is not an operator worth having.
 //
 // Flattening removes the intermediate rather than leaking it, and copies each
 // byte once instead of twice. Past six parts there is no overload to call and
 // `strJoin` is the better answer anyway, so that is where it stops -- as an
 // error naming the alternative, never as a silent fallback to the leaking form.
 private fn semaStringConcatChain(module: ASTNode, expr: ASTNode) -> TypeInfo {
-    if (semaStringSugarAvailable(expr, "strConcat", "joining Strings with `+`") == false) {
+    if (semaStringSugarAvailable(expr, "concat", "joining Strings with `+`") == false) {
         nodeSetType(expr, typeString())
         return typeString()
     }
@@ -495,7 +505,7 @@ private fn semaStringConcatChain(module: ASTNode, expr: ASTNode) -> TypeInfo {
         return typeString()
     }
 
-    semaBecomeCall(expr, "strConcat", parts.head)
+    semaBecomeCall(expr, "concat", parts.head)
     return semaExpr(module, expr)
 }
 
@@ -548,8 +558,8 @@ private fn semaPropertyRewrite(module: ASTNode, expr: ASTNode) -> Int {
     if (semaDeclaresFunction(name) == false) { return 0 }
 
     if (semaPropertyReturnsOwned(module, name)) {
-        semaErrorAt(expr, strConcat(strConcat("property ", diagQuote(name)),
-                                    " returns an owned value, so it allocates; call it as a method instead"))
+        semaErrorAt(expr, "property ".concat(diagQuote(name),
+                                             " returns an owned value, so it allocates; call it as a method instead"))
         diag_note("a property must not allocate -- write `()` after the name")
         return 2
     }
@@ -580,12 +590,12 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
     if (expr.kind == NodeKind.IDENTIFIER_EXPR) {
         if (ir_has_var_type(expr.s1) == 0) {
-            semaErrorAt(expr, strConcat("unknown identifier ", diagQuote(expr.s1)))
+            semaErrorAt(expr, "unknown identifier ".concat(diagQuote(expr.s1)))
             nodeSetType(expr, typeInvalid())
             return typeInvalid()
         }
         if (ir_is_moved(expr.s1) == 1) {
-            semaErrorAt(expr, strConcat("use of moved value ", diagQuote(expr.s1)))
+            semaErrorAt(expr, "use of moved value ".concat(diagQuote(expr.s1)))
         }
         let mut t = typeFromSemKey(ir_get_var_type(expr.s1))
         nodeSetType(expr, t)
@@ -664,13 +674,13 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // result is not representable in the operand's own type. Reject it
             // rather than silently wrapping.
             if (typeIntIsUnsigned(operandT)) {
-                semaErrorAt(operand, strConcat("cannot apply unary `-` to unsigned type ", typeDisplay(operandT)))
+                semaErrorAt(operand, "cannot apply unary `-` to unsigned type ".concat(typeDisplay(operandT)))
             }
             nodeSetType(expr, operandT)
             return operandT
         }
 
-        semaErrorAt(expr, strConcat("unknown unary operator ", diagQuote(uop)))
+        semaErrorAt(expr, "unknown unary operator ".concat(diagQuote(uop)))
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
     }
@@ -679,7 +689,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         // v0.1 3.6. A `+` spine over Strings is flattened here, **before either
         // operand is typed**, and the ordering is the whole reason this is not
         // three lines further down: typing the left operand of `a + b + c`
-        // rewrites the inner `+` into its `strConcat` call, after which the spine
+        // rewrites the inner `+` into its `concat` call, after which the spine
         // is no longer visible and the chain lowers pairwise -- which is the
         // leaking form. Measured in exactly that shape: 2 allocated, 1 released.
         if (expr.s1.equals("+") and semaConcatSpineIsString(module, expr)) {
@@ -714,9 +724,10 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
         if (op.equals("+") or op.equals("-") or op.equals("*") or op.equals("/")) {
             if (typeIsNumeric(leftT) == false) {
-                semaErrorAt(leftNode, strConcat(strConcat("operator ", diagQuote(op)), " requires numeric operands"))
+                semaErrorAt(leftNode, "operator ".concat(diagQuote(op),
+                                                         " requires numeric operands"))
             }
-            semaExpectAssignable(rightNode, strConcat("operator ", diagQuote(op)), leftT, rightT)
+            semaExpectAssignable(rightNode, "operator ".concat(diagQuote(op)), leftT, rightT)
             nodeSetType(expr, leftT)
             return leftT
         }
@@ -738,9 +749,10 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         // Bitwise and/or/xor: integer-shaped operands of the same type.
         if (op.equals("&") or op.equals("|") or op.equals("^")) {
             if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.ENUM and leftT.kind != TypeKind.CHAR) {
-                semaErrorAt(leftNode, strConcat(strConcat("bitwise operator ", diagQuote(op)), " requires integer operands"))
+                semaErrorAt(leftNode, "bitwise operator ".concat(diagQuote(op),
+                                                                 " requires integer operands"))
             }
-            semaExpectAssignable(rightNode, strConcat("operator ", diagQuote(op)), leftT, rightT)
+            semaExpectAssignable(rightNode, "operator ".concat(diagQuote(op)), leftT, rightT)
             nodeSetType(expr, leftT)
             return leftT
         }
@@ -749,10 +761,12 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         // is an independent integer rather than something that has to match it.
         if (op.equals("<<") or op.equals(">>")) {
             if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.CHAR) {
-                semaErrorAt(leftNode, strConcat(strConcat("shift ", diagQuote(op)), " requires an integer left operand"))
+                semaErrorAt(leftNode, "shift ".concat(diagQuote(op),
+                                                      " requires an integer left operand"))
             }
             if (rightT.kind != TypeKind.INT) {
-                semaErrorAt(rightNode, strConcat(strConcat("the shift amount of ", diagQuote(op)), " must be an integer"))
+                semaErrorAt(rightNode, "the shift amount of ".concat(diagQuote(op),
+                                                                     " must be an integer"))
             }
             nodeSetType(expr, leftT)
             return leftT
@@ -769,9 +783,8 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // next two rules are about.
             if (leftT.kind == TypeKind.OPTIONAL or rightT.kind == TypeKind.OPTIONAL) {
                 if (op.equals("==") == false and op.equals("!=") == false) {
-                    semaErrorAt(expr, strConcat(strConcat("cannot order optional values with ",
-                                                              diagQuote(op)),
-                                                   "; compare with `none` instead"))
+                    semaErrorAt(expr, "cannot order optional values with ".concat(diagQuote(op),
+                                                                                  "; compare with `none` instead"))
                 } else if (leftT.kind != TypeKind.OPTIONAL or rightT.kind != TypeKind.OPTIONAL) {
                     // Comparing `T?` to a present `T` would be an address
                     // comparison, which is the thing the String rule forbids.
@@ -796,10 +809,10 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                 // nothing from std.string at all now, but requiring the import
                 // anyway keeps one rule for every String operator instead of an
                 // exception a reader has to know about.
-                let mut cmpFn = "strCompare"
+                let mut cmpFn = "compare"
                 if (op.equals("==") or op.equals("!=")) { cmpFn = "equals" }
                 if (semaStringSugarAvailable(expr, cmpFn,
-                        strConcat(strConcat("comparing String values with ", diagQuote(op)), "")) == false) {
+                        "comparing String values with ".concat(diagQuote(op), "")) == false) {
                     nodeSetType(expr, typeBool())
                     return typeBool()
                 }
@@ -809,9 +822,8 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // so it gets its own message rather than the one above: the mistake
             // is a missing conversion, not a missing `strEquals`.
             if (leftT.kind == TypeKind.STRING or rightT.kind == TypeKind.STRING) {
-                semaErrorAt(expr, strConcat(strConcat("cannot compare a String with ",
-                                                      typeDisplay(typeStringOther(leftT, rightT))),
-                                            "; convert one side first"))
+                semaErrorAt(expr, "cannot compare a String with ".concat(typeDisplay(typeStringOther(leftT, rightT)),
+                                                                         "; convert one side first"))
                 nodeSetType(expr, typeBool())
                 return typeBool()
             }
@@ -825,12 +837,12 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                 return typeBool()
             }
 
-            semaExpectAssignable(rightNode, strConcat("comparison ", diagQuote(op)), leftT, rightT)
+            semaExpectAssignable(rightNode, "comparison ".concat(diagQuote(op)), leftT, rightT)
             nodeSetType(expr, typeBool())
             return typeBool()
         }
 
-        semaErrorAt(expr, strConcat("unknown operator ", diagQuote(op)))
+        semaErrorAt(expr, "unknown operator ".concat(diagQuote(op)))
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
     }
@@ -922,8 +934,9 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // check their spelling when the answer is their imports.
             if (modulePath.equals("") == false
                 and semaQualifierNamesModule(modulePath)) {
-                semaErrorAt(callee, strConcat(strConcat("module ", diagQuote(modulePath)),
-                                              strConcat(" declares no ", diagQuote(callee.s1))))
+                semaErrorAt(callee, "module ".concat(diagQuote(modulePath),
+                                                     " declares no ",
+                                                     diagQuote(callee.s1)))
                 nodeSetType(expr, typeInvalid())
                 return typeInvalid()
             }
@@ -938,10 +951,9 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                 and semaQualifierNamesModule(modulePath) == false) {
                 let suggestion = semaModuleWithLeaf(modulePath)
                 if (suggestion.equals("") == false) {
-                    semaErrorAt(target, strConcat("no module ", diagQuote(modulePath)))
-                    diag_note(strConcat(strConcat("a module is qualified by its full import path -- did you mean ",
-                                                  diagQuote(suggestion)),
-                                        "?"))
+                    semaErrorAt(target, "no module ".concat(diagQuote(modulePath)))
+                    diag_note("a module is qualified by its full import path -- did you mean ".concat(diagQuote(suggestion),
+                                                                                                      "?"))
                     nodeSetType(expr, typeInvalid())
                     return typeInvalid()
                 }
@@ -1026,7 +1038,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // wrapped here, after the overload is chosen. Matching admitted the
             // coercion; this is where it is actually built.
             semaBuildDynIfNeeded(module, argNode, paramT)
-            semaCheckValue(module, argNode, paramT, strConcat(diagQuote(name), " argument"))
+            semaCheckValue(module, argNode, paramT, diagQuote(name).concat(" argument"))
             // Only `sink` parameters take ownership; `let`/`inout` borrow.
             if (paramNode.s2.equals("sink")) {
                 semaConsumeOperand(argNode)
@@ -1098,9 +1110,8 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         // sized integers, because those come back in a different register class
         // or width and would need their own arm rather than a cast.
         if (typeIsValid(retT) and semaTaskResultAllowed(retT) == false) {
-            semaErrorAt(expr, strConcat(strConcat("a spawned function cannot return ",
-                                                    typeDisplay(retT)),
-                                         "; a task result must be Int, a reference type, or nothing"))
+            semaErrorAt(expr, "a spawned function cannot return ".concat(typeDisplay(retT),
+                                                                         "; a task result must be Int, a reference type, or nothing"))
         }
 
         let mut argPtr = call.child2
@@ -1114,9 +1125,8 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             // site, so it is exactly the case the T domain has nothing to say
             // about.
             if (typeIsValid(argT) and semaSpawnArgAllowed(argT) == false) {
-                semaErrorAt(argNode, strConcat(strConcat("a spawned argument must be a reference type, found ",
-                                                           typeDisplay(argT)),
-                                                "; tasks own what they are given, and a scalar has nothing to own"))
+                semaErrorAt(argNode, "a spawned argument must be a reference type, found ".concat(typeDisplay(argT),
+                                                                                                  "; tasks own what they are given, and a scalar has nothing to own"))
             }
             semaConsumeOperand(argNode)
             argc = argc + 1
@@ -1144,9 +1154,8 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             return typeInvalid()
         }
         if (typeIsTask(handleT) == false) {
-            semaErrorAt(handle, strConcat(strConcat("`join` needs a task handle, found ",
-                                                      typeDisplay(handleT)),
-                                           "; only `spawn` produces one"))
+            semaErrorAt(handle, "`join` needs a task handle, found ".concat(typeDisplay(handleT),
+                                                                            "; only `spawn` produces one"))
             nodeSetType(expr, typeInvalid())
             return typeInvalid()
         }
@@ -1189,8 +1198,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             }
             let rowT = ptr_to_type(objectT.child)
             if (rowT.kind != TypeKind.STRUCT) {
-                semaErrorAt(objectNode, strConcat("DataView element must name a struct, found ",
-                                                   typeDisplay(rowT)))
+                semaErrorAt(objectNode, "DataView element must name a struct, found ".concat(typeDisplay(rowT)))
                 nodeSetType(expr, typeInvalid())
                 return typeInvalid()
             }
@@ -1225,12 +1233,12 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                 // REQUIREMENTS 4's type. Naming a property here would send the
                 // reader looking for a spelling mistake.
                 if (objectT.kind == TypeKind.OPTIONAL) {
-                    semaErrorAt(objectNode, strConcat("member access requires a struct value, found ",
-                                                      typeDisplay(objectT)))
+                    semaErrorAt(objectNode, "member access requires a struct value, found ".concat(typeDisplay(objectT)))
                     diag_note("unwrap it first -- `expect(value)`")
                 } else {
-                    semaErrorAt(objectNode, strConcat(strConcat("no property ", diagQuote(expr.s1)),
-                                                      strConcat(" on ", typeDisplay(objectT))))
+                    semaErrorAt(objectNode, "no property ".concat(diagQuote(expr.s1),
+                                                                  " on ",
+                                                                  typeDisplay(objectT)))
                 }
             }
             nodeSetType(expr, typeInvalid())
@@ -1267,24 +1275,23 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         let collectionT = semaExpr(module, ptr_to_node(expr.child1))
         let indexT = semaExpr(module, ptr_to_node(expr.child2))
         semaExpectAssignable(ptr_to_node(expr.child2), "collection index", typeInt(), indexT)
-        // v0.1 3.6. `s[i]` is `strCharAt(s, i)`, which answers NUL rather than
+        // v0.1 3.6. `s[i]` is `s.charAt(i)`, which answers NUL rather than
         // trapping out of range -- the bounds check the caller would write is the
         // one the accessor already does, and a Prismio String cannot contain a
         // NUL, so the answer is unambiguous. `s.get(i)` is the Option form.
         if (collectionT.kind == TypeKind.STRING) {
-            if (semaStringSugarAvailable(expr, "strCharAt", "indexing a String") == false) {
+            if (semaStringSugarAvailable(expr, "charAt", "indexing a String") == false) {
                 nodeSetType(expr, typeChar())
                 return typeChar()
             }
-            semaBecomeCall(expr, "strCharAt",
+            semaBecomeCall(expr, "charAt",
                            semaCallArgs2(ptr_to_node(expr.child1), ptr_to_node(expr.child2)))
             return semaExpr(module, expr)
         }
 
         if (collectionT.kind != TypeKind.ARRAY and collectionT.kind != TypeKind.LIST
             and collectionT.kind != TypeKind.SLICE and collectionT.kind != TypeKind.DATAVIEW) {
-            semaErrorAt(expr, strConcat("indexing requires a String, array, List, Slice, or DataView, found ",
-                                         typeDisplay(collectionT)))
+            semaErrorAt(expr, "indexing requires a String, array, List, Slice, or DataView, found ".concat(typeDisplay(collectionT)))
             nodeSetType(expr, typeInvalid())
             return typeInvalid()
         }
@@ -1311,26 +1318,25 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         semaExpectAssignable(ptr_to_node(expr.child2), "slice start", typeInt(), startT)
         semaExpectAssignable(ptr_to_node(expr.child3), "slice end", typeInt(), endT)
 
-        // v0.1 3.6. `s[a..b]` is `strSlice(s, a, b)` -- half-open, and a fresh
+        // v0.1 3.6. `s[a..b]` is `s.slice(a, b)` -- half-open, and a fresh
         // allocation rather than a view. A String slice cannot be a borrow of its
         // source the way `List` slicing is: a String carries its length beside
         // its pointer, so a subrange is a different pair, and there is nowhere to
         // put one that outlives the expression without owning it. That makes this
         // the one indexing form that allocates, so bind what it gives you.
         if (baseT.kind == TypeKind.STRING) {
-            if (semaStringSugarAvailable(expr, "strSlice", "slicing a String") == false) {
+            if (semaStringSugarAvailable(expr, "slice", "slicing a String") == false) {
                 nodeSetType(expr, typeString())
                 return typeString()
             }
-            semaBecomeCall(expr, "strSlice",
+            semaBecomeCall(expr, "slice",
                            semaCallArgs3(ptr_to_node(expr.child1), ptr_to_node(expr.child2),
                                          ptr_to_node(expr.child3)))
             return semaExpr(module, expr)
         }
 
         if (baseT.kind != TypeKind.LIST and baseT.kind != TypeKind.SLICE) {
-            semaErrorAt(expr, strConcat("slicing requires a String, List, or Slice, found ",
-                                         typeDisplay(baseT)))
+            semaErrorAt(expr, "slicing requires a String, List, or Slice, found ".concat(typeDisplay(baseT)))
             nodeSetType(expr, typeInvalid())
             return typeInvalid()
         }
@@ -1359,14 +1365,14 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             let instantiated = monoInstantiateStruct(module, ptr_to_node(expr.child2))
             expr.child2 = ptr_null()
             if (instantiated.equals("")) {
-                semaErrorAt(expr, strConcat("unknown generic struct ", diagQuote(expr.s1)))
+                semaErrorAt(expr, "unknown generic struct ".concat(diagQuote(expr.s1)))
                 nodeSetType(expr, typeInvalid())
                 return typeInvalid()
             }
             expr.s1 = instantiated
         }
         if (semaHasStruct(module, expr.s1) == false) {
-            semaErrorAt(expr, strConcat("unknown struct ", diagQuote(expr.s1)))
+            semaErrorAt(expr, "unknown struct ".concat(diagQuote(expr.s1)))
             nodeSetType(expr, typeInvalid())
             return typeInvalid()
         }
@@ -1374,7 +1380,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         while (nodeExists(fieldPtr)) {
             let field = ptr_to_node(fieldPtr)
             let mut expected = semaFindStructFieldType(module, field, expr.s1, field.s1)
-            semaCheckValue(module, ptr_to_node(field.child1), expected, strConcat("struct field ", diagQuote(field.s1)))
+            semaCheckValue(module, ptr_to_node(field.child1), expected, "struct field ".concat(diagQuote(field.s1)))
             semaMoveOperand(ptr_to_node(field.child1))
             fieldPtr = field.next
         }
@@ -1400,7 +1406,7 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
         }
         if (hasInit) {
             if (hasAnnotation) {
-                semaCheckValue(module, ptr_to_node(stmt.child2), varT, strConcat("initializer for ", diagQuote(stmt.s1)))
+                semaCheckValue(module, ptr_to_node(stmt.child2), varT, "initializer for ".concat(diagQuote(stmt.s1)))
             } else {
                 varT = semaExpr(module, ptr_to_node(stmt.child2))
             }
@@ -1435,8 +1441,8 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
         // side.
         if (typeIsValid(varT) == false) {
             if (hasAnnotation == false and hasInit == false) {
-                semaErrorAt(stmt, strConcat(strConcat("cannot infer a type for ", diagQuote(stmt.s1)),
-                                               "; add a type annotation or an initializer"))
+                semaErrorAt(stmt, "cannot infer a type for ".concat(diagQuote(stmt.s1),
+                                                                    "; add a type annotation or an initializer"))
             }
         }
 
@@ -1480,8 +1486,8 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
         // question from whether the binding itself may be reseated.
         if (target.kind == NodeKind.IDENTIFIER_EXPR) {
             if (ir_var_is_mutable(target.s1) == 0) {
-                semaErrorAt(target, strConcat(strConcat("cannot assign to ", diagQuote(target.s1)),
-                                                 ", which is not declared `mut`"))
+                semaErrorAt(target, "cannot assign to ".concat(diagQuote(target.s1),
+                                                               ", which is not declared `mut`"))
                 diag_note("change its declaration to `let mut`")
             }
         }
@@ -1654,7 +1660,7 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
         }
 
         if (scrutT.kind != TypeKind.INT and scrutT.kind != TypeKind.ENUM) {
-            semaErrorAt(ptr_to_node(stmt.child1), strConcat("match scrutinee must be an integer or enum value, found ", typeDisplay(scrutT)))
+            semaErrorAt(ptr_to_node(stmt.child1), "match scrutinee must be an integer or enum value, found ".concat(typeDisplay(scrutT)))
         }
         let mut patExpected = typeCopy(scrutT)
         if (scrutT.kind == TypeKind.ENUM) { patExpected = typeInt() }
@@ -1701,8 +1707,7 @@ internal fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
     // meant to remove: a name that looks foreign or user-defined but whose call
     // is silently replaced by codegen.
     if (strStartsWith(fnNode.s1, "__builtin_")) {
-        semaErrorAt(fnNode, strConcat(diagQuote(fnNode.s1),
-                    " is reserved for a compiler builtin and cannot be declared"))
+        semaErrorAt(fnNode, diagQuote(fnNode.s1).concat(" is reserved for a compiler builtin and cannot be declared"))
         return
     }
 
@@ -1730,8 +1735,8 @@ internal fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
     // declarations cannot begin at the same file, line and column, so this
     // is exact.
     if (semaSamePosition(first, fnNode) == false) {
-        semaErrorAt(fnNode, strConcat(strConcat("duplicate definition of ", diagQuote(fnNode.s1)),
-                                          " with the same parameter types"))
+        semaErrorAt(fnNode, "duplicate definition of ".concat(diagQuote(fnNode.s1),
+                                                              " with the same parameter types"))
         diag_note_at(first.file, first.line, first.col, first.len, "the first definition is here")
     }
     ir_set_fn_return_type(symbol, typeSemKey(retT))
@@ -1744,7 +1749,7 @@ private fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
     }
     if (nodeExists(varNode.child2)) {
         if (typeIsValid(varT)) {
-            semaCheckValue(module, ptr_to_node(varNode.child2), varT, strConcat("initializer for global ", diagQuote(varNode.s1)))
+            semaCheckValue(module, ptr_to_node(varNode.child2), varT, "initializer for global ".concat(diagQuote(varNode.s1)))
         } else {
             varT = semaExpr(module, ptr_to_node(varNode.child2))
         }
@@ -1758,15 +1763,15 @@ private fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
         // (see parseUnary), so negative constants are still LITERAL_EXPR.
         let init = ptr_to_node(varNode.child2)
         if (init.kind != NodeKind.LITERAL_EXPR) {
-            semaErrorAt(init, strConcat(strConcat("global ", diagQuote(varNode.s1)),
-                                           " needs a constant initializer"))
+            semaErrorAt(init, "global ".concat(diagQuote(varNode.s1),
+                                               " needs a constant initializer"))
             diag_note("nothing runs before main, so a global cannot be initialized by an expression; move the computation into a function")
         }
     }
     if (typeIsValid(varT) == false) {
         if (nodeIsNull(varNode.child1) and nodeIsNull(varNode.child2)) {
-            semaErrorAt(varNode, strConcat(strConcat("cannot infer a type for global ", diagQuote(varNode.s1)),
-                                               "; add a type annotation or an initializer"))
+            semaErrorAt(varNode, "cannot infer a type for global ".concat(diagQuote(varNode.s1),
+                                                                          "; add a type annotation or an initializer"))
         }
     }
     ir_register_global_name(varNode.s1)
@@ -1794,7 +1799,8 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
         let mut param = ptr_to_node(paramPtr)
         let paramT = semaAnnotationType(module, ptr_to_node(param.child1))
         if (param.s2.equals("inout") and typeIsMoveOnly(paramT) == false) {
-            semaErrorAt(param, strConcat(strConcat("inout parameter ", diagQuote(param.s1)), " must be a struct (reference) type"))
+            semaErrorAt(param, "inout parameter ".concat(diagQuote(param.s1),
+                                                         " must be a struct (reference) type"))
         }
         // let/inout params are non-owning borrows; sink params own their value.
         if (param.s2.equals("sink") == false) {
@@ -1815,9 +1821,10 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
         // shaped.
         if (expectedReturn.kind != TypeKind.VOID) {
             if (semaBlockDiverges(body) == false) {
-                semaErrorAt(fnNode, strConcat(strConcat("function ", diagQuote(fnNode.s1)),
-                              strConcat(strConcat(" must return ", typeDisplay(expectedReturn)),
-                                         " on every path, but control can reach its closing brace")))
+                semaErrorAt(fnNode, "function ".concat(diagQuote(fnNode.s1),
+                                                       " must return ",
+                                                       typeDisplay(expectedReturn),
+                                                       " on every path, but control can reach its closing brace"))
             }
         }
     }
@@ -1852,13 +1859,15 @@ private fn semaCheckImplBlocks(module: ASTNode) {
                 let targetText = semaAnnotationText(ptr_to_node(stmt.child3).child1)
                 let traitText = monoTraitRefText(ptr_to_node(stmt.child3).child2)
                 if (semaImplsExactlyAgree(first, stmt)) {
-                    semaErrorAt(stmt, strConcat(strConcat("duplicate impl ", diagQuote(traitText)),
-                                                strConcat(" for ", diagQuote(targetText))))
+                    semaErrorAt(stmt, "duplicate impl ".concat(diagQuote(traitText),
+                                                               " for ",
+                                                               diagQuote(targetText)))
                     diag_note_at(first.file, first.line, first.col, first.len,
                                  "the first implementation is here")
                 } else {
-                    semaErrorAt(stmt, strConcat(strConcat("overlapping impl ", diagQuote(traitText)),
-                                                strConcat(" for ", diagQuote(targetText))))
+                    semaErrorAt(stmt, "overlapping impl ".concat(diagQuote(traitText),
+                                                                 " for ",
+                                                                 diagQuote(targetText)))
                     diag_note_at(first.file, first.line, first.col, first.len,
                                  "the first overlapping implementation is here")
                 }
@@ -1995,10 +2004,9 @@ private fn semaReturnsAgree(module: ASTNode, ptr: Ptr, expected: String, first: 
             let otherName = semaOpaqueConcreteName(module, node)
             if (otherName.equals("")) { return false }
             if (otherName.equals(expected) == false) {
-                semaErrorAt(node, strConcat(
-                    strConcat("every `return` in a function returning `impl Trait` must return the same type, but this one returns ",
-                              diagQuote(otherName)),
-                    strConcat(" and an earlier one returns ", diagQuote(expected))))
+                semaErrorAt(node, "every `return` in a function returning `impl Trait` must return the same type, but this one returns ".concat(diagQuote(otherName),
+                                                                                                                                                " and an earlier one returns ",
+                                                                                                                                                diagQuote(expected)))
                 diag_note_at(first.file, first.line, first.col, first.len,
                              "the earlier `return` is here")
                 diag_note("an opaque return names one type; `dyn Trait` is the spelling for several")
@@ -2096,8 +2104,7 @@ private fn semaEnsureDynStruct(module: ASTNode, annotation: ASTNode) {
     let traitName = strSubstring(name, 4, __builtin_string_len(name) - 4)
     let traitDecl = semaFindTrait(module, traitName)
     if (nodeIsNull(node_to_ptr(traitDecl))) {
-        semaErrorAt(annotation, strConcat(strConcat("`dyn ", traitName),
-                                          "` names no trait"))
+        semaErrorAt(annotation, "`dyn ".concat(traitName, "` names no trait"))
         return
     }
     if (semaTraitIsObjectSafe(module, traitDecl, annotation) == false) { return }
@@ -2129,9 +2136,9 @@ private fn semaTraitIsObjectSafe(module: ASTNode, traitDecl: ASTNode, at: ASTNod
     while (nodeExists(memberPtr)) {
         let member = ptr_to_node(memberPtr)
         if (member.kind == NodeKind.ASSOC_TYPE) {
-            semaErrorAt(at, strConcat(strConcat("`", traitDecl.s1),
-                        strConcat("` has an associated type, so it cannot be a `dyn` object yet",
-                                  "")))
+            semaErrorAt(at, "`".concat(traitDecl.s1,
+                                       "` has an associated type, so it cannot be a `dyn` object yet",
+                                       ""))
             diag_note("an object would have to fix the associated type at the use site; write a bound instead")
             return false
         }
@@ -2142,17 +2149,18 @@ private fn semaTraitIsObjectSafe(module: ASTNode, traitDecl: ASTNode, at: ASTNod
     while (nodeExists(sigPtr)) {
         let signature = ptr_to_node(sigPtr)
         if (signature.s2.equals("") == false) {
-            semaErrorAt(at, strConcat(strConcat("`", traitDecl.s1),
-                        strConcat("` cannot be a `dyn` object: ",
-                                  strConcat(diagQuote(signature.s1), " is generic"))))
+            semaErrorAt(at, "`".concat(traitDecl.s1,
+                                       "` cannot be a `dyn` object: ",
+                                       diagQuote(signature.s1),
+                                       " is generic"))
             diag_note("one vtable row holds one function, and a generic method needs a different one per type argument")
             return false
         }
         if (semaSignatureMentionsSelf(signature)) {
-            semaErrorAt(at, strConcat(strConcat("`", traitDecl.s1),
-                        strConcat("` cannot be a `dyn` object: ",
-                                  strConcat(diagQuote(signature.s1),
-                                            " mentions `Self` away from the receiver"))))
+            semaErrorAt(at, "`".concat(traitDecl.s1,
+                                       "` cannot be a `dyn` object: ",
+                                       diagQuote(signature.s1),
+                                       " mentions `Self` away from the receiver"))
             diag_note("the concrete type is not known through an object, so `Self` there has no meaning")
             return false
         }
@@ -2201,8 +2209,7 @@ private fn semaBuildDynIfNeeded(module: ASTNode, argNode: ASTNode, paramT: TypeI
 
     argNode.kind = NodeKind.DYN_MAKE
     argNode.s1 = strClone(paramT.name)
-    argNode.s2 = strConcat(strConcat("vtable$", traitName),
-                           strConcat("$", typeDisplay(actual)))
+    argNode.s2 = "vtable$".concat(traitName, "$", typeDisplay(actual))
     argNode.i1 = 0
     argNode.i2 = 0
     argNode.i3 = 0
@@ -2263,13 +2270,13 @@ private fn semaDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> Type
         let argNode = ptr_to_node(argPtr)
         let paramNode = ptr_to_node(paramPtr)
         let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
-        semaCheckValue(module, argNode, paramT, strConcat(diagQuote(name), " argument"))
+        semaCheckValue(module, argNode, paramT, diagQuote(name).concat(" argument"))
         argPtr = argNode.next
         paramPtr = paramNode.next
     }
     if (nodeExists(argPtr) or nodeExists(paramPtr)) {
-        semaErrorAt(expr, strConcat(strConcat("wrong number of arguments to ", diagQuote(name)),
-                                    " through a trait object"))
+        semaErrorAt(expr, "wrong number of arguments to ".concat(diagQuote(name),
+                                                                 " through a trait object"))
     }
 
     receiver.next = ptr_null()
@@ -2320,9 +2327,10 @@ private fn semaRejectDyn(ptr: Ptr, position: String) {
         let node = ptr_to_node(p)
         if (node.kind == NodeKind.TYPE_ANNOTATION and strStartsWith(node.s1, "dyn$")) {
             let traitName = strSubstring(node.s1, 4, __builtin_string_len(node.s1) - 4)
-            semaErrorAt(node, strConcat(strConcat("`dyn ", traitName),
-                        strConcat("` cannot be ", strConcat(position,
-                                  ": a trait object is a borrow and cannot outlive the call it is passed to"))))
+            semaErrorAt(node, "`dyn ".concat(traitName,
+                                             "` cannot be ",
+                                             position,
+                                             ": a trait object is a borrow and cannot outlive the call it is passed to"))
             diag_note("take it as a parameter, or use a bound -- `fn f<T: Trait>(v: T)` -- for a value you need to keep")
         }
         semaRejectDyn(node.child1, position)
@@ -2347,10 +2355,10 @@ private fn semaCheckOrphan(module: ASTNode, implNode: ASTNode) {
 
     let targetText = semaAnnotationText(header.child1)
     semaErrorAt(implNode,
-                strConcat(strConcat("this module declares neither ",
-                                    diagQuote(monoTraitRefText(header.child2))),
-                          strConcat(" nor ", strConcat(diagQuote(targetText),
-                                    ", so it may not implement one for the other"))))
+                "this module declares neither ".concat(diagQuote(monoTraitRefText(header.child2)),
+                                                       " nor ",
+                                                       diagQuote(targetText),
+                                                       ", so it may not implement one for the other"))
     diag_note("implement it in the module that declares the trait or the type; an implementation both of whose names are foreign cannot be checked for conflicts against another module that writes the same one")
 }
 
@@ -2658,16 +2666,17 @@ private fn semaCheckConformance(module: ASTNode, implNode: ASTNode) {
     let traitRef = ptr_to_node(header.child2)
     let traitDecl = semaFindTrait(module, traitRef.s1)
     if (nodeIsNull(node_to_ptr(traitDecl))) {
-        semaErrorAt(implNode, strConcat("unknown trait ", diagQuote(traitRef.s1)))
+        semaErrorAt(implNode, "unknown trait ".concat(diagQuote(traitRef.s1)))
         diag_note("a trait has to be declared with `trait Name { fn ... }` before a type can implement it")
         return
     }
 
     if (semaAnnotationChainLength(traitRef.child1) != monoParamCount(traitDecl.s2)) {
-        semaErrorAt(implNode, strConcat(strConcat(diagQuote(traitDecl.s1),
-                    " takes trait parameters <"), strConcat(strConcat(traitDecl.s2,
-                    ">, and the arguments in "),
-                    strConcat(diagQuote(monoTraitRefText(header.child2)), " do not match"))))
+        semaErrorAt(implNode, diagQuote(traitDecl.s1).concat(" takes trait parameters <",
+                                                             traitDecl.s2,
+                                                             ">, and the arguments in ",
+                                                             diagQuote(monoTraitRefText(header.child2)),
+                                                             " do not match"))
         return
     }
 
@@ -2689,12 +2698,13 @@ private fn semaCheckConformance(module: ASTNode, implNode: ASTNode) {
         }
         if (nodeIsNull(conformingPtr)) {
             let targetText = semaAnnotationText(ptr_to_node(implNode.child3).child1)
-            semaErrorAt(implNode, strConcat(strConcat(diagQuote(targetText),
-                        strConcat(" does not implement ",
-                                  diagQuote(monoTraitRefText(header.child2)))),
-                        strConcat(": no ", diagQuote(signature.s1))))
-            diag_note(strConcat(strConcat("the trait declares it as ", semaSignatureText(signature)),
-                                strConcat(", with `Self` standing for ", diagQuote(targetText))))
+            semaErrorAt(implNode, diagQuote(targetText).concat(" does not implement ",
+                                                               diagQuote(monoTraitRefText(header.child2)),
+                                                               ": no ",
+                                                               diagQuote(signature.s1)))
+            diag_note("the trait declares it as ".concat(semaSignatureText(signature),
+                                                         ", with `Self` standing for ",
+                                                         diagQuote(targetText)))
         }
         signaturePtr = signature.next
     }
@@ -2727,14 +2737,12 @@ private fn semaCheckTraitMembers(module: ASTNode, implNode: ASTNode, header: AST
         let suppliedPtr = semaFindImplMember(header, declared.s1, declared.kind)
 
         if (nodeIsNull(suppliedPtr)) {
-            let mut spelling = "`let "
-            if (declared.kind == NodeKind.ASSOC_TYPE) { spelling = "`type " }
+            let mut spelling = ": no `let "
+            if (declared.kind == NodeKind.ASSOC_TYPE) { spelling = ": no `type " }
             semaErrorAt(implNode,
-                        strConcat(strConcat(diagQuote(targetText),
-                                            strConcat(" does not implement ",
-                                                      diagQuote(monoTraitRefText(header.child2)))),
-                                  strConcat(strConcat(": no ", spelling),
-                                            strConcat(declared.s1, "`"))))
+                        diagQuote(targetText).concat(" does not implement ",
+                                                     diagQuote(monoTraitRefText(header.child2)),
+                                                     spelling, declared.s1, "`"))
             diag_note_at(declared.file, declared.line, declared.col, declared.len,
                          "the trait declares it here")
         } else if (declared.kind == NodeKind.ASSOC_CONST) {
@@ -2746,9 +2754,11 @@ private fn semaCheckTraitMembers(module: ASTNode, implNode: ASTNode, header: AST
             let gotT = semaExpr(module, ptr_to_node(supplied.child2))
             if (typeIsValid(wantT) and typeIsValid(gotT) and typeEquals(wantT, gotT) == false) {
                 semaErrorAt(supplied,
-                            strConcat(strConcat("`let ", strConcat(declared.s1, "` is declared ")),
-                                      strConcat(typeDisplay(wantT),
-                                                strConcat(", and this value is ", typeDisplay(gotT)))))
+                            "`let ".concat(declared.s1,
+                                           "` is declared ",
+                                           typeDisplay(wantT),
+                                           ", and this value is ",
+                                           typeDisplay(gotT)))
             }
         }
 
@@ -2822,10 +2832,10 @@ private fn semaCheckSupertraits(module: ASTNode, implNode: ASTNode, traitDecl: A
         let superRef = ptr_to_node(superPtr)
         if (semaTargetImplementsTrait(module, targetText, superRef) == false) {
             semaErrorAt(implNode,
-                        strConcat(strConcat(diagQuote(targetText),
-                                            strConcat(" implements ", diagQuote(traitDecl.s1))),
-                                  strConcat(", so it must also implement ",
-                                            diagQuote(monoTraitRefText(superPtr)))))
+                        diagQuote(targetText).concat(" implements ",
+                                                     diagQuote(traitDecl.s1),
+                                                     ", so it must also implement ",
+                                                     diagQuote(monoTraitRefText(superPtr))))
             diag_note_at(traitDecl.file, traitDecl.line, traitDecl.col, traitDecl.len,
                          "the supertrait is required here")
         }
@@ -2864,8 +2874,8 @@ private fn semaCheckSupertraitCycles(module: ASTNode) {
         let stmt = ptr_to_node(p)
         if (stmt.kind == NodeKind.TRAIT_DECL
             and semaTraitReaches(module, stmt.child2, stmt.s1, 0)) {
-            semaErrorAt(stmt, strConcat(strConcat("trait ", diagQuote(stmt.s1)),
-                                        " is its own supertrait, directly or through a cycle"))
+            semaErrorAt(stmt, "trait ".concat(diagQuote(stmt.s1),
+                                              " is its own supertrait, directly or through a cycle"))
         }
         p = stmt.next
     }
@@ -2916,10 +2926,11 @@ private fn semaCheckMethodConventions(signature: ASTNode, candidate: ASTNode) {
         let haveParam = ptr_to_node(have)
         if (wantParam.s2.equals(haveParam.s2) == false) {
             semaErrorAt(haveParam,
-                        strConcat(strConcat("parameter ", diagQuote(haveParam.s1)),
-                                  strConcat(strConcat(" is ", semaConventionText(wantParam.s2)),
-                                            strConcat(" in the trait, and ",
-                                                      semaConventionText(haveParam.s2)))))
+                        "parameter ".concat(diagQuote(haveParam.s1),
+                                            " is ",
+                                            semaConventionText(wantParam.s2),
+                                            " in the trait, and ",
+                                            semaConventionText(haveParam.s2)))
             diag_note_at(wantParam.file, wantParam.line, wantParam.col, wantParam.len,
                          "the trait declares the convention here")
         }
@@ -3106,19 +3117,19 @@ private fn semaAnnotationsAgree(targetPtr: Ptr, traitParams: String, traitArgs: 
 // rather than quoted from source, because the signature and the `impl` that fails
 // to satisfy it are routinely in different files.
 private fn semaSignatureText(signature: ASTNode) -> String {
-    let mut text = strConcat(strConcat("fn ", signature.s1), "(")
+    let mut text = "fn ".concat(signature.s1, "(")
     let mut paramPtr = signature.child1
     let mut first = true
     while (nodeExists(paramPtr)) {
         let param = ptr_to_node(paramPtr)
-        if (first == false) { text = strConcat(text, ", ") }
+        if (first == false) { text = text.concat(", ") }
         first = false
-        text = strConcat(text, strConcat(strConcat(param.s1, ": "), semaAnnotationText(param.child1)))
+        text = text.concat(param.s1, ": ", semaAnnotationText(param.child1))
         paramPtr = param.next
     }
-    text = strConcat(text, ")")
+    text = text.concat(")")
     if (nodeExists(signature.child3)) {
-        text = strConcat(text, strConcat(" -> ", semaAnnotationText(signature.child3)))
+        text = text.concat(" -> ", semaAnnotationText(signature.child3))
     }
     return text
 }
@@ -3127,21 +3138,21 @@ private fn semaAnnotationText(annotationPtr: Ptr) -> String {
     if (nodeIsNull(annotationPtr)) { return "" }
     let annotation = ptr_to_node(annotationPtr)
     if (annotation.i1 == 1) {
-        return strConcat(strConcat("[", semaAnnotationText(annotation.child1)), "]")
+        return "[".concat(semaAnnotationText(annotation.child1), "]")
     }
     if (annotation.i2 == 1) {
-        let mut text = strConcat(annotation.s1, "<")
+        let mut text = annotation.s1.concat("<")
         let mut argPtr = annotation.child1
         let mut first = true
         while (nodeExists(argPtr)) {
-            if (first == false) { text = strConcat(text, ", ") }
+            if (first == false) { text = text.concat(", ") }
             first = false
-            text = strConcat(text, semaAnnotationText(argPtr))
+            text = text.concat(semaAnnotationText(argPtr))
             argPtr = ptr_to_node(argPtr).next
         }
-        return strConcat(text, ">")
+        return text.concat(">")
     }
-    if (annotation.i3 == 1) { return strConcat(annotation.s1, "?") }
+    if (annotation.i3 == 1) { return annotation.s1.concat("?") }
     return strClone(annotation.s1)
 }
 
@@ -3158,7 +3169,7 @@ let mut closureSerial = 0
 // character, so no user declaration can collide with one -- which is what lets
 // the call rewrite key on the *type* rather than on the absence of a function of
 // the same name.
-private fn semaClosurePrefix() -> String { return strConcat("Closure", monoSeparator()) }
+private fn semaClosurePrefix() -> String { return "Closure".concat(monoSeparator()) }
 
 // **A closure is a struct and a function, and the dispatch is overloading.**
 //
@@ -3191,9 +3202,9 @@ private fn semaClosureName(expr: ASTNode) -> String {
     // enough. Two instantiations of one template hold two CLOSURE_EXPRs with
     // identical spans and possibly different capture types.
     closureSerial = closureSerial + 1
-    return strConcat(semaClosurePrefix(),
-                     strConcat(strFromInt(expr.line),
-                               strConcat(monoSeparator(), strFromInt(closureSerial))))
+    return semaClosurePrefix().concat(strFromInt(expr.line),
+                                      monoSeparator(),
+                                      strFromInt(closureSerial))
 }
 
 private fn semaClosureNamesParam(paramsPtr: Ptr, name: String) -> Bool {

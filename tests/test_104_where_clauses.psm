@@ -33,7 +33,7 @@ fn render<T>(value: T) -> String where T: Show {
 
 // Two parameters, each constrained by its own clause.
 fn renderBoth<A, B>(a: A, b: B) -> String where A: Show, B: Show {
-    return strConcat(show(a), show(b))
+    return show(a).concat(show(b))
 }
 
 // `+` inside a clause, and the union with a bound already in the list.

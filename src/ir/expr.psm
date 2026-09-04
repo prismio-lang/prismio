@@ -21,7 +21,7 @@ import std.string
 private fn generateShortCircuit(expr: ASTNode) -> String {
     let isAnd = expr.s1.equals("and")
 
-    let slot = strConcat("sc.", strFromInt(irShortCircuitCounter))
+    let slot = "sc.".concat(strFromInt(irShortCircuitCounter))
     irShortCircuitCounter = irShortCircuitCounter + 1
     ir_alloca("i1", slot)
 
@@ -469,7 +469,7 @@ internal fn chainCopiesName(head: Ptr, name: String) -> Bool {
 // Whether this function body explicitly frees `name` with `drop(name)`.
 //
 // The binding half of what `no_stack` used to answer for the whole site. A site
-// is shared -- every `strConcat` result in the program comes from the one
+// is shared -- every `concat` result in the program comes from the one
 // `str_with_capacity` inside it -- so "was this value explicitly dropped" cannot
 // be asked of the site without answering for every other binding that shares it.
 // It is asked of the name instead, in the same shape as chainAssignsName and
@@ -863,7 +863,7 @@ private fn irEmitFlatGuardsChain(head: Ptr, slot: String) {
 internal fn generateLoopFlatGuard(body: ASTNode) -> String {
     if (irFlatGuardCount(node_to_ptr(body)) <= 0) { return "" }
 
-    let name = strConcat("flatguard.", strFromInt(irLoopFlatGuardCounter))
+    let name = "flatguard.".concat(strFromInt(irLoopFlatGuardCounter))
     irLoopFlatGuardCounter = irLoopFlatGuardCounter + 1
     ir_set_var_type(name, "Bool")
     let slot = ir_get_var_slot(name)
@@ -997,7 +997,7 @@ private fn scalarFromInlineBits(storeType: String, bits: String) -> String {
 }
 
 private fn scalarSpillToSlot(storeType: String, value: String) -> String {
-    let slot = strConcat("elem.", strFromInt(irElemSpillCounter))
+    let slot = "elem.".concat(strFromInt(irElemSpillCounter))
     irElemSpillCounter = irElemSpillCounter + 1
     ir_alloca(storeType, slot)
     ir_store(storeType, value, slot)
@@ -1005,7 +1005,7 @@ private fn scalarSpillToSlot(storeType: String, value: String) -> String {
     // it looks the bare name up among the params and then the allocas. Handing
     // it the undecorated name instead falls through to const_from_text, which
     // fails the build with "non-null pointer constant".
-    return strConcat("%", slot)
+    return "%".concat(slot)
 }
 
 private fn generateElemInlineStamp(expr: ASTNode, funcName: String, result: String) {
@@ -1617,7 +1617,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
             if (spawnJoined and irArgumentIsOwnedTemporary(argNode)) {
                 let declType = getExprType(argNode)
                 let store = storageType(declType)
-                let name = strConcat("spawnarg.", strFromInt(irSpawnArgCounter))
+                let name = "spawnarg.".concat(strFromInt(irSpawnArgCounter))
                 irSpawnArgCounter = irSpawnArgCounter + 1
                 // Same order as an ordinary binding in src/ir/stmt.psm, and it
                 // is load-bearing: the binding is what assigns the slot its
@@ -1872,7 +1872,9 @@ internal fn generateExpression(expr: ASTNode) -> String {
                     let mut passed = ""
                     if (isFatStringKey(valueType)) {
                         let value = generateExpression(valueNode)
-                        passed = ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 0))
+                        // A slice slot owns its word for the same reason a list
+                        // element does, so this is `scalarToSlot` on the pair.
+                        passed = scalarToSlot("struct:prismio.str", value)
                     } else if (valueType.equals("ptr") == false) {
                         let value = generateExpression(valueNode)
                         // Widened for the by-value setter, punned for the boxed
@@ -1996,7 +1998,13 @@ internal fn generateExpression(expr: ASTNode) -> String {
             if (nodeExists(a0.next) == false) {
                 let value = generateExpression(a0)
                 let wide = ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 1))
-                return ir_get_temp_name(ir_trunc("i64", wide, "i32"))
+                let narrow = ir_get_temp_name(ir_trunc("i64", wide, "i32"))
+                // Bit 31 is the inline tag, not part of the length. This `and` is
+                // the entire per-read cost of the German-string representation --
+                // see the layout note over `str_data_ptr` in
+                // runtime/llvm-api-backend.c for why the tag sits there rather
+                // than at bit 63, where it would have cost an inline byte instead.
+                return ir_get_temp_name(ir_and("i32", narrow, "2147483647"))
             }
         }
 
@@ -2047,7 +2055,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // `strlen` on every access is what made `str_char_at` loops quadratic.
         // The builtin's contract is "the
         // index is in [0, len)" and std/string.psm establishes that bound before
-        // every use. `strCharAt` remains the checked accessor for callers who
+        // every use. `String.charAt` remains the checked accessor for callers who
         // want one.
         if (funcName.equals("__builtin_string_byte_at")
             and nodeExists(expr.child2)) {
@@ -2055,8 +2063,51 @@ internal fn generateExpression(expr: ASTNode) -> String {
             if (nodeExists(a0.next)) {
                 let base = generateExpression(a0)
                 let idx = generateExpression(ptr_to_node(a0.next))
-                let slot = ir_elem_ptr("i8", base, idx)
-                return ir_get_temp_name(ir_load_ptr("i8", ir_get_temp_name(slot)))
+                // **The resolved pointer first, if this operand is a binding
+                // that has one.** A String's bytes are behind its pointer or
+                // inside the pair, and `ir_str_byte_at` answers that per access
+                // -- five instructions per character, which the tokenizer paid
+                // 204 000 times because its loop is too large for LLVM to
+                // unswitch. A binding resolves it once where it is made
+                // (stmt.psm, module.psm), and then this is the GEP and load it
+                // has always been.
+                //
+                // Only for a plain variable reference: anything else has no
+                // binding to have resolved, and the per-access form is correct
+                // for all of them.
+                let a0node = ptr_to_node(expr.child2)
+                if (a0node.kind == NodeKind.IDENTIFIER_EXPR) {
+                    let resolved = ir_get_var_data(a0node.s1)
+                    if (resolved >= 0) {
+                        let slot = ir_elem_ptr("i8", ir_get_temp_name(resolved), idx)
+                        return ir_get_temp_name(ir_load_ptr("i8", ir_get_temp_name(slot)))
+                    }
+                }
+                return ir_get_temp_name(ir_str_byte_at(base, idx))
+            }
+        }
+
+        // The German short form, built from a range of another string.
+        //
+        // This is the producer the whole representation exists for. `strSubstring`
+        // takes it whenever the result is twelve bytes or fewer, which on the
+        // tokenizer benchmark is every token and across `prismio check src/main.psm`
+        // is 81.3% of every string allocated -- and it allocates nothing, frees
+        // nothing, and hands back sixteen bytes of value.
+        //
+        // Straight-line by construction: the size test lives in std/string.psm, so
+        // there is no branch here and nothing for the caller's loop to mispredict.
+        if (funcName.equals("__builtin_string_inline")
+            and nodeExists(expr.child2)) {
+            let a0 = ptr_to_node(expr.child2)
+            if (nodeExists(a0.next)) {
+                let a1 = ptr_to_node(a0.next)
+                if (nodeExists(a1.next)) {
+                    let base = generateExpression(a0)
+                    let from = generateExpression(a1)
+                    let count = generateExpression(ptr_to_node(a1.next))
+                    return ir_get_temp_name(ir_str_inline(base, from, count))
+                }
             }
         }
 
@@ -2069,8 +2120,11 @@ internal fn generateExpression(expr: ASTNode) -> String {
             if (nodeExists(e0.next)) {
                 let lhsVal = generateExpression(e0)
                 let rhsVal = generateExpression(ptr_to_node(e0.next))
-                let lhsPtr = ir_get_temp_name(ir_extract_value("struct:prismio.str", lhsVal, 0))
-                let rhsPtr = ir_get_temp_name(ir_extract_value("struct:prismio.str", rhsVal, 0))
+                // Canonicalised, not field 0: a short string's first field is
+                // twelve bytes of text, and strcmp on it compares the characters
+                // as if they were an address.
+                let lhsPtr = ir_get_temp_name(ir_str_data(lhsVal))
+                let rhsPtr = ir_get_temp_name(ir_str_data(rhsVal))
                 ir_call_begin()
                 ir_call_arg("ptr", lhsPtr)
                 ir_call_arg("ptr", rhsPtr)
@@ -2079,6 +2133,13 @@ internal fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
+        // **Writes go to the long form only, and every caller obeys that.** Every
+        // `__builtin_string_put_byte` in std/string.psm writes into a buffer that
+        // came from `str_with_capacity` two lines above, which always allocates;
+        // the short form is built whole by `__builtin_string_inline` and never
+        // written into. A write to a short string would land in the scratch copy
+        // the coercion makes and be lost, so the rule is the same one the index
+        // has: established at the call site, not checked here.
         if (funcName.equals("__builtin_string_put_byte")
             and nodeExists(expr.child2)) {
             let a0 = ptr_to_node(expr.child2)
@@ -2146,11 +2207,16 @@ internal fn generateExpression(expr: ASTNode) -> String {
             // The two branches each name `argVal` once and never both -- a String
             // is affine, so hoisting the common tail out would move it twice.
             if (isForeign and argStore.equals("struct:prismio.str")) {
-                let half = ir_get_temp_name(ir_extract_value("struct:prismio.str", argVal, 0))
                 if (argIndex == elemArg) {
-                    ir_call_arg("ptr", scalarToSlot("ptr", half))
+                    // Into a container slot, which owns one word and frees it
+                    // later -- so `scalarToSlot` is handed the *pair*, not the
+                    // pointer half, and copies a short string out to the heap on
+                    // the way in. Handing it the coerced pointer instead stored
+                    // the scratch buffer's address in the list, and the release at
+                    // teardown was a free of the stack.
+                    ir_call_arg("ptr", scalarToSlot("struct:prismio.str", argVal))
                 } else {
-                    ir_call_arg("ptr", half)
+                    ir_call_arg("ptr", ir_get_temp_name(ir_str_data(argVal)))
                 }
             } else {
                 if (argIndex == elemArg) {

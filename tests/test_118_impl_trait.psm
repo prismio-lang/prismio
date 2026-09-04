@@ -24,7 +24,7 @@ trait Weigh {
 struct Point { x: Int, y: Int }
 
 impl Show for Point {
-    fn show(self) -> String { return strConcat("P", strFromInt(self.x)) }
+    fn show(self) -> String { return "P".concat(strFromInt(self.x)) }
 }
 
 impl Weigh for Point {
@@ -45,7 +45,7 @@ fn describe(v: impl Show) -> String {
 // Two synthesised parameters in one signature. They must not collide, and they
 // must instantiate independently -- `a` and `b` are different types here.
 fn pair(a: impl Show, b: impl Show) -> String {
-    return strConcat(strConcat(a.show(), "+"), b.show())
+    return a.show().concat("+", b.show())
 }
 
 // Several bounds on one synthesised parameter, the `impl A + B` spelling.
@@ -57,7 +57,7 @@ fn heavy(v: impl Show + Weigh) -> Int {
 // A written type parameter alongside a synthesised one. The declaration ends up
 // carrying both, and the written one still comes first.
 fn tagged<T: Show>(first: T, second: impl Show) -> String {
-    return strConcat(strConcat(first.show(), "/"), second.show())
+    return first.show().concat("/", second.show())
 }
 
 // Return position. The caller cannot write this type; the compiler knows it.

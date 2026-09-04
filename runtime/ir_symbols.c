@@ -674,6 +674,21 @@ typedef struct {
     // that one is still this scope's to release. One flag answering both
     // questions is what made `return out` silently disable the release.
     int owns_slot;
+    // The German-string representation, resolved once per binding.
+    //
+    // A String's bytes live either behind its pointer or inside the pair itself,
+    // and asking which costs five instructions. Asking per *byte* is what put
+    // that cost inside every scan loop -- `benchTokenization` carried a
+    // `cmp`/`csel`/`ubfiz`/`lsr`/`csel` per character, because the loop is large
+    // enough that LLVM's unswitcher declines to specialise it (a one-site loop
+    // is unswitched cleanly, which is what made this look fine in isolation).
+    //
+    // So it is asked once, where the binding is made, and the answer -- a
+    // `const char*` valid for either form -- is kept here. Recorded only for
+    // immutable bindings: a reassignment inside a loop would define the
+    // replacement in a block that does not dominate a use after it, and an
+    // immutable binding cannot have one. -1 when there is none.
+    int data_ptr;
 } VarBinding;
 
 static VarBinding* var_bindings = NULL;
@@ -872,6 +887,7 @@ static void add_binding(const char* name, const char* type, int is_global) {
     b->is_droppable = 0;
     b->drop_kind = 0;
     b->owns_slot = 0;
+    b->data_ptr = -1;
 
     if (is_global) {
         // Globals are addressed by their own name (@name), so no renaming.
@@ -920,6 +936,18 @@ int ir_var_is_global(const char* name) {
 
 int ir_has_var_type(const char* name) {
     return find_binding(name) >= 0;
+}
+
+// The resolved byte pointer for a String binding, recorded where the binding is
+// made. See `data_ptr` on VarBinding.
+void ir_set_var_data(const char* name, int value) {
+    int i = find_binding(name);
+    if (i >= 0) var_bindings[i].data_ptr = value;
+}
+
+int ir_get_var_data(const char* name) {
+    int i = find_binding(name);
+    return i >= 0 ? var_bindings[i].data_ptr : -1;
 }
 
 // `let mut` marks the binding just declared. Assignment to anything not so

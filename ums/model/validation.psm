@@ -15,7 +15,7 @@ fn umsValidName(value: String) -> Bool {
     if (__builtin_string_len(value) == 0) { return false }
     let mut i = 0
     while (i < __builtin_string_len(value)) {
-        let current = strCharAt(value, i)
+        let current = value.charAt(i)
         if (umsIsAlnum(current) == false and current != '-' and current != '_' and current != '.') {
             return false
         }
@@ -29,7 +29,7 @@ private fn umsValidVersion(value: String, minimumComponents: Int) -> Bool {
     let mut componentDigits = 0
     let mut i = 0
     while (i < __builtin_string_len(value)) {
-        let current = strCharAt(value, i)
+        let current = value.charAt(i)
         if (umsIsDigit(current)) {
             componentDigits = componentDigits + 1
         } else if (current == '.' and componentDigits > 0) {
@@ -51,7 +51,7 @@ private fn umsValidLicenseExpression(value: String) -> Bool {
     if (__builtin_string_len(trimmed) == 0) { return false }
     let mut i = 0
     while (i < __builtin_string_len(trimmed)) {
-        let current = strCharAt(trimmed, i)
+        let current = trimmed.charAt(i)
         if (umsIsAlnum(current) == false and current != '-' and current != '.' and
             current != '+' and current != ':' and current != '(' and
             current != ')' and current != ' ') {
@@ -74,8 +74,8 @@ private fn umsRunnableScript(value: String) -> Bool {
 private fn umsAbsolutePath(value: String) -> Bool {
     let length = __builtin_string_len(value)
     if (length == 0) { return false }
-    if (strCharAt(value, 0) == '/' or strCharAt(value, 0) == '\\') { return true }
-    return length > 1 and strCharAt(value, 1) == ':'
+    if (value.charAt(0) == '/' or value.charAt(0) == '\\') { return true }
+    return length > 1 and value.charAt(1) == ':'
 }
 
 // Validation, as methods on the model it validates. `project.validate(diags)`
@@ -134,8 +134,7 @@ impl UmsProjectModel {
                 let licensePath = join_path(self.root, self.metadata.licenseFile)
                 if (file_exists(licensePath) == 0) {
                     self.validationError(diagnostics, "UMS2319",
-                        strConcat("project.licenseFile does not exist: ",
-                                  self.metadata.licenseFile))
+                        "project.licenseFile does not exist: ".concat(self.metadata.licenseFile))
                 }
             }
         }
@@ -169,19 +168,18 @@ impl UmsProjectModel {
             if (umsValidName(target.name) == false) {
                 umsDiagnosticAdd(diagnostics, "UMS2308", self.manifestPath,
                     target.line, target.col, target.len,
-                    strConcat(strConcat("invalid target name '", target.name), "'"))
+                    "invalid target name '".concat(target.name, "'"))
             }
             if (__builtin_string_len(target.entry) == 0) {
                 umsDiagnosticAdd(diagnostics, "UMS2309", self.manifestPath,
                     target.line, target.col, target.len,
-                    strConcat(strConcat("target '", target.name), "' requires an entry source"))
+                    "target '".concat(target.name, "' requires an entry source"))
             } else {
                 let sourcePath = join_path(self.root, target.entry)
                 if (file_exists(sourcePath) == 0) {
                     umsDiagnosticAdd(diagnostics, "UMS2310", self.manifestPath,
                         target.line, target.col, target.len,
-                        strConcat(strConcat(strConcat("target '", target.name),
-                                   "' entry does not exist: "), target.entry))
+                        "target '".concat(target.name, "' entry does not exist: ", target.entry))
                 }
             }
             if (target.kind == UmsTargetKind.LIBRARY) {
@@ -200,8 +198,8 @@ impl UmsProjectModel {
                            input.value.equals("prismio.backend") == false) {
                     umsDiagnosticAdd(diagnostics, "UMS2315", self.manifestPath,
                         input.line, input.col, input.len,
-                        strConcat(strConcat("unknown toolchain component '", input.value),
-                                  "'; available component: prismio.backend"))
+                        "unknown toolchain component '".concat(input.value,
+                                                               "'; available component: prismio.backend"))
                 }
                 linkIndex = linkIndex + 1
             }
@@ -214,13 +212,12 @@ impl UmsProjectModel {
             if (umsValidName(dependency.name) == false) {
                 umsDiagnosticAdd(diagnostics, "UMS2311", self.manifestPath,
                     dependency.line, dependency.col, dependency.len,
-                    strConcat(strConcat("invalid dependency name '", dependency.name), "'"))
+                    "invalid dependency name '".concat(dependency.name, "'"))
             }
             if (__builtin_string_len(dependency.constraint) == 0) {
                 umsDiagnosticAdd(diagnostics, "UMS2312", self.manifestPath,
                     dependency.line, dependency.col, dependency.len,
-                    strConcat(strConcat("dependency '", dependency.name),
-                               "' has an empty version constraint"))
+                    "dependency '".concat(dependency.name, "' has an empty version constraint"))
             }
             dependencyIndex = dependencyIndex + 1
         }
@@ -231,12 +228,12 @@ impl UmsProjectModel {
             if (umsValidName(command.name) == false) {
                 umsDiagnosticAdd(diagnostics, "UMS2601", self.manifestPath,
                     command.line, command.col, command.len,
-                    strConcat(strConcat("invalid command name '", command.name), "'"))
+                    "invalid command name '".concat(command.name, "'"))
             }
             if (list_len(command.steps) == 0) {
                 umsDiagnosticAdd(diagnostics, "UMS2602", self.manifestPath,
                     command.line, command.col, command.len,
-                    strConcat(strConcat("command '", command.name), "' declares no steps"))
+                    "command '".concat(command.name, "' declares no steps"))
             }
             let mut stepIndex = 0
             while (stepIndex < list_len(command.steps)) {
@@ -260,25 +257,23 @@ impl UmsProjectModel {
                             list_get(self.targets, referenced).kind != UmsTargetKind.EXECUTABLE) {
                             umsDiagnosticAdd(diagnostics, "UMS2604", self.manifestPath,
                                 step.line, step.col, step.len,
-                                strConcat(strConcat("run needs an executable target, and '",
-                                           step.subject), "' is not one"))
+                                "run needs an executable target, and '".concat(step.subject,
+                                                                               "' is not one"))
                         }
                     } else if (step.kind == UmsCommandStepKind.BUILD) {
                         umsDiagnosticAdd(diagnostics, "UMS2603", self.manifestPath,
                             step.line, step.col, step.len,
-                            strConcat(strConcat("no target named '", step.subject),
-                                       "' is declared in this project"))
+                            "no target named '".concat(step.subject,
+                                                       "' is declared in this project"))
                     } else if (umsRunnableScript(step.subject) == false) {
                         umsDiagnosticAdd(diagnostics, "UMS2606", self.manifestPath,
                             step.line, step.col, step.len,
-                            strConcat(strConcat("run names no declared target, and '",
-                                       step.subject),
-                                       "' is not a .py or .psm file; use shell for anything else"))
+                            "run names no declared target, and '".concat(step.subject,
+                                                                         "' is not a .py or .psm file; use shell for anything else"))
                     } else if (file_exists(join_path(self.root, step.subject)) == 0) {
                         umsDiagnosticAdd(diagnostics, "UMS2607", self.manifestPath,
                             step.line, step.col, step.len,
-                            strConcat(strConcat("run cannot find '", step.subject),
-                                       "' under the project root"))
+                            "run cannot find '".concat(step.subject, "' under the project root"))
                     }
                 }
                 stepIndex = stepIndex + 1

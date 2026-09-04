@@ -294,6 +294,13 @@ extern fn aif_layout_hot_count(type: String) -> Int
 // split is sound, it just has no basis for being chosen.
 extern fn aif_layout_no_split_unmodelled(type: String)
 
+// A performance guard for a pointer-free List element whose complete row is
+// consumed by one sequential traversal. It stays distinct from the hard
+// soundness veto above so an explicit LAYOUT 8 force can still override it.
+extern fn aif_layout_all_fields_sequential(type: String) -> Int
+extern fn aif_layout_no_split_list_full_scan(type: String)
+extern fn aif_layout_veto_reason(type: String) -> String alias
+
 // LAYOUT 8's forced candidate: emit this cut rather than the model's argmin.
 //
 // A candidate is named by its hot-field count, not its rank, because ranks move
@@ -625,7 +632,7 @@ internal fn aifElemKey(containerType: String) -> Int {
 // store ever populates.
 internal fn aifElementContainerType(ty: String) -> String {
     if (strStartsWith(ty, "Slice<")) {
-        return strConcat("List", strSubstring(ty, 5, __builtin_string_len(ty) - 5))
+        return "List".concat(strSubstring(ty, 5, __builtin_string_len(ty) - 5))
     }
     return ty
 }

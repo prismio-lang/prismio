@@ -37,13 +37,13 @@ private fn umsManifestEscape(value: String) -> String {
     let mut escaped = ""
     let mut i = 0
     while (i < __builtin_string_len(value)) {
-        let c = strCharAt(value, i)
-        if (c == '\\') { escaped = strConcat(escaped, "\\\\") }
-        else if (c == '"') { escaped = strConcat(escaped, "\\\"") }
-        else if (c == '\n') { escaped = strConcat(escaped, "\\n") }
-        else if (c == '\r') { escaped = strConcat(escaped, "\\r") }
-        else if (c == '\t') { escaped = strConcat(escaped, "\\t") }
-        else { escaped = strConcat(escaped, strFromChar(c)) }
+        let c = value.charAt(i)
+        if (c == '\\') { escaped = escaped.concat("\\\\") }
+        else if (c == '"') { escaped = escaped.concat("\\\"") }
+        else if (c == '\n') { escaped = escaped.concat("\\n") }
+        else if (c == '\r') { escaped = escaped.concat("\\r") }
+        else if (c == '\t') { escaped = escaped.concat("\\t") }
+        else { escaped = escaped.concat(strFromChar(c)) }
         i = i + 1
     }
     return escaped
@@ -52,18 +52,18 @@ private fn umsManifestEscape(value: String) -> String {
 private fn umsManifestDependencyText(scope: UmsDependencyScope, name: String,
                                      constraint: String, localPath: String) -> String {
     let spelling = umsManifestScopeName(scope)
-    let mut text = strConcat(spelling, "(\"")
+    let mut text = spelling.concat("(\"")
     let escapedName = umsManifestEscape(name)
-    text = strConcat(text, escapedName)
-    text = strConcat(text, "\", \"")
+    text = text.concat(escapedName)
+    text = text.concat("\", \"")
     let escapedConstraint = umsManifestEscape(constraint)
-    text = strConcat(text, escapedConstraint)
+    text = text.concat(escapedConstraint)
     if (__builtin_string_len(localPath) > 0) {
-        text = strConcat(text, "\", \"")
+        text = text.concat("\", \"")
         let escapedPath = umsManifestEscape(localPath)
-        text = strConcat(text, escapedPath)
+        text = text.concat(escapedPath)
     }
-    return strConcat(text, "\")")
+    return text.concat("\")")
 }
 
 private fn umsManifestNewline(source: String) -> String {
@@ -74,7 +74,7 @@ private fn umsManifestNewline(source: String) -> String {
 private fn umsManifestLineStart(source: String, at: Int) -> Int {
     let mut i = at
     while (i > 0) {
-        if (strCharAt(source, i - 1) == '\n') { break }
+        if (source.charAt(i - 1) == '\n') { break }
         i = i - 1
     }
     return i
@@ -83,7 +83,7 @@ private fn umsManifestLineStart(source: String, at: Int) -> Int {
 private fn umsManifestOnlyIndent(source: String, start: Int, end: Int) -> Bool {
     let mut i = start
     while (i < end) {
-        let c = strCharAt(source, i)
+        let c = source.charAt(i)
         if (c != ' ' and c != '\t') { return false }
         i = i + 1
     }
@@ -93,7 +93,7 @@ private fn umsManifestOnlyIndent(source: String, start: Int, end: Int) -> Bool {
 private fn umsManifestOnlyWhitespace(source: String, start: Int, end: Int) -> Bool {
     let mut i = start
     while (i < end) {
-        let c = strCharAt(source, i)
+        let c = source.charAt(i)
         if (c != ' ' and c != '\t' and c != '\r' and c != '\n') { return false }
         i = i + 1
     }
@@ -116,7 +116,7 @@ private fn umsManifestChildIndent(source: String, document: UmsAstDocument,
         }
     }
     let closingIndent = umsManifestIndentAt(source, block.blockClose)
-    return strConcat(closingIndent, "    ")
+    return closingIndent.concat("    ")
 }
 
 private fn umsManifestDependencyBlock(document: UmsAstDocument) -> Int {
@@ -139,23 +139,23 @@ private fn umsManifestAppendDependencyBlock(source: String,
     let mut separator = ""
     let length = __builtin_string_len(source)
     if (length > 0) {
-        let blankLine = strConcat(newline, newline)
+        let blankLine = newline.concat(newline)
         if (strEndsWith(source, blankLine) == false) {
             if (strEndsWith(source, newline)) {
                 separator = strClone(newline)
             } else {
-                separator = strConcat(newline, newline)
+                separator = newline.concat(newline)
             }
         }
     }
 
-    let mut block = strConcat("dependencies {", newline)
-    block = strConcat(block, "    ")
-    block = strConcat(block, declaration)
-    block = strConcat(block, newline)
-    block = strConcat(block, "}")
-    block = strConcat(block, newline)
-    return strConcat(source, separator, block)
+    let mut block = "dependencies {".concat(newline)
+    block = block.concat("    ")
+    block = block.concat(declaration)
+    block = block.concat(newline)
+    block = block.concat("}")
+    block = block.concat(newline)
+    return source.concat(separator, block)
 }
 
 private fn umsManifestInsertDependency(source: String, document: UmsAstDocument,
@@ -165,7 +165,7 @@ private fn umsManifestInsertDependency(source: String, document: UmsAstDocument,
     if (umsManifestOnlyIndent(source, closeLine, block.blockClose)) {
         let indent = umsManifestChildIndent(source, document, block)
         let newline = umsManifestNewline(source)
-        let addition = strConcat(indent, declaration, newline)
+        let addition = indent.concat(declaration, newline)
         return strInsert(source, closeLine, addition)
     }
 
@@ -173,18 +173,18 @@ private fn umsManifestInsertDependency(source: String, document: UmsAstDocument,
     if (umsManifestOnlyWhitespace(source, interiorStart, block.blockClose)) {
         if (interiorStart == block.blockClose) {
             return strInsert(source, block.blockClose,
-                             strConcat(" ", declaration, " "))
+                             " ".concat(declaration, " "))
         }
-        return strInsert(source, block.blockClose, strConcat(declaration, " "))
+        return strInsert(source, block.blockClose, declaration.concat(" "))
     }
 
     let mut contentEnd = block.blockClose
     while (contentEnd > interiorStart) {
-        let c = strCharAt(source, contentEnd - 1)
+        let c = source.charAt(contentEnd - 1)
         if (c != ' ' and c != '\t') { break }
         contentEnd = contentEnd - 1
     }
-    return strInsert(source, contentEnd, strConcat("; ", declaration))
+    return strInsert(source, contentEnd, "; ".concat(declaration))
 }
 
 // Adds one dependency declaration without serializing the manifest around it.
@@ -203,12 +203,12 @@ fn umsManifestAddDependency(source: String, manifestPath: String,
     }
     if (umsValidName(name) == false) {
         umsDiagnosticAdd(diagnostics, "UMS2402", manifestPath, 0, 0, 0,
-            strConcat(strConcat("invalid dependency name '", name), "'"))
+            "invalid dependency name '".concat(name, "'"))
         return umsManifestUnchanged(source)
     }
     if (__builtin_string_len(constraint) == 0) {
         umsDiagnosticAdd(diagnostics, "UMS2403", manifestPath, 0, 0, 0,
-            strConcat(strConcat("dependency '", name), "' has an empty version constraint"))
+            "dependency '".concat(name, "' has an empty version constraint"))
         return umsManifestUnchanged(source)
     }
 
@@ -219,8 +219,7 @@ fn umsManifestAddDependency(source: String, manifestPath: String,
 
     if (umsDependencyFind(project.dependencies, scope, name) >= 0) {
         umsDiagnosticAdd(diagnostics, "UMS2404", manifestPath, 0, 0, 0,
-            strConcat(strConcat("dependency '", name),
-                      "' is already declared in this scope"))
+            "dependency '".concat(name, "' is already declared in this scope"))
         return umsManifestUnchanged(source)
     }
 

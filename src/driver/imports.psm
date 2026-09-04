@@ -134,11 +134,11 @@ private fn moduleRelativePath(moduleName: String) -> String {
     let mut i = 0
     let length = __builtin_string_len(moduleName)
     while (i < length) {
-        let c = strCharAt(moduleName, i)
+        let c = moduleName.charAt(i)
         if (c == '.') {
-            relative = strConcat(relative, "/")
+            relative = relative.concat("/")
         } else {
-            relative = strConcat(relative, strFromChar(c))
+            relative = relative.concat(strFromChar(c))
         }
         i = i + 1
     }
@@ -173,7 +173,7 @@ private fn importBaseDir(baseDir: String, moduleName: String) -> String {
 
 private fn joinImportPath(baseDir: String, moduleName: String) -> String {
     return resolveUnder(importBaseDir(baseDir, moduleName),
-                        strConcat(moduleRelativePath(moduleName), ".psm"))
+                        moduleRelativePath(moduleName).concat(".psm"))
 }
 
 private fn joinImportDir(baseDir: String, packageName: String) -> String {
@@ -184,7 +184,7 @@ private fn joinImportDir(baseDir: String, packageName: String) -> String {
 // substring search can never match a partial path (e.g. "src\ir.psm" must not be
 // found inside "src\dir.psm").
 private fn importMemoKey(importPath: String) -> String {
-    return strConcat(strConcat("|", importPath), "|")
+    return "|".concat(importPath, "|")
 }
 
 // Resolves one named module into `merged`, unless it has already been resolved.
@@ -230,13 +230,14 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
         return visited
     }
 
-    let seen = strConcat(visited, key)
+    let seen = visited.concat(key)
 
     let content = read_file(importPath)
     if (content.equals("") and file_exists(importPath) == 0) {
         diag_error_at_code("P1001", site.file, site.line, site.col, site.len,
-            strConcat(strConcat("cannot read imported module ", diagQuote(moduleName)),
-                       strConcat(": no such file ", importPath)))
+            "cannot read imported module ".concat(diagQuote(moduleName),
+                                                  ": no such file ",
+                                                  importPath))
         diag_finish()
         exit(1)
     }
@@ -269,8 +270,7 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
 
     if (listing.equals("")) {
         diag_error_at_code("P1002", site.file, site.line, site.col, site.len,
-            strConcat(strConcat("package ", diagQuote(site.s1)),
-                       strConcat(" contains no modules: ", dirPath)))
+            "package ".concat(diagQuote(site.s1), " contains no modules: ", dirPath))
         diag_finish()
         exit(1)
     }
@@ -281,18 +281,18 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
     let length = __builtin_string_len(listing)
 
     while (i < length) {
-        let c = strCharAt(listing, i)
+        let c = listing.charAt(i)
         if (c == '\n') {
-            let qualified = strConcat(strConcat(site.s1, "."), name)
+            let qualified = site.s1.concat(".", name)
             seen = mergeNamedModule(merged, site, qualified, baseDir, seen)
             name = ""
         } else {
-            name = strConcat(name, strFromChar(c))
+            name = name.concat(strFromChar(c))
         }
         i = i + 1
     }
 
-    let last = strConcat(strConcat(site.s1, "."), name)
+    let last = site.s1.concat(".", name)
     return mergeNamedModule(merged, site, last, baseDir, seen)
 }
 
@@ -333,7 +333,7 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
 // `leaf` is the file name, because the installed layout flattens the package:
 // `std/map.psm` in a checkout is `stdlib/map.psm` once installed.
 fn standardModulePath(baseDir: String, leaf: String) -> String {
-    let besideEntry = join_path(baseDir, strConcat("std/", leaf))
+    let besideEntry = join_path(baseDir, "std/".concat(leaf))
     if (file_exists(besideEntry) == 1) { return besideEntry }
 
     // Then each enclosing directory, nearest first. One level was enough for as
@@ -350,8 +350,8 @@ fn standardModulePath(baseDir: String, leaf: String) -> String {
     let mut dir = get_directory(baseDir)
     let mut hops = 0
     while (hops < 64) {
-        if (file_exists(join_path(dir, strConcat("std/", leaf))) == 1) {
-            return join_path(dir, strConcat("std/", leaf))
+        if (file_exists(join_path(dir, "std/".concat(leaf))) == 1) {
+            return join_path(dir, "std/".concat(leaf))
         }
         let parent = get_directory(dir)
         if (parent.equals(dir)) { break }
@@ -361,10 +361,10 @@ fn standardModulePath(baseDir: String, leaf: String) -> String {
 
     let toolchainRoot = get_directory(executable_directory())
 
-    let installed = join_path(toolchainRoot, strConcat("stdlib/", leaf))
+    let installed = join_path(toolchainRoot, "stdlib/".concat(leaf))
     if (file_exists(installed) == 1) { return installed }
 
-    let besideBuild = join_path(toolchainRoot, strConcat("std/", leaf))
+    let besideBuild = join_path(toolchainRoot, "std/".concat(leaf))
     if (file_exists(besideBuild) == 1) { return besideBuild }
 
     return ""
@@ -389,11 +389,11 @@ private fn resolveImportPath(baseDir: String, moduleName: String) -> String {
     if (strStartsWith(moduleName, "std.") == false) {
         return joinImportPath(baseDir, moduleName)
     }
-    let leaf = strConcat(strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm")
+    let leaf = strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4).concat(".psm")
     if (standardModulePath(baseDir, leaf).equals("")) {
         return joinImportPath(baseDir, moduleName)
     }
-    return standardModulePath(baseDir, strConcat(strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4), ".psm"))
+    return standardModulePath(baseDir, strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4).concat(".psm"))
 }
 
 // The entry file is marked resolved before the walk begins, so that a package

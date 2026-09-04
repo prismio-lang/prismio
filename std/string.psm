@@ -20,7 +20,9 @@
 //
 // Equality, comparison, checked character access, concatenation, slicing and
 // Char conversion are all ordinary Prismio below. Importing this module neither
-// declares nor calls their older C implementations.
+// declares nor calls their older C implementations. The first five live in the
+// `impl String` block rather than as prefixed free functions, because they are
+// what the operators lower to -- see the note over them.
 //
 // What every wrapper adds is the **ownership contract**, declared once. An
 // `extern fn` with no contract has unknown provenance, so the analysis widens it
@@ -34,7 +36,7 @@
 // **1. Never accumulate into a reassigned binding.**
 //
 //     let mut out = ""
-//     while (...) { out = strConcat(out, piece) }     // leaks, every iteration
+//     while (...) { out = out.concat(piece) }         // leaks, every iteration
 //
 // An assignment releases nothing -- src/ir/stmt.psm marks a reassigned binding
 // as never droppable, because leaking beats double-freeing -- so every
@@ -119,35 +121,8 @@ fn strLength(s: String) -> Int {
     return __builtin_string_len(s)
 }
 
-// The byte at `index`, or NUL when out of range. Out-of-range is not an error
-// because the range check the caller would write is the one the runtime already
-// does; NUL is distinguishable because a Prismio string cannot contain one.
-fn strCharAt(s: String, index: Int) -> Char {
-    if (index < 0 or index >= __builtin_string_len(s)) { return '\0' }
-    return __builtin_string_byte_at(s, index)
-}
-
 fn strByteAt(s: String, index: Int) -> Int {
     return __builtin_string_byte_at(s, index) as U8 as Int
-}
-
-// Content equality. `==` on two Strings compares *pointers* and sema rejects it
-// with a message naming this operation, so this is the only content comparison.
-
-// Negative, zero, or positive, ordering by byte value.
-fn strCompare(a: String, b: String) -> Int {
-    let alen = __builtin_string_len(a)
-    let blen = __builtin_string_len(b)
-    let mut n = alen
-    if (blen < n) { n = blen }
-    let mut i = 0
-    while (i < n) {
-        let av = __builtin_string_byte_at(a, i) as U8 as Int
-        let bv = __builtin_string_byte_at(b, i) as U8 as Int
-        if (av != bv) { return av - bv }
-        i = i + 1
-    }
-    return alen - blen
 }
 
 // Copy `count` bytes between already-bounded ranges. Allocation deliberately
@@ -159,84 +134,6 @@ private fn strCopyRangeInto(out: String, outStart: Int, source: String, sourceSt
         __builtin_string_put_byte(out, outStart + i, __builtin_string_byte_at(source, sourceStart + i))
         i = i + 1
     }
-}
-
-fn strConcat(a: String, b: String) -> String {
-    let alen = __builtin_string_len(a)
-    let blen = __builtin_string_len(b)
-    let out = str_with_capacity(alen + blen)
-    strCopyRangeInto(out, 0, a, 0, alen)
-    strCopyRangeInto(out, alen, b, 0, blen)
-    return out
-}
-
-// Three to six parts in **one** allocation.
-//
-// These exist because `a + b + c` desugars to one of them rather than to nested
-// `strConcat`, and the difference is not a micro-optimisation. Nested concat
-// allocates an intermediate that nothing names, and RUNTIME.md 3.1's rule is
-// that a value nothing names is a value nothing frees: measured, the two-call
-// form reads 2 allocated / 1 released, and it does so on the released 0.1
-// compiler as well, so it is the language's rule rather than a regression.
-// Flattening the chain removes the intermediate instead of leaking it, and as a
-// side effect copies the bytes once instead of twice.
-//
-// Six is where it stops because `strJoin` is the right answer past that, and a
-// seventh overload is a table nobody reads.
-fn strConcat(a: String, b: String, c: String) -> String {
-    let alen = __builtin_string_len(a)
-    let blen = __builtin_string_len(b)
-    let clen = __builtin_string_len(c)
-    let out = str_with_capacity(alen + blen + clen)
-    strCopyRangeInto(out, 0, a, 0, alen)
-    strCopyRangeInto(out, alen, b, 0, blen)
-    strCopyRangeInto(out, alen + blen, c, 0, clen)
-    return out
-}
-
-fn strConcat(a: String, b: String, c: String, d: String) -> String {
-    let alen = __builtin_string_len(a)
-    let blen = __builtin_string_len(b)
-    let clen = __builtin_string_len(c)
-    let dlen = __builtin_string_len(d)
-    let out = str_with_capacity(alen + blen + clen + dlen)
-    strCopyRangeInto(out, 0, a, 0, alen)
-    strCopyRangeInto(out, alen, b, 0, blen)
-    strCopyRangeInto(out, alen + blen, c, 0, clen)
-    strCopyRangeInto(out, alen + blen + clen, d, 0, dlen)
-    return out
-}
-
-fn strConcat(a: String, b: String, c: String, d: String, e: String) -> String {
-    let alen = __builtin_string_len(a)
-    let blen = __builtin_string_len(b)
-    let clen = __builtin_string_len(c)
-    let dlen = __builtin_string_len(d)
-    let elen = __builtin_string_len(e)
-    let out = str_with_capacity(alen + blen + clen + dlen + elen)
-    strCopyRangeInto(out, 0, a, 0, alen)
-    strCopyRangeInto(out, alen, b, 0, blen)
-    strCopyRangeInto(out, alen + blen, c, 0, clen)
-    strCopyRangeInto(out, alen + blen + clen, d, 0, dlen)
-    strCopyRangeInto(out, alen + blen + clen + dlen, e, 0, elen)
-    return out
-}
-
-fn strConcat(a: String, b: String, c: String, d: String, e: String, f: String) -> String {
-    let alen = __builtin_string_len(a)
-    let blen = __builtin_string_len(b)
-    let clen = __builtin_string_len(c)
-    let dlen = __builtin_string_len(d)
-    let elen = __builtin_string_len(e)
-    let flen = __builtin_string_len(f)
-    let out = str_with_capacity(alen + blen + clen + dlen + elen + flen)
-    strCopyRangeInto(out, 0, a, 0, alen)
-    strCopyRangeInto(out, alen, b, 0, blen)
-    strCopyRangeInto(out, alen + blen, c, 0, clen)
-    strCopyRangeInto(out, alen + blen + clen, d, 0, dlen)
-    strCopyRangeInto(out, alen + blen + clen + dlen, e, 0, elen)
-    strCopyRangeInto(out, alen + blen + clen + dlen + elen, f, 0, flen)
-    return out
 }
 
 // `length` bytes from `start`. A range reaching past the end is clamped rather
@@ -251,6 +148,13 @@ fn strSubstring(s: String, start: Int, length: Int) -> String {
     }
     if (count < 0) { count = 0 }
     if (first + count > slen) { count = slen - first }
+    // Twelve bytes or fewer and the result *is* the pair: no allocation, nothing
+    // to release, and the copy is the twelve bytes themselves. This is the German
+    // short form (see the layout note in runtime/llvm-api-backend.c), and this
+    // test is the caller's half of the builtin's contract -- it does not bound
+    // `count` itself, for the same reason `__builtin_string_byte_at` does not
+    // bound its index.
+    if (count <= 12) { return __builtin_string_inline(s, first, count) }
     let out = str_with_capacity(count)
     strCopyRangeInto(out, 0, s, first, count)
     return out
@@ -1308,7 +1212,7 @@ fn strFromInt(value: Int) -> String {
 // Predicates and checked access
 //
 // The `Option`-returning forms here are **additions, not replacements**.
-// `strIndexOf` still answers -1 and `strCharAt` still answers NUL, because a
+// `strIndexOf` still answers -1 and `charAt` still answers NUL, because a
 // sentinel costs a register where `Option` costs a tagged struct and an
 // allocation (see the representation note in std/option.psm), and because the
 // compiler reads them that way at 848 call sites. What these add is the spelling
@@ -1349,7 +1253,7 @@ fn strGet(s: String, index: Int) -> Option<Char> {
     return Option<Char>.Some(__builtin_string_byte_at(s, index))
 }
 
-// NUL on an empty string, for the same reason `strCharAt` answers NUL out of
+// NUL on an empty string, for the same reason `charAt` answers NUL out of
 // range: a Prismio String cannot contain one, so the answer is unambiguous.
 fn strFirst(s: String) -> Char {
     if (__builtin_string_len(s) == 0) { return '\0' }
@@ -1436,23 +1340,6 @@ fn strCountOfChar(s: String, needle: Char) -> Int {
 // Same rule as the Building section above: allocate the final size once and fill
 // it. None of these grows a buffer, because an assignment releases nothing.
 // ---------------------------------------------------------------------------
-
-// `[start, end)`. The half-open twin of `strSubstring`, which takes a *length*.
-// Both exist because `s[a..b]` is end-exclusive and reading a range operator as
-// a length is the mistake this pair is meant to stop.
-fn strSlice(s: String, start: Int, end: Int) -> String {
-    let slen = __builtin_string_len(s)
-    let mut first = start
-    if (first < 0) { first = 0 }
-    if (first > slen) { first = slen }
-    let mut stop = end
-    if (stop > slen) { stop = slen }
-    if (stop < first) { stop = first }
-    let count = stop - first
-    let out = str_with_capacity(count)
-    strCopyRangeInto(out, 0, s, first, count)
-    return out
-}
 
 // The first byte uppercased, the rest untouched. Deliberately not "the rest
 // lowercased": that is a different operation, it destroys `"McDonald"`, and a
@@ -1765,22 +1652,25 @@ fn join(parts: List<String>, sep: String) -> String {
 // v0.1 3.2 -- the method surface
 // ---------------------------------------------------------------------------
 //
-// `text.trim()` rather than `strTrim(text)`. Every one of these delegates to the
-// `str*` function above it and adds nothing: `x.f(a)` is rewritten to `f(x, a)`
+// `text.trim()` rather than `strTrim(text)`. Most of these delegate to the
+// `str*` function above and add nothing: `x.f(a)` is rewritten to `f(x, a)`
 // before overload resolution, so a method here *is* the free function, reached
 // by a second name.
 //
 // **The prefix is not a style choice and this block does not retire it.** There
-// is no namespacing yet (v0.1 3.5), so `strTrim` is what stops this module's 46
+// is no namespacing yet (v0.1 3.5), so `strTrim` is what stops this module's
 // names from colliding with an application's. Until `string.trim` is spellable,
 // an unprefixed free function called `trim` would claim that name for every
-// program that imports this file -- and the 848 `str*` call sites in `src/`
-// alone are the reason the rename has to happen once, deliberately, rather than
-// as a side effect of adding methods.
+// program that imports this file, so the rename has to happen once, deliberately,
+// rather than as a side effect of adding methods.
 //
-// So the delegation runs this way round on purpose: the `str*` name keeps the
-// implementation, the method is the wrapper, and when 3.5 lands the two swap
-// with no change to any caller of either.
+// **Five names have already made that move, and were forced to.** `equals`,
+// `concat`, `slice`, `charAt` and `compare` are what the String operators lower
+// to, which made them compiler contracts rather than only API -- and a lowering
+// target has to be reachable from any program that writes the operator, so the
+// prefixed spelling could never be made `internal` while it was the target. They
+// carry their bodies here and have no `str*` twin left; the swap this comment
+// used to anticipate has happened for exactly the set that could not wait.
 //
 // Curated rather than exhaustive. Every method here costs a function in every
 // binary that imports this module -- there is no dead-function elimination in
@@ -1788,13 +1678,150 @@ fn join(parts: List<String>, sep: String) -> String {
 // `strMaximalSuffix`, `strSearchByteRank`) and the digit tables deliberately
 // have no method: they are implementation, not surface.
 impl String {
+    // -----------------------------------------------------------------------
+    // The five the operators lower to
+    // -----------------------------------------------------------------------
+    //
+    // `a + b`, `s[i]`, `s[a..b]` and the four orderings are rewritten into these
+    // by src/sema/checker.psm, so they are compiler contracts and not only
+    // surface -- which is why they are also the five with no `str*` function
+    // left to delegate to. The operator needed a target that is not part of this
+    // module's public prefix, and moving the bodies here is what let the
+    // prefixed names go.
+    //
+    // **They carry their implementations rather than delegating, and that is
+    // rule 2 of this file's header rather than a preference.** A function whose
+    // `return` is another function's allocation is a pass-through: its caller
+    // gets no drop as soon as an argument is itself owned, because the callee's
+    // one site is then in both the return's points-to set and the parameter's.
+    // Measured over 1,000 iterations of `let t = f("a","b"); let u = f(t,"c")`:
+    // delegating reads **2,001 allocated / 1 released / 2,000 leaked**, owning
+    // the body reads **2,001 / 2,001 / 0**. A version of `concat` that forwarded
+    // to a private helper would leak once per `+` in every program.
+    //
+    // Two to six parts in **one** allocation, for the same reason `a + b + c`
+    // lowers to one call rather than two: a nested join allocates an intermediate
+    // that nothing names, and RUNTIME.md 3.1 is that a value nothing names is a
+    // value nothing frees. Six is where it stops because `strJoin` is the right
+    // answer past that.
+    fn concat(self, other: String) -> String {
+        let alen = __builtin_string_len(self)
+        let blen = __builtin_string_len(other)
+        let out = str_with_capacity(alen + blen)
+        strCopyRangeInto(out, 0, self, 0, alen)
+        strCopyRangeInto(out, alen, other, 0, blen)
+        return out
+    }
+
+    fn concat(self, b: String, c: String) -> String {
+        let alen = __builtin_string_len(self)
+        let blen = __builtin_string_len(b)
+        let clen = __builtin_string_len(c)
+        let out = str_with_capacity(alen + blen + clen)
+        strCopyRangeInto(out, 0, self, 0, alen)
+        strCopyRangeInto(out, alen, b, 0, blen)
+        strCopyRangeInto(out, alen + blen, c, 0, clen)
+        return out
+    }
+
+    fn concat(self, b: String, c: String, d: String) -> String {
+        let alen = __builtin_string_len(self)
+        let blen = __builtin_string_len(b)
+        let clen = __builtin_string_len(c)
+        let dlen = __builtin_string_len(d)
+        let out = str_with_capacity(alen + blen + clen + dlen)
+        strCopyRangeInto(out, 0, self, 0, alen)
+        strCopyRangeInto(out, alen, b, 0, blen)
+        strCopyRangeInto(out, alen + blen, c, 0, clen)
+        strCopyRangeInto(out, alen + blen + clen, d, 0, dlen)
+        return out
+    }
+
+    fn concat(self, b: String, c: String, d: String, e: String) -> String {
+        let alen = __builtin_string_len(self)
+        let blen = __builtin_string_len(b)
+        let clen = __builtin_string_len(c)
+        let dlen = __builtin_string_len(d)
+        let elen = __builtin_string_len(e)
+        let out = str_with_capacity(alen + blen + clen + dlen + elen)
+        strCopyRangeInto(out, 0, self, 0, alen)
+        strCopyRangeInto(out, alen, b, 0, blen)
+        strCopyRangeInto(out, alen + blen, c, 0, clen)
+        strCopyRangeInto(out, alen + blen + clen, d, 0, dlen)
+        strCopyRangeInto(out, alen + blen + clen + dlen, e, 0, elen)
+        return out
+    }
+
+    fn concat(self, b: String, c: String, d: String, e: String, f: String) -> String {
+        let alen = __builtin_string_len(self)
+        let blen = __builtin_string_len(b)
+        let clen = __builtin_string_len(c)
+        let dlen = __builtin_string_len(d)
+        let elen = __builtin_string_len(e)
+        let flen = __builtin_string_len(f)
+        let out = str_with_capacity(alen + blen + clen + dlen + elen + flen)
+        strCopyRangeInto(out, 0, self, 0, alen)
+        strCopyRangeInto(out, alen, b, 0, blen)
+        strCopyRangeInto(out, alen + blen, c, 0, clen)
+        strCopyRangeInto(out, alen + blen + clen, d, 0, dlen)
+        strCopyRangeInto(out, alen + blen + clen + dlen, e, 0, elen)
+        strCopyRangeInto(out, alen + blen + clen + dlen + elen, f, 0, flen)
+        return out
+    }
+
+    // `[start, end)`. The half-open twin of `substring`, which takes a *length*.
+    // Both exist because `s[a..b]` is end-exclusive and reading a range operator
+    // as a length is the mistake this pair is meant to stop.
+    fn slice(self, start: Int, end: Int) -> String {
+        let slen = __builtin_string_len(self)
+        let mut first = start
+        if (first < 0) { first = 0 }
+        if (first > slen) { first = slen }
+        let mut stop = end
+        if (stop > slen) { stop = slen }
+        if (stop < first) { stop = first }
+        let count = stop - first
+        // The same short-form cut as `strSubstring`; see the note there.
+        if (count <= 12) { return __builtin_string_inline(self, first, count) }
+        let out = str_with_capacity(count)
+        strCopyRangeInto(out, 0, self, first, count)
+        return out
+    }
+
+    // The byte at `index`, or NUL when out of range. Out-of-range is not an
+    // error because the range check the caller would write is the one this
+    // already does; NUL is distinguishable because a Prismio string cannot
+    // contain one. `self.get(index)` is the Option form.
+    fn charAt(self, index: Int) -> Char {
+        if (index < 0 or index >= __builtin_string_len(self)) { return '\0' }
+        return __builtin_string_byte_at(self, index)
+    }
+
+    // Negative, zero, or positive, ordering by byte value.
+    fn compare(self, other: String) -> Int {
+        let alen = __builtin_string_len(self)
+        let blen = __builtin_string_len(other)
+        let mut n = alen
+        if (blen < n) { n = blen }
+        let mut i = 0
+        while (i < n) {
+            let av = __builtin_string_byte_at(self, i) as U8 as Int
+            let bv = __builtin_string_byte_at(other, i) as U8 as Int
+            if (av != bv) { return av - bv }
+            i = i + 1
+        }
+        return alen - blen
+    }
+
+    // -----------------------------------------------------------------------
+    // The rest, which delegate
+    // -----------------------------------------------------------------------
     fn length(self) -> Int { return strLength(self) }
     fn isEmpty(self) -> Bool { return strIsEmpty(self) }
     fn isNotEmpty(self) -> Bool { return strIsEmpty(self) == false }
     fn isBlank(self) -> Bool { return strIsBlank(self) }
     fn clone(self) -> String { return strClone(self) }
 
-    fn charAt(self, index: Int) -> Char { return strCharAt(self, index) }
     fn byteAt(self, index: Int) -> Int { return strByteAt(self, index) }
     fn get(self, index: Int) -> Option<Char> { return strGet(self, index) }
     fn first(self) -> Char { return strFirst(self) }
@@ -1803,7 +1830,6 @@ impl String {
     fn substring(self, start: Int, length: Int) -> String {
         return strSubstring(self, start, length)
     }
-    fn slice(self, start: Int, end: Int) -> String { return strSlice(self, start, end) }
 
     // The body lives here rather than in a prefixed free function: `equals` is
     // the public spelling, and `==` reaches the same answer through the
@@ -1826,9 +1852,7 @@ impl String {
     fn equalsIgnoreCase(self, other: String) -> Bool {
         return strEqualsIgnoreCase(self, other)
     }
-    fn compare(self, other: String) -> Int { return strCompare(self, other) }
 
-    fn concat(self, other: String) -> String { return strConcat(self, other) }
     fn repeat(self, times: Int) -> String { return strRepeat(self, times) }
 
     fn contains(self, needle: String) -> Bool { return strContains(self, needle) }

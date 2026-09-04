@@ -67,7 +67,7 @@ fn main() -> Int {
     list_push(names, "apple")
     list_push(names, "apricot")
     list_push(names, "fig")
-    let needle = strConcat("ap", "")
+    let needle = "ap".concat("")
     if (countWhere(names, |s: String| strStartsWith(s, needle)) != 2) {
         return fail("captured String")
     }

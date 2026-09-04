@@ -66,16 +66,16 @@ private fn umsBootstrapPrefixLength(source: String) -> Int {
     // comments. That gives the installed compiler a finite prefix to scan; it
     // never has to lex syntax owned by a newer project host.
     loop {
-        while (pos < length and (strCharAt(source, pos) == ' ' or
-               strCharAt(source, pos) == '\t' or strCharAt(source, pos) == '\r' or
-               strCharAt(source, pos) == '\n')) {
+        while (pos < length and (source.charAt(pos) == ' ' or
+               source.charAt(pos) == '\t' or source.charAt(pos) == '\r' or
+               source.charAt(pos) == '\n')) {
             pos = pos + 1
         }
-        if (pos < length and strCharAt(source, pos) == '#') {
-            while (pos < length and strCharAt(source, pos) != '\n') { pos = pos + 1 }
-        } else if (pos + 1 < length and strCharAt(source, pos) == '/' and
-                   strCharAt(source, pos + 1) == '/') {
-            while (pos < length and strCharAt(source, pos) != '\n') { pos = pos + 1 }
+        if (pos < length and source.charAt(pos) == '#') {
+            while (pos < length and source.charAt(pos) != '\n') { pos = pos + 1 }
+        } else if (pos + 1 < length and source.charAt(pos) == '/' and
+                   source.charAt(pos + 1) == '/') {
+            while (pos < length and source.charAt(pos) != '\n') { pos = pos + 1 }
         } else {
             break
         }
@@ -83,19 +83,19 @@ private fn umsBootstrapPrefixLength(source: String) -> Int {
 
     if (strMatchesAt(source, "toolchain", pos) == false) { return 0 }
     pos = pos + 9
-    while (pos < length and (strCharAt(source, pos) == ' ' or
-           strCharAt(source, pos) == '\t' or strCharAt(source, pos) == '\r' or
-           strCharAt(source, pos) == '\n')) {
+    while (pos < length and (source.charAt(pos) == ' ' or
+           source.charAt(pos) == '\t' or source.charAt(pos) == '\r' or
+           source.charAt(pos) == '\n')) {
         pos = pos + 1
     }
-    if (pos >= length or strCharAt(source, pos) != '{') { return 0 }
+    if (pos >= length or source.charAt(pos) != '{') { return 0 }
 
     let mut depth = 1
     let mut inString = false
     let mut escaped = false
     pos = pos + 1
     while (pos < length) {
-        let current = strCharAt(source, pos)
+        let current = source.charAt(pos)
         if (inString) {
             if (escaped) { escaped = false }
             else if (current == '\\') { escaped = true }
@@ -103,11 +103,11 @@ private fn umsBootstrapPrefixLength(source: String) -> Int {
         } else if (current == '"') {
             inString = true
         } else if (current == '#') {
-            while (pos < length and strCharAt(source, pos) != '\n') { pos = pos + 1 }
+            while (pos < length and source.charAt(pos) != '\n') { pos = pos + 1 }
             continue
         } else if (current == '/' and pos + 1 < length and
-                   strCharAt(source, pos + 1) == '/') {
-            while (pos < length and strCharAt(source, pos) != '\n') { pos = pos + 1 }
+                   source.charAt(pos + 1) == '/') {
+            while (pos < length and source.charAt(pos) != '\n') { pos = pos + 1 }
             continue
         } else if (current == '{') {
             depth = depth + 1

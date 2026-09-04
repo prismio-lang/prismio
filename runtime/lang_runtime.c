@@ -28,6 +28,12 @@
 // rt_base_alloc/rt_free seam this file's allocations sit on.
 #include "prismio_runtime.h"
 
+#if defined(_MSC_VER)
+#define PRISMIO_NOINLINE __declspec(noinline)
+#else
+#define PRISMIO_NOINLINE __attribute__((noinline))
+#endif
+
 // AIF Level 4, second half: `region` absorbs collections too.
 //
 // COMPILER-AUDIT scheduled Level 4 after Level 3 so that regions would already
@@ -49,13 +55,195 @@ void* arena_alloc(size_t size);
 void* arena_alloc_at(int slot, size_t size);
 int arena_current_slot(void);
 
-static int rt_arena_hint = 0;
+// Most Prismio programs are single-threaded. A direct TLS variable on Darwin is
+// reached through `tlv_get_addr`; paying that call at every arena access slowed
+// allocation-heavy benchmarks by up to 3x. Keep the original process-local fast
+// path until `spawn` is used, then route runtime-created workers to isolated TLS
+// state. The parent continues to own the process-local state, so spawning inside
+// an active region does not abandon that region.
+static volatile long prismio_memory_threads_enabled;
+static PRISMIO_THREAD_LOCAL int prismio_memory_worker;
+static int rt_arena_hint;
+static PRISMIO_THREAD_LOCAL int rt_worker_arena_hint;
 
-void rt_arena_hint_push(void) { rt_arena_hint++; }
-void rt_arena_hint_pop(void)  { if (rt_arena_hint > 0) rt_arena_hint--; }
+static int prismio_memory_threads_are_enabled(void) {
+#ifdef _WIN32
+    return InterlockedCompareExchange(&prismio_memory_threads_enabled, 0, 0) != 0;
+#else
+    return __atomic_load_n(&prismio_memory_threads_enabled, __ATOMIC_ACQUIRE) != 0;
+#endif
+}
+
+void prismio_memory_threads_enable(void) {
+#ifdef _WIN32
+    InterlockedExchange(&prismio_memory_threads_enabled, 1);
+#else
+    __atomic_store_n(&prismio_memory_threads_enabled, 1, __ATOMIC_RELEASE);
+#endif
+}
+
+void prismio_memory_thread_enter(void) { prismio_memory_worker = 1; }
+
+static int* rt_arena_hint_state(void) {
+    if (!prismio_memory_threads_are_enabled() || !prismio_memory_worker)
+        return &rt_arena_hint;
+    return &rt_worker_arena_hint;
+}
+
+void rt_arena_hint_push(void) { (*rt_arena_hint_state())++; }
+void rt_arena_hint_pop(void) {
+    int* hint = rt_arena_hint_state();
+    if (*hint > 0) (*hint)--;
+}
+
+// The small-block recycler.
+//
+// Measured on the `tokenization` benchmark, which cuts 54 000 tokens of one to
+// eight bytes out of a 204 KB buffer and frees each one before cutting the next:
+// **67% of that run was inside libmalloc's free path**, and over half of *that*
+// was `mach_absolute_time`, which macOS's xzone allocator calls on every free to
+// age its quarantine. Prismio and Rust make the same number of allocations there
+// (54 033 against 54 037); C++ makes 29, because every token fits libc++'s
+// 22-byte inline buffer and never reaches the heap at all. That is the whole of
+// a 4x gap, and it is not a gap in the generated code: with token materialisation
+// removed the same scan runs in 148 us against clang -O3's 149 us.
+//
+// A free list is the half of that which does not need a representation change.
+// Priced against the system allocator on that workload's shape, in ns for 54 000
+// blocks: malloc/free 2 225 000, this recycler 168 000, **not allocating at all
+// 176 000**. Recycling is not merely cheaper than the allocator here, it is as
+// cheap as the allocation not happening -- so an inline-string representation
+// would win the copy back, not the allocator.
+//
+// **Buckets are recovered from the block, not from a header.** A header would
+// offset every pointer this runtime hands out, and the one thing the seam above
+// promises is that a block from `rt_base_alloc` and a block from plain `malloc`
+// are interchangeable -- C_CODE_STYLE's "internal temporaries stay on plain
+// malloc/free" means both kinds reach `rt_free`. Asking the allocator for the
+// block's usable size keeps that true in both directions: a plain `malloc` block
+// arriving here is recycled correctly, and a recycled block handed to plain
+// `free` is an ordinary block. The bucket index is `usable / GRAIN` rounded
+// down, and a request of `n` takes from `ceil(n / GRAIN)`, so the block a
+// request receives always has at least the usable size it asked for -- true for
+// macOS's exact 16-byte classes and for glibc's 16n+8 alike.
+//
+// **Single-threaded only, by the same doctrine as the arena hint above.** The
+// pool is plain memory with no lock; `prismio_task_spawn` publishes
+// `prismio_memory_threads_enable()` *before* the OS can run the new thread, so
+// once any second thread exists every thread reads the switch as set and nothing
+// touches the pool again. Whatever it held at that moment stays allocated until
+// exit -- bounded by RT_RECYCLE_DEPTH x the bucket sizes, under 256 KB -- which
+// is the conservative direction and the price of not paying a lock on every
+// allocation in the programs that never spawn.
+//
+// **Not compiled into a `--verify` build at all.** There the seam is still the
+// two ledger macros, so the ledger sees every allocation and release exactly as
+// it did before, and a recycled block cannot be mistaken for a live one.
+#ifndef PRISMIO_AIF_VERIFY
+
+#if defined(_WIN32)
+#include <malloc.h>
+#define RT_USABLE_SIZE(p) ((size_t)_msize(p))
+#elif defined(__APPLE__)
+#include <malloc/malloc.h>
+#define RT_USABLE_SIZE(p) malloc_size(p)
+#elif defined(__linux__) || defined(__ANDROID__)
+#include <malloc.h>
+#define RT_USABLE_SIZE(p) malloc_usable_size(p)
+#endif
+
+#ifdef RT_USABLE_SIZE
+// 16 bytes is the smallest block any of the three allocators hands out, and
+// eight buckets covers every string and small struct the corpus allocates in a
+// loop.
+//
+// **The held-block cap is what makes the query affordable, and that is the whole
+// reason it is a single total rather than a depth per bucket.** Asking the
+// allocator for a block's usable size is not cheap -- `malloc_size` measured at
+// ~14 ns per call on macOS, more than the malloc/free pair it is meant to save --
+// so a free that ends up calling `free` anyway must not pay for it. Checking the
+// cap first costs one predictable branch and skips the query outright once the
+// pool is full.
+//
+// That is the difference between the two shapes this sees. A tokenizer frees
+// each block before cutting the next, so the pool holds one or two and every
+// free both queries and hits: `tokenization` runs 1.67x faster. A tree build
+// allocates 32 000 nodes and frees them all at teardown with nothing to reuse
+// them; it fills the cap in the first few hundred frees and the remaining 98%
+// skip the query and go straight to the allocator, which is what keeps that
+// shape from paying for a pool it cannot use.
+#define RT_RECYCLE_GRAIN     16
+#define RT_RECYCLE_BUCKETS   8
+#define RT_RECYCLE_HELD_MAX  512
+
+static void* rt_recycle_head[RT_RECYCLE_BUCKETS];
+static int   rt_recycle_held;
+#endif
+
+// Out of line, like `rt_free` below. Codegen emits libc `malloc` for object
+// allocation -- see g_alloc_fn in llvm-api-backend.c -- so the only callers are
+// inside this runtime, where one call per string is already in the noise.
+PRISMIO_NOINLINE void* rt_base_alloc(size_t size) {
+#ifdef RT_USABLE_SIZE
+    if (size <= (size_t)RT_RECYCLE_GRAIN * RT_RECYCLE_BUCKETS
+        && !prismio_memory_threads_are_enabled()) {
+        // A zero-byte request still takes a whole first bucket: the free list
+        // threads its next pointer through the block itself, so every block the
+        // pool holds has to be at least a pointer wide.
+        size_t k = (size + RT_RECYCLE_GRAIN - 1) / RT_RECYCLE_GRAIN;
+        if (k == 0) k = 1;
+        void* reused = rt_recycle_head[k - 1];
+        if (reused) {
+            rt_recycle_head[k - 1] = *(void**)reused;
+            rt_recycle_held--;
+            return reused;
+        }
+        return malloc(k * RT_RECYCLE_GRAIN);
+    }
+#endif
+    return malloc(size);
+}
+
+#ifdef RT_USABLE_SIZE
+// Split out so that `rt_free` below has no path that needs a frame: both of its
+// exits are tail calls, which matters because the shape that gets nothing from
+// the pool -- build a tree, free all of it at teardown -- runs every one of its
+// frees through the fallback and would otherwise pay a prologue per block for a
+// pool it never touches.
+static PRISMIO_NOINLINE void rt_pool_put_or_free(void* p) {
+    size_t k = RT_USABLE_SIZE(p) / RT_RECYCLE_GRAIN;
+    if (k >= 1 && k <= RT_RECYCLE_BUCKETS) {
+        *(void**)p = rt_recycle_head[k - 1];
+        rt_recycle_head[k - 1] = p;
+        rt_recycle_held++;
+        return;
+    }
+    free(p);
+}
+#endif
+
+// **Not curated, and that is a measurement** -- see the note beside `rt_free` in
+// PRISMIO_CURATED_OPS (build_driver.c). Inlining the gate into every release site
+// removes a call per release and moves nothing, because what a bulk-free shape
+// pays is the gate itself.
+PRISMIO_NOINLINE void rt_free(void* p) {
+    if (!p) return;
+#ifdef RT_USABLE_SIZE
+    // The cap is tested *before* the usable-size query, not after: see the note
+    // over RT_RECYCLE_HELD_MAX. Everything past it costs one load and a branch.
+    if (rt_recycle_held < RT_RECYCLE_HELD_MAX
+        && !prismio_memory_threads_are_enabled()) {
+        rt_pool_put_or_free(p);
+        return;
+    }
+#endif
+    free(p);
+}
+
+#endif  // PRISMIO_AIF_VERIFY
 
 static void* rt_alloc(size_t size) {
-    if (rt_arena_hint > 0) return arena_alloc(size);
+    if (*rt_arena_hint_state() > 0) return arena_alloc(size);
     return rt_base_alloc(size);
 }
 
@@ -65,7 +253,9 @@ static void* rt_alloc(size_t size) {
 // top at the time -- see list_push. A flag would not do: a nested `region`
 // inside the one that owns the list would take the new element block and free it
 // at its own exit, with the list still pointing at it.
-static int rt_arena_slot(void) { return rt_arena_hint > 0 ? arena_current_slot() : 0; }
+static int rt_arena_slot(void) {
+    return *rt_arena_hint_state() > 0 ? arena_current_slot() : 0;
+}
 
 // Println function - prints a string and adds a newline
 void println(const char* str) {
@@ -217,7 +407,7 @@ char* str_substring(const char* s, int start, int length) {
 // the input multiplies the time by ~2.9 rather than by 2.
 //
 // This is the same defect the old C `str_char_at` had, fixed the same way --
-// that function is gone now, and `strCharAt` in std/string.psm is the O(1)
+// that function is gone now, and `String.charAt` in std/string.psm is the O(1)
 // replacement that reads the carried length. createLexer
 // already measures the input once and holds it in `Lexer.length` precisely
 // because a per-character strlen made scanning quadratic; the comment there
@@ -443,6 +633,22 @@ char* str_clone(const char* s) {
     return result;
 }
 
+// A String on its way into a container slot, as a block the container can own.
+//
+// A slot is one word. The long form already *is* one -- the pointer goes in and
+// ownership transfers exactly as it did before the German-string representation
+// landed. The short form is twelve bytes living in a pair, with no address that
+// outlives the frame it was built in, so it has to be copied out.
+//
+// **This is the one place the short form costs something**, and it is a call
+// rather than a branch in the caller because the copy has to be conditional and
+// a `select` would have to evaluate both arms. `word` is the pair's length word;
+// bit 31 is the inline tag (llvm-api-backend.c).
+char* str_own(const char* data, long long word) {
+    if (!(word & 0x80000000LL)) return (char*)data;
+    return str_clone(data);
+}
+
 // Helpers for type punning ASTNode pointers in Prismio
 // The absent pointer, and the test for it.
 //
@@ -504,12 +710,25 @@ typedef struct ArenaChunk {
     unsigned char* base;
 } ArenaChunk;
 
-static ArenaChunk* arena_stack[ARENA_MAX_DEPTH];
-static int arena_depth = 0;
+typedef struct {
+    ArenaChunk* stack[ARENA_MAX_DEPTH];
+    int depth;
+    // Reported by arena_stats so a test can assert an allocation came from a
+    // region rather than from malloc -- the two are indistinguishable from the
+    // value.
+    long bytes_served, objects_served, regions_entered;
+    ArenaChunk* pool;
+    int pool_count;
+} ArenaState;
 
-// Reported by arena_stats so a test can assert an allocation came from a region
-// rather than from malloc -- the two are indistinguishable from the value.
-static long arena_bytes_served, arena_objects_served, arena_regions_entered;
+static ArenaState arena_main_state;
+static PRISMIO_THREAD_LOCAL ArenaState arena_worker_state;
+
+static ArenaState* arena_state(void) {
+    if (!prismio_memory_threads_are_enabled() || !prismio_memory_worker)
+        return &arena_main_state;
+    return &arena_worker_state;
+}
 
 // Chunks are pooled rather than returned to libc, and that is what makes
 // LAYOUT 4's `arenaSetupCost` of ~40 cycles a real number instead of an
@@ -535,14 +754,12 @@ static long arena_bytes_served, arena_objects_served, arena_regions_entered;
 // not in the pool, so it only has to cover what a single pop hands back plus
 // reuse across iterations, and a loop entering one region reuses one chunk.
 #define ARENA_POOL_MAX 8
-static ArenaChunk* arena_pool;
-static int arena_pool_count;
 
-static ArenaChunk* arena_chunk_new(size_t need) {
-    if (need <= ARENA_CHUNK_MIN && arena_pool) {
-        ArenaChunk* c = arena_pool;
-        arena_pool = c->next;
-        arena_pool_count--;
+static ArenaChunk* arena_chunk_new(ArenaState* state, size_t need) {
+    if (need <= ARENA_CHUNK_MIN && state->pool) {
+        ArenaChunk* c = state->pool;
+        state->pool = c->next;
+        state->pool_count--;
         c->used = 0;
         c->next = NULL;
         return c;
@@ -563,47 +780,49 @@ void arena_push(void) {
 #ifdef PRISMIO_AIF_VERIFY
     aif_verify_arm();
 #endif
-    if (arena_depth >= ARENA_MAX_DEPTH) {
+    ArenaState* state = arena_state();
+    if (state->depth >= ARENA_MAX_DEPTH) {
         fprintf(stderr, "internal error: regions nested more than %d deep\n", ARENA_MAX_DEPTH);
         exit(1);
     }
-    arena_stack[arena_depth++] = NULL;   // chunks are taken on first use
-    arena_regions_entered++;
+    state->stack[state->depth++] = NULL;   // chunks are taken on first use
+    state->regions_entered++;
 }
 
 void arena_pop(void) {
-    if (arena_depth <= 0) return;
-    ArenaChunk* c = arena_stack[--arena_depth];
+    ArenaState* state = arena_state();
+    if (state->depth <= 0) return;
+    ArenaChunk* c = state->stack[--state->depth];
     while (c) {
         ArenaChunk* next = c->next;
-        if (c->cap == ARENA_CHUNK_MIN && arena_pool_count < ARENA_POOL_MAX) {
-            c->next = arena_pool;
-            arena_pool = c;
-            arena_pool_count++;
+        if (c->cap == ARENA_CHUNK_MIN && state->pool_count < ARENA_POOL_MAX) {
+            c->next = state->pool;
+            state->pool = c;
+            state->pool_count++;
         } else {
             free(c->base);
             free(c);
         }
         c = next;
     }
-    arena_stack[arena_depth] = NULL;
+    state->stack[state->depth] = NULL;
 }
 
-static void* arena_alloc_slot(int index, size_t size) {
+static void* arena_alloc_slot(ArenaState* state, int index, size_t size) {
     size_t need = (size + 15u) & ~(size_t)15u;   // 16-byte aligned, as malloc is
-    ArenaChunk* c = arena_stack[index];
+    ArenaChunk* c = state->stack[index];
     if (!c || c->used + need > c->cap) {
-        ArenaChunk* fresh = arena_chunk_new(need);
+        ArenaChunk* fresh = arena_chunk_new(state, need);
         if (!fresh) return rt_base_alloc(size);
         fresh->next = c;
-        arena_stack[index] = fresh;
+        state->stack[index] = fresh;
         c = fresh;
     }
 
     void* p = c->base + c->used;
     c->used += need;
-    arena_bytes_served += (long)need;
-    arena_objects_served++;
+    state->bytes_served += (long)need;
+    state->objects_served++;
     return p;
 }
 
@@ -613,11 +832,12 @@ void* arena_alloc(size_t size) {
     // to the ordinary allocator keeps SPEC 1's invariant (never wrong, only
     // slower) instead of returning NULL into code that will not check it. Through
     // rt_base_alloc rather than malloc so a verify build still accounts for it.
-    if (arena_depth <= 0) return rt_base_alloc(size);
-    return arena_alloc_slot(arena_depth - 1, size);
+    ArenaState* state = arena_state();
+    if (state->depth <= 0) return rt_base_alloc(size);
+    return arena_alloc_slot(state, state->depth - 1, size);
 }
 
-int arena_current_slot(void) { return arena_depth; }
+int arena_current_slot(void) { return arena_state()->depth; }
 
 // SPEC 5.2.1.1. Allocate from a *named* arena rather than from the innermost
 // one, so a container can grow back into the region that owns it after an inner
@@ -628,13 +848,34 @@ int arena_current_slot(void) { return arena_depth; }
 // heap rather than trusting it keeps SPEC 1's invariant, and it is the direction
 // that leaks rather than the one that corrupts.
 void* arena_alloc_at(int slot, size_t size) {
-    if (slot <= 0 || slot > arena_depth) return rt_base_alloc(size);
-    return arena_alloc_slot(slot - 1, size);
+    ArenaState* state = arena_state();
+    if (slot <= 0 || slot > state->depth) return rt_base_alloc(size);
+    return arena_alloc_slot(state, slot - 1, size);
 }
 
-long arena_objects(void) { return arena_objects_served; }
-long arena_bytes(void)   { return arena_bytes_served; }
-long arena_regions(void) { return arena_regions_entered; }
+long arena_objects(void) { return arena_state()->objects_served; }
+long arena_bytes(void)   { return arena_state()->bytes_served; }
+long arena_regions(void) { return arena_state()->regions_entered; }
+
+// Native tasks are OS threads in v0.1. A thread-local pool otherwise strands up
+// to ARENA_POOL_MAX chunks every time one of those threads exits: the TLS pointer
+// disappears, but malloc still owns the chunks it named. The task trampoline
+// calls this after the spawned function returns. It also makes an unbalanced
+// region fail in the safe direction -- reclaim its thread's memory rather than
+// leaving it live or exposing it to the next task.
+void prismio_memory_thread_cleanup(void) {
+    ArenaState* state = arena_state();
+    while (state->depth > 0) arena_pop();
+    while (state->pool) {
+        ArenaChunk* next = state->pool->next;
+        free(state->pool->base);
+        free(state->pool);
+        state->pool = next;
+    }
+    state->pool_count = 0;
+    rt_worker_arena_hint = 0;
+    prismio_memory_worker = 0;
+}
 
 // AIF `verify` mode (SPEC 7.3)
 // A verify build swaps the allocator and deallocator names through
@@ -671,6 +912,11 @@ typedef struct AifLive {
 
 static AifLive* aif_live[AIF_VERIFY_BUCKETS];
 static long aif_allocs, aif_releases, aif_violations;
+static unsigned long long aif_allocated_bytes, aif_released_bytes;
+static unsigned long long aif_live_bytes, aif_peak_live_bytes;
+// Requested-size buckets. They describe Prismio-owned heap traffic, not libc's
+// usable size and not arena chunks, which deliberately bypass this ledger.
+static unsigned long long aif_size_buckets[9];
 static int aif_report_armed;
 
 // v0.1's channels let two tasks allocate and release at once, and this table is
@@ -686,9 +932,14 @@ static int aif_report_armed;
 // arm below is for.
 #ifdef _WIN32
 static PRISMIO_MUTEX_T aif_ledger_lock;
-static int aif_ledger_ready;
+static INIT_ONCE aif_ledger_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK aif_ledger_init(PINIT_ONCE once, PVOID param, PVOID* context) {
+    (void)once; (void)param; (void)context;
+    PRISMIO_MUTEX_INIT(&aif_ledger_lock);
+    return TRUE;
+}
 static void aif_ledger_enter(void) {
-    if (!aif_ledger_ready) { PRISMIO_MUTEX_INIT(&aif_ledger_lock); aif_ledger_ready = 1; }
+    InitOnceExecuteOnce(&aif_ledger_once, aif_ledger_init, NULL, NULL);
     PRISMIO_MUTEX_LOCK(&aif_ledger_lock);
 }
 #else
@@ -706,6 +957,7 @@ static unsigned aif_live_hash(const void* p) {
 }
 
 void aif_verify_report(void) {
+    aif_ledger_enter();
     long leaked = 0;
     for (int i = 0; i < AIF_VERIFY_BUCKETS; i++) {
         for (AifLive* n = aif_live[i]; n; n = n->next) {
@@ -721,9 +973,20 @@ void aif_verify_report(void) {
     }
     fprintf(stderr, "aif-verify: %ld allocated, %ld released, %ld leaked, %ld violation(s)\n",
             aif_allocs, aif_releases, leaked, aif_violations);
+    fprintf(stderr,
+            "aif-memory: %llu allocated bytes, %llu released bytes, %llu live bytes, %llu peak live bytes\n",
+            aif_allocated_bytes, aif_released_bytes, aif_live_bytes, aif_peak_live_bytes);
+    fprintf(stderr,
+            "aif-memory-sizes: <=16:%llu <=32:%llu <=64:%llu <=128:%llu <=256:%llu <=512:%llu <=1024:%llu <=4096:%llu >4096:%llu\n",
+            aif_size_buckets[0], aif_size_buckets[1], aif_size_buckets[2],
+            aif_size_buckets[3], aif_size_buckets[4], aif_size_buckets[5],
+            aif_size_buckets[6], aif_size_buckets[7], aif_size_buckets[8]);
+    fprintf(stderr, "aif-arena: %ld object(s), %ld byte(s), %ld region(s) on reporting thread\n",
+            arena_objects(), arena_bytes(), arena_regions());
     if (leaked || aif_violations) {
         fprintf(stderr, "aif-verify: FAILED -- an inferred fact did not hold at run time\n");
     }
+    aif_ledger_leave();
 }
 
 // Armed by the first allocation *or* the first region entry. Once LAYOUT 7.1
@@ -732,10 +995,12 @@ void aif_verify_report(void) {
 // arming only there would print no report at all, which reads as "the seam was
 // not redirected" rather than as "nothing needed accounting".
 void aif_verify_arm(void) {
+    aif_ledger_enter();
     if (!aif_report_armed) {
         aif_report_armed = 1;
         atexit(aif_verify_report);
     }
+    aif_ledger_leave();
 }
 
 void* aif_verify_alloc(size_t size) {
@@ -746,6 +1011,13 @@ void* aif_verify_alloc(size_t size) {
     AifLive* n = (AifLive*)malloc(sizeof(AifLive));
     aif_ledger_enter();
     aif_allocs++;
+    aif_allocated_bytes += (unsigned long long)size;
+    aif_live_bytes += (unsigned long long)size;
+    if (aif_live_bytes > aif_peak_live_bytes) aif_peak_live_bytes = aif_live_bytes;
+    int size_bucket = size <= 16 ? 0 : size <= 32 ? 1 : size <= 64 ? 2
+                    : size <= 128 ? 3 : size <= 256 ? 4 : size <= 512 ? 5
+                    : size <= 1024 ? 6 : size <= 4096 ? 7 : 8;
+    aif_size_buckets[size_bucket]++;
     if (n) {
         n->p = p;
         n->size = size;
@@ -778,6 +1050,15 @@ void aif_verify_release(void* p) {
     AifLive* n = *link;
     *link = n->next;
     aif_releases++;
+    aif_released_bytes += (unsigned long long)n->size;
+    if (aif_live_bytes >= (unsigned long long)n->size) {
+        aif_live_bytes -= (unsigned long long)n->size;
+    } else {
+        // A byte-accounting underflow is itself a ledger violation; clamp so the
+        // diagnostic remains readable rather than wrapping to 2^64.
+        aif_live_bytes = 0;
+        aif_violations++;
+    }
     aif_ledger_leave();
 
     // Outside the lock: the poison and the two frees touch only this unlinked
@@ -977,6 +1258,41 @@ static CycHeader* cyc_hdr(void* p) {
 #define CYC_THETA_BUFFER 4096
 #define CYC_K_ROOTS      256
 
+// Cycle headers and the candidate/work buffers form one graph algorithm state.
+// T4a permits an object to cross a native task boundary, so protecting only the
+// arrays would still race the header's count and colour. Use a recursive mutex:
+// collection invokes a generated release function, and that release may in turn
+// release a separately cycle-managed owned field on the same thread.
+#ifdef _WIN32
+static INIT_ONCE cyc_lock_once = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION cyc_state_lock;
+static BOOL CALLBACK cyc_lock_init(PINIT_ONCE once, PVOID param, PVOID* context) {
+    (void)once; (void)param; (void)context;
+    InitializeCriticalSection(&cyc_state_lock);
+    return TRUE;
+}
+static void cyc_enter(void) {
+    InitOnceExecuteOnce(&cyc_lock_once, cyc_lock_init, NULL, NULL);
+    EnterCriticalSection(&cyc_state_lock);
+}
+static void cyc_leave(void) { LeaveCriticalSection(&cyc_state_lock); }
+#else
+static pthread_once_t cyc_lock_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t cyc_state_lock;
+static void cyc_lock_init(void) {
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&cyc_state_lock, &attr);
+    pthread_mutexattr_destroy(&attr);
+}
+static void cyc_enter(void) {
+    pthread_once(&cyc_lock_once, cyc_lock_init);
+    pthread_mutex_lock(&cyc_state_lock);
+}
+static void cyc_leave(void) { pthread_mutex_unlock(&cyc_state_lock); }
+#endif
+
 static void** cyc_candidates;
 static int cyc_cand_count, cyc_cand_cap;
 
@@ -1133,14 +1449,24 @@ static void cyc_collect(int all) {
 static int cyc_exit_registered;
 
 static void cyc_final(void) {
+    cyc_enter();
     while (cyc_cand_count > 0) cyc_collect(1);
+    free(cyc_candidates);
+    free(cyc_walk);
+    cyc_candidates = NULL;
+    cyc_walk = NULL;
+    cyc_cand_count = cyc_cand_cap = 0;
+    cyc_walk_len = cyc_walk_cap = 0;
+    cyc_leave();
 }
 
 void* cyc_alloc(size_t size) {
+    cyc_enter();
     if (!cyc_exit_registered) {
         cyc_exit_registered = 1;
         atexit(cyc_final);
     }
+    cyc_leave();
     unsigned char* base = (unsigned char*)rt_base_alloc(size + CYC_HDR);
     if (!base) return 0;
     void* payload = base + CYC_HDR;
@@ -1150,27 +1476,39 @@ void* cyc_alloc(size_t size) {
     h->buffered = 0;
     h->children = 0;
     h->release = 0;
+    cyc_enter();
     cyc_allocated++;
+    cyc_leave();
     return payload;
 }
 
 void cyc_set_type(void* p, void (*children)(void*, CycVisitor), void (*release)(void*)) {
     if (!p) return;
+    cyc_enter();
     CycHeader* h = cyc_hdr(p);
     h->children = children;
     h->release = release;
+    cyc_leave();
 }
 
-void cyc_retain(void* p) {
-    if (p) cyc_hdr(p)->rc++;
-}
-
-void cyc_release(void* p) {
+PRISMIO_NOINLINE void cyc_retain(void* p) {
     if (!p) return;
+    cyc_enter();
+    cyc_hdr(p)->rc++;
+    cyc_leave();
+}
+
+PRISMIO_NOINLINE void cyc_release(void* p) {
+    if (!p) return;
+    cyc_enter();
     CycHeader* h = cyc_hdr(p);
-    if (h->rc == 0) return;         // never retained: nothing holds it, nothing frees it
+    if (h->rc == 0) {
+        cyc_leave();
+        return;                     // never retained: nothing holds it, nothing frees it
+    }
     if (--h->rc == 0) {
         cyc_free_object(p);
+        cyc_leave();
         return;
     }
     // CYCLES 3.2. A count that dropped without reaching zero is the only way a
@@ -1181,17 +1519,37 @@ void cyc_release(void* p) {
         cyc_buffer(p);
         if (cyc_cand_count >= CYC_THETA_BUFFER) cyc_collect(0);
     }
+    cyc_leave();
 }
 
 // CYCLES 6.1's third trigger, "or on explicit request". Exposed because the
 // other two -- buffer occupancy and allocation failure -- are both unreachable
 // in a fixture small enough to reason about, and a collector that only ever runs
 // at exit cannot be shown to restore counts on a *live* cycle.
-void cyc_collect_now(void) { cyc_collect(1); }
+void cyc_collect_now(void) {
+    cyc_enter();
+    cyc_collect(1);
+    cyc_leave();
+}
 
-long long cyc_objects(void)     { return cyc_allocated; }
-long long cyc_reclaimed(void)   { return cyc_collected; }
-long long cyc_collections_run(void) { return cyc_collections; }
+long long cyc_objects(void) {
+    cyc_enter();
+    long long n = cyc_allocated;
+    cyc_leave();
+    return n;
+}
+long long cyc_reclaimed(void) {
+    cyc_enter();
+    long long n = cyc_collected;
+    cyc_leave();
+    return n;
+}
+long long cyc_collections_run(void) {
+    cyc_enter();
+    long long n = cyc_collections;
+    cyc_leave();
+    return n;
+}
 
 // AIF item 3. `elem_own` is what the container was told about its elements at
 // construction, and being told is the only way it can know: the elements are

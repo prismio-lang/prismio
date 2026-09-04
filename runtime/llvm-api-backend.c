@@ -114,8 +114,28 @@ static int g_has_returned;
 // malloc for an arena, a refcounting allocator, or anything else is a change
 // here and not a change to codegen. Defaults keep today's behaviour exactly.
 
+// **The deallocator is the runtime's seam; the allocator stays libc's, and the
+// asymmetry is a measurement rather than an oversight.**
+//
+// `rt_free` recycles small blocks (lang_runtime.c), and a pool only fills if the
+// releases reach it -- a release emitted as libc `free` hands the allocator a
+// block the pool never gets back. That half is worth 1.85x on `tokenization`.
+//
+// Naming the seam on the allocator side too was tried and reverted. It buys
+// nothing -- `struct_creation` and `transient_allocation` both read 1.00x,
+// because the allocations that benefit are made *inside* the runtime by
+// `str_with_capacity` and friends, which already call `rt_base_alloc` directly.
+// And it costs: `malloc` is a name LLVM's TargetLibraryInfo knows, so the call
+// carries `noalias`, `allocsize` and inaccessible-memory-only for free, while an
+// opaque `rt_base_alloc` must be assumed to clobber everything. `tree_traversal`
+// -- 32 000 nodes built, then traversed 32 times -- measured **0.88x** with the
+// swap and 1.00x without it. Nothing about the pool needs it, so it is not paid.
+//
+// Under `--verify` both are overridden together with the ledger's own pair
+// (src/driver/compile.psm), which is the discipline that actually matters here:
+// the two halves of one *pairing* swap together or neither does.
 static char g_alloc_fn[NAME_LEN] = "malloc";
-static char g_free_fn[NAME_LEN] = "free";
+static char g_free_fn[NAME_LEN] = "rt_free";
 
 // Pointer-sized integer for the current target, in LLVM spelling. Set once per
 // module from the front end's irPtrIntType(); i64 on every target so far.
@@ -384,6 +404,102 @@ static LLVMValueRef resolve_value(const char *s, const char *type_key) {
     return const_from_text(s, type_from_key(type_key));
 }
 
+// The German-string representation (Umbra, CIDR 2020; the same layout Arrow,
+// DuckDB, Velox and Polars call a StringView).
+//
+// `String` is still the 16-byte `{ptr, i64}` pair. What changed is that the
+// length word carries a tag, and a tagged pair holds its bytes rather than an
+// address:
+//
+//     bits  0..30 of field 1 : byte length (up to 2 GiB)
+//     bit      31 of field 1 : INLINE
+//     bits 32..63 of field 1 : INLINE ? data[8..11] : reserved for the prefix
+//     field 0                : INLINE ? data[0..7]  : the data pointer
+//
+// Twelve inline bytes, which is what German strings get and what the shape of
+// this language's own allocations asks for: histogramming `length` at
+// `str_with_capacity` over `prismio check src/main.psm` -- 444 798 string
+// allocations -- puts 53.3% at four bytes or fewer, 74.6% at eight, and 81.3%
+// at twelve. libc++'s 22 reaches 96.5%, but it costs a 24-byte string, and the
+// remaining traffic is mostly substrings, which the storage classes this layout
+// leaves room for can take to zero rather than to inline.
+//
+// The tag is at bit 31 rather than 63 so that the whole top half stays data:
+// with it at 63 the twelfth byte would have to share, and 11 inline bytes reads
+// ~80% instead of 81.3%. It costs one `and` on `__builtin_string_len`.
+//
+// The long form is bit-for-bit what this compiler emitted before, which is what
+// makes the change safe to land in pieces: every producer that has not been
+// taught to inline keeps producing exactly what it did, and only a pair that
+// says INLINE is read the new way.
+#define PRISMIO_STR_INLINE_TAG 0x80000000ULL
+#define PRISMIO_STR_INLINE_MAX 12
+
+// A fresh 16-byte scratch slot in the entry block.
+//
+// **Fresh per call site, deliberately.** One buffer per function would be a
+// use-after-overwrite the moment two inline strings are live at once, which
+// `a == b` on two short strings does immediately -- both coerce, and the second
+// would land on the first. Entry-block allocas are stack slots that LLVM's stack
+// colouring merges when their live ranges do not overlap, so the cost of being
+// correct here is nothing.
+static LLVMValueRef str_scratch_slot(void) {
+    LLVMBasicBlockRef here = LLVMGetInsertBlock(g_builder);
+    LLVMValueRef first = g_entry_block ? LLVMGetFirstInstruction(g_entry_block) : NULL;
+    if (first) LLVMPositionBuilderBefore(g_builder, first);
+    else if (g_entry_block) LLVMPositionBuilderAtEnd(g_builder, g_entry_block);
+    LLVMValueRef slot = LLVMBuildAlloca(
+        g_builder, LLVMArrayType2(LLVMInt8TypeInContext(g_ctx), 16), "str.inline");
+    LLVMPositionBuilderAtEnd(g_builder, here);
+    return slot;
+}
+
+static LLVMValueRef byte_gep(LLVMValueRef base, LLVMValueRef index) {
+    LLVMValueRef idx[1] = {index};
+    return LLVMBuildInBoundsGEP2(g_builder, LLVMInt8TypeInContext(g_ctx), base, idx, 1, "");
+}
+
+// The pointer half of a String, for a consumer that wants `const char*`.
+//
+// An inline pair has no pointer to give, so one is made: the twelve bytes are
+// written into a scratch slot -- field 0's own bits at offset 0, the top half of
+// the length word at offset 8 -- and NUL-terminated there, because twelve bytes
+// of data leave no room for a terminator inside the pair and every consumer
+// downstream is a C function.
+//
+// **Branchless, and that is what keeps the scanner at C's speed.** A `select`
+// over three stores that are loop-invariant whenever the string is means LICM
+// lifts the whole thing out of a loop that walks one string, and the loop body
+// is the GEP-and-load it was before. A branch here would be inside that loop.
+//
+// The terminator index is masked to the buffer rather than trusted: the stores
+// run for a heap string too (they are dead there, and predicating them would
+// cost the branch this exists to avoid), and a heap string's length is not
+// bounded by 12.
+static LLVMValueRef str_data_ptr(LLVMValueRef v) {
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+
+    LLVMValueRef heap = LLVMBuildExtractValue(g_builder, v, 0, "");
+    LLVMValueRef word = LLVMBuildExtractValue(g_builder, v, 1, "");
+    LLVMValueRef tag = LLVMBuildAnd(g_builder, word,
+                                    LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), "");
+    LLVMValueRef inlined = LLVMBuildICmp(g_builder, LLVMIntNE, tag,
+                                         LLVMConstInt(i64, 0, 0), "");
+
+    LLVMValueRef buf = str_scratch_slot();
+    LLVMBuildStore(g_builder, LLVMBuildPtrToInt(g_builder, heap, i64, ""), buf);
+    LLVMValueRef hi = LLVMBuildTrunc(
+        g_builder, LLVMBuildLShr(g_builder, word, LLVMConstInt(i64, 32, 0), ""), i32, "");
+    LLVMBuildStore(g_builder, hi, byte_gep(buf, LLVMConstInt(i32, 8, 0)));
+    LLVMValueRef len = LLVMBuildAnd(g_builder, LLVMBuildTrunc(g_builder, word, i32, ""),
+                                    LLVMConstInt(i32, 15, 0), "");
+    LLVMBuildStore(g_builder, LLVMConstInt(i8, 0, 0), byte_gep(buf, len));
+
+    return LLVMBuildSelect(g_builder, inlined, buf, heap, "");
+}
+
 // A fat String where a pointer is wanted means its pointer half.
 //
 // `String` is `{ptr, i64}`, and the runtime entry points that take one -- `free`,
@@ -421,11 +537,14 @@ static LLVMValueRef coerce_for(LLVMValueRef v, const char *type_key) {
     // `LLVMConstExtractValue` was removed when LLVM pruned constant expressions;
     // `LLVMGetAggregateElement` reads a field out of a constant aggregate and is
     // what replaced it.
+    // A literal is always the long form -- `ir_const_str` builds a pointer to
+    // .rodata and never sets the tag -- so the constant path stays the plain
+    // field read and pays nothing for the representation.
     if (LLVMIsConstant(v)) {
         LLVMValueRef e = LLVMGetAggregateElement(v, 0);
         if (e) return e;
     }
-    return LLVMBuildExtractValue(g_builder, v, 0, "");
+    return str_data_ptr(v);
 }
 
 static void reset_state(void) {
@@ -1377,16 +1496,58 @@ void ir_region_end(void)   { ir_arena_call("arena_pop"); }
 void ir_arena_hint_begin(void) { ir_arena_call("rt_arena_hint_push"); }
 void ir_arena_hint_end(void)   { ir_arena_call("rt_arena_hint_pop"); }
 
+// The value behind a `$$v` handle, without the pointer coercion resolve_value
+// applies. Only the release path wants this: it has to read the length word
+// before deciding what -- if anything -- to hand the deallocator.
+static LLVMValueRef resolve_uncoerced(const char *s) {
+    if (!s || s[0] != '$' || s[1] != '$' || s[2] != 'v') return NULL;
+    int idx = atoi(s + 3);
+    if (idx < 0 || idx >= g_value_count) return NULL;
+    return g_values[idx];
+}
+
+static int is_prismio_str(LLVMValueRef v) {
+    if (!v) return 0;
+    LLVMTypeRef ty = LLVMTypeOf(v);
+    if (LLVMGetTypeKind(ty) != LLVMStructTypeKind) return 0;
+    const char *name = LLVMGetStructName(ty);
+    return name && strncmp(name, "prismio.str", 11) == 0;
+}
+
+// **An inline String owns no block, so its release must reach the deallocator
+// with nothing.** Not with the pair's first field: for an inline string that
+// field is twelve bytes of text, and handing it to `free` is a free of whatever
+// address those characters spell.
+//
+// A `select` to null rather than a branch around the call, because `rt_free`
+// already returns on null -- so the shape that inlines every one of its strings
+// pays one compare and one select per release and never enters the allocator,
+// which is the whole point of the representation on a tokenizer.
 static void ir_release_call(const char *value, const char *fn_name) {
     if (block_done()) return;
     LLVMTypeRef voidty = LLVMVoidTypeInContext(g_ctx);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
 
     LLVMTypeRef free_ty = LLVMFunctionType(voidty, &ptr, 1, 0);
     LLVMValueRef free_fn = LLVMGetNamedFunction(g_module, fn_name);
     if (!free_fn) free_fn = LLVMAddFunction(g_module, fn_name, free_ty);
 
-    LLVMValueRef args[1] = {coerce_for(resolve_value(value, "ptr"), "ptr")};
+    LLVMValueRef raw = resolve_uncoerced(value);
+    LLVMValueRef arg;
+    if (is_prismio_str(raw) && !LLVMIsConstant(raw)) {
+        LLVMValueRef word = LLVMBuildExtractValue(g_builder, raw, 1, "");
+        LLVMValueRef tag = LLVMBuildAnd(g_builder, word,
+                                        LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), "");
+        LLVMValueRef inlined = LLVMBuildICmp(g_builder, LLVMIntNE, tag,
+                                             LLVMConstInt(i64, 0, 0), "");
+        LLVMValueRef heap = LLVMBuildExtractValue(g_builder, raw, 0, "");
+        arg = LLVMBuildSelect(g_builder, inlined, LLVMConstNull(ptr), heap, "");
+    } else {
+        arg = coerce_for(resolve_value(value, "ptr"), "ptr");
+    }
+
+    LLVMValueRef args[1] = {arg};
     LLVMBuildCall2(g_builder, free_ty, free_fn, args, 1, "");
 }
 
@@ -2551,6 +2712,145 @@ int ir_extract_value(const char *agg_type, const char *agg, int index) {
 // A constant aggregate, for a value known at compile time -- a string literal is
 // `{ @.strN, <len> }` and needs no instructions at all, which is why literals do
 // not go through insertvalue.
+// One byte of a String, read from wherever that string keeps its bytes.
+//
+// **Never through `str_data_ptr`**, and that is the difference between this
+// representation paying for itself and costing 1.6x on a byte loop. Materialising
+// the pair into a scratch buffer writes three stores, and the load that follows
+// goes through a `select` that may point *at* that buffer -- so LICM cannot lift
+// the stores out of a loop, and `strCountOfChar` paid all three per byte.
+// Measured before this existed: `line_processing` 0.63x, `string_search` 0.86x,
+// with the stores plainly visible inside the loop in the disassembly.
+//
+// So the byte is read from the pair instead. For the short form the twelve bytes
+// are two machine words: index 0..7 live in field 0 and 8..11 in the top half of
+// field 1, and `i & 7` is the shift within whichever word, because for 8..11 that
+// is exactly `i - 8`.
+//
+// The heap load still happens either way, from a pointer that is valid either
+// way: for an inline string it reads the scratch slot, which is uninitialised
+// and whose value is then thrown away by the final `select`. That is what keeps
+// this branchless and store-free -- everything except the GEP and the load is
+// loop-invariant when the string is, so LICM lifts it and the loop body is the
+// two instructions it was before the representation changed.
+int ir_str_byte_at(const char *base, const char *index) {
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+
+    LLVMValueRef pair = resolve_value(base, "struct:prismio.str");
+    LLVMValueRef idx = resolve_value(index, "i32");
+
+    // A literal is always the long form, so it keeps the plain GEP-and-load.
+    if (!is_prismio_str(pair)) {
+        LLVMValueRef slot = byte_gep(resolve_value(base, "ptr"), idx);
+        return intern_value(LLVMBuildLoad2(g_builder, i8, slot, ""));
+    }
+
+    LLVMValueRef heap = LLVMBuildExtractValue(g_builder, pair, 0, "");
+    LLVMValueRef word = LLVMBuildExtractValue(g_builder, pair, 1, "");
+    LLVMValueRef inlined = LLVMBuildICmp(
+        g_builder, LLVMIntNE,
+        LLVMBuildAnd(g_builder, word, LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), ""),
+        LLVMConstInt(i64, 0, 0), "");
+
+    LLVMValueRef safe = LLVMBuildSelect(g_builder, inlined, str_scratch_slot(), heap, "");
+    LLVMValueRef from_heap =
+        LLVMBuildLoad2(g_builder, i8, byte_gep(safe, idx), "");
+
+    LLVMValueRef low = LLVMBuildPtrToInt(g_builder, heap, i64, "");
+    LLVMValueRef high = LLVMBuildLShr(g_builder, word, LLVMConstInt(i64, 32, 0), "");
+    LLVMValueRef which = LLVMBuildSelect(
+        g_builder,
+        LLVMBuildICmp(g_builder, LLVMIntULT, idx, LLVMConstInt(i32, 8, 0), ""),
+        low, high, "");
+    LLVMValueRef shift = LLVMBuildShl(
+        g_builder,
+        LLVMBuildZExt(g_builder, LLVMBuildAnd(g_builder, idx, LLVMConstInt(i32, 7, 0), ""),
+                      i64, ""),
+        LLVMConstInt(i64, 3, 0), "");
+    LLVMValueRef from_pair = LLVMBuildTrunc(
+        g_builder, LLVMBuildLShr(g_builder, which, shift, ""), i8, "");
+
+    return intern_value(LLVMBuildSelect(g_builder, inlined, from_pair, from_heap, ""));
+}
+
+// The canonical `const char*` for a String value, for the handful of frontend
+// sites that need the pointer half as a *value* rather than as a call argument.
+// `ir_call_arg("ptr", …)` already coerces on its way through `resolve_value`;
+// these are the places that do something with the pointer first.
+int ir_str_data(const char *value) {
+    // `coerce_for` explicitly, not just `resolve_value`: the `%name` path in
+    // resolve_value returns a parameter or alloca *without* coercing, so a
+    // String parameter came back as the pair and every later use materialised it
+    // again -- which put the three stores back inside the byte loop this exists
+    // to keep them out of.
+    return intern_value(coerce_for(resolve_value(value, "ptr"), "ptr"));
+}
+
+// Build the short form: `count` bytes at `base + start`, held in the pair.
+//
+// **The caller guarantees `count <= 12`.** `strSubstring` in std/string.psm tests
+// it and takes the allocating path otherwise; putting the test there rather than
+// here keeps this straight-line, which is what lets it be worth having at all.
+//
+// No allocation, no deallocation, and no owner: the result is sixteen bytes of
+// value. That is the whole German-string bet, and on a tokenizer it is the
+// difference between one malloc and one free per token and none.
+//
+// The buffer is zeroed before the copy so the bytes past `count` are
+// deterministic. Two pairs holding the same text then compare equal as
+// integers, which is what a later prefix comparison will rest on -- and it costs
+// two stores that the copy immediately overwrites for a full-length string.
+int ir_str_inline(const char *base, const char *start, const char *count) {
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+
+    LLVMValueRef src = resolve_value(base, "ptr");
+    LLVMValueRef off = resolve_value(start, "i32");
+    LLVMValueRef n = resolve_value(count, "i32");
+
+    LLVMValueRef buf = str_scratch_slot();
+    LLVMValueRef at8 = byte_gep(buf, LLVMConstInt(i32, 8, 0));
+    LLVMBuildStore(g_builder, LLVMConstInt(i64, 0, 0), buf);
+    LLVMBuildStore(g_builder, LLVMConstInt(i64, 0, 0), at8);
+    // **This is still a call to libc `memcpy`, for a copy of at most twelve
+    // bytes, once per short string.** Masking the length to four bits first was
+    // tried, on the theory that a provable bound of 15 would let LLVM expand it
+    // inline; the call is still there in the disassembly, so the hint was
+    // removed rather than left in looking like it did something. What would
+    // remove it is the classic small-copy ladder -- two overlapping i64 loads
+    // for 8..12 bytes, two i32 for 4..7, three bytes below that, all in bounds
+    // because the source has `count` valid bytes -- and that needs branches,
+    // which means basic blocks built inside a backend entry point. Worth about
+    // 47 us of the 54 000-token pass, which is most of what still separates the
+    // token half from C++'s (134 us against 87 us).
+    LLVMBuildMemCpy(g_builder, buf, 1, byte_gep(src, off), 1,
+                    LLVMBuildZExt(g_builder, n, i64, ""));
+
+    // data[0..7] become the pair's first field, read as an address only by the
+    // long form -- an inline pair's field 0 is never dereferenced, because
+    // str_data_ptr selects the scratch copy instead.
+    LLVMValueRef w0 = LLVMBuildLoad2(g_builder, i64, buf, "");
+    LLVMValueRef w1hi = LLVMBuildLoad2(g_builder, i32, at8, "");
+    LLVMValueRef tagged_len = LLVMBuildOr(
+        g_builder, LLVMBuildZExt(g_builder, n, i64, ""),
+        LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), "");
+    LLVMValueRef word = LLVMBuildOr(
+        g_builder, tagged_len,
+        LLVMBuildShl(g_builder, LLVMBuildZExt(g_builder, w1hi, i64, ""),
+                     LLVMConstInt(i64, 32, 0), ""), "");
+
+    LLVMTypeRef sty = named_struct("prismio.str");
+    LLVMValueRef pair = LLVMGetUndef(sty);
+    pair = LLVMBuildInsertValue(g_builder, pair,
+                                LLVMBuildIntToPtr(g_builder, w0, ptr, ""), 0, "");
+    pair = LLVMBuildInsertValue(g_builder, pair, word, 1, "");
+    return intern_value(pair);
+}
+
 int ir_const_str(const char *global_name, int length) {
     LLVMValueRef g = LLVMGetNamedGlobal(g_module, global_name);
     if (!g) backend_fail("unknown string global", global_name);

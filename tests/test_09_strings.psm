@@ -10,7 +10,7 @@ fn fail(message: String) -> Int {
 fn main() -> Int {
     let hello = "Hello"
     let world = "World"
-    let phrase = strConcat(strConcat(hello, ", "), world)
+    let phrase = hello.concat(", ", world)
 
     if (__builtin_string_len(hello) != 5) {
         return fail("string length should count characters")

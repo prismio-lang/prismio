@@ -15,29 +15,29 @@ internal fn semaMangleType(t: TypeInfo) -> String {
     if (t.kind == TypeKind.CHAR) { return "Char" }
     if (t.kind == TypeKind.STRING) { return "String" }
     if (t.kind == TypeKind.PTR) { return "Ptr" }
-    if (t.kind == TypeKind.STRUCT) { return strConcat("Struct_", t.name) }
-    if (t.kind == TypeKind.ENUM) { return strConcat("Enum_", t.name) }
+    if (t.kind == TypeKind.STRUCT) { return "Struct_".concat(t.name) }
+    if (t.kind == TypeKind.ENUM) { return "Enum_".concat(t.name) }
     if (t.kind == TypeKind.ARRAY) {
         if (nodeExists(t.child)) {
-            return strConcat("Array_", semaMangleType(ptr_to_type(t.child)))
+            return "Array_".concat(semaMangleType(ptr_to_type(t.child)))
         }
         return "Array_Invalid"
     }
     if (t.kind == TypeKind.LIST) {
         if (nodeExists(t.child)) {
-            return strConcat("List_", semaMangleType(ptr_to_type(t.child)))
+            return "List_".concat(semaMangleType(ptr_to_type(t.child)))
         }
         return "List_Invalid"
     }
     if (t.kind == TypeKind.SLICE) {
         if (nodeExists(t.child)) {
-            return strConcat("Slice_", semaMangleType(ptr_to_type(t.child)))
+            return "Slice_".concat(semaMangleType(ptr_to_type(t.child)))
         }
         return "Slice_Invalid"
     }
     if (t.kind == TypeKind.DATAVIEW) {
         if (nodeExists(t.child)) {
-            return strConcat("DataView_", semaMangleType(ptr_to_type(t.child)))
+            return "DataView_".concat(semaMangleType(ptr_to_type(t.child)))
         }
         return "DataView_Invalid"
     }
@@ -53,7 +53,7 @@ private fn semaParamSignature(module: ASTNode, paramPtr: Ptr) -> String {
         if (sig.equals("")) {
             sig = semaMangleType(paramT)
         } else {
-            sig = strConcat(strConcat(sig, "_"), semaMangleType(paramT))
+            sig = sig.concat("_", semaMangleType(paramT))
         }
         curr = param.next
     }
@@ -77,10 +77,9 @@ internal fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
     let owner = semaOwningTrait(module, fnNode)
     let signature = semaParamSignature(module, fnNode.child1)
     if (owner.equals("") == false) {
-        return strConcat(strConcat(owner, "_"),
-                         strConcat(fnNode.s1, strConcat("__", signature)))
+        return owner.concat("_", fnNode.s1, "__", signature)
     }
-    return strConcat(strConcat(fnNode.s1, "__"), signature)
+    return fnNode.s1.concat("__", signature)
 }
 
 // One entry per trait-impl method: `s1` is the owning trait's name and the span
@@ -499,8 +498,8 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
     // because semaError exited. Now that it returns, an ambiguous call would
     // also be reported as having no matching overload and as being unknown.
     if (matchCount > 1) {
-        semaErrorAt(call, strConcat(strConcat("ambiguous call to ", diagQuote(name)),
-                                       ": more than one overload matches these arguments"))
+        semaErrorAt(call, "ambiguous call to ".concat(diagQuote(name),
+                                                      ": more than one overload matches these arguments"))
         // When the tie is between two traits, the fix is a spelling rather than a
         // change to either declaration, so the note names it. Silent otherwise:
         // an ordinary overload tie has no qualifier that would resolve it.
@@ -511,17 +510,17 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         return ptr_to_node(bestPtr)
     }
     if (nameSeen) {
-        semaErrorAt(call, strConcat(strConcat("no overload of ", diagQuote(name)),
-                                       " accepts these argument types"))
+        semaErrorAt(call, "no overload of ".concat(diagQuote(name),
+                                                   " accepts these argument types"))
         return createNode(NodeKind.MODULE)
     }
     if (hiddenLevel == 1) {
-        semaErrorAt(call, strConcat(diagQuote(name), " is private to the file that declares it"))
+        semaErrorAt(call, diagQuote(name).concat(" is private to the file that declares it"))
         diag_note("drop `private` from its declaration, or mark it `internal` to share it within its package")
         return createNode(NodeKind.MODULE)
     }
     if (hiddenLevel == 2) {
-        semaErrorAt(call, strConcat(diagQuote(name), " is internal to the package that declares it"))
+        semaErrorAt(call, diagQuote(name).concat(" is internal to the package that declares it"))
         diag_note("drop `internal` from its declaration to make it part of that package's surface")
         return createNode(NodeKind.MODULE)
     }
@@ -530,11 +529,10 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         // reader to check their imports for a name that is a trait's.
         let mut kind = "module "
         if (traitQualified) { kind = "trait " }
-        semaErrorAt(call, strConcat(strConcat(kind, diagQuote(qualifier)),
-                                    strConcat(" declares no ", diagQuote(name))))
+        semaErrorAt(call, kind.concat(diagQuote(qualifier), " declares no ", diagQuote(name)))
         return createNode(NodeKind.MODULE)
     }
-    semaErrorAt(call, strConcat("unknown function ", diagQuote(name)))
+    semaErrorAt(call, "unknown function ".concat(diagQuote(name)))
     return createNode(NodeKind.MODULE)
 }
 
@@ -560,8 +558,10 @@ internal fn semaCheckArity(call: ASTNode, name: String, argPtr: Ptr, expected: I
 
     let mut noun = " arguments, found "
     if (expected == 1) { noun = " argument, found " }
-    semaErrorAt(call, strConcat(strConcat(diagQuote(name), " expects "),
-                  strConcat(strFromInt(expected), strConcat(noun, strFromInt(actual)))))
+    semaErrorAt(call, diagQuote(name).concat(" expects ",
+                                             strFromInt(expected),
+                                             noun,
+                                             strFromInt(actual)))
     return false
 }
 
@@ -588,17 +588,15 @@ private fn semaNoteTraitQualifiers(module: ASTNode, call: ASTNode, name: String,
             let owner = semaOwningTrait(module, stmt)
             if (owner.equals("") == false) {
                 if (suggestion.equals("") == false) {
-                    suggestion = strConcat(suggestion, " or ")
+                    suggestion = suggestion.concat(" or ")
                 }
-                suggestion = strConcat(suggestion,
-                                       strConcat("`", strConcat(owner,
-                                                 strConcat(".", strConcat(name, "(...)`")))))
+                suggestion = suggestion.concat("`", owner, ".", name, "(...)`")
             }
         }
         i = i + 1
     }
     if (suggestion.equals("") == false) {
         diag_note_at(call.file, call.line, call.col, call.len,
-                     strConcat("name the trait: write ", suggestion))
+                     "name the trait: write ".concat(suggestion))
     }
 }

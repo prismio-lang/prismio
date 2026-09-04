@@ -45,7 +45,7 @@ fn count_span(j: Job) -> Int {
 }
 
 fn name_span(j: Job) -> String {
-    return strConcat("span-", strFromInt(j.hi - j.lo))
+    return "span-".concat(strFromInt(j.hi - j.lo))
 }
 
 fn summarise(j: Job) -> Report {

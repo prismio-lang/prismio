@@ -33,17 +33,17 @@ impl Sized for Item {
 }
 
 impl Described for Item {
-    fn detail(self) -> String { return strConcat(label(self), "!") }
+    fn detail(self) -> String { return label(self).concat("!") }
 }
 
 impl Reported for Item {
-    fn report(self) -> String { return strConcat(detail(self), strFromInt(size(self))) }
+    fn report(self) -> String { return detail(self).concat(strFromInt(size(self))) }
 }
 
 // A bound on the child gives the parent's methods too, because the obligation
 // guarantees the implementation exists.
 fn describeAny<T: Described>(value: T) -> String {
-    return strConcat(label(value), detail(value))
+    return label(value).concat(detail(value))
 }
 
 fn fail(message: String) -> Int {

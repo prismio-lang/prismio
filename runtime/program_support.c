@@ -493,12 +493,16 @@ static void prismio_task_invoke(PrismioTask* t) {
 
 #ifdef _WIN32
 static DWORD WINAPI prismio_task_entry(LPVOID arg) {
+    prismio_memory_thread_enter();
     prismio_task_invoke((PrismioTask*)arg);
+    prismio_memory_thread_cleanup();
     return 0;
 }
 #else
 static void* prismio_task_entry(void* arg) {
+    prismio_memory_thread_enter();
     prismio_task_invoke((PrismioTask*)arg);
+    prismio_memory_thread_cleanup();
     return NULL;
 }
 #endif
@@ -521,6 +525,10 @@ void* prismio_task_spawn(void* fn, int rkind, int nargs, void* a0, void* a1, voi
     t->a[0] = a0;
     t->a[1] = a1;
     t->a[2] = a2;
+
+    // Publish the switch before the OS can run the new thread. Programs that
+    // never spawn retain the direct process-local arena fast path.
+    prismio_memory_threads_enable();
 
 #ifdef _WIN32
     t->thread = CreateThread(NULL, 0, prismio_task_entry, t, 0, NULL);

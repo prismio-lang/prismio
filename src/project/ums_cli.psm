@@ -99,7 +99,7 @@ fn initUmsProject(nameArg: String) -> Int {
     // Rejected by UMS's own rule rather than a copy of it, so a name this writes
     // is a name the validator accepts -- the scaffold cannot be born invalid.
     if (umsValidName(name) == false) {
-        diag_error_code("P1013", strConcat(strConcat("cannot use ", diagQuote(name)), " as a project name"))
+        diag_error_code("P1013", "cannot use ".concat(diagQuote(name), " as a project name"))
         diag_note("a name may hold letters, digits, `-`, `_` and `.`")
         diag_note("run `prismio init <name>` to choose one")
         return 1
@@ -107,23 +107,23 @@ fn initUmsProject(nameArg: String) -> Int {
 
     let manifestPath = join_path(root, "build.ums")
     if (file_exists(manifestPath) == 1) {
-        diag_error_code("P1014", strConcat(manifestPath, " already exists"))
+        diag_error_code("P1014", manifestPath.concat(" already exists"))
         return 1
     }
 
     if (make_directory(join_path(root, "src")) != 0) {
-        diag_error_code("P1015", strConcat("could not create ", join_path(root, "src")))
+        diag_error_code("P1015", "could not create ".concat(join_path(root, "src")))
         return 1
     }
 
-    let manifest = strConcat("project {\n    name = \"", name)
-    let manifestBody = strConcat(manifest,
-        strConcat("\"\n    version = \"0.1.0\"\n    prismio = \"",
-        strConcat(PRISMIO_VERSION,
-        strConcat("\"\n}\n\ntargets {\n    executable(\"", name))))
-    let manifestText = strConcat(manifestBody, "\") {\n        entry = \"src/main.psm\"\n    }\n}\n")
+    let manifest = "project {\n    name = \"".concat(name)
+    let manifestBody = manifest.concat("\"\n    version = \"0.1.0\"\n    prismio = \"",
+                                       PRISMIO_VERSION,
+                                       "\"\n}\n\ntargets {\n    executable(\"",
+                                       name)
+    let manifestText = manifestBody.concat("\") {\n        entry = \"src/main.psm\"\n    }\n}\n")
     if (write_file(manifestPath, manifestText) != 0) {
-        diag_error_code("P1016", strConcat("could not write ", manifestPath))
+        diag_error_code("P1016", "could not write ".concat(manifestPath))
         return 1
     }
 
@@ -131,7 +131,7 @@ fn initUmsProject(nameArg: String) -> Int {
     if (file_exists(entryPath) == 0) {
         if (write_file(entryPath,
                 "import std.io\n\nfn main() -> Int {\n    println(\"Hello, Prismio!\")\n    return 0\n}\n") != 0) {
-            diag_error_code("P1017", strConcat("could not write ", entryPath))
+            diag_error_code("P1017", "could not write ".concat(entryPath))
             return 1
         }
     }
@@ -142,7 +142,7 @@ fn initUmsProject(nameArg: String) -> Int {
     let ignorePath = join_path(root, ".gitignore")
     if (file_exists(ignorePath) == 0) {
         if (write_file(ignorePath, ".prismio/\n") != 0) {
-            diag_error_code("P1018", strConcat("could not write ", ignorePath))
+            diag_error_code("P1018", "could not write ".concat(ignorePath))
             return 1
         }
     }
@@ -168,11 +168,11 @@ fn initUmsProject(nameArg: String) -> Int {
 
 private fn umsNativePath(root: String, value: String) -> String {
     let length = __builtin_string_len(value)
-    if (length > 0 and (strCharAt(value, 0) == '/' or
-        strCharAt(value, 0) == '\\')) {
+    if (length > 0 and (value.charAt(0) == '/' or
+        value.charAt(0) == '\\')) {
         return strClone(value)
     }
-    if (length > 1 and strCharAt(value, 1) == ':') {
+    if (length > 1 and value.charAt(1) == ':') {
         return strClone(value)
     }
     return join_path(root, value)
@@ -295,7 +295,7 @@ fn projectProfile(startIndex: Int) -> String {
         } else if (flag.equals("--debug-profile")) {
             profile = "debug"
         } else {
-            diag_error_code("P1019", strConcat("unknown argument ", diagQuote(flag)))
+            diag_error_code("P1019", "unknown argument ".concat(diagQuote(flag)))
             diag_note("a project command takes `--release`; name a source file to build one file")
             return ""
         }
@@ -338,7 +338,7 @@ fn cleanUmsProject(profile: String) -> Int {
             } else if (delete_file(target.outputPath) == 0) {
                 removed = removed + 1
             } else {
-                diag_error_code("P1020", strConcat("could not remove ", target.outputPath))
+                diag_error_code("P1020", "could not remove ".concat(target.outputPath))
                 return 1
             }
         }
@@ -398,7 +398,7 @@ private fn cliWantsMachineOutput() -> Bool {
 }
 
 private fn buildUmsHostTarget(target: UmsTarget) -> Int {
-    let candidate = strConcat(strClone(target.outputPath), ".next")
+    let candidate = strClone(target.outputPath).concat(".next")
     if (file_exists(candidate) == 1) { delete_file(candidate) }
 
     let currentPath = join_path(executable_directory(), pathLeaf(cli_arg(0)))
@@ -454,7 +454,7 @@ fn dispatchToUmsHost() -> Int {
         return -1
     }
 
-    let candidate = strConcat(strClone(host), ".next")
+    let candidate = strClone(host).concat(".next")
     if (file_exists(candidate) == 1) { delete_file(candidate) }
 
     if (cliWantsMachineOutput() == false) {
@@ -582,7 +582,7 @@ fn buildUmsProject(profile: String, runAfterBuild: Bool) -> Int {
 
     let target = workspace.target(firstExecutable)
     if (compiler_run_executable(target.outputPath) != 0) {
-        diag_error_code("P1023", strConcat(target.outputPath, " exited with a failure status"))
+        diag_error_code("P1023", target.outputPath.concat(" exited with a failure status"))
         return 1
     }
     return 0
@@ -613,7 +613,7 @@ private fn rejectReservedCommandNames(workspace: UmsWorkspace) -> Int {
         let declared = workspace.command(index)
         if (umsReservedCommandName(declared.name)) {
             diag_error_code("P1062",
-                strConcat("a project command cannot be named ", diagQuote(declared.name)))
+                "a project command cannot be named ".concat(diagQuote(declared.name)))
             diag_note("that name is a built-in command and built-ins win; rename it in build.ums")
             rejected = 1
         }
@@ -641,7 +641,7 @@ private fn umsCommandProfile(startIndex: Int) -> String {
 private fn umsShellProgram(root: String, program: String) -> String {
     let mut i = 0
     while (i < __builtin_string_len(program)) {
-        let current = strCharAt(program, i)
+        let current = program.charAt(i)
         if (current == '/' or current == '\\') { return umsNativePath(root, program) }
         i = i + 1
     }
@@ -658,11 +658,11 @@ private fn umsStepArguments(step: UmsCommandStep, forwardFrom: Int) -> String {
         if (argument.forwarded) {
             let mut forwarded = forwardFrom
             while (forwarded < cli_arg_count()) {
-                tail = strConcat(tail, " ", command_quote_arg(cli_arg(forwarded)))
+                tail = tail.concat(" ", command_quote_arg(cli_arg(forwarded)))
                 forwarded = forwarded + 1
             }
         } else {
-            tail = strConcat(tail, " ", command_quote_arg(argument.text))
+            tail = tail.concat(" ", command_quote_arg(argument.text))
         }
         index = index + 1
     }
@@ -694,9 +694,9 @@ private fn runUmsScriptStep(workspace: UmsWorkspace, step: UmsCommandStep,
     let scriptPath = umsNativePath(workspace.project.root, step.subject)
 
     if (strEndsWith(step.subject, ".py")) {
-        let line = strConcat(umsPythonInterpreter(), " ",
-                             command_quote_arg(scriptPath),
-                             umsStepArguments(step, forwardFrom))
+        let line = umsPythonInterpreter().concat(" ",
+                                                 command_quote_arg(scriptPath),
+                                                 umsStepArguments(step, forwardFrom))
         return execute_command(line)
     }
 
@@ -713,8 +713,7 @@ private fn runUmsScriptStep(workspace: UmsWorkspace, step: UmsCommandStep,
 private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
                              forwardFrom: Int) -> Int {
     if (step.kind == UmsCommandStepKind.SHELL) {
-        let line = strConcat(command_quote_arg(umsShellProgram(workspace.project.root, step.subject)),
-                             umsStepArguments(step, forwardFrom))
+        let line = command_quote_arg(umsShellProgram(workspace.project.root, step.subject)).concat(umsStepArguments(step, forwardFrom))
         return execute_command(line)
     }
 
@@ -732,8 +731,7 @@ private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
     // previous compiler while reading as though it ran the new one.
     if (isUmsHostTarget(workspace, target)) {
         diag_error_code("P1061",
-            strConcat("a command step cannot build the toolchain.host target: ",
-                       diagQuote(step.subject)))
+            "a command step cannot build the toolchain.host target: ".concat(diagQuote(step.subject)))
         diag_note("run `prismio build` first; the rebuilt compiler is promoted only after that process exits")
         return 1
     }
@@ -741,7 +739,7 @@ private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
     if (step.kind == UmsCommandStepKind.BUILD) { return 0 }
     if (compiler_run_executable_with(target.outputPath,
                                      umsStepArguments(step, forwardFrom)) != 0) {
-        diag_error_code("P1063", strConcat(target.outputPath, " exited with a failure status"))
+        diag_error_code("P1063", target.outputPath.concat(" exited with a failure status"))
         return 1
     }
     return 0
@@ -768,7 +766,7 @@ fn runUmsProjectCommand(name: String, forwardFrom: Int) -> Int {
     while (index < list_len(declared.steps)) {
         if (runUmsCommandStep(workspace, list_get(declared.steps, index), forwardFrom) != 0) {
             diag_error_code("P1059",
-                strConcat("project command ", diagQuote(declared.name), " failed"))
+                "project command ".concat(diagQuote(declared.name), " failed"))
             return 1
         }
         index = index + 1

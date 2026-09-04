@@ -61,11 +61,11 @@ fn main() -> Int {
 
     // Equal content, different pointers. This is the case the old `==` got
     // wrong: it compared the pointers and answered "absent".
-    let built = strConcat("al", "pha")
+    let built = "al".concat("pha")
     if (mapGetOr(names, built, 0) != 1) { return fail("a string key built at run time") }
 
     // Overwrite through a distinct pointer with the same content.
-    if (mapSet(names, strConcat("bet", "a"), 22) == false) {
+    if (mapSet(names, "bet".concat("a"), 22) == false) {
         return fail("overwrite through an equal-content key not reported")
     }
     if (mapLen(names) != 3) { return fail("overwrite grew the map") }

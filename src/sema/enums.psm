@@ -36,7 +36,7 @@ import std.string
 private fn enumTagField() -> String { return "$tag" }
 
 fn enumPayloadField(variantName: String, index: Int) -> String {
-    return strConcat(strConcat(variantName, "$"), strFromInt(index))
+    return variantName.concat("$", strFromInt(index))
 }
 
 internal fn enumHasPayload(enumDecl: ASTNode) -> Bool {
@@ -313,10 +313,10 @@ internal fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: St
         // function `Ok`", which is what it looked like before and says nothing
         // about the actual problem.
         if (enumNeedsWrittenArgs(module, enumName)) {
-            semaErrorAt(expr, strConcat(strConcat(strConcat(
-                "cannot infer the type arguments of ", diagQuote(enumName)),
-                " here; write them, as "),
-                diagQuote(strConcat(strConcat(enumName, "<...>."), variantName))))
+            semaErrorAt(expr, "cannot infer the type arguments of ".concat(diagQuote(enumName),
+                                                                           " here; write them, as ",
+                                                                           diagQuote(enumName.concat("<...>.",
+                                                                                                     variantName))))
         }
         return false
     }
@@ -326,8 +326,7 @@ internal fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: St
 
     let tag = enumVariantTag(shadow, variantName)
     if (tag < 0) {
-        semaErrorAt(expr, strConcat(strConcat(diagQuote(enumName), " has no variant "),
-                                      diagQuote(variantName)))
+        semaErrorAt(expr, diagQuote(enumName).concat(" has no variant ", diagQuote(variantName)))
         return false
     }
 
@@ -340,8 +339,8 @@ internal fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: St
     let mut index = 0
     while (nodeExists(payload)) {
         if (nodeIsNull(arg)) {
-            semaErrorAt(expr, strConcat(strConcat("variant ", diagQuote(variantName)),
-                                          " is missing a payload value"))
+            semaErrorAt(expr, "variant ".concat(diagQuote(variantName),
+                                                " is missing a payload value"))
             return false
         }
         // The argument is detached from its siblings before it becomes a field
@@ -356,8 +355,8 @@ internal fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: St
         arg = following
     }
     if (nodeExists(arg)) {
-        semaErrorAt(expr, strConcat(strConcat("variant ", diagQuote(variantName)),
-                                      " was given more payload values than it carries"))
+        semaErrorAt(expr, "variant ".concat(diagQuote(variantName),
+                                            " was given more payload values than it carries"))
         return false
     }
 
@@ -415,8 +414,7 @@ private fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, e
     arm.s2 = enumArmVariantName(pattern)
     let tag = enumVariantTag(shadow, arm.s2)
     if (tag < 0) {
-        semaErrorAt(pattern, strConcat(strConcat(diagQuote(shadow.s1), " has no variant "),
-                                         diagQuote(arm.s2)))
+        semaErrorAt(pattern, diagQuote(shadow.s1).concat(" has no variant ", diagQuote(arm.s2)))
         return
     }
     arm.i1 = tag
@@ -448,12 +446,12 @@ private fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, e
         binder = name.next
     }
     if (nodeExists(payload)) {
-        semaErrorAt(pattern, strConcat(strConcat("variant ", diagQuote(arm.s2)),
-                                         " carries more values than this pattern binds"))
+        semaErrorAt(pattern, "variant ".concat(diagQuote(arm.s2),
+                                               " carries more values than this pattern binds"))
     }
     if (nodeExists(binder)) {
-        semaErrorAt(pattern, strConcat(strConcat("variant ", diagQuote(arm.s2)),
-                                         " carries fewer values than this pattern binds"))
+        semaErrorAt(pattern, "variant ".concat(diagQuote(arm.s2),
+                                               " carries fewer values than this pattern binds"))
     }
 
     semaBlock(module, ptr_to_node(arm.child2), expectedReturn)
@@ -509,7 +507,7 @@ private fn semaCheckExhaustive(stmt: ASTNode, shadow: ASTNode) {
             if (missing.equals("")) {
                 missing = variant.s1
             } else {
-                missing = strConcat(strConcat(missing, ", "), variant.s1)
+                missing = missing.concat(", ", variant.s1)
             }
         }
         index = index + 1
@@ -517,9 +515,10 @@ private fn semaCheckExhaustive(stmt: ASTNode, shadow: ASTNode) {
     }
 
     if (missing.equals("") == false) {
-        semaErrorAt(stmt, strConcat(strConcat(strConcat(
-            "this match does not cover ", missing),
-            " of "), strConcat(diagQuote(shadow.s1), "; add the missing arms or a `_` arm")))
+        semaErrorAt(stmt, "this match does not cover ".concat(missing,
+                                                              " of ",
+                                                              diagQuote(shadow.s1),
+                                                              "; add the missing arms or a `_` arm"))
     }
 }
 
@@ -551,9 +550,8 @@ private fn semaCheckDuplicateArms(stmt: ASTNode) {
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
         if (arm.s1.equals("_") == false and semaTagCoveredBefore(stmt, position, arm.i1)) {
-            semaErrorAt(arm, strConcat(strConcat(
-                "this arm is unreachable: an earlier arm already matches ",
-                diagQuote(arm.s2)), ""))
+            semaErrorAt(arm, "this arm is unreachable: an earlier arm already matches ".concat(diagQuote(arm.s2),
+                                                                                               ""))
         }
         position = position + 1
         armPtr = arm.next

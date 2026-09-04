@@ -18,7 +18,7 @@ impl Eq for Colour {
 }
 
 impl Display for Colour {
-    fn show(self) -> String { return strConcat("#", strFromInt(self.r)) }
+    fn show(self) -> String { return "#".concat(strFromInt(self.r)) }
 }
 
 // Ordered, with no `Eq` of its own. `==` falls back to `cmp(a, b) == 0`.

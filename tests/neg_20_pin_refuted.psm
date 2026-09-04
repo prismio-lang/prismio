@@ -7,7 +7,7 @@ import std.io
 import std.string
 
 fn escapes() -> String {
-    let pin(T1) s = strConcat("ab", "cd")
+    let pin(T1) s = "ab".concat("cd")
     return s
 }
 

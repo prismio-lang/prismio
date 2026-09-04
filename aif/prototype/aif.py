@@ -107,6 +107,11 @@ FFI_CONTRACTS = {
     '__builtin_string_len': {0: 'borrow'},
     '__builtin_string_byte_at': {0: 'borrow'},
     '__builtin_string_put_byte': {0: 'borrow'},
+    # Copies twelve bytes of its operand into the pair it returns, so it borrows
+    # the source and the result is independent of it. Producing, and the only
+    # entry in FFI_RETURNS_PRODUCE that produces without allocating -- the German
+    # short form is sixteen bytes of value with nothing behind it.
+    '__builtin_string_inline': {0: 'borrow'},
     'print':          {0: 'borrow'},
     'println':        {0: 'borrow'},
     # v0.1 concurrency. `chan_send` **consumes** its message rather than
@@ -177,6 +182,7 @@ FFI_RETURNS_PRODUCE = {
     'list_new', 'list_new_with_capacity',
     'soa', 'aos',
     'str_concat', 'str_substring', 'str_slice',
+    '__builtin_string_inline',
     'int_to_str',
     'read_file', 'get_directory', 'join_path',
     # What comes out of a channel was allocated by the sending task and is this

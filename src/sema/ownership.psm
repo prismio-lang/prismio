@@ -58,7 +58,7 @@ internal fn semaMoveOperand(node: ASTNode) {
             // that predates the loop still does.
             if (ir_binding_predates_loop(node.s1) == 1
                 and ir_is_reinit_target(node.s1) == 0) {
-                semaErrorAt(node, strConcat(diagQuote(node.s1), " is moved inside a loop, so the move would repeat on the next iteration"))
+                semaErrorAt(node, diagQuote(node.s1).concat(" is moved inside a loop, so the move would repeat on the next iteration"))
             }
             ir_mark_moved(node.s1)
         }
@@ -73,7 +73,7 @@ internal fn semaConsumeOperand(node: ASTNode) {
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
         if (typeIsMoveOnly(nodeGetType(node))) {
             if (ir_is_borrowed(node.s1) == 1) {
-                semaErrorAt(node, strConcat("cannot move out of borrowed value ", diagQuote(node.s1)))
+                semaErrorAt(node, "cannot move out of borrowed value ".concat(diagQuote(node.s1)))
                 return
             }
         }
@@ -201,13 +201,12 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
 
             if (semaExternTypeIsSlice(annotation)) {
                 diag_error_at_code("P4101", param.file, param.line, param.col, __builtin_string_len(param.s1),
-                    strConcat("Slice cannot cross an extern boundary without explicit marshalling: ",
-                               diagQuote(param.s1)))
+                    "Slice cannot cross an extern boundary without explicit marshalling: ".concat(diagQuote(param.s1)))
                 diag_note("copy the view into a C-compatible buffer before the call")
             }
             if (semaExternTypeIsDataView(annotation)) {
                 diag_error_at_code("P4102", param.file, param.line, param.col, __builtin_string_len(param.s1),
-                    strConcat("DataView cannot cross an extern boundary: ", diagQuote(param.s1)))
+                    "DataView cannot cross an extern boundary: ".concat(diagQuote(param.s1)))
                 diag_note("materialise ordinary AoS storage with aos(view) before the call")
             }
 
@@ -216,22 +215,20 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
 
                 if (semaIsParameterContract(name) == false) {
                     diag_error_at_code("P4103", param.file, param.line, param.col, __builtin_string_len(param.s1),
-                        strConcat(strConcat(diagQuote(name),
-                                   " is a return contract and cannot appear on parameter "),
-                                   diagQuote(param.s1)))
+                        diagQuote(name).concat(" is a return contract and cannot appear on parameter ",
+                                               diagQuote(param.s1)))
                     diag_note("parameters take `borrow`, `retain`, `retain_in(k)`, `consume` or `out`")
                 } else if (name.equals("retain_in")) {
                     let target = optionOr(strParseInt(semaContractArgument(encoded)), 0)
                     if (target < 0 or target >= arity) {
                         diag_error_at_code("P4104", param.file, param.line, param.col, __builtin_string_len(param.s1),
-                            strConcat(strConcat("`retain_in` names argument ",
-                                       semaContractArgument(encoded)),
-                                       strConcat(", but this function takes ", strFromInt(arity))))
+                            "`retain_in` names argument ".concat(semaContractArgument(encoded),
+                                                                 ", but this function takes ",
+                                                                 strFromInt(arity)))
                         diag_note("the index is zero-based and names the container this argument is stored into")
                     } else if (target == index) {
                         diag_error_at_code("P4105", param.file, param.line, param.col, __builtin_string_len(param.s1),
-                            strConcat(strConcat("`retain_in` on ", diagQuote(param.s1)),
-                                       " names itself"))
+                            "`retain_in` on ".concat(diagQuote(param.s1), " names itself"))
                         diag_note("it names the *other* argument this one is stored into; a value cannot contain itself")
                     }
                 }
@@ -257,8 +254,7 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
             let name = semaContractName(ret.s2)
             if (name.equals("alias") == false and name.equals("produce") == false) {
                 diag_error_at_code("P4108", extNode.file, extNode.line, extNode.col, __builtin_string_len(extNode.s1),
-                    strConcat(diagQuote(name),
-                               " is a parameter contract and cannot appear on a return type"))
+                    diagQuote(name).concat(" is a parameter contract and cannot appear on a return type"))
                 diag_note("returns take `alias` or `produce(free_fn)`")
             } else if (name.equals("produce")) {
                 if (semaContractArgument(ret.s2).equals("")) {

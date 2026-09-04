@@ -971,6 +971,16 @@ static int object_cache_trace(void);
 // **Its two struct siblings remain absent by measurement.** Curating
 // `list_set_inline` and `list_push_inline` was 0.999x on the corpus for +3.1%
 // compiler time, so their waiver is a result rather than an implementation gap.
+// **`rt_free` is absent for the same reason, and it was tried.** Codegen emits it
+// for every release, so it looked like the obvious next entry; curating it does
+// inline the gate into the caller and remove a call per release, and it moved
+// nothing. `tokenization` 1.67x against 1.72x uncurated and `tree_traversal`
+// 0.953x against 0.960x are both inside this suite's noise. The cost that shows
+// on a bulk-free shape is the gate's own load and branch, which inlining keeps;
+// only a release that carries the block's size could drop it, and that is an ABI
+// change rather than a curation one. Curating it also needs three of
+// lang_runtime.c's `static`s exported to satisfy the closure rule, which is real
+// surface for no measured gain.
 // **`list_get_inline_scalar` belongs here for the same reason and by the same
 // test.** It is what codegen emits for every read of a scalar-element list, and
 // it satisfies the closure rule as trivially as `list_get_inline` does: its body

@@ -103,16 +103,29 @@ are open or partial.
 | 9 · DataView policy | open | `RESULTS-M4-dataview-{a,b,c}.md` are investigation, not a policy |
 | 10 · curated dependency closure | **closed** | `RESULTS-curate-scalar-write.md` LANDED at 15 curated operations |
 
-**The one gate still open on gap 2.** `PRISMIO_INLINE_ELEMS=0` — the boxed
-fallback — fails **4 of 283** fixtures: a 1,784-allocation release imbalance,
-DataView conversion invariants, generic layout specialization, and a `--verify`
-fact. `KNOWN_ISSUES.md` records five; it is four now, and the difference has not
-been attributed. The fallback is the thing that makes the flat path safe to
-keep, so this is the first thing to fix before building further on gap 2.
+**The one gate still open on gap 2, and it is not the fallback.**
+`PRISMIO_INLINE_ELEMS=0` fails **4 of 285** fixtures — `test_49_aif_struct_fields`,
+`test_53_aif_views`, `test_80_data_view_conversion`, `test_82_generic_layout` —
+all leaks, no violations, checksums unchanged.
 
-**Suite state.** 283/283 with the default representation (279 before T16 added
-four `impl Trait` fixtures). It read 273/279 until 2026-09-03, and the six were
-not performance defects — see *Measurement traps*.
+Attributed on 2026-09-04. The fifth entry this list used to carry was never a
+gate failure: `test_62_split_release` reads the same ledger with the gate on and
+off on three compilers including `build/unswitch-gen4`. And the remaining four
+are one shape, not four defects: the switch is a `getenv` read at run time, while
+the element disposition, the arena placement and whether the site allocates at
+all were decided at compile time. `test_49` allocates 3 blocks with the
+representation on and 78 with it off, from one binary.
+
+So the criterion as written — one binary correct under two placements — cannot be
+met by any per-call fallback, because the fallback is downstream of the choice.
+Make the opt-out compile-time, or delete it and keep the `elem_size == stride`
+guard. See `aif/evidence/RESULTS-inline-elems-gate.md`.
+
+**Suite state.** 285/285 with the default representation, via
+`python3 tools/run_suite.py` (283 until 2026-09-04, when the String operator work
+added a ledger assertion and a negative fixture; 279 before T16 added four
+`impl Trait` fixtures). It read 273/279 until 2026-09-03, and the six were not
+performance defects — see *Measurement traps*.
 
 ## Read this first
 

@@ -51,8 +51,7 @@ impl UmsParser {
     private fn expected(self, expected: String) {
         let token = self.current()
         self.error(token, "UMS1101",
-            strConcat(strConcat("expected ", expected),
-                       strConcat(", found ", umsTokenKindName(token.kind))))
+            "expected ".concat(expected, ", found ", umsTokenKindName(token.kind)))
     }
 
     private fn parseValue(self) -> UmsAstValue {
@@ -172,8 +171,7 @@ impl UmsParser {
             }
         } else if (list_len(statement.arguments) == 0) {
             self.error(name, "UMS1102",
-                strConcat(strConcat("DSL element '", name.value),
-                           "' requires arguments or a block"))
+                "DSL element '".concat(name.value, "' requires arguments or a block"))
         }
 
         self.take(UmsTokenKind.SEMICOLON)

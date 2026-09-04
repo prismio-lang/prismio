@@ -227,6 +227,16 @@ private fn generateStatement(stmt: ASTNode) {
 
             ir_store(storeType, initVal, slot)
 
+            // Resolve the German-string representation once, here, where the
+            // binding is made and therefore where it dominates every use. A byte
+            // loop over this string then indexes a pointer instead of asking per
+            // character which half of the pair holds the byte -- five
+            // instructions the tokenizer used to pay 204 000 times. Immutable
+            // bindings only: see `data_ptr` in runtime/ir_symbols.c.
+            if (isFatStringKey(storeType) and stmt.i1 == 0) {
+                ir_set_var_data(varName, ir_str_data(initVal))
+            }
+
             // Every accumulator owns what its slot holds. Whether the *last*
             // value is this scope's to drop is the separate question below.
             if (accumulates) { ir_mark_owns_slot(varName) }
@@ -263,7 +273,7 @@ private fn generateStatement(stmt: ASTNode) {
                 and chainDropsName(irFunctionBody, varName) == false) {
                 // `drop(x)` already freed it, so a scope release as well is a
                 // double free. Asked of the binding rather than of the site,
-                // because one site backs every `strConcat` in the program and
+                // because one site backs every `concat` in the program and
                 // answering it there suppressed the release of every other
                 // binding too -- see aif_frees_at_scope_node.
                 ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
@@ -316,7 +326,7 @@ private fn generateStatement(stmt: ASTNode) {
             // value ends up unowned.
             //
             // The old pointer is read before the right-hand side is generated,
-            // and freed after: `out = strConcat(out, x)` passes the displaced
+            // and freed after: `out = out.concat(x)` passes the displaced
             // value *into* the call that replaces it, so releasing it any earlier
             // frees the argument being read.
             let releasesOld = ir_var_is_global(varName) == 0
