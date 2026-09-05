@@ -1,0 +1,839 @@
+diff --git a/runtime/embedded_sources.h b/runtime/embedded_sources.h
+index 2cfd275..dd1dd4b 100644
+--- a/runtime/embedded_sources.h
++++ b/runtime/embedded_sources.h
+@@ -17002,9 +17002,15 @@ static const char prismio_embedded_llvm_api_backend_c[] =
+ "// hide an out-of-range address result, as the pointer intrinsic does, but it\n"
+ "// cannot make an invalid load non-trapping. Loop bounds make this branch\n"
+ "// removable in the read benchmark, just as they do for ir_list_boxed_elem.\n"
++"// `check_bounds` is 0 only when the loop's guard already proved, in the\n"
++"// preheader, that every index this loop forms is in range -- see the range\n"
++"// conjuncts in generateLoopFlatGuard. Then the length load and the in-range\n"
++"// branch are both dead, and dropping them is what lets LICM hoist `data`: the\n"
++"// element load stops being conditional, which is the single reason the header\n"
++"// was re-read per access. Measured in aif/evidence/RESULTS-bounds-check-ceiling.md.\n"
+ "int ir_list_flat_scalar_elem(const char *list, const char *index,\n"
+ "                             const char *elem_type, int stride,\n"
+-"                             const char *guard) {\n"
++"                             const char *guard, int check_bounds) {\n"
+ "    LLVMTypeRef elemty = type_from_key(elem_type);\n"
+ "    if (block_done()) return intern_value(LLVMConstNull(elemty));\n"
+ "\n"
+@@ -17035,6 +17041,20 @@ static const char prismio_embedded_llvm_api_backend_c[] =
+ "    LLVMBuildCondBr(g_builder, is_flat, block_for(flat), block_for(boxed));\n"
+ "\n"
+ "    LLVMPositionBuilderAtEnd(g_builder, block_for(flat));\n"
++"    LLVMValueRef flat_val;\n"
++"    if (!check_bounds) {\n"
++"        LLVMValueRef data_ptr = LLVMBuildStructGEP2(\n"
++"            g_builder, listty, hdr, RT_LIST_FIELD_DATA, \"\");\n"
++"        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, \"\");\n"
++"        tag_scalar(data, \"ptr\");\n"
++"        LLVMValueRef offset = LLVMBuildMul(\n"
++"            g_builder, LLVMBuildSExt(g_builder, idx, i64, \"\"),\n"
++"            LLVMConstInt(i64, (unsigned long long)stride, 0), \"\");\n"
++"        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, \"\");\n"
++"        flat_val = LLVMBuildLoad2(g_builder, elemty, addr, \"\");\n"
++"        tag_scalar(flat_val, elem_type);\n"
++"        LLVMBuildBr(g_builder, block_for(join));\n"
++"    } else {\n"
+ "    LLVMValueRef len_ptr = LLVMBuildStructGEP2(\n"
+ "        g_builder, listty, hdr, RT_LIST_FIELD_LEN, \"\");\n"
+ "    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, \"\");\n"
+@@ -17065,11 +17085,12 @@ static const char prismio_embedded_llvm_api_backend_c[] =
+ "    LLVMBasicBlockRef absent_end = LLVMGetInsertBlock(g_builder);\n"
+ "\n"
+ "    LLVMPositionBuilderAtEnd(g_builder, block_for(checked));\n"
+-"    LLVMValueRef flat_val = LLVMBuildPhi(g_builder, elemty, \"\");\n"
++"    flat_val = LLVMBuildPhi(g_builder, elemty, \"\");\n"
+ "    LLVMValueRef flat_values[2] = {loaded, LLVMConstNull(elemty)};\n"
+ "    LLVMBasicBlockRef flat_blocks[2] = {present_end, absent_end};\n"
+ "    LLVMAddIncoming(flat_val, flat_values, flat_blocks, 2);\n"
+ "    LLVMBuildBr(g_builder, block_for(join));\n"
++"    }\n"
+ "    LLVMBasicBlockRef flat_end = LLVMGetInsertBlock(g_builder);\n"
+ "\n"
+ "    LLVMPositionBuilderAtEnd(g_builder, block_for(boxed));\n"
+@@ -17100,6 +17121,100 @@ static const char prismio_embedded_llvm_api_backend_c[] =
+ "    return intern_value(phi);\n"
+ "}\n"
+ "\n"
++"// The write half of the guarded flat path, and the mirror of\n"
++"// ir_list_flat_scalar_elem above.\n"
++"//\n"
++"// It exists for the same reason the read does and pays off for a different one:\n"
++"// the read's bounds check made its *load* conditional, and the write's makes the\n"
++"// loop keep a branch the copy loops are built out of. With `check_bounds` 0 the\n"
++"// loop's range conjuncts have already proved this index, so the length load and\n"
++"// the in-range branch are both dead and the store is one instruction.\n"
++"//\n"
++"// The false arm is the ordinary `list_set_inline_scalar` call, so a guard that\n"
++"// does not hold at run time stores exactly what it stores today -- including\n"
++"// doing nothing at all for an out-of-range index.\n"
++"void ir_list_flat_scalar_set(const char *list, const char *index,\n"
++"                             const char *value, const char *elem_type,\n"
++"                             int stride, const char *guard, int check_bounds) {\n"
++"    if (block_done()) return;\n"
++"\n"
++"    LLVMTypeRef elemty = type_from_key(elem_type);\n"
++"    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);\n"
++"    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);\n"
++"    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);\n"
++"    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);\n"
++"    LLVMTypeRef listty = rt_list_header_type();\n"
++"    LLVMValueRef hdr = resolve_value(list, \"ptr\");\n"
++"    LLVMValueRef idx = resolve_value(index, \"i32\");\n"
++"    LLVMValueRef val = resolve_value(value, elem_type);\n"
++"\n"
++"    LLVMValueRef is_flat;\n"
++"    if (guard && guard[0]) {\n"
++"        is_flat = resolve_value(guard, \"i1\");\n"
++"    } else {\n"
++"        LLVMValueRef size_ptr = LLVMBuildStructGEP2(\n"
++"            g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, \"\");\n"
++"        LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, \"\");\n"
++"        tag_scalar(elem_size, \"i32\");\n"
++"        is_flat = LLVMBuildICmp(\n"
++"            g_builder, LLVMIntEQ, elem_size,\n"
++"            LLVMConstInt(i32, (unsigned long long)stride, 0), \"\");\n"
++"    }\n"
++"\n"
++"    int flat = ir_get_label();\n"
++"    int boxed = ir_get_label();\n"
++"    int join = ir_get_label();\n"
++"    LLVMBuildCondBr(g_builder, is_flat, block_for(flat), block_for(boxed));\n"
++"\n"
++"    LLVMPositionBuilderAtEnd(g_builder, block_for(flat));\n"
++"    int store_at = flat;\n"
++"    if (check_bounds) {\n"
++"        LLVMValueRef len_ptr = LLVMBuildStructGEP2(\n"
++"            g_builder, listty, hdr, RT_LIST_FIELD_LEN, \"\");\n"
++"        LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, \"\");\n"
++"        tag_scalar(len, \"i32\");\n"
++"        LLVMValueRef in_bounds = LLVMBuildICmp(\n"
++"            g_builder, LLVMIntULT, idx, len, \"\");\n"
++"        int present = ir_get_label();\n"
++"        LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(join));\n"
++"        LLVMPositionBuilderAtEnd(g_builder, block_for(present));\n"
++"        store_at = present;\n"
++"    }\n"
++"    (void)store_at;\n"
++"    LLVMValueRef data_ptr = LLVMBuildStructGEP2(\n"
++"        g_builder, listty, hdr, RT_LIST_FIELD_DATA, \"\");\n"
++"    LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, \"\");\n"
++"    tag_scalar(data, \"ptr\");\n"
++"    LLVMValueRef offset = LLVMBuildMul(\n"
++"        g_builder, LLVMBuildSExt(g_builder, idx, i64, \"\"),\n"
++"        LLVMConstInt(i64, (unsigned long long)stride, 0), \"\");\n"
++"    LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, \"\");\n"
++"    LLVMBuildStore(g_builder, val, addr);\n"
++"    LLVMBuildBr(g_builder, block_for(join));\n"
++"\n"
++"    LLVMPositionBuilderAtEnd(g_builder, block_for(boxed));\n"
++"    LLVMValueRef bits;\n"
++"    if (strcmp(elem_type, \"double\") == 0) {\n"
++"        bits = LLVMBuildBitCast(g_builder, val, i64, \"\");\n"
++"    } else if (strcmp(elem_type, \"i64\") == 0) {\n"
++"        bits = val;\n"
++"    } else {\n"
++"        bits = LLVMBuildZExt(g_builder, val, i64, \"\");\n"
++"    }\n"
++"    LLVMTypeRef params[4] = {ptrty, i32, i64, i32};\n"
++"    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 4, 0);\n"
++"    LLVMValueRef fn = LLVMGetNamedFunction(g_module, \"list_set_inline_scalar\");\n"
++"    if (!fn) fn = LLVMAddFunction(g_module, \"list_set_inline_scalar\", fnty);\n"
++"    LLVMValueRef args[4] = {\n"
++"        hdr, idx, bits, LLVMConstInt(i32, (unsigned long long)stride, 0)\n"
++"    };\n"
++"    LLVMBuildCall2(g_builder, fnty, fn, args, 4, \"\");\n"
++"    LLVMBuildBr(g_builder, block_for(join));\n"
++"\n"
++"    LLVMPositionBuilderAtEnd(g_builder, block_for(join));\n"
++"    (void)elemty;\n"
++"}\n"
++"\n"
+ "// Emit the typed pointer-slot access in the caller. The frontend selects this\n"
+ "// only for a known List element type whose representation cannot be stamped\n"
+ "// inline; Invalid/inferred-later Lists keep the generic runtime accessor.\n"
+diff --git a/runtime/llvm-api-backend.c b/runtime/llvm-api-backend.c
+index 7dd33a4..c6b1748 100644
+--- a/runtime/llvm-api-backend.c
++++ b/runtime/llvm-api-backend.c
+@@ -2109,9 +2109,15 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
+ // hide an out-of-range address result, as the pointer intrinsic does, but it
+ // cannot make an invalid load non-trapping. Loop bounds make this branch
+ // removable in the read benchmark, just as they do for ir_list_boxed_elem.
++// `check_bounds` is 0 only when the loop's guard already proved, in the
++// preheader, that every index this loop forms is in range -- see the range
++// conjuncts in generateLoopFlatGuard. Then the length load and the in-range
++// branch are both dead, and dropping them is what lets LICM hoist `data`: the
++// element load stops being conditional, which is the single reason the header
++// was re-read per access. Measured in aif/evidence/RESULTS-bounds-check-ceiling.md.
+ int ir_list_flat_scalar_elem(const char *list, const char *index,
+                              const char *elem_type, int stride,
+-                             const char *guard) {
++                             const char *guard, int check_bounds) {
+     LLVMTypeRef elemty = type_from_key(elem_type);
+     if (block_done()) return intern_value(LLVMConstNull(elemty));
+ 
+@@ -2142,6 +2148,20 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
+     LLVMBuildCondBr(g_builder, is_flat, block_for(flat), block_for(boxed));
+ 
+     LLVMPositionBuilderAtEnd(g_builder, block_for(flat));
++    LLVMValueRef flat_val;
++    if (!check_bounds) {
++        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
++            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
++        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
++        tag_scalar(data, "ptr");
++        LLVMValueRef offset = LLVMBuildMul(
++            g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
++            LLVMConstInt(i64, (unsigned long long)stride, 0), "");
++        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
++        flat_val = LLVMBuildLoad2(g_builder, elemty, addr, "");
++        tag_scalar(flat_val, elem_type);
++        LLVMBuildBr(g_builder, block_for(join));
++    } else {
+     LLVMValueRef len_ptr = LLVMBuildStructGEP2(
+         g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+     LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+@@ -2172,11 +2192,12 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
+     LLVMBasicBlockRef absent_end = LLVMGetInsertBlock(g_builder);
+ 
+     LLVMPositionBuilderAtEnd(g_builder, block_for(checked));
+-    LLVMValueRef flat_val = LLVMBuildPhi(g_builder, elemty, "");
++    flat_val = LLVMBuildPhi(g_builder, elemty, "");
+     LLVMValueRef flat_values[2] = {loaded, LLVMConstNull(elemty)};
+     LLVMBasicBlockRef flat_blocks[2] = {present_end, absent_end};
+     LLVMAddIncoming(flat_val, flat_values, flat_blocks, 2);
+     LLVMBuildBr(g_builder, block_for(join));
++    }
+     LLVMBasicBlockRef flat_end = LLVMGetInsertBlock(g_builder);
+ 
+     LLVMPositionBuilderAtEnd(g_builder, block_for(boxed));
+@@ -2207,6 +2228,100 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
+     return intern_value(phi);
+ }
+ 
++// The write half of the guarded flat path, and the mirror of
++// ir_list_flat_scalar_elem above.
++//
++// It exists for the same reason the read does and pays off for a different one:
++// the read's bounds check made its *load* conditional, and the write's makes the
++// loop keep a branch the copy loops are built out of. With `check_bounds` 0 the
++// loop's range conjuncts have already proved this index, so the length load and
++// the in-range branch are both dead and the store is one instruction.
++//
++// The false arm is the ordinary `list_set_inline_scalar` call, so a guard that
++// does not hold at run time stores exactly what it stores today -- including
++// doing nothing at all for an out-of-range index.
++void ir_list_flat_scalar_set(const char *list, const char *index,
++                             const char *value, const char *elem_type,
++                             int stride, const char *guard, int check_bounds) {
++    if (block_done()) return;
++
++    LLVMTypeRef elemty = type_from_key(elem_type);
++    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
++    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
++    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
++    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
++    LLVMTypeRef listty = rt_list_header_type();
++    LLVMValueRef hdr = resolve_value(list, "ptr");
++    LLVMValueRef idx = resolve_value(index, "i32");
++    LLVMValueRef val = resolve_value(value, elem_type);
++
++    LLVMValueRef is_flat;
++    if (guard && guard[0]) {
++        is_flat = resolve_value(guard, "i1");
++    } else {
++        LLVMValueRef size_ptr = LLVMBuildStructGEP2(
++            g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, "");
++        LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
++        tag_scalar(elem_size, "i32");
++        is_flat = LLVMBuildICmp(
++            g_builder, LLVMIntEQ, elem_size,
++            LLVMConstInt(i32, (unsigned long long)stride, 0), "");
++    }
++
++    int flat = ir_get_label();
++    int boxed = ir_get_label();
++    int join = ir_get_label();
++    LLVMBuildCondBr(g_builder, is_flat, block_for(flat), block_for(boxed));
++
++    LLVMPositionBuilderAtEnd(g_builder, block_for(flat));
++    int store_at = flat;
++    if (check_bounds) {
++        LLVMValueRef len_ptr = LLVMBuildStructGEP2(
++            g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
++        LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
++        tag_scalar(len, "i32");
++        LLVMValueRef in_bounds = LLVMBuildICmp(
++            g_builder, LLVMIntULT, idx, len, "");
++        int present = ir_get_label();
++        LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(join));
++        LLVMPositionBuilderAtEnd(g_builder, block_for(present));
++        store_at = present;
++    }
++    (void)store_at;
++    LLVMValueRef data_ptr = LLVMBuildStructGEP2(
++        g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
++    LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
++    tag_scalar(data, "ptr");
++    LLVMValueRef offset = LLVMBuildMul(
++        g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
++        LLVMConstInt(i64, (unsigned long long)stride, 0), "");
++    LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
++    LLVMBuildStore(g_builder, val, addr);
++    LLVMBuildBr(g_builder, block_for(join));
++
++    LLVMPositionBuilderAtEnd(g_builder, block_for(boxed));
++    LLVMValueRef bits;
++    if (strcmp(elem_type, "double") == 0) {
++        bits = LLVMBuildBitCast(g_builder, val, i64, "");
++    } else if (strcmp(elem_type, "i64") == 0) {
++        bits = val;
++    } else {
++        bits = LLVMBuildZExt(g_builder, val, i64, "");
++    }
++    LLVMTypeRef params[4] = {ptrty, i32, i64, i32};
++    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 4, 0);
++    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "list_set_inline_scalar");
++    if (!fn) fn = LLVMAddFunction(g_module, "list_set_inline_scalar", fnty);
++    LLVMValueRef args[4] = {
++        hdr, idx, bits, LLVMConstInt(i32, (unsigned long long)stride, 0)
++    };
++    LLVMBuildCall2(g_builder, fnty, fn, args, 4, "");
++    LLVMBuildBr(g_builder, block_for(join));
++
++    LLVMPositionBuilderAtEnd(g_builder, block_for(join));
++    (void)elemty;
++}
++
+ // Emit the typed pointer-slot access in the caller. The frontend selects this
+ // only for a known List element type whose representation cannot be stamped
+ // inline; Invalid/inferred-later Lists keep the generic runtime accessor.
+diff --git a/src/ir/bridge.psm b/src/ir/bridge.psm
+index edbc223..e92fdd1 100644
+--- a/src/ir/bridge.psm
++++ b/src/ir/bridge.psm
+@@ -285,7 +285,10 @@ extern fn ir_list_flat_elem(listValue: String, indexValue: String, stride: Int,
+ // bit carrier back to the same type before the two arms join.
+ extern fn ir_list_flat_scalar_elem(listValue: String, indexValue: String,
+                                    elemType: String, stride: Int,
+-                                   guard: String) -> Int
++                                   guard: String, checkBounds: Int) -> Int
++extern fn ir_list_flat_scalar_set(listValue: String, indexValue: String,
++                                  value: String, elemType: String, stride: Int,
++                                  guard: String, checkBounds: Int)
+ // The corresponding typed access for pointer-slot Lists, including scalar
+ // values carried in a slot.
+ extern fn ir_list_boxed_elem(listValue: String, indexValue: String) -> Int
+diff --git a/src/ir/context.psm b/src/ir/context.psm
+index c3bf9dd..223f592 100644
+--- a/src/ir/context.psm
++++ b/src/ir/context.psm
+@@ -28,6 +28,13 @@ let mut irLoopDepth = 0
+ let mut irLoopFlatGuard = ""
+ let mut irLoopFlatGuardCounter = 0
+ 
++// Whether that same guard also proved, in the preheader, that every index this
++// loop forms is in range. Only then may a guarded read drop its bounds check --
++// and dropping it is the point, because a conditional element load is one LICM
++// will not hoist, which is the whole reason `data` was re-read per access.
++// Saved and restored around each loop exactly as irLoopFlatGuard is.
++let mut irLoopRangeProved = false
++
+ // Names the stack slot a `spawn`'s owned temporary argument is spilled into, so
+ // the ordinary scope drop can reach it. Dotted like `sc.`, which no Prismio
+ // identifier can contain, so it cannot collide with a user variable.
+diff --git a/src/ir/expr.psm b/src/ir/expr.psm
+index 1502293..6d9099c 100644
+--- a/src/ir/expr.psm
++++ b/src/ir/expr.psm
+@@ -774,6 +774,16 @@ private fn irFlatGuardCount(nodePtr: Ptr) -> Int {
+             // so it needs no representation guard and does not make an
+             // otherwise-flat loop ineligible for its shared guard.
+             found = 0
++        } else if (flatSetScalarStride(n, fname) > 0) {
++            // Writes through the block without stamping, growing or
++            // reallocating it, so the guard proved in the preheader is still
++            // true at every read below it. Contributes no term of its own: the
++            // write stays on `list_set_inline_scalar` and only the reads consume
++            // the guard. This is the whole of what kept a DP loop --
++            // `benchKnapsack`, and every `list_get`/`list_set` pair like it --
++            // off the flat path: one write declined a loop of otherwise
++            // eligible reads.
++            found = 0
+         } else {
+             // **Any other call declines the whole loop.** It could push to one of
+             // these lists -- which reallocates the element block -- or free it,
+@@ -860,7 +870,7 @@ private fn irEmitFlatGuardsChain(head: Ptr, slot: String) {
+ //
+ // Conservative in one direction only. If the guard is false at run time every
+ // site takes `list_get_inline`, which is exactly what they did before.
+-internal fn generateLoopFlatGuard(body: ASTNode) -> String {
++internal fn generateLoopFlatGuard(cond: ASTNode, body: ASTNode) -> String {
+     if (irFlatGuardCount(node_to_ptr(body)) <= 0) { return "" }
+ 
+     let name = "flatguard.".concat(strFromInt(irLoopFlatGuardCounter))
+@@ -870,9 +880,291 @@ internal fn generateLoopFlatGuard(body: ASTNode) -> String {
+     ir_alloca("i1", slot)
+     ir_store("i1", "true", slot)
+     irEmitFlatGuards(node_to_ptr(body), slot)
++    irLoopRangeProved = generateLoopRangeGuards(node_to_ptr(cond), node_to_ptr(body), slot)
+     return slot
+ }
+ 
++// A term the preheader may evaluate and the loop may not change: an integer
++// literal, or a name the body never assigns. `iv` itself is excluded because the
++// whole point is to express an index *relative* to it.
++private fn irIsInvariantTerm(n: ASTNode, iv: String, bodyPtr: Ptr) -> Bool {
++    if (n.kind == NodeKind.LITERAL_EXPR) { return n.i1 == TokenType.NUMBER_LITERAL }
++    if (n.kind != NodeKind.IDENTIFIER_EXPR) { return false }
++    if (n.s1.equals(iv)) { return false }
++    return chainAssignsName(bodyPtr, n.s1) == false
++}
++
++// How many times the body assigns `name`.
++private fn irCountAssigns(nodePtr: Ptr, name: String) -> Int {
++    if (nodeIsNull(nodePtr)) { return 0 }
++    let n = ptr_to_node(nodePtr)
++    let mut found = 0
++    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)) {
++        let target = ptr_to_node(n.child1)
++        if (target.kind == NodeKind.IDENTIFIER_EXPR and target.s1.equals(name)) {
++            found = 1
++        }
++    }
++    return found + irCountAssignsChain(n.child1, name)
++                 + irCountAssignsChain(n.child2, name)
++                 + irCountAssignsChain(n.child3, name)
++}
++
++private fn irCountAssignsChain(head: Ptr, name: String) -> Int {
++    let mut total = 0
++    let mut p = head
++    while (nodeExists(p)) {
++        let n = ptr_to_node(p)
++        total = total + irCountAssigns(node_to_ptr(n), name)
++        p = n.next
++    }
++    return total
++}
++
++// The loop's step as the literal's own text, or "" when the sole assignment to
++// `name` is not `name = name + K` / `name = name - K` for an integer literal K.
++//
++// Text rather than a parsed number, because the only use is as an i64 constant
++// in the widening below, and IR constants are already spelled as strings here.
++// A LITERAL_EXPR number is never negative -- a negative is a UNARY_EXPR over one
++// -- so the magnitude is the text and the direction comes from the condition.
++private fn irIVStepText(nodePtr: Ptr, name: String) -> String {
++    if (nodeIsNull(nodePtr)) { return "" }
++    let n = ptr_to_node(nodePtr)
++    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)
++            and nodeExists(n.child2)) {
++        let target = ptr_to_node(n.child1)
++        if (target.kind == NodeKind.IDENTIFIER_EXPR and target.s1.equals(name)) {
++            let rhs = ptr_to_node(n.child2)
++            if (rhs.kind != NodeKind.BINARY_EXPR) { return "" }
++            if (rhs.s1.equals("+") == false and rhs.s1.equals("-") == false) { return "" }
++            if (nodeIsNull(rhs.child1) or nodeIsNull(rhs.child2)) { return "" }
++            let lhs = ptr_to_node(rhs.child1)
++            let amount = ptr_to_node(rhs.child2)
++            if (lhs.kind != NodeKind.IDENTIFIER_EXPR) { return "" }
++            if (lhs.s1.equals(name) == false) { return "" }
++            if (amount.kind != NodeKind.LITERAL_EXPR) { return "" }
++            if (amount.i1 != TokenType.NUMBER_LITERAL) { return "" }
++            return amount.s1
++        }
++    }
++    let a = irIVStepChain(n.child1, name)
++    if (a.equals("") == false) { return a }
++    let b = irIVStepChain(n.child2, name)
++    if (b.equals("") == false) { return b }
++    return irIVStepChain(n.child3, name)
++}
++
++private fn irIVStepChain(head: Ptr, name: String) -> String {
++    let mut p = head
++    while (nodeExists(p)) {
++        let n = ptr_to_node(p)
++        let one = irIVStepText(node_to_ptr(n), name)
++        if (one.equals("") == false) { return one }
++        p = n.next
++    }
++    return ""
++}
++
++// Whether the loop's sole update of `iv` is the body's last statement.
++//
++// **This is what makes the range exact rather than useless.** With the update
++// last, every access sees the value the condition just admitted, so the range is
++// [bound, init]. Widening by a step to allow the update anywhere instead costs a
++// bound of `weight - 1` on knapsack's `at - weight` read, whose lower conjunct
++// `>= 0` is then false at run time -- a guard that never fires, measured at
++// 1.29x for the versioning it still pays for.
++private fn irIVUpdateIsLast(bodyPtr: Ptr, iv: String) -> Bool {
++    if (nodeIsNull(bodyPtr)) { return false }
++    let body = ptr_to_node(bodyPtr)
++    let mut p = body.child1
++    if (nodeExists(p) == false) { return false }
++    let mut last = p
++    while (nodeExists(p)) {
++        last = p
++        p = ptr_to_node(p).next
++    }
++    let n = ptr_to_node(last)
++    if (n.kind != NodeKind.ASSIGNMENT_STATEMENT) { return false }
++    if (nodeIsNull(n.child1)) { return false }
++    let target = ptr_to_node(n.child1)
++    if (target.kind != NodeKind.IDENTIFIER_EXPR) { return false }
++    return target.s1.equals(iv)
++}
++
++// Whether every guarded read in this loop indexes affinely off `iv`: `iv`,
++// `iv - E` or `iv + E` for an E the loop cannot change. All-or-nothing, like the
++// representation guard above -- one read this cannot place leaves the whole loop
++// checked, because the guard is a single `i1` and a partially true one is worse
++// than none.
++private fn irRangeMatchAll(nodePtr: Ptr, iv: String, bodyPtr: Ptr) -> Bool {
++    if (nodeIsNull(nodePtr)) { return true }
++    let n = ptr_to_node(nodePtr)
++    if (n.kind == NodeKind.CALL_EXPR) {
++        let mut fname = ""
++        if (nodeExists(n.child1)) { fname = ptr_to_node(n.child1).s1 }
++        if (flatGetStride(n, fname) > 0 or flatSetScalarStride(n, fname) > 0) {
++            let listNode = ptr_to_node(n.child2)
++            if (nodeIsNull(listNode.next)) { return false }
++            if (irIndexOffsetSign(ptr_to_node(listNode.next), iv, bodyPtr) == 0) {
++                return false
++            }
++            // **The length is read once, in the preheader, so the receiver has
++            // to still name the same list at every access.** The representation
++            // guard tolerates a re-bound receiver -- it would only pick the
++            // wrong arm -- but a stale length here is an out-of-bounds store.
++            // A plain name the body never assigns is the only shape admitted;
++            // `w.items` is declined because an assignment through a field is not
++            // what irCountAssigns looks at.
++            if (listNode.kind != NodeKind.IDENTIFIER_EXPR) { return false }
++            if (chainAssignsName(bodyPtr, listNode.s1)) { return false }
++        }
++    }
++    if (irRangeMatchChain(n.child1, iv, bodyPtr) == false) { return false }
++    if (irRangeMatchChain(n.child2, iv, bodyPtr) == false) { return false }
++    return irRangeMatchChain(n.child3, iv, bodyPtr)
++}
++
++private fn irRangeMatchChain(head: Ptr, iv: String, bodyPtr: Ptr) -> Bool {
++    let mut p = head
++    while (nodeExists(p)) {
++        let n = ptr_to_node(p)
++        if (irRangeMatchAll(node_to_ptr(n), iv, bodyPtr) == false) { return false }
++        p = n.next
++    }
++    return true
++}
++
++// 1 for a bare `iv`, 2 for `iv + E`, 3 for `iv - E`, 0 for anything else.
++private fn irIndexOffsetSign(idx: ASTNode, iv: String, bodyPtr: Ptr) -> Int {
++    if (idx.kind == NodeKind.IDENTIFIER_EXPR) {
++        if (idx.s1.equals(iv)) { return 1 }
++        return 0
++    }
++    if (idx.kind != NodeKind.BINARY_EXPR) { return 0 }
++    if (nodeIsNull(idx.child1) or nodeIsNull(idx.child2)) { return 0 }
++    let lhs = ptr_to_node(idx.child1)
++    if (lhs.kind != NodeKind.IDENTIFIER_EXPR) { return 0 }
++    if (lhs.s1.equals(iv) == false) { return 0 }
++    if (irIsInvariantTerm(ptr_to_node(idx.child2), iv, bodyPtr) == false) { return 0 }
++    if (idx.s1.equals("+")) { return 2 }
++    if (idx.s1.equals("-")) { return 3 }
++    return 0
++}
++
++// Fold `0 <= lowest index && highest index < len` for one read into the slot.
++private fn irEmitOneRangeGuard(n: ASTNode, iv: String, bodyPtr: Ptr,
++                               lo: String, hi: String, slot: String) {
++    let listNode = ptr_to_node(n.child2)
++    let idx = ptr_to_node(listNode.next)
++    let sign = irIndexOffsetSign(idx, iv, bodyPtr)
++    let mut low = strClone(lo)
++    let mut high = strClone(hi)
++    if (sign != 1) {
++        let off = ir_get_temp_name(
++            ir_sext("i32", generateExpression(ptr_to_node(idx.child2)), "i64"))
++        let offAgain = strClone(off)
++        if (sign == 2) {
++            low = ir_get_temp_name(ir_add("i64", low, off))
++            high = ir_get_temp_name(ir_add("i64", high, offAgain))
++        } else {
++            low = ir_get_temp_name(ir_sub("i64", low, off))
++            high = ir_get_temp_name(ir_sub("i64", high, offAgain))
++        }
++    }
++    ir_call_begin()
++    ir_call_arg("ptr", generateExpression(listNode))
++    let len = ir_get_temp_name(ir_call_end("i32", "list_len"))
++    let len64 = ir_get_temp_name(ir_sext("i32", len, "i64"))
++    let lowOk = ir_get_temp_name(ir_icmp_sge("i64", low, "0"))
++    let highOk = ir_get_temp_name(ir_icmp_slt("i64", high, len64))
++    let both = ir_get_temp_name(ir_and("i1", lowOk, highOk))
++    let prev = ir_get_temp_name(ir_load("i1", slot))
++    ir_store("i1", ir_get_temp_name(ir_and("i1", prev, both)), slot)
++}
++
++private fn irEmitRangeGuards(nodePtr: Ptr, iv: String, bodyPtr: Ptr,
++                             lo: String, hi: String, slot: String) {
++    if (nodeIsNull(nodePtr)) { return }
++    let n = ptr_to_node(nodePtr)
++    if (n.kind == NodeKind.CALL_EXPR) {
++        let mut fname = ""
++        if (nodeExists(n.child1)) { fname = ptr_to_node(n.child1).s1 }
++        if (flatGetStride(n, fname) > 0 or flatSetScalarStride(n, fname) > 0) {
++            irEmitOneRangeGuard(n, iv, bodyPtr, lo, hi, slot)
++        }
++    }
++    irEmitRangeChain(n.child1, iv, bodyPtr, lo, hi, slot)
++    irEmitRangeChain(n.child2, iv, bodyPtr, lo, hi, slot)
++    irEmitRangeChain(n.child3, iv, bodyPtr, lo, hi, slot)
++}
++
++private fn irEmitRangeChain(head: Ptr, iv: String, bodyPtr: Ptr,
++                            lo: String, hi: String, slot: String) {
++    let mut p = head
++    while (nodeExists(p)) {
++        let n = ptr_to_node(p)
++        irEmitRangeGuards(node_to_ptr(n), iv, bodyPtr, lo, hi, slot)
++        p = n.next
++    }
++}
++
++// HotSpot's loop predication, with the versioned slow loop standing in for
++// deoptimisation. Folds "every index this loop forms is in range" into the same
++// preheader `i1` the representation guard uses, so the true version can drop the
++// per-access bounds check -- and dropping it is what makes the element load
++// unconditional, which is the only reason LICM could not hoist `data`. The false
++// version is unchanged, so `list_get` stays total: nothing here can make an
++// out-of-range read do anything other than what it does today.
++//
++// Everything is computed in i64 so the widening cannot wrap a 32-bit `Int`.
++private fn generateLoopRangeGuards(condPtr: Ptr, bodyPtr: Ptr, slot: String) -> Bool {
++    if (nodeIsNull(condPtr) or nodeIsNull(bodyPtr)) { return false }
++    let cond = ptr_to_node(condPtr)
++    if (cond.kind != NodeKind.BINARY_EXPR) { return false }
++    let mut decreasing = false
++    if (cond.s1.equals(">=") or cond.s1.equals(">")) {
++        decreasing = true
++    } else if (cond.s1.equals("<=") == false and cond.s1.equals("<") == false) {
++        return false
++    }
++    if (nodeIsNull(cond.child1) or nodeIsNull(cond.child2)) { return false }
++    let ivNode = ptr_to_node(cond.child1)
++    if (ivNode.kind != NodeKind.IDENTIFIER_EXPR) { return false }
++    let iv = ivNode.s1
++
++    // Exactly one update, of the recognised shape. More than one and the value
++    // seen at an access is not bracketed by the condition and that update alone.
++    if (irCountAssigns(bodyPtr, iv) != 1) { return false }
++    if (irIVStepText(bodyPtr, iv).equals("")) { return false }
++    if (irIVUpdateIsLast(bodyPtr, iv) == false) { return false }
++
++    let boundNode = ptr_to_node(cond.child2)
++    if (irIsInvariantTerm(boundNode, iv, bodyPtr) == false) { return false }
++    if (irRangeMatchAll(bodyPtr, iv, bodyPtr) == false) { return false }
++
++    // The preheader still holds the induction variable's initial value, so the
++    // range needs no symbolic start: it is the variable itself, read here.
++    let init = ir_get_temp_name(ir_sext("i32", generateExpression(ivNode), "i64"))
++    let bound = ir_get_temp_name(ir_sext("i32", generateExpression(boundNode), "i64"))
++
++    // The update is the body's last statement, so every access sees a value the
++    // condition admitted: exactly [bound, init] going down, [init, bound] going
++    // up. `>` and `<` are covered by using the bound itself, which is one step
++    // stricter than the true extreme and so can only decline, never admit.
++    let mut lo = ""
++    let mut hi = ""
++    if (decreasing) {
++        lo = strClone(bound)
++        hi = strClone(init)
++    } else {
++        lo = strClone(init)
++        hi = strClone(bound)
++    }
++    irEmitRangeGuards(bodyPtr, iv, bodyPtr, lo, hi, slot)
++    return true
++}
++
+ // Whether this is a two-argument `list_get` on a statically known List. The
+ // element may still be `Invalid`: such a list can never be stamped inline, so
+ // its stable representation is the ordinary pointer-slot form.
+@@ -913,6 +1205,40 @@ private fn flatGetStride(expr: ASTNode, funcName: String) -> Int {
+     return inlineElemSizeOfList(listNode)
+ }
+ 
++// `list_set(l, i, v)` into a statically typed List of **scalar** elements.
++//
++// This answers a different question from `flatGetStride`, and the difference is
++// the whole point: it is not about serving the site -- the write still goes to
++// `list_set_inline_scalar` -- but about whether the site invalidates the loop's
++// guard. It does not. No member of the `list_set` family stamps `elem_size`,
++// grows the block or reallocates it: the boxed one bounds-checks and stores into
++// `l->data[index]`, the inline one copies into the existing row, and the scalar
++// one falls back to the boxed setter when the widths disagree. `list_push` does
++// all three -- `list_push_inline_scalar_slow` calls `list_set_elem_inline` and
++// `list_inline_grow` -- which is why it must keep declining.
++//
++// **Scalars only, and that is not conservatism for its own sake.** The struct
++// setter runs `list_release_source` and the boxed one an `rc_release`, and a
++// releaser is user code that could reach the same list and stamp or grow it
++// behind the guard. A scalar element has neither.
++private fn flatSetScalarStride(expr: ASTNode, funcName: String) -> Int {
++    if (funcName.equals("list_set") == false) { return 0 }
++    if (nodeIsNull(expr.child2)) { return 0 }
++    let listNode = ptr_to_node(expr.child2)
++    if (nodeIsNull(listNode.next)) { return 0 }
++    let indexNode = ptr_to_node(listNode.next)
++    if (nodeIsNull(indexNode.next)) { return 0 }
++    if (nodeExists(ptr_to_node(indexNode.next).next)) { return 0 }
++    if (nodeHasType(listNode) == false) { return 0 }
++    let lt = nodeGetType(listNode)
++    if (lt.kind != TypeKind.LIST) { return 0 }
++    if (nodeIsNull(lt.child)) { return 0 }
++    let ekey = typeIrKey(ptr_to_type(lt.child))
++    if (isStructTypeKey(ekey)) { return 0 }
++    if (scalarInlineBytes(ekey) <= 0) { return 0 }
++    return inlineElemSizeOfList(listNode)
++}
++
+ // M4.2's destination-passing push: `list_push(l, T { ... })` builds the element
+ // **in the list**, so the push allocates nothing and copies nothing. Five of the
+ // six corpus programs push exactly this shape, and it is what turned inline
+@@ -1984,11 +2310,35 @@ internal fn generateExpression(expr: ASTNode) -> String {
+                     listVal, indexVal, flatStride, guard))
+             }
+             if (scalarInlineBytes(flatRet) > 0) {
++                let mut checkBounds = 1
++                if (irLoopRangeProved) { checkBounds = 0 }
+                 return ir_get_temp_name(ir_list_flat_scalar_elem(
+-                    listVal, indexVal, flatRet, flatStride, guard))
++                    listVal, indexVal, flatRet, flatStride, guard, checkBounds))
+             }
+         }
+ 
++        // The write half, and only once the range is proved. Unlike the read,
++        // there is nothing to win here from the guard alone: `list_set_inline_scalar`
++        // is curated and inlines, so a merely representation-guarded store is the
++        // same code by another route. What pays is dropping the bounds branch,
++        // which is the last one left in a copy loop.
++        let flatSetStride = flatSetScalarStride(expr, funcName)
++        if (flatSetStride > 0 and irLoopFlatGuard.equals("") == false
++                and irLoopRangeProved) {
++            let setList = ptr_to_node(expr.child2)
++            let setIndex = ptr_to_node(setList.next)
++            let setValue = ptr_to_node(setIndex.next)
++            let setType = nodeGetType(setList)
++            let elemKey = typeIrKey(ptr_to_type(setType.child))
++            let listVal2 = generateExpression(setList)
++            let indexVal2 = generateExpression(setIndex)
++            let valueVal2 = generateExpression(setValue)
++            let guard2 = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
++            ir_list_flat_scalar_set(listVal2, indexVal2, valueVal2, elemKey,
++                                    flatSetStride, guard2, 0)
++            return ""
++        }
++
+         // Byte length is the pair's second field. This is a reserved compiler
+         // builtin, not an extern: its source spelling carries no declaration,
+         // LLVM symbol or link requirement.
+diff --git a/src/ir/stmt.psm b/src/ir/stmt.psm
+index 958ffd2..ab734a7 100644
+--- a/src/ir/stmt.psm
++++ b/src/ir/stmt.psm
+@@ -494,7 +494,10 @@ private fn generateStatement(stmt: ASTNode) {
+         // M4.2, the loop half. Emitted here because here is the preheader: the
+         // guard has to dominate the loop and be computed once.
+         let savedGuard = irLoopFlatGuard
+-        irLoopFlatGuard = generateLoopFlatGuard(ptr_to_node(stmt.child2))
++        let savedRange = irLoopRangeProved
++        irLoopRangeProved = false
++        irLoopFlatGuard = generateLoopFlatGuard(ptr_to_node(stmt.child1),
++                                                ptr_to_node(stmt.child2))
+ 
+         ir_br_numbered(condLabel)
+         ir_label_numbered(condLabel)
+@@ -515,6 +518,7 @@ private fn generateStatement(stmt: ASTNode) {
+         ir_clear_returned()
+ 
+         irLoopFlatGuard = savedGuard
++        irLoopRangeProved = savedRange
+         ir_label_numbered(endLabel)
+     }
+ 
+diff --git a/src/main.psm b/src/main.psm
+index e85db34..f1282b9 100644
+--- a/src/main.psm
++++ b/src/main.psm
+@@ -22,20 +22,24 @@ extern fn cli_arg_count() -> Int
+ // Both malloc and hand the buffer over: compiler_default_exe_path sprintfs into
+ // a fresh block, compiler_temp_ir_path goes through compiler_temp_path which
+ // does the same. The caller owns them.
+-extern fn compiler_default_exe_path(sourcePath: String) -> String produce(free)
+-// Every path through both mallocs, including the failure paths, which allocate a
+-// one-byte empty string rather than returning a literal. That is the same
+-// invariant Level 4 had to give str_substring and str_trim -- anything declared
+-// to return String returns something a release can take -- and it is what makes
+-// `produce` true here rather than nearly true.
++extern fn compiler_default_exe_path(sourcePath: String) -> String produce (free )
++
++/** Every path through both mallocs, including the failure paths, which allocate a
++ one-byte empty string rather than returning a literal. That is the same
++ invariant Level 4 had to give str_substring and str_trim -- anything declared
++to return String returns something a release can take -- and it is what makes
++ `produce` true here rather than nearly true.
++*/
+ extern fn compiler_runtime_source_hash() -> String produce(free)
+-// `--sysroot`. Where *this machine* keeps the SDK for the target -- not a
+-// property of the triple, which is why it is not in the target record: two hosts
+-// building the same target legitimately pass different paths, and an SDK the
+-// compiler picked for itself is the kind of helpful guess that ends in a link
+-// error someone spends an afternoon on.
+-extern fn compiler_set_sysroot(path: String borrow)
+-extern fn executable_directory() -> String produce(free)
++
++/** `--sysroot`. Where *this machine* keeps the SDK for the target -- not a
++ property of the triple, which is why it is not in the target record: two hosts
++ building the same target legitimately pass different paths, and an SDK the
++ compiler picked for itself is the kind of helpful guess that ends in a link
++error someone spends an afternoon on.
++*/
++extern fn compiler_set_sysroot(path: String borrow )
++extern fn executable_directory() -> String produce (free )
+ extern fn get_directory(path: String) -> String
+ // A `static char buf[32]` the next call overwrites.
+ extern fn ir_llvm_version() -> String alias
+@@ -316,7 +320,7 @@ private fn cliAif() -> Int {
+     }
+ 
+     return aifCommand(cli_arg(2), aifSummary, aifOwned, aifThetaFields, aifBudgetArg,
+-                       aifWhy, aifLayout, aifManifest)
++    aifWhy, aifLayout, aifManifest)
+ }
+ 
+ // Compiler development. The command itself selects the build mode -- there is
+@@ -365,7 +369,7 @@ private fn cliBootstrap() -> Int {
+     }
+ 
+     return compileSource(path, outputFile, false, true, false, false,
+-                          bootstrapDebugInfo, false, false)
++    bootstrapDebugInfo, false, false)
+ }
+ 
+ fn main() -> Int {
+@@ -627,5 +631,5 @@ fn main() -> Int {
+     }
+ 
+     return compileSource(path, outputFile, runAfterBuild, bootstrapMode, verifyMode, debugMode,
+-                          debugInfo, optimized, jitMode)
++    debugInfo, optimized, jitMode)
+ }

@@ -279,6 +279,8 @@ typedef struct {
     int hot_count;      // 0 unless split
     int field_count;
     int path_tbaa;
+    int null_tag;       // boxed binary enum's empty tag, or 0
+    int null_reserved;  // optional or foreign use needs every enum value non-null
     char field_keys[64][NAME_LEN];
 } StructType;
 
@@ -299,6 +301,8 @@ static StructType *struct_entry(const char *name) {
     g_structs[g_struct_count].hot_count = 0;
     g_structs[g_struct_count].field_count = 0;
     g_structs[g_struct_count].path_tbaa = 1;
+    g_structs[g_struct_count].null_tag = 0;
+    g_structs[g_struct_count].null_reserved = 0;
     return &g_structs[g_struct_count++];
 }
 
@@ -808,6 +812,7 @@ void ir_module_start(const char *module_name) {
 void ir_module_end(void) { /* nothing to flush -- the module is already built */ }
 
 static int g_pending_param_noalias[MAX_PENDING_PARAMS];
+static int g_pending_ret_noalias;
 
 void ir_function_begin(const char *name, const char *ret_type) {
     strncpy(g_pending_fn_name, name, NAME_LEN - 1);
@@ -815,6 +820,7 @@ void ir_function_begin(const char *name, const char *ret_type) {
     g_pending_ret = type_from_key(ret_type);
     g_pending_param_count = 0;
     memset(g_pending_param_noalias, 0, sizeof(g_pending_param_noalias));
+    g_pending_ret_noalias = 0;
     g_declaring = 0;
 }
 
@@ -874,7 +880,31 @@ static LLVMValueRef materialize_function(void) {
     return LLVMAddFunction(g_module, g_pending_fn_name, fnty);
 }
 
-void ir_declare_function_end(void) { materialize_function(); }
+// A return that is a fresh allocation: `noalias` at the return index, which is
+// what clang puts on `malloc` and what it means here too.
+//
+// This is E5's second half, and the half that separates two *headers*. The
+// scope pair above says a header field is not an element body; nothing in it
+// says `source`'s header is not `target`'s, so a loop pushing to two lists still
+// reloads one length after storing the other and stays scalar. Two calls to
+// `list_new_with_capacity` are two allocations, and this is how BasicAA is told.
+// Measured on `benchLargeBufferCopy`'s fill loop: the attribute alone changes
+// nothing, the scopes alone change nothing, and together they vectorise it.
+//
+// **Only for a function whose result is memory nothing else can reach.**
+// `list_push_slot` and `list_get_inline` return interior pointers *into* an
+// element block the caller already holds; this on either of them is a wrong
+// answer rather than a missed optimisation.
+void ir_declare_function_fresh(void) { g_pending_ret_noalias = 1; }
+
+void ir_declare_function_end(void) {
+    LLVMValueRef fn = materialize_function();
+    if (!g_pending_ret_noalias) return;
+    unsigned kind = LLVMGetEnumAttributeKindForName("noalias", 7);
+    if (!kind) return;
+    LLVMAddAttributeAtIndex(fn, 0u /* LLVMAttributeReturnIndex */,
+                            LLVMCreateEnumAttribute(g_ctx, kind, 0));
+}
 
 void ir_function_body_start(void) {
     g_function = materialize_function();
@@ -1192,6 +1222,80 @@ static void tag_struct_record(LLVMValueRef inst, const StructType *s, int cold,
 void ir_struct_disable_path_tbaa(const char *struct_name) {
     if (!struct_name || !*struct_name) return;
     struct_entry(struct_name)->path_tbaa = 0;
+}
+
+// E5. The `RtList` header and its element block are two allocations, and
+// `!alias.scope` is where that fact goes. TBAA cannot carry it.
+//
+// `l->len` is an `i32` under leaf "int", and so is every element of a
+// `List<Int>` -- the same leaf, so a loop that pushes must reload `len` out of
+// the header after each element store, the length recurrence stays in memory
+// and the loop stays scalar. E1 made `benchLargeBufferCopy`'s fill loop
+// checkless and it still measured 0.994 for exactly this reason;
+// `aif/evidence/RESULTS-push-predication.md` names it. Task 0.2 found the same
+// collision holding the `len` load in `ir_list_flat_elem`.
+//
+// **Giving the header its own leaf is not the fix.** In C both really are `int`
+// lvalues; `list_get_inline` is compiled by clang and tags them identically
+// because it must. A distinct leaf would declare codegen's accesses NoAlias
+// with the curated runtime's accesses to the same fields, which is wrong.
+// Scopes are per-region rather than per-type and leave the runtime's tags
+// alone: an *unscoped* access -- everything clang compiles, and every store
+// through an address `ir_list_flat_elem` handed back -- stays may-alias with
+// both, so this can only remove a false dependence, never create a true one.
+//
+// **One pair for the module, not one per loop.** The statement is universal: no
+// element body is ever an `RtList` header. `data` is its own `rt_alloc` or its
+// own arena bump on every path in `lang_runtime.c`, and an element type is
+// stored inline only when it is flat -- no pointer anywhere inside it -- while a
+// header is two pointers and five counters. `List<List<Int>>` keeps the boxed
+// representation and never reaches these tags.
+//
+// **It does not separate two headers, and that half is not done here.** Two
+// receivers in one loop are both header accesses, so `target`'s length store
+// still blocks `source`'s length load; what discharges that is `noalias` on the
+// list constructors -- see ir_declare_function_fresh -- which is a fact about
+// allocation rather than about regions. Measured on the two-list fill loop:
+// scopes alone move it not at all, and the two together vectorise it.
+//
+// The scope names are strings rather than self-references. LangRef allows
+// either -- "if the name is a string then it can be combined across functions
+// and translation units" -- a string is already unique within this module, and
+// the self-referential form needs LLVMTemporaryMDNode, which prismio_llvm.h's
+// hand-written fallback declarations do not have.
+static LLVMMetadataRef list_region_scope(int elements) {
+    const char *domain_text = "prismio container";
+    LLVMMetadataRef domain_name =
+        LLVMMDStringInContext2(g_ctx, domain_text, strlen(domain_text));
+    LLVMMetadataRef domain = LLVMMDNodeInContext2(g_ctx, &domain_name, 1);
+    const char *text = elements ? "prismio list elements" : "prismio list header";
+    LLVMMetadataRef ops[2] = {
+        LLVMMDStringInContext2(g_ctx, text, strlen(text)),
+        domain,
+    };
+    return LLVMMDNodeInContext2(g_ctx, ops, 2);
+}
+
+// `alias.scope` says where this access is; `noalias` says where it is not. Both
+// are needed: ScopedNoAliasAA answers NoAlias only when one access's scope list
+// is contained in the other's noalias list.
+static void tag_list_region(LLVMValueRef inst, int elements) {
+    LLVMMetadataRef here = list_region_scope(elements);
+    LLVMMetadataRef there = list_region_scope(!elements);
+    LLVMSetMetadata(inst, LLVMGetMDKindIDInContext(g_ctx, "alias.scope", 11),
+                    LLVMMetadataAsValue(g_ctx, LLVMMDNodeInContext2(g_ctx, &here, 1)));
+    LLVMSetMetadata(inst, LLVMGetMDKindIDInContext(g_ctx, "noalias", 7),
+                    LLVMMetadataAsValue(g_ctx, LLVMMDNodeInContext2(g_ctx, &there, 1)));
+}
+
+static void tag_list_header(LLVMValueRef inst, const char *type) {
+    tag_scalar(inst, type);
+    tag_list_region(inst, 0);
+}
+
+static void tag_list_element(LLVMValueRef inst, const char *type) {
+    tag_scalar(inst, type);
+    tag_list_region(inst, 1);
 }
 
 
@@ -1798,6 +1902,42 @@ int ir_struct_is_flat(const char *struct_name) {
     return struct_is_flat_by_name(struct_name, 0);
 }
 
+// The null pointer replaces only an empty *boxed* variant. A flat value can be
+// embedded in a struct or copied into a list, so its storage still needs a tag.
+// Raw-pointer-exposed and split layouts also keep their existing representation.
+void ir_enum_set_null_tag(const char *name, int tag) {
+    StructType *s = struct_entry(name);
+    s->null_tag = (tag > 0 && tag <= 2 && !s->null_reserved
+                   && s->path_tbaa && s->hot_count == 0
+                   && !ir_struct_is_flat(name)) ? tag : 0;
+}
+
+void ir_enum_reserve_null(const char *name) {
+    StructType *s = struct_entry(name);
+    s->null_reserved = 1;
+    s->null_tag = 0;
+}
+
+int ir_enum_null_tag(const char *name) { return struct_entry(name)->null_tag; }
+
+int ir_enum_tag(const char *name, const char *value) {
+    StructType *s = struct_entry(name);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    if (block_done()) return intern_value(LLVMConstInt(i32, 0, 0));
+    if (s->null_tag) {
+        LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+        LLVMValueRef empty = LLVMBuildICmp(g_builder, LLVMIntEQ,
+            resolve_value(value, "ptr"), LLVMConstNull(ptr), "");
+        return intern_value(LLVMBuildSelect(g_builder, empty,
+            LLVMConstInt(i32, (unsigned)s->null_tag, 0),
+            LLVMConstInt(i32, (unsigned)(3 - s->null_tag), 0), ""));
+    }
+    int slot = ir_struct_field_ptr(name, value, 0);
+    char slot_name[32];
+    snprintf(slot_name, sizeof(slot_name), "$$v%d", slot);
+    return ir_struct_load_ptr("i32", slot_name, name, 0);
+}
+
 // The type's ABI size in bytes, read from the **module's** data layout so a
 // `--target` build sizes for the target rather than for this host. A constant
 // here rather than an emitted `LLVMSizeOf`, because the container is told the
@@ -1913,9 +2053,75 @@ int ir_list_is_flat(const char *list, int stride) {
     LLVMValueRef size_ptr =
         LLVMBuildStructGEP2(g_builder, rt_list_header_type(), hdr, RT_LIST_FIELD_ELEM_SIZE, "");
     LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
-    tag_scalar(elem_size, "i32");
+    tag_list_header(elem_size, "i32");
     return intern_value(LLVMBuildICmp(g_builder, LLVMIntEQ, elem_size,
                                       LLVMConstInt(i32, (unsigned long long)stride, 0), ""));
+}
+
+// The whole-buffer copy, as one `llvm.memmove`.
+//
+// `while (k < n) { list_set(dst, k, list_get(src, k)); k = k + 1 }` is a block
+// move written a word at a time. LLVM vectorises it -- four `ldp q`/`stp q` a
+// turn -- and that is still not what libc does for a megabyte: `memmove` on this
+// target picks its own width, prefetch distance and non-temporal hint from the
+// length, which no unrolled loop in the caller can. The caller's guard has
+// already proved both containers are flat at this stride and that `count` is
+// within both lengths, so the transfer is exactly `(count - from) * stride`
+// bytes and the totality of `list_get`/`list_set` cannot be observed.
+//
+// **`memmove`, not `memcpy`, and not out of caution.** `dst` and `src` are two
+// names, and nothing stops them being two bindings of the same list; a `memcpy`
+// whose regions coincide exactly is undefined even though every implementation
+// would survive it. On this target both land in the same libsystem entry for a
+// disjoint copy, so the choice costs nothing measurable and removes the
+// obligation to prove disjointness.
+void ir_list_flat_copy(const char *dst, const char *src, const char *from,
+                       const char *count, int stride) {
+    if (block_done()) return;
+    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef listty = rt_list_header_type();
+
+    LLVMValueRef dst_hdr = resolve_value(dst, "ptr");
+    LLVMValueRef src_hdr = resolve_value(src, "ptr");
+    LLVMValueRef begin = LLVMBuildSExt(g_builder, resolve_value(from, "i32"), i64, "");
+    LLVMValueRef end = LLVMBuildSExt(g_builder, resolve_value(count, "i32"), i64, "");
+    LLVMValueRef width = LLVMConstInt(i64, (unsigned long long)stride, 0);
+
+    LLVMValueRef dst_data = LLVMBuildLoad2(
+        g_builder, ptrty,
+        LLVMBuildStructGEP2(g_builder, listty, dst_hdr, RT_LIST_FIELD_DATA, ""), "");
+    tag_list_header(dst_data, "ptr");
+    LLVMValueRef src_data = LLVMBuildLoad2(
+        g_builder, ptrty,
+        LLVMBuildStructGEP2(g_builder, listty, src_hdr, RT_LIST_FIELD_DATA, ""), "");
+    tag_list_header(src_data, "ptr");
+
+    LLVMValueRef offset = LLVMBuildMul(g_builder, begin, width, "");
+    LLVMValueRef dst_at = LLVMBuildGEP2(g_builder, i8, dst_data, &offset, 1, "");
+    LLVMValueRef src_at = LLVMBuildGEP2(g_builder, i8, src_data, &offset, 1, "");
+    LLVMValueRef bytes = LLVMBuildMul(
+        g_builder, LLVMBuildSub(g_builder, end, begin, ""), width, "");
+
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "llvm.memmove.p0.p0.i64");
+    if (!fn) {
+        LLVMTypeRef params[4] = {ptrty, ptrty, i64, LLVMInt1TypeInContext(g_ctx)};
+        LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 4, 0);
+        fn = LLVMAddFunction(g_module, "llvm.memmove.p0.p0.i64", fnty);
+    }
+    LLVMTypeRef params[4] = {ptrty, ptrty, i64, LLVMInt1TypeInContext(g_ctx)};
+    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 4, 0);
+    LLVMValueRef args[4] = {
+        dst_at, src_at, bytes, LLVMConstInt(LLVMInt1TypeInContext(g_ctx), 0, 0)
+    };
+    LLVMValueRef move = LLVMBuildCall2(g_builder, fnty, fn, args, 4, "");
+    // Both ends are element blocks, so the transfer says nothing about any
+    // header -- which is what lets the length load feeding the caller's loop
+    // bound stay hoisted across it.
+    tag_list_region(move, 1);
+    (void)i32;
 }
 
 // The write end of the flat-`List` view: `list_push_slot` without the call.
@@ -1933,7 +2139,7 @@ int ir_list_is_flat(const char *list, int stride) {
 // representation -- stays in the runtime call on the slow arm, so this is the
 // same specialisation discipline as ir_list_flat_elem above and the same
 // fallback.
-int ir_list_flat_push(const char *list, int stride) {
+int ir_list_flat_push(const char *list, int stride, const char *guard) {
     LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
     if (block_done()) return intern_value(LLVMConstNull(ptrty));
 
@@ -1946,23 +2152,35 @@ int ir_list_flat_push(const char *list, int stride) {
     LLVMValueRef size_ptr =
         LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, "");
     LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
-    tag_scalar(elem_size, "i32");
+    tag_list_header(elem_size, "i32");
     LLVMValueRef len_ptr =
         LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
     LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
-    tag_scalar(len, "i32");
+    tag_list_header(len, "i32");
     LLVMValueRef cap_ptr =
         LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_CAP, "");
     LLVMValueRef cap = LLVMBuildLoad2(g_builder, i32, cap_ptr, "");
-    tag_scalar(cap, "i32");
+    tag_list_header(cap, "i32");
 
     // Stamped at this stride, and room for one more. An unstamped list has
     // elem_size 0 and fails the first test, so the lazy stamp still happens in
     // the runtime on the first push exactly as it did.
-    LLVMValueRef is_flat = LLVMBuildICmp(g_builder, LLVMIntEQ, elem_size,
-                                         LLVMConstInt(i32, (unsigned long long)stride, 0), "");
-    LLVMValueRef has_room = LLVMBuildICmp(g_builder, LLVMIntSLT, len, cap, "");
-    LLVMValueRef fast = LLVMBuildAnd(g_builder, is_flat, has_room, "");
+    //
+    // **With a `guard` the test is not here at all.** The loop's preheader has
+    // already proved `elem_size == stride` and `cap - len >= trip_count` for
+    // every push this loop performs, so the per-push test is the thing E1 exists
+    // to delete: paying it at the site is what made the same fast path a 1.275x
+    // loss on g6 when codegen emitted it unconditionally
+    // (RESULTS-inline-push-rejected.md).
+    LLVMValueRef fast;
+    if (guard && guard[0]) {
+        fast = resolve_value(guard, "i1");
+    } else {
+        LLVMValueRef is_flat = LLVMBuildICmp(g_builder, LLVMIntEQ, elem_size,
+                                             LLVMConstInt(i32, (unsigned long long)stride, 0), "");
+        LLVMValueRef has_room = LLVMBuildICmp(g_builder, LLVMIntSLT, len, cap, "");
+        fast = LLVMBuildAnd(g_builder, is_flat, has_room, "");
+    }
 
     int inplace = ir_get_label();
     int viacall = ir_get_label();
@@ -1973,13 +2191,13 @@ int ir_list_flat_push(const char *list, int stride) {
     LLVMValueRef data_ptr =
         LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
     LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
-    tag_scalar(data, "ptr");
+    tag_list_header(data, "ptr");
     LLVMValueRef offset = LLVMBuildMul(g_builder, LLVMBuildSExt(g_builder, len, i64, ""),
                                        LLVMConstInt(i64, (unsigned long long)stride, 0), "");
     LLVMValueRef slot = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
     LLVMValueRef bumped = LLVMBuildAdd(g_builder, len, LLVMConstInt(i32, 1, 0), "");
     LLVMValueRef st = LLVMBuildStore(g_builder, bumped, len_ptr);
-    tag_scalar(st, "i32");
+    tag_list_header(st, "i32");
     LLVMBuildBr(g_builder, block_for(join));
     LLVMBasicBlockRef inplace_end = LLVMGetInsertBlock(g_builder);
 
@@ -2001,8 +2219,112 @@ int ir_list_flat_push(const char *list, int stride) {
     return intern_value(phi);
 }
 
+// E1's preheader conjunct: `cap - len >= need`, in i64 so the subtraction cannot
+// wrap a 32-bit count.
+//
+// One test per receiver per loop, against `need = trip_count * pushes_per_iteration`.
+// A list built by `list_new()` has capacity 0 and fails it, which is the whole
+// discrimination the pushes-per-list *profile* was being asked for: g6's
+// `plan_orders` builds a fresh list per squad and takes the ordinary path, while
+// a `list_new_with_capacity(n)` loop takes the checkless one.
+int ir_list_has_room(const char *list, const char *need) {
+    LLVMTypeRef i1 = LLVMInt1TypeInContext(g_ctx);
+    if (block_done()) return intern_value(LLVMConstInt(i1, 0, 0));
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef listty = rt_list_header_type();
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+
+    LLVMValueRef len = LLVMBuildLoad2(
+        g_builder, i32,
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, ""), "");
+    tag_list_header(len, "i32");
+    LLVMValueRef cap = LLVMBuildLoad2(
+        g_builder, i32,
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_CAP, ""), "");
+    tag_list_header(cap, "i32");
+
+    LLVMValueRef room = LLVMBuildSub(g_builder,
+                                     LLVMBuildSExt(g_builder, cap, i64, ""),
+                                     LLVMBuildSExt(g_builder, len, i64, ""), "");
+    return intern_value(LLVMBuildICmp(g_builder, LLVMIntSGE, room,
+                                      resolve_value(need, "i64"), ""));
+}
+
+// The scalar push under E1's guard: a typed store and a length bump, with no
+// test of any kind in the loop body.
+//
+// The false arm is `list_push_inline_scalar`, so a loop whose guard does not hold
+// pushes exactly as it does today -- lazy stamp, growth, arena and the boxed
+// representation all still reached through the runtime.
+void ir_list_flat_push_scalar(const char *list, const char *value,
+                              const char *elem_type, int stride,
+                              const char *guard) {
+    if (block_done()) return;
+    LLVMTypeRef elemty = type_from_key(elem_type);
+    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef listty = rt_list_header_type();
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+    LLVMValueRef val = resolve_value(value, elem_type);
+
+    int fast = ir_get_label();
+    int slow = ir_get_label();
+    int join = ir_get_label();
+    LLVMBuildCondBr(g_builder, resolve_value(guard, "i1"),
+                    block_for(fast), block_for(slow));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(fast));
+    LLVMValueRef len_ptr =
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+    tag_list_header(len, "i32");
+    LLVMValueRef data = LLVMBuildLoad2(
+        g_builder, ptrty,
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, ""), "");
+    tag_list_header(data, "ptr");
+    LLVMValueRef offset = LLVMBuildMul(
+        g_builder, LLVMBuildSExt(g_builder, len, i64, ""),
+        LLVMConstInt(i64, (unsigned long long)stride, 0), "");
+    LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+    LLVMValueRef st = LLVMBuildStore(g_builder, val, addr);
+    tag_list_element(st, elem_type);
+    LLVMValueRef bumped = LLVMBuildStore(
+        g_builder, LLVMBuildAdd(g_builder, len, LLVMConstInt(i32, 1, 0), ""), len_ptr);
+    tag_list_header(bumped, "i32");
+    LLVMBuildBr(g_builder, block_for(join));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(slow));
+    LLVMValueRef bits;
+    if (strcmp(elem_type, "double") == 0) {
+        bits = LLVMBuildBitCast(g_builder, val, i64, "");
+    } else if (strcmp(elem_type, "i64") == 0) {
+        bits = val;
+    } else {
+        bits = LLVMBuildZExt(g_builder, val, i64, "");
+    }
+    LLVMTypeRef params[3] = {ptrty, i64, i32};
+    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 3, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "list_push_inline_scalar");
+    if (!fn) fn = LLVMAddFunction(g_module, "list_push_inline_scalar", fnty);
+    LLVMValueRef args[3] = {
+        hdr, bits, LLVMConstInt(i32, (unsigned long long)stride, 0)
+    };
+    LLVMBuildCall2(g_builder, fnty, fn, args, 3, "");
+    LLVMBuildBr(g_builder, block_for(join));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(join));
+    (void)elemty;
+}
+
+static int is_constant_true_guard(const char *guard) {
+    return guard && (strcmp(guard, "1") == 0 || strcmp(guard, "true") == 0);
+}
+
 int ir_list_flat_elem(const char *list, const char *index, int stride,
-                      const char *guard) {
+                      const char *guard, int check_bounds) {
     LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
     if (block_done()) return intern_value(LLVMConstNull(ptrty));
 
@@ -2027,6 +2349,26 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
     // once, so it ANDs them in the preheader and hands the one `i1` to every
     // site; LLVM then versions the loop exactly twice. See generateLoopFlatGuard
     // in src/ir/stmt.psm for what it declines on.
+    if (is_constant_true_guard(guard)) {
+        LLVMValueRef data_ptr =
+            LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+        tag_list_header(data, "ptr");
+        LLVMValueRef offset = LLVMBuildMul(g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
+                                           LLVMConstInt(i64, (unsigned long long)stride, 0), "");
+        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+        if (!check_bounds) {
+            return intern_value(addr);
+        }
+        LLVMValueRef len_ptr =
+            LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+        LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+        tag_list_header(len, "i32");
+        LLVMValueRef in_bounds = LLVMBuildICmp(g_builder, LLVMIntULT, idx, len, "");
+        LLVMValueRef flat_val = LLVMBuildSelect(g_builder, in_bounds, addr, LLVMConstNull(ptrty), "");
+        return intern_value(flat_val);
+    }
+
     LLVMValueRef is_flat;
     if (guard && guard[0]) {
         is_flat = resolve_value(guard, "i1");
@@ -2034,7 +2376,7 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
         LLVMValueRef size_ptr =
             LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, "");
         LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
-        tag_scalar(elem_size, "i32");
+        tag_list_header(elem_size, "i32");
         is_flat = LLVMBuildICmp(g_builder, LLVMIntEQ, elem_size,
                                 LLVMConstInt(i32, (unsigned long long)stride, 0), "");
     }
@@ -2045,35 +2387,46 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
     LLVMBuildCondBr(g_builder, is_flat, block_for(flat), block_for(boxed));
 
     LLVMPositionBuilderAtEnd(g_builder, block_for(flat));
-    LLVMValueRef len_ptr =
-        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
-    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
-    tag_scalar(len, "i32");
-    // `index < 0 || index >= len` is one unsigned compare: a negative index is a
-    // very large unsigned one, and `len` is never negative. Same answer as
-    // list_get_inline's two signed tests, and the same null on failure.
-    LLVMValueRef in_bounds = LLVMBuildICmp(g_builder, LLVMIntULT, idx, len, "");
+    // `check_bounds` is 0 only when the loop's guard already proved, in the
+    // preheader, that every index this loop forms is in range -- the same
+    // conjuncts ir_list_flat_scalar_elem drops its branch on. Here what they buy
+    // is the *length* load: the select below reads `len` out of the header on
+    // every access, and `len` is an `int` under the same TBAA leaf as any `int`
+    // the loop stores through the element it just addressed, so LICM cannot lift
+    // it. A struct-element loop that writes an `i32` field therefore reloaded the
+    // header every iteration and stayed scalar -- measured at 1.14x against the
+    // boxed arm on the ecs shape, a "fast" path slower than the one it replaces.
     LLVMValueRef data_ptr =
         LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
     LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
-    tag_scalar(data, "ptr");
+    tag_list_header(data, "ptr");
     LLVMValueRef offset = LLVMBuildMul(g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
                                        LLVMConstInt(i64, (unsigned long long)stride, 0), "");
     LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
-    // **A select, not a branch, and the difference is the whole optimisation.**
-    // Answering the bounds test with a branch to a null-returning edge is what
-    // list_get_inline does and it reads as the more faithful translation, so it
-    // was written that way first. It costs the result: the extra control flow in
-    // this block leaves the *second* list's representation test unhoisted, so
-    // g4's movement loop came back with `cmp w10, #0x18` and a reloaded `data`
-    // per iteration and the constant stride replaced by `madd`. Two straight-line
-    // instructions here buy four versions of a branch-free loop.
-    //
-    // Plain GEP rather than inbounds: an out-of-range index is answered with null
-    // on the line below, and poison in the arm that select discards is a hazard
-    // worth not having for an address the target folds either way.
-    LLVMValueRef flat_val =
-        LLVMBuildSelect(g_builder, in_bounds, addr, LLVMConstNull(ptrty), "");
+    LLVMValueRef flat_val = addr;
+    if (check_bounds) {
+        LLVMValueRef len_ptr =
+            LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+        LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+        tag_list_header(len, "i32");
+        // `index < 0 || index >= len` is one unsigned compare: a negative index is
+        // a very large unsigned one, and `len` is never negative. Same answer as
+        // list_get_inline's two signed tests, and the same null on failure.
+        LLVMValueRef in_bounds = LLVMBuildICmp(g_builder, LLVMIntULT, idx, len, "");
+        // **A select, not a branch, and the difference is the whole optimisation.**
+        // Answering the bounds test with a branch to a null-returning edge is what
+        // list_get_inline does and it reads as the more faithful translation, so it
+        // was written that way first. It costs the result: the extra control flow in
+        // this block leaves the *second* list's representation test unhoisted, so
+        // g4's movement loop came back with `cmp w10, #0x18` and a reloaded `data`
+        // per iteration and the constant stride replaced by `madd`. Two straight-line
+        // instructions here buy four versions of a branch-free loop.
+        //
+        // Plain GEP rather than inbounds: an out-of-range index is answered with
+        // null here, and poison in the arm that select discards is a hazard worth
+        // not having for an address the target folds either way.
+        flat_val = LLVMBuildSelect(g_builder, in_bounds, addr, LLVMConstNull(ptrty), "");
+    }
     LLVMBuildBr(g_builder, block_for(join));
     LLVMBasicBlockRef flat_end = LLVMGetInsertBlock(g_builder);
 
@@ -2109,9 +2462,15 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
 // hide an out-of-range address result, as the pointer intrinsic does, but it
 // cannot make an invalid load non-trapping. Loop bounds make this branch
 // removable in the read benchmark, just as they do for ir_list_boxed_elem.
+// `check_bounds` is 0 only when the loop's guard already proved, in the
+// preheader, that every index this loop forms is in range -- see the range
+// conjuncts in generateLoopFlatGuard. Then the length load and the in-range
+// branch are both dead, and dropping them is what lets LICM hoist `data`: the
+// element load stops being conditional, which is the single reason the header
+// was re-read per access. Measured in aif/evidence/RESULTS-bounds-check-ceiling.md.
 int ir_list_flat_scalar_elem(const char *list, const char *index,
                              const char *elem_type, int stride,
-                             const char *guard) {
+                             const char *guard, int check_bounds) {
     LLVMTypeRef elemty = type_from_key(elem_type);
     if (block_done()) return intern_value(LLVMConstNull(elemty));
 
@@ -2124,13 +2483,63 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
     LLVMValueRef idx = resolve_value(index, "i32");
 
     LLVMValueRef is_flat;
+    if (is_constant_true_guard(guard) && !check_bounds) {
+        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+        tag_list_header(data, "ptr");
+        LLVMValueRef offset = LLVMBuildMul(
+            g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
+            LLVMConstInt(i64, (unsigned long long)stride, 0), "");
+        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+        LLVMValueRef flat_val = LLVMBuildLoad2(g_builder, elemty, addr, "");
+        tag_list_element(flat_val, elem_type);
+        return intern_value(flat_val);
+    }
+    if (is_constant_true_guard(guard) && check_bounds) {
+        LLVMValueRef len_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+        LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+        tag_list_header(len, "i32");
+        LLVMValueRef in_bounds = LLVMBuildICmp(
+            g_builder, LLVMIntULT, idx, len, "");
+        int present = ir_get_label();
+        int absent = ir_get_label();
+        int checked = ir_get_label();
+        LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(absent));
+
+        LLVMPositionBuilderAtEnd(g_builder, block_for(present));
+        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+        tag_list_header(data, "ptr");
+        LLVMValueRef offset = LLVMBuildMul(
+            g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
+            LLVMConstInt(i64, (unsigned long long)stride, 0), "");
+        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+        LLVMValueRef loaded = LLVMBuildLoad2(g_builder, elemty, addr, "");
+        tag_list_element(loaded, elem_type);
+        LLVMBuildBr(g_builder, block_for(checked));
+        LLVMBasicBlockRef present_end = LLVMGetInsertBlock(g_builder);
+
+        LLVMPositionBuilderAtEnd(g_builder, block_for(absent));
+        LLVMBuildBr(g_builder, block_for(checked));
+        LLVMBasicBlockRef absent_end = LLVMGetInsertBlock(g_builder);
+
+        LLVMPositionBuilderAtEnd(g_builder, block_for(checked));
+        LLVMValueRef flat_val = LLVMBuildPhi(g_builder, elemty, "");
+        LLVMValueRef flat_values[2] = {loaded, LLVMConstNull(elemty)};
+        LLVMBasicBlockRef flat_blocks[2] = {present_end, absent_end};
+        LLVMAddIncoming(flat_val, flat_values, flat_blocks, 2);
+        return intern_value(flat_val);
+    }
     if (guard && guard[0]) {
         is_flat = resolve_value(guard, "i1");
     } else {
         LLVMValueRef size_ptr = LLVMBuildStructGEP2(
             g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, "");
         LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
-        tag_scalar(elem_size, "i32");
+        tag_list_header(elem_size, "i32");
         is_flat = LLVMBuildICmp(
             g_builder, LLVMIntEQ, elem_size,
             LLVMConstInt(i32, (unsigned long long)stride, 0), "");
@@ -2142,10 +2551,24 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
     LLVMBuildCondBr(g_builder, is_flat, block_for(flat), block_for(boxed));
 
     LLVMPositionBuilderAtEnd(g_builder, block_for(flat));
+    LLVMValueRef flat_val;
+    if (!check_bounds) {
+        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+        tag_list_header(data, "ptr");
+        LLVMValueRef offset = LLVMBuildMul(
+            g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
+            LLVMConstInt(i64, (unsigned long long)stride, 0), "");
+        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+        flat_val = LLVMBuildLoad2(g_builder, elemty, addr, "");
+        tag_list_element(flat_val, elem_type);
+        LLVMBuildBr(g_builder, block_for(join));
+    } else {
     LLVMValueRef len_ptr = LLVMBuildStructGEP2(
         g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
     LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
-    tag_scalar(len, "i32");
+    tag_list_header(len, "i32");
     LLVMValueRef in_bounds = LLVMBuildICmp(
         g_builder, LLVMIntULT, idx, len, "");
     int present = ir_get_label();
@@ -2157,13 +2580,13 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
     LLVMValueRef data_ptr = LLVMBuildStructGEP2(
         g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
     LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
-    tag_scalar(data, "ptr");
+    tag_list_header(data, "ptr");
     LLVMValueRef offset = LLVMBuildMul(
         g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
         LLVMConstInt(i64, (unsigned long long)stride, 0), "");
     LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
     LLVMValueRef loaded = LLVMBuildLoad2(g_builder, elemty, addr, "");
-    tag_scalar(loaded, elem_type);
+    tag_list_element(loaded, elem_type);
     LLVMBuildBr(g_builder, block_for(checked));
     LLVMBasicBlockRef present_end = LLVMGetInsertBlock(g_builder);
 
@@ -2172,11 +2595,12 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
     LLVMBasicBlockRef absent_end = LLVMGetInsertBlock(g_builder);
 
     LLVMPositionBuilderAtEnd(g_builder, block_for(checked));
-    LLVMValueRef flat_val = LLVMBuildPhi(g_builder, elemty, "");
+    flat_val = LLVMBuildPhi(g_builder, elemty, "");
     LLVMValueRef flat_values[2] = {loaded, LLVMConstNull(elemty)};
     LLVMBasicBlockRef flat_blocks[2] = {present_end, absent_end};
     LLVMAddIncoming(flat_val, flat_values, flat_blocks, 2);
     LLVMBuildBr(g_builder, block_for(join));
+    }
     LLVMBasicBlockRef flat_end = LLVMGetInsertBlock(g_builder);
 
     LLVMPositionBuilderAtEnd(g_builder, block_for(boxed));
@@ -2207,6 +2631,145 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
     return intern_value(phi);
 }
 
+// The write half of the guarded flat path, and the mirror of
+// ir_list_flat_scalar_elem above.
+//
+// It exists for the same reason the read does and pays off for a different one:
+// the read's bounds check made its *load* conditional, and the write's makes the
+// loop keep a branch the copy loops are built out of. With `check_bounds` 0 the
+// loop's range conjuncts have already proved this index, so the length load and
+// the in-range branch are both dead and the store is one instruction.
+//
+// The false arm is the ordinary `list_set_inline_scalar` call, so a guard that
+// does not hold at run time stores exactly what it stores today -- including
+// doing nothing at all for an out-of-range index.
+void ir_list_flat_scalar_set(const char *list, const char *index,
+                             const char *value, const char *elem_type,
+                             int stride, const char *guard, int check_bounds) {
+    if (block_done()) return;
+
+    LLVMTypeRef elemty = type_from_key(elem_type);
+    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef listty = rt_list_header_type();
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+    LLVMValueRef idx = resolve_value(index, "i32");
+    LLVMValueRef val = resolve_value(value, elem_type);
+
+    LLVMValueRef is_flat;
+    if (is_constant_true_guard(guard) && !check_bounds) {
+        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+        tag_list_header(data, "ptr");
+        LLVMValueRef offset = LLVMBuildMul(
+            g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
+            LLVMConstInt(i64, (unsigned long long)stride, 0), "");
+        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+        LLVMValueRef st = LLVMBuildStore(g_builder, val, addr);
+        tag_list_element(st, elem_type);
+        return;
+    }
+    if (is_constant_true_guard(guard) && check_bounds) {
+        LLVMValueRef len_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+        LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+        tag_list_header(len, "i32");
+        LLVMValueRef in_bounds = LLVMBuildICmp(
+            g_builder, LLVMIntULT, idx, len, "");
+        int present = ir_get_label();
+        int join = ir_get_label();
+        LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(join));
+        LLVMPositionBuilderAtEnd(g_builder, block_for(present));
+        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+        tag_list_header(data, "ptr");
+        LLVMValueRef offset = LLVMBuildMul(
+            g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
+            LLVMConstInt(i64, (unsigned long long)stride, 0), "");
+        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+        LLVMValueRef st = LLVMBuildStore(g_builder, val, addr);
+        tag_list_element(st, elem_type);
+        LLVMBuildBr(g_builder, block_for(join));
+        LLVMPositionBuilderAtEnd(g_builder, block_for(join));
+        return;
+    }
+    if (guard && guard[0]) {
+        is_flat = resolve_value(guard, "i1");
+    } else {
+        LLVMValueRef size_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, "");
+        LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
+        tag_list_header(elem_size, "i32");
+        is_flat = LLVMBuildICmp(
+            g_builder, LLVMIntEQ, elem_size,
+            LLVMConstInt(i32, (unsigned long long)stride, 0), "");
+    }
+
+    int flat = ir_get_label();
+    int boxed = ir_get_label();
+    int join = ir_get_label();
+    LLVMBuildCondBr(g_builder, is_flat, block_for(flat), block_for(boxed));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(flat));
+    int store_at = flat;
+    if (check_bounds) {
+        LLVMValueRef len_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+        LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+        tag_list_header(len, "i32");
+        LLVMValueRef in_bounds = LLVMBuildICmp(
+            g_builder, LLVMIntULT, idx, len, "");
+        int present = ir_get_label();
+        LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(join));
+        LLVMPositionBuilderAtEnd(g_builder, block_for(present));
+        store_at = present;
+    }
+    (void)store_at;
+    LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+        g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+    LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+    tag_list_header(data, "ptr");
+    LLVMValueRef offset = LLVMBuildMul(
+        g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
+        LLVMConstInt(i64, (unsigned long long)stride, 0), "");
+    LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+    // **Tagged, and leaving it untagged cost the whole vectoriser.** An untagged
+    // store may alias anything, including the `data` pointer this block just
+    // loaded out of the header -- so LICM cannot hoist that load, the base is
+    // re-read every iteration, and dependence analysis across iterations is
+    // impossible. Every other access this backend emits is tagged; this one was
+    // not, and the loop stayed scalar with the reason invisible in the assembly.
+    LLVMValueRef st = LLVMBuildStore(g_builder, val, addr);
+    tag_list_element(st, elem_type);
+    LLVMBuildBr(g_builder, block_for(join));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(boxed));
+    LLVMValueRef bits;
+    if (strcmp(elem_type, "double") == 0) {
+        bits = LLVMBuildBitCast(g_builder, val, i64, "");
+    } else if (strcmp(elem_type, "i64") == 0) {
+        bits = val;
+    } else {
+        bits = LLVMBuildZExt(g_builder, val, i64, "");
+    }
+    LLVMTypeRef params[4] = {ptrty, i32, i64, i32};
+    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 4, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "list_set_inline_scalar");
+    if (!fn) fn = LLVMAddFunction(g_module, "list_set_inline_scalar", fnty);
+    LLVMValueRef args[4] = {
+        hdr, idx, bits, LLVMConstInt(i32, (unsigned long long)stride, 0)
+    };
+    LLVMBuildCall2(g_builder, fnty, fn, args, 4, "");
+    LLVMBuildBr(g_builder, block_for(join));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(join));
+    (void)elemty;
+}
+
 // Emit the typed pointer-slot access in the caller. The frontend selects this
 // only for a known List element type whose representation cannot be stamped
 // inline; Invalid/inferred-later Lists keep the generic runtime accessor.
@@ -2228,7 +2791,7 @@ int ir_list_boxed_elem(const char *list, const char *index) {
     LLVMValueRef len_ptr = LLVMBuildStructGEP2(
         g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
     LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
-    tag_scalar(len, "i32");
+    tag_list_header(len, "i32");
     LLVMValueRef in_bounds = LLVMBuildICmp(g_builder, LLVMIntULT, idx, len, "");
     int present = ir_get_label();
     int absent = ir_get_label();
@@ -2239,11 +2802,11 @@ int ir_list_boxed_elem(const char *list, const char *index) {
     LLVMValueRef data_ptr = LLVMBuildStructGEP2(
         g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
     LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
-    tag_scalar(data, "ptr");
+    tag_list_header(data, "ptr");
     LLVMValueRef wide_idx = LLVMBuildSExt(g_builder, idx, i64, "");
     LLVMValueRef slot = LLVMBuildGEP2(g_builder, ptrty, data, &wide_idx, 1, "");
     LLVMValueRef loaded = LLVMBuildLoad2(g_builder, ptrty, slot, "");
-    tag_scalar(loaded, "ptr");
+    tag_list_element(loaded, "ptr");
     LLVMBuildBr(g_builder, block_for(checked));
     LLVMBasicBlockRef present_end = LLVMGetInsertBlock(g_builder);
 
@@ -2388,9 +2951,24 @@ BINOP(ir_sdiv, LLVMBuildSDiv)
 BINOP(ir_udiv, LLVMBuildUDiv)
 BINOP(ir_srem, LLVMBuildSRem)
 BINOP(ir_urem, LLVMBuildURem)
-BINOP(ir_fadd, LLVMBuildFAdd)
-BINOP(ir_fsub, LLVMBuildFSub)
-BINOP(ir_fmul, LLVMBuildFMul)
+int ir_fadd(const char *type, const char *lhs, const char *rhs) {
+    if (block_done()) return 0;
+    LLVMValueRef v = LLVMBuildFAdd(g_builder, resolve_value(lhs, type), resolve_value(rhs, type), "");
+    LLVMSetFastMathFlags(v, (1 << 5));
+    return intern_value(v);
+}
+int ir_fsub(const char *type, const char *lhs, const char *rhs) {
+    if (block_done()) return 0;
+    LLVMValueRef v = LLVMBuildFSub(g_builder, resolve_value(lhs, type), resolve_value(rhs, type), "");
+    LLVMSetFastMathFlags(v, (1 << 5));
+    return intern_value(v);
+}
+int ir_fmul(const char *type, const char *lhs, const char *rhs) {
+    if (block_done()) return 0;
+    LLVMValueRef v = LLVMBuildFMul(g_builder, resolve_value(lhs, type), resolve_value(rhs, type), "");
+    LLVMSetFastMathFlags(v, (1 << 5));
+    return intern_value(v);
+}
 BINOP(ir_fdiv, LLVMBuildFDiv)
 BINOP(ir_and, LLVMBuildAnd)
 BINOP(ir_or, LLVMBuildOr)

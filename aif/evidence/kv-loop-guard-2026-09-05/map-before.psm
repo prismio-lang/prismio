@@ -1,0 +1,241 @@
+// Map<K, V> -- an associative container, in Prismio.
+//
+// REQUIREMENTS 13 asked for `Map<K,V>` and a growable `Vec<T>`. Only one of
+// those was missing: `List<T>` **is** the growable vector -- runtime/lang_runtime.c
+// stores it as a `void**` that doubles on push, and its own comment calls
+// `list_new_with_capacity` "Vec::with_capacity". This is the half that did not
+// exist.
+//
+// **A hash table since 2026-08-29, and the previous version of this header is
+// worth keeping in view because it named its own fix.** It read:
+//
+// > Association list, not a hash table, and the reason is a missing language
+// > feature rather than a shortcut. Hashing `K` needs a hash function per key
+// > type, and dispatching to it needs bounded type parameters -- traits. […]
+// > Give it bounds and this file becomes a hash table without its callers
+// > changing.
+//
+// That is exactly what happened. `K: Key + Copy` uses `Key` (std/key.psm) for
+// `hash`/`eq` and `Copy` (std/copy.psm) for storage; `mapIndexOf` went from a
+// linear scan to a probe, and **no caller
+// changed** -- `tests/test_65_map.psm` is untouched and still passes.
+//
+// **String keys work now.** The old header said they "do not instantiate, and
+// that is the language being consistent rather than this module being weak":
+// `String ==` compares pointers and is rejected, so a generic `K` could only be
+// compared with the operator, so only scalars instantiated. `Key` replaces the
+// operator with `eq`, and `impl Key for String` uses `strEquals`. Struct keys
+// work too, for any struct that implements `Key`.
+//
+// **The representation**: two dense parallel arrays in insertion order, plus an
+// open-addressed `slots` table of indices into them. Insertion order is not an
+// accident to be preserved -- `mapKeyAt`/`mapValueAt` are the iteration API and
+// their contract says insertion order, so the entries have to live somewhere
+// that is not the probe table.
+//
+// **Keys may be owned; values may not, and that is a measured limit rather than
+// an oversight.** `K: Key + Copy` duplicates a `String` or a struct key into
+// the table and `Map<String, Int>` is `--verify` clean at
+// 9 allocated / 9 released / 0 leaked. `V` has no bound, so an owned `V` is
+// rejected at compile time with "cannot move out of borrowed value `value`" --
+// the same honest error the association list gave, and not a silent one.
+//
+// Bounding `V: Copy` as well was tried and reverted on 2026-08-29: it compiles
+// and computes the right answers, and `Map<String, String>` then **leaks every
+// value it holds** -- 4 of 14 allocations, rising to 8 of 18 when the lookups
+// also answer with copies. The values list is returned from by `mapGetOr`,
+// `mapGet` and `mapValueAt`, the analysis sees it escape, and it declines to
+// release the container. That is the pass-through escape KNOWN_ISSUES.md tracks, not
+// something this file can fix, and a standard-library container that leaks its
+// contents is worse than one that says it cannot hold them.
+//
+// **Triangular probing, no tombstones, and no deletion.** There is no `mapRemove` in
+// this API, so no slot ever becomes free after being used, and the probe can stop
+// at the first empty slot. Adding deletion means adding tombstones and revisiting
+// every loop here; it is not a two-line change and it is not in v0.1.
+//
+// Integer keys were never a consolation prize for the caller this was written
+// for: runtime/aif_support.c interns every name, type and site to an `int` id and
+// keys its tables on those -- which is also why `keyMixInt` is a real mix rather
+// than the identity. Consecutive small ids with an identity hash are one long
+// probe chain.
+
+import std.key
+import std.copy
+import std.option
+
+// `slots` holds an index into `keys`/`values`, or -1 for empty. Its length is
+// always a power of two, so `hash & mask` is the bucket.
+struct Map<K: Key + Copy, V> {
+    keys: List<K>,
+    values: List<V>,
+    slots: List<Int>,
+    mask: Int
+}
+
+// 8 buckets, which is 4 entries before the first rehash. Small enough that a map
+// used as a scratch lookup costs almost nothing, and a power of two so the mask
+// is right from the start.
+private fn mapInitialCapacity() -> Int { return 8 }
+
+fn mapNew<K: Key + Copy, V>() -> Map<K, V> {
+    let k: List<K> = list_new()
+    let v: List<V> = list_new()
+    let s: List<Int> = list_new_with_capacity(mapInitialCapacity())
+    let mut i = 0
+    while (i < mapInitialCapacity()) {
+        list_push(s, -1)
+        i = i + 1
+    }
+    return Map<K, V> { keys: k, values: v, slots: s, mask: mapInitialCapacity() - 1 }
+}
+
+fn mapLen<K: Key + Copy, V>(m: Map<K, V>) -> Int {
+    return list_len(m.keys)
+}
+
+// Return the bucket position for insertion, or the dense entry index for lookup.
+// Lookup returns -1 on a miss. Returning the entry directly avoids a second
+// bucket load (and its bounds check) after a successful probe. Triangular offsets
+// visit every bucket of a power-of-two table, and growth keeps an empty bucket
+// available, so probing terminates. Advancing by 1, 2, 3, ... reduces
+// primary clustering while retaining the compact insertion-order index table.
+private fn mapProbe<K: Key + Copy, V>(m: Map<K, V>, key: K, findSlot: Bool) -> Int {
+    let mut at = hash(key) & m.mask
+    let mut step = 1
+    loop {
+        let entry = list_get(m.slots, at)
+        if (entry < 0) {
+            if (findSlot) { return at }
+            return -1
+        }
+        let existing = list_get(m.keys, entry)
+        if (eq(existing, key)) {
+            if (findSlot) { return at }
+            return entry
+        }
+        at = (at + step) & m.mask
+        step = step + 1
+    }
+}
+
+// The insertion-order entry index of `key`, or -1.
+fn mapIndexOf<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Int {
+    return mapProbe(m, key, false)
+}
+
+// Doubles the table and re-places every entry.
+//
+// **The slot list is grown in place rather than replaced**, and that is not a
+// micro-optimisation: assigning a new `List` over `m.slots` releases nothing, so
+// every rehash would leak the old table. Pushing the new half and then clearing
+// the old half reuses the one allocation the map has ever had for this.
+private fn mapRehash<K: Key + Copy, V>(m: Map<K, V>) {
+    let old = m.mask + 1
+    let capacity = old * 2
+
+    let mut i = old
+    while (i < capacity) {
+        list_push(m.slots, -1)
+        i = i + 1
+    }
+    let mut j = 0
+    while (j < old) {
+        list_set(m.slots, j, -1)
+        j = j + 1
+    }
+    m.mask = capacity - 1
+
+    let n = list_len(m.keys)
+    let mut e = 0
+    while (e < n) {
+        let key = list_get(m.keys, e)
+        // Existing entries are unique. Rehash only needs an empty bucket;
+        // comparing keys here repeats work already done by insertion.
+        let mut at = hash(key) & m.mask
+        let mut step = 1
+        while (list_get(m.slots, at) >= 0) {
+            at = (at + step) & m.mask
+            step = step + 1
+        }
+        list_set(m.slots, at, e)
+        e = e + 1
+    }
+}
+
+fn mapHas<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Bool {
+    return mapIndexOf(m, key) >= 0
+}
+
+// The value for `key`, or `None`.
+//
+// This is the lookup that can distinguish "absent" from "present and equal to
+// the fallback", which mapGetOr cannot. It is what the earlier version of this
+// file said would arrive with REQUIREMENTS 14, and it did.
+fn mapGet<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Option<V> {
+    let at = mapIndexOf(m, key)
+    if (at < 0) { return Option<V>.None }
+    return Option.Some(list_get(m.values, at))
+}
+
+// Absence answered with a caller-supplied value. Kept alongside mapGet for the
+// many callers that have a sensible default and do not want to match on one.
+fn mapGetOr<K: Key + Copy, V>(m: Map<K, V>, key: K, fallback: V) -> V {
+    let at = mapIndexOf(m, key)
+    if (at < 0) { return fallback }
+    return list_get(m.values, at)
+}
+
+// Update an existing value with one key lookup. The callback receives the old
+// value and returns its replacement; it runs exactly once on a hit and never
+// on a miss. Returns whether the key existed. The update itself does not insert
+// or reorder entries. Example: mapUpdate(counts, key, |value: Int| value + 1).
+fn mapUpdate<K: Key + Copy, V, F>(m: Map<K, V>, key: K, update: F) -> Bool {
+    let at = mapIndexOf(m, key)
+    if (at < 0) { return false }
+    let value = update.call(list_get(m.values, at))
+    list_set(m.values, at, value)
+    return true
+}
+
+// Insert or overwrite. Answers whether the key was already present, which is the
+// one bit a caller cannot recover afterwards without a second lookup.
+//
+// Grows above 1/2 load after insertion. A spare index bucket costs four bytes;
+// keeping probe chains short is worth that space on lookup/update workloads.
+// Keys and values remain dense, so lowering occupancy only grows the index.
+// Comparing with capacity / 2 also avoids overflowing count * 4 at large sizes.
+fn mapSet<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V) -> Bool {
+    let at = mapProbe(m, key, true)
+    let entry = list_get(m.slots, at)
+    if (entry >= 0) {
+        list_set(m.values, entry, value)
+        return true
+    }
+
+    // The key is **copied in**, not moved: a parameter is a borrow, so
+    // `list_push(m.keys, key)` is "cannot move out of borrowed value", which is
+    // exactly why an owned key needs the separate `Copy` bound. A
+    // `sink` parameter pushed here would be worse than either -- codegen
+    // transfers nothing, so the caller's scope exit and the list's release both
+    // free it, and `--verify` reports "release of a pointer that is not live".
+    //
+    // The **value** is not copied, and that is the limitation below.
+    let index = list_len(m.keys)
+    list_push(m.keys, copyOf(key))
+    list_push(m.values, value)
+    list_set(m.slots, at, index)
+
+    if ((index + 1) > (m.mask + 1) / 2) { mapRehash(m) }
+    return false
+}
+
+// The key at a position, for iterating a map. Positions are insertion order and
+// stay valid until the next mapSet that inserts.
+fn mapKeyAt<K: Key + Copy, V>(m: Map<K, V>, index: Int) -> K {
+    return list_get(m.keys, index)
+}
+
+fn mapValueAt<K: Key + Copy, V>(m: Map<K, V>, index: Int) -> V {
+    return list_get(m.values, index)
+}

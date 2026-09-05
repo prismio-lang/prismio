@@ -1,0 +1,5 @@
+PASS: single-probe map updates
+aif-verify: 328 allocated, 328 released, 0 leaked, 0 violation(s)
+aif-memory: 19050 allocated bytes, 19050 released bytes, 0 live bytes, 10576 peak live bytes
+aif-memory-sizes: <=16:265 <=32:20 <=64:27 <=128:3 <=256:3 <=512:3 <=1024:3 <=4096:4 >4096:0
+aif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread

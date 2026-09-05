@@ -1,0 +1,8 @@
+=== g2_frame_loop ===
+mode=mnemonic functions: old=209 new=209 only_old=0 only_new=0 changed=2
+  CHANGED: _build_scene__Int  76 -> 69 insns
+  CHANGED: _main  4815 -> 4814 insns
+=== g4_ecs_world ===
+mode=mnemonic functions: old=213 new=213 only_old=0 only_new=0 changed=0
+=== g6_game ===
+mode=mnemonic functions: old=220 new=220 only_old=0 only_new=0 changed=0

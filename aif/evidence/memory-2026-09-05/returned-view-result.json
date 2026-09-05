@@ -1,0 +1,5 @@
+{
+  "returncode": 0,
+  "stdout": "PASS: returned view\n",
+  "stderr": "aif-verify: leaked #1 (65 bytes)\naif-verify: 1 allocated, 0 released, 1 leaked, 0 violation(s)\naif-memory: 65 allocated bytes, 0 released bytes, 65 live bytes, 65 peak live bytes\naif-memory-sizes: <=16:0 <=32:0 <=64:0 <=128:1 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+}

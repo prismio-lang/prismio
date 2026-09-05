@@ -1,0 +1,18 @@
+source lists agree                         ok    
+two-generation bootstrap                   ok    
+compiler IR fixpoint                       ok    byte-identical
+RC reproduces itself                       ok    the frozen binary emits generation 1's IR
+seed agreement                             ok    committed seed builds the compiler
+full suite                                 FAIL  296 passed, 2 failed
+AIF oracle differential                    FAIL    tests/aif_concurrency.psm (owned=True): T3: compiler=3 oracle=5, sites: compiler=95 oracle=97, opaque-ret: compiler=3 oracle=5, extern-alloc: compiler=58 oracle=60, Isolated: compiler=84 oracle=86, bracketable: compiler=86 oracle=85, br-opaque: compiler=125 oracle=126
+corpus builds and runs                     ok    7 programs
+--verify sweep                             ok    0 leaked / 0 violations on every program
+curated runtime off                        ok    
+object cache off                           ok    
+JIT                                        ok    
+cross-target                               ok    x86_64-apple-macos built
+packaged toolchain                         ok    [32mAll separation checks passed[0m
+per-function mnemonic diff vs /Users/vibrant/Desktop/Projects/Prismio/prismio/build/enum-npo/before 
+    benchmark suite    mode=mnemonic functions: old=457 new=457 only_old=0 only_new=0 changed=10
+
+GATE FAILED

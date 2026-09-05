@@ -1290,9 +1290,29 @@ static CycHeader* cyc_hdr(void* p) {
 
 // Cycle headers and the candidate/work buffers form one graph algorithm state.
 // T4a permits an object to cross a native task boundary, so protecting only the
-// arrays would still race the header's count and colour. Use a recursive mutex:
-// collection invokes a generated release function, and that release may in turn
-// release a separately cycle-managed owned field on the same thread.
+// arrays would still race the header's count and colour.
+//
+// **The lock is not taken at all until the process has a second thread.** Every
+// reference update on a cycle-managed object went through it, and a program that
+// never calls `spawn` was paying an uncontended mutex per retain and per release
+// to exclude threads that do not exist. `prismio_memory_threads_enabled` is the
+// same flag the allocator already consults, and it is monotonic: it is set by
+// `spawn` before the new thread runs, so a bypass decision cannot be invalidated
+// by a thread that was already there.
+//
+// **`cyc_leave` re-reads the flag, and that is safe for one reason worth
+// stating.** An unmatched unlock would need the flag to flip *between* an enter
+// and its leave -- that is, a `spawn` inside a cycle-collector critical section.
+// Those sections contain reference-count updates, the candidate buffers, and
+// `cyc_free_object`, which calls a **compiler-generated** release function; a
+// generated release drops fields and calls `rt_free`/`rc_release`/`list_release`
+// and reaches no user code, so it cannot spawn. The flag is also monotonic, so
+// the reverse flip does not exist.
+//
+// A thread-local depth counter latching the decision was written first and
+// reverted: `PRISMIO_THREAD_LOCAL` is a call to the TLS resolver on this target,
+// which costs more per reference update than the uncontended mutex it replaces.
+
 #ifdef _WIN32
 static INIT_ONCE cyc_lock_once = INIT_ONCE_STATIC_INIT;
 static CRITICAL_SECTION cyc_state_lock;
@@ -1302,10 +1322,14 @@ static BOOL CALLBACK cyc_lock_init(PINIT_ONCE once, PVOID param, PVOID* context)
     return TRUE;
 }
 static void cyc_enter(void) {
+    if (!prismio_memory_threads_are_enabled()) return;
     InitOnceExecuteOnce(&cyc_lock_once, cyc_lock_init, NULL, NULL);
     EnterCriticalSection(&cyc_state_lock);
 }
-static void cyc_leave(void) { LeaveCriticalSection(&cyc_state_lock); }
+static void cyc_leave(void) {
+    if (!prismio_memory_threads_are_enabled()) return;
+    LeaveCriticalSection(&cyc_state_lock);
+}
 #else
 static pthread_once_t cyc_lock_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t cyc_state_lock;
@@ -1317,10 +1341,14 @@ static void cyc_lock_init(void) {
     pthread_mutexattr_destroy(&attr);
 }
 static void cyc_enter(void) {
+    if (!prismio_memory_threads_are_enabled()) return;
     pthread_once(&cyc_lock_once, cyc_lock_init);
     pthread_mutex_lock(&cyc_state_lock);
 }
-static void cyc_leave(void) { pthread_mutex_unlock(&cyc_state_lock); }
+static void cyc_leave(void) {
+    if (!prismio_memory_threads_are_enabled()) return;
+    pthread_mutex_unlock(&cyc_state_lock);
+}
 #endif
 
 static void** cyc_candidates;
@@ -1827,6 +1855,7 @@ void list_set_elem_inline(void* lp, int elem_size) {
     // list is stamped and the first push allocates a body block directly, which
     // is the whole saving.
     if (!l->data) return;
+    if (l->cap > 0 && elem_size == (int)sizeof(void*)) return;
     if (!l->arena) rt_free(l->data);
     size_t bytes = (size_t)l->cap * (size_t)elem_size;
     l->data = (void**)(l->arena ? arena_alloc_at(l->arena, bytes) : rt_alloc(bytes));
@@ -1884,18 +1913,32 @@ static void list_release_source(RtList* l, void* e) {
 // The size is a parameter so an unstamped-but-empty list can stamp itself here:
 // this is the one entry point that has the element type and the list together
 // with nothing pushed yet.
+// Fact 4: still boxed, either because the knob is off or because this list was
+// pushed into through the boxed path first. A body written into a pointer slot
+// would be silent corruption, so allocate one.
+//
+// Outlined and exported for the same reason `list_push_grow` and
+// `list_inline_grow` are: `rt_alloc` reaches `rt_arena_hint`, `arena_depth` and
+// `arena_alloc_slot`, all `static` here, and a curated body that referenced one
+// would link against symbols the runtime object does not export. Keeping the
+// allocator on this side is what lets `list_push_slot` be curated at all.
+//
+// `PRISMIO_NOINLINE` is load-bearing, not a hint. Two calls is under clang's own
+// threshold, so -O2 folded this straight back into `list_push_slot` before the
+// curation pass ever saw it -- the outlining was invisible in the emitted IR and
+// the closure violation came back with it. `list_push_grow` and
+// `list_inline_grow` survive on size alone; this one is too small to.
+PRISMIO_NOINLINE void* list_push_slot_boxed(void* lp, int elem_size) {
+    void* box = rt_alloc((size_t)(elem_size > 0 ? elem_size : 1));
+    list_push(lp, box);
+    return box;
+}
+
 void* list_push_slot(void* lp, int elem_size) {
     RtList* l = (RtList*)lp;
     if (!l->elem_size) {
         if (l->len == 0) list_set_elem_inline(lp, elem_size);
-        // Fact 4: still boxed, either because the knob is off or because this
-        // list was pushed into through the boxed path first. A body written into
-        // a pointer slot would be silent corruption, so allocate one.
-        if (!l->elem_size) {
-            void* box = rt_alloc((size_t)(elem_size > 0 ? elem_size : 1));
-            list_push(lp, box);
-            return box;
-        }
+        if (!l->elem_size) return list_push_slot_boxed(lp, elem_size);
     }
     if (l->len >= l->cap) list_inline_grow(l);
     void* slot = (unsigned char*)l->data + (size_t)l->len * (size_t)l->elem_size;

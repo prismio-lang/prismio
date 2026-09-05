@@ -1,0 +1,45 @@
+import common
+import std.map
+
+fn phaseKeyValueUpdate(scale: Int) -> Int {
+    let n = 20000 * scale
+    let t0 = benchNow()
+    let map: Map<Int, Int> = mapNew<Int, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(map, i, i % 101)
+        i = i + 1
+    }
+    let t1 = benchNow()
+    let mut round = 0
+    while (round < 20) {
+        let mut k = 0
+        while (k < n) {
+            mapSet(map, k, mapGetOr(map, k, 0) + 1)
+            k = k + 1
+        }
+        round = round + 1
+    }
+    let t2 = benchNow()
+    let mut checksum = 0
+    let mut q = 0
+    while (q < n) {
+        checksum = (checksum + mapGetOr(map, q, 0)) % 1000000007
+        q = q + 1
+    }
+    let t3 = benchNow()
+    benchPrint("insert_ns: ")
+    benchPrintln((t1 - t0) as Int)
+    benchPrint("update_ns: ")
+    benchPrintln((t2 - t1) as Int)
+    benchPrint("sum_ns: ")
+    benchPrintln((t3 - t2) as Int)
+    return checksum
+}
+
+fn main() -> Int {
+    let r = phaseKeyValueUpdate(4)
+    benchPrint("result: ")
+    benchPrintln(r)
+    return 0
+}

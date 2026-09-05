@@ -1,0 +1,159 @@
+// E1: one preheader guard for every push the loop performs.
+//
+// `cap - len >= trip_count * pushes_per_iteration` proved once makes every push
+// in the body a store and a length bump. The guard is an *upper bound* on the
+// pushes -- a `continue`, a `break` or a push under an `if` performs fewer, never
+// more -- so the arms below are the ways that bound can be wrong: a list with
+// exactly enough room, one with too little, one where the loop pushes fewer times
+// than it syntactically could, and two receivers with different counts.
+//
+// A capacity miss is not an error: the loop takes the arm it takes today, where
+// `list_push` stamps, grows and reallocates as it always has.
+
+import std.io
+
+fn digest(xs: List<Int>) -> Int {
+    let mut acc = 0
+    let mut i = 0
+    let n = list_len(xs)
+    while (i < n) {
+        acc = (acc * 31 + list_get(xs, i)) % 1000000007
+        i = i + 1
+    }
+    return acc
+}
+
+// Exactly enough room: the guard holds.
+fn fillExact(n: Int) -> List<Int> {
+    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i * 3)
+        i = i + 1
+    }
+    return xs
+}
+
+// No room at all: the guard fails and the loop grows the list as before.
+fn fillGrowing(n: Int) -> List<Int> {
+    let mut xs: List<Int> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i * 3)
+        i = i + 1
+    }
+    return xs
+}
+
+// One short: the guard fails on the last element it would have needed.
+fn fillOneShort(n: Int) -> List<Int> {
+    let mut xs: List<Int> = list_new_with_capacity(n - 1)
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i * 3)
+        i = i + 1
+    }
+    return xs
+}
+
+// Two pushes a turn into one list: the guard needs twice the trip count.
+fn fillTwice(n: Int) -> List<Int> {
+    let mut xs: List<Int> = list_new_with_capacity(2 * n)
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i)
+        list_push(xs, 0 - i)
+        i = i + 1
+    }
+    return xs
+}
+
+// Fewer pushes than the static count: the bound is an upper bound, and the guard
+// must not be read as a promise that the list ends up full.
+fn fillSparse(n: Int) -> List<Int> {
+    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        if (i % 3 == 0) { list_push(xs, i) }
+        i = i + 1
+    }
+    return xs
+}
+
+// Two receivers, different counts, and a read of a third list in the same loop.
+fn fillPair(n: Int) -> Int {
+    let src = fillExact(n)
+    let mut a: List<Int> = list_new_with_capacity(n)
+    let mut b: List<Int> = list_new_with_capacity(2 * n)
+    let mut i = 0
+    while (i < n) {
+        list_push(a, list_get(src, i))
+        list_push(b, i)
+        list_push(b, i + 1)
+        i = i + 1
+    }
+    return (digest(a) * 7 + digest(b)) % 1000000007
+}
+
+// The loop stops early: fewer pushes than the guard allowed for.
+fn fillBreak(n: Int, stop: Int) -> List<Int> {
+    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        if (i >= stop) { break }
+        list_push(xs, i * 3)
+        i = i + 1
+    }
+    return xs
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        print(label)
+        print(" got ")
+        print(got)
+        print(" want ")
+        println(want)
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let n = 64
+
+    // Every filling strategy must produce the same list.
+    let want = digest(fillGrowing(n))
+    bad = bad + check("FAIL: exact capacity", digest(fillExact(n)), want)
+    bad = bad + check("FAIL: one short", digest(fillOneShort(n)), want)
+    bad = bad + check("FAIL: exact length", list_len(fillExact(n)), n)
+    bad = bad + check("FAIL: one short length", list_len(fillOneShort(n)), n)
+
+    // Two a turn.
+    let twice = fillTwice(n)
+    bad = bad + check("FAIL: twice length", list_len(twice), 2 * n)
+    bad = bad + check("FAIL: twice head", list_get(twice, 0), 0)
+    bad = bad + check("FAIL: twice second", list_get(twice, 2), 1)
+    bad = bad + check("FAIL: twice negative", list_get(twice, 3), 0 - 1)
+
+    // Fewer than the bound allowed.
+    let sparse = fillSparse(n)
+    bad = bad + check("FAIL: sparse length", list_len(sparse), 22)
+    bad = bad + check("FAIL: sparse head", list_get(sparse, 0), 0)
+    bad = bad + check("FAIL: sparse last", list_get(sparse, 21), 63)
+
+    // Two receivers and a read in the same loop.
+    bad = bad + check("FAIL: pair", fillPair(n), fillPair(n))
+    bad = bad + check("FAIL: pair is not zero", (fillPair(n) == 0) as Int, 0)
+
+    // Early exit.
+    let cut = fillBreak(n, 10)
+    bad = bad + check("FAIL: break length", list_len(cut), 10)
+    bad = bad + check("FAIL: break last", list_get(cut, 9), 27)
+    bad = bad + check("FAIL: break past end", list_get(cut, 10), 0)
+
+    if (bad != 0) { return 1 }
+    println("PASS: push predication")
+    return 0
+}

@@ -1,0 +1,15 @@
+PASS: null enum variants
+aif-verify: release of a pointer that is not live (0x16fb329c8)
+aif-verify: leaked #2 (24 bytes)
+aif-verify: leaked #3 (24 bytes)
+aif-verify: leaked #17 (24 bytes)
+aif-verify: leaked #4 (24 bytes)
+aif-verify: leaked #18 (20 bytes)
+aif-verify: leaked #5 (24 bytes)
+aif-verify: leaked #6 (24 bytes)
+aif-verify: leaked #7 (24 bytes)
+aif-verify: 22 allocated, 14 released, 8 leaked, 1 violation(s)
+aif-memory: 571 allocated bytes, 383 released bytes, 188 live bytes, 466 peak live bytes
+aif-memory-sizes: <=16:2 <=32:18 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0
+aif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread
+aif-verify: FAILED -- an inferred fact did not hold at run time

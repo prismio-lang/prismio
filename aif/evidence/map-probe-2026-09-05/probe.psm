@@ -1,0 +1,99 @@
+// Supplemental map workloads. Does not replace any cross-language benchmark.
+// Usage: probe <int|wide|string> <entry-count>
+import std.io
+import std.map
+import std.process
+import std.string
+import std.option
+
+struct Stamp { seconds: I64, nanoseconds: I64 }
+extern fn clock_gettime(clock: Int, stamp: Stamp) -> Int
+
+fn now() -> I64 {
+    let t = Stamp { seconds: 0, nanoseconds: 0 }
+    clock_gettime(4, t)
+    return t.seconds * 1000000000 + t.nanoseconds
+}
+
+fn intProbe(n: Int) -> Int {
+    let m = mapNew<Int, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(m, i * 64 + 7, i)
+        i = i + 1
+    }
+    let mut sum = 0
+    let mut round = 0
+    while (round < 4) {
+        let mut q = 0
+        while (q < n * 2) {
+            sum = (sum + mapGetOr(m, q * 64 + 7, 0)) % 1000000007
+            q = q + 1
+        }
+        round = round + 1
+    }
+    return sum
+}
+
+fn wideProbe(n: Int) -> Int {
+    let m = mapNew<U64, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(m, ((i as U64) << 32) | 17, i)
+        i = i + 1
+    }
+    let mut sum = 0
+    let mut q = 0
+    while (q < n * 2) {
+        sum = (sum + mapGetOr(m, ((q as U64) << 32) | 17, 0)) % 1000000007
+        q = q + 1
+    }
+    return sum
+}
+
+fn stringProbe(n: Int) -> Int {
+    let keys: List<String> = list_new_with_capacity(n * 2)
+    let mut k = 0
+    while (k < n * 2) {
+        list_push(keys, "long-shared-prefix-key-".concat(k.toString()))
+        k = k + 1
+    }
+    let m = mapNew<String, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(m, list_get(keys, i), i)
+        i = i + 1
+    }
+    let mut sum = 0
+    let mut round = 0
+    while (round < 4) {
+        let mut q = 0
+        while (q < n * 2) {
+            sum = (sum + mapGetOr(m, list_get(keys, q), 0)) % 1000000007
+            q = q + 1
+        }
+        round = round + 1
+    }
+    return sum
+}
+
+fn main() -> Int {
+    let mode = arg(1)
+    let n = optionOr(strParseInt(arg(2)), 4096)
+    if (n < 1 or n > 1000000) { return 1 }
+    let start = now()
+    let mut result = 0
+    if (mode.equals("int")) {
+        result = intProbe(n)
+    } else if (mode.equals("wide")) {
+        result = wideProbe(n)
+    } else if (mode.equals("string")) {
+        result = stringProbe(n)
+    } else { return 2 }
+    let elapsed = now() - start
+    print("result: ")
+    println(result)
+    print("elapsed_ns: ")
+    println(elapsed)
+    return 0
+}

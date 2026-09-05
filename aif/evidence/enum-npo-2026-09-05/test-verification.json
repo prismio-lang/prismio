@@ -1,0 +1,32 @@
+{
+  "test_127_enum_null_variant": {
+    "before": {
+      "exit_code": 0,
+      "output": "PASS: null enum variants\naif-verify: release of a pointer that is not live (0x16fb329c8)\naif-verify: leaked #2 (24 bytes)\naif-verify: leaked #3 (24 bytes)\naif-verify: leaked #17 (24 bytes)\naif-verify: leaked #4 (24 bytes)\naif-verify: leaked #18 (20 bytes)\naif-verify: leaked #5 (24 bytes)\naif-verify: leaked #6 (24 bytes)\naif-verify: leaked #7 (24 bytes)\naif-verify: 22 allocated, 14 released, 8 leaked, 1 violation(s)\naif-memory: 571 allocated bytes, 383 released bytes, 188 live bytes, 466 peak live bytes\naif-memory-sizes: <=16:2 <=32:18 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "exit_code": 0,
+      "output": "PASS: null enum variants\naif-verify: leaked #2 (24 bytes)\naif-verify: leaked #3 (24 bytes)\naif-verify: leaked #10 (24 bytes)\naif-verify: leaked #11 (20 bytes)\naif-verify: 15 allocated, 11 released, 4 leaked, 0 violation(s)\naif-memory: 395 allocated bytes, 303 released bytes, 92 live bytes, 322 peak live bytes\naif-memory-sizes: <=16:2 <=32:11 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "test_128_enum_null_reserved": {
+    "before": {
+      "exit_code": 0,
+      "output": "PASS: reserved enum nulls\naif-verify: leaked #1 (16 bytes)\naif-verify: leaked #2 (16 bytes)\naif-verify: 2 allocated, 0 released, 2 leaked, 0 violation(s)\naif-memory: 32 allocated bytes, 0 released bytes, 32 live bytes, 32 peak live bytes\naif-memory-sizes: <=16:2 <=32:0 <=64:0 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "exit_code": 0,
+      "output": "PASS: reserved enum nulls\naif-verify: leaked #2 (16 bytes)\naif-verify: leaked #1 (16 bytes)\naif-verify: 2 allocated, 0 released, 2 leaked, 0 violation(s)\naif-memory: 32 allocated bytes, 0 released bytes, 32 live bytes, 32 peak live bytes\naif-memory-sizes: <=16:2 <=32:0 <=64:0 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "test_129_enum_null_ownership": {
+    "before": {
+      "exit_code": 0,
+      "output": "PASS: null enum ownership\naif-verify: release of a pointer that is not live (0x1015df250)\naif-verify: 2052 allocated, 2052 released, 0 leaked, 1 violation(s)\naif-memory: 49288 allocated bytes, 49288 released bytes, 0 live bytes, 49288 peak live bytes\naif-memory-sizes: <=16:1 <=32:2049 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "exit_code": 0,
+      "output": "PASS: null enum ownership\naif-verify: 1027 allocated, 1027 released, 0 leaked, 0 violation(s)\naif-memory: 24696 allocated bytes, 24696 released bytes, 0 live bytes, 24696 peak live bytes\naif-memory-sizes: <=16:0 <=32:1025 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\n"
+    }
+  }
+}

@@ -1,0 +1,132 @@
+// Which callees the flat-List guard may look through.
+//
+// The guard proves two facts in a loop's preheader -- the element representation
+// and the index range -- and a callee invalidates them only if it can **move the
+// element block**: grow it, re-width it, or free it. Reads and writes cannot.
+// So `list_get`/`list_set` and helpers built from them stay eligible, while
+// anything that reaches `list_push` does not, however many calls away it is.
+//
+// This file is the adversarial half of that claim. Every function below returns
+// a value that is wrong -- or crashes -- if the guard is kept where it should be
+// declined, because a stale `len` past a `list_push` is an out-of-bounds access
+// rather than a wrong answer.
+
+import std.io
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        println(label)
+        return 1
+    }
+    return 0
+}
+
+fn filled(n: Int) -> List<Int> {
+    let mut xs: List<Int> = list_new_with_capacity(2)
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i)
+        i = i + 1
+    }
+    return xs
+}
+
+// Moves the block. Must disqualify any loop that calls it.
+fn growIt(xs: List<Int>) -> Int {
+    list_push(xs, 99)
+    return 1
+}
+
+// Reaches the grower one call away. Must disqualify transitively.
+fn indirectGrow(xs: List<Int>) -> Int {
+    return growIt(xs)
+}
+
+// Reads only. Must stay eligible.
+fn readIt(xs: List<Int>, at: Int) -> Int {
+    return list_get(xs, at)
+}
+
+// Writes, which cannot move the block either. Must stay eligible.
+fn bumpIt(xs: List<Int>, at: Int) -> Int {
+    list_set(xs, at, list_get(xs, at))
+    return 0
+}
+
+fn withGrower(n: Int) -> Int {
+    let xs = filled(n)
+    let mut acc = 0
+    let mut at = n - 1
+    while (at >= 0) {
+        acc = acc + list_get(xs, at) + growIt(xs)
+        at = at - 1
+    }
+    return acc
+}
+
+fn withIndirectGrower(n: Int) -> Int {
+    let xs = filled(n)
+    let mut acc = 0
+    let mut at = n - 1
+    while (at >= 0) {
+        acc = acc + list_get(xs, at) + indirectGrow(xs)
+        at = at - 1
+    }
+    return acc
+}
+
+fn withReader(n: Int) -> Int {
+    let xs = filled(n)
+    let mut acc = 0
+    let mut at = n - 1
+    while (at >= 0) {
+        acc = acc + list_get(xs, at) + readIt(xs, at)
+        at = at - 1
+    }
+    return acc
+}
+
+fn withWriter(n: Int) -> Int {
+    let xs = filled(n)
+    let mut acc = 0
+    let mut at = n - 1
+    while (at >= 0) {
+        acc = acc + list_get(xs, at) + bumpIt(xs, at)
+        at = at - 1
+    }
+    return acc
+}
+
+// A loop with no call at all: the control, and the value every other arm's list
+// half must agree with.
+fn plain(n: Int) -> Int {
+    let xs = filled(n)
+    let mut acc = 0
+    let mut at = n - 1
+    while (at >= 0) {
+        acc = acc + list_get(xs, at)
+        at = at - 1
+    }
+    return acc
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // 0+1+..+7 = 28.
+    bad = bad + check("FAIL: plain", plain(8), 28)
+
+    // The grower appends past the end each iteration; the reads still see the
+    // original eight elements, and each call contributes 1.
+    bad = bad + check("FAIL: guard kept past a grower", withGrower(8), 36)
+    bad = bad + check("FAIL: guard kept past an indirect grower",
+                      withIndirectGrower(8), 36)
+
+    // Eligible callees must not change the answer either.
+    bad = bad + check("FAIL: reader changed the answer", withReader(8), 56)
+    bad = bad + check("FAIL: writer changed the answer", withWriter(8), 28)
+
+    if (bad != 0) { return 1 }
+    println("PASS: guard effect analysis")
+    return 0
+}

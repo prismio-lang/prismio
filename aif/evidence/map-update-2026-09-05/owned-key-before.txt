@@ -1,0 +1,8 @@
+41
+aif-verify: leaked #2 (16 bytes)
+aif-verify: leaked #1 (40 bytes)
+aif-verify: 14 allocated, 12 released, 2 leaked, 0 violation(s)
+aif-memory: 427 allocated bytes, 371 released bytes, 56 live bytes, 363 peak live bytes
+aif-memory-sizes: <=16:5 <=32:3 <=64:6 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0
+aif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread
+aif-verify: FAILED -- an inferred fact did not hold at run time

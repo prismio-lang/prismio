@@ -13,6 +13,16 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // String's irreducible representation operations. These are compiler
     // builtins, not foreign functions: sema owns their signatures and codegen
     // replaces their call-shaped syntax with field/GEP operations.
+    // Integer min/max/abs. Builtins rather than library functions, and the
+    // reason is codegen: they lower to `llvm.smax.i32`, `llvm.smin.i32` and
+    // `llvm.abs.i32`, which LLVM lists as *trivially vectorisable*. Written as
+    // an ordinary function instead, the loop that calls one keeps a call at the
+    // point the flat-List guard is decided, and `benchKnapsack` measured **1.79x
+    // slower** than the branch it replaced. See aif/evidence/RESULTS-min-max.md.
+    if (name.equals("__builtin_max")) { return typeInt() }
+    if (name.equals("__builtin_min")) { return typeInt() }
+    if (name.equals("__builtin_abs")) { return typeInt() }
+
     if (name.equals("__builtin_string_len")) { return typeInt() }
     if (name.equals("__builtin_string_byte_at")) { return typeChar() }
     if (name.equals("__builtin_string_put_byte")) { return typeVoid() }
@@ -140,6 +150,20 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         if (nodeIsNull(ot.child)) {
             semaErrorAt(a0, "expect needs to know what it is unwrapping; `none` on its own has no type")
         }
+        return true
+    }
+
+    if (name.equals("__builtin_max") or name.equals("__builtin_min")) {
+        if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
+        let m0 = ptr_to_node(argPtr)
+        semaCheckValue(module, m0, typeInt(), "integer min/max operand")
+        semaCheckValue(module, ptr_to_node(m0.next), typeInt(), "integer min/max operand")
+        return true
+    }
+
+    if (name.equals("__builtin_abs")) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        semaCheckValue(module, ptr_to_node(argPtr), typeInt(), "integer abs operand")
         return true
     }
 

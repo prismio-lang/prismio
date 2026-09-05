@@ -1,0 +1,88 @@
+import common
+import std.process
+
+fn full(n: Int) -> Int {
+    let mut values: List<Int> = list_new()
+    let mut checksum = 0
+    let mut i = 0
+    while (i < n) {
+        let value = i % 997
+        list_push(values, value)
+        checksum = (checksum + value) % 1000000007
+        i = i + 1
+    }
+    return checksum + list_len(values)
+}
+
+fn modonly(n: Int) -> Int {
+    let mut checksum = 0
+    let mut i = 0
+    while (i < n) {
+        let value = i % 997
+        checksum = (checksum + value) % 1000000007
+        i = i + 1
+    }
+    return checksum
+}
+
+fn nosum(n: Int) -> Int {
+    let mut values: List<Int> = list_new()
+    let mut checksum = 0
+    let mut i = 0
+    while (i < n) {
+        let value = i % 997
+        list_push(values, value)
+        checksum = checksum + value
+        i = i + 1
+    }
+    return checksum + list_len(values)
+}
+
+fn pushonly(n: Int) -> Int {
+    let mut values: List<Int> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(values, i)
+        i = i + 1
+    }
+    return list_len(values)
+}
+
+fn reserve(n: Int) -> Int {
+    let mut values: List<Int> = list_new_with_capacity(n)
+    let mut checksum = 0
+    let mut i = 0
+    while (i < n) {
+        let value = i % 997
+        list_push(values, value)
+        checksum = (checksum + value) % 1000000007
+        i = i + 1
+    }
+    return checksum + list_len(values)
+}
+
+fn one(label: String, r: Int, t0: I64, t1: I64) {
+    benchPrint(label)
+    benchPrint(" ")
+    benchPrintln(r)
+    benchPrint("   ns: ")
+    benchPrintln((t1 - t0) as Int)
+}
+
+fn main() -> Int {
+    let n = 4000000
+    let which = arg(1)
+    let t0 = benchNow()
+    let mut r = 0
+    if (which.equals("full")) { r = full(n) }
+    if (which.equals("modonly")) { r = modonly(n) }
+    if (which.equals("nosum")) { r = nosum(n) }
+    if (which.equals("pushonly")) { r = pushonly(n) }
+    if (which.equals("reserve")) { r = reserve(n) }
+    let t1 = benchNow()
+    benchPrint("result: ")
+    benchPrintln(r)
+    benchPrint("elapsed_ns: ")
+    benchPrintln((t1 - t0) as Int)
+    return 0
+}

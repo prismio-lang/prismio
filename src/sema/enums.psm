@@ -79,6 +79,38 @@ internal fn enumIsPayloadType(module: ASTNode, t: TypeInfo) -> Bool {
     return nodeExists(node_to_ptr(enumShadowFind(module, t.name)))
 }
 
+// Start with recursive binary enums: their empty leaves account for roughly
+// half of a tree's allocations. Non-recursive option types keep their layout
+// in this pass; broadening to them changed unrelated hot-loop alignment and
+// regressed knapsack in the cross-language suite. See RESULTS-enum-null.md.
+// The backend separately checks boxing and whether null is already reserved.
+fn enumNullVariantTag(module: ASTNode, name: String) -> Int {
+    let shadow = enumShadowFind(module, name)
+    if (nodeIsNull(node_to_ptr(shadow))) { return 0 }
+    let mut p = shadow.child1
+    let mut count = 0
+    let mut emptyCount = 0
+    let mut emptyTag = 0
+    let mut recursive = false
+    while (nodeExists(p)) {
+        let variant = ptr_to_node(p)
+        count = count + 1
+        if (nodeIsNull(variant.child1)) {
+            emptyCount = emptyCount + 1
+            emptyTag = count
+        }
+        let mut payload = variant.child1
+        while (nodeExists(payload)) {
+            let ann = ptr_to_node(payload)
+            if (ann.s1.equals(name)) { recursive = true }
+            payload = ann.next
+        }
+        p = variant.next
+    }
+    if (count == 2 and emptyCount == 1 and recursive) { return emptyTag }
+    return 0
+}
+
 private fn enumVariantNode(enumDecl: ASTNode, variantName: String) -> ASTNode {
     let mut p = enumDecl.child1
     while (nodeExists(p)) {

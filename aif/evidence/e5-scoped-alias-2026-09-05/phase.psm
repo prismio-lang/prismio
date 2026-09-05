@@ -1,0 +1,51 @@
+import common
+
+fn phaseLargeBufferCopy(scale: Int) -> Int {
+    let n = 500000 * scale
+    let t0 = benchNow()
+    let mut source: List<Int> = list_new_with_capacity(n)
+    let mut target: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(source, i % 4093)
+        list_push(target, 0)
+        i = i + 1
+    }
+    let t1 = benchNow()
+    let mut round = 0
+    while (round < 8) {
+        let mut k = 0
+        while (k < n) {
+            list_set(target, k, list_get(source, k))
+            k = k + 1
+        }
+        round = round + 1
+    }
+    let t2 = benchNow()
+    let mut checksum = 0
+    let mut q = 0
+    while (q < n) {
+        checksum = (checksum + list_get(target, q)) % 1000000007
+        q = q + 1
+    }
+    let t3 = benchNow()
+    benchPrint("fill_ns: ")
+    benchPrintln((t1 - t0) as Int)
+    benchPrint("copy_ns: ")
+    benchPrintln((t2 - t1) as Int)
+    benchPrint("sum_ns: ")
+    benchPrintln((t3 - t2) as Int)
+    return checksum
+}
+
+fn main() -> Int {
+    let mut r = 0
+    let mut it = 0
+    while (it < 1) {
+        r = phaseLargeBufferCopy(4)
+        it = it + 1
+    }
+    benchPrint("result: ")
+    benchPrintln(r)
+    return 0
+}

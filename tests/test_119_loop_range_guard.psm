@@ -1,0 +1,125 @@
+// The loop range guard, and the one property it must never break.
+//
+// A loop whose reads are provably in range drops its per-access bounds check --
+// see generateLoopRangeGuards in src/ir/expr.psm. That is a *speed* change and
+// must not be a *semantics* one: `list_get` is total, and an index past the end
+// returns 0 rather than reading memory. So every case below is written twice,
+// once with indices the guard can prove and once with indices it cannot, and
+// both have to produce the same answer they would with the guard switched off.
+//
+// The in-range arms are what proves the fast path is emitted at all; the
+// out-of-range arms are what proves the guard declines rather than corrupts.
+// A version of this analysis that widened the range by one step made every
+// lower conjunct false, so the guard never fired -- these arms would still have
+// passed, which is why the benchmark, not this file, is what shows it works.
+
+import std.io
+
+fn filled() -> List<Int> {
+    let mut xs: List<Int> = list_new_with_capacity(4)
+    let mut i = 0
+    while (i < 4) {
+        list_push(xs, i + 1)
+        i = i + 1
+    }
+    return xs
+}
+
+// Decreasing induction variable, bare index.
+fn sumDown(top: Int) -> Int {
+    let xs = filled()
+    let mut acc = 0
+    let mut at = top
+    while (at >= 0) {
+        acc = acc + list_get(xs, at)
+        at = at - 1
+    }
+    return acc
+}
+
+// Decreasing, with a loop-invariant offset -- knapsack's shape.
+fn sumDownOffset(top: Int, k: Int) -> Int {
+    let xs = filled()
+    let mut acc = 0
+    let mut at = top
+    while (at >= 0) {
+        acc = acc + list_get(xs, at - k)
+        at = at - 1
+    }
+    return acc
+}
+
+// Increasing induction variable.
+fn sumUp(limit: Int) -> Int {
+    let xs = filled()
+    let mut acc = 0
+    let mut at = 0
+    while (at < limit) {
+        acc = acc + list_get(xs, at)
+        at = at + 1
+    }
+    return acc
+}
+
+// A read and a write to the same list in one loop: the shape `list_set` used to
+// veto outright, and the one the range guard has to serve with the write still
+// checked.
+fn readWrite(top: Int) -> Int {
+    let xs = filled()
+    let mut at = top
+    while (at >= 0) {
+        let doubled = list_get(xs, at) * 2
+        list_set(xs, at, doubled)
+        at = at - 1
+    }
+    let mut acc = 0
+    let mut i = 0
+    while (i < 4) {
+        acc = acc + list_get(xs, i)
+        i = i + 1
+    }
+    return acc
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        println(label)
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // In range: the guard should be provable.
+    bad = bad + check("FAIL: sumDown in range", sumDown(3), 10)
+    bad = bad + check("FAIL: sumDownOffset in range", sumDownOffset(3, 0), 10)
+    bad = bad + check("FAIL: sumUp in range", sumUp(4), 10)
+    bad = bad + check("FAIL: readWrite in range", readWrite(3), 20)
+
+    // Past the end: out-of-range reads contribute 0, nothing is read from memory.
+    bad = bad + check("FAIL: sumDown past end", sumDown(10), 10)
+    bad = bad + check("FAIL: sumUp past end", sumUp(9), 10)
+    bad = bad + check("FAIL: readWrite past end", readWrite(9), 20)
+
+    // Offset drives indices negative: 1, 0, -1, -2 over a 4-element list.
+    bad = bad + check("FAIL: sumDownOffset negative", sumDownOffset(3, 2), 3)
+
+    // Offset drives them past the end instead.
+    bad = bad + check("FAIL: sumDownOffset past end", sumDownOffset(3, 0 - 2), 7)
+
+    // An empty list: length 0, so no index is ever in range.
+    let empty: List<Int> = list_new_with_capacity(1)
+    let mut acc = 0
+    let mut at = 3
+    while (at >= 0) {
+        acc = acc + list_get(empty, at)
+        at = at - 1
+    }
+    bad = bad + check("FAIL: empty list", acc, 0)
+
+    if (bad != 0) { return 1 }
+    println("PASS: loop range guard")
+    return 0
+}

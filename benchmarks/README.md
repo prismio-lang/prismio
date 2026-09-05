@@ -11,6 +11,38 @@ milestone scripts were removed from the working tree and remain recoverable from
 Git history; narrative result documents are historical evidence, not inputs to
 this runner.
 
+## The three arms must be the same program
+
+Not merely produce the same checksum -- **express the same algorithm**. This is
+the invariant the suite exists to protect and it has been broken once, silently,
+for as long as `knapsack` has existed.
+
+`knapsack`'s C++ and Rust arms wrote the DP update as an unconditional store:
+
+```cpp
+best[at] = std::max(best[at], best[at - weight] + value);   // C++
+best[at as usize] = best[at as usize].max(...);             // Rust
+```
+
+The Prismio arm wrote it as a *conditional* store -- `if (candidate > ...) {
+list_set(...) }`. Same answer, different program: an unconditional store
+vectorises and a conditional one does not, in **any** of the three languages.
+Measured on a raw C array, the same loop is 220,000ns and 7 NEON ops written
+with `if` against 188,000ns and 22 written with `max`. Prismio was being read as
+1.37x of C++ when a third of that was the benchmark, not the compiler.
+
+Checksums cannot catch this, and neither can review of one arm at a time. **When
+adding or editing a benchmark, diff the three arms against each other
+statement by statement**, and treat a difference in control flow -- a branch
+where another arm has a select, a call where another has an inlined operation --
+as a defect in the benchmark until measured otherwise.
+
+A known and accepted difference remains in `mergesort`: C++ writes the merge
+step as a ternary with side effects in both arms, Prismio as an `if`/`else` with
+a store in each. Neither vectorises, so it is a spelling difference rather than
+an algorithmic one -- recorded here so the next reader does not have to
+re-derive that.
+
 ## Run
 
 ```bash

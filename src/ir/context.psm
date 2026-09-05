@@ -28,6 +28,22 @@ let mut irLoopDepth = 0
 let mut irLoopFlatGuard = ""
 let mut irLoopFlatGuardCounter = 0
 
+// Whether that same guard also proved, in the preheader, that every index this
+// loop forms is in range. Only then may a guarded read drop its bounds check --
+// and dropping it is the point, because a conditional element load is one LICM
+// will not hoist, which is the whole reason `data` was re-read per access.
+// Saved and restored around each loop exactly as irLoopFlatGuard is.
+let mut irLoopRangeProved = false
+
+// E1's guard: the slot holding "every push this loop performs fits in the
+// capacity the receiver already has", or "" outside such a loop. Separate from
+// irLoopFlatGuard on purpose -- that one declines any loop containing a push,
+// because a push can reallocate the block its readers are indexing, and folding
+// the two would make a capacity miss cost the reads as well.
+let mut irLoopPushGuard = ""
+let mut irLoopPushGuardCounter = 0
+
+
 // Names the stack slot a `spawn`'s owned temporary argument is spilled into, so
 // the ordinary scope drop can reach it. Dotted like `sc.`, which no Prismio
 // identifier can contain, so it cannot collide with a user variable.
@@ -144,7 +160,6 @@ extern fn aif_frees_at_scope_node(node: Ptr) -> Int
 // confinement, because an accumulator allocates in a loop body and binds outside
 // it -- and `return out` puts E at Caller for a value no return ever carried.
 extern fn aif_releases_on_overwrite_node(node: Ptr) -> Int
-
 
 // Whether it may come from the enclosing `region`'s arena instead of the heap.
 // Stricter than "is inside a region block": the value must also be unable to

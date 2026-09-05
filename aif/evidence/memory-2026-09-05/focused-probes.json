@@ -1,0 +1,106 @@
+{
+  "test_42_aif_stack_promotion.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_42_aif_stack_promotion\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "PASS\n",
+    "stderr": "aif-verify: 1 allocated, 1 released, 0 leaked, 0 violation(s)\naif-memory: 8 allocated bytes, 8 released bytes, 0 live bytes, 8 peak live bytes\naif-memory-sizes: <=16:1 <=32:0 <=64:0 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 1 region(s) on reporting thread\n"
+  },
+  "test_52_aif_cycle_collector.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_52_aif_cycle_collector\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "PASS\n",
+    "stderr": "aif-verify: 12 allocated, 12 released, 0 leaked, 0 violation(s)\naif-memory: 480 allocated bytes, 480 released bytes, 0 live bytes, 336 peak live bytes\naif-memory-sizes: <=16:0 <=32:4 <=64:8 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\n"
+  },
+  "test_70_struct_field_release.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_70_struct_field_release\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "PASS\n",
+    "stderr": "aif-verify: leaked #80 (24 bytes)\naif-verify: leaked #79 (32 bytes)\naif-verify: leaked #77 (40 bytes)\naif-verify: 83 allocated, 80 released, 3 leaked, 0 violation(s)\naif-memory: 2216 allocated bytes, 2120 released bytes, 96 live bytes, 184 peak live bytes\naif-memory-sizes: <=16:28 <=32:29 <=64:26 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "test_79_slices.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_79_slices\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "PASS: slices\n",
+    "stderr": "aif-verify: 8 allocated, 8 released, 0 leaked, 0 violation(s)\naif-memory: 272 allocated bytes, 272 released bytes, 0 live bytes, 232 peak live bytes\naif-memory-sizes: <=16:2 <=32:2 <=64:4 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\n"
+  },
+  "test_80_data_view_conversion.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_80_data_view_conversion\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "PASS: data view conversion\n",
+    "stderr": "aif-verify: 11 allocated, 11 released, 0 leaked, 0 violation(s)\naif-memory: 386 allocated bytes, 386 released bytes, 0 live bytes, 282 peak live bytes\naif-memory-sizes: <=16:5 <=32:0 <=64:5 <=128:1 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\n"
+  },
+  "test_81_data_view_drop.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_81_data_view_drop\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "",
+    "stderr": "aif-verify: 6 allocated, 6 released, 0 leaked, 0 violation(s)\naif-memory: 188 allocated bytes, 188 released bytes, 0 live bytes, 188 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:3 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\n"
+  },
+  "test_89_closures.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_89_closures\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "test_89 ok\n",
+    "stderr": "aif-verify: 15 allocated, 15 released, 0 leaked, 0 violation(s)\naif-memory: 491 allocated bytes, 491 released bytes, 0 live bytes, 395 peak live bytes\naif-memory-sizes: <=16:5 <=32:3 <=64:7 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\n"
+  },
+  "test_92_field_view_provenance.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_92_field_view_provenance\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "test_92 ok\n",
+    "stderr": "aif-verify: leaked #8 (4 bytes)\naif-verify: leaked #14 (4 bytes)\naif-verify: leaked #13 (16 bytes)\naif-verify: leaked #7 (16 bytes)\naif-verify: leaked #12 (4 bytes)\naif-verify: leaked #9 (24 bytes)\naif-verify: leaked #15 (24 bytes)\naif-verify: leaked #11 (24 bytes)\naif-verify: leaked #10 (4 bytes)\naif-verify: leaked #16 (4 bytes)\naif-verify: 18 allocated, 8 released, 10 leaked, 0 violation(s)\naif-memory: 216 allocated bytes, 92 released bytes, 124 live bytes, 216 peak live bytes\naif-memory-sizes: <=16:13 <=32:5 <=64:0 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "test_93_data_view_from_helper.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_93_data_view_from_helper\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "data view from a helper ok\n",
+    "stderr": "aif-verify: 14 allocated, 14 released, 0 leaked, 0 violation(s)\naif-memory: 6728 allocated bytes, 6728 released bytes, 0 live bytes, 3200 peak live bytes\naif-memory-sizes: <=16:0 <=32:0 <=64:4 <=128:1 <=256:1 <=512:5 <=1024:1 <=4096:2 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\n"
+  },
+  "test_100_reuse_token.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_100_reuse_token\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "reuse token ok\n",
+    "stderr": "aif-verify: leaked #8 (24 bytes)\naif-verify: leaked #2 (40 bytes)\naif-verify: leaked #7 (24 bytes)\naif-verify: leaked #1 (40 bytes)\naif-verify: leaked #4 (32 bytes)\naif-verify: leaked #6 (24 bytes)\naif-verify: leaked #5 (32 bytes)\naif-verify: leaked #3 (24 bytes)\naif-verify: 8 allocated, 0 released, 8 leaked, 0 violation(s)\naif-memory: 240 allocated bytes, 0 released bytes, 240 live bytes, 240 peak live bytes\naif-memory-sizes: <=16:0 <=32:6 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 2 object(s), 64 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "test_116_trait_objects.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_116_trait_objects\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "test_116 ok\n",
+    "stderr": ""
+  },
+  "test_119_loop_range_guard.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/test_119_loop_range_guard\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "PASS: loop range guard\n",
+    "stderr": "aif-verify: 30 allocated, 30 released, 0 leaked, 0 violation(s)\naif-memory: 844 allocated bytes, 844 released bytes, 0 live bytes, 72 peak live bytes\naif-memory-sizes: <=16:11 <=32:9 <=64:10 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\n"
+  },
+  "string_slots_probe.psm": {
+    "build_code": 0,
+    "build_stdout": "Built /private/tmp/prismio-memory-2026-09-05/probes/string_slots_probe\n",
+    "build_stderr": "",
+    "returncode": 0,
+    "stdout": "PASS: string slots\n",
+    "stderr": "aif-verify: 10002 allocated, 10002 released, 0 leaked, 0 violation(s)\naif-memory: 170040 allocated bytes, 170040 released bytes, 0 live bytes, 170040 peak live bytes\naif-memory-sizes: <=16:10000 <=32:0 <=64:1 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:1\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\n"
+  }
+}

@@ -1,0 +1,7 @@
+mode=mnemonic functions: old=457 new=457 only_old=1 only_new=1 changed=4
+  ONLY OLD: _mapSlotOf$Int$Int__Struct_Map$Int$Int_Int
+  ONLY NEW: _mapProbe$Int$Int__Struct_Map$Int$Int_Int_Bool
+  CHANGED: _benchHashMap__Int  82 -> 150 insns
+  CHANGED: _mapGetOr$Int$Int__Struct_Map$Int$Int_Int_Int  94 -> 75 insns
+  CHANGED: _benchKeyValueUpdate__Int  167 -> 209 insns
+  CHANGED: _mapIndexOf$Int$Int__Struct_Map$Int$Int_Int  72 -> 61 insns

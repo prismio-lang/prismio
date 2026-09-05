@@ -90,6 +90,64 @@ const char* ir_intern(const char* name) {
     return n->text;
 }
 
+// Functions the flat-List guard may look through.
+//
+// `irFlatGuardCount` declines a loop on any call it does not recognise, because
+// the callee could push to one of the loop's lists -- which reallocates the
+// element block -- or free it. A function that **calls nothing and indexes
+// nothing** can do neither, so it has nothing to say about the guard. Marked
+// once per module, before any body is generated.
+//
+// The criterion is deliberately the conservative one Rust settled on for
+// inferring cross-crate inlinability: no calls, nothing clever. It is what makes
+// a two-line `maxInt(a, b)` free in a hot loop instead of 1.79x, and it needs no
+// fixed point over mutual recursion to compute.
+#define GUARD_SAFE_BUCKETS 512
+
+// **Keyed by the source name, which is why `unsafe_seen` exists.** The guard
+// sees the spelling at the call site, and overloading means one spelling can name
+// several functions. A name is safe only when *every* function carrying it is, so
+// one unsafe overload poisons the name for all of them.
+typedef struct GuardSafeNode {
+    struct GuardSafeNode* next;
+    const char* name;
+    int safe_seen;
+    int unsafe_seen;
+} GuardSafeNode;
+
+static GuardSafeNode* guard_safe_buckets[GUARD_SAFE_BUCKETS];
+
+static GuardSafeNode* guard_safe_entry(const char* name) {
+    const char* s = ir_intern(name);
+    unsigned bucket = hash_str(s) % GUARD_SAFE_BUCKETS;
+    for (GuardSafeNode* n = guard_safe_buckets[bucket]; n; n = n->next) {
+        if (n->name == s) return n;
+    }
+    GuardSafeNode* n = (GuardSafeNode*)xmalloc(sizeof(GuardSafeNode),
+                                               "the guard-safe function table");
+    n->name = s;
+    n->safe_seen = 0;
+    n->unsafe_seen = 0;
+    n->next = guard_safe_buckets[bucket];
+    guard_safe_buckets[bucket] = n;
+    return n;
+}
+
+void ir_mark_guard_safe_fn(const char* name, int safe) {
+    GuardSafeNode* n = guard_safe_entry(name);
+    if (safe) { n->safe_seen = 1; } else { n->unsafe_seen = 1; }
+}
+
+int ir_is_guard_safe_fn(const char* name) {
+    if (!name || !name[0]) return 0;
+    const char* s = ir_intern(name);
+    unsigned bucket = hash_str(s) % GUARD_SAFE_BUCKETS;
+    for (GuardSafeNode* n = guard_safe_buckets[bucket]; n; n = n->next) {
+        if (n->name == s) return n->safe_seen && !n->unsafe_seen;
+    }
+    return 0;
+}
+
 #define MAX_LOOP_DEPTH 256
 
 static int loop_continue_stack[MAX_LOOP_DEPTH];

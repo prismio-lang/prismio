@@ -1,0 +1,18 @@
+mode=mnemonic functions: old=457 new=461 only_old=0 only_new=4 changed=13
+  ONLY NEW: _keyStrengthen__Int
+  ONLY NEW: _mapInsert$Int$Int__Struct_Map$Int$Int_Int_Int_Int
+  ONLY NEW: _mapHashOf$Int$Int__Struct_Map$Int$Int_Int
+  ONLY NEW: _mapPlaceAll$Int$Int__Struct_Map$Int$Int
+  CHANGED: _keyMixInt__Int  11 -> 3 insns
+  CHANGED: _Key_hash__Int  11 -> 3 insns
+  CHANGED: _Key_hash__U32  11 -> 3 insns
+  CHANGED: _Key_hash__Char  11 -> 2 insns
+  CHANGED: _Key_hash__Bool  5 -> 2 insns
+  CHANGED: _benchHashMap__Int  150 -> 153 insns
+  CHANGED: _mapNew$Int$Int__Void  191 -> 192 insns
+  CHANGED: _mapSet$Int$Int__Struct_Map$Int$Int_Int_Int  159 -> 90 insns
+  CHANGED: _mapGetOr$Int$Int__Struct_Map$Int$Int_Int_Int  75 -> 83 insns
+  CHANGED: _benchKeyValueUpdate__Int  209 -> 338 insns
+  CHANGED: _mapProbe$Int$Int__Struct_Map$Int$Int_Int_Bool  64 -> 72 insns
+  CHANGED: _mapRehash$Int$Int__Struct_Map$Int$Int  130 -> 53 insns
+  CHANGED: _mapIndexOf$Int$Int__Struct_Map$Int$Int_Int  61 -> 69 insns

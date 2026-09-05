@@ -1,0 +1,546 @@
+{
+  "fibonacci": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 5985853\nelapsed_ns: 23024334\naif-verify: leaked #5 (9 bytes)\naif-verify: leaked #4 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 178 allocated bytes, 161 released bytes, 17 live bytes, 178 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 5985853\nelapsed_ns: 20564459\naif-verify: leaked #4 (8 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 177 allocated bytes, 160 released bytes, 17 live bytes, 177 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "prime_sieve": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 458935349\nelapsed_ns: 976083\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (7 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 180 allocated bytes, 163 released bytes, 17 live bytes, 180 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 3600080 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 458935349\nelapsed_ns: 1084834\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 180 allocated bytes, 162 released bytes, 18 live bytes, 180 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 3600080 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "gcd_lcm": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 504265700\nelapsed_ns: 33218583\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 178 allocated bytes, 159 released bytes, 19 live bytes, 178 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 504265700\nelapsed_ns: 27575208\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 177 allocated bytes, 158 released bytes, 19 live bytes, 177 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "binary_search": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 1004850\nelapsed_ns: 91765667\naif-verify: leaked #4 (8 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 182 allocated bytes, 165 released bytes, 17 live bytes, 182 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 4800048 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 1004850\nelapsed_ns: 89483667\naif-verify: leaked #4 (8 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 181 allocated bytes, 164 released bytes, 17 live bytes, 181 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 4800048 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "quicksort": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 33756443\nelapsed_ns: 4743250\naif-verify: leaked #4 (9 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 178 allocated bytes, 161 released bytes, 17 live bytes, 178 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 1200048 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 33756443\nelapsed_ns: 5036625\naif-verify: leaked #4 (9 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 177 allocated bytes, 160 released bytes, 17 live bytes, 177 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 1200048 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "mergesort": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 33756443\nelapsed_ns: 5945583\naif-verify: leaked #4 (9 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 178 allocated bytes, 161 released bytes, 17 live bytes, 178 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 6 object(s), 2400096 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 33756443\nelapsed_ns: 5840167\naif-verify: leaked #5 (8 bytes)\naif-verify: leaked #4 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 177 allocated bytes, 160 released bytes, 17 live bytes, 177 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 6 object(s), 2400096 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "string_search": {
+    "before": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 152047993\nelapsed_ns: 121167\naif-verify: leaked #5 (10 bytes)\naif-verify: leaked #6 (7 bytes)\naif-verify: 6 allocated, 4 released, 2 leaked, 0 violation(s)\naif-memory: 288183 allocated bytes, 288166 released bytes, 17 live bytes, 288166 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:1\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 152047993\nelapsed_ns: 122917\naif-verify: leaked #6 (7 bytes)\naif-verify: leaked #5 (10 bytes)\naif-verify: 6 allocated, 4 released, 2 leaked, 0 violation(s)\naif-memory: 288182 allocated bytes, 288165 released bytes, 17 live bytes, 288165 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:1\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "graph_bfs": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 542195018\nelapsed_ns: 711791\naif-verify: leaked #5 (7 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 178 allocated bytes, 161 released bytes, 17 live bytes, 178 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 6 object(s), 4838496 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 542195018\nelapsed_ns: 721458\naif-verify: leaked #5 (7 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 177 allocated bytes, 160 released bytes, 17 live bytes, 177 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 6 object(s), 4838496 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "knapsack": {
+    "before": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 12798\nelapsed_ns: 139584\naif-verify: leaked #7 (6 bytes)\naif-verify: leaked #8 (7 bytes)\naif-verify: 8 allocated, 6 released, 2 leaked, 0 violation(s)\naif-memory: 38625 allocated bytes, 38612 released bytes, 13 live bytes, 25808 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:1 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:2\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 12798\nelapsed_ns: 150416\naif-verify: leaked #8 (7 bytes)\naif-verify: leaked #7 (6 bytes)\naif-verify: 8 allocated, 6 released, 2 leaked, 0 violation(s)\naif-memory: 38624 allocated bytes, 38611 released bytes, 13 live bytes, 25807 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:1 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:2\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "tree_traversal": {
+    "before": {
+      "allocated": 16388,
+      "released": 16386,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 294705124\nelapsed_ns: 811084\naif-verify: leaked #16387 (10 bytes)\naif-verify: leaked #16388 (7 bytes)\naif-verify: 16388 allocated, 16386 released, 2 leaked, 0 violation(s)\naif-memory: 393375 allocated bytes, 393358 released bytes, 17 live bytes, 393358 peak live bytes\naif-memory-sizes: <=16:3 <=32:16383 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 16388,
+      "released": 16386,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 294705124\nelapsed_ns: 774833\naif-verify: leaked #16387 (10 bytes)\naif-verify: leaked #16388 (7 bytes)\naif-verify: 16388 allocated, 16386 released, 2 leaked, 0 violation(s)\naif-memory: 393374 allocated bytes, 393357 released bytes, 17 live bytes, 393357 peak live bytes\naif-memory-sizes: <=16:3 <=32:16383 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "hashmap_insert_lookup": {
+    "before": {
+      "allocated": 61,
+      "released": 59,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 42239213\nelapsed_ns: 7100000\naif-verify: leaked #60 (9 bytes)\naif-verify: leaked #61 (8 bytes)\naif-verify: 61 allocated, 59 released, 2 leaked, 0 violation(s)\naif-memory: 8388950 allocated bytes, 8388933 released bytes, 17 live bytes, 5243205 peak live bytes\naif-memory-sizes: <=16:4 <=32:5 <=64:7 <=128:5 <=256:3 <=512:3 <=1024:3 <=4096:6 >4096:25\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 61,
+      "released": 59,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 42239213\nelapsed_ns: 7277583\naif-verify: leaked #61 (8 bytes)\naif-verify: leaked #60 (9 bytes)\naif-verify: 61 allocated, 59 released, 2 leaked, 0 violation(s)\naif-memory: 8388949 allocated bytes, 8388932 released bytes, 17 live bytes, 5243204 peak live bytes\naif-memory-sizes: <=16:4 <=32:5 <=64:7 <=128:5 <=256:3 <=512:3 <=1024:3 <=4096:6 >4096:25\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "vector_growth": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 995982695\nelapsed_ns: 11297750\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 184 allocated bytes, 165 released bytes, 19 live bytes, 184 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 22 object(s), 33554464 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 995982695\nelapsed_ns: 11195500\naif-verify: leaked #5 (9 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 183 allocated bytes, 164 released bytes, 19 live bytes, 183 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 22 object(s), 33554464 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "vector_iteration": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 127112128\nelapsed_ns: 75697375\naif-verify: leaked #5 (9 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 187 allocated bytes, 168 released bytes, 19 live bytes, 187 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 48000048 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 127112128\nelapsed_ns: 75872375\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 186 allocated bytes, 167 released bytes, 19 live bytes, 186 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 48000048 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "key_value_update": {
+    "before": {
+      "allocated": 58,
+      "released": 56,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 5599628\nelapsed_ns: 11181042\naif-verify: leaked #57 (8 bytes)\naif-verify: leaked #58 (9 bytes)\naif-verify: 58 allocated, 56 released, 2 leaked, 0 violation(s)\naif-memory: 4194641 allocated bytes, 4194624 released bytes, 17 live bytes, 2621760 peak live bytes\naif-memory-sizes: <=16:4 <=32:5 <=64:7 <=128:5 <=256:3 <=512:3 <=1024:3 <=4096:6 >4096:22\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 58,
+      "released": 56,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 5599628\nelapsed_ns: 10842500\naif-verify: leaked #57 (8 bytes)\naif-verify: leaked #58 (9 bytes)\naif-verify: 58 allocated, 56 released, 2 leaked, 0 violation(s)\naif-memory: 4194640 allocated bytes, 4194623 released bytes, 17 live bytes, 2621759 peak live bytes\naif-memory-sizes: <=16:4 <=32:5 <=64:7 <=128:5 <=256:3 <=512:3 <=1024:3 <=4096:6 >4096:22\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "matrix_multiply": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 346043827\nelapsed_ns: 4293084\naif-verify: leaked #5 (8 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 185 allocated bytes, 167 released bytes, 18 live bytes, 185 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 9 object(s), 589968 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 346043827\nelapsed_ns: 4254583\naif-verify: leaked #5 (8 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 184 allocated bytes, 166 released bytes, 18 live bytes, 184 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 9 object(s), 589968 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "mandelbrot": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 38776\nelapsed_ns: 3740292\naif-verify: leaked #5 (8 bytes)\naif-verify: leaked #4 (6 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 176 allocated bytes, 162 released bytes, 14 live bytes, 176 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 38776\nelapsed_ns: 3744209\naif-verify: leaked #4 (6 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 175 allocated bytes, 161 released bytes, 14 live bytes, 175 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "fft": {
+    "before": {
+      "allocated": 11,
+      "released": 9,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 327680\nelapsed_ns: 4592958\naif-verify: leaked #10 (7 bytes)\naif-verify: leaked #11 (8 bytes)\naif-verify: 11 allocated, 9 released, 2 leaked, 0 violation(s)\naif-memory: 131322 allocated bytes, 131307 released bytes, 15 live bytes, 65771 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:2 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:4\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 11,
+      "released": 9,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 327680\nelapsed_ns: 4646583\naif-verify: leaked #10 (7 bytes)\naif-verify: leaked #11 (8 bytes)\naif-verify: 11 allocated, 9 released, 2 leaked, 0 violation(s)\naif-memory: 131321 allocated bytes, 131306 released bytes, 15 live bytes, 65770 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:2 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:4\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "numerical_integration": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 314159265\nelapsed_ns: 2098542\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 191 allocated bytes, 173 released bytes, 18 live bytes, 191 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 314159265\nelapsed_ns: 2177417\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 190 allocated bytes, 172 released bytes, 18 live bytes, 190 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "vector_dot": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 199986180\nelapsed_ns: 14661125\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 181 allocated bytes, 162 released bytes, 19 live bytes, 181 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 6 object(s), 96000096 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 199986180\nelapsed_ns: 14417375\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 180 allocated bytes, 161 released bytes, 19 live bytes, 180 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 6 object(s), 96000096 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "convolution": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 399934914\nelapsed_ns: 4234416\naif-verify: leaked #5 (8 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 181 allocated bytes, 163 released bytes, 18 live bytes, 181 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 6 object(s), 28800096 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 399934914\nelapsed_ns: 4233084\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 180 allocated bytes, 162 released bytes, 18 live bytes, 180 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 6 object(s), 28800096 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "monte_carlo": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 6498683\nelapsed_ns: 43243417\naif-verify: leaked #4 (8 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 180 allocated bytes, 163 released bytes, 17 live bytes, 180 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 6498683\nelapsed_ns: 43212333\naif-verify: leaked #5 (9 bytes)\naif-verify: leaked #4 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 179 allocated bytes, 162 released bytes, 17 live bytes, 179 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "polynomial_evaluation": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 147510845\nelapsed_ns: 22402833\naif-verify: leaked #5 (9 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 192 allocated bytes, 173 released bytes, 19 live bytes, 192 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 147510845\nelapsed_ns: 22418167\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 191 allocated bytes, 172 released bytes, 19 live bytes, 191 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "ecs_component_update": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 166215579\nelapsed_ns: 3288833\naif-verify: leaked #5 (8 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 190 allocated bytes, 172 released bytes, 18 live bytes, 190 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 9600048 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 166215579\nelapsed_ns: 3388458\naif-verify: leaked #5 (8 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 189 allocated bytes, 171 released bytes, 18 live bytes, 189 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 9600048 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "parallel_reduction": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 822454185\nelapsed_ns: 7434375\naif-verify: leaked #5 (8 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 188 allocated bytes, 170 released bytes, 18 live bytes, 188 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 822454185\nelapsed_ns: 7323166\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 187 allocated bytes, 169 released bytes, 18 live bytes, 187 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "transient_allocation": {
+    "before": {
+      "allocated": 9605,
+      "released": 9603,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 339103\nelapsed_ns: 2530917\naif-verify: leaked #9604 (7 bytes)\naif-verify: leaked #9605 (8 bytes)\naif-verify: 9605 allocated, 9603 released, 2 leaked, 0 violation(s)\naif-memory: 26233787 allocated bytes, 26233772 released bytes, 15 live bytes, 24788 peak live bytes\naif-memory-sizes: <=16:802 <=32:801 <=64:1600 <=128:802 <=256:800 <=512:800 <=1024:800 <=4096:1600 >4096:1600\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 9605,
+      "released": 9603,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 339103\nelapsed_ns: 2518458\naif-verify: leaked #9605 (8 bytes)\naif-verify: leaked #9604 (7 bytes)\naif-verify: 9605 allocated, 9603 released, 2 leaked, 0 violation(s)\naif-memory: 26233786 allocated bytes, 26233771 released bytes, 15 live bytes, 24787 peak live bytes\naif-memory-sizes: <=16:802 <=32:801 <=64:1600 <=128:802 <=256:800 <=512:800 <=1024:800 <=4096:1600 >4096:1600\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "struct_creation": {
+    "before": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 48996500\nelapsed_ns: 7060917\naif-verify: leaked #7 (9 bytes)\naif-verify: leaked #8 (8 bytes)\naif-verify: 8 allocated, 6 released, 2 leaked, 0 violation(s)\naif-memory: 48000224 allocated bytes, 48000207 released bytes, 17 live bytes, 40000207 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:1 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:2\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 48996500\nelapsed_ns: 6845416\naif-verify: leaked #7 (9 bytes)\naif-verify: leaked #8 (8 bytes)\naif-verify: 8 allocated, 6 released, 2 leaked, 0 violation(s)\naif-memory: 48000223 allocated bytes, 48000206 released bytes, 17 live bytes, 40000206 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:1 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:2\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "allocation_mutation": {
+    "before": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 36000000\nelapsed_ns: 6798667\naif-verify: leaked #7 (9 bytes)\naif-verify: leaked #8 (8 bytes)\naif-verify: 8 allocated, 6 released, 2 leaked, 0 violation(s)\naif-memory: 19200228 allocated bytes, 19200211 released bytes, 17 live bytes, 16000211 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:1 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:2\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 36000000\nelapsed_ns: 6900167\naif-verify: leaked #8 (8 bytes)\naif-verify: leaked #7 (9 bytes)\naif-verify: 8 allocated, 6 released, 2 leaked, 0 violation(s)\naif-memory: 19200227 allocated bytes, 19200210 released bytes, 17 live bytes, 16000210 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:1 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:2\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "nested_collection": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 409805349\nelapsed_ns: 2780708\naif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 187 allocated bytes, 169 released bytes, 18 live bytes, 187 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3202 object(s), 9657648 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 409805349\nelapsed_ns: 2797292\naif-verify: leaked #5 (8 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 186 allocated bytes, 168 released bytes, 18 live bytes, 186 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3202 object(s), 9657648 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "large_buffer_copy": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 90068056\nelapsed_ns: 7905708\naif-verify: leaked #4 (9 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 186 allocated bytes, 169 released bytes, 17 live bytes, 186 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 6 object(s), 48000096 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 90068056\nelapsed_ns: 7934958\naif-verify: leaked #5 (8 bytes)\naif-verify: leaked #4 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 185 allocated bytes, 168 released bytes, 17 live bytes, 185 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 6 object(s), 48000096 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "recursive_tree_rebuild": {
+    "before": {
+      "allocated": 8196,
+      "released": 8194,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 4137497\nelapsed_ns: 558792\naif-verify: leaked #8196 (7 bytes)\naif-verify: leaked #8195 (8 bytes)\naif-verify: 8196 allocated, 8194 released, 2 leaked, 0 violation(s)\naif-memory: 196773 allocated bytes, 196758 released bytes, 15 live bytes, 196758 peak live bytes\naif-memory-sizes: <=16:2 <=32:8192 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 8196,
+      "released": 8194,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 4137497\nelapsed_ns: 575791\naif-verify: leaked #8195 (8 bytes)\naif-verify: leaked #8196 (7 bytes)\naif-verify: 8196 allocated, 8194 released, 2 leaked, 0 violation(s)\naif-memory: 196772 allocated bytes, 196757 released bytes, 15 live bytes, 196757 peak live bytes\naif-memory-sizes: <=16:2 <=32:8192 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "file_read": {
+    "before": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 21823488\nelapsed_ns: 679292\naif-verify: leaked #6 (7 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 6 allocated, 4 released, 2 leaked, 0 violation(s)\naif-memory: 278706 allocated bytes, 278690 released bytes, 16 live bytes, 278690 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:1\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 21823488\nelapsed_ns: 670500\naif-verify: leaked #5 (9 bytes)\naif-verify: leaked #6 (7 bytes)\naif-verify: 6 allocated, 4 released, 2 leaked, 0 violation(s)\naif-memory: 278705 allocated bytes, 278689 released bytes, 16 live bytes, 278689 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:1\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "file_write": {
+    "before": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 18825216\nelapsed_ns: 832125\naif-verify: leaked #6 (7 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 6 allocated, 4 released, 2 leaked, 0 violation(s)\naif-memory: 278707 allocated bytes, 278691 released bytes, 16 live bytes, 278691 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:1\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 18825216\nelapsed_ns: 765583\naif-verify: leaked #5 (9 bytes)\naif-verify: leaked #6 (7 bytes)\naif-verify: 6 allocated, 4 released, 2 leaked, 0 violation(s)\naif-memory: 278706 allocated bytes, 278690 released bytes, 16 live bytes, 278690 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:1\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "line_processing": {
+    "before": {
+      "allocated": 8211,
+      "released": 8209,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 8437760\nelapsed_ns: 556000\naif-verify: leaked #8210 (8 bytes)\naif-verify: leaked #8211 (7 bytes)\naif-verify: 8211 allocated, 8209 released, 2 leaked, 0 violation(s)\naif-memory: 688319 allocated bytes, 688304 released bytes, 15 live bytes, 622800 peak live bytes\naif-memory-sizes: <=16:3 <=32:1 <=64:8194 <=128:3 <=256:1 <=512:1 <=1024:1 <=4096:2 >4096:5\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 8211,
+      "released": 8209,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 8437760\nelapsed_ns: 563375\naif-verify: leaked #8211 (7 bytes)\naif-verify: leaked #8210 (8 bytes)\naif-verify: 8211 allocated, 8209 released, 2 leaked, 0 violation(s)\naif-memory: 688318 allocated bytes, 688303 released bytes, 15 live bytes, 622799 peak live bytes\naif-memory-sizes: <=16:3 <=32:1 <=64:8194 <=128:3 <=256:1 <=512:1 <=1024:1 <=4096:2 >4096:5\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  },
+  "tokenization": {
+    "before": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 211969972\nelapsed_ns: 145416\naif-verify: leaked #5 (10 bytes)\naif-verify: leaked #6 (7 bytes)\naif-verify: 6 allocated, 4 released, 2 leaked, 0 violation(s)\naif-memory: 204182 allocated bytes, 204165 released bytes, 17 live bytes, 204165 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:1\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    },
+    "after": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "output": "result: 211969972\nelapsed_ns: 143292\naif-verify: leaked #5 (10 bytes)\naif-verify: leaked #6 (7 bytes)\naif-verify: 6 allocated, 4 released, 2 leaked, 0 violation(s)\naif-memory: 204181 allocated bytes, 204164 released bytes, 17 live bytes, 204164 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:0 <=128:2 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:1\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+    }
+  }
+}

@@ -20,6 +20,10 @@ extern fn ir_module_set_target(triple: String borrow, layout: String borrow)
 // Function Builders
 extern fn ir_declare_function_begin(name: String, retType: String)
 extern fn ir_declare_function_param(paramType: String)
+// The declaration returns memory nothing else can reach, so LLVM may treat two
+// calls as two allocations. Only for a constructor: an entry point returning a
+// pointer *into* a block the caller already holds must not carry it.
+extern fn ir_declare_function_fresh()
 extern fn ir_declare_function_end()
 
 extern fn ir_function_begin(name: String, retType: String)
@@ -178,6 +182,10 @@ extern fn ir_struct_type_field(fieldType: String)
 // here, because ir_struct_field_ptr is the single choke point for field access.
 extern fn ir_struct_type_split(hotCount: Int)
 extern fn ir_struct_type_end()
+extern fn ir_enum_set_null_tag(name: String, tag: Int)
+extern fn ir_enum_reserve_null(name: String)
+extern fn ir_enum_null_tag(name: String) -> Int
+extern fn ir_enum_tag(name: String, value: String) -> Int
 extern fn ir_struct_disable_path_tbaa(structName: String)
 extern fn ir_alloc_object(structName: String) -> Int
 
@@ -279,20 +287,38 @@ extern fn ir_elem_ptr(elemType: String, base: String, index: String) -> Int
 // the emitted false arm is `list_get_inline` itself, so the boxed representation
 // is answered exactly as it was.
 extern fn ir_list_flat_elem(listValue: String, indexValue: String, stride: Int,
-                            guard: String) -> Int
+                            guard: String, checkBounds: Int) -> Int
 // The scalar twin returns a value rather than an address. Its flat arm loads
 // `elemType` directly; its fallback arm converts list_get_inline_scalar's i64
 // bit carrier back to the same type before the two arms join.
 extern fn ir_list_flat_scalar_elem(listValue: String, indexValue: String,
                                    elemType: String, stride: Int,
-                                   guard: String) -> Int
+                                   guard: String, checkBounds: Int) -> Int
+extern fn ir_list_flat_scalar_set(listValue: String, indexValue: String,
+                                  value: String, elemType: String, stride: Int,
+                                  guard: String, checkBounds: Int)
 // The corresponding typed access for pointer-slot Lists, including scalar
 // values carried in a slot.
 extern fn ir_list_boxed_elem(listValue: String, indexValue: String) -> Int
 // The write end: a flat push that needs no allocator when the list has room.
-extern fn ir_list_flat_push(listValue: String, stride: Int) -> Int
+extern fn ir_list_flat_push(listValue: String, stride: Int, guard: String) -> Int
+// E1. The preheader's capacity conjunct, and the push it licenses: with
+// `cap - len >= trip_count * pushes_per_iteration` proved once, a push in the
+// body is a store and a length bump with no test of any kind.
+extern fn ir_list_has_room(listValue: String, needValue: String) -> Int
+extern fn ir_list_flat_push_scalar(listValue: String, value: String,
+                                   elemType: String, stride: Int, guard: String)
 // One receiver's half of a loop's flat guard, for the preheader.
 extern fn ir_list_is_flat(listValue: String, stride: Int) -> Int
+// The whole-buffer copy as one `llvm.memmove`, replacing the loop that wrote it
+// a word at a time. The caller's guard owns every precondition: both containers
+// flat at `stride`, and `[from, count)` inside both lengths.
+extern fn ir_list_flat_copy(dstValue: String, srcValue: String, fromValue: String,
+                            countValue: String, stride: Int)
+// The flat-List guard's view of a callee: marked once per module, read at every
+// call site inside a guarded loop.
+extern fn ir_mark_guard_safe_fn(name: String borrow, safe: Int)
+extern fn ir_is_guard_safe_fn(name: String borrow) -> Int
 extern fn ir_array_alloca(elemType: String, count: Int) -> Int
 extern fn ir_string_ptr(globalName: String) -> Int
 // LAYOUT 2. A constant C string created on demand and interned by content, for

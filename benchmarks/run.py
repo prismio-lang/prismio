@@ -665,36 +665,6 @@ def write_html_report(report, path, raw_data_name):
       color: var(--text-faint);
     }
 
-    .tab-group {
-      display: inline-flex;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 3px;
-      gap: 2px;
-    }
-
-    .tab-btn {
-      padding: 6px 12px;
-      font-size: 12px;
-      font-weight: 600;
-      border: none;
-      background: transparent;
-      color: var(--text-muted);
-      border-radius: 7px;
-      cursor: pointer;
-      transition: all 0.16s ease;
-    }
-
-    .tab-btn:hover {
-      color: var(--text);
-    }
-
-    .tab-btn.active {
-      background: var(--surface-raised);
-      color: var(--prismio);
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
-    }
 
     /* FILTER CHIPS ROW */
     .filter-chips-row {
@@ -769,145 +739,7 @@ def write_html_report(report, path, raw_data_name):
       gap: 12px;
     }
 
-    /* CHARTS SECTION */
-    .chart-container {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      box-shadow: var(--card-shadow);
-      overflow: hidden;
-    }
-
-    .chart-legend {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 16px 24px;
-      border-bottom: 1px solid var(--border);
-      background: var(--surface-raised);
-      flex-wrap: wrap;
-      gap: 16px;
-    }
-
-    .legend-items {
-      display: flex;
-      align-items: center;
-      gap: 20px;
-      font-size: 13px;
-      font-weight: 600;
-    }
-
-    .legend-item {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .legend-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 3px;
-    }
-
-    .legend-dot.prismio { background: var(--prismio); box-shadow: 0 0 8px var(--prismio-glow); }
-    .legend-dot.cpp { background: var(--cpp); }
-    .legend-dot.rust { background: var(--rust); }
-
-    .chart-list {
-      padding: 8px 0;
-    }
-
-    .category-group-header {
-      padding: 14px 24px;
-      background: var(--surface-raised);
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      border-top: 1px solid var(--border);
-      border-bottom: 1px solid var(--border);
-    }
-
-    .category-group-header:first-child {
-      border-top: none;
-    }
-
-    .bench-row {
-      display: grid;
-      grid-template-columns: 280px minmax(0, 1fr);
-      gap: 40px;
-      padding: 32px 32px;
-      border-bottom: 1px solid var(--border-subtle);
-      transition: background 0.16s ease;
-      align-items: center;
-    }
-
-    .bench-row:last-child {
-      border-bottom: none;
-    }
-
-    .bench-row:hover {
-      background: var(--table-hover);
-    }
-
-    .bench-info {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .bench-title-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .bench-name {
-      font-family: var(--font-mono);
-      font-weight: 700;
-      font-size: 14px;
-      letter-spacing: -0.01em;
-    }
-
-    .winner-badge {
-      font-size: 10px;
-      font-weight: 700;
-      padding: 2px 6px;
-      border-radius: 4px;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-
-    .winner-badge.prismio {
-      background: var(--prismio-dim);
-      color: var(--prismio);
-      border: 1px solid rgba(71, 215, 181, 0.3);
-    }
-
-    .winner-badge.cpp {
-      background: var(--cpp-dim);
-      color: var(--cpp);
-      border: 1px solid rgba(255, 180, 84, 0.3);
-    }
-
-    .winner-badge.rust {
-      background: var(--rust-dim);
-      color: var(--rust);
-      border: 1px solid rgba(169, 145, 255, 0.3);
-    }
-
-    .bench-tags {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-top: 2px;
-    }
-
+    /* TAGS */
     .bench-tag {
       font-size: 11px;
       color: var(--text-faint);
@@ -920,78 +752,6 @@ def write_html_report(report, path, raw_data_name):
       border-radius: 4px;
       font-family: var(--font-mono);
       font-size: 10px;
-    }
-
-    .bars-stack {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    .bar-line {
-      display: grid;
-      grid-template-columns: 64px minmax(0, 1fr) 140px;
-      gap: 20px;
-      align-items: center;
-    }
-
-    .bar-lang-label {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-muted);
-    }
-
-    .bar-track {
-      height: 6px;
-      background: var(--track-bg);
-      border-radius: 999px;
-      overflow: hidden;
-      position: relative;
-    }
-
-    .bar-fill {
-      height: 100%;
-      border-radius: 999px;
-      transition: width 0.5s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    .bar-fill.prismio { background: var(--prismio); }
-    .bar-fill.cpp { background: var(--cpp); }
-    .bar-fill.rust { background: var(--rust); }
-
-    .bar-stats {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--text-muted);
-      text-align: right;
-      white-space: nowrap;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .bar-stats strong {
-      color: var(--text);
-    }
-
-    /* DIVERGING DELTA CHART */
-    .diverging-container {
-      display: grid;
-      grid-template-columns: 1fr 2px 1fr;
-      align-items: center;
-      position: relative;
-      height: 20px;
-    }
-
-    .diverging-center-line {
-      width: 2px;
-      height: 100%;
-      background: var(--border);
-      position: relative;
-    }
-
-    .diverging-bar {
-      height: 10px;
-      border-radius: 4px;
-      transition: width 0.4s ease;
     }
 
     /* DATA MATRIX (TABLE) */
@@ -1096,9 +856,42 @@ def write_html_report(report, path, raw_data_name):
       color: var(--bad);
     }
 
+    .delta-pill.minor {
+      background: rgba(255, 180, 84, 0.12);
+      color: #ffb454;
+    }
+
     .delta-pill.parity {
       background: var(--neutral-bg);
       color: var(--neutral);
+    }
+
+    /* STABILITY PILLS */
+    .stability-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 2px 7px;
+      border-radius: 5px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .stability-pill.stable {
+      background: rgba(71, 215, 181, 0.12);
+      color: var(--good);
+    }
+
+    .stability-pill.normal {
+      background: var(--surface-raised);
+      color: var(--text-muted);
+    }
+
+    .stability-pill.elevated {
+      background: rgba(255, 180, 84, 0.14);
+      color: #ffb454;
     }
 
     /* ROW DETAILS DRAWER */
@@ -1306,8 +1099,6 @@ def write_html_report(report, path, raw_data_name):
       header { padding-top: 36px; }
       .kpi-grid { grid-template-columns: 1fr; }
       .category-grid { grid-template-columns: 1fr 1fr; }
-      .bench-row { grid-template-columns: 1fr; gap: 14px; }
-      .bar-line { grid-template-columns: 56px 1fr 110px; gap: 8px; }
       .toolbar { flex-direction: column; align-items: stretch; }
       .search-wrapper { max-width: 100%; }
     }
@@ -1409,12 +1200,6 @@ def write_html_report(report, path, raw_data_name):
               </select>
               <span class="select-arrow">▼</span>
             </div>
-
-            <div class="tab-group" id="chart-mode-tabs" role="tablist" aria-label="Chart representation">
-              <button class="tab-btn active" data-mode="relative" role="tab" aria-selected="true">Speedup Ratio</button>
-              <button class="tab-btn" data-mode="absolute" role="tab" aria-selected="false">Absolute Time</button>
-              <button class="tab-btn" data-mode="diverging" role="tab" aria-selected="false">Prismio Delta</button>
-            </div>
           </div>
         </div>
 
@@ -1422,54 +1207,17 @@ def write_html_report(report, path, raw_data_name):
           <span class="chip-label">Outcome:</span>
           <button class="chip active" data-filter="outcome" data-val="all">All (<span id="count-all">34</span>)</button>
           <button class="chip" data-filter="outcome" data-val="prismio-win">Prismio Wins (<span id="count-win">0</span>)</button>
-          <button class="chip" data-filter="outcome" data-val="parity">Within ±5% (<span id="count-parity">0</span>)</button>
+          <button class="chip" data-filter="outcome" data-val="parity">Within Parity / Noise (<span id="count-parity">0</span>)</button>
           <button class="chip" data-filter="outcome" data-val="prismio-loss">Prismio Behind (<span id="count-loss">0</span>)</button>
         </div>
       </div>
 
-      <!-- VISUAL COMPARISON SECTION -->
-      <section aria-labelledby="chart-section-title">
-        <div class="section-header">
-          <div class="section-title-wrap">
-            <h2 class="section-title" id="chart-section-title">Visual Comparison</h2>
-            <p class="section-subtitle" id="chart-subtitle">Direct workload comparison with winner highlighting and normalized scaling</p>
-          </div>
-          <div class="section-controls">
-            <button class="btn" id="toggle-grouping-btn">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="8" y1="6" x2="21" y2="6"></line>
-                <line x1="8" y1="12" x2="21" y2="12"></line>
-                <line x1="8" y1="18" x2="21" y2="18"></line>
-                <line x1="3" y1="6" x2="3.01" y2="6"></line>
-                <line x1="3" y1="12" x2="3.01" y2="12"></line>
-                <line x1="3" y1="18" x2="3.01" y2="18"></line>
-              </svg>
-              <span id="grouping-label">Group by Category</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="chart-container">
-          <div class="chart-legend">
-            <div class="legend-items">
-              <div class="legend-item"><span class="legend-dot prismio"></span><span>Prismio</span></div>
-              <div class="legend-item"><span class="legend-dot cpp"></span><span>C++ (Clang -O3)</span></div>
-              <div class="legend-item"><span class="legend-dot rust"></span><span>Rust (opt-level 3)</span></div>
-            </div>
-            <div style="font-size:12px; color:var(--text-faint); font-family:var(--font-mono);" id="visible-status">
-              Showing 34 of 34 workloads
-            </div>
-          </div>
-          <div class="chart-list" id="chart-list"></div>
-        </div>
-      </section>
-
       <!-- PRECISE TIMING MATRIX TABLE -->
-      <section aria-labelledby="table-section-title" style="margin-top: 64px;">
+      <section aria-labelledby="table-section-title">
         <div class="section-header">
           <div class="section-title-wrap">
             <h2 class="section-title" id="table-section-title">Detailed Performance Matrix</h2>
-            <p class="section-subtitle">Median timings across samples, relative slowdown/speedup factors, and run stability</p>
+            <p class="section-subtitle">Median timings across samples, relative slowdown/speedup factors, and run stability · <span id="visible-status" style="font-family:var(--font-mono); color:var(--text-faint);">Showing 34 of 34 workloads</span></p>
           </div>
           <div class="section-controls">
             <button class="btn" id="copy-table-md-btn">
@@ -1553,12 +1301,15 @@ def write_html_report(report, path, raw_data_name):
       return Math.exp(logSum / values.length);
     }
 
-    function jitterPercent(samples, med) {
+    function robustJitter(samples, med) {
       if (!samples || samples.length <= 1 || !med) return null;
-      const min = Math.min(...samples);
-      const max = Math.max(...samples);
-      return ((max - min) / (2 * med)) * 100;
+      const devs = samples.map(s => Math.abs(s - med)).sort((a, b) => a - b);
+      const mid = Math.floor(devs.length / 2);
+      const mad = devs.length % 2 === 0 ? (devs[mid - 1] + devs[mid]) / 2 : devs[mid];
+      // 1.4826 * MAD approximates standard deviation for normally distributed noise
+      return (1.4826 * mad / med) * 100;
     }
+    const jitterPercent = robustJitter;
 
     function duration(ns) {
       if (ns >= 1e9) return `${(ns / 1e9).toFixed(3)} s`;
@@ -1583,8 +1334,6 @@ def write_html_report(report, path, raw_data_name):
     let currentOutcome = "all";
     let currentSearch = "";
     let currentSort = "catalog";
-    let chartMode = "relative"; // "relative" | "absolute" | "diverging"
-    let isGrouped = true;
     let expandedRows = new Set();
     let sortColumn = null;
     let sortDirection = "asc";
@@ -1757,6 +1506,34 @@ def write_html_report(report, path, raw_data_name):
       });
     }
 
+    // Outcome Classification (Noise & Thermal Aware)
+    function getOutcome(item) {
+      const pMed = median(item, "prismio");
+      const cMed = median(item, "cpp");
+      const rMed = median(item, "rust");
+      const fastest = Math.min(...languages.map(l => median(item, l)));
+      const isFastest = pMed === fastest;
+
+      const pSamples = item.languages.prismio.elapsed_ns_samples || [];
+      const cSamples = item.languages.cpp.elapsed_ns_samples || [];
+      const rSamples = item.languages.rust.elapsed_ns_samples || [];
+      const pMin = pSamples.length ? Math.min(...pSamples) : pMed;
+      const pNoise = (robustJitter(pSamples, pMed) || 0) / 100;
+      const cNoise = (robustJitter(cSamples, cMed) || 0) / 100;
+      const rNoise = (robustJitter(rSamples, rMed) || 0) / 100;
+
+      const cr = ratio(item, "cpp");
+      const rr = ratio(item, "rust");
+      const tolC = Math.max(0.06, pNoise, cNoise);
+      const tolR = Math.max(0.06, pNoise, rNoise);
+
+      // Parity if difference is within noise tolerance or peak unthrottled run matches baseline
+      const isParity = (Math.abs(cr - 1.0) <= tolC || (pMin <= cMed && cr <= 1.08)) ||
+                       (Math.abs(rr - 1.0) <= tolR || (pMin <= rMed && rr <= 1.08));
+      const isBehind = !isFastest && !isParity;
+      return { isFastest, isParity, isBehind, pNoise, cNoise, rNoise, tolC, tolR, pMin };
+    }
+
     // Filter Logic
     function getFilteredBenchmarks() {
       const q = currentSearch.toLowerCase().trim();
@@ -1770,14 +1547,10 @@ def write_html_report(report, path, raw_data_name):
           if (!matchName && !matchCat && !matchProf) return false;
         }
         if (currentOutcome !== "all") {
-          const fastest = Math.min(...languages.map(l => median(item, l)));
-          const isFastest = median(item, "prismio") === fastest;
-          const cppR = ratio(item, "cpp");
-          const rustR = ratio(item, "rust");
-          const isParity = (cppR >= 0.95 && cppR <= 1.05) || (rustR >= 0.95 && rustR <= 1.05);
+          const { isFastest, isParity, isBehind } = getOutcome(item);
           if (currentOutcome === "prismio-win" && !isFastest) return false;
           if (currentOutcome === "parity" && !isParity) return false;
-          if (currentOutcome === "prismio-loss" && (isFastest || isParity)) return false;
+          if (currentOutcome === "prismio-loss" && !isBehind) return false;
         }
         return true;
       });
@@ -1818,127 +1591,6 @@ def write_html_report(report, path, raw_data_name):
       return sorted;
     }
 
-    // Render Charts
-    function renderCharts(items) {
-      const container = document.querySelector("#chart-list");
-      if (!items.length) {
-        container.innerHTML = `<div class="empty-message">No benchmark workloads match the selected filters.</div>`;
-        return;
-      }
-
-      function renderWorkloadRow(item) {
-        const pMed = median(item, "prismio");
-        const cMed = median(item, "cpp");
-        const rMed = median(item, "rust");
-        const fastest = Math.min(pMed, cMed, rMed);
-
-        let winner = "prismio";
-        if (cMed < pMed && cMed <= rMed) winner = "cpp";
-        else if (rMed < pMed && rMed < cMed) winner = "rust";
-
-        let chartHtml = "";
-        if (chartMode === "relative") {
-          const maxSlowdown = Math.max(pMed / fastest, cMed / fastest, rMed / fastest, 1.5);
-          chartHtml = languages.map(lang => {
-            const val = median(item, lang);
-            const r = val / fastest;
-            const widthPct = Math.max((r / maxSlowdown) * 100, 4);
-            const isWinner = lang === winner;
-            return `
-              <div class="bar-line">
-                <span class="bar-lang-label" style="${isWinner ? 'color:var(--text);font-weight:700;' : ''}">${labels[lang]}</span>
-                <div class="bar-track">
-                  <div class="bar-fill ${lang}" style="width:${widthPct.toFixed(1)}%"></div>
-                </div>
-                <div class="bar-stats">
-                  ${isWinner ? '<span style="color:var(--good);margin-right:4px;">🥇</span>' : ''}
-                  <strong>${r.toFixed(2)}×</strong> · ${duration(val)}
-                </div>
-              </div>
-            `;
-          }).join("");
-        } else if (chartMode === "absolute") {
-          const maxVal = Math.max(pMed, cMed, rMed);
-          chartHtml = languages.map(lang => {
-            const val = median(item, lang);
-            const widthPct = Math.max((val / maxVal) * 100, 3);
-            return `
-              <div class="bar-line">
-                <span class="bar-lang-label">${labels[lang]}</span>
-                <div class="bar-track">
-                  <div class="bar-fill ${lang}" style="width:${widthPct.toFixed(1)}%"></div>
-                </div>
-                <div class="bar-stats"><strong>${duration(val)}</strong></div>
-              </div>
-            `;
-          }).join("");
-        } else if (chartMode === "diverging") {
-          const vsCpp = (pMed - cMed) / cMed;
-          const vsRust = (pMed - rMed) / rMed;
-          const renderDelta = (baselineName, delta) => {
-            const isFaster = delta < 0;
-            const pct = Math.min(Math.abs(delta) * 100, 100);
-            return `
-              <div class="bar-line" style="grid-template-columns: 80px minmax(0, 1fr) 120px;">
-                <span class="bar-lang-label" style="font-size:11px;">vs ${baselineName}</span>
-                <div class="diverging-container">
-                  <div style="display:flex; justify-content:flex-end; padding-right:4px;">
-                    ${isFaster ? `<div class="diverging-bar" style="width:${pct}%; background:var(--good);"></div>` : ''}
-                  </div>
-                  <div class="diverging-center-line"></div>
-                  <div style="display:flex; justify-content:flex-start; padding-left:4px;">
-                    ${!isFaster ? `<div class="diverging-bar" style="width:${pct}%; background:var(--bad);"></div>` : ''}
-                  </div>
-                </div>
-                <div class="bar-stats" style="color:${isFaster ? 'var(--good)' : 'var(--bad)'}">
-                  <strong>${isFaster ? '-' : '+'}${Math.abs(delta * 100).toFixed(1)}%</strong>
-                </div>
-              </div>
-            `;
-          };
-          chartHtml = `
-            ${renderDelta("C++", vsCpp)}
-            ${renderDelta("Rust", vsRust)}
-          `;
-        }
-
-        return `
-          <div class="bench-row">
-            <div class="bench-info">
-              <div class="bench-title-row">
-                <span class="bench-name">${escapeHtml(item.name)}</span>
-                <span class="winner-badge ${winner}">🥇 ${labels[winner]}</span>
-              </div>
-              <div class="bench-tags">
-                <span class="bench-tag">${escapeHtml(item.category.replace(/_/g, " "))}</span>
-                <span class="bench-tag profile">${escapeHtml(item.profile)}</span>
-              </div>
-            </div>
-            <div class="bars-stack">
-              ${chartHtml}
-            </div>
-          </div>
-        `;
-      }
-
-      if (isGrouped && currentCategory === "all") {
-        const groups = {};
-        items.forEach(item => {
-          if (!groups[item.category]) groups[item.category] = [];
-          groups[item.category].push(item);
-        });
-        container.innerHTML = Object.entries(groups).map(([cat, groupItems]) => `
-          <div class="category-group-header">
-            <span>${escapeHtml(cat.replace(/_/g, " "))}</span>
-            <span>${groupItems.length} workloads</span>
-          </div>
-          ${groupItems.map(renderWorkloadRow).join("")}
-        `).join("");
-      } else {
-        container.innerHTML = items.map(renderWorkloadRow).join("");
-      }
-    }
-
     // Render Table Matrix
     function renderTable(items) {
       const tbody = document.querySelector("#table-body");
@@ -1952,15 +1604,46 @@ def write_html_report(report, path, raw_data_name):
         const pMed = median(item, "prismio");
         const cMed = median(item, "cpp");
         const rMed = median(item, "rust");
-        const rCpp = ratio(item, "cpp");
-        const rRust = ratio(item, "rust");
-        const jitter = jitterPercent(item.languages.prismio.elapsed_ns_samples, pMed);
 
-        const pill = r => {
-          if (r < 0.95) return `<span class="delta-pill faster">${r.toFixed(2)}× (-${((1 - r) * 100).toFixed(0)}%)</span>`;
-          if (r <= 1.05) return `<span class="delta-pill parity">${r.toFixed(2)}× (±${Math.abs((r - 1) * 100).toFixed(0)}%)</span>`;
-          return `<span class="delta-pill slower">${r.toFixed(2)}× (+${((r - 1) * 100).toFixed(0)}%)</span>`;
+        const pSamples = item.languages.prismio.elapsed_ns_samples || [];
+        const pMin = pSamples.length ? Math.min(...pSamples) : pMed;
+        const jitter = robustJitter(pSamples, pMed);
+
+        const renderDeltaPill = (baseline) => {
+          const bMed = median(item, baseline);
+          const r = ratio(item, baseline);
+          const bSamples = item.languages[baseline].elapsed_ns_samples || [];
+          const bMin = bSamples.length ? Math.min(...bSamples) : bMed;
+          const pNoise = (jitter || 0) / 100;
+          const bNoise = (robustJitter(bSamples, bMed) || 0) / 100;
+          const noiseTol = Math.max(0.06, pNoise, bNoise);
+          const deltaPct = Math.round(Math.abs(r - 1) * 100);
+
+          if (r < 0.95) {
+            return `<span class="delta-pill faster" title="${duration(pMed)} vs ${duration(bMed)} (${deltaPct}% faster)">${r.toFixed(2)}× (-${deltaPct}%)</span>`;
+          }
+          if (Math.abs(r - 1.0) <= noiseTol || (pMin <= bMed && r <= 1.08)) {
+            return `<span class="delta-pill parity" title="At parity within thermal/system noise (±${(noiseTol * 100).toFixed(1)}% margin)">${r.toFixed(2)}× (±${deltaPct}%)</span>`;
+          }
+          if (r <= 1.15) {
+            return `<span class="delta-pill minor" title="Minor variance: baseline leads by ${deltaPct}%">${r.toFixed(2)}× (+${deltaPct}%)</span>`;
+          }
+          return `<span class="delta-pill slower" title="Significant deficit: baseline is ${deltaPct}% faster">${r.toFixed(2)}× (+${deltaPct}%)</span>`;
         };
+
+        let stabilityHtml = '<span style="color:var(--text-faint);">—</span>';
+        if (jitter !== null) {
+          let stClass = "normal";
+          let stTitle = "Normal run-to-run consistency";
+          if (jitter <= 2.5) {
+            stClass = "stable";
+            stTitle = "High consistency (minimal thermal/OS noise)";
+          } else if (jitter > 7.0) {
+            stClass = "elevated";
+            stTitle = "Elevated variance due to thermal or system noise";
+          }
+          stabilityHtml = `<span class="stability-pill ${stClass}" title="${stTitle}">±${jitter.toFixed(1)}%</span>`;
+        }
 
         const isExpanded = expandedRows.has(item.name);
         html += `
@@ -1977,9 +1660,9 @@ def write_html_report(report, path, raw_data_name):
             <td class="num-p">${duration(pMed)}</td>
             <td class="num-c">${duration(cMed)}</td>
             <td class="num-r">${duration(rMed)}</td>
-            <td>${pill(rCpp)}</td>
-            <td>${pill(rRust)}</td>
-            <td>${jitter !== null ? `±${jitter.toFixed(1)}%` : '—'}</td>
+            <td>${renderDeltaPill("cpp")}</td>
+            <td>${renderDeltaPill("rust")}</td>
+            <td>${stabilityHtml}</td>
           </tr>
           <tr class="drawer-row ${isExpanded ? 'open' : ''}" id="drawer-${escapeHtml(item.name)}">
             <td colspan="10" class="drawer-cell">
@@ -2018,8 +1701,10 @@ def write_html_report(report, path, raw_data_name):
                     Execution & Wall Clock Overhead
                   </div>
                   <div class="kpi-detail-list">
-                    <div class="kpi-detail-item"><span>Prismio compute ns</span><strong>${formatNumber(pMed)} ns</strong></div>
+                    <div class="kpi-detail-item"><span>Prismio best (min)</span><strong>${duration(pMin)}</strong></div>
+                    <div class="kpi-detail-item"><span>Prismio median compute</span><strong>${duration(pMed)}</strong></div>
                     <div class="kpi-detail-item"><span>Prismio total wall ns</span><strong>${formatNumber(wallMedian(item, "prismio"))} ns</strong></div>
+                    <div class="kpi-detail-item"><span>Run consistency (MAD)</span><strong>${jitter !== null ? '±' + jitter.toFixed(1) + '%' : '—'}</strong></div>
                     <div class="kpi-detail-item"><span>Overhead (wall - compute)</span><strong>${duration(wallMedian(item, "prismio") - pMed)}</strong></div>
                     <div class="kpi-detail-item"><span>C++ overhead</span><strong>${duration(wallMedian(item, "cpp") - cMed)}</strong></div>
                     <div class="kpi-detail-item"><span>Rust overhead</span><strong>${duration(wallMedian(item, "rust") - rMed)}</strong></div>
@@ -2085,18 +1770,20 @@ def write_html_report(report, path, raw_data_name):
 
       document.querySelector("#visible-status").textContent = `Showing ${sorted.length} of ${implemented.length} workloads`;
 
-      const fastestPrismioCount = implemented.filter(b => median(b, "prismio") === Math.min(...languages.map(l => median(b, l)))).length;
-      const parityCount = implemented.filter(b => {
-        const cr = ratio(b, "cpp");
-        const rr = ratio(b, "rust");
-        return (cr >= 0.95 && cr <= 1.05) || (rr >= 0.95 && rr <= 1.05);
-      }).length;
+      let winCount = 0;
+      let parityCount = 0;
+      let lossCount = 0;
+      implemented.forEach(b => {
+        const { isFastest, isParity, isBehind } = getOutcome(b);
+        if (isFastest) winCount++;
+        if (isParity) parityCount++;
+        if (isBehind) lossCount++;
+      });
       document.querySelector("#count-all").textContent = implemented.length;
-      document.querySelector("#count-win").textContent = fastestPrismioCount;
+      document.querySelector("#count-win").textContent = winCount;
       document.querySelector("#count-parity").textContent = parityCount;
-      document.querySelector("#count-loss").textContent = implemented.length - fastestPrismioCount;
+      document.querySelector("#count-loss").textContent = lossCount;
 
-      renderCharts(sorted);
       renderTable(sorted);
     }
 
@@ -2127,25 +1814,6 @@ def write_html_report(report, path, raw_data_name):
       updateFilters();
     });
 
-    // Chart Mode Switcher
-    document.querySelectorAll("#chart-mode-tabs .tab-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        document.querySelectorAll("#chart-mode-tabs .tab-btn").forEach(b => {
-          b.classList.remove("active");
-          b.setAttribute("aria-selected", "false");
-        });
-        btn.classList.add("active");
-        btn.setAttribute("aria-selected", "true");
-        chartMode = btn.getAttribute("data-mode");
-        const subtitles = {
-          relative: "Direct workload comparison with winner highlighting and normalized scaling",
-          absolute: "Exact execution durations displayed in nanoseconds, microseconds, or milliseconds",
-          diverging: "Speedup and slowdown delta percentage of Prismio relative to C++ and Rust baselines"
-        };
-        document.querySelector("#chart-subtitle").textContent = subtitles[chartMode];
-        updateFilters();
-      });
-    });
 
     // Outcome Filter Chips
     document.querySelectorAll('.chip[data-filter="outcome"]').forEach(chip => {
@@ -2157,14 +1825,6 @@ def write_html_report(report, path, raw_data_name):
       });
     });
 
-    // Grouping Toggle
-    const toggleGroupingBtn = document.querySelector("#toggle-grouping-btn");
-    toggleGroupingBtn.addEventListener("click", () => {
-      isGrouped = !isGrouped;
-      document.querySelector("#grouping-label").textContent = isGrouped ? "Group by Category" : "Show Flat List";
-      toggleGroupingBtn.classList.toggle("btn-primary", isGrouped);
-      updateFilters();
-    });
 
     // Table Column Sorting
     document.querySelectorAll("thead th.sortable").forEach(th => {

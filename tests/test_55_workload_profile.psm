@@ -21,6 +21,7 @@
 
 import std.io
 import std.string
+
 extern fn print(s: String)
 extern fn println(s: String)
 extern fn list_new() -> List<Cell>

@@ -1,0 +1,10 @@
+PASS: null enum variants
+aif-verify: leaked #2 (24 bytes)
+aif-verify: leaked #3 (24 bytes)
+aif-verify: leaked #10 (24 bytes)
+aif-verify: leaked #11 (20 bytes)
+aif-verify: 15 allocated, 11 released, 4 leaked, 0 violation(s)
+aif-memory: 395 allocated bytes, 303 released bytes, 92 live bytes, 322 peak live bytes
+aif-memory-sizes: <=16:2 <=32:11 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0
+aif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread
+aif-verify: FAILED -- an inferred fact did not hold at run time

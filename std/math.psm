@@ -1,0 +1,27 @@
+// Integer min, max and absolute value.
+//
+// Thin by design: each is one builtin, and the builtin is an LLVM intrinsic
+// (`llvm.smax.i32`, `llvm.smin.i32`, `llvm.abs.i32`) rather than a branch. Those
+// are on LLVM's trivially-vectorisable list, which is the difference between a
+// DP loop that widens to four elements per iteration and one that does not.
+//
+// **These are functions and that used to be a trap.** A call in a loop body made
+// `irFlatGuardCount` decline the loop's flat-List guard, and a hand-written
+// `maxInt` measured 1.79x *slower* than the branch it replaced. The guard now
+// looks through callees that call nothing and index nothing, and these qualify
+// through their builtins -- see aif/evidence/RESULTS-min-max.md.
+
+fn max(a: Int, b: Int) -> Int {
+    return __builtin_max(a, b)
+}
+
+fn min(a: Int, b: Int) -> Int {
+    return __builtin_min(a, b)
+}
+
+// `abs(Int.min)` is `Int.min`. Int is signed 32-bit and wraps in release builds
+// (RESULTS-int-width.md), so this is the same answer the rest of the language's
+// arithmetic gives rather than a special case.
+fn abs(value: Int) -> Int {
+    return __builtin_abs(value)
+}

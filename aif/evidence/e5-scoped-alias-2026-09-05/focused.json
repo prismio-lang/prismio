@@ -1,0 +1,97 @@
+{
+  "prime_sieve": {
+    "before": 798584,
+    "after": 723792,
+    "repeat": 796542
+  },
+  "binary_search": {
+    "before": 90816125,
+    "after": 90774250,
+    "repeat": 90430167
+  },
+  "quicksort": {
+    "before": 4716041,
+    "after": 4602916,
+    "repeat": 4682083
+  },
+  "mergesort": {
+    "before": 5652500,
+    "after": 5653292,
+    "repeat": 5644709
+  },
+  "graph_bfs": {
+    "before": 722708,
+    "after": 723084,
+    "repeat": 731958
+  },
+  "knapsack": {
+    "before": 136750,
+    "after": 137042,
+    "repeat": 137000
+  },
+  "matrix_multiply": {
+    "before": 4210417,
+    "after": 4282292,
+    "repeat": 4205458
+  },
+  "fft": {
+    "before": 4746666,
+    "after": 4659541,
+    "repeat": 4738458
+  },
+  "vector_dot": {
+    "before": 14329833,
+    "after": 14331833,
+    "repeat": 14314667
+  },
+  "convolution": {
+    "before": 4239875,
+    "after": 4248542,
+    "repeat": 4265083
+  },
+  "vector_growth": {
+    "before": 10787167,
+    "after": 10830625,
+    "repeat": 10815792
+  },
+  "vector_iteration": {
+    "before": 75409958,
+    "after": 75366166,
+    "repeat": 75409333
+  },
+  "line_processing": {
+    "before": 332125,
+    "after": 329333,
+    "repeat": 329875
+  },
+  "transient_allocation": {
+    "before": 2113667,
+    "after": 2110375,
+    "repeat": 2104209
+  },
+  "nested_collection": {
+    "before": 2774708,
+    "after": 2782625,
+    "repeat": 2797125
+  },
+  "large_buffer_copy": {
+    "before": 7930875,
+    "after": 7937584,
+    "repeat": 7924042
+  },
+  "tokenization": {
+    "before": 151167,
+    "after": 149375,
+    "repeat": 151208
+  },
+  "file_read": {
+    "before": 665583,
+    "after": 664916,
+    "repeat": 665875
+  },
+  "file_write": {
+    "before": 951250,
+    "after": 891500,
+    "repeat": 727459
+  }
+}

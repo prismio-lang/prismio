@@ -1,0 +1,88 @@
+// A loop-body-local `let` used inside an index expression.
+//
+// The range guard evaluates every loop-invariant term in the **preheader**, and
+// a binding declared inside the body does not exist there yet. Treating one as
+// invariant emits a load from a local the backend has never seen, which fails as
+// `internal backend error: load from unknown local` rather than as a wrong
+// answer -- so this file is a compile-time regression test first and a value
+// test second.
+//
+// The hole was that invariance rejected names the body *assigns* but not names
+// it *declares*. Both forms appear below, and so does the case that must still
+// qualify: a term bound outside the loop.
+
+import std.io
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        println(label)
+        return 1
+    }
+    return 0
+}
+
+fn filled(n: Int) -> List<Int> {
+    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i)
+        i = i + 1
+    }
+    return xs
+}
+
+// `step` is declared inside the body. It is not invariant, and the loop must not
+// be range-guarded on it.
+fn localDecl(n: Int) -> Int {
+    let xs = filled(n)
+    let mut acc = 0
+    let mut at = n - 1
+    while (at >= 0) {
+        let step = 1
+        acc = acc + list_get(xs, at - step)
+        at = at - 1
+    }
+    return acc
+}
+
+// `step` is declared outside but assigned inside: the case that was already
+// handled, kept so both halves of the predicate stay covered.
+fn assignedInBody(n: Int) -> Int {
+    let xs = filled(n)
+    let mut acc = 0
+    let mut step = 1
+    let mut at = n - 1
+    while (at >= 0) {
+        acc = acc + list_get(xs, at - step)
+        step = 1
+        at = at - 1
+    }
+    return acc
+}
+
+// Bound outside and never touched: this one must still qualify, so the fix is a
+// correction rather than a blanket refusal.
+fn trulyInvariant(n: Int, step: Int) -> Int {
+    let xs = filled(n)
+    let mut acc = 0
+    let mut at = n - 1
+    while (at >= 0) {
+        acc = acc + list_get(xs, at - step)
+        at = at - 1
+    }
+    return acc
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    // xs is [0..7]; reading at-1 for at in 7..0 gives 6+5+4+3+2+1+0 and one
+    // out-of-range read at at=0 contributing 0.
+    bad = bad + check("FAIL: body-local index term", localDecl(8), 21)
+    bad = bad + check("FAIL: body-assigned index term", assignedInBody(8), 21)
+    bad = bad + check("FAIL: invariant index term", trulyInvariant(8, 1), 21)
+    bad = bad + check("FAIL: invariant index term, step 2", trulyInvariant(8, 2), 15)
+
+    if (bad != 0) { return 1 }
+    println("PASS: loop-local index terms")
+    return 0
+}

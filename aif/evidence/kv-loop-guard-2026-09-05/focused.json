@@ -1,0 +1,52 @@
+{
+  "key_value_update": {
+    "before": 10843000,
+    "after": 11020208,
+    "repeat": 10921917
+  },
+  "hashmap_insert_lookup": {
+    "before": 6936125,
+    "after": 7317958,
+    "repeat": 6937833
+  },
+  "string_search": {
+    "before": 124875,
+    "after": 123916,
+    "repeat": 123500
+  },
+  "tokenization": {
+    "before": 144666,
+    "after": 145000,
+    "repeat": 145042
+  },
+  "line_processing": {
+    "before": 328042,
+    "after": 331875,
+    "repeat": 333000
+  },
+  "file_read": {
+    "before": 667958,
+    "after": 669292,
+    "repeat": 666125
+  },
+  "graph_bfs": {
+    "before": 732792,
+    "after": 731125,
+    "repeat": 734000
+  },
+  "binary_search": {
+    "before": 90512334,
+    "after": 90459000,
+    "repeat": 90545667
+  },
+  "mergesort": {
+    "before": 5736833,
+    "after": 5705708,
+    "repeat": 5726791
+  },
+  "prime_sieve": {
+    "before": 732667,
+    "after": 726917,
+    "repeat": 728958
+  }
+}

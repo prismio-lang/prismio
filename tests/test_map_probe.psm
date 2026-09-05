@@ -1,0 +1,70 @@
+// Collision chains must survive wraparound, growth and overwrite without
+// changing insertion order. A negative constant hash is a valid Key impl.
+import std.io
+import std.map
+import std.key
+import std.copy
+import std.option
+
+struct CollidingKey { id: Int }
+
+impl Key for CollidingKey {
+    fn hash(self) -> Int { return -1 }
+    fn eq(self, other: Self) -> Bool { return self.id == other.id }
+}
+
+impl Copy for CollidingKey {
+    fn copyOf(self) -> Self { return CollidingKey { id: self.id } }
+}
+
+fn main() -> Int {
+    let m = mapNew<CollidingKey, Int>()
+    let mut i = 0
+    while (i < 257) {
+        if (mapSet(m, CollidingKey { id: i }, i * 7)) { return 1 }
+        if (mapLen(m) != i + 1) { return 2 }
+        // Probe through the whole chain, including just after each growth.
+        if (mapHas(m, CollidingKey { id: -1 })) { return 3 }
+        let mut j = 0
+        while (j <= i) {
+            if (mapGetOr(m, CollidingKey { id: j }, -1) != j * 7) { return 4 }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    let mut k = 256
+    while (k >= 0) {
+        if (mapSet(m, CollidingKey { id: k }, -k) == false) { return 5 }
+        k = k - 1
+    }
+    if (mapLen(m) != 257) { return 6 }
+    let mut at = 0
+    while (at < mapLen(m)) {
+        let key = mapKeyAt(m, at)
+        if (key.id != at or mapValueAt(m, at) != -at) { return 7 }
+        if (mapIndexOf(m, CollidingKey { id: at }) != at) { return 8 }
+        at = at + 1
+    }
+    if (optionIsNone(mapGet(m, CollidingKey { id: 0 }))) { return 9 }
+    if (optionIsSome(mapGet(m, CollidingKey { id: 999 }))) { return 10 }
+
+    // Owned long String keys must remain valid across repeated rehashes.
+    let names = mapNew<String, Int>()
+    let mut n = 0
+    while (n < 300) {
+        let key = "a-long-owned-map-key-".concat(n.toString())
+        mapSet(names, key, n)
+        n = n + 1
+    }
+    let mut q = 0
+    while (q < 300) {
+        let key = "a-long-owned-map-key-".concat(q.toString())
+        if (mapGetOr(names, key, -1) != q) { return 11 }
+        if (mapSet(names, key, q + 1) == false) { return 12 }
+        if (mapValueAt(names, q) != q + 1) { return 13 }
+        q = q + 1
+    }
+    if (mapLen(names) != 300) { return 14 }
+    println("PASS: map probe, growth, order and owned keys")
+    return 0
+}

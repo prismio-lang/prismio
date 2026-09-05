@@ -1,0 +1,423 @@
+[93m============================================================[0m
+[93mPrismio Compiler Test Suite[0m
+[93m============================================================[0m
+
+Found 137 positive test(s)
+Found 111 negative test(s)
+Running file fixtures on 8 worker(s)
+
+  [  1/248] [92mok  [0m   1.82s  test_08_mutability
+  [  2/248] [92mok  [0m   2.28s  test_02_if_else
+  [  3/248] [92mok  [0m   2.73s  test_01_variables
+  [  4/248] [92mok  [0m   3.23s  test_07_booleans
+  [  5/248] [92mok  [0m   3.74s  test_04_structs
+  [  6/248] [92mok  [0m   4.18s  test_05_enums
+  [  7/248] [92mok  [0m   4.65s  test_06_recursion
+  [  8/248] [92mok  [0m   5.17s  test_03_while_loops
+  [  9/248] [92mok  [0m   3.85s  test_09_strings
+  [ 10/248] [92mok  [0m   3.91s  test_100_generic_inherent_impl
+  [ 11/248] [92mok  [0m   3.89s  test_100_reuse_token
+  [ 12/248] [92mok  [0m   4.08s  test_101_generic_trait_impl
+  [ 13/248] [92mok  [0m   3.99s  test_102_generic_trait_arguments
+  [ 14/248] [92mok  [0m   4.01s  test_103_default_trait_methods
+  [ 15/248] [92mok  [0m   3.99s  test_104_where_clauses
+  [ 16/248] [92mok  [0m   3.94s  test_105_supertraits
+  [ 17/248] [92mok  [0m   4.00s  test_106_associated_constants
+  [ 18/248] [92mok  [0m   3.95s  test_107_associated_types
+  [ 19/248] [92mok  [0m   3.96s  test_108_trait_method_namespaces
+  [ 20/248] [92mok  [0m   3.79s  test_109_trait_ownership
+  [ 21/248] [92mok  [0m   4.00s  test_10_expressions
+  [ 22/248] [92mok  [0m   4.08s  test_110_orphan_rule
+  [ 23/248] [92mok  [0m   4.21s  test_111_blanket_impls
+  [ 24/248] [92mok  [0m   4.26s  test_112_operator_traits
+  [ 25/248] [92mok  [0m   4.19s  test_113_std_eq_and_display
+  [ 26/248] [92mok  [0m   4.22s  test_114_iterator
+  [ 27/248] [92mok  [0m   4.33s  test_115_trait_imports
+  [ 28/248] [92mok  [0m   4.28s  test_116_trait_objects
+  [ 29/248] [92mok  [0m   4.43s  test_117_block_comments
+  [ 30/248] [92mok  [0m   4.38s  test_118_impl_trait
+  [ 31/248] [92mok  [0m   4.40s  test_119_loop_range_guard
+  [ 32/248] [92mok  [0m   4.33s  test_11_returns
+  [ 33/248] [92mok  [0m   4.30s  test_120_min_max_abs
+  [ 34/248] [92mok  [0m   4.33s  test_121_guard_effect_analysis
+  [ 35/248] [92mok  [0m   4.30s  test_122_loop_local_index_term
+  [ 36/248] [92mok  [0m   4.33s  test_123_loop_range_guard_wrap
+  [ 37/248] [92mok  [0m   4.01s  test_124_whole_buffer_copy
+  [ 38/248] [92mok  [0m   4.12s  test_125_stencil_range_guard
+  [ 39/248] [92mok  [0m   3.96s  test_126_push_predication
+  [ 40/248] [92mok  [0m   4.07s  test_127_enum_null_variant
+  [ 41/248] [92mok  [0m   4.10s  test_128_enum_null_reserved
+  [ 42/248] [92mok  [0m   4.10s  test_129_enum_null_ownership
+  [ 43/248] [92mok  [0m   4.07s  test_12_imports
+  [ 44/248] [92mok  [0m   4.00s  test_13_globals
+  [ 45/248] [92mok  [0m   4.05s  test_14_multi_args
+  [ 46/248] [92mok  [0m   3.97s  test_15_compiler_sim
+  [ 47/248] [92mok  [0m   4.03s  test_16_arrays
+  [ 48/248] [92mok  [0m   3.93s  test_17_string_runtime
+  [ 49/248] [92mok  [0m   3.90s  test_18_floats
+  [ 50/248] [92mok  [0m   3.81s  test_19_runtime_split
+  [ 51/248] [92mok  [0m   3.77s  test_20_integers
+  [ 52/248] [92mok  [0m   3.77s  test_21_loops
+  [ 53/248] [92mok  [0m   3.76s  test_22_match
+  [ 54/248] [92mok  [0m   3.68s  test_23_move
+  [ 55/248] [92mok  [0m   3.60s  test_24_drop
+  [ 56/248] [92mok  [0m   3.66s  test_25_conventions
+  [ 57/248] [92mok  [0m   3.63s  test_26_borrow_reuse
+  [ 58/248] [92mok  [0m   3.61s  test_27_for
+  [ 59/248] [92mok  [0m   3.75s  test_28_list
+  [ 60/248] [92mok  [0m   3.82s  test_29_overloads
+  [ 61/248] [92mok  [0m   3.88s  test_30_diamond_imports
+  [ 62/248] [92mok  [0m   3.93s  test_31_strings_in_control_flow
+  [ 63/248] [92mok  [0m   4.03s  test_32_sized_int_modulo
+  [ 64/248] [92mok  [0m   3.96s  test_33_unary_operators
+  [ 65/248] [92mok  [0m   3.99s  test_34_string_escapes
+  [ 66/248] [92mok  [0m   4.10s  test_35_short_circuit
+  [ 67/248] [92mok  [0m   4.18s  test_36_casts
+  [ 68/248] [92mok  [0m   4.16s  test_37_bitwise_and_compound
+  [ 69/248] [92mok  [0m   4.08s  test_38_scoping
+  [ 70/248] [92mok  [0m   4.11s  test_39_typed_arrays
+  [ 71/248] [92mok  [0m   4.11s  test_40_annotated_arrays
+  [ 72/248] [92mok  [0m   4.15s  test_41_punned_slot_bytes
+  [ 73/248] [92mok  [0m   4.12s  test_42_aif_stack_promotion
+  [ 74/248] [92mok  [0m   4.08s  test_43_aif_scope_drop
+  [ 75/248] [92mok  [0m   3.86s  test_44_aif_region
+  [ 76/248] [92mok  [0m   3.88s  test_45_aif_affine_collections
+  [ 77/248] [92mok  [0m   3.92s  test_46_aif_annotations
+  [ 78/248] [92mok  [0m   3.84s  test_47_aif_containers
+  [ 79/248] [92mok  [0m   3.76s  test_47_aif_minimal_cause
+  [ 80/248] [92mok  [0m   3.73s  test_48_aif_shared_elements
+  [ 81/248] [92mok  [0m   3.70s  test_49_aif_struct_fields
+  [ 82/248] [92mok  [0m   3.67s  test_50_scalar_lists
+  [ 83/248] [92mok  [0m   3.68s  test_51_optional_refs
+  [ 84/248] [92mok  [0m   3.64s  test_52_aif_cycle_collector
+  [ 85/248] [92mok  [0m   3.59s  test_53_aif_views
+  [ 86/248] [92mok  [0m   3.61s  test_53_memory_budget
+  [ 87/248] [92mok  [0m   3.60s  test_54_print_overloads
+  [ 88/248] [92mok  [0m   3.70s  test_56_list_capacity
+  [ 89/248] [92mok  [0m   3.77s  test_57_pin_tiers
+  [ 90/248] [92mok  [0m   3.81s  test_58_region_serves
+  [ 91/248] [92mok  [0m   3.74s  test_59_bracket_summary
+  [ 92/248] [92mok  [0m   3.74s  test_61_layout_cost_model
+  [ 93/248] [92mok  [0m   3.72s  test_62_split_release
+  [ 94/248] [92mok  [0m   7.32s  test_55_workload_profile
+  [ 95/248] [92mok  [0m   3.64s  test_63_placement_pin
+  [ 96/248] [92mok  [0m   3.69s  test_64_generics
+  [ 97/248] [92mok  [0m   3.69s  test_65_map
+  [ 98/248] [92mok  [0m   3.69s  test_66_payload_enums
+  [ 99/248] [92mok  [0m   7.44s  test_60_bracket_reset
+  [100/248] [92mok  [0m   3.75s  test_67_option_result
+  [101/248] [92mok  [0m   3.74s  test_68_optional_returns
+  [102/248] [92mok  [0m   3.71s  test_69_task_results
+  [103/248] [92mok  [0m   3.71s  test_70_struct_field_release
+  [104/248] [92mok  [0m   3.57s  test_71_nonlexical_extent
+  [105/248] [92mok  [0m   3.52s  test_72_reassigned_ownership
+  [106/248] [92mok  [0m   3.58s  test_73_recursive_release
+  [107/248] [92mok  [0m   3.60s  test_73_recursive_release_depth
+  [108/248] [92mok  [0m   3.52s  test_74_reinit_assignment
+  [109/248] [92mok  [0m   3.52s  test_75_std_string
+  [110/248] [92mok  [0m   3.56s  test_76_std_fs
+  [111/248] [92mok  [0m   3.55s  test_77_spawn_literal
+  [112/248] [92mok  [0m   3.58s  test_78_std_string_native
+  [113/248] [92mok  [0m   3.62s  test_79_slices
+  [114/248] [92mok  [0m   3.56s  test_80_data_view_conversion
+  [115/248] [92mok  [0m   3.53s  test_81_data_view_drop
+  [116/248] [92mok  [0m   3.60s  test_82_generic_layout
+  [117/248] [92mok  [0m   3.60s  test_83_list_set_exclusive
+  [118/248] [92mok  [0m   3.66s  test_84_task_release
+  [119/248] [92mok  [0m   3.76s  test_85_passthrough_escape
+  [120/248] [92mok  [0m   3.72s  test_86_impl_blocks
+  [121/248] [92mok  [0m   3.72s  test_87_traits
+  [122/248] [92mok  [0m   3.76s  test_88_map_keys
+  [123/248] [92mok  [0m   3.78s  test_88_single_loop_inline
+  [124/248] [92mok  [0m   3.73s  test_89_closures
+  [125/248] [92mok  [0m   3.74s  test_90_modules
+  [126/248] [92mok  [0m   3.67s  test_91_string_ergonomics
+  [127/248] [92mok  [0m   3.60s  test_92_field_view_provenance
+  [128/248] [92mok  [0m   3.60s  test_93_data_view_from_helper
+  [129/248] [92mok  [0m   3.61s  test_94_selective_imports
+  [130/248] [92mok  [0m   3.58s  test_95_literal_tbaa
+  [131/248] [92mok  [0m   3.59s  test_96_channels
+  [132/248] [92mok  [0m   3.59s  test_97_generic_annotation
+  [133/248] [92mok  [0m   3.62s  test_98_multiple_trait_bounds
+  [134/248] [92mok  [0m   3.67s  test_99_trait_coherence
+  [135/248] [92mok  [0m   3.67s  test_key_wide
+  [136/248] [92mok  [0m   3.71s  test_map_probe
+  [137/248] [92mok  [0m   3.68s  test_map_update
+  [138/248] [92mok  [0m   0.02s  neg_02_int_width
+  [139/248] [92mok  [0m   0.02s  neg_01_type_mismatch
+  [140/248] [92mok  [0m   0.02s  neg_03_use_after_move
+  [141/248] [92mok  [0m   0.02s  neg_05_drop_borrow
+  [142/248] [92mok  [0m   0.02s  neg_06_duplicate_overload
+  [143/248] [92mok  [0m   0.02s  neg_04_use_after_drop
+  [144/248] [92mok  [0m   0.02s  neg_07_scope_leak
+  [145/248] [92mok  [0m   0.02s  neg_08_missing_return
+  [146/248] [92mok  [0m   0.01s  neg_100_for_over_non_iterator
+  [147/248] [92mok  [0m   0.02s  neg_09_unreachable_code
+  [148/248] [92mok  [0m   0.01s  neg_102_dyn_associated_type
+  [149/248] [92mok  [0m   0.02s  neg_101_dyn_self_not_object_safe
+  [150/248] [92mok  [0m   0.01s  neg_104_dyn_returned
+  [151/248] [92mok  [0m   0.02s  neg_103_dyn_in_struct_field
+  [152/248] [92mok  [0m   0.01s  neg_105_dyn_unknown_trait
+  [153/248] [92mok  [0m   0.01s  neg_106_unterminated_block_comment
+  [154/248] [92mok  [0m   0.01s  neg_107_impl_trait_return_mismatch
+  [155/248] [92mok  [0m   0.01s  neg_108_impl_trait_position
+  [156/248] [92mok  [0m   0.01s  neg_10_move_in_loop
+  [157/248] [92mok  [0m   0.01s  neg_109_impl_trait_bound
+  [158/248] [92mok  [0m   0.01s  neg_110_string_operator_needs_import
+  [159/248] [92mok  [0m   0.01s  neg_11_immutable_assign
+  [160/248] [92mok  [0m   0.01s  neg_12_multiple_errors
+  [161/248] [92mok  [0m   0.01s  neg_13_syntax_recovery
+  [162/248] [92mok  [0m   0.01s  neg_14_wrong_arity
+  [163/248] [92mok  [0m   0.01s  neg_15_unclosed_block
+  [164/248] [92mok  [0m   0.01s  neg_17_region_unnamed
+  [165/248] [92mok  [0m   0.01s  neg_18_drop_array
+  [166/248] [92mok  [0m   0.01s  neg_16_return_local_array
+  [167/248] [92mok  [0m   0.01s  neg_22_push_borrowed_element
+  [168/248] [92mok  [0m   0.01s  neg_21_container_takes_ownership
+  [169/248] [92mok  [0m   0.01s  neg_24_region_budget_refuted
+  [170/248] [92mok  [0m   0.01s  neg_24_unique_aliased_args
+  [171/248] [92mok  [0m   0.02s  neg_23_optional_needs_unwrap
+  [172/248] [92mok  [0m   0.02s  neg_20_pin_refuted
+  [173/248] [92mok  [0m   0.03s  neg_19_use_after_move_string
+  [174/248] [92mok  [0m   0.01s  neg_25_pin_refuted
+  [175/248] [92mok  [0m   0.01s  neg_26_placement_pin_refuted
+  [176/248] [92mok  [0m   0.01s  neg_27_generic_arity
+  [177/248] [92mok  [0m   0.01s  neg_28_enum_infer
+  [178/248] [92mok  [0m   0.01s  neg_29_match_not_exhaustive
+  [179/248] [92mok  [0m   0.01s  neg_30_unreachable_arm
+  [180/248] [92mok  [0m   0.01s  neg_33_slice_type_mismatch
+  [181/248] [92mok  [0m   0.01s  neg_31_reserved_builtin
+  [182/248] [92mok  [0m   0.01s  neg_34_slice_ffi
+  [183/248] [92mok  [0m   0.02s  neg_32_slice_non_list
+  [184/248] [92mok  [0m   0.01s  neg_35_soa_non_list
+  [185/248] [92mok  [0m   0.01s  neg_36_soa_non_flat
+  [186/248] [92mok  [0m   0.01s  neg_37_data_view_ffi
+  [187/248] [92mok  [0m   0.01s  neg_38_data_view_field
+  [188/248] [92mok  [0m   0.01s  neg_39_soa_moves_source
+  [189/248] [92mok  [0m   0.01s  neg_41_list_set_exclusive_observed
+  [190/248] [92mok  [0m   0.01s  neg_40_data_element_escape
+  [191/248] [92mok  [0m   0.01s  neg_43_impl_self_position
+  [192/248] [92mok  [0m   0.01s  neg_42_list_set_exclusive_inline
+  [193/248] [92mok  [0m   0.01s  neg_45_bound_not_satisfied
+  [194/248] [92mok  [0m   0.01s  neg_46_impl_missing_method
+  [195/248] [92mok  [0m   0.01s  neg_44_impl_generic
+  [196/248] [92mok  [0m   0.01s  neg_47_unknown_trait
+  [197/248] [92mok  [0m   0.01s  neg_50_closure_param_type
+  [198/248] [92mok  [0m   0.01s  neg_51_private_function
+  [199/248] [92mok  [0m   0.02s  neg_49_map_float_key
+  [200/248] [92mok  [0m   0.01s  neg_52_unknown_module_member
+  [201/248] [92mok  [0m   0.02s  neg_48_bound_not_a_trait
+  [202/248] [92mok  [0m   0.01s  neg_54_private_method
+  [203/248] [92mok  [0m   0.01s  neg_53_internal_across_packages
+  [204/248] [92mok  [0m   0.01s  neg_56_channel_send_moves
+  [205/248] [92mok  [0m   0.02s  neg_55_unselected_name
+  [206/248] [92mok  [0m   0.01s  neg_58_second_bound_not_trait
+  [207/248] [92mok  [0m   0.01s  neg_57_second_bound_not_satisfied
+  [208/248] [92mok  [0m   0.01s  neg_61_duplicate_trait_impl
+  [209/248] [92mok  [0m   0.01s  neg_59_malformed_multiple_bound
+  [210/248] [92mok  [0m   0.01s  neg_60_unrelated_method_not_conformance
+  [211/248] [92mok  [0m   0.01s  neg_62_unconstrained_generic_impl
+  [212/248] [92mok  [0m   0.01s  neg_63_impl_for_type_parameter
+  [213/248] [92mok  [0m   0.01s  neg_64_duplicate_impl_method_parameter
+  [214/248] [92mok  [0m   0.01s  neg_65_generic_trait_impl_bound
+  [215/248] [92mok  [0m   0.01s  neg_66_overlapping_generic_trait_impl
+  [216/248] [92mok  [0m   0.01s  neg_69_generic_trait_method_parameter
+  [217/248] [92mok  [0m   0.01s  neg_68_blanket_trait_impl
+  [218/248] [92mok  [0m   0.01s  neg_70_missing_trait_argument
+  [219/248] [92mok  [0m   0.02s  neg_67_generic_trait_conformance
+  [220/248] [92mok  [0m   0.01s  neg_71_extra_trait_argument
+  [221/248] [92mok  [0m   0.01s  neg_73_trait_argument_bound_mismatch
+  [222/248] [92mok  [0m   0.01s  neg_72_missing_bound_trait_argument
+  [223/248] [92mok  [0m   0.01s  neg_74_trait_argument_conformance
+  [224/248] [92mok  [0m   0.01s  neg_75_overlapping_trait_arguments
+  [225/248] [92mok  [0m   0.01s  neg_76_unknown_trait_argument_type
+  [226/248] [92mok  [0m   0.01s  neg_77_missing_method_with_defaults
+  [227/248] [92mok  [0m   0.01s  neg_79_where_unknown_parameter
+  [228/248] [92mok  [0m   0.02s  neg_78_default_body_unknown_call
+  [229/248] [92mok  [0m   0.01s  neg_83_supertrait_cycle
+  [230/248] [92mok  [0m   0.01s  neg_81_where_bound_not_trait
+  [231/248] [92mok  [0m   0.02s  neg_80_where_bound_not_satisfied
+  [232/248] [92mok  [0m   0.02s  neg_82_missing_supertrait
+  [233/248] [92mok  [0m   0.01s  neg_88_trait_constant_with_value
+  [234/248] [92mok  [0m   0.02s  neg_85_missing_associated_constant
+  [235/248] [92mok  [0m   0.01s  neg_90_trait_associated_type_value
+  [236/248] [92mok  [0m   0.02s  neg_84_transitive_supertrait
+  [237/248] [92mok  [0m   0.01s  neg_91_unknown_projection
+  [238/248] [92mok  [0m   0.01s  neg_89_missing_associated_type
+  [239/248] [92mok  [0m   0.02s  neg_86_associated_constant_type
+  [240/248] [92mok  [0m   0.02s  neg_87_associated_constant_not_global
+  [241/248] [92mok  [0m   0.01s  neg_93_ambiguous_trait_method
+  [242/248] [92mok  [0m   0.01s  neg_94_wrong_trait_qualifier
+  [243/248] [92mok  [0m   0.01s  neg_92_equality_constraint
+  [244/248] [92mok  [0m   0.01s  neg_96_trait_inout_not_honoured
+  [245/248] [92mok  [0m   0.01s  neg_95_trait_sink_not_honoured
+  [246/248] [92mok  [0m   0.01s  neg_99_compare_without_ord
+  [247/248] [92mok  [0m   0.01s  neg_97_nonterminating_instantiation
+  [248/248] [92mok  [0m   0.01s  neg_98_orphan_impl
+
+  file fixtures: 68.4s (248 passed, 0 failed)
+
+
+[94m--- Running cli_run_forward_slash ---[0m
+[92m[PASS] `prismio run` works with a forward-slash output path[0m
+
+[94m--- Running cli_check_protocol ---[0m
+[92m[PASS] check is analysis-only and emits schema v1 JSON Lines[0m
+
+[94m--- Running ums ---[0m
+[92m[PASS] ums: manifest lowering, validation, build planning, native linkage, host routing, dependency resolution and the lockfile[0m
+
+[94m--- Running corpus ---[0m
+[92m[PASS] corpus: 7 programs build and run[0m
+
+[94m--- Running aif_tiers ---[0m
+[92m[PASS] AIF assigns every SPEC 4.2 clause its expected tier[0m
+
+[94m--- Running aif_human_report ---[0m
+[92m[PASS] AIF defaults to human storage decisions; --manifest preserves the CI form[0m
+
+[94m--- Running aif_concurrency ---[0m
+[92m[PASS] INFERENCE 4.3 assigns every rule its expected affinity; T4a is reachable and counts atomically[0m
+
+[94m--- Running aif_widening ---[0m
+[92m[PASS] widening never lowers a tier, at any budget[0m
+
+[94m--- Running aif_stack_slot ---[0m
+[92m[PASS] T0 sites reach codegen as allocas, collisions included[0m
+
+[94m--- Running pin_tiers ---[0m
+[92m[PASS] pin freezes the tier, and only where the mechanism exists[0m
+
+[94m--- Running region_diagnostics ---[0m
+[92m[PASS] region diagnostics: inert regions warn, served ones do not, and --why names every blocker[0m
+
+[94m--- Running placement_pin ---[0m
+[92m[PASS] pin(<region-name>) is recorded honoured, and a second call site to a bracketed callee fails the build[0m
+
+[94m--- Running nonlexical_extent ---[0m
+[92m[PASS] non-lexical extents: 11 arena(s) bracketed between statements, five exit shapes correct, ledger clean[0m
+
+[94m--- Running bracket_summary ---[0m
+[92m[PASS] bracketing summary: obligation 2 fires on the callee that stores into a parameter, and only on it; a blocker propagates to its caller[0m
+
+[94m--- Running layout_cost_model ---[0m
+[92m[PASS] the cost model ranks cuts by cost, not by frequency rank, and codegen emits the cut it chose[0m
+
+[94m--- Running split_release ---[0m
+[92m[PASS] a split object is reclaimed whole: both halves released, no double free, cold fields read back exact[0m
+
+[94m--- Running forced_layout ---[0m
+[92m[PASS] a named candidate is emitted, runs correct at every cut, and an unmatched force changes nothing[0m
+
+[94m--- Running object_cache ---[0m
+[92m[PASS] the runtime object is cached: cold misses, warm hits, the program still runs, --verify keys separately, and the bypass bypasses[0m
+
+[94m--- Running bootstrap_cache_key ---[0m
+[92m[PASS] the bootstrap cache key is stable, per-source, and moves when either the source or a header does[0m
+
+[94m--- Running bootstrap_command ---[0m
+[92m[PASS] `prismio bootstrap -g` builds a debuggable compiler whose IR matches this one's[0m
+
+[94m--- Running manifest_parseable ---[0m
+[92m[PASS] every manifest record is parseable by the CI differ[0m
+
+[94m--- Running oracle_vocabulary ---[0m
+[92m[PASS] compiler and oracle agree on all 13 producing runtime calls[0m
+
+[94m--- Running elem_mode_agreement ---[0m
+[92m[PASS] all 8 element modes agree across src/ir/context.psm, aif_support.c and lang_runtime.c[0m
+
+[94m--- Running aif_drop_emission ---[0m
+[92m[PASS] every scope exit reclaims what it allocated, and nowhere else does[0m
+
+[94m--- Running aif_rc ---[0m
+  2 refcounted allocation(s) in the compiler, all struct-sized
+[92m[PASS] T3 is counted where it is ours and nowhere else[0m
+
+[94m--- Running aif_view ---[0m
+[92m[PASS] a collection outlives every view of it, and only then[0m
+
+[94m--- Running slice_gate ---[0m
+[92m[PASS] Slice is handle-based, growth-safe, range-checked, and covered by E-VIEW[0m
+
+[94m--- Running data_view_gate ---[0m
+[92m[PASS] DataView emits disjoint columns, round-trips mutations through padding-aware rows, and releases cleanly[0m
+
+[94m--- Running struct_path_tbaa ---[0m
+[92m[PASS] ordinary, reordered and split field accesses carry target-layout struct paths; literal initialisers and raw-Ptr-exposed structs stay conservative[0m
+
+[94m--- Running generic_layout_specialization_gate ---[0m
+[92m[PASS] generic clones select inline storage only after concrete layout substitution[0m
+
+[94m--- Running aif_layout ---[0m
+[92m[PASS] layout reorders fields and never the first one (7 structs)[0m
+
+[94m--- Running workload ---[0m
+[92m[PASS] a measured profile changes the layout, and nothing else[0m
+
+[94m--- Running aif_struct_fields ---[0m
+[92m[PASS] a struct releases the fields it owns, and only those[0m
+
+[94m--- Running no_inference ---[0m
+[92m[PASS] inference changes no observable output, over 133 fixture(s) (4 probing the allocator's own counters, which 7.1 excludes)[0m
+
+[94m--- Running aif_verify ---[0m
+[92m[PASS] verify: no double frees, and leaks are only the T2 returns[0m
+
+[94m--- Running aif_annotations ---[0m
+[92m[PASS] `unique` cuts aliasing and `pin` freezes a tier, both recorded[0m
+
+[94m--- Running aif_minimal_cause ---[0m
+[92m[PASS] minimal cause walks the derivation, and repairs follow the path[0m
+
+[94m--- Running punned_slot_invariant ---[0m
+[92m[PASS] NodeKind and TypeKind both reserve ordinal 0[0m
+
+[94m--- Running debug_info ---[0m
+[92m[PASS] -g: 5 marked lines and 1 closing braces located, 8 members at host offsets, 5 globals described, an enum with 3 enumerators, a split type describes its cold block[0m
+
+[94m--- Running inline_runtime_default ---[0m
+[92m[PASS] inline runtime merged by default; `=0` retained the old path[0m
+
+[94m--- Running runtime_object_from_ir ---[0m
+[92m[PASS] runtime object lowered from the curated bitcode; `=0` compiled it from source; both agree[0m
+
+[94m--- Running single_loop_inline ---[0m
+[92m[PASS] unique single-loop call is inlined; crowded and debug calls retain boundaries[0m
+
+[94m--- Running task_release ---[0m
+[92m[PASS] task release: emitted where the join is proved, withheld for a copied handle and an unprovable join[0m
+
+[94m--- Running string_operator_ledger ---[0m
+[92m[PASS] string operator ledger: 27 allocated, 27 released, 0 leaked, 0 violations -- the five lowering targets own what they return[0m
+
+[94m--- Running overflow_checks ---[0m
+  (program exited with code 1)
+[92m[PASS] overflow checks: default wraps and emits no intrinsic; --overflow-checks names the operator and the line[0m
+
+[94m--- Running curated_closure ---[0m
+[92m[PASS] curated closure: 15 op(s) reference only exported symbols[0m
+
+[94m--- Running curated_emits ---[0m
+[92m[PASS] curated emits: 5 op(s) codegen emits, 3 curated and 2 waived with a recorded reason[0m
+
+[94m--- Running target_cross ---[0m
+[92m[PASS] --target: triple and layout from LLVM, pointer width agreed by sema and codegen, -g offsets from the target, cache keyed per target, container fields sized from the target; layout vs clang: 2 target(s) agree with clang; link: x86_64-apple-macos built and ran[0m
+
+[94m--- Running runtime_library ---[0m
+[92m[PASS] runtime library: a packaged toolchain links its own archive, a foreign target does not get the host's, --verify bypasses it, staleness is caught; cross: runtime-x86_64-apple-macos.a linked and ran; separation: verify_separation.py passed[0m
+
+[94m--- Running incremental_manifest ---[0m
+[92m[PASS] incremental manifest: cold and incremental agree, discriminating, reversible and budget-sensitive[0m
+
+[94m--- Running jit ---[0m
+[92m[PASS] jit: same output and status as a built run, arguments are the program's, --target refused both ways, nothing written[0m
+
+[93m============================================================[0m
+[93mTest Results[0m
+[93m============================================================[0m
+[92mPassed: 299[0m
+[91mFailed: 0[0m
+Total:  299
+
+[92mAll tests passed![0m

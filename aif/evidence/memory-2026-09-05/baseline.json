@@ -1,0 +1,1893 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-05T04:51:17.774095+00:00",
+  "runs": 9,
+  "build_commands": {
+    "prismio": "/private/tmp/prismio-memory-2026-09-05/gen2 build /private/tmp/prismio-memory-2026-09-05/benchmarks/prismio/suite.psm -o /private/tmp/prismio-memory-2026-09-05/benchmarks/build/prismio-suite",
+    "cpp": "/opt/homebrew/opt/llvm/bin/clang++ -O3 -std=c++20 -pthread /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/suite.cpp /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/algorithms.cpp /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/data_structures.cpp /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/compute.cpp /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/memory.cpp /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/io.cpp -o /private/tmp/prismio-memory-2026-09-05/benchmarks/build/cpp-suite",
+    "rust": "rustc -C opt-level=3 --edition=2021 /private/tmp/prismio-memory-2026-09-05/benchmarks/rust/suite.rs -o /private/tmp/prismio-memory-2026-09-05/benchmarks/build/rust-suite"
+  },
+  "compile_ns": {
+    "prismio": 1640692500,
+    "cpp": 1918343000,
+    "rust": 723117750
+  },
+  "benchmarks": [
+    {
+      "name": "fibonacci",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu",
+      "result": 5985853,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 11406709,
+          "wall_ns_median": 13083250,
+          "elapsed_ns_samples": [
+            23219750,
+            19196292,
+            12618250,
+            11409208,
+            11350791,
+            11406709,
+            11333292,
+            11398250,
+            11403917
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 11476083,
+          "wall_ns_median": 13276917,
+          "elapsed_ns_samples": [
+            23230833,
+            15042917,
+            11470375,
+            11461959,
+            11480708,
+            11488083,
+            11437958,
+            11448833,
+            11476083
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 11473333,
+          "wall_ns_median": 13231208,
+          "elapsed_ns_samples": [
+            23402875,
+            13353584,
+            11442875,
+            11478917,
+            11428000,
+            11434375,
+            11483875,
+            11473333,
+            11435083
+          ]
+        }
+      }
+    },
+    {
+      "name": "prime_sieve",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "result": 458935349,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 855959,
+          "wall_ns_median": 2456208,
+          "elapsed_ns_samples": [
+            867375,
+            868917,
+            922667,
+            852750,
+            855959,
+            804000,
+            798250,
+            821250,
+            867416
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 520250,
+          "wall_ns_median": 2272875,
+          "elapsed_ns_samples": [
+            522541,
+            527709,
+            517042,
+            504209,
+            538417,
+            495000,
+            528792,
+            520250,
+            516041
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 897291,
+          "wall_ns_median": 2583125,
+          "elapsed_ns_samples": [
+            896875,
+            932833,
+            778208,
+            904250,
+            897291,
+            901291,
+            899958,
+            774792,
+            780333
+          ]
+        }
+      }
+    },
+    {
+      "name": "gcd_lcm",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu",
+      "result": 504265700,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 22526125,
+          "wall_ns_median": 24320208,
+          "elapsed_ns_samples": [
+            23965333,
+            22526125,
+            21194583,
+            20987834,
+            25974041,
+            22898167,
+            20542708,
+            19927666,
+            23353625
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 22107042,
+          "wall_ns_median": 24149958,
+          "elapsed_ns_samples": [
+            25611125,
+            23802833,
+            24651750,
+            19915625,
+            22107042,
+            21783959,
+            26165583,
+            20614417,
+            20590125
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 23258875,
+          "wall_ns_median": 25123292,
+          "elapsed_ns_samples": [
+            23258875,
+            24998125,
+            24847791,
+            25778167,
+            25231250,
+            23155458,
+            22219625,
+            22174416,
+            23170750
+          ]
+        }
+      }
+    },
+    {
+      "name": "binary_search",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "result": 1004850,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 90807041,
+          "wall_ns_median": 92991416,
+          "elapsed_ns_samples": [
+            90549542,
+            89709916,
+            89888083,
+            89273166,
+            91544167,
+            90807041,
+            91589542,
+            90955459,
+            91879000
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 72366500,
+          "wall_ns_median": 74567833,
+          "elapsed_ns_samples": [
+            72410083,
+            72883417,
+            72327209,
+            72233000,
+            72160792,
+            72352959,
+            72409625,
+            72366500,
+            72759000
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 131493916,
+          "wall_ns_median": 133490750,
+          "elapsed_ns_samples": [
+            131817167,
+            132856625,
+            130265417,
+            130980375,
+            131493916,
+            131959375,
+            131831250,
+            131171542,
+            131212958
+          ]
+        }
+      }
+    },
+    {
+      "name": "quicksort",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "result": 33756443,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 4846167,
+          "wall_ns_median": 6640458,
+          "elapsed_ns_samples": [
+            4846167,
+            4852250,
+            4888875,
+            4782417,
+            4840125,
+            4883584,
+            4749583,
+            4807917,
+            4848208
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 4432708,
+          "wall_ns_median": 6394833,
+          "elapsed_ns_samples": [
+            4458167,
+            4524500,
+            4404416,
+            4395416,
+            4432708,
+            4624083,
+            4408917,
+            4460500,
+            4428917
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 4444000,
+          "wall_ns_median": 6284375,
+          "elapsed_ns_samples": [
+            4488666,
+            4339292,
+            4444667,
+            4418083,
+            4402708,
+            4527375,
+            4444000,
+            4449458,
+            4443875
+          ]
+        }
+      }
+    },
+    {
+      "name": "mergesort",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "result": 33756443,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 6364167,
+          "wall_ns_median": 8096209,
+          "elapsed_ns_samples": [
+            6366292,
+            6259833,
+            6287667,
+            6273584,
+            6483750,
+            6452208,
+            6288250,
+            6376792,
+            6364167
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 3695625,
+          "wall_ns_median": 5549000,
+          "elapsed_ns_samples": [
+            3668042,
+            3701708,
+            3695625,
+            3713833,
+            3680250,
+            3703292,
+            3699416,
+            3663750,
+            3630500
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 5010958,
+          "wall_ns_median": 6774834,
+          "elapsed_ns_samples": [
+            5047958,
+            5028542,
+            4912792,
+            4938333,
+            5010958,
+            5050250,
+            4945792,
+            4996458,
+            5018458
+          ]
+        }
+      }
+    },
+    {
+      "name": "string_search",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-allocation",
+      "result": 152047993,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 127708,
+          "wall_ns_median": 1739917,
+          "elapsed_ns_samples": [
+            131125,
+            122458,
+            124583,
+            121333,
+            131917,
+            121209,
+            128625,
+            133292,
+            127708
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 93291,
+          "wall_ns_median": 1848334,
+          "elapsed_ns_samples": [
+            93291,
+            88750,
+            92125,
+            97041,
+            89708,
+            98625,
+            96667,
+            90375,
+            95334
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 161000,
+          "wall_ns_median": 1880917,
+          "elapsed_ns_samples": [
+            158584,
+            158208,
+            163875,
+            167958,
+            171709,
+            165625,
+            159833,
+            153542,
+            161000
+          ]
+        }
+      }
+    },
+    {
+      "name": "graph_bfs",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "memory",
+      "result": 542195018,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 760125,
+          "wall_ns_median": 2435833,
+          "elapsed_ns_samples": [
+            771667,
+            749417,
+            740500,
+            758834,
+            751959,
+            780542,
+            760125,
+            819417,
+            791375
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 592667,
+          "wall_ns_median": 2379583,
+          "elapsed_ns_samples": [
+            591417,
+            592042,
+            598667,
+            586375,
+            592667,
+            613291,
+            610416,
+            590375,
+            609292
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 594916,
+          "wall_ns_median": 2303625,
+          "elapsed_ns_samples": [
+            589792,
+            594916,
+            594750,
+            586541,
+            595209,
+            600250,
+            585125,
+            598417,
+            604167
+          ]
+        }
+      }
+    },
+    {
+      "name": "knapsack",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "result": 12798,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 202417,
+          "wall_ns_median": 1780667,
+          "elapsed_ns_samples": [
+            201708,
+            199208,
+            204166,
+            198916,
+            203750,
+            202417,
+            203083,
+            199666,
+            206084
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 147750,
+          "wall_ns_median": 1883084,
+          "elapsed_ns_samples": [
+            144875,
+            146042,
+            153500,
+            161541,
+            136709,
+            152292,
+            142583,
+            148375,
+            147750
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 428125,
+          "wall_ns_median": 2098083,
+          "elapsed_ns_samples": [
+            421541,
+            422083,
+            428125,
+            429084,
+            429125,
+            430250,
+            411417,
+            430625,
+            422625
+          ]
+        }
+      }
+    },
+    {
+      "name": "tree_traversal",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "memory",
+      "result": 294705124,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 677125,
+          "wall_ns_median": 2293916,
+          "elapsed_ns_samples": [
+            694959,
+            683917,
+            650250,
+            722375,
+            660000,
+            700167,
+            652125,
+            638000,
+            677125
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 382584,
+          "wall_ns_median": 2101666,
+          "elapsed_ns_samples": [
+            397583,
+            363084,
+            401750,
+            402334,
+            350709,
+            367708,
+            382584,
+            388417,
+            361209
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 331125,
+          "wall_ns_median": 2025833,
+          "elapsed_ns_samples": [
+            319417,
+            350292,
+            353667,
+            319708,
+            329375,
+            331125,
+            314875,
+            356000,
+            339167
+          ]
+        }
+      }
+    },
+    {
+      "name": "hashmap_insert_lookup",
+      "category": "data_structures",
+      "status": "implemented",
+      "profile": "memory-allocation",
+      "result": 42239213,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 9505416,
+          "wall_ns_median": 11285625,
+          "elapsed_ns_samples": [
+            9607625,
+            9614875,
+            9364375,
+            9363833,
+            9505416,
+            9555333,
+            9476083,
+            9621791,
+            9386292
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 6898208,
+          "wall_ns_median": 8863667,
+          "elapsed_ns_samples": [
+            6617958,
+            6610625,
+            6801416,
+            6911166,
+            6901625,
+            6659625,
+            6898208,
+            6907709,
+            7211625
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 7907208,
+          "wall_ns_median": 9793667,
+          "elapsed_ns_samples": [
+            7938167,
+            7940167,
+            7889584,
+            7818416,
+            7907208,
+            7935959,
+            7911833,
+            7867625,
+            7815708
+          ]
+        }
+      }
+    },
+    {
+      "name": "vector_growth",
+      "category": "data_structures",
+      "status": "implemented",
+      "profile": "allocation",
+      "result": 995982695,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 11402834,
+          "wall_ns_median": 13803166,
+          "elapsed_ns_samples": [
+            12845709,
+            20893000,
+            11646584,
+            11358500,
+            11402834,
+            11143417,
+            11325667,
+            11472625,
+            11222292
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 11227250,
+          "wall_ns_median": 13945667,
+          "elapsed_ns_samples": [
+            26099000,
+            11692542,
+            11486167,
+            11483708,
+            11227250,
+            11143083,
+            11118959,
+            11000000,
+            11215500
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 10361750,
+          "wall_ns_median": 12678000,
+          "elapsed_ns_samples": [
+            16005958,
+            10642458,
+            10417667,
+            10373750,
+            10078792,
+            10218417,
+            10361750,
+            10165375,
+            10198209
+          ]
+        }
+      }
+    },
+    {
+      "name": "vector_iteration",
+      "category": "data_structures",
+      "status": "implemented",
+      "profile": "memory",
+      "result": 127112128,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 76874250,
+          "wall_ns_median": 79186583,
+          "elapsed_ns_samples": [
+            76874250,
+            76218792,
+            75867084,
+            83653708,
+            79117042,
+            77142417,
+            76921458,
+            76655792,
+            76528083
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 77791958,
+          "wall_ns_median": 80418833,
+          "elapsed_ns_samples": [
+            77791958,
+            76678667,
+            77329459,
+            80431917,
+            78241041,
+            77922417,
+            78928625,
+            77098500,
+            76977042
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 75279417,
+          "wall_ns_median": 78053791,
+          "elapsed_ns_samples": [
+            74709625,
+            74502167,
+            89838542,
+            81731042,
+            75423500,
+            75279417,
+            76618833,
+            74738000,
+            74519042
+          ]
+        }
+      }
+    },
+    {
+      "name": "key_value_update",
+      "category": "data_structures",
+      "status": "implemented",
+      "profile": "memory",
+      "result": 5599628,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 18704709,
+          "wall_ns_median": 20550667,
+          "elapsed_ns_samples": [
+            18363250,
+            19314125,
+            20550083,
+            19009958,
+            18680000,
+            18613583,
+            18751458,
+            18704709,
+            18682875
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 5604375,
+          "wall_ns_median": 7668250,
+          "elapsed_ns_samples": [
+            5635583,
+            5658875,
+            5899625,
+            5552709,
+            5604375,
+            5594833,
+            5521667,
+            5839459,
+            5454417
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 8638709,
+          "wall_ns_median": 10571125,
+          "elapsed_ns_samples": [
+            8585750,
+            10178041,
+            8844292,
+            8676708,
+            8489250,
+            8638709,
+            8699375,
+            8577917,
+            8547792
+          ]
+        }
+      }
+    },
+    {
+      "name": "linked_list",
+      "category": "data_structures",
+      "status": "unsupported",
+      "profile": "allocation"
+    },
+    {
+      "name": "binary_search_tree",
+      "category": "data_structures",
+      "status": "unsupported",
+      "profile": "memory-allocation"
+    },
+    {
+      "name": "priority_queue",
+      "category": "data_structures",
+      "status": "unsupported",
+      "profile": "cpu-memory"
+    },
+    {
+      "name": "mixed_map_removal",
+      "category": "data_structures",
+      "status": "unsupported",
+      "profile": "memory-allocation"
+    },
+    {
+      "name": "matrix_multiply",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu",
+      "result": 346043827,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 4336917,
+          "wall_ns_median": 6059417,
+          "elapsed_ns_samples": [
+            4335667,
+            4379000,
+            4432333,
+            4305292,
+            4319708,
+            4336917,
+            4384916,
+            4417750,
+            4321041
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 4297917,
+          "wall_ns_median": 6219542,
+          "elapsed_ns_samples": [
+            4301167,
+            4281375,
+            4350834,
+            4332041,
+            4285709,
+            4290250,
+            4256708,
+            4297917,
+            4326458
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 4353959,
+          "wall_ns_median": 6388667,
+          "elapsed_ns_samples": [
+            4355417,
+            4523417,
+            4338542,
+            4327458,
+            4293458,
+            4307625,
+            4362542,
+            4673208,
+            4353959
+          ]
+        }
+      }
+    },
+    {
+      "name": "mandelbrot",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu",
+      "result": 38776,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 3927333,
+          "wall_ns_median": 5895333,
+          "elapsed_ns_samples": [
+            3842041,
+            3833500,
+            3907041,
+            3836333,
+            3927333,
+            4030125,
+            4014167,
+            4136083,
+            3996167
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 3035125,
+          "wall_ns_median": 5573375,
+          "elapsed_ns_samples": [
+            3329750,
+            3518042,
+            3344000,
+            3019750,
+            3023584,
+            3072416,
+            3026792,
+            3027167,
+            3035125
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 3805875,
+          "wall_ns_median": 5832959,
+          "elapsed_ns_samples": [
+            3805875,
+            3806541,
+            3813042,
+            3821000,
+            3792083,
+            3824917,
+            3805375,
+            3779417,
+            3730042
+          ]
+        }
+      }
+    },
+    {
+      "name": "fft",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu",
+      "result": 327680,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 4687958,
+          "wall_ns_median": 6497208,
+          "elapsed_ns_samples": [
+            4710417,
+            4687958,
+            4695250,
+            4837625,
+            4716166,
+            4597333,
+            4603000,
+            4634625,
+            4606209
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 2686916,
+          "wall_ns_median": 4798625,
+          "elapsed_ns_samples": [
+            2680333,
+            2703292,
+            2692542,
+            2693125,
+            2696583,
+            2684875,
+            2677125,
+            2686916,
+            2681417
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 2992375,
+          "wall_ns_median": 4866542,
+          "elapsed_ns_samples": [
+            2990541,
+            2994167,
+            2995708,
+            3009208,
+            2984084,
+            2974542,
+            3012334,
+            2985958,
+            2992375
+          ]
+        }
+      }
+    },
+    {
+      "name": "numerical_integration",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu",
+      "result": 314159265,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 2168208,
+          "wall_ns_median": 4133875,
+          "elapsed_ns_samples": [
+            2160917,
+            2175541,
+            2163708,
+            2168208,
+            2153584,
+            2172875,
+            2169417,
+            2163666,
+            2322666
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 2205166,
+          "wall_ns_median": 4331125,
+          "elapsed_ns_samples": [
+            2204833,
+            2207042,
+            2205166,
+            2195333,
+            2217750,
+            2194125,
+            2199834,
+            2215083,
+            2206167
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 2165375,
+          "wall_ns_median": 4097083,
+          "elapsed_ns_samples": [
+            2152000,
+            2165375,
+            2156125,
+            2194250,
+            2170125,
+            2184500,
+            2280750,
+            2163125,
+            2161708
+          ]
+        }
+      }
+    },
+    {
+      "name": "vector_dot",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "result": 199986180,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 15161916,
+          "wall_ns_median": 17407583,
+          "elapsed_ns_samples": [
+            16680416,
+            15579166,
+            15071417,
+            15118125,
+            14935250,
+            14857500,
+            15161916,
+            15272833,
+            15410500
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 20290208,
+          "wall_ns_median": 23106792,
+          "elapsed_ns_samples": [
+            21047792,
+            19977125,
+            24836292,
+            20056708,
+            19875459,
+            20178458,
+            21329542,
+            20290208,
+            20618292
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 11908208,
+          "wall_ns_median": 14313292,
+          "elapsed_ns_samples": [
+            11891625,
+            12054709,
+            11949959,
+            11995000,
+            11906166,
+            11908208,
+            11865000,
+            12088666,
+            11792125
+          ]
+        }
+      }
+    },
+    {
+      "name": "convolution",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "result": 399934914,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 6278750,
+          "wall_ns_median": 8139334,
+          "elapsed_ns_samples": [
+            6283916,
+            6332833,
+            6296625,
+            6194292,
+            6220250,
+            6285084,
+            6260709,
+            6278750,
+            6260208
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 3520875,
+          "wall_ns_median": 5404375,
+          "elapsed_ns_samples": [
+            3450292,
+            3523208,
+            3521541,
+            3459041,
+            3461417,
+            3525208,
+            3534708,
+            3520875,
+            3480209
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 3398584,
+          "wall_ns_median": 5265041,
+          "elapsed_ns_samples": [
+            3444292,
+            3390750,
+            3457875,
+            3527250,
+            3398584,
+            3409459,
+            3358500,
+            3377792,
+            3379916
+          ]
+        }
+      }
+    },
+    {
+      "name": "monte_carlo",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu",
+      "result": 6498683,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 43967459,
+          "wall_ns_median": 45984250,
+          "elapsed_ns_samples": [
+            44066000,
+            43788083,
+            44157083,
+            44089333,
+            43893542,
+            43757208,
+            44577083,
+            43707541,
+            43967459
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 43863292,
+          "wall_ns_median": 45993500,
+          "elapsed_ns_samples": [
+            45024292,
+            43849167,
+            43824291,
+            43677583,
+            43956708,
+            43744791,
+            44473958,
+            43899416,
+            43863292
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 43877459,
+          "wall_ns_median": 45879791,
+          "elapsed_ns_samples": [
+            44568458,
+            43654292,
+            43857792,
+            44372750,
+            43694625,
+            44105208,
+            44206250,
+            43743916,
+            43877459
+          ]
+        }
+      }
+    },
+    {
+      "name": "polynomial_evaluation",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu",
+      "result": 147510845,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 23110667,
+          "wall_ns_median": 24925208,
+          "elapsed_ns_samples": [
+            23148500,
+            23110667,
+            23106250,
+            23082667,
+            23063625,
+            23113500,
+            23158750,
+            23328250,
+            23012667
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 23122250,
+          "wall_ns_median": 25021291,
+          "elapsed_ns_samples": [
+            23122250,
+            23291709,
+            23047000,
+            23125792,
+            23050375,
+            23073250,
+            22953125,
+            23203875,
+            24519583
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 22981959,
+          "wall_ns_median": 24751750,
+          "elapsed_ns_samples": [
+            22869375,
+            22966000,
+            22930708,
+            22931791,
+            22981959,
+            23041458,
+            23010166,
+            23034708,
+            24511292
+          ]
+        }
+      }
+    },
+    {
+      "name": "ecs_component_update",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "memory",
+      "result": 166215579,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 3400292,
+          "wall_ns_median": 5147500,
+          "elapsed_ns_samples": [
+            3465875,
+            3608583,
+            3401666,
+            3395500,
+            3400292,
+            3325167,
+            3418166,
+            3361000,
+            3311583
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 3440167,
+          "wall_ns_median": 5429125,
+          "elapsed_ns_samples": [
+            3502125,
+            3395583,
+            3520542,
+            3481167,
+            3558125,
+            3348209,
+            3393625,
+            3376291,
+            3440167
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 3222792,
+          "wall_ns_median": 5141000,
+          "elapsed_ns_samples": [
+            3190708,
+            3245958,
+            3113375,
+            3243084,
+            3152500,
+            3235250,
+            3157542,
+            3307000,
+            3222792
+          ]
+        }
+      }
+    },
+    {
+      "name": "parallel_reduction",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu-concurrency",
+      "result": 822454185,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 7339667,
+          "wall_ns_median": 9060750,
+          "elapsed_ns_samples": [
+            7315250,
+            7411333,
+            7319542,
+            7309042,
+            7409292,
+            7339667,
+            7309916,
+            7466500,
+            7351916
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 7390500,
+          "wall_ns_median": 9166542,
+          "elapsed_ns_samples": [
+            7408375,
+            7357333,
+            7296791,
+            7405833,
+            7329292,
+            7390500,
+            7420875,
+            7340959,
+            7469334
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 7357250,
+          "wall_ns_median": 9061792,
+          "elapsed_ns_samples": [
+            7357250,
+            7397459,
+            7414584,
+            7326500,
+            7446917,
+            7350583,
+            7322958,
+            7449167,
+            7343000
+          ]
+        }
+      }
+    },
+    {
+      "name": "transient_allocation",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation",
+      "result": 339103,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 2164375,
+          "wall_ns_median": 3810292,
+          "elapsed_ns_samples": [
+            2177250,
+            2129709,
+            2126084,
+            2154250,
+            2209917,
+            2169875,
+            2161125,
+            2167583,
+            2164375
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 1821167,
+          "wall_ns_median": 3594041,
+          "elapsed_ns_samples": [
+            1785917,
+            1847500,
+            1817292,
+            1813000,
+            1873417,
+            1821167,
+            1837958,
+            1836250,
+            1791083
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 1807083,
+          "wall_ns_median": 3528750,
+          "elapsed_ns_samples": [
+            1888541,
+            1797584,
+            1817667,
+            1807083,
+            1818000,
+            1806708,
+            1804000,
+            1831166,
+            1803625
+          ]
+        }
+      }
+    },
+    {
+      "name": "struct_creation",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation",
+      "result": 48996500,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 6304917,
+          "wall_ns_median": 8336458,
+          "elapsed_ns_samples": [
+            9346583,
+            6304917,
+            6254583,
+            6104125,
+            6403083,
+            7598250,
+            6208583,
+            6152708,
+            8043459
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 6667417,
+          "wall_ns_median": 8791791,
+          "elapsed_ns_samples": [
+            6916584,
+            6602208,
+            6608042,
+            6667417,
+            6499333,
+            6775333,
+            6572375,
+            7586375,
+            7689458
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 5531666,
+          "wall_ns_median": 7540458,
+          "elapsed_ns_samples": [
+            6632125,
+            5397375,
+            5585209,
+            5531666,
+            5382375,
+            5524125,
+            5397667,
+            7588875,
+            5743791
+          ]
+        }
+      }
+    },
+    {
+      "name": "allocation_mutation",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation-memory",
+      "result": 36000000,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 7510584,
+          "wall_ns_median": 10197500,
+          "elapsed_ns_samples": [
+            7404250,
+            7270792,
+            6824417,
+            9913417,
+            7510584,
+            7795667,
+            8505208,
+            7324959,
+            8095167
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 7172417,
+          "wall_ns_median": 9718708,
+          "elapsed_ns_samples": [
+            6851666,
+            7313792,
+            7261542,
+            7298917,
+            7516083,
+            7172417,
+            6624375,
+            6329167,
+            7093625
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 7816833,
+          "wall_ns_median": 10280208,
+          "elapsed_ns_samples": [
+            7527916,
+            6526666,
+            7920500,
+            6938083,
+            7837875,
+            8664209,
+            8059667,
+            7816833,
+            7357292
+          ]
+        }
+      }
+    },
+    {
+      "name": "nested_collection",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation-memory",
+      "result": 409805349,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 3320084,
+          "wall_ns_median": 5396625,
+          "elapsed_ns_samples": [
+            2957375,
+            3060916,
+            3394042,
+            3014042,
+            3320084,
+            3055792,
+            3618167,
+            3341792,
+            3490334
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 2532792,
+          "wall_ns_median": 4620292,
+          "elapsed_ns_samples": [
+            2406333,
+            2406917,
+            2399375,
+            2406750,
+            2532792,
+            2886667,
+            2549875,
+            2653959,
+            3062375
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 2461000,
+          "wall_ns_median": 4609125,
+          "elapsed_ns_samples": [
+            2429584,
+            2462166,
+            2411542,
+            2424542,
+            2389916,
+            2461000,
+            2495750,
+            2533208,
+            2607000
+          ]
+        }
+      }
+    },
+    {
+      "name": "large_buffer_copy",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "memory",
+      "result": 90068056,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 20526291,
+          "wall_ns_median": 24290417,
+          "elapsed_ns_samples": [
+            24017917,
+            24572292,
+            20993791,
+            24877375,
+            20526291,
+            19929750,
+            19105834,
+            19331250,
+            19100709
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 6841542,
+          "wall_ns_median": 10591625,
+          "elapsed_ns_samples": [
+            8399291,
+            7262292,
+            8569000,
+            8232291,
+            6841542,
+            6477208,
+            6456334,
+            6038042,
+            6011833
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 7307208,
+          "wall_ns_median": 12754500,
+          "elapsed_ns_samples": [
+            8860292,
+            7160667,
+            8765083,
+            8714208,
+            9976958,
+            7202833,
+            7307208,
+            7046459,
+            6681334
+          ]
+        }
+      }
+    },
+    {
+      "name": "recursive_tree_rebuild",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation",
+      "result": 4137497,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 567333,
+          "wall_ns_median": 2475792,
+          "elapsed_ns_samples": [
+            567333,
+            1924875,
+            958667,
+            568542,
+            563667,
+            571291,
+            549417,
+            542334,
+            564084
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 892292,
+          "wall_ns_median": 3026834,
+          "elapsed_ns_samples": [
+            1142166,
+            892292,
+            822667,
+            1096625,
+            872625,
+            894458,
+            872083,
+            1078666,
+            880500
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 493750,
+          "wall_ns_median": 2514708,
+          "elapsed_ns_samples": [
+            522458,
+            506958,
+            475000,
+            489042,
+            493750,
+            484458,
+            497458,
+            503750,
+            484500
+          ]
+        }
+      }
+    },
+    {
+      "name": "file_read",
+      "category": "io",
+      "status": "implemented",
+      "profile": "io",
+      "result": 21823488,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 693834,
+          "wall_ns_median": 2386875,
+          "elapsed_ns_samples": [
+            3240250,
+            693834,
+            702916,
+            690375,
+            700125,
+            688250,
+            685750,
+            697083,
+            692791
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 1304125,
+          "wall_ns_median": 3090708,
+          "elapsed_ns_samples": [
+            1304125,
+            1261000,
+            1456541,
+            1246083,
+            1415708,
+            1266084,
+            1371834,
+            1276333,
+            1318083
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 686042,
+          "wall_ns_median": 2467583,
+          "elapsed_ns_samples": [
+            681500,
+            701083,
+            686167,
+            691416,
+            685541,
+            685333,
+            686042,
+            686375,
+            684541
+          ]
+        }
+      }
+    },
+    {
+      "name": "file_write",
+      "category": "io",
+      "status": "implemented",
+      "profile": "io-allocation",
+      "result": 18825216,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 770084,
+          "wall_ns_median": 2583750,
+          "elapsed_ns_samples": [
+            1099041,
+            790584,
+            771541,
+            757625,
+            770084,
+            769208,
+            791875,
+            764959,
+            764791
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 977625,
+          "wall_ns_median": 2748500,
+          "elapsed_ns_samples": [
+            987458,
+            1152709,
+            969250,
+            977625,
+            1138416,
+            957959,
+            990583,
+            954875,
+            970917
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 997834,
+          "wall_ns_median": 2713500,
+          "elapsed_ns_samples": [
+            1103250,
+            997834,
+            745333,
+            1030584,
+            761625,
+            1158041,
+            740333,
+            1131667,
+            753625
+          ]
+        }
+      }
+    },
+    {
+      "name": "line_processing",
+      "category": "io",
+      "status": "implemented",
+      "profile": "io-allocation",
+      "result": 8437760,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 353333,
+          "wall_ns_median": 2035416,
+          "elapsed_ns_samples": [
+            357875,
+            404708,
+            338375,
+            345292,
+            339292,
+            343583,
+            353333,
+            361958,
+            365750
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 963750,
+          "wall_ns_median": 2820792,
+          "elapsed_ns_samples": [
+            975625,
+            983458,
+            964542,
+            939750,
+            963750,
+            978917,
+            963125,
+            936708,
+            943334
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 330417,
+          "wall_ns_median": 2028125,
+          "elapsed_ns_samples": [
+            332250,
+            327792,
+            327500,
+            330417,
+            347250,
+            321792,
+            335000,
+            328792,
+            347541
+          ]
+        }
+      }
+    },
+    {
+      "name": "tokenization",
+      "category": "io",
+      "status": "implemented",
+      "profile": "cpu-allocation",
+      "result": 211969972,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 230375,
+          "wall_ns_median": 1881666,
+          "elapsed_ns_samples": [
+            218583,
+            220333,
+            230500,
+            243541,
+            230750,
+            230375,
+            222375,
+            223250,
+            234834
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 264959,
+          "wall_ns_median": 2024166,
+          "elapsed_ns_samples": [
+            258625,
+            251625,
+            260958,
+            254000,
+            264959,
+            299125,
+            284375,
+            272792,
+            268083
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 975167,
+          "wall_ns_median": 2645042,
+          "elapsed_ns_samples": [
+            1084792,
+            917625,
+            1054833,
+            1008375,
+            956125,
+            980958,
+            975167,
+            918750,
+            948875
+          ]
+        }
+      }
+    },
+    {
+      "name": "json_parse",
+      "category": "io",
+      "status": "unsupported",
+      "profile": "cpu-allocation"
+    },
+    {
+      "name": "json_serialize",
+      "category": "io",
+      "status": "unsupported",
+      "profile": "cpu-allocation"
+    }
+  ],
+  "artifacts": {
+    "html_report": "/Users/vibrant/Desktop/Projects/Prismio/prismio/aif/evidence/memory-2026-09-05/report.html",
+    "raw_data": "/Users/vibrant/Desktop/Projects/Prismio/prismio/aif/evidence/memory-2026-09-05/baseline.json"
+  }
+}

@@ -1,0 +1,31 @@
+// Existing mapSet/mapGetOr leak, independent of mapUpdate. The original query
+// key's counter list is not released; the map's copied key is released.
+import std.io
+import std.map
+import std.key
+import std.copy
+
+struct ProbeKey { id: Int, hashes: List<Int> }
+impl Key for ProbeKey {
+    fn hash(self) -> Int {
+        list_set(self.hashes, 0, list_get(self.hashes, 0) + 1)
+        return -1
+    }
+    fn eq(self, other: Self) -> Bool { return self.id == other.id }
+}
+impl Copy for ProbeKey {
+    fn copyOf(self) -> Self {
+        let hashes: List<Int> = list_new()
+        list_push(hashes, 0)
+        return ProbeKey { id: self.id, hashes: hashes }
+    }
+}
+fn main() -> Int {
+    let hashes: List<Int> = list_new()
+    list_push(hashes, 0)
+    let key = ProbeKey { id: 5, hashes: hashes }
+    let m = mapNew<ProbeKey, Int>()
+    mapSet(m, key, 41)
+    println(mapGetOr(m, key, 0))
+    return 0
+}

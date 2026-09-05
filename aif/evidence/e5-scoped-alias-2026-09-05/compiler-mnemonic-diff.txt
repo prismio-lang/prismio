@@ -1,0 +1,19 @@
+mode=mnemonic functions: old=2010 new=2012 only_old=0 only_new=2 changed=16
+  ONLY NEW: _ir_declare_function_fresh
+  ONLY NEW: _tag_list_region
+  CHANGED: _strStripPrefix__String_String  134 -> 139 insns
+  CHANGED: _strStripSuffix__String_String  113 -> 118 insns
+  CHANGED: _generateModule__Struct_ASTNode  2195 -> 2197 insns
+  CHANGED: _tryReadFile__String  67 -> 70 insns
+  CHANGED: _ir_function_begin  30 -> 32 insns
+  CHANGED: _ir_declare_function_begin  30 -> 32 insns
+  CHANGED: _ir_declare_function_end  28 -> 51 insns
+  CHANGED: _ir_list_is_flat  109 -> 112 insns
+  CHANGED: _ir_list_flat_copy  231 -> 240 insns
+  CHANGED: _ir_list_flat_push  392 -> 412 insns
+  CHANGED: _ir_list_has_room  152 -> 158 insns
+  CHANGED: _ir_list_flat_push_scalar  321 -> 335 insns
+  CHANGED: _ir_list_flat_elem  375 -> 385 insns
+  CHANGED: _ir_list_flat_scalar_elem  558 -> 576 insns
+  CHANGED: _ir_list_flat_scalar_set  391 -> 404 insns
+  CHANGED: _ir_list_boxed_elem  275 -> 284 insns

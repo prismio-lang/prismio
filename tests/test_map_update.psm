@@ -1,0 +1,106 @@
+import std.io
+import std.map
+import std.key
+import std.copy
+import std.string
+
+extern fn abort()
+
+struct UpdateKey { id: Int }
+impl Key for UpdateKey {
+    fn hash(self) -> Int { return -1 }
+    fn eq(self, other: Self) -> Bool { return self.id == other.id }
+}
+impl Copy for UpdateKey {
+    fn copyOf(self) -> Self { return UpdateKey { id: self.id } }
+}
+
+fn unexpectedUpdate(value: Int) -> Int {
+    abort()
+    return value
+}
+
+// Observable counters check the API's one-probe / one-callback contract.
+struct ProbeKey { id: Int, hashes: Int }
+impl Key for ProbeKey {
+    fn hash(self) -> Int {
+        self.hashes = self.hashes + 1
+        return -1
+    }
+    fn eq(self, other: Self) -> Bool { return self.id == other.id }
+}
+impl Copy for ProbeKey {
+    fn copyOf(self) -> Self {
+        return ProbeKey { id: self.id, hashes: 0 }
+    }
+}
+struct CountUpdate { calls: Int }
+impl CountUpdate {
+    fn call(self, value: Int) -> Int {
+        self.calls = self.calls + 1
+        return value + 1
+    }
+}
+
+fn main() -> Int {
+    let empty = mapNew<Int, Int>()
+    if (mapUpdate(empty, 7, |v: Int| unexpectedUpdate(v))) { return 1 }
+    if (mapLen(empty) != 0) { return 2 }
+
+    let m = mapNew<UpdateKey, Int>()
+    let mut i = 0
+    while (i < 257) {
+        mapSet(m, UpdateKey { id: i }, i * 3)
+        i = i + 1
+    }
+    // Find every entry through collision chains, including after rehashes.
+    let add = 11
+    let mut j = 256
+    while (j >= 0) {
+        if (mapUpdate(m, UpdateKey { id: j }, |v: Int| v + add) == false) { return 3 }
+        j = j - 1
+    }
+    if (mapUpdate(m, UpdateKey { id: -1 }, |v: Int| unexpectedUpdate(v))) { return 4 }
+    if (mapLen(m) != 257) { return 5 }
+    let mut q = 0
+    while (q < 257) {
+        let key = mapKeyAt(m, q)
+        if (key.id != q or mapValueAt(m, q) != q * 3 + add) { return 6 }
+        q = q + 1
+    }
+
+    // Value and callback types specialize independently.
+    let flags = mapNew<Int, Bool>()
+    mapSet(flags, 1, false)
+    if (mapUpdate(flags, 1, |v: Bool| v == false) == false) { return 7 }
+    if (mapGetOr(flags, 1, false) == false) { return 8 }
+    let wide = mapNew<Int, I64>()
+    mapSet(wide, 1, 4294967296 as I64)
+    mapUpdate(wide, 1, |v: I64| v + 1)
+    if (mapGetOr(wide, 1, 0 as I64) != 4294967297 as I64) { return 9 }
+
+    // Content-equal String keys and an owned callback capture stay ledger-clean.
+    let names = mapNew<String, Int>()
+    mapSet(names, "an-owned-map-update-key", 0)
+    let key = "an-owned-map-".concat("update-key")
+    let capture = "an-owned-callback-".concat("capture")
+    let expected = capture.length()
+    if (mapUpdate(names, key, |v: Int| v + capture.length()) == false) { return 10 }
+    if (mapGetOr(names, key, -1) != expected) { return 11 }
+
+    let countedKey = ProbeKey { id: 5, hashes: 0 }
+    let update = CountUpdate { calls: 0 }
+    let counted = mapNew<ProbeKey, Int>()
+    mapSet(counted, countedKey, 41)
+    countedKey.hashes = 0
+    if (mapUpdate(counted, countedKey, update) == false) { return 12 }
+    if (countedKey.hashes != 1) { return 13 }
+    if (update.calls != 1) { return 14 }
+    if (mapValueAt(counted, 0) != 42) { return 15 }
+    countedKey.id = 6
+    if (mapUpdate(counted, countedKey, update)) { return 16 }
+    if (countedKey.hashes != 2) { return 17 }
+    if (update.calls != 1) { return 18 }
+    println("PASS: single-probe map updates")
+    return 0
+}

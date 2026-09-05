@@ -49,16 +49,26 @@
 // something this file can fix, and a standard-library container that leaks its
 // contents is worse than one that says it cannot hold them.
 //
-// **Linear probing, no tombstones, and no deletion.** There is no `mapRemove` in
+// **Triangular probing, no tombstones, and no deletion.** There is no `mapRemove` in
 // this API, so no slot ever becomes free after being used, and the probe can stop
 // at the first empty slot. Adding deletion means adding tombstones and revisiting
 // every loop here; it is not a two-line change and it is not in v0.1.
 //
 // Integer keys were never a consolation prize for the caller this was written
-// for: runtime/aif_support.c interns every name, type and site to an `int` id and
-// keys its tables on those -- which is also why `keyMixInt` is a real mix rather
-// than the identity. Consecutive small ids with an identity hash are one long
-// probe chain.
+// for: runtime/aif_support.c interns every name, type and site to an `int` id
+// and keys its tables on those.
+//
+// **That used to be the argument for an avalanche hash and it is the argument
+// against one.** The header here read "consecutive small ids with an identity
+// hash are one long probe chain", which is true of *linear* probing and false
+// of this table: triangular offsets and a power-of-two mask place consecutive
+// ids in consecutive buckets, one probe each, and measured they cost **1.00**
+// probes per lookup where MurmurHash3's finalizer costs 1.21 — because 1.21 is
+// what random placement costs and a dense key set does better than random.
+// Scattering them also throws away the prefetching that makes a scan of an
+// id-keyed table fast: 7.25 ms against 3.64 ms on `key_value_update`'s update
+// phase. `keyMixInt` folds the high half into the low half and stops, and
+// `mapRehash` below is what makes that safe.
 
 import std.key
 import std.copy
@@ -70,10 +80,13 @@ struct Map<K: Key + Copy, V> {
     keys: List<K>,
     values: List<V>,
     slots: List<Int>,
-    mask: Int
+    mask: Int,
+    // Whether this map has measured its own probe displacement and found the
+    // hashes it is being given bad enough to be worth re-mixing. See mapRehash.
+    strong: Bool
 }
 
-// 8 buckets, which is 6 entries before the first rehash. Small enough that a map
+// 8 buckets, which is 4 entries before the first rehash. Small enough that a map
 // used as a scratch lookup costs almost nothing, and a power of two so the mask
 // is right from the start.
 private fn mapInitialCapacity() -> Int { return 8 }
@@ -87,31 +100,64 @@ fn mapNew<K: Key + Copy, V>() -> Map<K, V> {
         list_push(s, -1)
         i = i + 1
     }
-    return Map<K, V> { keys: k, values: v, slots: s, mask: mapInitialCapacity() - 1 }
+    return Map<K, V> { keys: k, values: v, slots: s, mask: mapInitialCapacity() - 1,
+                       strong: false }
 }
 
 fn mapLen<K: Key + Copy, V>(m: Map<K, V>) -> Int {
     return list_len(m.keys)
 }
 
-// The slot `key` occupies, or the first empty slot on its probe chain. Always
-// terminates: the table is grown before it can fill, so an empty slot exists.
-private fn mapSlotOf<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Int {
-    let mut at = hash(key) & m.mask
+// **Both modes answer a hit with the dense entry index.** They differ only in
+// what a miss is: `findSlot` reports the empty bucket it stopped on, encoded as
+// `-bucket - 2`, and a lookup reports -1.
+//
+// Encoding the bucket rather than returning it plainly is what removes the last
+// redundant load from `mapSet`. It used to ask for the bucket, get one whether
+// the key was there or not, and then re-read `slots[at]` to find out which --
+// a load, a bounds check and a representation test for an answer the probe had
+// already computed and thrown away. A bucket is in `[0, mask]`, so `-bucket - 2`
+// is at most -2 and can never be confused with an entry index or with the
+// lookup miss. (`mask` would have to reach 2^31-1 for that subtraction to wrap,
+// which is an index table of 8 GB.)
+//
+// Triangular offsets visit every bucket of a power-of-two table, and growth
+// keeps an empty bucket available, so probing terminates. Advancing by
+// 1, 2, 3, ... reduces primary clustering while retaining the compact
+// insertion-order index table.
+// The bucket hash. `hash(key)` is the key type's answer; a map that has caught
+// itself clustering re-mixes it, and every map starts out trusting the key.
+//
+// **The branch is the cheap half of the trade.** It is one load and one
+// perfectly-predicted test per probe, against the eight instructions of an
+// unconditional avalanche mix — and against the locality that mix destroys,
+// which is the larger number: `key_value_update`'s update phase is 7.25 ms with
+// the mix applied to every key and 3.64 ms without it.
+private fn mapHashOf<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Int {
+    let h = hash(key)
+    if (m.strong) { return keyStrengthen(h) }
+    return h
+}
+
+private fn mapProbe<K: Key + Copy, V>(m: Map<K, V>, key: K, findSlot: Bool) -> Int {
+    let mut at = mapHashOf(m, key) & m.mask
+    let mut step = 1
     loop {
         let entry = list_get(m.slots, at)
-        if (entry < 0) { return at }
+        if (entry < 0) {
+            if (findSlot) { return 0 - at - 2 }
+            return -1
+        }
         let existing = list_get(m.keys, entry)
-        if (eq(existing, key)) { return at }
-        at = (at + 1) & m.mask
+        if (eq(existing, key)) { return entry }
+        at = (at + step) & m.mask
+        step = step + 1
     }
 }
 
-// The index of `key`, or -1. Every other function here is written in terms of
-// this one, so the probe is in one place -- which is what let the linear scan
-// this replaced be swapped out without touching a caller.
+// The insertion-order entry index of `key`, or -1.
 fn mapIndexOf<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Int {
-    return list_get(m.slots, mapSlotOf(m, key))
+    return mapProbe(m, key, false)
 }
 
 // Doubles the table and re-places every entry.
@@ -129,20 +175,56 @@ private fn mapRehash<K: Key + Copy, V>(m: Map<K, V>) {
         list_push(m.slots, -1)
         i = i + 1
     }
+    m.mask = capacity - 1
+
+    // **The table checks the hash it is being given, and this is the whole
+    // defence of a cheap `keyMixInt`.** Placing every entry into a table it has
+    // just doubled costs about 0.2 displaced probes per entry when the hashes
+    // spread; three per entry is not a run of bad luck at any size, it is a hash
+    // that is not separating these keys. `i * 65537` under the fold in
+    // std/key.psm is the family that does it — the two halves cancel and every
+    // key lands in bucket 0 — and it reaches an average of three by the ninth
+    // entry, so the wasted work before the switch is thirty-six probe steps.
+    //
+    // A map that switches never switches back: the keys that clustered are
+    // still in it, and the strengthened hash is what is now keeping them apart.
+    // A false positive costs that map its locality and nothing else, which is
+    // why the threshold does not need to be delicate.
+    if (mapPlaceAll(m) > list_len(m.keys) * 3 and m.strong == false) {
+        m.strong = true
+        mapPlaceAll(m)
+    }
+}
+
+// Clear the index table and re-place every entry, answering with the total
+// probe displacement — the number of buckets that were already taken.
+//
+// Existing entries are unique, so this needs an empty bucket and never a key
+// comparison; that is work insertion already did.
+private fn mapPlaceAll<K: Key + Copy, V>(m: Map<K, V>) -> Int {
+    let capacity = m.mask + 1
     let mut j = 0
-    while (j < old) {
+    while (j < capacity) {
         list_set(m.slots, j, -1)
         j = j + 1
     }
-    m.mask = capacity - 1
 
     let n = list_len(m.keys)
+    let mut displacement = 0
     let mut e = 0
     while (e < n) {
         let key = list_get(m.keys, e)
-        list_set(m.slots, mapSlotOf(m, key), e)
+        let mut at = mapHashOf(m, key) & m.mask
+        let mut step = 1
+        while (list_get(m.slots, at) >= 0) {
+            at = (at + step) & m.mask
+            step = step + 1
+            displacement = displacement + 1
+        }
+        list_set(m.slots, at, e)
         e = e + 1
     }
+    return displacement
 }
 
 fn mapHas<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Bool {
@@ -168,20 +250,47 @@ fn mapGetOr<K: Key + Copy, V>(m: Map<K, V>, key: K, fallback: V) -> V {
     return list_get(m.values, at)
 }
 
+// Update an existing value with one key lookup. The callback receives the old
+// value and returns its replacement; it runs exactly once on a hit and never
+// on a miss. Returns whether the key existed. The update itself does not insert
+// or reorder entries. Example: mapUpdate(counts, key, |value: Int| value + 1).
+fn mapUpdate<K: Key + Copy, V, F>(m: Map<K, V>, key: K, update: F) -> Bool {
+    let at = mapIndexOf(m, key)
+    if (at < 0) { return false }
+    let value = update.call(list_get(m.values, at))
+    list_set(m.values, at, value)
+    return true
+}
+
 // Insert or overwrite. Answers whether the key was already present, which is the
 // one bit a caller cannot recover afterwards without a second lookup.
 //
-// Grows at 3/4 load. The check is `(count) * 4 > capacity * 3` *after* the
-// insert, so the table is never left full -- which is the precondition that makes
-// mapSlotOf's loop terminate.
+// Grows above 1/2 load after insertion. A spare index bucket costs four bytes;
+// keeping probe chains short is worth that space on lookup/update workloads.
+// Keys and values remain dense, so lowering occupancy only grows the index.
+// Comparing with capacity / 2 also avoids overflowing count * 4 at large sizes.
 fn mapSet<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V) -> Bool {
-    let at = mapSlotOf(m, key)
-    let entry = list_get(m.slots, at)
-    if (entry >= 0) {
-        list_set(m.values, entry, value)
+    let found = mapProbe(m, key, true)
+    if (found >= 0) {
+        list_set(m.values, found, value)
         return true
     }
+    mapInsert(m, key, value, 0 - found - 2)
+    return false
+}
 
+// The half of `mapSet` that runs when the key is new, kept in its own function
+// so that the half that runs when it is not can be inlined into a caller's loop.
+//
+// **This is a codegen shape, not a refactor, and it is worth 1.5x on an update
+// loop.** `mapSet` overwriting an existing key is a probe and one store; the
+// insert path is two pushes, a copy, a slot write and a possible rehash. Inlined
+// together they are one body far over any inliner's threshold, so
+// `mapSet(m, k, mapGetOr(m, k, 0) + 1)` compiled to two out-of-line calls that
+// hash the same key twice and probe the same bucket twice, with nothing able to
+// see that they were the same key. Split, the hot half inlines and both probes
+// land in the caller where the optimiser can look at them together.
+private fn mapInsert<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V, at: Int) {
     // The key is **copied in**, not moved: a parameter is a borrow, so
     // `list_push(m.keys, key)` is "cannot move out of borrowed value", which is
     // exactly why an owned key needs the separate `Copy` bound. A
@@ -195,8 +304,7 @@ fn mapSet<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V) -> Bool {
     list_push(m.values, value)
     list_set(m.slots, at, index)
 
-    if ((index + 1) * 4 > (m.mask + 1) * 3) { mapRehash(m) }
-    return false
+    if ((index + 1) > (m.mask + 1) / 2) { mapRehash(m) }
 }
 
 // The key at a position, for iterating a map. Positions are insertion order and

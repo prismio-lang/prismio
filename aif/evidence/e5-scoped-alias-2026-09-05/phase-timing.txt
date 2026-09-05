@@ -1,0 +1,4 @@
+benchLargeBufferCopy phases, scale 4, one shot per process, 18 samples
+fill   before    2.235 ms   after    2.198 ms   ratio 0.984
+copy   before    1.115 ms   after    1.129 ms   ratio 1.012
+sum    before    4.545 ms   after    4.542 ms   ratio 0.999

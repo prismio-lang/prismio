@@ -1,0 +1,72 @@
+{
+  "knapsack": {
+    "returncode": 0,
+    "stdout": "result: 12798\nelapsed_ns: 257375\n",
+    "stderr": "aif-verify: leaked #4 (6 bytes)\naif-verify: leaked #5 (7 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 118 allocated bytes, 105 released bytes, 13 live bytes, 118 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 38480 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "tree_traversal": {
+    "returncode": 0,
+    "stdout": "result: 294705124\nelapsed_ns: 4230292\n",
+    "stderr": "aif-verify: leaked #32772 (8 bytes)\naif-verify: leaked #32771 (10 bytes)\naif-verify: 32772 allocated, 32770 released, 2 leaked, 0 violation(s)\naif-memory: 786537 allocated bytes, 786519 released bytes, 18 live bytes, 786519 peak live bytes\naif-memory-sizes: <=16:3 <=32:32767 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "hashmap_insert_lookup": {
+    "returncode": 0,
+    "stdout": "result: 42239213\nelapsed_ns: 13938667\n",
+    "stderr": "aif-verify: leaked #60 (9 bytes)\naif-verify: leaked #61 (9 bytes)\naif-verify: 61 allocated, 59 released, 2 leaked, 0 violation(s)\naif-memory: 8388896 allocated bytes, 8388878 released bytes, 18 live bytes, 5243150 peak live bytes\naif-memory-sizes: <=16:4 <=32:5 <=64:9 <=128:3 <=256:3 <=512:3 <=1024:3 <=4096:6 >4096:25\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "vector_growth": {
+    "returncode": 0,
+    "stdout": "result: 995982695\nelapsed_ns: 13959875\n",
+    "stderr": "aif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 129 allocated bytes, 110 released bytes, 19 live bytes, 129 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 22 object(s), 33554464 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "vector_iteration": {
+    "returncode": 0,
+    "stdout": "result: 127112128\nelapsed_ns: 87944959\n",
+    "stderr": "aif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 132 allocated bytes, 113 released bytes, 19 live bytes, 132 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3 object(s), 48000048 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "key_value_update": {
+    "returncode": 0,
+    "stdout": "result: 5599628\nelapsed_ns: 19310084\n",
+    "stderr": "aif-verify: leaked #56 (8 bytes)\naif-verify: leaked #57 (9 bytes)\naif-verify: 57 allocated, 55 released, 2 leaked, 0 violation(s)\naif-memory: 3146010 allocated bytes, 3145993 released bytes, 17 live bytes, 1835273 peak live bytes\naif-memory-sizes: <=16:4 <=32:5 <=64:9 <=128:3 <=256:3 <=512:3 <=1024:3 <=4096:6 >4096:21\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "parallel_reduction": {
+    "returncode": 0,
+    "stdout": "result: 822454185\nelapsed_ns: 7581584\n",
+    "stderr": "aif-verify: leaked #4 (10 bytes)\naif-verify: leaked #5 (8 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 133 allocated bytes, 115 released bytes, 18 live bytes, 133 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "transient_allocation": {
+    "returncode": 0,
+    "stdout": "result: 339103\nelapsed_ns: 2642250\n",
+    "stderr": "aif-verify: leaked #9605 (8 bytes)\naif-verify: leaked #9604 (7 bytes)\naif-verify: 9605 allocated, 9603 released, 2 leaked, 0 violation(s)\naif-memory: 26233732 allocated bytes, 26233717 released bytes, 15 live bytes, 24733 peak live bytes\naif-memory-sizes: <=16:802 <=32:801 <=64:1602 <=128:800 <=256:800 <=512:800 <=1024:800 <=4096:1600 >4096:1600\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "struct_creation": {
+    "returncode": 0,
+    "stdout": "result: 48996500\nelapsed_ns: 10066750\n",
+    "stderr": "aif-verify: leaked #7 (9 bytes)\naif-verify: leaked #8 (9 bytes)\naif-verify: 8 allocated, 6 released, 2 leaked, 0 violation(s)\naif-memory: 48000170 allocated bytes, 48000152 released bytes, 18 live bytes, 40000152 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:3 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:2\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "allocation_mutation": {
+    "returncode": 0,
+    "stdout": "result: 36000000\nelapsed_ns: 7818541\n",
+    "stderr": "aif-verify: leaked #7 (9 bytes)\naif-verify: leaked #8 (8 bytes)\naif-verify: 8 allocated, 6 released, 2 leaked, 0 violation(s)\naif-memory: 19200173 allocated bytes, 19200156 released bytes, 17 live bytes, 16000156 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:3 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:2\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "nested_collection": {
+    "returncode": 0,
+    "stdout": "result: 409805349\nelapsed_ns: 2942833\n",
+    "stderr": "aif-verify: leaked #5 (8 bytes)\naif-verify: leaked #4 (10 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 132 allocated bytes, 114 released bytes, 18 live bytes, 132 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 3202 object(s), 9657648 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "large_buffer_copy": {
+    "returncode": 0,
+    "stdout": "result: 90068056\nelapsed_ns: 16523000\n",
+    "stderr": "aif-verify: leaked #5 (9 bytes)\naif-verify: leaked #4 (9 bytes)\naif-verify: 5 allocated, 3 released, 2 leaked, 0 violation(s)\naif-memory: 132 allocated bytes, 114 released bytes, 18 live bytes, 132 peak live bytes\naif-memory-sizes: <=16:2 <=32:1 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 6 object(s), 48000096 byte(s), 1 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "recursive_tree_rebuild": {
+    "returncode": 0,
+    "stdout": "result: 4137497\nelapsed_ns: 1105333\n",
+    "stderr": "aif-verify: leaked #16388 (8 bytes)\naif-verify: leaked #16387 (8 bytes)\naif-verify: 16388 allocated, 16386 released, 2 leaked, 0 violation(s)\naif-memory: 393327 allocated bytes, 393311 released bytes, 16 live bytes, 393311 peak live bytes\naif-memory-sizes: <=16:2 <=32:16384 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  },
+  "tokenization": {
+    "returncode": 0,
+    "stdout": "result: 211969972\nelapsed_ns: 229583\n",
+    "stderr": "aif-verify: leaked #5 (10 bytes)\naif-verify: leaked #6 (7 bytes)\naif-verify: 6 allocated, 4 released, 2 leaked, 0 violation(s)\naif-memory: 204127 allocated bytes, 204110 released bytes, 17 live bytes, 204110 peak live bytes\naif-memory-sizes: <=16:3 <=32:0 <=64:2 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:1\naif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread\naif-verify: FAILED -- an inferred fact did not hold at run time\n"
+  }
+}

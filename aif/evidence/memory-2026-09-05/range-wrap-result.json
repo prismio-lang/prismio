@@ -1,0 +1,12 @@
+{
+  "inline": {
+    "returncode": -11,
+    "stdout": "",
+    "stderr": ""
+  },
+  "boxed_control": {
+    "returncode": 0,
+    "stdout": "2\n",
+    "stderr": ""
+  }
+}

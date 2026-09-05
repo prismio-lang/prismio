@@ -1,0 +1,128 @@
+// MEM-006: `while (k < n) { list_set(dst, k, list_get(src, k)); k = k + 1 }` is
+// lowered to one `llvm.memmove` under a preheader guard.
+//
+// The guard has to carry every precondition the loop satisfied implicitly, and
+// each arm below is one of them. `list_get` and `list_set` are total, so a bound
+// past either length is not an error -- reading past `src` yields 0 and writing
+// past `dst` does nothing -- and a block transfer that ignored the lengths would
+// turn both into memory it does not own.
+//
+// The induction variable is live after the loop, so the transfer has to leave it
+// where the loop would have: at the bound.
+
+import std.io
+
+fn filled(n: Int, base: Int) -> List<Int> {
+    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, base + i)
+        i = i + 1
+    }
+    return xs
+}
+
+fn digest(xs: List<Int>) -> Int {
+    let mut acc = 0
+    let mut i = 0
+    let n = list_len(xs)
+    while (i < n) {
+        acc = (acc * 31 + list_get(xs, i)) % 1000000007
+        i = i + 1
+    }
+    return acc
+}
+
+// The shape the lowering serves.
+fn copyAll(dst: List<Int>, src: List<Int>, n: Int) -> Int {
+    let mut k = 0
+    while (k < n) {
+        list_set(dst, k, list_get(src, k))
+        k = k + 1
+    }
+    return k
+}
+
+// The same, from a non-zero start.
+fn copyFrom(dst: List<Int>, src: List<Int>, start: Int, n: Int) -> Int {
+    let mut k = start
+    while (k < n) {
+        list_set(dst, k, list_get(src, k))
+        k = k + 1
+    }
+    return k
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        print(label)
+        print(" got ")
+        print(got)
+        print(" want ")
+        println(want)
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // Whole buffer, both lengths equal: the transfer runs.
+    let a = filled(64, 100)
+    let b = filled(64, 0)
+    bad = bad + check("FAIL: copyAll returns the bound", copyAll(b, a, 64), 64)
+    bad = bad + check("FAIL: copyAll content", digest(b), digest(a))
+
+    // The bound is past the destination. `list_set` does nothing past the end,
+    // so the first 8 move and the rest are dropped.
+    let c = filled(32, 200)
+    let d = filled(8, 0)
+    bad = bad + check("FAIL: short dst returns the bound", copyAll(d, c, 32), 32)
+    bad = bad + check("FAIL: short dst length", list_len(d), 8)
+    bad = bad + check("FAIL: short dst content", digest(d), digest(filled(8, 200)))
+
+    // The bound is past the source. `list_get` yields 0 there, so the tail of
+    // the destination is zeroed rather than left alone.
+    let e = filled(8, 300)
+    let f = filled(32, 7)
+    bad = bad + check("FAIL: short src returns the bound", copyAll(f, e, 32), 32)
+    bad = bad + check("FAIL: short src head", list_get(f, 0), 300)
+    bad = bad + check("FAIL: short src boundary", list_get(f, 7), 307)
+    bad = bad + check("FAIL: short src tail", list_get(f, 8), 0)
+    bad = bad + check("FAIL: short src end", list_get(f, 31), 0)
+
+    // A non-zero start leaves everything below it alone.
+    let g = filled(16, 400)
+    let h = filled(16, 0)
+    bad = bad + check("FAIL: copyFrom returns the bound", copyFrom(h, g, 4, 16), 16)
+    bad = bad + check("FAIL: copyFrom below start", list_get(h, 3), 3)
+    bad = bad + check("FAIL: copyFrom at start", list_get(h, 4), 404)
+    bad = bad + check("FAIL: copyFrom end", list_get(h, 15), 415)
+
+    // Start past the bound: no iteration, and the variable still lands there.
+    let i2 = filled(16, 500)
+    let j = filled(16, 0)
+    bad = bad + check("FAIL: empty range returns the start", copyFrom(j, i2, 20, 16), 20)
+    bad = bad + check("FAIL: empty range content", digest(j), digest(filled(16, 0)))
+
+    // Same list on both sides: every element copies onto itself.
+    let k2 = filled(16, 600)
+    bad = bad + check("FAIL: aliased returns the bound", copyAll(k2, k2, 16), 16)
+    bad = bad + check("FAIL: aliased content", digest(k2), digest(filled(16, 600)))
+
+    // Nothing to move.
+    let l = filled(0, 0)
+    let m = filled(0, 0)
+    bad = bad + check("FAIL: empty lists", copyAll(m, l, 0), 0)
+
+    // A negative bound is not a range at all.
+    let o = filled(8, 700)
+    let p = filled(8, 0)
+    bad = bad + check("FAIL: negative bound", copyAll(p, o, 0 - 5), 0)
+    bad = bad + check("FAIL: negative bound content", digest(p), digest(filled(8, 0)))
+
+    if (bad != 0) { return 1 }
+    println("PASS: whole buffer copy")
+    return 0
+}

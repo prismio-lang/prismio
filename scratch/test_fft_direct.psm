@@ -1,0 +1,94 @@
+import std.io
+
+extern fn cos(value: Float) -> Float
+extern fn sin(value: Float) -> Float
+
+fn benchFftTransform(real: List<Float>, imag: List<Float>, n: Int) {
+    let mut j = 0
+    let mut i = 1
+    while (i < n) {
+        let mut bit = n / 2
+        while (j >= bit) {
+            j = j - bit
+            bit = bit / 2
+        }
+        j = j + bit
+        if (i < j) {
+            let realSwap = list_get(real, i)
+            let imagSwap = list_get(imag, i)
+            list_set(real, i, list_get(real, j))
+            list_set(imag, i, list_get(imag, j))
+            list_set(real, j, realSwap)
+            list_set(imag, j, imagSwap)
+        }
+        i = i + 1
+    }
+
+    let mut length = 2
+    while (length <= n) {
+        let angle = -6.283185307179586 / (length as Float)
+        let stepReal = cos(angle)
+        let stepImag = sin(angle)
+        let half = length / 2
+        let mut block = 0
+        while (block < n) {
+            let rightBase = block + half
+            let mut weightReal = 1.0
+            let mut weightImag = 0.0
+            let mut offset = 0
+            while (offset < half) {
+                let rightReal = list_get(real, offset + rightBase)
+                let rightImag = list_get(imag, offset + rightBase)
+                let valueReal = rightReal * weightReal - rightImag * weightImag
+                let valueImag = rightReal * weightImag + rightImag * weightReal
+                let leftReal = list_get(real, offset + block)
+                let leftImag = list_get(imag, offset + block)
+                list_set(real, offset + block, leftReal + valueReal)
+                list_set(imag, offset + block, leftImag + valueImag)
+                list_set(real, offset + rightBase, leftReal - valueReal)
+                list_set(imag, offset + rightBase, leftImag - valueImag)
+                let nextReal = weightReal * stepReal - weightImag * stepImag
+                weightImag = weightReal * stepImag + weightImag * stepReal
+                weightReal = nextReal
+                offset = offset + 1
+            }
+            block = block + length
+        }
+        length = length * 2
+    }
+}
+
+fn benchFft(scale: Int) -> Int {
+    let mut n = 1024 * scale
+    if (scale == 12) { n = 16384 }
+    let mut real: List<Float> = list_new_with_capacity(n)
+    let mut imag: List<Float> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(real, 1.0)
+        list_push(imag, 0.0)
+        i = i + 1
+    }
+    let rounds = 20 * scale
+    let mut checksum = 0
+    let mut round = 0
+    while (round < rounds) {
+        let mut k = 0
+        while (k < n) {
+            list_set(real, k, 1.0)
+            list_set(imag, k, 0.0)
+            k = k + 1
+        }
+        benchFftTransform(real, imag, n)
+        checksum = checksum + (list_get(real, 0) as Int)
+        round = round + 1
+    }
+    return checksum
+}
+
+fn main() -> Int {
+    let checksum = benchFft(4)
+    print("FFT scale 4 checksum: ")
+    println(checksum)
+    return 0
+}

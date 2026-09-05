@@ -1,0 +1,59 @@
+// The high word must contribute to bucket selection. Correct lookups alone
+// cannot detect a hash that silently turns structured 64-bit ids into a chain.
+import std.io
+import std.key
+import std.map
+
+fn main() -> Int {
+    let signed = mapNew<I64, Int>()
+    let unsigned = mapNew<U64, Int>()
+    let sizes = mapNew<Usize, Int>()
+    let buckets: List<Int> = list_new_with_capacity(256)
+    let mut b = 0
+    while (b < 256) {
+        list_push(buckets, 0)
+        b = b + 1
+    }
+    let mut i = 0
+    while (i < 4096) {
+        let key = ((i as U64) << 32) | 17
+        let negative = (0 as U64) - key
+        mapSet(signed, negative as I64, i)
+        mapSet(unsigned, key, i)
+        if (((key as Usize) as U64) == key) { mapSet(sizes, key as Usize, i) }
+        let bucket = hash(key) & 255
+        list_set(buckets, bucket, list_get(buckets, bucket) + 1)
+        // Signed and unsigned hashing must preserve the same bit pattern.
+        if (hash(negative as I64) != hash(negative)) { return 1 }
+        if (((key as Usize) as U64) == key) {
+            if (hash(key as Usize) != hash(key)) { return 2 }
+        }
+        i = i + 1
+    }
+    let mut used = 0
+    let mut j = 0
+    while (j < 256) {
+        let count = list_get(buckets, j)
+        if (count > 0) { used = used + 1 }
+        if (count > 64) { return 3 }
+        j = j + 1
+    }
+    if (used < 240) { return 4 }
+    let mut q = 0
+    while (q < 4096) {
+        let key = ((q as U64) << 32) | 17
+        if (mapGetOr(signed, ((0 as U64) - key) as I64, -1) != q) { return 5 }
+        if (mapGetOr(unsigned, key, -1) != q) { return 6 }
+        if (((key as Usize) as U64) == key) {
+            if (mapGetOr(sizes, key as Usize, -1) != q) { return 7 }
+        }
+        q = q + 1
+    }
+    let minimum = ((1 as U64) << 63) as I64
+    mapSet(signed, minimum, 99)
+    mapSet(unsigned, (0 as U64) - 1, 88)
+    if (mapGetOr(signed, minimum, 0) != 99) { return 8 }
+    if (mapGetOr(unsigned, (0 as U64) - 1, 0) != 88) { return 9 }
+    println("PASS: full-width integer hashing")
+    return 0
+}

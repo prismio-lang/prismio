@@ -1,5 +1,6 @@
 import common
 import std.string
+import std.math
 
 fn benchGcd(a0: Int, b0: Int) -> Int {
     let mut a = a0
@@ -297,8 +298,19 @@ fn benchKnapsack(scale: Int) -> Int {
         let value = (i * 53) % 211 + 1
         let mut at = capacity
         while (at >= weight) {
-            let candidate = list_get(best, at - weight) + value
-            if (candidate > list_get(best, at)) { list_set(best, at, candidate) }
+            // The same statement the other two arms write, now spelled the same
+            // way as well:
+            //
+            //   C++   best[at] = std::max(best[at], best[at - weight] + value);
+            //   Rust  best[at] = best[at].max(best[at - weight] + value);
+            //
+            // `max` is `std.math`'s, over `llvm.smax.i32`. An *unconditional*
+            // store is the load-bearing part -- this was an `if (candidate > ...)
+            // { list_set(...) }`, which is a different program from the other two
+            // and vectorises in none of the three languages. Written this way the
+            // loop emits 22 NEON ops and four elements per iteration, the same as
+            // C++.
+            list_set(best, at, max(list_get(best, at), list_get(best, at - weight) + value))
             at = at - 1
         }
         i = i + 1

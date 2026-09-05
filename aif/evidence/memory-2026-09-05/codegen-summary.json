@@ -1,0 +1,281 @@
+{
+  "raw.ll": {
+    "benchKnapsack__Int": {
+      "lines": 234,
+      "alloca": 12,
+      "calls": {
+        "rt_arena_hint_push": 1,
+        "list_new_with_capacity": 1,
+        "rt_arena_hint_pop": 1,
+        "list_set_elem_inline": 1,
+        "list_push_inline_scalar": 1,
+        "list_len": 3,
+        "list_get_inline_scalar": 3,
+        "list_set_inline_scalar": 1
+      },
+      "vector_types": []
+    },
+    "benchTreeSum__Struct_BenchTree": {
+      "lines": 46,
+      "alloca": 4,
+      "calls": {
+        "benchTreeSum__Struct_BenchTree": 2
+      },
+      "vector_types": []
+    },
+    "benchTreeTraversal__Int": {
+      "lines": 50,
+      "alloca": 5,
+      "calls": {
+        "benchBuildTree__Int_Int": 1,
+        "benchTreeSum__Struct_BenchTree": 1,
+        "__aif_release_BenchTree": 1
+      },
+      "vector_types": []
+    },
+    "benchKeyValueUpdate__Int": {
+      "lines": 110,
+      "alloca": 8,
+      "calls": {
+        "\"mapNew$Int$Int__Void\"": 1,
+        "\"mapSet$Int$Int__Struct_Map$Int$Int_Int_Int\"": 2,
+        "\"mapGetOr$Int$Int__Struct_Map$Int$Int_Int_Int\"": 2,
+        "\"__aif_release_Map$Int$Int\"": 1
+      },
+      "vector_types": []
+    },
+    "benchTokenization__Int": {
+      "lines": 235,
+      "alloca": 15,
+      "calls": {
+        "repeat__String_Int": 1,
+        "length__String": 2,
+        "charAt__String_Int": 3,
+        "isSpace__Char": 1,
+        "isAlpha__Char": 1,
+        "isDigit__Char": 2,
+        "isAlnum__Char": 1,
+        "substring__String_Int_Int": 1,
+        "rt_free": 1
+      },
+      "vector_types": []
+    },
+    "benchBuildMemoryTree__Int_Int": {
+      "lines": 49,
+      "alloca": 2,
+      "calls": {
+        "malloc": 2,
+        "benchBuildMemoryTree__Int_Int": 2
+      },
+      "vector_types": []
+    },
+    "benchStructCreation__Int": {
+      "lines": 139,
+      "alloca": 8,
+      "calls": {
+        "list_new_with_capacity": 1,
+        "list_set_elem_owner": 1,
+        "list_set_elem_inline": 1,
+        "list_push_slot": 1,
+        "list_len": 1,
+        "list_get_inline": 1,
+        "list_release": 1
+      },
+      "vector_types": []
+    },
+    "benchAllocationMutation__Int": {
+      "lines": 253,
+      "alloca": 13,
+      "calls": {
+        "list_new_with_capacity": 1,
+        "list_set_elem_owner": 1,
+        "list_set_elem_inline": 1,
+        "list_push_slot": 1,
+        "list_len": 2,
+        "list_get_inline": 2,
+        "list_release": 1
+      },
+      "vector_types": []
+    },
+    "benchNestedCollection__Int": {
+      "lines": 181,
+      "alloca": 11,
+      "calls": {
+        "rt_arena_hint_push": 2,
+        "list_new_with_capacity": 2,
+        "rt_arena_hint_pop": 2,
+        "list_set_elem_inline": 1,
+        "list_push_inline_scalar": 1,
+        "arena_alloc": 1,
+        "list_push": 1,
+        "list_len": 1,
+        "list_get_inline_scalar": 1
+      },
+      "vector_types": []
+    },
+    "benchLargeBufferCopy__Int": {
+      "lines": 229,
+      "alloca": 12,
+      "calls": {
+        "rt_arena_hint_push": 2,
+        "list_new_with_capacity": 2,
+        "rt_arena_hint_pop": 2,
+        "list_set_elem_inline": 2,
+        "list_push_inline_scalar": 2,
+        "list_len": 3,
+        "list_get_inline_scalar": 2,
+        "list_set_inline_scalar": 1
+      },
+      "vector_types": []
+    },
+    "benchTreeAdd__Struct_BenchTree_Int": {
+      "lines": 74,
+      "alloca": 5,
+      "calls": {
+        "benchTreeAdd__Struct_BenchTree_Int": 2,
+        "malloc": 1
+      },
+      "vector_types": []
+    }
+  },
+  "optimized.ll": {
+    "benchKnapsack__Int": {
+      "lines": 229,
+      "alloca": 0,
+      "calls": {
+        "rt_arena_hint_push": 1,
+        "list_new_with_capacity": 1,
+        "rt_arena_hint_pop": 1,
+        "list_set_elem_inline": 1,
+        "list_push_inline_scalar_slow": 1,
+        "list_set": 1
+      },
+      "vector_types": []
+    },
+    "benchTreeSum__Struct_BenchTree": {
+      "lines": 24,
+      "alloca": 0,
+      "calls": {
+        "benchTreeSum__Struct_BenchTree": 2
+      },
+      "vector_types": []
+    },
+    "benchTreeTraversal__Int": {
+      "lines": 27,
+      "alloca": 0,
+      "calls": {
+        "benchBuildTree__Int_Int": 1,
+        "benchTreeSum__Struct_BenchTree": 1,
+        "__aif_release_BenchTree": 1
+      },
+      "vector_types": []
+    },
+    "benchKeyValueUpdate__Int": {
+      "lines": 63,
+      "alloca": 0,
+      "calls": {
+        "\"mapNew$Int$Int__Void\"": 1,
+        "\"mapGetOr$Int$Int__Struct_Map$Int$Int_Int_Int\"": 2,
+        "\"mapSet$Int$Int__Struct_Map$Int$Int_Int_Int\"": 2,
+        "list_release": 3,
+        "rt_free": 1
+      },
+      "vector_types": []
+    },
+    "benchTokenization__Int": {
+      "lines": 229,
+      "alloca": 4,
+      "calls": {
+        "llvm.lifetime.start.p0": 4,
+        "llvm.smax.i32": 3,
+        "str_with_capacity": 1,
+        "llvm.lifetime.end.p0": 6,
+        "rt_free": 1,
+        "llvm.umax.i32": 1,
+        "strSubstring__String_Int_Int": 1
+      },
+      "vector_types": [
+        "<16 x i8>"
+      ]
+    },
+    "benchBuildMemoryTree__Int_Int": {
+      "lines": 34,
+      "alloca": 0,
+      "calls": {
+        "malloc": 1,
+        "llvm.memset.p0.i64": 1,
+        "benchBuildMemoryTree__Int_Int": 2
+      },
+      "vector_types": []
+    },
+    "benchStructCreation__Int": {
+      "lines": 115,
+      "alloca": 0,
+      "calls": {
+        "list_new_with_capacity": 1,
+        "list_set_elem_inline": 1,
+        "list_push_slot": 1,
+        "llvm.assume": 2,
+        "list_release": 1
+      },
+      "vector_types": [
+        "<2 x double>"
+      ]
+    },
+    "benchAllocationMutation__Int": {
+      "lines": 218,
+      "alloca": 0,
+      "calls": {
+        "list_new_with_capacity": 1,
+        "list_set_elem_inline": 1,
+        "list_push_slot": 1,
+        "llvm.memset.p0.i64": 1,
+        "llvm.assume": 4,
+        "list_release": 1
+      },
+      "vector_types": [
+        "<2 x double>"
+      ]
+    },
+    "benchNestedCollection__Int": {
+      "lines": 191,
+      "alloca": 0,
+      "calls": {
+        "rt_arena_hint_push": 2,
+        "list_new_with_capacity": 2,
+        "rt_arena_hint_pop": 2,
+        "list_set_elem_inline": 1,
+        "list_push_inline_scalar_slow": 1,
+        "arena_alloc": 1,
+        "cyc_retain": 2,
+        "list_push_grow": 1,
+        "llvm.assume": 1
+      },
+      "vector_types": []
+    },
+    "benchLargeBufferCopy__Int": {
+      "lines": 326,
+      "alloca": 0,
+      "calls": {
+        "rt_arena_hint_push": 2,
+        "list_new_with_capacity": 2,
+        "rt_arena_hint_pop": 2,
+        "list_set_elem_inline": 2,
+        "list_push_inline_scalar_slow": 2,
+        "list_set": 1,
+        "llvm.assume": 1
+      },
+      "vector_types": []
+    },
+    "benchTreeAdd__Struct_BenchTree_Int": {
+      "lines": 41,
+      "alloca": 0,
+      "calls": {
+        "llvm.memset.p0.i64": 2,
+        "benchTreeAdd__Struct_BenchTree_Int": 2,
+        "malloc": 1
+      },
+      "vector_types": []
+    }
+  }
+}

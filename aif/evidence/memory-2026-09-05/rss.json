@@ -1,0 +1,282 @@
+{
+  "knapsack": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 12798\nelapsed_ns: 347208\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 12798\nelapsed_ns: 198209\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 12798\nelapsed_ns: 204083\n"
+    }
+  ],
+  "tree_traversal": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 294705124\nelapsed_ns: 643458\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 294705124\nelapsed_ns: 657625\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 294705124\nelapsed_ns: 656375\n"
+    }
+  ],
+  "hashmap_insert_lookup": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 42239213\nelapsed_ns: 9730750\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 42239213\nelapsed_ns: 9613833\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 42239213\nelapsed_ns: 9359459\n"
+    }
+  ],
+  "vector_growth": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.01 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 995982695\nelapsed_ns: 11016959\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.01 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 995982695\nelapsed_ns: 11026459\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.01 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 995982695\nelapsed_ns: 11091625\n"
+    }
+  ],
+  "vector_iteration": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.07 real         0.07 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 127112128\nelapsed_ns: 76721166\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.07 real         0.07 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 127112128\nelapsed_ns: 76458750\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.07 real         0.07 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 127112128\nelapsed_ns: 77916208\n"
+    }
+  ],
+  "key_value_update": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.02 real         0.02 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 5599628\nelapsed_ns: 20141042\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.02 real         0.01 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 5599628\nelapsed_ns: 19492541\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.02 real         0.02 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 5599628\nelapsed_ns: 20654500\n"
+    }
+  ],
+  "parallel_reduction": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.03 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 822454185\nelapsed_ns: 8397375\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.02 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 822454185\nelapsed_ns: 7561791\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.03 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 822454185\nelapsed_ns: 7670041\n"
+    }
+  ],
+  "transient_allocation": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 339103\nelapsed_ns: 2237916\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 339103\nelapsed_ns: 2364375\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 339103\nelapsed_ns: 2295708\n"
+    }
+  ],
+  "struct_creation": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 48996500\nelapsed_ns: 8596167\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 48996500\nelapsed_ns: 6368417\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 48996500\nelapsed_ns: 6608084\n"
+    }
+  ],
+  "allocation_mutation": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 36000000\nelapsed_ns: 8857583\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 36000000\nelapsed_ns: 7299584\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 36000000\nelapsed_ns: 7301042\n"
+    }
+  ],
+  "nested_collection": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 409805349\nelapsed_ns: 3032917\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 409805349\nelapsed_ns: 3219750\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 409805349\nelapsed_ns: 2982083\n"
+    }
+  ],
+  "large_buffer_copy": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.01 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 90068056\nelapsed_ns: 16760333\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.01 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 90068056\nelapsed_ns: 16904042\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.01 real         0.01 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 90068056\nelapsed_ns: 16422417\n"
+    }
+  ],
+  "recursive_tree_rebuild": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 4137497\nelapsed_ns: 558583\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 4137497\nelapsed_ns: 587542\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 4137497\nelapsed_ns: 552166\n"
+    }
+  ],
+  "tokenization": [
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 211969972\nelapsed_ns: 239458\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 211969972\nelapsed_ns: 224167\n"
+    },
+    {
+      "returncode": 1,
+      "rss_bytes": null,
+      "stderr": "        0.00 real         0.00 user         0.00 sys\ntime: sysctl kern.clockrate: Operation not permitted\n",
+      "stdout": "result: 211969972\nelapsed_ns: 225334\n"
+    }
+  ]
+}

@@ -1,0 +1,1538 @@
+{
+  "before": {
+    "fibonacci": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 5985853
+    },
+    "prime_sieve": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        203,
+        185,
+        18,
+        203
+      ],
+      "result": 458935349
+    },
+    "gcd_lcm": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        181,
+        19,
+        200
+      ],
+      "result": 504265700
+    },
+    "binary_search": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        204,
+        187,
+        17,
+        204
+      ],
+      "result": 1004850
+    },
+    "quicksort": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 33756443
+    },
+    "mergesort": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 33756443
+    },
+    "string_search": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        288205,
+        288188,
+        17,
+        288188
+      ],
+      "result": 152047993
+    },
+    "graph_bfs": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 542195018
+    },
+    "knapsack": {
+      "ledger": [
+        8,
+        6,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        38647,
+        38634,
+        13,
+        25830
+      ],
+      "result": 12798
+    },
+    "tree_traversal": {
+      "ledger": [
+        32772,
+        32770,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        786614,
+        786596,
+        18,
+        786596
+      ],
+      "result": 294705124
+    },
+    "hashmap_insert_lookup": {
+      "ledger": [
+        61,
+        59,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        8388972,
+        8388955,
+        17,
+        5243227
+      ],
+      "result": 42239213
+    },
+    "vector_growth": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        206,
+        187,
+        19,
+        206
+      ],
+      "result": 995982695
+    },
+    "vector_iteration": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        209,
+        190,
+        19,
+        209
+      ],
+      "result": 127112128
+    },
+    "key_value_update": {
+      "ledger": [
+        58,
+        56,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        4194663,
+        4194646,
+        17,
+        2621782
+      ],
+      "result": 5599628
+    },
+    "matrix_multiply": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        207,
+        189,
+        18,
+        207
+      ],
+      "result": 346043827
+    },
+    "mandelbrot": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        198,
+        184,
+        14,
+        198
+      ],
+      "result": 38776
+    },
+    "fft": {
+      "ledger": [
+        11,
+        9,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        131344,
+        131329,
+        15,
+        65793
+      ],
+      "result": 327680
+    },
+    "numerical_integration": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        213,
+        195,
+        18,
+        213
+      ],
+      "result": 314159265
+    },
+    "vector_dot": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        203,
+        184,
+        19,
+        203
+      ],
+      "result": 199986180
+    },
+    "convolution": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        203,
+        185,
+        18,
+        203
+      ],
+      "result": 399934914
+    },
+    "monte_carlo": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        202,
+        185,
+        17,
+        202
+      ],
+      "result": 6498683
+    },
+    "polynomial_evaluation": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        214,
+        195,
+        19,
+        214
+      ],
+      "result": 147510845
+    },
+    "ecs_component_update": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        212,
+        194,
+        18,
+        212
+      ],
+      "result": 166215579
+    },
+    "parallel_reduction": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        210,
+        192,
+        18,
+        210
+      ],
+      "result": 822454185
+    },
+    "transient_allocation": {
+      "ledger": [
+        9605,
+        9603,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        26233809,
+        26233794,
+        15,
+        24810
+      ],
+      "result": 339103
+    },
+    "struct_creation": {
+      "ledger": [
+        8,
+        6,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        48000246,
+        48000229,
+        17,
+        40000229
+      ],
+      "result": 48996500
+    },
+    "allocation_mutation": {
+      "ledger": [
+        8,
+        6,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        19200250,
+        19200233,
+        17,
+        16000233
+      ],
+      "result": 36000000
+    },
+    "nested_collection": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        209,
+        191,
+        18,
+        209
+      ],
+      "result": 409805349
+    },
+    "large_buffer_copy": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        208,
+        191,
+        17,
+        208
+      ],
+      "result": 90068056
+    },
+    "recursive_tree_rebuild": {
+      "ledger": [
+        16388,
+        16386,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        393404,
+        393388,
+        16,
+        393388
+      ],
+      "result": 4137497
+    },
+    "file_read": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        278728,
+        278712,
+        16,
+        278712
+      ],
+      "result": 21823488
+    },
+    "file_write": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        278730,
+        278713,
+        17,
+        278713
+      ],
+      "result": 18825216
+    },
+    "line_processing": {
+      "ledger": [
+        8211,
+        8209,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        688341,
+        688326,
+        15,
+        622822
+      ],
+      "result": 8437760
+    },
+    "tokenization": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        204204,
+        204187,
+        17,
+        204187
+      ],
+      "result": 211969972
+    }
+  },
+  "after_legacy": {
+    "fibonacci": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 5985853
+    },
+    "prime_sieve": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        203,
+        185,
+        18,
+        203
+      ],
+      "result": 458935349
+    },
+    "gcd_lcm": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        181,
+        19,
+        200
+      ],
+      "result": 504265700
+    },
+    "binary_search": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        204,
+        187,
+        17,
+        204
+      ],
+      "result": 1004850
+    },
+    "quicksort": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 33756443
+    },
+    "mergesort": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 33756443
+    },
+    "string_search": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        288205,
+        288188,
+        17,
+        288188
+      ],
+      "result": 152047993
+    },
+    "graph_bfs": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 542195018
+    },
+    "knapsack": {
+      "ledger": [
+        8,
+        6,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        38647,
+        38634,
+        13,
+        25830
+      ],
+      "result": 12798
+    },
+    "tree_traversal": {
+      "ledger": [
+        32772,
+        32770,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        786614,
+        786596,
+        18,
+        786596
+      ],
+      "result": 294705124
+    },
+    "hashmap_insert_lookup": {
+      "ledger": [
+        61,
+        59,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        8388972,
+        8388955,
+        17,
+        5243227
+      ],
+      "result": 42239213
+    },
+    "vector_growth": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        206,
+        187,
+        19,
+        206
+      ],
+      "result": 995982695
+    },
+    "vector_iteration": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        209,
+        190,
+        19,
+        209
+      ],
+      "result": 127112128
+    },
+    "key_value_update": {
+      "ledger": [
+        58,
+        56,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        4194663,
+        4194646,
+        17,
+        2621782
+      ],
+      "result": 5599628
+    },
+    "matrix_multiply": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        207,
+        189,
+        18,
+        207
+      ],
+      "result": 346043827
+    },
+    "mandelbrot": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        198,
+        184,
+        14,
+        198
+      ],
+      "result": 38776
+    },
+    "fft": {
+      "ledger": [
+        11,
+        9,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        131344,
+        131329,
+        15,
+        65793
+      ],
+      "result": 327680
+    },
+    "numerical_integration": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        213,
+        195,
+        18,
+        213
+      ],
+      "result": 314159265
+    },
+    "vector_dot": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        203,
+        184,
+        19,
+        203
+      ],
+      "result": 199986180
+    },
+    "convolution": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        203,
+        185,
+        18,
+        203
+      ],
+      "result": 399934914
+    },
+    "monte_carlo": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        202,
+        185,
+        17,
+        202
+      ],
+      "result": 6498683
+    },
+    "polynomial_evaluation": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        214,
+        195,
+        19,
+        214
+      ],
+      "result": 147510845
+    },
+    "ecs_component_update": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        212,
+        194,
+        18,
+        212
+      ],
+      "result": 166215579
+    },
+    "parallel_reduction": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        210,
+        192,
+        18,
+        210
+      ],
+      "result": 822454185
+    },
+    "transient_allocation": {
+      "ledger": [
+        9605,
+        9603,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        26233809,
+        26233794,
+        15,
+        24810
+      ],
+      "result": 339103
+    },
+    "struct_creation": {
+      "ledger": [
+        8,
+        6,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        48000246,
+        48000229,
+        17,
+        40000229
+      ],
+      "result": 48996500
+    },
+    "allocation_mutation": {
+      "ledger": [
+        8,
+        6,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        19200250,
+        19200233,
+        17,
+        16000233
+      ],
+      "result": 36000000
+    },
+    "nested_collection": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        209,
+        191,
+        18,
+        209
+      ],
+      "result": 409805349
+    },
+    "large_buffer_copy": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        208,
+        191,
+        17,
+        208
+      ],
+      "result": 90068056
+    },
+    "recursive_tree_rebuild": {
+      "ledger": [
+        16388,
+        16386,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        393403,
+        393388,
+        15,
+        393388
+      ],
+      "result": 4137497
+    },
+    "file_read": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        278728,
+        278712,
+        16,
+        278712
+      ],
+      "result": 21823488
+    },
+    "file_write": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        278730,
+        278713,
+        17,
+        278713
+      ],
+      "result": 18825216
+    },
+    "line_processing": {
+      "ledger": [
+        8211,
+        8209,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        688341,
+        688326,
+        15,
+        622822
+      ],
+      "result": 8437760
+    },
+    "tokenization": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        204204,
+        204187,
+        17,
+        204187
+      ],
+      "result": 211969972
+    }
+  },
+  "after_update": {
+    "fibonacci": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 5985853
+    },
+    "prime_sieve": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        203,
+        185,
+        18,
+        203
+      ],
+      "result": 458935349
+    },
+    "gcd_lcm": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        181,
+        19,
+        200
+      ],
+      "result": 504265700
+    },
+    "binary_search": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        204,
+        187,
+        17,
+        204
+      ],
+      "result": 1004850
+    },
+    "quicksort": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 33756443
+    },
+    "mergesort": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 33756443
+    },
+    "string_search": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        288205,
+        288188,
+        17,
+        288188
+      ],
+      "result": 152047993
+    },
+    "graph_bfs": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        200,
+        183,
+        17,
+        200
+      ],
+      "result": 542195018
+    },
+    "knapsack": {
+      "ledger": [
+        8,
+        6,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        38647,
+        38634,
+        13,
+        25830
+      ],
+      "result": 12798
+    },
+    "tree_traversal": {
+      "ledger": [
+        32772,
+        32770,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        786614,
+        786596,
+        18,
+        786596
+      ],
+      "result": 294705124
+    },
+    "hashmap_insert_lookup": {
+      "ledger": [
+        61,
+        59,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        8388972,
+        8388955,
+        17,
+        5243227
+      ],
+      "result": 42239213
+    },
+    "vector_growth": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        206,
+        187,
+        19,
+        206
+      ],
+      "result": 995982695
+    },
+    "vector_iteration": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        209,
+        190,
+        19,
+        209
+      ],
+      "result": 127112128
+    },
+    "key_value_update": {
+      "ledger": [
+        58,
+        56,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        4194662,
+        4194646,
+        16,
+        2621782
+      ],
+      "result": 5599628
+    },
+    "matrix_multiply": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        207,
+        189,
+        18,
+        207
+      ],
+      "result": 346043827
+    },
+    "mandelbrot": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        198,
+        184,
+        14,
+        198
+      ],
+      "result": 38776
+    },
+    "fft": {
+      "ledger": [
+        11,
+        9,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        131344,
+        131329,
+        15,
+        65793
+      ],
+      "result": 327680
+    },
+    "numerical_integration": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        213,
+        195,
+        18,
+        213
+      ],
+      "result": 314159265
+    },
+    "vector_dot": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        203,
+        184,
+        19,
+        203
+      ],
+      "result": 199986180
+    },
+    "convolution": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        203,
+        185,
+        18,
+        203
+      ],
+      "result": 399934914
+    },
+    "monte_carlo": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        202,
+        185,
+        17,
+        202
+      ],
+      "result": 6498683
+    },
+    "polynomial_evaluation": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        214,
+        195,
+        19,
+        214
+      ],
+      "result": 147510845
+    },
+    "ecs_component_update": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        212,
+        194,
+        18,
+        212
+      ],
+      "result": 166215579
+    },
+    "parallel_reduction": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        210,
+        192,
+        18,
+        210
+      ],
+      "result": 822454185
+    },
+    "transient_allocation": {
+      "ledger": [
+        9605,
+        9603,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        26233809,
+        26233794,
+        15,
+        24810
+      ],
+      "result": 339103
+    },
+    "struct_creation": {
+      "ledger": [
+        8,
+        6,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        48000246,
+        48000229,
+        17,
+        40000229
+      ],
+      "result": 48996500
+    },
+    "allocation_mutation": {
+      "ledger": [
+        8,
+        6,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        19200250,
+        19200233,
+        17,
+        16000233
+      ],
+      "result": 36000000
+    },
+    "nested_collection": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        209,
+        191,
+        18,
+        209
+      ],
+      "result": 409805349
+    },
+    "large_buffer_copy": {
+      "ledger": [
+        5,
+        3,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        208,
+        191,
+        17,
+        208
+      ],
+      "result": 90068056
+    },
+    "recursive_tree_rebuild": {
+      "ledger": [
+        16388,
+        16386,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        393403,
+        393388,
+        15,
+        393388
+      ],
+      "result": 4137497
+    },
+    "file_read": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        278728,
+        278712,
+        16,
+        278712
+      ],
+      "result": 21823488
+    },
+    "file_write": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        278730,
+        278713,
+        17,
+        278713
+      ],
+      "result": 18825216
+    },
+    "line_processing": {
+      "ledger": [
+        8211,
+        8209,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        688341,
+        688326,
+        15,
+        622822
+      ],
+      "result": 8437760
+    },
+    "tokenization": {
+      "ledger": [
+        6,
+        4,
+        2,
+        0
+      ],
+      "memory_bytes": [
+        204204,
+        204187,
+        17,
+        204187
+      ],
+      "result": 211969972
+    }
+  }
+}

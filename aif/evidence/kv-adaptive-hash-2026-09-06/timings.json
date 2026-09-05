@@ -1,0 +1,172 @@
+{
+  "fibonacci": {
+    "before": 11445667,
+    "after": 11435833,
+    "repeat": 11454417
+  },
+  "prime_sieve": {
+    "before": 720125,
+    "after": 723833,
+    "repeat": 719875
+  },
+  "gcd_lcm": {
+    "before": 20614958,
+    "after": 23190959,
+    "repeat": 21330084
+  },
+  "binary_search": {
+    "before": 90379834,
+    "after": 90281375,
+    "repeat": 90260791
+  },
+  "quicksort": {
+    "before": 4639667,
+    "after": 4631167,
+    "repeat": 4623834
+  },
+  "mergesort": {
+    "before": 5797958,
+    "after": 5772625,
+    "repeat": 5807125
+  },
+  "string_search": {
+    "before": 124583,
+    "after": 124042,
+    "repeat": 126292
+  },
+  "graph_bfs": {
+    "before": 748333,
+    "after": 739209,
+    "repeat": 740708
+  },
+  "knapsack": {
+    "before": 142583,
+    "after": 142125,
+    "repeat": 141583
+  },
+  "tree_traversal": {
+    "before": 342291,
+    "after": 351708,
+    "repeat": 359167
+  },
+  "hashmap_insert_lookup": {
+    "before": 6953875,
+    "after": 4462292,
+    "repeat": 6902000
+  },
+  "vector_growth": {
+    "before": 10807209,
+    "after": 10782583,
+    "repeat": 10800291
+  },
+  "vector_iteration": {
+    "before": 75453542,
+    "after": 75464208,
+    "repeat": 75477083
+  },
+  "key_value_update": {
+    "before": 10517375,
+    "after": 4917333,
+    "repeat": 10463292
+  },
+  "matrix_multiply": {
+    "before": 4250542,
+    "after": 4252375,
+    "repeat": 4280667
+  },
+  "mandelbrot": {
+    "before": 3752959,
+    "after": 3770750,
+    "repeat": 3753750
+  },
+  "fft": {
+    "before": 4776375,
+    "after": 4728625,
+    "repeat": 4783625
+  },
+  "numerical_integration": {
+    "before": 2125459,
+    "after": 2128584,
+    "repeat": 2131125
+  },
+  "vector_dot": {
+    "before": 14208084,
+    "after": 14228500,
+    "repeat": 14229209
+  },
+  "convolution": {
+    "before": 4281292,
+    "after": 4269042,
+    "repeat": 4271792
+  },
+  "monte_carlo": {
+    "before": 43398250,
+    "after": 43401709,
+    "repeat": 43417958
+  },
+  "polynomial_evaluation": {
+    "before": 22834750,
+    "after": 22863125,
+    "repeat": 22868750
+  },
+  "ecs_component_update": {
+    "before": 3314292,
+    "after": 3336125,
+    "repeat": 3347208
+  },
+  "parallel_reduction": {
+    "before": 7393292,
+    "after": 7410458,
+    "repeat": 7377542
+  },
+  "transient_allocation": {
+    "before": 2116084,
+    "after": 2128042,
+    "repeat": 2127709
+  },
+  "struct_creation": {
+    "before": 5772583,
+    "after": 5785917,
+    "repeat": 5753917
+  },
+  "allocation_mutation": {
+    "before": 6723875,
+    "after": 6774250,
+    "repeat": 6745084
+  },
+  "nested_collection": {
+    "before": 2842000,
+    "after": 2834792,
+    "repeat": 2831625
+  },
+  "large_buffer_copy": {
+    "before": 7943667,
+    "after": 7907833,
+    "repeat": 7963958
+  },
+  "recursive_tree_rebuild": {
+    "before": 363667,
+    "after": 348667,
+    "repeat": 407166
+  },
+  "file_read": {
+    "before": 685125,
+    "after": 688125,
+    "repeat": 691917
+  },
+  "file_write": {
+    "before": 743500,
+    "after": 737583,
+    "repeat": 741792
+  },
+  "line_processing": {
+    "before": 334500,
+    "after": 337584,
+    "repeat": 330459
+  },
+  "tokenization": {
+    "before": 147958,
+    "after": 153042,
+    "repeat": 151500
+  }
+}

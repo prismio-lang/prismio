@@ -1,0 +1,546 @@
+{
+  "fibonacci": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "5985853"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "5985853"
+    }
+  },
+  "prime_sieve": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "458935349"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "458935349"
+    }
+  },
+  "gcd_lcm": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "504265700"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "504265700"
+    }
+  },
+  "binary_search": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "1004850"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "1004850"
+    }
+  },
+  "quicksort": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "33756443"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "33756443"
+    }
+  },
+  "mergesort": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "33756443"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "33756443"
+    }
+  },
+  "string_search": {
+    "before": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "152047993"
+    },
+    "after": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "152047993"
+    }
+  },
+  "graph_bfs": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "542195018"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "542195018"
+    }
+  },
+  "knapsack": {
+    "before": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "12798"
+    },
+    "after": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "12798"
+    }
+  },
+  "tree_traversal": {
+    "before": {
+      "allocated": 16388,
+      "released": 16386,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "294705124"
+    },
+    "after": {
+      "allocated": 16388,
+      "released": 16386,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "294705124"
+    }
+  },
+  "hashmap_insert_lookup": {
+    "before": {
+      "allocated": 61,
+      "released": 59,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "42239213"
+    },
+    "after": {
+      "allocated": 61,
+      "released": 59,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "42239213"
+    }
+  },
+  "vector_growth": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "995982695"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "995982695"
+    }
+  },
+  "vector_iteration": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "127112128"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "127112128"
+    }
+  },
+  "key_value_update": {
+    "before": {
+      "allocated": 58,
+      "released": 56,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "5599628"
+    },
+    "after": {
+      "allocated": 58,
+      "released": 56,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "5599628"
+    }
+  },
+  "matrix_multiply": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "346043827"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "346043827"
+    }
+  },
+  "mandelbrot": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "38776"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "38776"
+    }
+  },
+  "fft": {
+    "before": {
+      "allocated": 11,
+      "released": 9,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "327680"
+    },
+    "after": {
+      "allocated": 11,
+      "released": 9,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "327680"
+    }
+  },
+  "numerical_integration": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "314159265"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "314159265"
+    }
+  },
+  "vector_dot": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "199986180"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "199986180"
+    }
+  },
+  "convolution": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "399934914"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "399934914"
+    }
+  },
+  "monte_carlo": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "6498683"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "6498683"
+    }
+  },
+  "polynomial_evaluation": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "147510845"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "147510845"
+    }
+  },
+  "ecs_component_update": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "166215579"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "166215579"
+    }
+  },
+  "parallel_reduction": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "822454185"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "822454185"
+    }
+  },
+  "transient_allocation": {
+    "before": {
+      "allocated": 9605,
+      "released": 9603,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "339103"
+    },
+    "after": {
+      "allocated": 9605,
+      "released": 9603,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "339103"
+    }
+  },
+  "struct_creation": {
+    "before": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "48996500"
+    },
+    "after": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "48996500"
+    }
+  },
+  "allocation_mutation": {
+    "before": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "36000000"
+    },
+    "after": {
+      "allocated": 8,
+      "released": 6,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "36000000"
+    }
+  },
+  "nested_collection": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "409805349"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "409805349"
+    }
+  },
+  "large_buffer_copy": {
+    "before": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "90068056"
+    },
+    "after": {
+      "allocated": 5,
+      "released": 3,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "90068056"
+    }
+  },
+  "recursive_tree_rebuild": {
+    "before": {
+      "allocated": 8196,
+      "released": 8194,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "4137497"
+    },
+    "after": {
+      "allocated": 8196,
+      "released": 8194,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "4137497"
+    }
+  },
+  "file_read": {
+    "before": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "21823488"
+    },
+    "after": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "21823488"
+    }
+  },
+  "file_write": {
+    "before": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "18825216"
+    },
+    "after": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "18825216"
+    }
+  },
+  "line_processing": {
+    "before": {
+      "allocated": 8211,
+      "released": 8209,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "8437760"
+    },
+    "after": {
+      "allocated": 8211,
+      "released": 8209,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "8437760"
+    }
+  },
+  "tokenization": {
+    "before": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "211969972"
+    },
+    "after": {
+      "allocated": 6,
+      "released": 4,
+      "leaked": 2,
+      "violations": 0,
+      "checksum": "211969972"
+    }
+  }
+}

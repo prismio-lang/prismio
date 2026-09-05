@@ -1,0 +1,98 @@
+// `std.math`'s min/max/abs, and the guard they must not decline.
+//
+// Three things are being checked and only the first is arithmetic.
+//
+// 1. The values, including the edges: `max` and `min` on equal operands, on
+//    negatives, and `abs` at Int's minimum, which is not representable and so
+//    returns itself (Int is signed 32-bit and wraps -- RESULTS-int-width.md).
+// 2. That they work through the library wrapper as well as the builtin, since
+//    the wrapper is a *call* and a call in a loop used to be the problem.
+// 3. That a loop calling one still computes the same answers as a loop that does
+//    not -- which is what the flat-List guard looking through the call has to
+//    preserve. It is a speed change and must not be a semantics one.
+
+import std.io
+import std.math
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        println(label)
+        return 1
+    }
+    return 0
+}
+
+// A loop whose body calls a guard-safe function. The guard may look through it;
+// the answer may not change.
+fn clampSum(n: Int, lo: Int, hi: Int) -> Int {
+    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i - 4)
+        i = i + 1
+    }
+    let mut acc = 0
+    let mut at = n - 1
+    while (at >= 0) {
+        acc = acc + min(hi, max(lo, list_get(xs, at)))
+        at = at - 1
+    }
+    return acc
+}
+
+// The same thing written without a call, as the control.
+fn clampSumInline(n: Int, lo: Int, hi: Int) -> Int {
+    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i - 4)
+        i = i + 1
+    }
+    let mut acc = 0
+    let mut at = n - 1
+    while (at >= 0) {
+        let v = list_get(xs, at)
+        let mut c = v
+        if (c < lo) { c = lo }
+        if (c > hi) { c = hi }
+        acc = acc + c
+        at = at - 1
+    }
+    return acc
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("FAIL: max basic", max(3, 9), 9)
+    bad = bad + check("FAIL: max reversed", max(9, 3), 9)
+    bad = bad + check("FAIL: max equal", max(5, 5), 5)
+    bad = bad + check("FAIL: max negatives", max(0 - 9, 0 - 3), 0 - 3)
+    bad = bad + check("FAIL: min basic", min(3, 9), 3)
+    bad = bad + check("FAIL: min reversed", min(9, 3), 3)
+    bad = bad + check("FAIL: min equal", min(5, 5), 5)
+    bad = bad + check("FAIL: min negatives", min(0 - 9, 0 - 3), 0 - 9)
+    bad = bad + check("FAIL: abs positive", abs(7), 7)
+    bad = bad + check("FAIL: abs negative", abs(0 - 7), 7)
+    bad = bad + check("FAIL: abs zero", abs(0), 0)
+
+    // Int's minimum has no positive counterpart; abs returns it unchanged rather
+    // than trapping, which is the same answer the language's arithmetic gives.
+    let intMin = 0 - 2147483647 - 1
+    bad = bad + check("FAIL: abs at Int minimum", abs(intMin), intMin)
+
+    // The builtins directly, so the wrapper is not the only thing under test.
+    bad = bad + check("FAIL: __builtin_max", __builtin_max(2, 8), 8)
+    bad = bad + check("FAIL: __builtin_min", __builtin_min(2, 8), 2)
+    bad = bad + check("FAIL: __builtin_abs", __builtin_abs(0 - 2), 2)
+
+    // A guarded loop that calls out must agree with one that does not.
+    bad = bad + check("FAIL: call in loop changed the answer",
+                      clampSum(64, 0 - 1, 20), clampSumInline(64, 0 - 1, 20))
+    // [-4,-3,-2,-1,0,1,2,3] clamped to [0,2] is [0,0,0,0,0,1,2,2].
+    bad = bad + check("FAIL: clampSum value", clampSum(8, 0, 2), 5)
+
+    if (bad != 0) { return 1 }
+    println("PASS: min/max/abs")
+    return 0
+}

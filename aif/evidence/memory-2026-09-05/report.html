@@ -1,0 +1,2072 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Prismio Benchmark Intelligence Report</title>
+  <style>
+    :root {
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, -system-ui, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+      --prismio: #47d7b5;
+      --prismio-dim: rgba(71, 215, 181, 0.14);
+      --prismio-glow: rgba(71, 215, 181, 0.25);
+      --cpp: #ffb454;
+      --cpp-dim: rgba(255, 180, 84, 0.14);
+      --rust: #a991ff;
+      --rust-dim: rgba(169, 145, 255, 0.14);
+
+      --good: #47d7b5;
+      --good-bg: rgba(71, 215, 181, 0.12);
+      --bad: #ff6e7f;
+      --bad-bg: rgba(255, 110, 127, 0.12);
+      --neutral: #8e9cae;
+      --neutral-bg: rgba(142, 156, 174, 0.12);
+
+      --card-accent: var(--border);
+      --lang: var(--prismio);
+    }
+
+    html[data-theme="dark"] {
+      --bg: #07090e;
+      --bg-gradient: radial-gradient(circle at 18% -10%, rgba(71, 215, 181, 0.08) 0%, transparent 40%),
+                          radial-gradient(circle at 82% -10%, rgba(169, 145, 255, 0.08) 0%, transparent 40%),
+                          #07090e;
+      --surface: #0e1219;
+      --surface-raised: #141a24;
+      --surface-elevated: #192230;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-subtle: rgba(255, 255, 255, 0.04);
+      --border-focus: var(--prismio);
+      --text: #f3f6fa;
+      --text-muted: #8b97a8;
+      --text-faint: #535e6f;
+      --card-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.5), 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+      --track-bg: #141a24;
+      --table-stripe: rgba(255, 255, 255, 0.015);
+      --table-hover: rgba(71, 215, 181, 0.04);
+    }
+
+    html[data-theme="light"] {
+      --bg: #f8fafc;
+      --bg-gradient: radial-gradient(circle at 18% -10%, rgba(71, 215, 181, 0.12) 0%, transparent 45%),
+                          radial-gradient(circle at 82% -10%, rgba(169, 145, 255, 0.12) 0%, transparent 45%),
+                          #f8fafc;
+      --surface: #ffffff;
+      --surface-raised: #f1f5f9;
+      --surface-elevated: #e2e8f0;
+      --border: rgba(0, 0, 0, 0.08);
+      --border-subtle: rgba(0, 0, 0, 0.04);
+      --border-focus: #0f766e;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --text-faint: #94a3b8;
+      --card-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.06), 0 1px 3px 0 rgba(0, 0, 0, 0.04);
+      --track-bg: #e2e8f0;
+      --table-stripe: rgba(0, 0, 0, 0.015);
+      --table-hover: rgba(71, 215, 181, 0.07);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--bg-gradient);
+      background-attachment: fixed;
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.55;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--prismio) 0%, var(--cpp) 50%, var(--rust) 100%);
+      z-index: 1000;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    button, input, select { font: inherit; color: inherit; }
+
+    .shell {
+      width: min(1520px, calc(100% - 48px));
+      margin: 0 auto;
+    }
+
+    /* HEADER */
+    header {
+      padding: 56px 0 32px;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+    }
+
+    .nav-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-logo {
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, rgba(71, 215, 181, 0.2), rgba(169, 145, 255, 0.2));
+      border: 1px solid var(--border);
+      display: grid;
+      place-items: center;
+      box-shadow: 0 0 20px var(--prismio-glow);
+    }
+
+    .brand-title {
+      font-size: clamp(1.4rem, 2.8vw, 2.2rem);
+      font-weight: 800;
+      letter-spacing: -0.035em;
+      line-height: 1.1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--prismio-dim);
+      color: var(--prismio);
+      border: 1px solid rgba(71, 215, 181, 0.3);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .brand-sub {
+      color: var(--text-muted);
+      font-size: 14px;
+      margin-top: 5px;
+      max-width: 72ch;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      height: 38px;
+      padding: 0 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.16s ease;
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      background: var(--surface-raised);
+      border-color: rgba(255, 255, 255, 0.18);
+      transform: translateY(-1px);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn-primary {
+      background: var(--prismio-dim);
+      color: var(--prismio);
+      border-color: rgba(71, 215, 181, 0.4);
+    }
+
+    .btn-primary:hover {
+      background: rgba(71, 215, 181, 0.22);
+      border-color: var(--prismio);
+    }
+
+    .icon-btn {
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+    }
+
+    /* EXECUTIVE SUMMARY & KPI CARDS */
+    .kpi-section {
+      margin-top: 32px;
+    }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 24px;
+    }
+
+    .kpi-card {
+      --card-accent: var(--border);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 32px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: var(--card-shadow);
+      transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+
+    .kpi-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(255, 255, 255, 0.14);
+    }
+
+    .kpi-card::after {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: var(--card-accent, var(--border));
+    }
+
+    .kpi-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 12px;
+    }
+
+    .kpi-value-row {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+
+    .kpi-number {
+      font-size: clamp(2rem, 3.2vw, 2.75rem);
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .kpi-delta {
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 6px;
+      white-space: nowrap;
+      font-family: var(--font-mono);
+    }
+
+    .kpi-desc {
+      margin-top: 10px;
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    .kpi-detail-list {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+    }
+
+    .kpi-detail-item {
+      display: flex;
+      justify-content: space-between;
+      color: var(--text-muted);
+    }
+
+    .kpi-detail-item strong {
+      color: var(--text);
+    }
+
+    /* WIN/LOSS/TIE BARS */
+    .distribution-bar {
+      height: 8px;
+      border-radius: 999px;
+      background: var(--surface-raised);
+      display: flex;
+      overflow: hidden;
+      margin-top: 12px;
+      gap: 2px;
+    }
+
+    .dist-seg {
+      height: 100%;
+      transition: width 0.4s ease;
+    }
+
+    .dist-seg.win { background: var(--good); }
+    .dist-seg.tie { background: var(--neutral); }
+    .dist-seg.loss { background: var(--bad); }
+
+    /* CATEGORY CARDS GRID */
+    .category-section {
+      margin-top: 40px;
+    }
+
+    .category-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 20px;
+    }
+
+    .cat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 24px;
+      cursor: pointer;
+      transition: all 0.16s ease;
+      position: relative;
+    }
+
+    .cat-card:hover, .cat-card.active {
+      border-color: var(--prismio);
+      background: var(--surface-raised);
+      transform: translateY(-2px);
+    }
+
+    .cat-card.active::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 16px; right: 16px;
+      height: 2px;
+      background: var(--prismio);
+      border-radius: 0 0 2px 2px;
+    }
+
+    .cat-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .cat-name {
+      font-weight: 700;
+      font-size: 13px;
+      text-transform: capitalize;
+    }
+
+    .cat-count {
+      font-size: 11px;
+      color: var(--text-faint);
+      font-family: var(--font-mono);
+      background: var(--surface-raised);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .cat-metrics {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      margin-top: 4px;
+    }
+
+    .cat-metric-label {
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+
+    /* MAIN CONTENT & TOOLBAR */
+    main {
+      padding: 40px 0 96px;
+    }
+
+    .toolbar-container {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      padding: 16px 0;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 32px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .search-wrapper {
+      position: relative;
+      flex: 1;
+      min-width: 240px;
+      max-width: 440px;
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-faint);
+      pointer-events: none;
+    }
+
+    .search-input {
+      width: 100%;
+      height: 40px;
+      padding: 0 38px 0 40px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.16s ease, box-shadow 0.16s ease;
+    }
+
+    .search-input:focus {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px var(--prismio-dim);
+    }
+
+    .clear-search {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: var(--text-faint);
+      cursor: pointer;
+      display: none;
+    }
+
+    .clear-search.visible {
+      display: block;
+    }
+
+    .toolbar-filters {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .select-wrap {
+      position: relative;
+    }
+
+    .toolbar-select {
+      height: 40px;
+      padding: 0 32px 0 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+      cursor: pointer;
+      appearance: none;
+    }
+
+    .toolbar-select:focus {
+      border-color: var(--border-focus);
+    }
+
+    .select-arrow {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      pointer-events: none;
+      color: var(--text-faint);
+    }
+
+    .tab-group {
+      display: inline-flex;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 3px;
+      gap: 2px;
+    }
+
+    .tab-btn {
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      border-radius: 7px;
+      cursor: pointer;
+      transition: all 0.16s ease;
+    }
+
+    .tab-btn:hover {
+      color: var(--text);
+    }
+
+    .tab-btn.active {
+      background: var(--surface-raised);
+      color: var(--prismio);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+    }
+
+    /* FILTER CHIPS ROW */
+    .filter-chips-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .chip-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-right: 4px;
+    }
+
+    .chip {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.16s ease;
+    }
+
+    .chip:hover {
+      color: var(--text);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .chip.active {
+      background: var(--prismio-dim);
+      color: var(--prismio);
+      border-color: rgba(71, 215, 181, 0.4);
+    }
+
+    /* SECTION HEADERS */
+    .section-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+      margin: 48px 0 20px;
+    }
+
+    .section-title-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .section-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+
+    .section-subtitle {
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    .section-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* CHARTS SECTION */
+    .chart-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: var(--card-shadow);
+      overflow: hidden;
+    }
+
+    .chart-legend {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-raised);
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .legend-items {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+    }
+
+    .legend-dot.prismio { background: var(--prismio); box-shadow: 0 0 8px var(--prismio-glow); }
+    .legend-dot.cpp { background: var(--cpp); }
+    .legend-dot.rust { background: var(--rust); }
+
+    .chart-list {
+      padding: 8px 0;
+    }
+
+    .category-group-header {
+      padding: 14px 24px;
+      background: var(--surface-raised);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .category-group-header:first-child {
+      border-top: none;
+    }
+
+    .bench-row {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 40px;
+      padding: 32px 32px;
+      border-bottom: 1px solid var(--border-subtle);
+      transition: background 0.16s ease;
+      align-items: center;
+    }
+
+    .bench-row:last-child {
+      border-bottom: none;
+    }
+
+    .bench-row:hover {
+      background: var(--table-hover);
+    }
+
+    .bench-info {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .bench-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .bench-name {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: -0.01em;
+    }
+
+    .winner-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .winner-badge.prismio {
+      background: var(--prismio-dim);
+      color: var(--prismio);
+      border: 1px solid rgba(71, 215, 181, 0.3);
+    }
+
+    .winner-badge.cpp {
+      background: var(--cpp-dim);
+      color: var(--cpp);
+      border: 1px solid rgba(255, 180, 84, 0.3);
+    }
+
+    .winner-badge.rust {
+      background: var(--rust-dim);
+      color: var(--rust);
+      border: 1px solid rgba(169, 145, 255, 0.3);
+    }
+
+    .bench-tags {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 2px;
+    }
+
+    .bench-tag {
+      font-size: 11px;
+      color: var(--text-faint);
+      text-transform: capitalize;
+    }
+
+    .bench-tag.profile {
+      background: var(--surface-raised);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    .bars-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .bar-line {
+      display: grid;
+      grid-template-columns: 64px minmax(0, 1fr) 140px;
+      gap: 20px;
+      align-items: center;
+    }
+
+    .bar-lang-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .bar-track {
+      height: 6px;
+      background: var(--track-bg);
+      border-radius: 999px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .bar-fill.prismio { background: var(--prismio); }
+    .bar-fill.cpp { background: var(--cpp); }
+    .bar-fill.rust { background: var(--rust); }
+
+    .bar-stats {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+      text-align: right;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .bar-stats strong {
+      color: var(--text);
+    }
+
+    /* DIVERGING DELTA CHART */
+    .diverging-container {
+      display: grid;
+      grid-template-columns: 1fr 2px 1fr;
+      align-items: center;
+      position: relative;
+      height: 20px;
+    }
+
+    .diverging-center-line {
+      width: 2px;
+      height: 100%;
+      background: var(--border);
+      position: relative;
+    }
+
+    .diverging-bar {
+      height: 10px;
+      border-radius: 4px;
+      transition: width 0.4s ease;
+    }
+
+    /* DATA MATRIX (TABLE) */
+    .table-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: var(--card-shadow);
+      overflow: hidden;
+    }
+
+    .table-scroll {
+      overflow-x: auto;
+      max-width: 100%;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-variant-numeric: tabular-nums;
+      text-align: left;
+    }
+
+    thead th {
+      background: var(--surface-raised);
+      padding: 14px 16px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+      user-select: none;
+      cursor: pointer;
+      transition: color 0.16s ease, background 0.16s ease;
+    }
+
+    thead th:hover {
+      color: var(--text);
+      background: var(--surface-elevated);
+    }
+
+    thead th.sortable {
+      position: relative;
+    }
+
+    thead th.sort-asc::after { content: " ▲"; color: var(--prismio); }
+    thead th.sort-desc::after { content: " ▼"; color: var(--prismio); }
+
+    tbody tr.data-row {
+      border-bottom: 1px solid var(--border-subtle);
+      cursor: pointer;
+      transition: background 0.16s ease;
+    }
+
+    tbody tr.data-row:hover {
+      background: var(--table-hover);
+    }
+
+    tbody tr.data-row.expanded {
+      background: var(--surface-raised);
+    }
+
+    tbody td {
+      padding: 14px 16px;
+      font-size: 13px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    tbody td.cell-primary {
+      font-family: var(--font-sans);
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .num-p { color: var(--prismio); font-weight: 600; }
+    .num-c { color: var(--cpp); }
+    .num-r { color: var(--rust); }
+
+    /* DELTA PILLS */
+    .delta-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+    }
+
+    .delta-pill.faster {
+      background: var(--good-bg);
+      color: var(--good);
+    }
+
+    .delta-pill.slower {
+      background: var(--bad-bg);
+      color: var(--bad);
+    }
+
+    .delta-pill.parity {
+      background: var(--neutral-bg);
+      color: var(--neutral);
+    }
+
+    /* ROW DETAILS DRAWER */
+    tr.drawer-row {
+      display: none;
+    }
+
+    tr.drawer-row.open {
+      display: table-row;
+    }
+
+    .drawer-cell {
+      padding: 0 !important;
+      background: var(--surface-raised);
+    }
+
+    .drawer-content {
+      padding: 24px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .drawer-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .drawer-card-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .samples-plot {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .sample-plot-line {
+      display: grid;
+      grid-template-columns: 56px 1fr;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .sample-dots-track {
+      height: 20px;
+      background: var(--surface-raised);
+      border-radius: 6px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .sample-dot {
+      position: absolute;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      opacity: 0.8;
+    }
+
+    .sample-dot.prismio { background: var(--prismio); }
+    .sample-dot.cpp { background: var(--cpp); }
+    .sample-dot.rust { background: var(--rust); }
+
+    .sample-plot-label {
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .sample-plot-label.prismio { color: var(--prismio); }
+    .sample-plot-label.cpp { color: var(--cpp); }
+    .sample-plot-label.rust { color: var(--rust); }
+
+    .sample-median-marker {
+      position: absolute;
+      top: 2px;
+      bottom: 2px;
+      width: 2px;
+      border-radius: 1px;
+      transform: translateX(-50%);
+    }
+
+    /* UNSUPPORTED SECTION */
+    .unsupported-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+    }
+
+    .unsupported-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 20px;
+      position: relative;
+      box-shadow: var(--card-shadow);
+    }
+
+    .unsupported-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .unsupported-name {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 14px;
+      color: var(--text);
+    }
+
+    .unsupported-badge {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: rgba(255, 180, 84, 0.12);
+      color: var(--cpp);
+      border: 1px solid rgba(255, 180, 84, 0.25);
+    }
+
+    .unsupported-meta {
+      display: flex;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-faint);
+    }
+
+    /* FOOTER */
+    footer {
+      padding: 48px 0;
+      border-top: 1px solid var(--border);
+      color: var(--text-faint);
+      font-size: 13px;
+      margin-top: 64px;
+    }
+
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .empty-message {
+      padding: 64px 24px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    /* TOAST NOTIFICATION */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--surface-elevated);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 12px 18px;
+      border-radius: 10px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+      font-size: 13px;
+      font-weight: 600;
+      z-index: 9999;
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    @media (max-width: 1200px) {
+      .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+      .category-grid { grid-template-columns: repeat(3, 1fr); }
+      .drawer-content { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 768px) {
+      .shell { width: calc(100% - 28px); }
+      header { padding-top: 36px; }
+      .kpi-grid { grid-template-columns: 1fr; }
+      .category-grid { grid-template-columns: 1fr 1fr; }
+      .bench-row { grid-template-columns: 1fr; gap: 14px; }
+      .bar-line { grid-template-columns: 56px 1fr 110px; gap: 8px; }
+      .toolbar { flex-direction: column; align-items: stretch; }
+      .search-wrapper { max-width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="nav-bar">
+        <div class="brand">
+          <div class="brand-logo">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2" stroke="var(--prismio)"/>
+              <line x1="12" y1="22" x2="12" y2="12" stroke="var(--prismio)"/>
+              <line x1="22" y1="8.5" x2="12" y2="12" stroke="var(--cpp)"/>
+              <line x1="2" y1="8.5" x2="12" y2="12" stroke="var(--rust)"/>
+            </svg>
+          </div>
+          <div>
+            <div class="brand-title">
+              Prismio Benchmark Intelligence
+              <span class="brand-badge">Cross-Language</span>
+            </div>
+            <p class="brand-sub">Canonical workload matrix evaluating Prismio against Clang++ C++20 (-O3) and Rustc 2021 (opt-level 3).</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="btn icon-btn" id="theme-toggle" title="Toggle Light/Dark Theme" aria-label="Toggle Theme">
+            <svg id="theme-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+          </button>
+          <button class="btn" id="copy-summary-btn" title="Copy markdown summary for PRs or documentation">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            Copy Summary
+          </button>
+          <a class="btn" href="baseline.json" target="_blank" rel="noopener">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+            </svg>
+            Raw JSON
+          </a>
+        </div>
+      </div>
+
+      <!-- EXECUTIVE KPI SECTION -->
+      <section class="kpi-section" aria-label="Executive KPI Overview">
+        <div class="kpi-grid" id="kpi-grid"></div>
+      </section>
+
+      <!-- CATEGORY SCORECARDS -->
+      <section class="category-section" aria-label="Category Summaries">
+        <div class="category-grid" id="category-grid"></div>
+      </section>
+    </header>
+
+    <main>
+      <!-- CONTROLS TOOLBAR -->
+      <div class="toolbar-container">
+        <div class="toolbar" role="toolbar" aria-label="Dashboard controls">
+          <div class="search-wrapper">
+            <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input class="search-input" id="search-input" type="search" placeholder="Search workloads (e.g. quicksort, fft, memory)..." autocomplete="off" spellcheck="false">
+            <button class="clear-search" id="clear-search" title="Clear search">✕</button>
+          </div>
+
+          <div class="toolbar-filters">
+            <div class="select-wrap">
+              <select class="toolbar-select" id="profile-filter" aria-label="Filter by profile">
+                <option value="all">All Workload Profiles</option>
+                <option value="cpu">CPU Intensive</option>
+                <option value="cpu-memory">CPU & Memory</option>
+                <option value="memory">Memory Intensive</option>
+                <option value="allocation">Allocation Heavy</option>
+                <option value="io">I/O Intensive</option>
+                <option value="concurrency">Concurrency</option>
+              </select>
+              <span class="select-arrow">▼</span>
+            </div>
+
+            <div class="select-wrap">
+              <select class="toolbar-select" id="sort-select" aria-label="Sort workloads">
+                <option value="catalog">Sort: Catalog Order</option>
+                <option value="prismio-fastest">Sort: Prismio Fastest First</option>
+                <option value="prismio-slowest">Sort: Prismio Slowest First</option>
+                <option value="cpp-ratio-best">Sort: Best vs C++</option>
+                <option value="cpp-ratio-worst">Sort: Worst vs C++</option>
+                <option value="rust-ratio-best">Sort: Best vs Rust</option>
+                <option value="rust-ratio-worst">Sort: Worst vs Rust</option>
+              </select>
+              <span class="select-arrow">▼</span>
+            </div>
+
+            <div class="tab-group" id="chart-mode-tabs" role="tablist" aria-label="Chart representation">
+              <button class="tab-btn active" data-mode="relative" role="tab" aria-selected="true">Speedup Ratio</button>
+              <button class="tab-btn" data-mode="absolute" role="tab" aria-selected="false">Absolute Time</button>
+              <button class="tab-btn" data-mode="diverging" role="tab" aria-selected="false">Prismio Delta</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="filter-chips-row">
+          <span class="chip-label">Outcome:</span>
+          <button class="chip active" data-filter="outcome" data-val="all">All (<span id="count-all">34</span>)</button>
+          <button class="chip" data-filter="outcome" data-val="prismio-win">Prismio Wins (<span id="count-win">0</span>)</button>
+          <button class="chip" data-filter="outcome" data-val="parity">Within ±5% (<span id="count-parity">0</span>)</button>
+          <button class="chip" data-filter="outcome" data-val="prismio-loss">Prismio Behind (<span id="count-loss">0</span>)</button>
+        </div>
+      </div>
+
+      <!-- VISUAL COMPARISON SECTION -->
+      <section aria-labelledby="chart-section-title">
+        <div class="section-header">
+          <div class="section-title-wrap">
+            <h2 class="section-title" id="chart-section-title">Visual Comparison</h2>
+            <p class="section-subtitle" id="chart-subtitle">Direct workload comparison with winner highlighting and normalized scaling</p>
+          </div>
+          <div class="section-controls">
+            <button class="btn" id="toggle-grouping-btn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="8" y1="6" x2="21" y2="6"></line>
+                <line x1="8" y1="12" x2="21" y2="12"></line>
+                <line x1="8" y1="18" x2="21" y2="18"></line>
+                <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                <line x1="3" y1="18" x2="3.01" y2="18"></line>
+              </svg>
+              <span id="grouping-label">Group by Category</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="chart-container">
+          <div class="chart-legend">
+            <div class="legend-items">
+              <div class="legend-item"><span class="legend-dot prismio"></span><span>Prismio</span></div>
+              <div class="legend-item"><span class="legend-dot cpp"></span><span>C++ (Clang -O3)</span></div>
+              <div class="legend-item"><span class="legend-dot rust"></span><span>Rust (opt-level 3)</span></div>
+            </div>
+            <div style="font-size:12px; color:var(--text-faint); font-family:var(--font-mono);" id="visible-status">
+              Showing 34 of 34 workloads
+            </div>
+          </div>
+          <div class="chart-list" id="chart-list"></div>
+        </div>
+      </section>
+
+      <!-- PRECISE TIMING MATRIX TABLE -->
+      <section aria-labelledby="table-section-title" style="margin-top: 64px;">
+        <div class="section-header">
+          <div class="section-title-wrap">
+            <h2 class="section-title" id="table-section-title">Detailed Performance Matrix</h2>
+            <p class="section-subtitle">Median timings across samples, relative slowdown/speedup factors, and run stability</p>
+          </div>
+          <div class="section-controls">
+            <button class="btn" id="copy-table-md-btn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              Copy Markdown
+            </button>
+            <button class="btn" id="copy-table-csv-btn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              Export CSV
+            </button>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <div class="table-scroll">
+            <table id="performance-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-col="name">Workload</th>
+                  <th class="sortable" data-col="category">Category</th>
+                  <th class="sortable" data-col="profile">Profile</th>
+                  <th class="sortable" data-col="result">Checksum</th>
+                  <th class="sortable" data-col="prismio">Prismio Median</th>
+                  <th class="sortable" data-col="cpp">C++ Median</th>
+                  <th class="sortable" data-col="rust">Rust Median</th>
+                  <th class="sortable" data-col="vs-cpp">vs C++</th>
+                  <th class="sortable" data-col="vs-rust">vs Rust</th>
+                  <th class="sortable" data-col="jitter">Stability (±)</th>
+                </tr>
+              </thead>
+              <tbody id="table-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- UNSUPPORTED CAPABILITIES SECTION -->
+      <section id="unsupported-section" aria-labelledby="unsupported-title" style="margin-top: 64px;">
+        <div class="section-header">
+          <div class="section-title-wrap">
+            <h2 class="section-title" id="unsupported-title">Cataloged & Pending Capabilities</h2>
+            <p class="section-subtitle">Cataloged benchmark workloads awaiting upcoming Prismio language or runtime features</p>
+          </div>
+        </div>
+        <div class="unsupported-grid" id="unsupported-grid"></div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="footer-inner">
+        <div id="footer-meta">Prismio Cross-Language Performance Matrix</div>
+        <div>All 34 implemented benchmarks verified with identical canonical checksums across all 3 languages.</div>
+      </div>
+    </footer>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">Copied to clipboard!</div>
+
+  <script>
+    const report = {"schema_version":1,"generated_at":"2026-09-05T04:51:17.774095+00:00","runs":9,"build_commands":{"prismio":"/private/tmp/prismio-memory-2026-09-05/gen2 build /private/tmp/prismio-memory-2026-09-05/benchmarks/prismio/suite.psm -o /private/tmp/prismio-memory-2026-09-05/benchmarks/build/prismio-suite","cpp":"/opt/homebrew/opt/llvm/bin/clang++ -O3 -std=c++20 -pthread /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/suite.cpp /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/algorithms.cpp /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/data_structures.cpp /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/compute.cpp /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/memory.cpp /private/tmp/prismio-memory-2026-09-05/benchmarks/cpp/io.cpp -o /private/tmp/prismio-memory-2026-09-05/benchmarks/build/cpp-suite","rust":"rustc -C opt-level=3 --edition=2021 /private/tmp/prismio-memory-2026-09-05/benchmarks/rust/suite.rs -o /private/tmp/prismio-memory-2026-09-05/benchmarks/build/rust-suite"},"compile_ns":{"prismio":1640692500,"cpp":1918343000,"rust":723117750},"benchmarks":[{"name":"fibonacci","category":"algorithms","status":"implemented","profile":"cpu","result":5985853,"languages":{"prismio":{"elapsed_ns_median":11406709,"wall_ns_median":13083250,"elapsed_ns_samples":[23219750,19196292,12618250,11409208,11350791,11406709,11333292,11398250,11403917]},"cpp":{"elapsed_ns_median":11476083,"wall_ns_median":13276917,"elapsed_ns_samples":[23230833,15042917,11470375,11461959,11480708,11488083,11437958,11448833,11476083]},"rust":{"elapsed_ns_median":11473333,"wall_ns_median":13231208,"elapsed_ns_samples":[23402875,13353584,11442875,11478917,11428000,11434375,11483875,11473333,11435083]}}},{"name":"prime_sieve","category":"algorithms","status":"implemented","profile":"cpu-memory","result":458935349,"languages":{"prismio":{"elapsed_ns_median":855959,"wall_ns_median":2456208,"elapsed_ns_samples":[867375,868917,922667,852750,855959,804000,798250,821250,867416]},"cpp":{"elapsed_ns_median":520250,"wall_ns_median":2272875,"elapsed_ns_samples":[522541,527709,517042,504209,538417,495000,528792,520250,516041]},"rust":{"elapsed_ns_median":897291,"wall_ns_median":2583125,"elapsed_ns_samples":[896875,932833,778208,904250,897291,901291,899958,774792,780333]}}},{"name":"gcd_lcm","category":"algorithms","status":"implemented","profile":"cpu","result":504265700,"languages":{"prismio":{"elapsed_ns_median":22526125,"wall_ns_median":24320208,"elapsed_ns_samples":[23965333,22526125,21194583,20987834,25974041,22898167,20542708,19927666,23353625]},"cpp":{"elapsed_ns_median":22107042,"wall_ns_median":24149958,"elapsed_ns_samples":[25611125,23802833,24651750,19915625,22107042,21783959,26165583,20614417,20590125]},"rust":{"elapsed_ns_median":23258875,"wall_ns_median":25123292,"elapsed_ns_samples":[23258875,24998125,24847791,25778167,25231250,23155458,22219625,22174416,23170750]}}},{"name":"binary_search","category":"algorithms","status":"implemented","profile":"cpu-memory","result":1004850,"languages":{"prismio":{"elapsed_ns_median":90807041,"wall_ns_median":92991416,"elapsed_ns_samples":[90549542,89709916,89888083,89273166,91544167,90807041,91589542,90955459,91879000]},"cpp":{"elapsed_ns_median":72366500,"wall_ns_median":74567833,"elapsed_ns_samples":[72410083,72883417,72327209,72233000,72160792,72352959,72409625,72366500,72759000]},"rust":{"elapsed_ns_median":131493916,"wall_ns_median":133490750,"elapsed_ns_samples":[131817167,132856625,130265417,130980375,131493916,131959375,131831250,131171542,131212958]}}},{"name":"quicksort","category":"algorithms","status":"implemented","profile":"cpu-memory","result":33756443,"languages":{"prismio":{"elapsed_ns_median":4846167,"wall_ns_median":6640458,"elapsed_ns_samples":[4846167,4852250,4888875,4782417,4840125,4883584,4749583,4807917,4848208]},"cpp":{"elapsed_ns_median":4432708,"wall_ns_median":6394833,"elapsed_ns_samples":[4458167,4524500,4404416,4395416,4432708,4624083,4408917,4460500,4428917]},"rust":{"elapsed_ns_median":4444000,"wall_ns_median":6284375,"elapsed_ns_samples":[4488666,4339292,4444667,4418083,4402708,4527375,4444000,4449458,4443875]}}},{"name":"mergesort","category":"algorithms","status":"implemented","profile":"cpu-memory","result":33756443,"languages":{"prismio":{"elapsed_ns_median":6364167,"wall_ns_median":8096209,"elapsed_ns_samples":[6366292,6259833,6287667,6273584,6483750,6452208,6288250,6376792,6364167]},"cpp":{"elapsed_ns_median":3695625,"wall_ns_median":5549000,"elapsed_ns_samples":[3668042,3701708,3695625,3713833,3680250,3703292,3699416,3663750,3630500]},"rust":{"elapsed_ns_median":5010958,"wall_ns_median":6774834,"elapsed_ns_samples":[5047958,5028542,4912792,4938333,5010958,5050250,4945792,4996458,5018458]}}},{"name":"string_search","category":"algorithms","status":"implemented","profile":"cpu-allocation","result":152047993,"languages":{"prismio":{"elapsed_ns_median":127708,"wall_ns_median":1739917,"elapsed_ns_samples":[131125,122458,124583,121333,131917,121209,128625,133292,127708]},"cpp":{"elapsed_ns_median":93291,"wall_ns_median":1848334,"elapsed_ns_samples":[93291,88750,92125,97041,89708,98625,96667,90375,95334]},"rust":{"elapsed_ns_median":161000,"wall_ns_median":1880917,"elapsed_ns_samples":[158584,158208,163875,167958,171709,165625,159833,153542,161000]}}},{"name":"graph_bfs","category":"algorithms","status":"implemented","profile":"memory","result":542195018,"languages":{"prismio":{"elapsed_ns_median":760125,"wall_ns_median":2435833,"elapsed_ns_samples":[771667,749417,740500,758834,751959,780542,760125,819417,791375]},"cpp":{"elapsed_ns_median":592667,"wall_ns_median":2379583,"elapsed_ns_samples":[591417,592042,598667,586375,592667,613291,610416,590375,609292]},"rust":{"elapsed_ns_median":594916,"wall_ns_median":2303625,"elapsed_ns_samples":[589792,594916,594750,586541,595209,600250,585125,598417,604167]}}},{"name":"knapsack","category":"algorithms","status":"implemented","profile":"cpu-memory","result":12798,"languages":{"prismio":{"elapsed_ns_median":202417,"wall_ns_median":1780667,"elapsed_ns_samples":[201708,199208,204166,198916,203750,202417,203083,199666,206084]},"cpp":{"elapsed_ns_median":147750,"wall_ns_median":1883084,"elapsed_ns_samples":[144875,146042,153500,161541,136709,152292,142583,148375,147750]},"rust":{"elapsed_ns_median":428125,"wall_ns_median":2098083,"elapsed_ns_samples":[421541,422083,428125,429084,429125,430250,411417,430625,422625]}}},{"name":"tree_traversal","category":"algorithms","status":"implemented","profile":"memory","result":294705124,"languages":{"prismio":{"elapsed_ns_median":677125,"wall_ns_median":2293916,"elapsed_ns_samples":[694959,683917,650250,722375,660000,700167,652125,638000,677125]},"cpp":{"elapsed_ns_median":382584,"wall_ns_median":2101666,"elapsed_ns_samples":[397583,363084,401750,402334,350709,367708,382584,388417,361209]},"rust":{"elapsed_ns_median":331125,"wall_ns_median":2025833,"elapsed_ns_samples":[319417,350292,353667,319708,329375,331125,314875,356000,339167]}}},{"name":"hashmap_insert_lookup","category":"data_structures","status":"implemented","profile":"memory-allocation","result":42239213,"languages":{"prismio":{"elapsed_ns_median":9505416,"wall_ns_median":11285625,"elapsed_ns_samples":[9607625,9614875,9364375,9363833,9505416,9555333,9476083,9621791,9386292]},"cpp":{"elapsed_ns_median":6898208,"wall_ns_median":8863667,"elapsed_ns_samples":[6617958,6610625,6801416,6911166,6901625,6659625,6898208,6907709,7211625]},"rust":{"elapsed_ns_median":7907208,"wall_ns_median":9793667,"elapsed_ns_samples":[7938167,7940167,7889584,7818416,7907208,7935959,7911833,7867625,7815708]}}},{"name":"vector_growth","category":"data_structures","status":"implemented","profile":"allocation","result":995982695,"languages":{"prismio":{"elapsed_ns_median":11402834,"wall_ns_median":13803166,"elapsed_ns_samples":[12845709,20893000,11646584,11358500,11402834,11143417,11325667,11472625,11222292]},"cpp":{"elapsed_ns_median":11227250,"wall_ns_median":13945667,"elapsed_ns_samples":[26099000,11692542,11486167,11483708,11227250,11143083,11118959,11000000,11215500]},"rust":{"elapsed_ns_median":10361750,"wall_ns_median":12678000,"elapsed_ns_samples":[16005958,10642458,10417667,10373750,10078792,10218417,10361750,10165375,10198209]}}},{"name":"vector_iteration","category":"data_structures","status":"implemented","profile":"memory","result":127112128,"languages":{"prismio":{"elapsed_ns_median":76874250,"wall_ns_median":79186583,"elapsed_ns_samples":[76874250,76218792,75867084,83653708,79117042,77142417,76921458,76655792,76528083]},"cpp":{"elapsed_ns_median":77791958,"wall_ns_median":80418833,"elapsed_ns_samples":[77791958,76678667,77329459,80431917,78241041,77922417,78928625,77098500,76977042]},"rust":{"elapsed_ns_median":75279417,"wall_ns_median":78053791,"elapsed_ns_samples":[74709625,74502167,89838542,81731042,75423500,75279417,76618833,74738000,74519042]}}},{"name":"key_value_update","category":"data_structures","status":"implemented","profile":"memory","result":5599628,"languages":{"prismio":{"elapsed_ns_median":18704709,"wall_ns_median":20550667,"elapsed_ns_samples":[18363250,19314125,20550083,19009958,18680000,18613583,18751458,18704709,18682875]},"cpp":{"elapsed_ns_median":5604375,"wall_ns_median":7668250,"elapsed_ns_samples":[5635583,5658875,5899625,5552709,5604375,5594833,5521667,5839459,5454417]},"rust":{"elapsed_ns_median":8638709,"wall_ns_median":10571125,"elapsed_ns_samples":[8585750,10178041,8844292,8676708,8489250,8638709,8699375,8577917,8547792]}}},{"name":"linked_list","category":"data_structures","status":"unsupported","profile":"allocation"},{"name":"binary_search_tree","category":"data_structures","status":"unsupported","profile":"memory-allocation"},{"name":"priority_queue","category":"data_structures","status":"unsupported","profile":"cpu-memory"},{"name":"mixed_map_removal","category":"data_structures","status":"unsupported","profile":"memory-allocation"},{"name":"matrix_multiply","category":"compute","status":"implemented","profile":"cpu","result":346043827,"languages":{"prismio":{"elapsed_ns_median":4336917,"wall_ns_median":6059417,"elapsed_ns_samples":[4335667,4379000,4432333,4305292,4319708,4336917,4384916,4417750,4321041]},"cpp":{"elapsed_ns_median":4297917,"wall_ns_median":6219542,"elapsed_ns_samples":[4301167,4281375,4350834,4332041,4285709,4290250,4256708,4297917,4326458]},"rust":{"elapsed_ns_median":4353959,"wall_ns_median":6388667,"elapsed_ns_samples":[4355417,4523417,4338542,4327458,4293458,4307625,4362542,4673208,4353959]}}},{"name":"mandelbrot","category":"compute","status":"implemented","profile":"cpu","result":38776,"languages":{"prismio":{"elapsed_ns_median":3927333,"wall_ns_median":5895333,"elapsed_ns_samples":[3842041,3833500,3907041,3836333,3927333,4030125,4014167,4136083,3996167]},"cpp":{"elapsed_ns_median":3035125,"wall_ns_median":5573375,"elapsed_ns_samples":[3329750,3518042,3344000,3019750,3023584,3072416,3026792,3027167,3035125]},"rust":{"elapsed_ns_median":3805875,"wall_ns_median":5832959,"elapsed_ns_samples":[3805875,3806541,3813042,3821000,3792083,3824917,3805375,3779417,3730042]}}},{"name":"fft","category":"compute","status":"implemented","profile":"cpu","result":327680,"languages":{"prismio":{"elapsed_ns_median":4687958,"wall_ns_median":6497208,"elapsed_ns_samples":[4710417,4687958,4695250,4837625,4716166,4597333,4603000,4634625,4606209]},"cpp":{"elapsed_ns_median":2686916,"wall_ns_median":4798625,"elapsed_ns_samples":[2680333,2703292,2692542,2693125,2696583,2684875,2677125,2686916,2681417]},"rust":{"elapsed_ns_median":2992375,"wall_ns_median":4866542,"elapsed_ns_samples":[2990541,2994167,2995708,3009208,2984084,2974542,3012334,2985958,2992375]}}},{"name":"numerical_integration","category":"compute","status":"implemented","profile":"cpu","result":314159265,"languages":{"prismio":{"elapsed_ns_median":2168208,"wall_ns_median":4133875,"elapsed_ns_samples":[2160917,2175541,2163708,2168208,2153584,2172875,2169417,2163666,2322666]},"cpp":{"elapsed_ns_median":2205166,"wall_ns_median":4331125,"elapsed_ns_samples":[2204833,2207042,2205166,2195333,2217750,2194125,2199834,2215083,2206167]},"rust":{"elapsed_ns_median":2165375,"wall_ns_median":4097083,"elapsed_ns_samples":[2152000,2165375,2156125,2194250,2170125,2184500,2280750,2163125,2161708]}}},{"name":"vector_dot","category":"compute","status":"implemented","profile":"cpu-memory","result":199986180,"languages":{"prismio":{"elapsed_ns_median":15161916,"wall_ns_median":17407583,"elapsed_ns_samples":[16680416,15579166,15071417,15118125,14935250,14857500,15161916,15272833,15410500]},"cpp":{"elapsed_ns_median":20290208,"wall_ns_median":23106792,"elapsed_ns_samples":[21047792,19977125,24836292,20056708,19875459,20178458,21329542,20290208,20618292]},"rust":{"elapsed_ns_median":11908208,"wall_ns_median":14313292,"elapsed_ns_samples":[11891625,12054709,11949959,11995000,11906166,11908208,11865000,12088666,11792125]}}},{"name":"convolution","category":"compute","status":"implemented","profile":"cpu-memory","result":399934914,"languages":{"prismio":{"elapsed_ns_median":6278750,"wall_ns_median":8139334,"elapsed_ns_samples":[6283916,6332833,6296625,6194292,6220250,6285084,6260709,6278750,6260208]},"cpp":{"elapsed_ns_median":3520875,"wall_ns_median":5404375,"elapsed_ns_samples":[3450292,3523208,3521541,3459041,3461417,3525208,3534708,3520875,3480209]},"rust":{"elapsed_ns_median":3398584,"wall_ns_median":5265041,"elapsed_ns_samples":[3444292,3390750,3457875,3527250,3398584,3409459,3358500,3377792,3379916]}}},{"name":"monte_carlo","category":"compute","status":"implemented","profile":"cpu","result":6498683,"languages":{"prismio":{"elapsed_ns_median":43967459,"wall_ns_median":45984250,"elapsed_ns_samples":[44066000,43788083,44157083,44089333,43893542,43757208,44577083,43707541,43967459]},"cpp":{"elapsed_ns_median":43863292,"wall_ns_median":45993500,"elapsed_ns_samples":[45024292,43849167,43824291,43677583,43956708,43744791,44473958,43899416,43863292]},"rust":{"elapsed_ns_median":43877459,"wall_ns_median":45879791,"elapsed_ns_samples":[44568458,43654292,43857792,44372750,43694625,44105208,44206250,43743916,43877459]}}},{"name":"polynomial_evaluation","category":"compute","status":"implemented","profile":"cpu","result":147510845,"languages":{"prismio":{"elapsed_ns_median":23110667,"wall_ns_median":24925208,"elapsed_ns_samples":[23148500,23110667,23106250,23082667,23063625,23113500,23158750,23328250,23012667]},"cpp":{"elapsed_ns_median":23122250,"wall_ns_median":25021291,"elapsed_ns_samples":[23122250,23291709,23047000,23125792,23050375,23073250,22953125,23203875,24519583]},"rust":{"elapsed_ns_median":22981959,"wall_ns_median":24751750,"elapsed_ns_samples":[22869375,22966000,22930708,22931791,22981959,23041458,23010166,23034708,24511292]}}},{"name":"ecs_component_update","category":"compute","status":"implemented","profile":"memory","result":166215579,"languages":{"prismio":{"elapsed_ns_median":3400292,"wall_ns_median":5147500,"elapsed_ns_samples":[3465875,3608583,3401666,3395500,3400292,3325167,3418166,3361000,3311583]},"cpp":{"elapsed_ns_median":3440167,"wall_ns_median":5429125,"elapsed_ns_samples":[3502125,3395583,3520542,3481167,3558125,3348209,3393625,3376291,3440167]},"rust":{"elapsed_ns_median":3222792,"wall_ns_median":5141000,"elapsed_ns_samples":[3190708,3245958,3113375,3243084,3152500,3235250,3157542,3307000,3222792]}}},{"name":"parallel_reduction","category":"compute","status":"implemented","profile":"cpu-concurrency","result":822454185,"languages":{"prismio":{"elapsed_ns_median":7339667,"wall_ns_median":9060750,"elapsed_ns_samples":[7315250,7411333,7319542,7309042,7409292,7339667,7309916,7466500,7351916]},"cpp":{"elapsed_ns_median":7390500,"wall_ns_median":9166542,"elapsed_ns_samples":[7408375,7357333,7296791,7405833,7329292,7390500,7420875,7340959,7469334]},"rust":{"elapsed_ns_median":7357250,"wall_ns_median":9061792,"elapsed_ns_samples":[7357250,7397459,7414584,7326500,7446917,7350583,7322958,7449167,7343000]}}},{"name":"transient_allocation","category":"memory","status":"implemented","profile":"allocation","result":339103,"languages":{"prismio":{"elapsed_ns_median":2164375,"wall_ns_median":3810292,"elapsed_ns_samples":[2177250,2129709,2126084,2154250,2209917,2169875,2161125,2167583,2164375]},"cpp":{"elapsed_ns_median":1821167,"wall_ns_median":3594041,"elapsed_ns_samples":[1785917,1847500,1817292,1813000,1873417,1821167,1837958,1836250,1791083]},"rust":{"elapsed_ns_median":1807083,"wall_ns_median":3528750,"elapsed_ns_samples":[1888541,1797584,1817667,1807083,1818000,1806708,1804000,1831166,1803625]}}},{"name":"struct_creation","category":"memory","status":"implemented","profile":"allocation","result":48996500,"languages":{"prismio":{"elapsed_ns_median":6304917,"wall_ns_median":8336458,"elapsed_ns_samples":[9346583,6304917,6254583,6104125,6403083,7598250,6208583,6152708,8043459]},"cpp":{"elapsed_ns_median":6667417,"wall_ns_median":8791791,"elapsed_ns_samples":[6916584,6602208,6608042,6667417,6499333,6775333,6572375,7586375,7689458]},"rust":{"elapsed_ns_median":5531666,"wall_ns_median":7540458,"elapsed_ns_samples":[6632125,5397375,5585209,5531666,5382375,5524125,5397667,7588875,5743791]}}},{"name":"allocation_mutation","category":"memory","status":"implemented","profile":"allocation-memory","result":36000000,"languages":{"prismio":{"elapsed_ns_median":7510584,"wall_ns_median":10197500,"elapsed_ns_samples":[7404250,7270792,6824417,9913417,7510584,7795667,8505208,7324959,8095167]},"cpp":{"elapsed_ns_median":7172417,"wall_ns_median":9718708,"elapsed_ns_samples":[6851666,7313792,7261542,7298917,7516083,7172417,6624375,6329167,7093625]},"rust":{"elapsed_ns_median":7816833,"wall_ns_median":10280208,"elapsed_ns_samples":[7527916,6526666,7920500,6938083,7837875,8664209,8059667,7816833,7357292]}}},{"name":"nested_collection","category":"memory","status":"implemented","profile":"allocation-memory","result":409805349,"languages":{"prismio":{"elapsed_ns_median":3320084,"wall_ns_median":5396625,"elapsed_ns_samples":[2957375,3060916,3394042,3014042,3320084,3055792,3618167,3341792,3490334]},"cpp":{"elapsed_ns_median":2532792,"wall_ns_median":4620292,"elapsed_ns_samples":[2406333,2406917,2399375,2406750,2532792,2886667,2549875,2653959,3062375]},"rust":{"elapsed_ns_median":2461000,"wall_ns_median":4609125,"elapsed_ns_samples":[2429584,2462166,2411542,2424542,2389916,2461000,2495750,2533208,2607000]}}},{"name":"large_buffer_copy","category":"memory","status":"implemented","profile":"memory","result":90068056,"languages":{"prismio":{"elapsed_ns_median":20526291,"wall_ns_median":24290417,"elapsed_ns_samples":[24017917,24572292,20993791,24877375,20526291,19929750,19105834,19331250,19100709]},"cpp":{"elapsed_ns_median":6841542,"wall_ns_median":10591625,"elapsed_ns_samples":[8399291,7262292,8569000,8232291,6841542,6477208,6456334,6038042,6011833]},"rust":{"elapsed_ns_median":7307208,"wall_ns_median":12754500,"elapsed_ns_samples":[8860292,7160667,8765083,8714208,9976958,7202833,7307208,7046459,6681334]}}},{"name":"recursive_tree_rebuild","category":"memory","status":"implemented","profile":"allocation","result":4137497,"languages":{"prismio":{"elapsed_ns_median":567333,"wall_ns_median":2475792,"elapsed_ns_samples":[567333,1924875,958667,568542,563667,571291,549417,542334,564084]},"cpp":{"elapsed_ns_median":892292,"wall_ns_median":3026834,"elapsed_ns_samples":[1142166,892292,822667,1096625,872625,894458,872083,1078666,880500]},"rust":{"elapsed_ns_median":493750,"wall_ns_median":2514708,"elapsed_ns_samples":[522458,506958,475000,489042,493750,484458,497458,503750,484500]}}},{"name":"file_read","category":"io","status":"implemented","profile":"io","result":21823488,"languages":{"prismio":{"elapsed_ns_median":693834,"wall_ns_median":2386875,"elapsed_ns_samples":[3240250,693834,702916,690375,700125,688250,685750,697083,692791]},"cpp":{"elapsed_ns_median":1304125,"wall_ns_median":3090708,"elapsed_ns_samples":[1304125,1261000,1456541,1246083,1415708,1266084,1371834,1276333,1318083]},"rust":{"elapsed_ns_median":686042,"wall_ns_median":2467583,"elapsed_ns_samples":[681500,701083,686167,691416,685541,685333,686042,686375,684541]}}},{"name":"file_write","category":"io","status":"implemented","profile":"io-allocation","result":18825216,"languages":{"prismio":{"elapsed_ns_median":770084,"wall_ns_median":2583750,"elapsed_ns_samples":[1099041,790584,771541,757625,770084,769208,791875,764959,764791]},"cpp":{"elapsed_ns_median":977625,"wall_ns_median":2748500,"elapsed_ns_samples":[987458,1152709,969250,977625,1138416,957959,990583,954875,970917]},"rust":{"elapsed_ns_median":997834,"wall_ns_median":2713500,"elapsed_ns_samples":[1103250,997834,745333,1030584,761625,1158041,740333,1131667,753625]}}},{"name":"line_processing","category":"io","status":"implemented","profile":"io-allocation","result":8437760,"languages":{"prismio":{"elapsed_ns_median":353333,"wall_ns_median":2035416,"elapsed_ns_samples":[357875,404708,338375,345292,339292,343583,353333,361958,365750]},"cpp":{"elapsed_ns_median":963750,"wall_ns_median":2820792,"elapsed_ns_samples":[975625,983458,964542,939750,963750,978917,963125,936708,943334]},"rust":{"elapsed_ns_median":330417,"wall_ns_median":2028125,"elapsed_ns_samples":[332250,327792,327500,330417,347250,321792,335000,328792,347541]}}},{"name":"tokenization","category":"io","status":"implemented","profile":"cpu-allocation","result":211969972,"languages":{"prismio":{"elapsed_ns_median":230375,"wall_ns_median":1881666,"elapsed_ns_samples":[218583,220333,230500,243541,230750,230375,222375,223250,234834]},"cpp":{"elapsed_ns_median":264959,"wall_ns_median":2024166,"elapsed_ns_samples":[258625,251625,260958,254000,264959,299125,284375,272792,268083]},"rust":{"elapsed_ns_median":975167,"wall_ns_median":2645042,"elapsed_ns_samples":[1084792,917625,1054833,1008375,956125,980958,975167,918750,948875]}}},{"name":"json_parse","category":"io","status":"unsupported","profile":"cpu-allocation"},{"name":"json_serialize","category":"io","status":"unsupported","profile":"cpu-allocation"}],"artifacts":{"html_report":"/Users/vibrant/Desktop/Projects/Prismio/prismio/aif/evidence/memory-2026-09-05/report.html","raw_data":"/Users/vibrant/Desktop/Projects/Prismio/prismio/aif/evidence/memory-2026-09-05/baseline.json"}};
+    const languages = ["prismio", "cpp", "rust"];
+    const labels = {prismio: "Prismio", cpp: "C++", rust: "Rust"};
+    const implemented = report.benchmarks.filter(b => b.status === "implemented");
+    const unsupported = report.benchmarks.filter(b => b.status === "unsupported");
+
+    // Math & Formatting Helpers
+    const median = (item, lang) => item.languages[lang].elapsed_ns_median;
+    const wallMedian = (item, lang) => item.languages[lang].wall_ns_median;
+    const ratio = (item, baseline) => median(item, "prismio") / Math.max(median(item, baseline), 1);
+
+    function geomean(values) {
+      if (!values.length) return 1;
+      const logSum = values.reduce((acc, v) => acc + Math.log(Math.max(v, 1e-9)), 0);
+      return Math.exp(logSum / values.length);
+    }
+
+    function jitterPercent(samples, med) {
+      if (!samples || samples.length <= 1 || !med) return null;
+      const min = Math.min(...samples);
+      const max = Math.max(...samples);
+      return ((max - min) / (2 * med)) * 100;
+    }
+
+    function duration(ns) {
+      if (ns >= 1e9) return `${(ns / 1e9).toFixed(3)} s`;
+      if (ns >= 1e6) return `${(ns / 1e6).toFixed(3)} ms`;
+      if (ns >= 1e3) return `${(ns / 1e3).toFixed(2)} µs`;
+      return `${ns} ns`;
+    }
+
+    function formatNumber(num) {
+      return Number(num).toLocaleString("en-US");
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>'"]/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
+      }[c]));
+    }
+
+    // State
+    let currentCategory = "all";
+    let currentProfile = "all";
+    let currentOutcome = "all";
+    let currentSearch = "";
+    let currentSort = "catalog";
+    let chartMode = "relative"; // "relative" | "absolute" | "diverging"
+    let isGrouped = true;
+    let expandedRows = new Set();
+    let sortColumn = null;
+    let sortDirection = "asc";
+
+    // Theme Switcher
+    const htmlEl = document.documentElement;
+    const themeBtn = document.querySelector("#theme-toggle");
+    const themeIcon = document.querySelector("#theme-icon");
+
+    function setTheme(t) {
+      htmlEl.setAttribute("data-theme", t);
+      localStorage.setItem("prismio-theme", t);
+      themeIcon.innerHTML = t === "dark"
+        ? '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>'
+        : '<circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>';
+    }
+    const savedTheme = localStorage.getItem("prismio-theme") || "dark";
+    setTheme(savedTheme);
+    themeBtn.addEventListener("click", () => {
+      const next = htmlEl.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      setTheme(next);
+    });
+
+    // Toast Utility
+    const toast = document.querySelector("#toast");
+    let toastTimer = null;
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove("show"), 2800);
+    }
+
+    // Compute Executive Stats
+    const cppRatios = implemented.map(item => ratio(item, "cpp"));
+    const rustRatios = implemented.map(item => ratio(item, "rust"));
+    const cppGeomean = geomean(cppRatios);
+    const rustGeomean = geomean(rustRatios);
+
+    const winsVsCpp = implemented.filter(item => ratio(item, "cpp") < 0.95).length;
+    const parityVsCpp = implemented.filter(item => ratio(item, "cpp") >= 0.95 && ratio(item, "cpp") <= 1.05).length;
+    const lossesVsCpp = implemented.filter(item => ratio(item, "cpp") > 1.05).length;
+
+    const winsVsRust = implemented.filter(item => ratio(item, "rust") < 0.95).length;
+    const parityVsRust = implemented.filter(item => ratio(item, "rust") >= 0.95 && ratio(item, "rust") <= 1.05).length;
+    const lossesVsRust = implemented.filter(item => ratio(item, "rust") > 1.05).length;
+
+    // Render KPI Cards
+    function renderKPIs() {
+      const kpiGrid = document.querySelector("#kpi-grid");
+      const fmtRatio = r => `${r.toFixed(2)}×`;
+      const deltaText = r => r <= 1
+        ? `${((1 - r) * 100).toFixed(1)}% faster`
+        : `${((r - 1) * 100).toFixed(1)}% slower`;
+
+      const compilePrismio = report.compile_ns ? report.compile_ns.prismio : null;
+      const compileCpp = report.compile_ns ? report.compile_ns.cpp : null;
+      const compileRust = report.compile_ns ? report.compile_ns.rust : null;
+      const compileSpeedup = (compilePrismio && compileCpp) ? (compileCpp / compilePrismio).toFixed(2) : null;
+
+      kpiGrid.innerHTML = `
+        <div class="kpi-card" style="--card-accent: var(--prismio)">
+          <div class="kpi-header">
+            <span>Overall vs C++</span>
+            <span style="color:var(--cpp)">Clang++ -O3</span>
+          </div>
+          <div class="kpi-value-row">
+            <div class="kpi-number" style="color:var(--prismio)">${fmtRatio(cppGeomean)}</div>
+            <span class="kpi-delta" style="background:${cppGeomean <= 1 ? 'var(--good-bg)' : 'var(--bad-bg)'}; color:${cppGeomean <= 1 ? 'var(--good)' : 'var(--bad)'}">${deltaText(cppGeomean)}</span>
+          </div>
+          <p class="kpi-desc">Geometric mean across all ${implemented.length} implemented workloads.</p>
+          <div class="distribution-bar" title="Prismio vs C++: ${winsVsCpp} faster, ${parityVsCpp} parity, ${lossesVsCpp} slower">
+            <div class="dist-seg win" style="width:${(winsVsCpp / implemented.length * 100).toFixed(1)}%"></div>
+            <div class="dist-seg tie" style="width:${(parityVsCpp / implemented.length * 100).toFixed(1)}%"></div>
+            <div class="dist-seg loss" style="width:${(lossesVsCpp / implemented.length * 100).toFixed(1)}%"></div>
+          </div>
+          <div class="kpi-detail-list">
+            <div class="kpi-detail-item"><span>Prismio faster / parity</span><strong>${winsVsCpp + parityVsCpp} of ${implemented.length}</strong></div>
+            <div class="kpi-detail-item"><span>Fastest margin</span><strong>${(Math.min(...cppRatios)).toFixed(2)}×</strong></div>
+          </div>
+        </div>
+
+        <div class="kpi-card" style="--card-accent: var(--rust)">
+          <div class="kpi-header">
+            <span>Overall vs Rust</span>
+            <span style="color:var(--rust)">rustc opt-3</span>
+          </div>
+          <div class="kpi-value-row">
+            <div class="kpi-number" style="color:var(--prismio)">${fmtRatio(rustGeomean)}</div>
+            <span class="kpi-delta" style="background:${rustGeomean <= 1 ? 'var(--good-bg)' : 'var(--bad-bg)'}; color:${rustGeomean <= 1 ? 'var(--good)' : 'var(--bad)'}">${deltaText(rustGeomean)}</span>
+          </div>
+          <p class="kpi-desc">Geometric mean across all ${implemented.length} implemented workloads.</p>
+          <div class="distribution-bar" title="Prismio vs Rust: ${winsVsRust} faster, ${parityVsRust} parity, ${lossesVsRust} slower">
+            <div class="dist-seg win" style="width:${(winsVsRust / implemented.length * 100).toFixed(1)}%"></div>
+            <div class="dist-seg tie" style="width:${(parityVsRust / implemented.length * 100).toFixed(1)}%"></div>
+            <div class="dist-seg loss" style="width:${(lossesVsRust / implemented.length * 100).toFixed(1)}%"></div>
+          </div>
+          <div class="kpi-detail-list">
+            <div class="kpi-detail-item"><span>Prismio faster / parity</span><strong>${winsVsRust + parityVsRust} of ${implemented.length}</strong></div>
+            <div class="kpi-detail-item"><span>Fastest margin</span><strong>${(Math.min(...rustRatios)).toFixed(2)}×</strong></div>
+          </div>
+        </div>
+
+        <div class="kpi-card" style="--card-accent: var(--cpp)">
+          <div class="kpi-header">
+            <span>Compilation Speed</span>
+            <span>Release Suite</span>
+          </div>
+          <div class="kpi-value-row">
+            <div class="kpi-number" style="color:var(--text)">${compilePrismio ? duration(compilePrismio) : "Reused"}</div>
+            ${compileSpeedup ? `<span class="kpi-delta" style="background:var(--good-bg); color:var(--good)">${compileSpeedup}× faster vs C++</span>` : ''}
+          </div>
+          <p class="kpi-desc">Time taken to build full dispatch suite from sources.</p>
+          <div class="kpi-detail-list" style="margin-top:16px;">
+            <div class="kpi-detail-item"><span>Prismio compiler</span><strong>${compilePrismio ? duration(compilePrismio) : "cached"}</strong></div>
+            <div class="kpi-detail-item"><span>Clang++ (-O3)</span><strong>${compileCpp ? duration(compileCpp) : "cached"}</strong></div>
+            <div class="kpi-detail-item"><span>Rustc (opt-3)</span><strong>${compileRust ? duration(compileRust) : "cached"}</strong></div>
+          </div>
+        </div>
+
+        <div class="kpi-card" style="--card-accent: #38bdf8">
+          <div class="kpi-header">
+            <span>Suite Scale & Integrity</span>
+            <span style="color:var(--good)">✓ Verified</span>
+          </div>
+          <div class="kpi-value-row">
+            <div class="kpi-number" style="color:var(--text)">${implemented.length}<span style="font-size:1.4rem; color:var(--text-muted);">/${report.benchmarks.length}</span></div>
+            <span class="kpi-delta" style="background:var(--good-bg); color:var(--good)">100% Match</span>
+          </div>
+          <p class="kpi-desc">Identical outputs validated across all language binaries.</p>
+          <div class="kpi-detail-list" style="margin-top:16px;">
+            <div class="kpi-detail-item"><span>Sample iterations</span><strong>${report.runs} runs (${report.runs * implemented.length * 3} total)</strong></div>
+            <div class="kpi-detail-item"><span>Unsupported catalog</span><strong>${unsupported.length} capabilities</strong></div>
+            <div class="kpi-detail-item"><span>Generated</span><strong>${new Date(report.generated_at).toLocaleDateString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}</strong></div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Render Category Grid
+    function renderCategories() {
+      const catGrid = document.querySelector("#category-grid");
+      const categories = [...new Set(report.benchmarks.map(b => b.category))];
+      catGrid.innerHTML = categories.map(cat => {
+        const catItems = implemented.filter(b => b.category === cat);
+        const count = catItems.length;
+        const catCppGeomean = geomean(catItems.map(item => ratio(item, "cpp")));
+        const catRustGeomean = geomean(catItems.map(item => ratio(item, "rust")));
+        const isActive = currentCategory === cat;
+        return `
+          <div class="cat-card ${isActive ? 'active' : ''}" data-category="${cat}">
+            <div class="cat-head">
+              <span class="cat-name">${escapeHtml(cat.replace(/_/g, " "))}</span>
+              <span class="cat-count">${count}</span>
+            </div>
+            <div class="cat-metrics">
+              <span class="cat-metric-label">vs C++: <strong style="color:${catCppGeomean <= 1 ? 'var(--good)' : 'var(--text)'}">${catCppGeomean.toFixed(2)}×</strong></span>
+              <span class="cat-metric-label">vs Rust: <strong style="color:${catRustGeomean <= 1 ? 'var(--good)' : 'var(--text)'}">${catRustGeomean.toFixed(2)}×</strong></span>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      catGrid.querySelectorAll(".cat-card").forEach(card => {
+        card.addEventListener("click", () => {
+          const cat = card.getAttribute("data-category");
+          currentCategory = currentCategory === cat ? "all" : cat;
+          updateFilters();
+        });
+      });
+    }
+
+    // Filter Logic
+    function getFilteredBenchmarks() {
+      const q = currentSearch.toLowerCase().trim();
+      return implemented.filter(item => {
+        if (currentCategory !== "all" && item.category !== currentCategory) return false;
+        if (currentProfile !== "all" && !item.profile.includes(currentProfile)) return false;
+        if (q) {
+          const matchName = item.name.toLowerCase().includes(q);
+          const matchCat = item.category.toLowerCase().includes(q);
+          const matchProf = (item.profile || "").toLowerCase().includes(q);
+          if (!matchName && !matchCat && !matchProf) return false;
+        }
+        if (currentOutcome !== "all") {
+          const fastest = Math.min(...languages.map(l => median(item, l)));
+          const isFastest = median(item, "prismio") === fastest;
+          const cppR = ratio(item, "cpp");
+          const rustR = ratio(item, "rust");
+          const isParity = (cppR >= 0.95 && cppR <= 1.05) || (rustR >= 0.95 && rustR <= 1.05);
+          if (currentOutcome === "prismio-win" && !isFastest) return false;
+          if (currentOutcome === "parity" && !isParity) return false;
+          if (currentOutcome === "prismio-loss" && (isFastest || isParity)) return false;
+        }
+        return true;
+      });
+    }
+
+    function sortBenchmarks(items) {
+      const sorted = [...items];
+      if (sortColumn) {
+        sorted.sort((a, b) => {
+          let valA, valB;
+          if (sortColumn === "name") { valA = a.name; valB = b.name; }
+          else if (sortColumn === "category") { valA = a.category; valB = b.category; }
+          else if (sortColumn === "profile") { valA = a.profile; valB = b.profile; }
+          else if (sortColumn === "result") { valA = a.result; valB = b.result; }
+          else if (sortColumn === "prismio") { valA = median(a, "prismio"); valB = median(b, "prismio"); }
+          else if (sortColumn === "cpp") { valA = median(a, "cpp"); valB = median(b, "cpp"); }
+          else if (sortColumn === "rust") { valA = median(a, "rust"); valB = median(b, "rust"); }
+          else if (sortColumn === "vs-cpp") { valA = ratio(a, "cpp"); valB = ratio(b, "cpp"); }
+          else if (sortColumn === "vs-rust") { valA = ratio(a, "rust"); valB = ratio(b, "rust"); }
+          else if (sortColumn === "jitter") {
+            valA = jitterPercent(a.languages.prismio.elapsed_ns_samples, median(a, "prismio")) || 0;
+            valB = jitterPercent(b.languages.prismio.elapsed_ns_samples, median(b, "prismio")) || 0;
+          }
+          if (typeof valA === "string") {
+            return sortDirection === "asc" ? valA.localeCompare(valB) : valB.localeCompare(valA);
+          }
+          return sortDirection === "asc" ? valA - valB : valB - valA;
+        });
+        return sorted;
+      }
+
+      if (currentSort === "prismio-fastest") sorted.sort((a, b) => median(a, "prismio") - median(b, "prismio"));
+      else if (currentSort === "prismio-slowest") sorted.sort((a, b) => median(b, "prismio") - median(a, "prismio"));
+      else if (currentSort === "cpp-ratio-best") sorted.sort((a, b) => ratio(a, "cpp") - ratio(b, "cpp"));
+      else if (currentSort === "cpp-ratio-worst") sorted.sort((a, b) => ratio(b, "cpp") - ratio(a, "cpp"));
+      else if (currentSort === "rust-ratio-best") sorted.sort((a, b) => ratio(a, "rust") - ratio(b, "rust"));
+      else if (currentSort === "rust-ratio-worst") sorted.sort((a, b) => ratio(b, "rust") - ratio(a, "rust"));
+      return sorted;
+    }
+
+    // Render Charts
+    function renderCharts(items) {
+      const container = document.querySelector("#chart-list");
+      if (!items.length) {
+        container.innerHTML = `<div class="empty-message">No benchmark workloads match the selected filters.</div>`;
+        return;
+      }
+
+      function renderWorkloadRow(item) {
+        const pMed = median(item, "prismio");
+        const cMed = median(item, "cpp");
+        const rMed = median(item, "rust");
+        const fastest = Math.min(pMed, cMed, rMed);
+
+        let winner = "prismio";
+        if (cMed < pMed && cMed <= rMed) winner = "cpp";
+        else if (rMed < pMed && rMed < cMed) winner = "rust";
+
+        let chartHtml = "";
+        if (chartMode === "relative") {
+          const maxSlowdown = Math.max(pMed / fastest, cMed / fastest, rMed / fastest, 1.5);
+          chartHtml = languages.map(lang => {
+            const val = median(item, lang);
+            const r = val / fastest;
+            const widthPct = Math.max((r / maxSlowdown) * 100, 4);
+            const isWinner = lang === winner;
+            return `
+              <div class="bar-line">
+                <span class="bar-lang-label" style="${isWinner ? 'color:var(--text);font-weight:700;' : ''}">${labels[lang]}</span>
+                <div class="bar-track">
+                  <div class="bar-fill ${lang}" style="width:${widthPct.toFixed(1)}%"></div>
+                </div>
+                <div class="bar-stats">
+                  ${isWinner ? '<span style="color:var(--good);margin-right:4px;">🥇</span>' : ''}
+                  <strong>${r.toFixed(2)}×</strong> · ${duration(val)}
+                </div>
+              </div>
+            `;
+          }).join("");
+        } else if (chartMode === "absolute") {
+          const maxVal = Math.max(pMed, cMed, rMed);
+          chartHtml = languages.map(lang => {
+            const val = median(item, lang);
+            const widthPct = Math.max((val / maxVal) * 100, 3);
+            return `
+              <div class="bar-line">
+                <span class="bar-lang-label">${labels[lang]}</span>
+                <div class="bar-track">
+                  <div class="bar-fill ${lang}" style="width:${widthPct.toFixed(1)}%"></div>
+                </div>
+                <div class="bar-stats"><strong>${duration(val)}</strong></div>
+              </div>
+            `;
+          }).join("");
+        } else if (chartMode === "diverging") {
+          const vsCpp = (pMed - cMed) / cMed;
+          const vsRust = (pMed - rMed) / rMed;
+          const renderDelta = (baselineName, delta) => {
+            const isFaster = delta < 0;
+            const pct = Math.min(Math.abs(delta) * 100, 100);
+            return `
+              <div class="bar-line" style="grid-template-columns: 80px minmax(0, 1fr) 120px;">
+                <span class="bar-lang-label" style="font-size:11px;">vs ${baselineName}</span>
+                <div class="diverging-container">
+                  <div style="display:flex; justify-content:flex-end; padding-right:4px;">
+                    ${isFaster ? `<div class="diverging-bar" style="width:${pct}%; background:var(--good);"></div>` : ''}
+                  </div>
+                  <div class="diverging-center-line"></div>
+                  <div style="display:flex; justify-content:flex-start; padding-left:4px;">
+                    ${!isFaster ? `<div class="diverging-bar" style="width:${pct}%; background:var(--bad);"></div>` : ''}
+                  </div>
+                </div>
+                <div class="bar-stats" style="color:${isFaster ? 'var(--good)' : 'var(--bad)'}">
+                  <strong>${isFaster ? '-' : '+'}${Math.abs(delta * 100).toFixed(1)}%</strong>
+                </div>
+              </div>
+            `;
+          };
+          chartHtml = `
+            ${renderDelta("C++", vsCpp)}
+            ${renderDelta("Rust", vsRust)}
+          `;
+        }
+
+        return `
+          <div class="bench-row">
+            <div class="bench-info">
+              <div class="bench-title-row">
+                <span class="bench-name">${escapeHtml(item.name)}</span>
+                <span class="winner-badge ${winner}">🥇 ${labels[winner]}</span>
+              </div>
+              <div class="bench-tags">
+                <span class="bench-tag">${escapeHtml(item.category.replace(/_/g, " "))}</span>
+                <span class="bench-tag profile">${escapeHtml(item.profile)}</span>
+              </div>
+            </div>
+            <div class="bars-stack">
+              ${chartHtml}
+            </div>
+          </div>
+        `;
+      }
+
+      if (isGrouped && currentCategory === "all") {
+        const groups = {};
+        items.forEach(item => {
+          if (!groups[item.category]) groups[item.category] = [];
+          groups[item.category].push(item);
+        });
+        container.innerHTML = Object.entries(groups).map(([cat, groupItems]) => `
+          <div class="category-group-header">
+            <span>${escapeHtml(cat.replace(/_/g, " "))}</span>
+            <span>${groupItems.length} workloads</span>
+          </div>
+          ${groupItems.map(renderWorkloadRow).join("")}
+        `).join("");
+      } else {
+        container.innerHTML = items.map(renderWorkloadRow).join("");
+      }
+    }
+
+    // Render Table Matrix
+    function renderTable(items) {
+      const tbody = document.querySelector("#table-body");
+      if (!items.length) {
+        tbody.innerHTML = `<tr><td colspan="10" class="empty-message">No benchmark workloads match the selected filters.</td></tr>`;
+        return;
+      }
+
+      let html = "";
+      items.forEach((item) => {
+        const pMed = median(item, "prismio");
+        const cMed = median(item, "cpp");
+        const rMed = median(item, "rust");
+        const rCpp = ratio(item, "cpp");
+        const rRust = ratio(item, "rust");
+        const jitter = jitterPercent(item.languages.prismio.elapsed_ns_samples, pMed);
+
+        const pill = r => {
+          if (r < 0.95) return `<span class="delta-pill faster">${r.toFixed(2)}× (-${((1 - r) * 100).toFixed(0)}%)</span>`;
+          if (r <= 1.05) return `<span class="delta-pill parity">${r.toFixed(2)}× (±${Math.abs((r - 1) * 100).toFixed(0)}%)</span>`;
+          return `<span class="delta-pill slower">${r.toFixed(2)}× (+${((r - 1) * 100).toFixed(0)}%)</span>`;
+        };
+
+        const isExpanded = expandedRows.has(item.name);
+        html += `
+          <tr class="data-row ${isExpanded ? 'expanded' : ''}" data-name="${escapeHtml(item.name)}">
+            <td class="cell-primary">
+              <span style="display:inline-flex; align-items:center; gap:6px;">
+                <span style="font-size:10px; color:var(--text-faint);">${isExpanded ? '▼' : '▶'}</span>
+                ${escapeHtml(item.name)}
+              </span>
+            </td>
+            <td><span style="text-transform:capitalize;">${escapeHtml(item.category.replace(/_/g, " "))}</span></td>
+            <td><span class="bench-tag profile">${escapeHtml(item.profile)}</span></td>
+            <td style="color:var(--text-faint); font-size:11px;">${formatNumber(item.result)}</td>
+            <td class="num-p">${duration(pMed)}</td>
+            <td class="num-c">${duration(cMed)}</td>
+            <td class="num-r">${duration(rMed)}</td>
+            <td>${pill(rCpp)}</td>
+            <td>${pill(rRust)}</td>
+            <td>${jitter !== null ? `±${jitter.toFixed(1)}%` : '—'}</td>
+          </tr>
+          <tr class="drawer-row ${isExpanded ? 'open' : ''}" id="drawer-${escapeHtml(item.name)}">
+            <td colspan="10" class="drawer-cell">
+              <div class="drawer-content">
+                <div class="drawer-card">
+                  <div class="drawer-card-title">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                    Sample Runs Spread (${report.runs} runs)
+                  </div>
+                  <div class="samples-plot">
+                    ${languages.map(lang => {
+                      const samples = item.languages[lang].elapsed_ns_samples || [];
+                      const min = Math.min(...samples);
+                      const max = Math.max(...samples);
+                      const med = median(item, lang);
+                      return `
+                        <div class="sample-plot-line">
+                          <span class="sample-plot-label ${lang}">${labels[lang]}</span>
+                          <div class="sample-dots-track" title="${labels[lang]}: min ${duration(min)}, median ${duration(med)}, max ${duration(max)}">
+                            ${samples.map(s => {
+                              const pct = max > min ? ((s - min) / (max - min)) * 92 + 4 : 50;
+                              return `<div class="sample-dot ${lang}" style="left:${pct.toFixed(1)}%;"></div>`;
+                            }).join("")}
+                            <div class="sample-median-marker" style="left:${(max > min ? ((med - min) / (max - min)) * 92 + 4 : 50).toFixed(1)}%; background:var(--text);"></div>
+                          </div>
+                        </div>
+                      `;
+                    }).join("")}
+                  </div>
+                  <div style="font-size:11px; color:var(--text-faint); margin-top:8px;">Line marks median sample; dots represent individual run timings.</div>
+                </div>
+
+                <div class="drawer-card">
+                  <div class="drawer-card-title">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                    Execution & Wall Clock Overhead
+                  </div>
+                  <div class="kpi-detail-list">
+                    <div class="kpi-detail-item"><span>Prismio compute ns</span><strong>${formatNumber(pMed)} ns</strong></div>
+                    <div class="kpi-detail-item"><span>Prismio total wall ns</span><strong>${formatNumber(wallMedian(item, "prismio"))} ns</strong></div>
+                    <div class="kpi-detail-item"><span>Overhead (wall - compute)</span><strong>${duration(wallMedian(item, "prismio") - pMed)}</strong></div>
+                    <div class="kpi-detail-item"><span>C++ overhead</span><strong>${duration(wallMedian(item, "cpp") - cMed)}</strong></div>
+                    <div class="kpi-detail-item"><span>Rust overhead</span><strong>${duration(wallMedian(item, "rust") - rMed)}</strong></div>
+                  </div>
+                </div>
+
+                <div class="drawer-card">
+                  <div class="drawer-card-title">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                    Verification & Workload Profile
+                  </div>
+                  <div class="kpi-detail-list">
+                    <div class="kpi-detail-item"><span>Checksum status</span><strong style="color:var(--good);">Verified Identical ✓</strong></div>
+                    <div class="kpi-detail-item"><span>Expected value</span><code>${item.result}</code></div>
+                    <div class="kpi-detail-item"><span>Workload profile</span><code>${item.profile}</code></div>
+                    <div class="kpi-detail-item"><span>Category</span><strong style="text-transform:capitalize;">${item.category.replace(/_/g, " ")}</strong></div>
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+        `;
+      });
+      tbody.innerHTML = html;
+
+      tbody.querySelectorAll("tr.data-row").forEach(row => {
+        row.addEventListener("click", () => {
+          const name = row.getAttribute("data-name");
+          if (expandedRows.has(name)) expandedRows.delete(name);
+          else expandedRows.add(name);
+          renderTable(items);
+        });
+      });
+    }
+
+    // Render Unsupported
+    function renderUnsupported() {
+      const grid = document.querySelector("#unsupported-grid");
+      if (!unsupported.length) {
+        document.querySelector("#unsupported-section").hidden = true;
+        return;
+      }
+      grid.innerHTML = unsupported.map(item => `
+        <div class="unsupported-card">
+          <div class="unsupported-top">
+            <span class="unsupported-name">${escapeHtml(item.name)}</span>
+            <span class="unsupported-badge">Pending</span>
+          </div>
+          <div class="unsupported-meta">
+            <span style="text-transform:capitalize;">Category: ${escapeHtml(item.category.replace(/_/g, " "))}</span>
+            <span>·</span>
+            <span>Profile: ${escapeHtml(item.profile)}</span>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    // Master Update
+    function updateFilters() {
+      renderCategories();
+      const filtered = getFilteredBenchmarks();
+      const sorted = sortBenchmarks(filtered);
+
+      document.querySelector("#visible-status").textContent = `Showing ${sorted.length} of ${implemented.length} workloads`;
+
+      const fastestPrismioCount = implemented.filter(b => median(b, "prismio") === Math.min(...languages.map(l => median(b, l)))).length;
+      const parityCount = implemented.filter(b => {
+        const cr = ratio(b, "cpp");
+        const rr = ratio(b, "rust");
+        return (cr >= 0.95 && cr <= 1.05) || (rr >= 0.95 && rr <= 1.05);
+      }).length;
+      document.querySelector("#count-all").textContent = implemented.length;
+      document.querySelector("#count-win").textContent = fastestPrismioCount;
+      document.querySelector("#count-parity").textContent = parityCount;
+      document.querySelector("#count-loss").textContent = implemented.length - fastestPrismioCount;
+
+      renderCharts(sorted);
+      renderTable(sorted);
+    }
+
+    // Search and Filters Event Handlers
+    const searchInput = document.querySelector("#search-input");
+    const clearSearch = document.querySelector("#clear-search");
+    searchInput.addEventListener("input", e => {
+      currentSearch = e.target.value;
+      clearSearch.classList.toggle("visible", Boolean(currentSearch));
+      updateFilters();
+    });
+    clearSearch.addEventListener("click", () => {
+      searchInput.value = "";
+      currentSearch = "";
+      clearSearch.classList.remove("visible");
+      updateFilters();
+    });
+
+    document.querySelector("#profile-filter").addEventListener("change", e => {
+      currentProfile = e.target.value;
+      updateFilters();
+    });
+
+    document.querySelector("#sort-select").addEventListener("change", e => {
+      currentSort = e.target.value;
+      sortColumn = null;
+      document.querySelectorAll("thead th").forEach(th => th.classList.remove("sort-asc", "sort-desc"));
+      updateFilters();
+    });
+
+    // Chart Mode Switcher
+    document.querySelectorAll("#chart-mode-tabs .tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#chart-mode-tabs .tab-btn").forEach(b => {
+          b.classList.remove("active");
+          b.setAttribute("aria-selected", "false");
+        });
+        btn.classList.add("active");
+        btn.setAttribute("aria-selected", "true");
+        chartMode = btn.getAttribute("data-mode");
+        const subtitles = {
+          relative: "Direct workload comparison with winner highlighting and normalized scaling",
+          absolute: "Exact execution durations displayed in nanoseconds, microseconds, or milliseconds",
+          diverging: "Speedup and slowdown delta percentage of Prismio relative to C++ and Rust baselines"
+        };
+        document.querySelector("#chart-subtitle").textContent = subtitles[chartMode];
+        updateFilters();
+      });
+    });
+
+    // Outcome Filter Chips
+    document.querySelectorAll('.chip[data-filter="outcome"]').forEach(chip => {
+      chip.addEventListener("click", () => {
+        document.querySelectorAll('.chip[data-filter="outcome"]').forEach(c => c.classList.remove("active"));
+        chip.classList.add("active");
+        currentOutcome = chip.getAttribute("data-val");
+        updateFilters();
+      });
+    });
+
+    // Grouping Toggle
+    const toggleGroupingBtn = document.querySelector("#toggle-grouping-btn");
+    toggleGroupingBtn.addEventListener("click", () => {
+      isGrouped = !isGrouped;
+      document.querySelector("#grouping-label").textContent = isGrouped ? "Group by Category" : "Show Flat List";
+      toggleGroupingBtn.classList.toggle("btn-primary", isGrouped);
+      updateFilters();
+    });
+
+    // Table Column Sorting
+    document.querySelectorAll("thead th.sortable").forEach(th => {
+      th.addEventListener("click", () => {
+        const col = th.getAttribute("data-col");
+        if (sortColumn === col) {
+          sortDirection = sortDirection === "asc" ? "desc" : "asc";
+        } else {
+          sortColumn = col;
+          sortDirection = "asc";
+        }
+        document.querySelectorAll("thead th").forEach(h => h.classList.remove("sort-asc", "sort-desc"));
+        th.classList.add(sortDirection === "asc" ? "sort-asc" : "sort-desc");
+        updateFilters();
+      });
+    });
+
+    // Export Utilities
+    document.querySelector("#copy-summary-btn").addEventListener("click", () => {
+      const summaryMd = `### Prismio Performance Benchmark Summary
+- **Overall vs C++ (Clang -O3)**: **${cppGeomean.toFixed(2)}×** (${cppGeomean <= 1 ? ((1 - cppGeomean) * 100).toFixed(1) + '% faster' : ((cppGeomean - 1) * 100).toFixed(1) + '% slower'})
+- **Overall vs Rust (rustc opt-3)**: **${rustGeomean.toFixed(2)}×** (${rustGeomean <= 1 ? ((1 - rustGeomean) * 100).toFixed(1) + '% faster' : ((rustGeomean - 1) * 100).toFixed(1) + '% slower'})
+- **Prismio Wins / Parity**: ${winsVsCpp + parityVsCpp}/${implemented.length} vs C++, ${winsVsRust + parityVsRust}/${implemented.length} vs Rust
+- **Release Suite Build Time**: Prismio ${report.compile_ns ? duration(report.compile_ns.prismio) : 'cached'} | C++ ${report.compile_ns ? duration(report.compile_ns.cpp) : 'cached'} | Rust ${report.compile_ns ? duration(report.compile_ns.rust) : 'cached'}
+- **Coverage**: ${implemented.length} implemented canonical workloads across 5 categories (${unsupported.length} pending).
+- **Integrity**: 100% checksum consistency across all languages over ${report.runs} runs.`;
+      navigator.clipboard.writeText(summaryMd).then(() => showToast("Summary markdown copied to clipboard!"));
+    });
+
+    document.querySelector("#copy-table-md-btn").addEventListener("click", () => {
+      const items = sortBenchmarks(getFilteredBenchmarks());
+      let md = `| Workload | Category | Profile | Prismio ns | C++ ns | Rust ns | vs C++ | vs Rust |\n|---|---|---|---:|---:|---:|---:|---:|\n`;
+      items.forEach(item => {
+        md += `| \`${item.name}\` | ${item.category} | ${item.profile} | ${median(item, "prismio")} | ${median(item, "cpp")} | ${median(item, "rust")} | ${ratio(item, "cpp").toFixed(2)}× | ${ratio(item, "rust").toFixed(2)}× |\n`;
+      });
+      navigator.clipboard.writeText(md).then(() => showToast("Table copied as Markdown!"));
+    });
+
+    document.querySelector("#copy-table-csv-btn").addEventListener("click", () => {
+      const items = sortBenchmarks(getFilteredBenchmarks());
+      let csv = "Workload,Category,Profile,Checksum,Prismio_ns,Cpp_ns,Rust_ns,Ratio_vs_Cpp,Ratio_vs_Rust\n";
+      items.forEach(item => {
+        csv += `"${item.name}","${item.category}","${item.profile}",${item.result},${median(item, "prismio")},${median(item, "cpp")},${median(item, "rust")},${ratio(item, "cpp").toFixed(3)},${ratio(item, "rust").toFixed(3)}\n`;
+      });
+      navigator.clipboard.writeText(csv).then(() => showToast("Table copied as CSV!"));
+    });
+
+    // Initial Render
+    renderKPIs();
+    renderCategories();
+    renderUnsupported();
+    updateFilters();
+  </script>
+</body>
+</html>

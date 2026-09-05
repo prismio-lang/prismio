@@ -1,0 +1,7 @@
+mode=mnemonic functions: old=457 new=457 only_old=0 only_new=0 changed=6
+  CHANGED: _benchBuildTree__Int_Int  37 -> 30 insns
+  CHANGED: _benchTreeSum__Struct_BenchTree  26 -> 22 insns
+  CHANGED: _benchBuildMemoryTree__Int_Int  54 -> 46 insns
+  CHANGED: _benchMemoryTreeSum__Struct_BenchTree  26 -> 22 insns
+  CHANGED: _benchTreeAdd__Struct_BenchTree_Int  45 -> 26 insns
+  CHANGED: _benchRecursiveTreeRebuild__Int  34 -> 28 insns

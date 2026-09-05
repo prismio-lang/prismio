@@ -1,0 +1,11 @@
+mode=mnemonic functions: old=456 new=457 only_old=0 only_new=1 changed=9
+  ONLY NEW: _keyMixWide__U64
+  CHANGED: _Key_hash__I64  11 -> 12 insns
+  CHANGED: _Key_hash__U64  11 -> 12 insns
+  CHANGED: _Key_hash__Usize  11 -> 12 insns
+  CHANGED: _mapSet$Int$Int__Struct_Map$Int$Int_Int_Int  178 -> 179 insns
+  CHANGED: _mapGetOr$Int$Int__Struct_Map$Int$Int_Int_Int  92 -> 94 insns
+  CHANGED: _benchKeyValueUpdate__Int  165 -> 167 insns
+  CHANGED: _mapSlotOf$Int$Int__Struct_Map$Int$Int_Int  58 -> 60 insns
+  CHANGED: _mapRehash$Int$Int__Struct_Map$Int$Int  147 -> 119 insns
+  CHANGED: _mapIndexOf$Int$Int__Struct_Map$Int$Int_Int  70 -> 72 insns

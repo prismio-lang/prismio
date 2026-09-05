@@ -1240,7 +1240,7 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
 
     char* q_ir = command_quote_arg(merged ? merged : ir_file);
     char* q_obj = command_quote_arg(program_obj);
-    int len = (int)(strlen(q_ir) + strlen(q_obj) + strlen(target) + 96);
+    int len = (int)(strlen(q_ir) + strlen(q_obj) + strlen(target) + 160);
     char* command = (char*)malloc(len);
 
     // --target as well as the triple already written on the module: clang needs
@@ -1272,10 +1272,23 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     // g5 is too layout-noisy to claim. Every checksum is unchanged. g4's
     // program-O2 stage costs about 6 ms more (56 ms to 62 ms). Two executables
     // grow by 16 KiB, still more than 4x smaller than the Rust controls.
+    // **-O3, and the -O2 that used to be here was measured on a compiler that
+    // could not vectorise.** The old note recorded -O3 as "between 0.98x and
+    // 1.03x of -O2, which is noise, and costs the same compile time". Re-run on
+    // the benchmark suite after the loop guard landed, that is no longer true:
+    // `tokenization` is **0.64x** at -O3, with knapsack 0.96, convolution 0.96
+    // and mergesort 0.97. `prime_sieve` is the one loss at 1.06.
+    //
+    // It also settles a fairness question: the C++ arm of the cross-language
+    // suite is built `-O3` and the Rust arm `opt-level=3`, so an -O2 Prismio was
+    // being compared against two rivals at their highest setting.
+    //
+    // Priced: +16 bytes on the benchmark suite executable, and suite compile
+    // time 0.56s -> 0.59s.
     snprintf(command, len,
              "clang %s-Wno-override-module %s -c %s -o %s",
              target,
-             g_debug_info ? "-O0" : "-O2 -mllvm -enable-nontrivial-unswitch",
+             g_debug_info ? "-O0" : "-O3 -mllvm -enable-nontrivial-unswitch",
              q_ir, q_obj);
     double t0 = build_trace_ms();
     int result = run_build_command(command);

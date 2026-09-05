@@ -1,0 +1,40 @@
+// Keep the allocation ledger isolated from borrow/temporary provenance cases.
+// A full tree has exactly one allocation per non-empty node, then frees all of
+// them. Empty values shared through two lists must never touch an RC header.
+import std.io
+
+enum OwnedTree { Empty, Node(OwnedTree, Int, OwnedTree) }
+enum SharedEmpty { Empty, Node(SharedEmpty, Int) }
+
+fn build(depth: Int) -> OwnedTree {
+    if (depth == 0) { return OwnedTree.Empty }
+    return OwnedTree.Node(build(depth - 1), 1, build(depth - 1))
+}
+
+fn total(t: OwnedTree) -> Int {
+    match (t) {
+        OwnedTree.Empty => { return 0 }
+        OwnedTree.Node(left, value, right) => { return total(left) + value + total(right) }
+    }
+    return -1
+}
+
+fn isEmpty(t: SharedEmpty) -> Bool {
+    match (t) {
+        SharedEmpty.Empty => { return true }
+        SharedEmpty.Node(child, value) => { return false }
+    }
+    return false
+}
+
+fn main() -> Int {
+    let tree = build(10)
+    if (total(tree) != 1023) { return 1 }
+    let a: List<SharedEmpty> = list_new()
+    let b: List<SharedEmpty> = list_new()
+    list_push(a, SharedEmpty.Empty)
+    list_push(b, list_get(a, 0))
+    if (isEmpty(list_get(a, 0)) == false or isEmpty(list_get(b, 0)) == false) { return 2 }
+    println("PASS: null enum ownership")
+    return 0
+}

@@ -1,0 +1,4 @@
+mode=mnemonic functions: old=457 new=459 only_old=0 only_new=2 changed=1
+  ONLY NEW: _mapUpdate$Int$Int$Struct_Closure$71$1__Struct_Map$Int$Int_Int_Struct_Closure$71$1
+  ONLY NEW: _call__Struct_Closure$71$1_Int
+  CHANGED: _benchKeyValueUpdate__Int  209 -> 264 insns

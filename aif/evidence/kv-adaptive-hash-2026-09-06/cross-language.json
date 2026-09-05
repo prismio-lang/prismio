@@ -1,0 +1,14 @@
+{
+  "key_value_update": {
+    "prismio before": 10.495,
+    "prismio after": 4.947666,
+    "c++": 5.623458,
+    "rust": 8.596167
+  },
+  "hashmap_insert_lookup": {
+    "prismio before": 6.959208,
+    "prismio after": 4.484167,
+    "c++": 6.822583,
+    "rust": 7.889375
+  }
+}

@@ -1,0 +1,127 @@
+// Empty boxed variants allocate nothing. Matching, ownership and container
+// storage must work with either variant order and with nested optional values.
+import std.io
+import std.string
+
+enum Tree { Empty, Node(Tree, Int, Tree) }
+enum Reversed { Value(String, Reversed), Empty }
+enum Maybe<T> { None, Some(T) }
+enum Three { First, Text(String), Last }
+struct Wrapped { number: Maybe<Int> }
+
+fn sum(t: Tree) -> Int {
+    match (t) {
+        Tree.Empty => { return 0 }
+        Tree.Node(l, v, r) => { return sum(l) + v + sum(r) }
+    }
+    return -1
+}
+
+fn add(sink t: Tree, k: Int) -> Tree {
+    match (t) {
+        Tree.Empty => { return Tree.Empty }
+        Tree.Node(l, v, r) => { return Tree.Node(add(l, k), v + k, add(r, k)) }
+    }
+    return Tree.Empty
+}
+
+fn reversedLength(t: Reversed) -> Int {
+    match (t) {
+        Reversed.Value(s, tail) => { return s.length() + reversedLength(tail) }
+        Reversed.Empty => { return 0 }
+    }
+    return -1
+}
+
+fn number(t: Maybe<Int>) -> Int {
+    match (t) {
+        Maybe.None => { return 0 }
+        Maybe.Some(n) => { return n }
+    }
+    return -1
+}
+
+fn nested(t: Maybe<Maybe<String>>) -> Int {
+    match (t) {
+        Maybe.None => { return 1 }
+        Maybe.Some(inner) => {
+            match (inner) {
+                Maybe.None => { return 2 }
+                Maybe.Some(s) => { return s.length() }
+            }
+        }
+    }
+    return -1
+}
+
+fn three(t: Three) -> Int {
+    match (t) {
+        Three.First => { return 1 }
+        Three.Text(s) => { return s.length() }
+        Three.Last => { return 3 }
+    }
+    return -1
+}
+
+fn wildcard(t: Tree) -> Int {
+    match (t) {
+        Tree.Empty => { return 1 }
+        _ => { return 2 }
+    }
+    return -1
+}
+
+fn makeTree(depth: Int) -> Tree {
+    if (depth == 0) { return Tree.Empty }
+    return Tree.Node(makeTree(depth - 1), depth, makeTree(depth - 1))
+}
+
+fn makeReversed() -> Reversed {
+    return Reversed.Value(strClone("a long owned enum string"), Reversed.Empty)
+}
+
+fn makeNested() -> Maybe<Maybe<String>> {
+    return Maybe.Some(makeInner())
+}
+
+fn makeInner() -> Maybe<String> { return Maybe.Some(strClone("nested owned string")) }
+
+fn makeThree() -> Three { return Three.Text(strClone("many variants")) }
+
+fn main() -> Int {
+    let t = makeTree(2)
+    let changed = add(t, 2)
+    if (sum(changed) != 10) { return 1 }
+    if (sum(add(Tree.Empty, 100)) != 0) { return 2 }
+    if (wildcard(Tree.Empty) != 1 or wildcard(changed) != 2) { return 3 }
+
+    let trees: List<Tree> = list_new()
+    list_push(trees, Tree.Empty)
+    list_push(trees, Tree.Node(Tree.Empty, 23, Tree.Empty))
+    list_push(trees, Tree.Empty)
+    if (list_len(trees) != 3) { return 4 }
+    if (sum(list_get(trees, 0)) != 0 or sum(list_get(trees, 1)) != 23
+        or sum(list_get(trees, 2)) != 0) { return 5 }
+
+    if (reversedLength(Reversed.Empty) != 0) { return 6 }
+    if (reversedLength(makeReversed()) != 24) { return 7 }
+
+    // The outer Some must remain non-null even when its payload is None.
+    if (nested(Maybe<Maybe<String>>.None) != 1) { return 8 }
+    if (nested(Maybe.Some(Maybe<String>.None)) != 2) { return 9 }
+    if (nested(makeNested()) != 19) { return 10 }
+
+    // POD enums remain inline, both in another struct and in a List.
+    let wrapped = Wrapped { number: Maybe.Some(42) }
+    if (number(wrapped.number) != 42) { return 11 }
+    let numbers: List<Maybe<Int>> = list_new()
+    list_push(numbers, Maybe<Int>.None)
+    list_push(numbers, Maybe.Some(31))
+    if (number(list_get(numbers, 0)) != 0 or number(list_get(numbers, 1)) != 31) { return 12 }
+
+    // More than two variants retain their tagged representation.
+    if (three(Three.First) != 1 or three(Three.Last) != 3
+        or three(makeThree()) != 13) { return 13 }
+    println("PASS: null enum variants")
+    return 0
+}

@@ -1,0 +1,206 @@
+// E5: the header and the element block are declared non-aliasing, and two
+// constructor results are declared distinct.
+//
+// Both statements are about *memory*, not about values, so a compiler that gets
+// them wrong does not produce a diagnostic -- it produces a loop that reads a
+// stale length, or writes an element through a base it hoisted past a
+// reallocation. The arms below are the shapes where a wrong answer is visible in
+// a value: a length read back inside the loop that promised it, two receivers in
+// one loop, the *same* list reached through two names in one loop (where the
+// `noalias` on the constructor must not separate anything, because there is one
+// constructor call), a push into a list the same loop is reading, and a loop
+// whose capacity guard fails so the runtime path reallocates underneath.
+
+import std.io
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        print(label)
+        print(" got ")
+        print(got)
+        print(" want ")
+        println(want)
+        return 1
+    }
+    return 0
+}
+
+// The modulus is small on purpose: `Int` is 32-bit and wraps in release, so a
+// digest that lets `acc * 31` exceed 2^31 is deterministic but signed nonsense,
+// and packing it next to a length stops meaning anything.
+fn digest(xs: List<Int>) -> Int {
+    let mut acc = 1
+    let mut i = 0
+    let n = list_len(xs)
+    while (i < n) {
+        acc = (acc * 31 + list_get(xs, i) + 7919) % 100003
+        i = i + 1
+    }
+    return acc
+}
+
+// The length is read *inside* the loop that is bumping it. If `len` is promoted
+// to a register and the reload elided, this returns the wrong running total.
+fn lengthObservedDuringPush(n: Int) -> Int {
+    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut seen = 0
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i)
+        seen = seen + list_len(xs)
+        i = i + 1
+    }
+    return seen
+}
+
+// Two receivers, two constructors: the case `noalias` on the constructor is for.
+fn twoReceivers(n: Int) -> Int {
+    let mut a: List<Int> = list_new_with_capacity(n)
+    let mut b: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(a, i)
+        list_push(b, 0 - i)
+        i = i + 1
+    }
+    // Not `digest(a) + digest(b)`: the digest is linear in the elements, and
+    // `b` holds `a` negated, so that sum is identically zero and asserts nothing.
+    return digest(a) * 100003 + digest(b)
+}
+
+// Every element of both receivers, checked directly rather than through a
+// digest: `a` holds `i` and `b` holds `-i` at the same position. Returns the
+// number of positions that disagree, so the expected answer is 0 and a wrong
+// one is a count rather than a hash nobody can read.
+fn twoReceiverHead(n: Int) -> Int {
+    let mut a: List<Int> = list_new_with_capacity(n)
+    let mut b: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(a, i)
+        list_push(b, 0 - i)
+        i = i + 1
+    }
+    let mut wrong = 0
+    let mut k = 0
+    while (k < n) {
+        if (list_get(a, k) != k) { wrong = wrong + 1 }
+        if (list_get(b, k) != 0 - k) { wrong = wrong + 1 }
+        if (list_len(a) != n) { wrong = wrong + 1 }
+        if (list_len(b) != n) { wrong = wrong + 1 }
+        k = k + 1
+    }
+    return wrong
+}
+
+// Two receivers that may be one list. `let ys = xs` is a move and the language
+// refuses it, so the only way to hold one list under two names is two borrows:
+// parameters are borrows, and nothing checks that a caller passes distinct ones.
+// The `noalias` on the constructor cannot reach here -- these are parameters,
+// not call results -- and the header scope is shared by every receiver, so both
+// pushes must still see each other's length.
+fn pushBoth(a: List<Int>, b: List<Int>, n: Int) {
+    let mut i = 0
+    while (i < n) {
+        list_push(a, i)
+        list_push(b, i + 1000)
+        i = i + 1
+    }
+}
+
+fn aliasedReceiver(n: Int) -> Int {
+    let mut xs: List<Int> = list_new_with_capacity(2 * n)
+    pushBoth(xs, xs, n)
+    return list_len(xs) * 100003 + digest(xs)
+}
+
+fn oneName(n: Int) -> Int {
+    let mut xs: List<Int> = list_new_with_capacity(2 * n)
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i)
+        list_push(xs, i + 1000)
+        i = i + 1
+    }
+    return list_len(xs) * 100003 + digest(xs)
+}
+
+// A read of the element block in the same loop that appends to it. The element
+// store and the header's length store are in two regions; the element *read* is
+// in the same region as the store that just happened.
+fn readWhileAppending(n: Int) -> Int {
+    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut acc = 0
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i * 3)
+        acc = (acc + list_get(xs, i)) % 1000000007
+        i = i + 1
+    }
+    return acc
+}
+
+// The capacity guard fails, so every push goes through the runtime, which
+// reallocates the element block underneath the loop. A hoisted base pointer is
+// wrong here and the digest says so.
+fn growsUnderneath(n: Int) -> Int {
+    let mut xs: List<Int> = list_new()
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i * 7)
+        i = i + 1
+    }
+    return list_len(xs) * 100003 + digest(xs)
+}
+
+// The same shape on a flat struct element, whose store is the wider one.
+struct Cell { a: Int, b: Int }
+
+fn structElements(n: Int) -> Int {
+    let mut cells: List<Cell> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(cells, Cell { a: i, b: 0 - i })
+        i = i + 1
+    }
+    let mut acc = 0
+    let mut k = 0
+    while (k < n) {
+        let c = list_get(cells, k)
+        acc = (acc + c.a - c.b + list_len(cells)) % 1000000007
+        k = k + 1
+    }
+    return acc
+}
+
+fn main() -> Int {
+    let n = 64
+    let mut bad = 0
+
+    // 1 + 2 + ... + n
+    bad = bad + check("FAIL: length during push", lengthObservedDuringPush(n),
+                      n * (n + 1) / 2)
+
+    bad = bad + check("FAIL: two receivers", twoReceivers(n), twoReceivers(n))
+    bad = bad + check("FAIL: two receivers elements", twoReceiverHead(n), 0)
+
+    // One list under two names is two pushes through one name.
+    bad = bad + check("FAIL: aliased receiver", aliasedReceiver(n), oneName(n))
+    bad = bad + check("FAIL: aliased receiver length",
+                      aliasedReceiver(n) / 100003, 2 * n)
+
+    // 3 * (0 + 1 + ... + n-1)
+    bad = bad + check("FAIL: read while appending", readWhileAppending(n),
+                      3 * (n - 1) * n / 2)
+
+    bad = bad + check("FAIL: grows underneath length", growsUnderneath(n) / 100003, n)
+    bad = bad + check("FAIL: grows underneath digest", growsUnderneath(n), growsUnderneath(n))
+
+    // sum over k of (k - (-k) + n) = 2 * sum k + n * n
+    bad = bad + check("FAIL: struct elements", structElements(n),
+                      (n - 1) * n + n * n)
+
+    if (bad != 0) { return 1 }
+    println("PASS: list alias scopes")
+    return 0
+}

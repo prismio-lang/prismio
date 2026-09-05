@@ -383,6 +383,153 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
         }
         markPtr = func.next
     }
+
+    // Which callees the flat-List guard may look through. Marked by *source*
+    // name, because that is the spelling the guard sees, and marked for every
+    // function including the unsafe ones so that one unsafe overload poisons the
+    // name rather than leaving it silently safe.
+    //
+    // The builtins go in first and by the same door, which is what lets a library
+    // wrapper qualify: `fn max(a, b) { return __builtin_max(a, b) }` calls
+    // something, but it calls something already known to touch nothing.
+    ir_mark_guard_safe_fn("__builtin_max", 1)
+    ir_mark_guard_safe_fn("__builtin_min", 1)
+    ir_mark_guard_safe_fn("__builtin_abs", 1)
+    // The string builtins that only read. A `String` is a pointer and a length
+    // and holds no container, so none of them can grow, restamp or free a
+    // list's element block -- which is the whole of what irBodyMovesNoBlock
+    // asks. `__builtin_string_len` was here alone and the other two are the
+    // same statement.
+    //
+    // Their absence was not a missed optimisation, it was `std.map` losing its
+    // guard entirely: `hash` for String reaches `__builtin_string_byte_at` and
+    // `eq` for String reaches `__builtin_string_eq`, verdicts are marked by
+    // source name so one unsafe overload poisons the name, and `mapProbe` calls
+    // `hash` and `eq`. Every `Map<Int, Int>` probe in the language paid a
+    // per-access `elem_size` load and test because `Map<String, V>` exists.
+    ir_mark_guard_safe_fn("__builtin_string_len", 1)
+    ir_mark_guard_safe_fn("__builtin_string_byte_at", 1)
+    ir_mark_guard_safe_fn("__builtin_string_eq", 1)
+
+    // Optimistic start: every function with a body is assumed to move no block,
+    // then the sweeps below take that away from the ones that do. Starting the
+    // other way round would never admit a recursive function, because it would
+    // be waiting on itself.
+    let mut seedPtr = module.child1
+    while (nodeExists(seedPtr)) {
+        let func = ptr_to_node(seedPtr)
+        if (func.kind == NodeKind.FUNCTION and nodeExists(func.child2)) {
+            ir_mark_guard_safe_fn(func.s1, 1)
+        }
+        seedPtr = func.next
+    }
+
+    // Sweep to a fixed point. Each pass can only turn a verdict from safe to
+    // unsafe, and there are finitely many functions, so this terminates; the
+    // bound is the longest chain in the call graph.
+    let mut changed = true
+    while (changed) {
+        changed = false
+        let mut safePtr = module.child1
+        while (nodeExists(safePtr)) {
+            let func = ptr_to_node(safePtr)
+            if (func.kind == NodeKind.FUNCTION and nodeExists(func.child2)) {
+                if (ir_is_guard_safe_fn(func.s1) == 1) {
+                    if (irBodyMovesNoBlock(func.child2) == false) {
+                        ir_mark_guard_safe_fn(func.s1, 0)
+                        changed = true
+                    }
+                }
+            }
+            safePtr = func.next
+        }
+    }
+}
+
+// The one thing a callee can do that invalidates a loop's flat guard: move the
+// element block.
+//
+// **This is narrower than "touches a list", and the difference is most of the
+// language.** The guard proves two facts in the preheader -- `elem_size ==
+// stride`, and the index range against `len`. A read cannot change either. Nor
+// can a write: `list_set` and its inline siblings store into a slot that already
+// exists. Only growth and teardown can -- `list_push` and its family reallocate
+// through `list_inline_grow`, `list_set_elem_inline` frees and re-widths the
+// block outright, and `list_release` frees it. So those are the primitives that
+// disqualify, and `l[i]`, `list_get` and `list_set` do not.
+//
+// `rc_release` and `cyc_release` are in the set for a less obvious reason: they
+// can run a user releaser, and a releaser is a body this analysis has not seen.
+private fn irPrimitiveMovesBlock(name: String) -> Bool {
+    if (name.equals("list_push")) { return true }
+    if (name.equals("list_push_inline")) { return true }
+    if (name.equals("list_push_inline_scalar")) { return true }
+    if (name.equals("list_push_inline_scalar_slow")) { return true }
+    if (name.equals("list_push_slot")) { return true }
+    if (name.equals("list_push_grow")) { return true }
+    if (name.equals("list_inline_grow")) { return true }
+    if (name.equals("list_set_elem_inline")) { return true }
+    if (name.equals("list_release")) { return true }
+    if (name.equals("rc_release")) { return true }
+    if (name.equals("rc_release_atomic")) { return true }
+    if (name.equals("cyc_release")) { return true }
+    return false
+}
+
+// Container reads and writes: they touch a list and cannot move its block.
+private fn irPrimitiveIsSettled(name: String) -> Bool {
+    if (name.equals("list_get")) { return true }
+    if (name.equals("list_get_inline")) { return true }
+    if (name.equals("list_get_inline_scalar")) { return true }
+    if (name.equals("list_set")) { return true }
+    if (name.equals("list_set_inline")) { return true }
+    if (name.equals("list_set_inline_scalar")) { return true }
+    if (name.equals("list_len")) { return true }
+    if (name.equals("rc_retain")) { return true }
+    return false
+}
+
+// Whether this body can be ruled out as a reason to decline a loop's flat guard.
+//
+// Run to a fixed point by the caller: a call to a module function is charged to
+// that function's current verdict, so `f` calling `g` calling `list_push` fails
+// on the second sweep. Recursion is admitted optimistically, which is what makes
+// the fixed point a greatest one and therefore the right one here -- `f` calling
+// only itself moves no block.
+private fn irBodyMovesNoBlock(nodePtr: Ptr) -> Bool {
+    if (nodeIsNull(nodePtr)) { return true }
+    let n = ptr_to_node(nodePtr)
+
+    // A spawn runs its callee on another thread, where this loop's reasoning
+    // does not reach at all.
+    if (n.kind == NodeKind.SPAWN_EXPR) { return false }
+    if (n.kind == NodeKind.JOIN_EXPR) { return false }
+
+    if (n.kind == NodeKind.CALL_EXPR) {
+        if (nodeExists(n.child1) == false) { return false }
+        let callee = ptr_to_node(n.child1).s1
+        if (irPrimitiveMovesBlock(callee)) { return false }
+        if (irPrimitiveIsSettled(callee) == false) {
+            // Not a primitive this pass knows: it has to be a function the pass
+            // has already judged. An `extern fn` never is, which is the
+            // conservative answer for a body written in another language.
+            if (ir_is_guard_safe_fn(callee) != 1) { return false }
+        }
+    }
+
+    if (irChainMovesNoBlock(n.child1) == false) { return false }
+    if (irChainMovesNoBlock(n.child2) == false) { return false }
+    return irChainMovesNoBlock(n.child3)
+}
+
+private fn irChainMovesNoBlock(head: Ptr) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (irBodyMovesNoBlock(node_to_ptr(n)) == false) { return false }
+        p = n.next
+    }
+    return true
 }
 
 // A task crosses the C runtime through up to three `void*` slots. A String does
@@ -795,6 +942,35 @@ private fn registerRawPtrStructs(module: ASTNode) {
         }
         stmtPtr = stmt.next
     }
+}
+
+// `T?` already reserves null for absence: a present `T.Empty` must remain a
+// different value. Follow resolved types, including generics and container
+// elements, before choosing any enum representation. Foreign signatures retain
+// their boxed ABI too, including legacy conversions through String.
+private fn reserveEnumNullInType(typePtr: Ptr, foreign: Bool) {
+    if (nodeIsNull(typePtr)) { return }
+    let t = ptr_to_type(typePtr)
+    if (foreign and t.kind == TypeKind.STRUCT) {
+        ir_enum_reserve_null(t.name)
+    }
+    if (t.kind == TypeKind.OPTIONAL and nodeExists(t.child)) {
+        let inner = ptr_to_type(t.child)
+        if (inner.kind == TypeKind.STRUCT) { ir_enum_reserve_null(inner.name) }
+    }
+    reserveEnumNullInType(t.child, foreign)
+    reserveEnumNullInType(t.next, foreign)
+}
+
+private fn reserveEnumNullInTree(nodePtr: Ptr, foreign: Bool) {
+    if (nodeIsNull(nodePtr)) { return }
+    let n = ptr_to_node(nodePtr)
+    reserveEnumNullInType(n.typeInfo, foreign)
+    let inForeign = foreign or n.kind == NodeKind.EXTERN_FUNCTION
+    reserveEnumNullInTree(n.child1, inForeign)
+    reserveEnumNullInTree(n.child2, inForeign)
+    reserveEnumNullInTree(n.child3, inForeign)
+    reserveEnumNullInTree(n.next, foreign)
 }
 
 private fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
@@ -1275,6 +1451,7 @@ fn generateModule(module: ASTNode) {
     }
 
     registerRawPtrStructs(module)
+    reserveEnumNullInTree(module.child1, false)
 
     let mut structStmtPtr = module.child1
     while (nodeExists(structStmtPtr)) {
@@ -1293,6 +1470,8 @@ fn generateModule(module: ASTNode) {
     while (nodeExists(debugStructPtr)) {
         let debugStructStmt = ptr_to_node(debugStructPtr)
         if (debugStructStmt.kind == NodeKind.STRUCT_DECL) {
+            ir_enum_set_null_tag(debugStructStmt.s1,
+                                enumNullVariantTag(module, debugStructStmt.s1))
             debugStruct(debugStructStmt)
         }
         // Enums ride this walk rather than one of their own: they need no
@@ -1325,11 +1504,17 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_param("ptr")
     ir_declare_function_end()
 
+    // E5's second half. Two constructor calls are two headers, which is what
+    // lets a loop pushing to two lists keep both lengths in registers -- the
+    // alias scopes in llvm-api-backend.c separate a header from an element
+    // block but say nothing about one header and another.
     ir_declare_function_begin("list_new", "ptr")
+    ir_declare_function_fresh()
     ir_declare_function_end()
 
     ir_declare_function_begin("list_new_with_capacity", "ptr")
     ir_declare_function_param("i32")
+    ir_declare_function_fresh()
     ir_declare_function_end()
 
     ir_declare_function_begin("list_set_elem_releaser", "void")
@@ -1602,6 +1787,29 @@ fn generateModule(module: ASTNode) {
 
     ir_declare_function_begin("list_len", "i32")
     ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    // LLVM's own integer min/max/abs. Declared, not defined: the names are
+    // intrinsics, so a call to one is recognised by the backend rather than
+    // linked. They are on LLVM's trivially-vectorisable list, which is the whole
+    // point -- `smax` survives into a vector loop where an icmp/select pair
+    // written by hand does not always.
+    ir_declare_function_begin("llvm.smax.i32", "i32")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("llvm.smin.i32", "i32")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    // The second operand is `is_int_min_poison`, and it is passed false: the
+    // absolute value of Int's minimum is not representable, and this language
+    // wraps rather than poisons (RESULTS-int-width.md).
+    ir_declare_function_begin("llvm.abs.i32", "i32")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("i1")
     ir_declare_function_end()
 
     // Struct-field ownership. Declared before any is defined, because a type

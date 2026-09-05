@@ -1,0 +1,110 @@
+// MEM-035: a multi-point stencil is bounded by a *shifted* condition.
+//
+// `while (at + 3 < n)` is how a 7-point stencil says "the widest read is in
+// range". The offsets on the reads were always matched; the condition was not,
+// because a shifted left-hand side is not an identifier, so every access in the
+// loop stayed checked and the loop stayed scalar.
+//
+// `at + K < n` is `at < n - K`. The arms below are the ones that can go wrong if
+// the shift is dropped or applied in the wrong direction: the guard would then
+// admit a loop whose widest read is past the end, and `list_get`'s totality --
+// 0 past the end, never a memory read -- would be observable as a wrong sum.
+
+import std.io
+
+fn filled(n: Int) -> List<Int> {
+    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, i + 1)
+        i = i + 1
+    }
+    return xs
+}
+
+// The stencil shape, with the widest read exactly at the bound.
+fn stencil(n: Int, len: Int) -> Int {
+    let xs = filled(len)
+    let mut acc = 0
+    let mut at = 3
+    while (at + 3 < n) {
+        acc = acc + list_get(xs, at - 3) + 2 * list_get(xs, at - 1)
+                  + list_get(xs, at) + 2 * list_get(xs, at + 1)
+                  + list_get(xs, at + 3)
+        at = at + 1
+    }
+    return acc
+}
+
+// A shift wider than the list: every read past the end contributes 0.
+fn shiftedPastEnd(n: Int) -> Int {
+    let xs = filled(4)
+    let mut acc = 0
+    let mut at = 0
+    while (at + 100 < n) {
+        acc = acc + list_get(xs, at + 100)
+        at = at + 1
+    }
+    return acc
+}
+
+// The bound is smaller than the shift, so the loop never runs.
+fn neverRuns() -> Int {
+    let xs = filled(16)
+    let mut acc = 0
+    let mut at = 0
+    while (at + 20 < 10) {
+        acc = acc + list_get(xs, at)
+        at = at + 1
+    }
+    return acc
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        print(label)
+        print(" got ")
+        print(got)
+        print(" want ")
+        println(want)
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // n = 16 over a 16-element list: `at` runs 3..12, every read in range.
+    // Sum over at of (at-2) + 2*at + (at+1) + 2*(at+2) + (at+4) = 7*at + 7.
+    let mut want = 0
+    let mut a = 3
+    while (a < 13) {
+        want = want + 7 * a + 7
+        a = a + 1
+    }
+    bad = bad + check("FAIL: stencil in range", stencil(16, 16), want)
+
+    // The same loop over a list of 8. Reads past index 7 contribute 0, and a
+    // guard that forgot the shift would read memory instead.
+    let mut want2 = 0
+    let mut b = 3
+    while (b < 13) {
+        let mut term = 0
+        if (b - 3 < 8) { term = term + (b - 2) }
+        if (b - 1 < 8) { term = term + 2 * b }
+        if (b < 8) { term = term + (b + 1) }
+        if (b + 1 < 8) { term = term + 2 * (b + 2) }
+        if (b + 3 < 8) { term = term + (b + 4) }
+        want2 = want2 + term
+        b = b + 1
+    }
+    bad = bad + check("FAIL: stencil past end", stencil(16, 8), want2)
+
+    bad = bad + check("FAIL: shifted past end", shiftedPastEnd(110), 0)
+    bad = bad + check("FAIL: never runs", neverRuns(), 0)
+
+    if (bad != 0) { return 1 }
+    println("PASS: stencil range guard")
+    return 0
+}

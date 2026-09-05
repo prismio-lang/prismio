@@ -494,7 +494,82 @@ private fn generateStatement(stmt: ASTNode) {
         // M4.2, the loop half. Emitted here because here is the preheader: the
         // guard has to dominate the loop and be computed once.
         let savedGuard = irLoopFlatGuard
-        irLoopFlatGuard = generateLoopFlatGuard(ptr_to_node(stmt.child2))
+        let savedRange = irLoopRangeProved
+        let savedPush = irLoopPushGuard
+        irLoopRangeProved = false
+        irLoopPushGuard = generateLoopPushGuard(ptr_to_node(stmt.child1),
+                                                ptr_to_node(stmt.child2))
+
+        // MEM-006, and it has to come first: the block transfer replaces the
+        // whole loop, so it is emitted in the preheader before the loop's own
+        // guard exists. It leaves the builder in the arm the loop belongs to.
+        generateWholeBufferCopy(ptr_to_node(stmt.child1), ptr_to_node(stmt.child2),
+                                endLabel)
+
+        let guardSlot = generateLoopFlatGuard(ptr_to_node(stmt.child1),
+                                              ptr_to_node(stmt.child2))
+
+        if (guardSlot.equals("") == false) {
+            let fastCondLabel = ir_get_label()
+            let fastBodyLabel = ir_get_label()
+            let slowCondLabel = ir_get_label()
+            let slowBodyLabel = ir_get_label()
+
+            let guardVal = ir_get_temp_name(ir_load("i1", guardSlot))
+            ir_cond_br_numbered(guardVal, fastCondLabel, slowCondLabel)
+
+            let provedRange = irLoopRangeProved
+
+            // Specialized fast loop: representation is guaranteed flat and constant-guarded.
+            ir_label_numbered(fastCondLabel)
+            irLoopFlatGuard = "1"
+            irLoopRangeProved = provedRange
+            let fastCondVal = generateExpression(ptr_to_node(stmt.child1))
+            ir_cond_br_numbered(fastCondVal, fastBodyLabel, endLabel)
+
+            ir_label_numbered(fastBodyLabel)
+            ir_loop_push(fastCondLabel, endLabel)
+            ir_drop_barrier_push()
+            irLoopDepth = irLoopDepth + 1
+            generateBlock(ptr_to_node(stmt.child2))
+            irLoopDepth = irLoopDepth - 1
+            ir_drop_barrier_pop()
+            ir_loop_pop()
+
+            if (ir_has_returned() == 0) { ir_br_numbered(fastCondLabel) }
+            ir_clear_returned()
+
+            // Safe slow loop: standard fallback.
+            ir_label_numbered(slowCondLabel)
+            irLoopFlatGuard = ""
+            irLoopRangeProved = false
+            let slowCondVal = generateExpression(ptr_to_node(stmt.child1))
+            ir_cond_br_numbered(slowCondVal, slowBodyLabel, endLabel)
+
+            ir_label_numbered(slowBodyLabel)
+            ir_loop_push(slowCondLabel, endLabel)
+            ir_drop_barrier_push()
+            irLoopDepth = irLoopDepth + 1
+            generateBlock(ptr_to_node(stmt.child2))
+            irLoopDepth = irLoopDepth - 1
+            ir_drop_barrier_pop()
+            ir_loop_pop()
+
+            if (ir_has_returned() == 0) { ir_br_numbered(slowCondLabel) }
+            ir_clear_returned()
+
+            irLoopFlatGuard = strClone(savedGuard)
+            irLoopRangeProved = savedRange
+            irLoopPushGuard = strClone(savedPush)
+            ir_label_numbered(endLabel)
+            return
+        }
+
+        if (savedGuard.equals("1")) {
+            irLoopFlatGuard = "1"
+        } else {
+            irLoopFlatGuard = guardSlot
+        }
 
         ir_br_numbered(condLabel)
         ir_label_numbered(condLabel)
@@ -515,6 +590,8 @@ private fn generateStatement(stmt: ASTNode) {
         ir_clear_returned()
 
         irLoopFlatGuard = savedGuard
+        irLoopRangeProved = savedRange
+        irLoopPushGuard = savedPush
         ir_label_numbered(endLabel)
     }
 
@@ -632,9 +709,7 @@ private fn generateStatement(stmt: ASTNode) {
         // once per arm, which for anything but a bare name is wrong.
         let payloadMatch = matchBindsPayload(stmt)
         if (payloadMatch) {
-            let tagSlot = ir_struct_field_ptr(structTypeName(scrutType), stmt.s1, 0)
-            stmt.s2 = ir_get_temp_name(ir_struct_load_ptr("i32", ir_get_temp_name(tagSlot),
-                                                          structTypeName(scrutType), 0))
+            stmt.s2 = ir_get_temp_name(ir_enum_tag(structTypeName(scrutType), stmt.s1))
         } else {
             stmt.s2 = stmt.s1
         }

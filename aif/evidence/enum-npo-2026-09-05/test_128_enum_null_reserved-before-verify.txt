@@ -1,0 +1,8 @@
+PASS: reserved enum nulls
+aif-verify: leaked #1 (16 bytes)
+aif-verify: leaked #2 (16 bytes)
+aif-verify: 2 allocated, 0 released, 2 leaked, 0 violation(s)
+aif-memory: 32 allocated bytes, 0 released bytes, 32 live bytes, 32 peak live bytes
+aif-memory-sizes: <=16:2 <=32:0 <=64:0 <=128:0 <=256:0 <=512:0 <=1024:0 <=4096:0 >4096:0
+aif-arena: 0 object(s), 0 byte(s), 0 region(s) on reporting thread
+aif-verify: FAILED -- an inferred fact did not hold at run time

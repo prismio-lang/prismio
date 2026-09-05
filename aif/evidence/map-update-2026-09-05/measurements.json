@@ -1,0 +1,553 @@
+{
+  "runs": 15,
+  "compiler_sha256": "e206c6628aa54106acdb2ca8f712950e06ebf7670e411526b27096743448f58d",
+  "before_map_sha256": "1bde8ec12259e8f39c822d43de2e6ee545b32e9931cded72636fe797123fcaac",
+  "after_map_sha256": "43eb580ee3fd69294a4c362131dcd8680dfa5dfc6ab8f9e17a4f5a4b700caa50",
+  "key_sha256": "e86cf5109f5c29e5cd266784e9c3724d2bb0572e6c149d83df7a754d27fb8508",
+  "toolchains": {
+    "clang++": "Homebrew clang version 22.1.8",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "benchmarks": {
+    "key_value_update": {
+      "checksum": 5599628,
+      "samples_ns": {
+        "before": [
+          11552584,
+          11314792,
+          11132833,
+          11189542,
+          11133166,
+          11402542,
+          11077792,
+          11608708,
+          11217459,
+          11333500,
+          11523166,
+          11593583,
+          11208666,
+          11325584,
+          11297167
+        ],
+        "after_legacy": [
+          11148083,
+          10769458,
+          11058167,
+          10643417,
+          10837459,
+          11025375,
+          11082667,
+          10951584,
+          10993166,
+          11122250,
+          10994916,
+          11126834,
+          10813625,
+          10822000,
+          10947208
+        ],
+        "after_update": [
+          7483375,
+          7147583,
+          7530625,
+          6858083,
+          6789833,
+          7221667,
+          6829625,
+          7459292,
+          7250209,
+          6969833,
+          7263875,
+          6671334,
+          7265209,
+          6843500,
+          7363291
+        ],
+        "cpp_double": [
+          5590417,
+          5578875,
+          5497458,
+          5463834,
+          5578750,
+          5467917,
+          5740583,
+          5695792,
+          5503667,
+          5167875,
+          5528834,
+          6039708,
+          5490291,
+          5586458,
+          5550208
+        ],
+        "cpp_single": [
+          3060708,
+          3069542,
+          2819833,
+          3132542,
+          2878625,
+          3073250,
+          2919583,
+          3030541,
+          2924833,
+          2950709,
+          3521625,
+          2854000,
+          3152375,
+          3218291,
+          3071583
+        ],
+        "rust_single": [
+          8672334,
+          8478583,
+          8595250,
+          8542875,
+          9372791,
+          8492833,
+          8580000,
+          8572917,
+          8548875,
+          8601542,
+          8559792,
+          8482166,
+          8517125,
+          8486541,
+          8528667
+        ],
+        "before_repeat": [
+          11575875,
+          11334750,
+          11279291,
+          11480791,
+          11186833,
+          11092542,
+          11250250,
+          11208000,
+          11443459,
+          11262875,
+          11251417,
+          11238417,
+          11376375,
+          11378375,
+          11481375
+        ]
+      },
+      "median_ns": {
+        "before": 11314792,
+        "after_legacy": 10993166,
+        "after_update": 7221667,
+        "cpp_double": 5550208,
+        "cpp_single": 3060708,
+        "rust_single": 8548875,
+        "before_repeat": 11279291
+      }
+    },
+    "hashmap_insert_lookup": {
+      "checksum": 42239213,
+      "samples_ns": {
+        "before": [
+          7325834,
+          7366125,
+          7310625,
+          7278416,
+          7368667,
+          7256208,
+          7311000,
+          7229166,
+          7286458,
+          7388167,
+          7231125,
+          7348666,
+          7271750,
+          7386000,
+          7453500
+        ],
+        "after_legacy": [
+          6869542,
+          7018459,
+          7021000,
+          7023042,
+          6952500,
+          6999500,
+          6959958,
+          6988083,
+          6975916,
+          6914500,
+          7032458,
+          7001541,
+          7002292,
+          7078125,
+          7113458
+        ],
+        "after_update": [
+          6936250,
+          7021541,
+          7051792,
+          6731042,
+          6957625,
+          6903375,
+          7024625,
+          7052500,
+          6956416,
+          6882958,
+          6916000,
+          7037333,
+          7060292,
+          6914750,
+          6727875
+        ],
+        "cpp_double": [
+          6686333,
+          6530625,
+          6993833,
+          6878583,
+          6654208,
+          8119667,
+          6974750,
+          7125583,
+          6752167,
+          6948167,
+          6844708,
+          6515041,
+          7172916,
+          6757833,
+          6819167
+        ],
+        "cpp_single": [
+          6748584,
+          7058292,
+          6665125,
+          6831167,
+          7204709,
+          6839333,
+          7122834,
+          7240334,
+          7658625,
+          6730208,
+          6493750,
+          6912375,
+          6754000,
+          6639583,
+          6572333
+        ],
+        "rust_single": [
+          7821542,
+          7827125,
+          7853500,
+          7766083,
+          7810583,
+          7811416,
+          7986166,
+          7829209,
+          7898750,
+          7833209,
+          7794959,
+          7890833,
+          7788750,
+          7845625,
+          7809958
+        ],
+        "before_repeat": [
+          7442250,
+          7238125,
+          7217292,
+          7402875,
+          7328584,
+          7277334,
+          7385750,
+          7314917,
+          7325291,
+          7258416,
+          7612625,
+          7316709,
+          7292375,
+          7366209,
+          7438541
+        ]
+      },
+      "median_ns": {
+        "before": 7311000,
+        "after_legacy": 7001541,
+        "after_update": 6956416,
+        "cpp_double": 6844708,
+        "cpp_single": 6831167,
+        "rust_single": 7827125,
+        "before_repeat": 7325291
+      }
+    }
+  },
+  "checksums": {
+    "fibonacci": {
+      "before": 5985853,
+      "after_legacy": 5985853,
+      "after_update": 5985853,
+      "cpp_double": 5985853,
+      "cpp_single": 5985853,
+      "rust_single": 5985853
+    },
+    "prime_sieve": {
+      "before": 458935349,
+      "after_legacy": 458935349,
+      "after_update": 458935349,
+      "cpp_double": 458935349,
+      "cpp_single": 458935349,
+      "rust_single": 458935349
+    },
+    "gcd_lcm": {
+      "before": 504265700,
+      "after_legacy": 504265700,
+      "after_update": 504265700,
+      "cpp_double": 504265700,
+      "cpp_single": 504265700,
+      "rust_single": 504265700
+    },
+    "binary_search": {
+      "before": 1004850,
+      "after_legacy": 1004850,
+      "after_update": 1004850,
+      "cpp_double": 1004850,
+      "cpp_single": 1004850,
+      "rust_single": 1004850
+    },
+    "quicksort": {
+      "before": 33756443,
+      "after_legacy": 33756443,
+      "after_update": 33756443,
+      "cpp_double": 33756443,
+      "cpp_single": 33756443,
+      "rust_single": 33756443
+    },
+    "mergesort": {
+      "before": 33756443,
+      "after_legacy": 33756443,
+      "after_update": 33756443,
+      "cpp_double": 33756443,
+      "cpp_single": 33756443,
+      "rust_single": 33756443
+    },
+    "string_search": {
+      "before": 152047993,
+      "after_legacy": 152047993,
+      "after_update": 152047993,
+      "cpp_double": 152047993,
+      "cpp_single": 152047993,
+      "rust_single": 152047993
+    },
+    "graph_bfs": {
+      "before": 542195018,
+      "after_legacy": 542195018,
+      "after_update": 542195018,
+      "cpp_double": 542195018,
+      "cpp_single": 542195018,
+      "rust_single": 542195018
+    },
+    "knapsack": {
+      "before": 12798,
+      "after_legacy": 12798,
+      "after_update": 12798,
+      "cpp_double": 12798,
+      "cpp_single": 12798,
+      "rust_single": 12798
+    },
+    "tree_traversal": {
+      "before": 294705124,
+      "after_legacy": 294705124,
+      "after_update": 294705124,
+      "cpp_double": 294705124,
+      "cpp_single": 294705124,
+      "rust_single": 294705124
+    },
+    "hashmap_insert_lookup": {
+      "before": 42239213,
+      "after_legacy": 42239213,
+      "after_update": 42239213,
+      "cpp_double": 42239213,
+      "cpp_single": 42239213,
+      "rust_single": 42239213
+    },
+    "vector_growth": {
+      "before": 995982695,
+      "after_legacy": 995982695,
+      "after_update": 995982695,
+      "cpp_double": 995982695,
+      "cpp_single": 995982695,
+      "rust_single": 995982695
+    },
+    "vector_iteration": {
+      "before": 127112128,
+      "after_legacy": 127112128,
+      "after_update": 127112128,
+      "cpp_double": 127112128,
+      "cpp_single": 127112128,
+      "rust_single": 127112128
+    },
+    "key_value_update": {
+      "before": 5599628,
+      "after_legacy": 5599628,
+      "after_update": 5599628,
+      "cpp_double": 5599628,
+      "cpp_single": 5599628,
+      "rust_single": 5599628
+    },
+    "matrix_multiply": {
+      "before": 346043827,
+      "after_legacy": 346043827,
+      "after_update": 346043827,
+      "cpp_double": 346043827,
+      "cpp_single": 346043827,
+      "rust_single": 346043827
+    },
+    "mandelbrot": {
+      "before": 38776,
+      "after_legacy": 38776,
+      "after_update": 38776,
+      "cpp_double": 38776,
+      "cpp_single": 38776,
+      "rust_single": 38776
+    },
+    "fft": {
+      "before": 327680,
+      "after_legacy": 327680,
+      "after_update": 327680,
+      "cpp_double": 327680,
+      "cpp_single": 327680,
+      "rust_single": 327680
+    },
+    "numerical_integration": {
+      "before": 314159265,
+      "after_legacy": 314159265,
+      "after_update": 314159265,
+      "cpp_double": 314159265,
+      "cpp_single": 314159265,
+      "rust_single": 314159265
+    },
+    "vector_dot": {
+      "before": 199986180,
+      "after_legacy": 199986180,
+      "after_update": 199986180,
+      "cpp_double": 199986180,
+      "cpp_single": 199986180,
+      "rust_single": 199986180
+    },
+    "convolution": {
+      "before": 399934914,
+      "after_legacy": 399934914,
+      "after_update": 399934914,
+      "cpp_double": 399934914,
+      "cpp_single": 399934914,
+      "rust_single": 399934914
+    },
+    "monte_carlo": {
+      "before": 6498683,
+      "after_legacy": 6498683,
+      "after_update": 6498683,
+      "cpp_double": 6498683,
+      "cpp_single": 6498683,
+      "rust_single": 6498683
+    },
+    "polynomial_evaluation": {
+      "before": 147510845,
+      "after_legacy": 147510845,
+      "after_update": 147510845,
+      "cpp_double": 147510845,
+      "cpp_single": 147510845,
+      "rust_single": 147510845
+    },
+    "ecs_component_update": {
+      "before": 166215579,
+      "after_legacy": 166215579,
+      "after_update": 166215579,
+      "cpp_double": 166215579,
+      "cpp_single": 166215579,
+      "rust_single": 166215579
+    },
+    "parallel_reduction": {
+      "before": 822454185,
+      "after_legacy": 822454185,
+      "after_update": 822454185,
+      "cpp_double": 822454185,
+      "cpp_single": 822454185,
+      "rust_single": 822454185
+    },
+    "transient_allocation": {
+      "before": 339103,
+      "after_legacy": 339103,
+      "after_update": 339103,
+      "cpp_double": 339103,
+      "cpp_single": 339103,
+      "rust_single": 339103
+    },
+    "struct_creation": {
+      "before": 48996500,
+      "after_legacy": 48996500,
+      "after_update": 48996500,
+      "cpp_double": 48996500,
+      "cpp_single": 48996500,
+      "rust_single": 48996500
+    },
+    "allocation_mutation": {
+      "before": 36000000,
+      "after_legacy": 36000000,
+      "after_update": 36000000,
+      "cpp_double": 36000000,
+      "cpp_single": 36000000,
+      "rust_single": 36000000
+    },
+    "nested_collection": {
+      "before": 409805349,
+      "after_legacy": 409805349,
+      "after_update": 409805349,
+      "cpp_double": 409805349,
+      "cpp_single": 409805349,
+      "rust_single": 409805349
+    },
+    "large_buffer_copy": {
+      "before": 90068056,
+      "after_legacy": 90068056,
+      "after_update": 90068056,
+      "cpp_double": 90068056,
+      "cpp_single": 90068056,
+      "rust_single": 90068056
+    },
+    "recursive_tree_rebuild": {
+      "before": 4137497,
+      "after_legacy": 4137497,
+      "after_update": 4137497,
+      "cpp_double": 4137497,
+      "cpp_single": 4137497,
+      "rust_single": 4137497
+    },
+    "file_read": {
+      "before": 21823488,
+      "after_legacy": 21823488,
+      "after_update": 21823488,
+      "cpp_double": 21823488,
+      "cpp_single": 21823488,
+      "rust_single": 21823488
+    },
+    "file_write": {
+      "before": 18825216,
+      "after_legacy": 18825216,
+      "after_update": 18825216,
+      "cpp_double": 18825216,
+      "cpp_single": 18825216,
+      "rust_single": 18825216
+    },
+    "line_processing": {
+      "before": 8437760,
+      "after_legacy": 8437760,
+      "after_update": 8437760,
+      "cpp_double": 8437760,
+      "cpp_single": 8437760,
+      "rust_single": 8437760
+    },
+    "tokenization": {
+      "before": 211969972,
+      "after_legacy": 211969972,
+      "after_update": 211969972,
+      "cpp_double": 211969972,
+      "cpp_single": 211969972,
+      "rust_single": 211969972
+    }
+  }
+}

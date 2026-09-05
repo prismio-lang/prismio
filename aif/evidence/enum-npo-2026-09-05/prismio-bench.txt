@@ -1,0 +1,4 @@
+compiler host: project-local /Users/vibrant/Desktop/Projects/Prismio/prismio/.prismio/build/debug/prismio
+Completed 34 benchmarks (6 unsupported) · 7 runs
+Report   /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/results/report.html
+Data     /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/results/results.json

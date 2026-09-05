@@ -1,0 +1,22 @@
+{
+  "full_suite": {
+    "passed": 299,
+    "failed": 0
+  },
+  "compiler_sha256": "c9b8246afb6ce80db2f879c7231b49be42e9b60e374f7c9f032d8945cfee1511",
+  "promoted_host_sha256": "c9b8246afb6ce80db2f879c7231b49be42e9b60e374f7c9f032d8945cfee1511",
+  "before_host_sha256": "e206c6628aa54106acdb2ca8f712950e06ebf7670e411526b27096743448f58d",
+  "compiler_ir_fixpoint_sha256": "0f1656a3256be8f9abaeccb416fb4f7d0c71e1b6b3c5c9434a0bdd7559d07ef5",
+  "second_generation_ir_sha256": "0f1656a3256be8f9abaeccb416fb4f7d0c71e1b6b3c5c9434a0bdd7559d07ef5",
+  "benchmarks": 34,
+  "benchmark_checksums": "all five arms agree",
+  "benchmark_verify_violations": 0,
+  "benchmark_existing_leaks_per_process": 2,
+  "oracle_before_after_identical": true,
+  "project_bench": {
+    "command": "prismio bench --runs 7",
+    "exit_code": 0,
+    "implemented": 34,
+    "unsupported": 6
+  }
+}

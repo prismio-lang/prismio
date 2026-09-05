@@ -1,0 +1,49 @@
+AIF differential test -- /Users/vibrant/Desktop/Projects/Prismio/prismio/build/enum-npo/before vs aif/prototype/aif.py
+
+  DIFFER  src/main.psm [as-is]
+  DIFFER  src/main.psm [owned]
+  agree   aif/corpus/g1_particles.psm [as-is]
+  agree   aif/corpus/g1_particles.psm [owned]
+  agree   aif/corpus/g2_frame_loop.psm [as-is]
+  agree   aif/corpus/g2_frame_loop.psm [owned]
+  agree   aif/corpus/g3_scene_graph.psm [as-is]
+  agree   aif/corpus/g3_scene_graph.psm [owned]
+  agree   aif/corpus/g4_ecs_world.psm [as-is]
+  agree   aif/corpus/g4_ecs_world.psm [owned]
+  agree   aif/corpus/g5_asset_cache.psm [as-is]
+  agree   aif/corpus/g5_asset_cache.psm [owned]
+  agree   aif/corpus/g6_engine.psm [as-is]
+  agree   aif/corpus/g6_engine.psm [owned]
+  agree   aif/corpus/g6_game.psm [as-is]
+  agree   aif/corpus/g6_game.psm [owned]
+  agree   aif/corpus/g9_bands.psm [as-is]
+  agree   aif/corpus/g9_bands.psm [owned]
+  agree   tests/test_44_aif_region.psm [as-is]
+  agree   tests/test_44_aif_region.psm [owned]
+  DIFFER  tests/test_45_aif_affine_collections.psm [as-is]
+  DIFFER  tests/test_45_aif_affine_collections.psm [owned]
+  agree   tests/test_47_aif_containers.psm [as-is]
+  agree   tests/test_47_aif_containers.psm [owned]
+  agree   tests/test_48_aif_shared_elements.psm [as-is]
+  agree   tests/test_48_aif_shared_elements.psm [owned]
+  agree   tests/test_53_aif_views.psm [as-is]
+  agree   tests/test_53_aif_views.psm [owned]
+  DIFFER  tests/aif_concurrency.psm [as-is]
+  DIFFER  tests/aif_concurrency.psm [owned]
+  agree   tests/aif_concurrency_shared.psm [as-is]
+  agree   tests/aif_concurrency_shared.psm [owned]
+  agree   tests/test_56_list_capacity.psm [as-is]
+  agree   tests/test_56_list_capacity.psm [owned]
+  agree   tests/test_59_bracket_summary.psm [as-is]
+  agree   tests/test_59_bracket_summary.psm [owned]
+  agree   tests/test_96_channels.psm [as-is]
+  agree   tests/test_96_channels.psm [owned]
+
+6 disagreement(s):
+
+  src/main.psm (owned=False): T1: compiler=198 oracle=201, T3: compiler=319 oracle=318, sites: compiler=582 oracle=584, opaque-ret: compiler=145 oracle=147, extern-alloc: compiler=515 oracle=517, rounds: compiler=16 oracle=15, Isolated: compiler=582 oracle=584, bracketable: compiler=240 oracle=182, sole-regime: compiler=68 oracle=40, br-param: compiler=280 oracle=268, br-opaque: compiler=923 oracle=981
+  src/main.psm (owned=True): T1: compiler=198 oracle=201, T2: compiler=149 oracle=159, T3: compiler=234 oracle=223, sites: compiler=582 oracle=584, opaque-ret: compiler=145 oracle=147, extern-alloc: compiler=515 oracle=517, rounds: compiler=15 oracle=14, Isolated: compiler=582 oracle=584, bracketable: compiler=240 oracle=182, sole-regime: compiler=68 oracle=40, br-param: compiler=280 oracle=268, br-opaque: compiler=923 oracle=981
+  tests/test_45_aif_affine_collections.psm (owned=False): T3: compiler=52 oracle=54, sites: compiler=88 oracle=90, opaque-ret: compiler=0 oracle=2, extern-alloc: compiler=56 oracle=58, Isolated: compiler=88 oracle=90, bracketable: compiler=82 oracle=81, br-opaque: compiler=129 oracle=130
+  tests/test_45_aif_affine_collections.psm (owned=True): T3: compiler=0 oracle=2, sites: compiler=88 oracle=90, opaque-ret: compiler=0 oracle=2, extern-alloc: compiler=56 oracle=58, Isolated: compiler=88 oracle=90, bracketable: compiler=82 oracle=81, br-opaque: compiler=129 oracle=130
+  tests/aif_concurrency.psm (owned=False): T3: compiler=55 oracle=57, sites: compiler=95 oracle=97, opaque-ret: compiler=3 oracle=5, extern-alloc: compiler=58 oracle=60, Isolated: compiler=84 oracle=86, bracketable: compiler=86 oracle=85, br-opaque: compiler=125 oracle=126
+  tests/aif_concurrency.psm (owned=True): T3: compiler=3 oracle=5, sites: compiler=95 oracle=97, opaque-ret: compiler=3 oracle=5, extern-alloc: compiler=58 oracle=60, Isolated: compiler=84 oracle=86, bracketable: compiler=86 oracle=85, br-opaque: compiler=125 oracle=126

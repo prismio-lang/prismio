@@ -1,0 +1,22 @@
+dense i        murmur3        update    7.705 ms   probes/lookup  1.21   (insert  1.66)
+dense i        xorshift16     update    3.446 ms   probes/lookup  1.00   (insert  1.00)
+dense i        identity       update    3.474 ms   probes/lookup  1.00   (insert  1.00)
+
+stride 64      murmur3        update    7.585 ms   probes/lookup  1.21   (insert  1.65)
+stride 64      xorshift16     update    3.299 ms   probes/lookup  1.18   (insert  2.51)
+stride 64      identity       update   20.783 ms   probes/lookup 10.27   (insert 23.38)
+
+stride 2^16    murmur3        update    8.968 ms   probes/lookup  1.37   (insert  1.59)
+stride 2^16    xorshift16     update    3.164 ms   probes/lookup  1.00   (insert  1.00)
+stride 2^16    identity       update 23097.166 ms   probes/lookup 14076.05   (insert 17431.69)
+
+pre-scrambled  murmur3        update    7.117 ms   probes/lookup  1.21   (insert  1.66)
+pre-scrambled  xorshift16     update    5.872 ms   probes/lookup  1.18   (insert  1.57)
+pre-scrambled  identity       update    3.450 ms   probes/lookup  1.00   (insert  1.00)
+
+i*65537        murmur3        update   11.518 ms   probes/lookup  1.46   (insert  1.71)
+i*65537        xorshift16     update 13368.629 ms   probes/lookup 7077.85   (insert 17144.38)
+
+i*2^17         murmur3        update    7.489 ms   probes/lookup  1.39   (insert  1.50)
+i*2^17         xorshift16     update    3.538 ms   probes/lookup  1.00   (insert  1.00)
+

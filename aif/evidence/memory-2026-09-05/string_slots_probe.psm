@@ -1,0 +1,22 @@
+// Exercise the container boundary that the ephemeral-token benchmark avoids.
+import std.io
+import std.string
+
+fn main() -> Int {
+    let tokens: List<String> = list_new_with_capacity(10000)
+    let mut i = 0
+    while (i < 10000) {
+        list_push(tokens, strSubstring("abcdefgh longer source text", 0, 8))
+        i = i + 1
+    }
+    let mut total = 0
+    let mut at = 0
+    while (at < list_len(tokens)) {
+        total = total + strLength(list_get(tokens, at))
+        at = at + 1
+    }
+    drop(tokens)
+    if (total != 80000) { return 1 }
+    println("PASS: string slots")
+    return 0
+}

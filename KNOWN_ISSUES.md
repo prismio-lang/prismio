@@ -239,12 +239,23 @@ working tree — which costs a confusing hour. Either copy referenced constants
 during curation, or refuse to curate a function that references one.
 
 **`list_push_slot` is not curated, and it is the seam under M6's one declined
-case.** It reaches three `static`s, which is the rule `list_push_grow` was
-outlined to satisfy for `list_push`. Until it is curated, a struct literal pushed
-into a container cannot take a struct-path TBAA tag: the widened store the tag
-enables is a 0.76x win where the optimiser can see the destination and a 2.74x
-loss against this call. See `aif/evidence/RESULTS-M6-struct-path-tbaa.md` and
+case.** Until it is curated, a struct literal pushed into a container cannot take
+a struct-path TBAA tag: the widened store the tag enables is a 0.76x win where the
+optimiser can see the destination and a 2.74x loss against this call. See
+`aif/evidence/RESULTS-M6-struct-path-tbaa.md` and
 `aif/evidence/bench/g2_cull_probe.c`.
+
+**The closure blocker is gone; the reason it is still not curated is
+performance.** `list_push_slot_boxed` now carries `rt_alloc`'s three `static`s,
+so the set stays closed with `list_push_slot` in it — one line in
+`PRISMIO_CURATED_OPS` turns it on. Measured 2026-09-05, that line inlines the
+fast path into every push site and reproduces the regression
+`RESULTS-inline-push-rejected.md` recorded: `world_spawn` 37 -> 115 and `recruit`
+57 -> 160 instructions in g6, against 0.984x on `struct_creation`. **Do not flip
+it without the pushes-per-list profile that evidence file asks for.** The static
+proxy for that profile does not work either: g2's `cull` and g6's `plan_orders`
+both build with `list_new()`, so gating on `list_new_with_capacity` separates
+neither. See `aif/evidence/RESULTS-loop-range-monotonicity.md` §10.
 
 **The flat-list guard is per loop, and its code-size cost is a policy question.** `list_get` on a
 flat element type now emits its own address arithmetic with the stride as an
@@ -402,3 +413,23 @@ does not carry that compound workload forward. Its useful axes are isolated as
 `hashmap_insert_lookup`, `key_value_update`, and `nested_collection` under
 `benchmarks/`; use their cross-language checksums and repeated medians instead
 of interpreting an old g5 result.
+
+**`tools/release_gate.py`'s suite step fails on a clean tree, for every
+compiler.** It runs `PRISMIO=<rc> tests/test_runner.py`, and `--target` and
+`jit` fail under that invocation whatever compiler is passed — including the
+current project host, where `prismio aif --layout` produces no sizes. The same
+tree through `tools/run_suite.py`, which promotes the candidate to
+`.prismio/build/debug/prismio` first, is 300/300. Either fix the gate to promote
+the candidate, or run the previous compiler through the same invocation before
+treating a failure as a regression. The gate's AIF oracle differential failure is
+separately pre-existing; diff `tools/aif_differential.py`'s output between the
+two compilers rather than reading the summary line.
+
+**Phase-time a memory benchmark one shot per process.** Every `benchmarks/` entry
+runs once per process, and looping the same workload inside one process measures
+a different program: `benchLargeBufferCopy`'s fill settles to 0.55 ms warm and is
+2.2 ms one shot, because `rt_base_alloc` recycles the block and the pages stay
+faulted in. The difference inverts the cross-language comparison — a warm C++ arm
+reads a *slower* fill than Prismio's, purely because `std::vector`'s allocator
+returns the block to the OS between iterations.
+See `aif/evidence/RESULTS-scoped-alias-metadata.md`.

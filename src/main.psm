@@ -22,20 +22,24 @@ extern fn cli_arg_count() -> Int
 // Both malloc and hand the buffer over: compiler_default_exe_path sprintfs into
 // a fresh block, compiler_temp_ir_path goes through compiler_temp_path which
 // does the same. The caller owns them.
-extern fn compiler_default_exe_path(sourcePath: String) -> String produce(free)
-// Every path through both mallocs, including the failure paths, which allocate a
-// one-byte empty string rather than returning a literal. That is the same
-// invariant Level 4 had to give str_substring and str_trim -- anything declared
-// to return String returns something a release can take -- and it is what makes
-// `produce` true here rather than nearly true.
+extern fn compiler_default_exe_path(sourcePath: String) -> String produce (free )
+
+/** Every path through both mallocs, including the failure paths, which allocate a
+ one-byte empty string rather than returning a literal. That is the same
+ invariant Level 4 had to give str_substring and str_trim -- anything declared
+to return String returns something a release can take -- and it is what makes
+ `produce` true here rather than nearly true.
+*/
 extern fn compiler_runtime_source_hash() -> String produce(free)
-// `--sysroot`. Where *this machine* keeps the SDK for the target -- not a
-// property of the triple, which is why it is not in the target record: two hosts
-// building the same target legitimately pass different paths, and an SDK the
-// compiler picked for itself is the kind of helpful guess that ends in a link
-// error someone spends an afternoon on.
-extern fn compiler_set_sysroot(path: String borrow)
-extern fn executable_directory() -> String produce(free)
+
+/** `--sysroot`. Where *this machine* keeps the SDK for the target -- not a
+ property of the triple, which is why it is not in the target record: two hosts
+ building the same target legitimately pass different paths, and an SDK the
+ compiler picked for itself is the kind of helpful guess that ends in a link
+error someone spends an afternoon on.
+*/
+extern fn compiler_set_sysroot(path: String borrow )
+extern fn executable_directory() -> String produce (free )
 extern fn get_directory(path: String) -> String
 // A `static char buf[32]` the next call overwrites.
 extern fn ir_llvm_version() -> String alias
@@ -316,7 +320,7 @@ private fn cliAif() -> Int {
     }
 
     return aifCommand(cli_arg(2), aifSummary, aifOwned, aifThetaFields, aifBudgetArg,
-                       aifWhy, aifLayout, aifManifest)
+    aifWhy, aifLayout, aifManifest)
 }
 
 // Compiler development. The command itself selects the build mode -- there is
@@ -365,7 +369,7 @@ private fn cliBootstrap() -> Int {
     }
 
     return compileSource(path, outputFile, false, true, false, false,
-                          bootstrapDebugInfo, false, false)
+    bootstrapDebugInfo, false, false)
 }
 
 fn main() -> Int {
@@ -627,5 +631,5 @@ fn main() -> Int {
     }
 
     return compileSource(path, outputFile, runAfterBuild, bootstrapMode, verifyMode, debugMode,
-                          debugInfo, optimized, jitMode)
+    debugInfo, optimized, jitMode)
 }

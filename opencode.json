@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "tokenra": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "TokenRa",
+      "options": {
+        "baseURL": "https://tokenra.io/v1"
+      },
+      "models": {
+        "stealth/ox-alpha": {
+          "name": "Ox Alpha"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+// NPO cannot consume a null value already reserved by T? or change an extern's
+// boxed enum ABI. These cases need to stay present even for the empty variant.
+import std.io
+
+enum OptionalTree { Empty, Node(OptionalTree, Int) }
+enum Generic<T> { None, Some(T) }
+enum Exposed { Empty, Node(Exposed, Int) }
+
+extern fn node_to_ptr(t: Exposed borrow) -> Ptr alias
+extern fn ptr_is_null(p: Ptr borrow) -> Int
+
+fn find(present: Bool) -> OptionalTree? {
+    if (present) { return OptionalTree.Empty }
+    return none
+}
+
+fn findGeneric(present: Bool) -> Generic<List<Int>>? {
+    if (present) { return Generic<List<Int>>.None }
+    return none
+}
+
+fn empty(t: OptionalTree) -> Bool {
+    match (t) {
+        OptionalTree.Empty => { return true }
+        OptionalTree.Node(child, n) => { return false }
+    }
+    return false
+}
+
+fn genericEmpty(t: Generic<List<Int>>) -> Bool {
+    match (t) {
+        Generic.None => { return true }
+        Generic.Some(xs) => { return false }
+    }
+    return false
+}
+
+fn main() -> Int {
+    let present = find(true)
+    if (present == none) { return 1 }
+    if (empty(expect(present)) == false) { return 2 }
+    if (find(false) != none) { return 3 }
+    let generic = findGeneric(true)
+    if (generic == none) { return 4 }
+    if (genericEmpty(expect(generic)) == false) { return 5 }
+    if (findGeneric(false) != none) { return 6 }
+    let external = Exposed.Empty
+    if (ptr_is_null(node_to_ptr(external)) == 1) { return 7 }
+    println("PASS: reserved enum nulls")
+    return 0
+}

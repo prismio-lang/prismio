@@ -1,0 +1,218 @@
+// `keyMixInt` folds the high half into the low half and stops, which is the
+// identity for every key below 2^16 and therefore keeps a table of interned ids
+// in insertion order in *bucket* order too. One key family defeats that fold:
+// `i * 65537` puts the same bits in both halves, so folding them cancels and
+// every key lands in bucket 0. Unhandled that is 7,078 probes per lookup.
+//
+// `mapRehash` measures its own probe displacement while re-placing and switches
+// the map to `keyStrengthen` when it is bad. The arms below are what that
+// switch must not disturb: every key still findable, insertion order intact,
+// growth after the switch, a map that was already strong staying strong, and
+// the ordinary families still taking the cheap path.
+//
+// The timings are not asserted -- a test that fails on a slow machine is worse
+// than no test -- but the pathological arm is sized so that a *missing* switch
+// does not finish in the time this suite allows.
+
+import std.io
+import std.map
+import std.key
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        print(label)
+        print(" got ")
+        print(got)
+        print(" want ")
+        println(want)
+        return 1
+    }
+    return 0
+}
+
+// A key whose hash is the pathological family, and which counts the probe steps
+// the table spends on it. `eq(existing, key)` is called once per *occupied*
+// bucket the probe walks past, and `existing` is the stored copy, so summing the
+// counter over `mapKeyAt` is the table's total probe displacement — the property
+// the switch exists to bound, measured instead of timed.
+struct PathKey { v: Int, hits: Int }
+impl Key for PathKey {
+    fn hash(self) -> Int { return keyMixInt(self.v * 65537) }
+    fn eq(self, other: Self) -> Bool {
+        self.hits = self.hits + 1
+        return self.v == other.v
+    }
+}
+impl Copy for PathKey {
+    fn copyOf(self) -> Self { return PathKey { v: self.v, hits: self.hits } }
+}
+
+// Insert and read back `n` pathological keys, answering with the total number of
+// key comparisons the table performed. With the switch this is a small multiple
+// of `n`; without it every key lands in one bucket and it is quadratic.
+fn pathProbeSteps(n: Int) -> Int {
+    let m: Map<PathKey, Int> = mapNew<PathKey, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(m, PathKey { v: i, hits: 0 }, i)
+        i = i + 1
+    }
+    let mut k = 0
+    while (k < n) {
+        if (mapGetOr(m, PathKey { v: k, hits: 0 }, 0 - 1) != k) { return 0 - 1 }
+        k = k + 1
+    }
+    let mut total = 0
+    let mut e = 0
+    while (e < n) {
+        total = total + mapKeyAt(m, e).hits
+        e = e + 1
+    }
+    return total
+}
+
+// Insert `n` keys `i * stride`, then read every one back. Returns the number of
+// lookups that did not answer with the value they were given.
+fn roundTrip(stride: Int, n: Int) -> Int {
+    let m: Map<Int, Int> = mapNew<Int, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(m, i * stride, i * 7 + 1)
+        i = i + 1
+    }
+    let mut wrong = 0
+    let mut k = 0
+    while (k < n) {
+        if (mapGetOr(m, k * stride, 0 - 1) != k * 7 + 1) { wrong = wrong + 1 }
+        k = k + 1
+    }
+    if (mapLen(m) != n) { wrong = wrong + 1000 }
+    return wrong
+}
+
+// Insertion order must survive a switch: mapKeyAt is the iteration contract.
+fn orderAfterSwitch(stride: Int, n: Int) -> Int {
+    let m: Map<Int, Int> = mapNew<Int, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(m, i * stride, i)
+        i = i + 1
+    }
+    let mut wrong = 0
+    let mut k = 0
+    while (k < n) {
+        if (mapKeyAt(m, k) != k * stride) { wrong = wrong + 1 }
+        if (mapValueAt(m, k) != k) { wrong = wrong + 1 }
+        k = k + 1
+    }
+    return wrong
+}
+
+// A map that switched must keep growing correctly, and must still answer for
+// keys inserted before the switch.
+fn growAfterSwitch(n: Int) -> Int {
+    let m: Map<Int, Int> = mapNew<Int, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(m, i * 65537, i)
+        i = i + 1
+    }
+    // Ordinary keys into the same, now-strengthened table.
+    let mut j = 0
+    while (j < n) {
+        mapSet(m, 0 - (j + 1), j + 100)
+        j = j + 1
+    }
+    let mut wrong = 0
+    let mut k = 0
+    while (k < n) {
+        if (mapGetOr(m, k * 65537, 0 - 1) != k) { wrong = wrong + 1 }
+        if (mapGetOr(m, 0 - (k + 1), 0 - 1) != k + 100) { wrong = wrong + 1 }
+        k = k + 1
+    }
+    if (mapLen(m) != 2 * n) { wrong = wrong + 1000 }
+    return wrong
+}
+
+// Overwrite, absence and negative keys still behave across the switch.
+fn semanticsAfterSwitch(n: Int) -> Int {
+    let m: Map<Int, Int> = mapNew<Int, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(m, i * 65537, i)
+        i = i + 1
+    }
+    let mut wrong = 0
+    // Overwriting reports "was present" and does not grow the map.
+    if (mapSet(m, 5 * 65537, 999) == false) { wrong = wrong + 1 }
+    if (mapGetOr(m, 5 * 65537, 0 - 1) != 999) { wrong = wrong + 1 }
+    if (mapLen(m) != n) { wrong = wrong + 1 }
+    // A key that was never inserted is still absent.
+    if (mapHas(m, 3)) { wrong = wrong + 1 }
+    if (mapGetOr(m, 3, 0 - 7) != 0 - 7) { wrong = wrong + 1 }
+    if (mapIndexOf(m, 3) != 0 - 1) { wrong = wrong + 1 }
+    // Inserting reports "was absent" and does grow it.
+    if (mapSet(m, 3, 42)) { wrong = wrong + 1 }
+    if (mapGetOr(m, 3, 0 - 1) != 42) { wrong = wrong + 1 }
+    if (mapLen(m) != n + 1) { wrong = wrong + 1 }
+    return wrong
+}
+
+// String keys never go through keyMixInt at all; the switch must leave them
+// answering the same.
+fn stringKeys(n: Int) -> Int {
+    let m: Map<String, Int> = mapNew<String, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(m, "k".concat(i.toString()), i)
+        i = i + 1
+    }
+    let mut wrong = 0
+    let mut k = 0
+    while (k < n) {
+        if (mapGetOr(m, "k".concat(k.toString()), 0 - 1) != k) { wrong = wrong + 1 }
+        k = k + 1
+    }
+    if (mapHas(m, "absent")) { wrong = wrong + 1 }
+    return wrong
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let n = 3000
+
+    // The families that take the cheap path.
+    bad = bad + check("FAIL: dense round trip", roundTrip(1, n), 0)
+    bad = bad + check("FAIL: stride 64 round trip", roundTrip(64, n), 0)
+    bad = bad + check("FAIL: stride 65536 round trip", roundTrip(65536, n), 0)
+    bad = bad + check("FAIL: stride 131072 round trip", roundTrip(131072, n), 0)
+
+    // The family that defeats the fold: every key folds to bucket 0.
+    bad = bad + check("FAIL: stride 65537 round trip", roundTrip(65537, n), 0)
+
+    // And the cost, asserted rather than timed. `n` inserts plus `n` lookups
+    // with the switch cost about 2.4 comparisons each; without it the table
+    // degrades to one chain and the same work is quadratic — measured at 2.25
+    // million for this `n`, against the ~14,000 the bound allows.
+    let steps = pathProbeSteps(n)
+    bad = bad + check("FAIL: pathological probe steps are not quadratic",
+                      (steps >= 0 and steps < n * 5) as Int, 1)
+
+    bad = bad + check("FAIL: order after switch", orderAfterSwitch(65537, n), 0)
+    bad = bad + check("FAIL: order without switch", orderAfterSwitch(1, n), 0)
+    bad = bad + check("FAIL: growth after switch", growAfterSwitch(n), 0)
+    bad = bad + check("FAIL: semantics after switch", semanticsAfterSwitch(n), 0)
+    bad = bad + check("FAIL: string keys", stringKeys(500), 0)
+
+    // A single entry, and an empty map, still work either way.
+    let one: Map<Int, Int> = mapNew<Int, Int>()
+    mapSet(one, 65537, 1)
+    bad = bad + check("FAIL: single entry", mapGetOr(one, 65537, 0), 1)
+    let empty: Map<Int, Int> = mapNew<Int, Int>()
+    bad = bad + check("FAIL: empty length", mapLen(empty), 0)
+    bad = bad + check("FAIL: empty lookup", mapGetOr(empty, 65537, 0 - 5), 0 - 5)
+
+    if (bad != 0) { return 1 }
+    println("PASS: adaptive map hashing")
+    return 0
+}
