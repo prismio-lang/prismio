@@ -90,6 +90,16 @@ def parse_runner_args():
         "--compiler",
         help="compiler to test; wins over $PRISMIO and over `prismio` on PATH",
     )
+    parser.add_argument(
+        "--no-interactive",
+        action="store_true",
+        help="disable live interactive progress meter",
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="force live interactive progress meter",
+    )
     return parser.parse_args()
 
 
@@ -133,22 +143,190 @@ def test_jobs():
 _progress_lock = threading.Lock()
 _progress_done = 0
 _progress_total = 0
+_progress_meter = None
+
+
+class LiveProgress:
+    """Thread-safe live progress meter for the test suite.
+
+    In interactive terminals (`sys.stdout.isatty()`), displays a dynamic progress
+    bar and status meter on the bottom line showing:
+      - visual bar and completion percentage
+      - completed / total test count
+      - total elapsed time and estimated time remaining (ETA)
+      - currently active / running tests and their elapsed durations
+    When each test completes, the status line is cleared, the test result line
+    is printed with percentage and timing, and the status bar is redrawn.
+
+    When stdout is redirected or non-interactive (CI, log files), status line
+    redraws are disabled and each completed test is printed cleanly with
+    immediate flush.
+    """
+
+    def __init__(self, total, stream=None, interactive=None):
+        self.total = max(total, 1)
+        self.done = 0
+        self.passed = 0
+        self.failed = 0
+        self.lock = threading.RLock()
+        self.stream = stream or sys.__stdout__
+        if interactive is not None:
+            self.interactive = interactive
+        else:
+            env = os.environ.get("PRISMIO_TEST_INTERACTIVE")
+            if env == "1":
+                self.interactive = True
+            elif env == "0":
+                self.interactive = False
+            else:
+                self.interactive = getattr(self.stream, "isatty", lambda: False)()
+        self.start_time = time.time()
+        self.active_items = {}  # label -> start_time
+        self.current_step = ""
+        self.current_step_start = 0.0
+        self._prev_len = 0
+        self._stopped = False
+        self._ticker_thread = None
+
+    def start(self):
+        if self.interactive:
+            self._stopped = False
+            self._ticker_thread = threading.Thread(target=self._ticker_loop, daemon=True)
+            self._ticker_thread.start()
+
+    def stop(self):
+        self._stopped = True
+        if self._ticker_thread:
+            self._ticker_thread.join(timeout=0.4)
+            self._ticker_thread = None
+        self.clear_bar()
+
+    def _ticker_loop(self):
+        while not self._stopped:
+            time.sleep(0.2)
+            with self.lock:
+                if not self._stopped and self.interactive:
+                    self._draw_bar_locked()
+
+    def add_active(self, label):
+        with self.lock:
+            self.active_items[label] = time.time()
+            if self.interactive and not self._stopped:
+                self._draw_bar_locked()
+
+    def remove_active(self, label):
+        with self.lock:
+            self.active_items.pop(label, None)
+            if self.interactive and not self._stopped:
+                self._draw_bar_locked()
+
+    def set_current(self, step_description):
+        with self.lock:
+            self.current_step = step_description
+            self.current_step_start = time.time()
+            if self.interactive and not self._stopped:
+                self._draw_bar_locked()
+
+    def clear_bar(self):
+        with self.lock:
+            if self.interactive and self._prev_len > 0:
+                self.stream.write("\r\033[K")
+                self.stream.flush()
+                self._prev_len = 0
+
+    def redraw_bar(self):
+        with self.lock:
+            if self.interactive and not self._stopped:
+                self._draw_bar_locked()
+
+    def _draw_bar_locked(self):
+        if not self.interactive or self._stopped:
+            return
+        now = time.time()
+        elapsed = now - self.start_time
+        pct = int(100 * self.done / self.total)
+        bar_cols = 18
+        filled = min(bar_cols, int(bar_cols * self.done / self.total))
+        bar = "█" * filled + "░" * (bar_cols - filled)
+
+        eta_str = ""
+        if self.done >= 3 and elapsed > 0.5:
+            rate = self.done / elapsed
+            remaining = (self.total - self.done) / max(rate, 0.001)
+            if remaining < 60:
+                eta_str = f", ETA {remaining:.0f}s"
+            else:
+                eta_str = f", ETA {int(remaining // 60)}m{int(remaining % 60):02d}s"
+
+        detail = ""
+        if self.current_step:
+            step_dur = now - self.current_step_start if self.current_step_start > 0 else 0.0
+            detail = f" | {self.current_step} ({step_dur:.1f}s)"
+        elif self.active_items:
+            items_list = sorted(self.active_items.items(), key=lambda kv: kv[1])
+            shown = []
+            for lbl, st in items_list[:2]:
+                dur = now - st
+                shown.append(f"{lbl} ({dur:.1f}s)")
+            summary = ", ".join(shown)
+            if len(items_list) > 2:
+                summary += f" +{len(items_list) - 2} more"
+            detail = f" | active ({len(items_list)}): {summary}"
+
+        line = f"  [{bar}] {pct:3d}% ({self.done}/{self.total}) [{elapsed:.1f}s{eta_str}]{detail}"
+        term_width = shutil.get_terminal_size((80, 24)).columns
+        if len(line) > term_width - 1:
+            line = line[:max(10, term_width - 4)] + "..."
+        self.stream.write("\r\033[K" + line)
+        self.stream.flush()
+        self._prev_len = len(line)
+
+    def finish_test(self, label, ok, seconds, extra_output=None):
+        with self.lock:
+            self.done += 1
+            if ok:
+                self.passed += 1
+            else:
+                self.failed += 1
+            self.active_items.pop(label, None)
+            if self.interactive:
+                self.stream.write("\r\033[K")
+                self.stream.flush()
+                self._prev_len = 0
+
+            pct = int(100 * self.done / self.total)
+            mark = f"{GREEN}ok  {RESET}" if ok else f"{RED}FAIL{RESET}"
+            line = f"  [{self.done:3d}/{self.total}] ({pct:3d}%) {mark} {seconds:6.2f}s  {label}\n"
+            self.stream.write(line)
+            if extra_output:
+                self.stream.write(extra_output)
+            self.stream.flush()
+
+            if self.interactive and not self._stopped:
+                self._draw_bar_locked()
 
 
 def progress(label, ok, seconds):
-    """One line per finished test, in completion order, with its own duration.
-
-    Printed under a lock because the workers share stdout. The counter is what
-    makes a long run legible -- a suite that prints nothing for three minutes is
-    indistinguishable from a hung one, which is how a 90-second compile hid in
-    here.
-    """
-    global _progress_done
+    """Record and display one finished test result."""
+    global _progress_meter, _progress_done
     with _progress_lock:
         _progress_done += 1
-        n = _progress_done
-    mark = f"{GREEN}ok  {RESET}" if ok else f"{RED}FAIL{RESET}"
-    print(f"  [{n:3d}/{_progress_total}] {mark} {seconds:6.2f}s  {label}", flush=True)
+    if _progress_meter:
+        _progress_meter.finish_test(label, ok, seconds)
+    else:
+        mark = f"{GREEN}ok  {RESET}" if ok else f"{RED}FAIL{RESET}"
+        print(f"  [{_progress_done:3d}/{_progress_total}] {mark} {seconds:6.2f}s  {label}", flush=True)
+
+
+def _worker_timed(fn, item, label_of):
+    label = label_of(item)
+    if _progress_meter:
+        _progress_meter.add_active(label)
+    try:
+        return _timed(fn, item)
+    finally:
+        if _progress_meter:
+            _progress_meter.remove_active(label)
 
 
 def run_parallel(fn, items, label_of):
@@ -159,13 +337,16 @@ def run_parallel(fn, items, label_of):
     """
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=test_jobs()) as pool:
-        futures = {pool.submit(_timed, fn, it): it for it in items}
+        futures = {pool.submit(_worker_timed, fn, it, label_of): it for it in items}
         for fut in concurrent.futures.as_completed(futures):
             it = futures[fut]
             ok, seconds, out = fut.result()
-            progress(label_of(it), ok, seconds)
-            if out:
-                sys.stdout.write(out)
+            if _progress_meter:
+                _progress_meter.finish_test(label_of(it), ok, seconds, out)
+            else:
+                progress(label_of(it), ok, seconds)
+                if out:
+                    sys.stdout.write(out)
             results.append(ok)
     return results
 
@@ -173,20 +354,14 @@ def run_parallel(fn, items, label_of):
 class _ThreadOut(io.TextIOBase):
     """A `sys.stdout` that routes each worker thread's writes to its own buffer.
 
-    **`contextlib.redirect_stdout` cannot be used here and the reason is not
-    obvious.** It swaps a global, so with eight workers one thread's redirect
-    captures every other thread's output for as long as it is open -- and the
-    unwinding is out of order, so `sys.stdout` is left pointing at a discarded
-    buffer afterwards. The first parallel version of this file did exactly that:
-    the run was correct and silent, printing 2 of 154 progress lines and no
-    final summary, while still exiting 0.
-
-    A thread that has set no buffer -- the main one, which prints the progress
-    lines and the summary -- writes straight through.
+    When the main thread writes (e.g. status banners or test logs), it coordinates
+    with `LiveProgress` so the live progress bar is erased before the write and
+    redrawn on the new line afterwards.
     """
 
-    def __init__(self, real):
+    def __init__(self, real, meter=None):
         self._real = real
+        self._meter = meter
         self._local = threading.local()
 
     def set_buffer(self, buf):
@@ -194,12 +369,27 @@ class _ThreadOut(io.TextIOBase):
 
     def write(self, text):
         buf = getattr(self._local, "buf", None)
-        return (self._real if buf is None else buf).write(text)
+        if buf is not None:
+            return buf.write(text)
+        if self._meter:
+            self._meter.clear_bar()
+        res = self._real.write(text)
+        self._real.flush()
+        if self._meter and text.endswith("\n"):
+            self._meter.redraw_bar()
+        return res
 
     def flush(self):
         buf = getattr(self._local, "buf", None)
         if buf is None:
             self._real.flush()
+
+    def isatty(self):
+        return self._real.isatty()
+
+    @property
+    def encoding(self):
+        return self._real.encoding
 
 
 def _timed(fn, item):
@@ -3102,6 +3292,63 @@ def run_data_view_gate_test():
     return True
 
 
+def run_counted_fill_codegen_test():
+    """The pure fill grows early; observable calls and early exits do not."""
+    print(f"\n{BLUE}--- Running counted_fill_codegen ---{RESET}")
+    source = TEST_DIR / "test_132_counted_fill.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-counted-fill-") as tmp:
+        ir_path = Path(tmp) / "fill.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] counted fill IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ir_path.read_text()
+
+        def body(name):
+            match = re.search(rf'^define [^\n]*@{name}__[^\n]*\n(.*?)^}}',
+                              ir, re.MULTILINE | re.DOTALL)
+            if not match:
+                problems.append(f"missing function {name}")
+                return ""
+            return match.group(1)
+
+        for name in ("fill", "inclusiveFill"):
+            if "call void @list_inline_grow(" not in body(name):
+                problems.append(f"{name} did not prepare its empty buffer")
+        for name in ("interruptedFill", "observedFill", "queueGrowth"):
+            if "call void @list_inline_grow(" in body(name):
+                problems.append(f"{name} speculatively grew its buffer")
+        if not re.search(r'store i32 .*alias.scope .*noalias', body("structFill")):
+            problems.append("struct element initialisation has no region proof")
+        if not re.search(r'load i32, .*range', body("fill")):
+            problems.append("list counts have no nonnegative range")
+        if not re.search(r'store i1 false, ptr %pushguard\.', body("wrappingInclusiveFill")):
+            problems.append("inclusive Int.MAX loop received a finite capacity guard")
+
+        exe = Path(tmp) / ("fill.exe" if platform.system() == "Windows" else "fill")
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "--verify",
+                             "-o", str(exe)])
+        if built.returncode != 0:
+            problems.append(f"verify build failed: {built.stdout} {built.stderr}")
+        else:
+            for boxed in (False, True):
+                env = os.environ.copy()
+                env["PRISMIO_INLINE_ELEMS"] = "0" if boxed else "1"
+                ran = subprocess.run([str(exe)], cwd=PROJECT_ROOT, env=env,
+                                     capture_output=True, text=True)
+                output = ran.stdout + ran.stderr
+                if ran.returncode or "PASS:" not in output:
+                    problems.append(f"boxed={boxed}: {output}")
+                if not re.search(r'0 leaked, 0 violation\(s\)', output):
+                    problems.append(f"boxed={boxed}: no clean verify ledger: {output}")
+    if problems:
+        print(f"{RED}[FAIL] counted fill: " + "\n".join(problems) + RESET)
+        return False
+    print(f"{GREEN}[PASS] counted fill guards, struct regions, and both verify modes{RESET}")
+    return True
+
+
 def run_struct_path_tbaa_test():
     """M6 slice 2: ordinary fields carry their selected record and byte offset.
 
@@ -5257,14 +5504,24 @@ def run_no_inference_test():
     problems = []
     checked = 0
     skipped = []
+    total_fixtures = len(fixtures)
+    total_processed = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=test_jobs()) as pool:
-        for kind, payload in pool.map(check_one, fixtures):
+        futures = {pool.submit(check_one, f): f for f in fixtures}
+        for fut in concurrent.futures.as_completed(futures):
+            kind, payload = fut.result()
+            total_processed += 1
             if kind == "skip":
                 skipped.append(payload)
             elif kind == "problem":
                 problems.append(payload)
             elif kind == "checked":
                 checked += 1
+            if _progress_meter:
+                _progress_meter.set_current(f"running: no_inference ({total_processed}/{total_fixtures})...")
+            if total_processed % 25 == 0 or total_processed == total_fixtures:
+                if _progress_meter and not _progress_meter.interactive:
+                    print(f"  [no_inference] {total_processed}/{total_fixtures} fixtures checked...", flush=True)
 
     cleanup_files(release_exe, debug_exe)
     if checked == 0:
@@ -5657,6 +5914,17 @@ def run_aif_verify_test():
         # than as a leak, and the loop above fails the fixture on any violation.
         # See RESULTS-extern-alias-escape.md.
         "extern_alias_escape": 0,
+        # Consuming String append. The fixture performs 9,192 logical appends,
+        # including self/view aliases and a concat site also stored in a list.
+        # Geometric growth plus 1,000 integer formatter buffers measures 1,040
+        # allocations; immutable concat-per-iteration is over 10,000. The exact
+        # leak count protects ownership, while the ceiling below protects the
+        # amortised architecture rather than timing a noisy CI host.
+        "test_100_string_append_reuse": 0,
+    }
+
+    max_allocations = {
+        "test_100_string_append_reuse": 1100,
     }
 
     exe = TEST_DIR / "aif_verify_probe.exe"
@@ -5676,6 +5944,7 @@ def run_aif_verify_test():
                             "was not redirected")
             continue
 
+        allocated = int(report.group(1))
         leaked, violations = int(report.group(3)), int(report.group(4))
         if violations:
             problems.append(f"{name}: {violations} violation(s) -- a value was "
@@ -5684,6 +5953,10 @@ def run_aif_verify_test():
             problems.append(f"{name}: {leaked} leaked, expected {want_leaks} "
                             "(if this dropped, T2 now has a free point and the "
                             "expectation should follow)")
+        if name in max_allocations and allocated > max_allocations[name]:
+            problems.append(f"{name}: {allocated} allocations, expected at most "
+                            f"{max_allocations[name]} (String append is no longer "
+                            "growing geometrically)")
 
     cleanup_files(exe)
     if problems:
@@ -6566,300 +6839,129 @@ def main():
         print("Test files should be named test_XX_*.psm or neg_XX_*.psm")
         sys.exit(1)
 
+    PROGRAMMATIC_TESTS = [
+        ("cli_run_forward_slash", run_cli_test),
+        ("cli_check_protocol", run_check_command_test),
+        ("ums", run_ums_test),
+        ("corpus", run_corpus_test),
+        ("aif_tiers", run_aif_test),
+        ("aif_human_report", run_aif_human_report_test),
+        ("aif_concurrency", run_aif_concurrency_test),
+        ("aif_widening", run_aif_widening_test),
+        ("aif_stack_slot", run_aif_stack_slot_test),
+        ("pin_tiers", run_pin_tier_test),
+        ("region_diagnostics", run_region_diagnostic_test),
+        ("placement_pin", run_placement_pin_test),
+        ("nonlexical_extent", run_nonlexical_extent_test),
+        ("bracket_summary", run_bracket_summary_test),
+        ("layout_cost_model", run_layout_cost_model_test),
+        ("split_release", run_split_release_test),
+        ("forced_layout", run_forced_layout_test),
+        ("object_cache", run_object_cache_test),
+        ("bootstrap_cache_key", run_bootstrap_cache_key_test),
+        ("bootstrap_command", run_bootstrap_command_test),
+        ("manifest_parseable", run_manifest_parseable_test),
+        ("oracle_vocabulary", run_oracle_vocabulary_test),
+        ("elem_mode_agreement", run_elem_mode_agreement_test),
+        ("aif_drop_emission", run_aif_drop_emission_test),
+        ("aif_rc", run_aif_rc_test),
+        ("aif_view", run_aif_view_test),
+        ("slice_gate", run_slice_gate_test),
+        ("data_view_gate", run_data_view_gate_test),
+        ("counted_fill_codegen", run_counted_fill_codegen_test),
+        ("struct_path_tbaa", run_struct_path_tbaa_test),
+        ("generic_layout_specialization_gate", run_generic_layout_specialization_test),
+        ("aif_layout", run_aif_layout_test),
+        ("workload", run_workload_test),
+        ("aif_struct_fields", run_aif_struct_field_test),
+        ("no_inference", run_no_inference_test),
+        ("aif_verify", run_aif_verify_test),
+        ("aif_annotations", run_aif_annotation_test),
+        ("aif_minimal_cause", run_aif_minimal_cause_test),
+        ("punned_slot_invariant", run_punned_slot_invariant_test),
+        ("debug_info", run_debug_info_test),
+        ("inline_runtime_default", run_inline_runtime_default_test),
+        ("runtime_object_from_ir", run_runtime_object_from_ir_test),
+        ("single_loop_inline", run_single_loop_inline_test),
+        ("task_release", run_task_release_test),
+        ("string_operator_ledger", run_string_operator_ledger_test),
+        ("overflow_checks", run_overflow_checks_test),
+        ("curated_closure", run_curated_closure_test),
+        ("curated_emits", run_curated_emits_test),
+        ("target_cross", run_target_test),
+        ("runtime_library", run_runtime_library_test),
+        ("incremental_manifest", run_incremental_manifest_test),
+        ("jit", run_jit_test),
+    ]
+
     if patterns:
         print(f"\nFilter: {', '.join(patterns)} (file fixtures only)")
     print(f"\nFound {len(test_files)} positive test(s)")
     print(f"Found {len(neg_test_files)} negative test(s)")
+    if not patterns:
+        print(f"Found {len(PROGRAMMATIC_TESTS)} programmatic test(s) ({len(test_files) + len(neg_test_files) + len(PROGRAMMATIC_TESTS)} total)")
 
     passed = 0
     failed = 0
 
-    global _progress_total
-    _progress_total = len(test_files) + len(neg_test_files)
-    print(f"Running file fixtures on {test_jobs()} worker(s)\n")
+    global _progress_total, _progress_meter
+    programmatic_count = len(PROGRAMMATIC_TESTS) if not patterns else 0
+    _progress_total = len(test_files) + len(neg_test_files) + programmatic_count
+
+    interactive = None
+    if getattr(args, "no_interactive", False):
+        interactive = False
+    elif getattr(args, "interactive", False):
+        interactive = True
+
+    real_stdout = sys.stdout
+    _progress_meter = LiveProgress(_progress_total, stream=real_stdout, interactive=interactive)
+    _progress_meter.start()
+
+    print(f"Running file fixtures on {test_jobs()} worker(s)\n", flush=True)
 
     t_files = time.time()
-    real_stdout = sys.stdout
-    sys.stdout = _ThreadOut(real_stdout)
+    sys.stdout = _ThreadOut(real_stdout, _progress_meter)
     try:
         outcomes = (run_parallel(run_test, test_files, lambda f: Path(f).stem)
                     + run_parallel(run_negative_test, neg_test_files, lambda f: Path(f).stem))
+        for ok in outcomes:
+            if ok:
+                passed += 1
+            else:
+                failed += 1
+        print(f"\n  file fixtures: {time.time() - t_files:.1f}s "
+              f"({passed} passed, {failed} failed)\n", flush=True)
+
+        if patterns:
+            print(f"{YELLOW}{'='*60}{RESET}")
+            print(f"{YELLOW}Filtered Test Results{RESET}")
+            print(f"{YELLOW}{'='*60}{RESET}")
+            print(f"{GREEN}Passed: {passed}{RESET}")
+            print(f"{RED}Failed: {failed}{RESET}")
+            print(f"Total:  {passed + failed}")
+            if failed:
+                sys.exit(1)
+            print(f"\n{GREEN}All selected tests passed!{RESET}")
+            sys.exit(0)
+
+        for name, fn in PROGRAMMATIC_TESTS:
+            _progress_meter.set_current(f"running: {name}...")
+            t0 = time.time()
+            try:
+                ok = fn()
+            except Exception as exc:
+                ok = False
+                print(f"{RED}[FAIL] {name}: uncaught exception: {exc}{RESET}", flush=True)
+            dt = time.time() - t0
+            _progress_meter.finish_test(name, ok, dt)
+            if ok:
+                passed += 1
+            else:
+                failed += 1
     finally:
+        _progress_meter.stop()
         sys.stdout = real_stdout
-    for ok in outcomes:
-        if ok:
-            passed += 1
-        else:
-            failed += 1
-    print(f"\n  file fixtures: {time.time() - t_files:.1f}s "
-          f"({passed} passed, {failed} failed)\n")
-
-    if patterns:
-        print(f"{YELLOW}{'='*60}{RESET}")
-        print(f"{YELLOW}Filtered Test Results{RESET}")
-        print(f"{YELLOW}{'='*60}{RESET}")
-        print(f"{GREEN}Passed: {passed}{RESET}")
-        print(f"{RED}Failed: {failed}{RESET}")
-        print(f"Total:  {passed + failed}")
-        if failed:
-            sys.exit(1)
-        print(f"\n{GREEN}All selected tests passed!{RESET}")
-        sys.exit(0)
-
-    if run_cli_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_check_command_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_ums_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_corpus_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_human_report_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_concurrency_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_widening_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_stack_slot_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_pin_tier_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_region_diagnostic_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_placement_pin_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_nonlexical_extent_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_bracket_summary_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_layout_cost_model_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_split_release_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_forced_layout_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_object_cache_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_bootstrap_cache_key_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_bootstrap_command_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_manifest_parseable_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_oracle_vocabulary_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_elem_mode_agreement_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_drop_emission_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_rc_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_view_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_slice_gate_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_data_view_gate_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_struct_path_tbaa_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_generic_layout_specialization_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_layout_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_workload_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_struct_field_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_no_inference_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_verify_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_annotation_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_aif_minimal_cause_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_punned_slot_invariant_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_debug_info_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_inline_runtime_default_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_runtime_object_from_ir_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_single_loop_inline_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_task_release_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_string_operator_ledger_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_overflow_checks_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_curated_closure_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_curated_emits_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_target_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_runtime_library_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_incremental_manifest_test():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_jit_test():
-        passed += 1
-    else:
-        failed += 1
 
     print(f"\n{YELLOW}{'='*60}{RESET}")
     print(f"{YELLOW}Test Results{RESET}")

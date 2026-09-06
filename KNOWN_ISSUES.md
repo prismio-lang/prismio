@@ -414,16 +414,18 @@ does not carry that compound workload forward. Its useful axes are isolated as
 `benchmarks/`; use their cross-language checksums and repeated medians instead
 of interpreting an old g5 result.
 
-**`tools/release_gate.py`'s suite step fails on a clean tree, for every
-compiler.** It runs `PRISMIO=<rc> tests/test_runner.py`, and `--target` and
-`jit` fail under that invocation whatever compiler is passed — including the
-current project host, where `prismio aif --layout` produces no sizes. The same
-tree through `tools/run_suite.py`, which promotes the candidate to
-`.prismio/build/debug/prismio` first, is 300/300. Either fix the gate to promote
-the candidate, or run the previous compiler through the same invocation before
-treating a failure as a regression. The gate's AIF oracle differential failure is
-separately pre-existing; diff `tools/aif_differential.py`'s output between the
-two compilers rather than reading the summary line.
+**The AIF oracle differential still disagrees on six cases.** The compiler and
+Python oracle disagree for `src/main.psm`, `test_45_aif_affine_collections`, and
+`aif_concurrency`, each in as-is and owned modes. The original compiler and the
+2026-09-06 optimization candidate produce identical differential results; see
+`aif/evidence/critical-gaps-2026-09-06/differential-{baseline,final}.log`.
+
+The suite-routing defect is fixed: `tools/run_suite.py` used to name its copy
+`prismio`, silently redirecting to the older project host and making the suite
+appear green for an untested candidate. Its copy is now `suite-compiler`; the
+UMS fixture makes its own `prismio` launcher for routing checks. A named candidate
+passes 303/303 through the corrected runner. The oracle disagreement remains a
+separate, pre-existing issue.
 
 **Phase-time a memory benchmark one shot per process.** Every `benchmarks/` entry
 runs once per process, and looping the same workload inside one process measures

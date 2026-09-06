@@ -1007,7 +1007,7 @@ static const char* const PRISMIO_CURATED_OPS[] = {
 // which are not bytes in lang_runtime.c. Bump this whenever that curation
 // policy changes; M4.3c added invariant ready-view loads and exposed that the
 // old key could otherwise reuse a semantically older curated module forever.
-#define PRISMIO_CURATED_SCHEMA "curated-v4-scalar-inline-write"
+#define PRISMIO_CURATED_SCHEMA "curated-v7-noalias-allocs"
 
 // On by default after the curated-module path became part of the ordinary
 // Windows/Linux/macOS suite. `0` remains the measurement and emergency opt-out:

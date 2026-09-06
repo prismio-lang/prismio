@@ -42,11 +42,15 @@
 #include <stddef.h>
 #ifdef PRISMIO_AIF_VERIFY
 void* aif_verify_alloc(size_t size);
+void* aif_verify_realloc(void* p, size_t size);
+size_t aif_verify_usable_size(void* p);
 void  aif_verify_release(void* p);
 // Arms the ledger. Declared here with the other two rather than beside the one
 // caller, so the whole seam is one block that swaps together.
 void  aif_verify_arm(void);
 #define rt_base_alloc(n) aif_verify_alloc(n)
+#define rt_base_realloc(p, n) aif_verify_realloc((p), (n))
+#define rt_base_usable_size(p) aif_verify_usable_size(p)
 #define rt_free(p)       aif_verify_release(p)
 #else
 // Functions rather than macros over malloc/free, because the ordinary build
@@ -60,6 +64,8 @@ void  aif_verify_arm(void);
 // keeps its own pairing for the same reason, and `--verify` overrides
 // `g_free_fn` to match it (src/driver/compile.psm).
 void* rt_base_alloc(size_t size);
+void* rt_base_realloc(void* p, size_t size);
+size_t rt_base_usable_size(void* p);
 void  rt_free(void* p);
 #endif
 #endif

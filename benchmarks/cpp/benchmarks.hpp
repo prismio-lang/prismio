@@ -51,3 +51,17 @@ int file_read(const std::string& path);
 int file_write(int scale, const std::string& path);
 int line_processing(const std::string& path);
 int tokenization(int scale);
+int base64_codec(int scale);
+int csv_parse(int scale);
+
+int dijkstra_shortest_path(int scale);
+int lz4_compress(int scale);
+int s_expression_parse(int scale);
+
+int flat_bitset(int scale);
+int trie_search(int scale);
+
+int sha256(int scale);
+int blake3_chunk(int scale);
+int raytracer_sphere(int scale);
+int channel_pipeline(int scale);

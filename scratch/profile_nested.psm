@@ -1,0 +1,58 @@
+import std.string
+import std.io
+
+extern fn clock_gettime(clk: Int, stamp: BenchTimespec) -> Int
+
+struct BenchTimespec {
+    seconds: I64,
+    nanoseconds: I64
+}
+
+fn benchNow() -> I64 {
+    let stamp = BenchTimespec { seconds: 0, nanoseconds: 0 }
+    clock_gettime(4, stamp)
+    return stamp.seconds * 1000000000 + stamp.nanoseconds
+}
+
+struct BenchBucket {
+    values: List<Int>
+}
+
+fn main() -> Int {
+    let scale = 4
+    let bucketsCount = 200 * scale
+
+    let t0 = benchNow()
+    let mut buckets: List<BenchBucket> = list_new_with_capacity(bucketsCount)
+    let mut b = 0
+    while (b < bucketsCount) {
+        let mut values: List<Int> = list_new_with_capacity(1000)
+        let mut i = 0
+        while (i < 1000) {
+            list_push(values, (b + i) % 1021)
+            i = i + 1
+        }
+        list_push(buckets, BenchBucket { values: values })
+        b = b + 1
+    }
+    let t1 = benchNow()
+
+    let mut checksum = 0
+    let mut x = 0
+    while (x < bucketsCount) {
+        let bucket = list_get(buckets, x)
+        let mut y = 0
+        while (y < list_len(bucket.values)) {
+            checksum = (checksum + list_get(bucket.values, y)) % 1000000007
+            y = y + 1
+        }
+        x = x + 1
+    }
+    let t2 = benchNow()
+
+    println("Creation time: ".concat(((t1 - t0) as Int).toString()).concat(" ns"))
+    println("Traversal time: ".concat(((t2 - t1) as Int).toString()).concat(" ns"))
+    println("Total time: ".concat(((t2 - t0) as Int).toString()).concat(" ns"))
+    println("Checksum: ".concat(checksum.toString()))
+    return 0
+}

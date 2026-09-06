@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <queue>
 #include <vector>
 
 int gcd_value(int a, int b) {
@@ -177,4 +178,202 @@ int tree_traversal(int scale) {
     int checksum = 0;
     for (int i = 0; i < 8 * scale; ++i) checksum = (checksum + tree_sum(tree.get())) % BENCH_MOD;
     return checksum;
+}
+
+int dijkstra_shortest_path(int scale) {
+    const int v_count = 1000 * scale;
+    const int e_count = v_count + 5000 * scale;
+
+    std::vector<int> head(v_count, -1);
+    std::vector<int> edge_to(e_count, 0);
+    std::vector<int> edge_weight(e_count, 0);
+    std::vector<int> edge_next(e_count, 0);
+
+    int edge_idx = 0;
+    for (int ri = 0; ri < v_count; ++ri) {
+        edge_to[edge_idx] = (ri + 1) % v_count;
+        edge_weight[edge_idx] = (ri % 30) + 1;
+        edge_next[edge_idx] = head[ri];
+        head[ri] = edge_idx++;
+    }
+
+    int seed = 47;
+    while (edge_idx < e_count) {
+        seed = bench_next_random(seed);
+        int u = seed % v_count;
+        seed = bench_next_random(seed);
+        int v = seed % v_count;
+        seed = bench_next_random(seed);
+        int w = (seed % 50) + 1;
+
+        edge_to[edge_idx] = v;
+        edge_weight[edge_idx] = w;
+        edge_next[edge_idx] = head[u];
+        head[u] = edge_idx++;
+    }
+
+    const int inf = 1000000000;
+    std::vector<int> dist(v_count, inf);
+    dist[0] = 0;
+
+    using PII = std::pair<int, int>;
+    std::priority_queue<PII, std::vector<PII>, std::greater<PII>> pq;
+    pq.push({0, 0});
+
+    while (!pq.empty()) {
+        auto [d, u] = pq.top();
+        pq.pop();
+
+        if (d > dist[u]) continue;
+
+        for (int e = head[u]; e != -1; e = edge_next[e]) {
+            int v = edge_to[e];
+            int alt = d + edge_weight[e];
+            if (alt < dist[v]) {
+                dist[v] = alt;
+                pq.push({alt, v});
+            }
+        }
+    }
+
+    long long checksum = 0;
+    for (int i = 0; i < v_count; ++i) {
+        if (dist[i] < inf) {
+            long long term = (static_cast<long long>(dist[i]) * (i % 100 + 1)) % BENCH_MOD;
+            checksum = (checksum + term) % BENCH_MOD;
+        }
+    }
+    return static_cast<int>(checksum);
+}
+
+int lz4_compress(int scale) {
+    const int n = 20000 * scale;
+    std::vector<uint8_t> input(n);
+
+    int seed = 83;
+    for (int i = 0; i < n; ++i) {
+        seed = bench_next_random(seed);
+        if (i > 20 && (seed % 4) == 0) {
+            int offset = 12 + (seed % 8);
+            input[i] = input[i - offset];
+        } else {
+            input[i] = static_cast<uint8_t>(32 + (seed % 95));
+        }
+    }
+
+    std::vector<int> table(4096, -1);
+    int pos = 0;
+    int token_count = 0;
+    int literal_len = 0;
+    long long checksum = 0;
+
+    while (pos + 4 <= n) {
+        uint8_t b0 = input[pos];
+        uint8_t b1 = input[pos + 1];
+        uint8_t b2 = input[pos + 2];
+        uint8_t b3 = input[pos + 3];
+
+        int h = ((b0 << 12) ^ (b1 << 8) ^ (b2 << 4) ^ b3) % 4096;
+        int ref_pos = table[h];
+        table[h] = pos;
+
+        if (ref_pos != -1 && (pos - ref_pos) < 65535 &&
+            input[ref_pos] == b0 && input[ref_pos + 1] == b1 &&
+            input[ref_pos + 2] == b2 && input[ref_pos + 3] == b3) {
+
+            int match_len = 4;
+            while (pos + match_len < n && input[pos + match_len] == input[ref_pos + match_len] && match_len < 255) {
+                match_len++;
+            }
+
+            int offset = pos - ref_pos;
+            long long term = static_cast<long long>(literal_len) * 10007 + match_len * 31 + offset;
+            checksum = (checksum * 31 + term) % BENCH_MOD;
+            token_count++;
+            literal_len = 0;
+            pos += match_len;
+        } else {
+            literal_len++;
+            pos++;
+        }
+    }
+
+    checksum = (checksum + token_count + literal_len) % BENCH_MOD;
+    return static_cast<int>(checksum);
+}
+
+static std::string build_one_sexpr(int depth, int& seed) {
+    if (depth <= 0) {
+        seed = bench_next_random(seed);
+        return std::to_string((seed % 100) + 1);
+    }
+    seed = bench_next_random(seed);
+    char op = "+-*"[seed % 3];
+    return "(" + std::string(1, op) + " " + build_one_sexpr(depth - 1, seed) + " " + build_one_sexpr(depth - 1, seed) + ")";
+}
+
+struct SExprASTNode {
+    int tag; // 0 = num, 1 = op
+    int val;
+    std::unique_ptr<SExprASTNode> left;
+    std::unique_ptr<SExprASTNode> right;
+};
+
+static std::unique_ptr<SExprASTNode> parse_sexpr_ast(const std::string& s, int& pos) {
+    while (pos < (int)s.size() && (s[pos] == ' ' || s[pos] == '\n')) pos++;
+    if (pos >= (int)s.size()) return nullptr;
+    if (s[pos] == '(') {
+        pos++;
+        while (pos < (int)s.size() && s[pos] == ' ') pos++;
+        char op = s[pos++];
+        auto left = parse_sexpr_ast(s, pos);
+        auto right = parse_sexpr_ast(s, pos);
+        while (pos < (int)s.size() && s[pos] == ' ') pos++;
+        if (pos < (int)s.size() && s[pos] == ')') pos++;
+        auto node = std::make_unique<SExprASTNode>();
+        node->tag = 1;
+        node->val = op;
+        node->left = std::move(left);
+        node->right = std::move(right);
+        return node;
+    } else {
+        int num = 0;
+        while (pos < (int)s.size() && s[pos] >= '0' && s[pos] <= '9') {
+            num = num * 10 + (s[pos++] - '0');
+        }
+        auto node = std::make_unique<SExprASTNode>();
+        node->tag = 0;
+        node->val = num;
+        return node;
+    }
+}
+
+static int eval_sexpr_ast(const SExprASTNode* e) {
+    if (!e) return 0;
+    if (e->tag == 0) return e->val;
+    long long left = eval_sexpr_ast(e->left.get());
+    long long right = eval_sexpr_ast(e->right.get());
+    if (e->val == '+') return (left + right) % BENCH_MOD;
+    if (e->val == '-') return (left - right + BENCH_MOD) % BENCH_MOD;
+    return (left * right) % BENCH_MOD;
+}
+
+int s_expression_parse(int scale) {
+    const int count = 400 * scale;
+    std::string all_text;
+    all_text.reserve(count * 60);
+    int seed = 42;
+    for (int i = 0; i < count; ++i) {
+        all_text += build_one_sexpr(4, seed) + "\n";
+    }
+
+    int pos = 0;
+    long long checksum = 0;
+    while (pos < (int)all_text.size()) {
+        auto expr = parse_sexpr_ast(all_text, pos);
+        if (expr) {
+            checksum = (checksum + eval_sexpr_ast(expr.get())) % BENCH_MOD;
+        }
+    }
+    return static_cast<int>(checksum);
 }

@@ -17,8 +17,8 @@ argument is forwarded to the runner, so `prismio suite -k foo --list` works.
 
     python tools/run_suite.py [--compiler PATH] [runner args...]
 
-`--compiler` defaults to the packaged toolchain, falling back to the project
-host. Exits with the runner's status.
+`--compiler` defaults to the project host, falling back to the packaged
+toolchain. Exits with the runner's status.
 """
 import argparse
 import shutil
@@ -60,10 +60,11 @@ def main() -> int:
             return 1
 
     with tempfile.TemporaryDirectory(prefix="prismio-suite-") as tmp:
-        # Named `prismio` in its own directory: the ums fixture derives the
-        # stage-0 launcher's identity from the file name, and a copy called
-        # anything else is not the compiler it is pretending to be.
-        copy = Path(tmp) / ("prismio.exe" if sys.platform == "win32" else "prismio")
+        # Named generations never redirect to build.ums's project host. Calling
+        # this copy `prismio` silently tested an older project compiler instead
+        # of --compiler. The UMS fixture creates its own `prismio` launcher when
+        # it specifically tests routing, and preserves the project host itself.
+        copy = Path(tmp) / ("suite-compiler.exe" if sys.platform == "win32" else "suite-compiler")
         shutil.copy2(source, copy)
         copy.chmod(0o755)
 
@@ -73,7 +74,7 @@ def main() -> int:
             shown = source
         print(f"suite: testing a copy of {shown}")
         result = subprocess.run(
-            [sys.executable, str(REPO / "tests" / "test_runner.py"),
+            [sys.executable, "-u", str(REPO / "tests" / "test_runner.py"),
              "--compiler", str(copy), *forwarded],
             cwd=str(REPO),
         )

@@ -96,19 +96,19 @@ public `String.equals(...)` API.
 
 ## Coverage
 
-The catalog contains 40 distinct workloads across the requested five
-categories. Thirty-four are implemented in all three languages. Six remain
+The catalog contains 61 distinct workloads across the requested five
+categories. Forty-five are implemented in all three languages. Sixteen remain
 in the catalog as unsupported Prismio capabilities; their exact records are in
 [`UNSUPPORTED.md`](UNSUPPORTED.md).
 
 | Category | Implemented | Unsupported | Total |
 |---|---:|---:|---:|
-| Algorithms | 10 | 0 | 10 |
-| Data structures | 4 | 4 | 8 |
-| Compute | 10 | 0 | 10 |
-| Memory | 6 | 0 | 6 |
-| I/O and serialization | 4 | 2 | 6 |
-| **Total** | **34** | **6** | **40** |
+| Algorithms | 13 | 1 | 14 |
+| Data structures | 6 | 5 | 11 |
+| Compute | 14 | 4 | 18 |
+| Memory | 6 | 1 | 7 |
+| I/O and serialization | 6 | 5 | 11 |
+| **Total** | **45** | **16** | **61** |
 
 Every benchmark has one canonical workload definition so results stay directly
 comparable between runs. `--runs` controls sampling without changing the work
@@ -117,22 +117,27 @@ status, and workload profile.
 
 ### Catalog by category
 
-- Algorithms (10 implemented): `fibonacci`, `prime_sieve`, `gcd_lcm`,
+- Algorithms (13 implemented, 1 unsupported): `fibonacci`, `prime_sieve`, `gcd_lcm`,
   `binary_search`, `quicksort`, `mergesort`, `string_search`, `graph_bfs`,
-  `knapsack`, `tree_traversal`.
-- Data structures (4 implemented, 4 unsupported):
+  `knapsack`, `tree_traversal`, `dijkstra_shortest_path`, `lz4_compress`,
+  `s_expression_parse`; unsupported: `regex_matching`.
+- Data structures (6 implemented, 5 unsupported):
   `hashmap_insert_lookup`, `vector_growth`, `vector_iteration`,
-  `key_value_update`; unsupported: `linked_list`, `binary_search_tree`,
-  `priority_queue`, `mixed_map_removal`.
-- Compute (10 implemented): `matrix_multiply`, `mandelbrot`, `fft`,
+  `key_value_update`, `flat_bitset`, `trie_search`; unsupported: `linked_list`,
+  `binary_search_tree`, `priority_queue`, `mixed_map_removal`, `lock_free_queue`.
+- Compute (14 implemented, 4 unsupported): `matrix_multiply`, `mandelbrot`, `fft`,
   `numerical_integration`, `vector_dot`, `convolution`, `monte_carlo`,
-  `polynomial_evaluation`, `ecs_component_update`, `parallel_reduction`;
-- Memory (6 implemented): `transient_allocation`, `struct_creation`,
+  `polynomial_evaluation`, `ecs_component_update`, `parallel_reduction`,
+  `sha256`, `blake3_chunk`, `raytracer_sphere`, `channel_pipeline`;
+  unsupported: `async_event_loop`, `mutex_contention`, `work_stealing_pool`,
+  `simd_vector_ops`.
+- Memory (6 implemented, 1 unsupported): `transient_allocation`, `struct_creation`,
   `allocation_mutation`, `nested_collection`, `large_buffer_copy`,
-  `recursive_tree_rebuild`.
-- I/O and serialization (4 implemented, 2 unsupported): `file_read`,
-  `file_write`, `line_processing`, `tokenization`; unsupported: `json_parse`,
-  `json_serialize`.
+  `recursive_tree_rebuild`; unsupported: `custom_allocator_churn`.
+- I/O and serialization (6 implemented, 5 unsupported): `file_read`,
+  `file_write`, `line_processing`, `tokenization`, `base64_codec`, `csv_parse`;
+  unsupported: `json_parse`, `json_serialize`, `tcp_echo_server`, `mmap_file_io`,
+  `generic_serialization`.
 
 ## Original g1-g9 audit
 
@@ -170,17 +175,27 @@ No numeric `gN` names are used by the maintained suite.
   fused operations can affect boundary cases.
 
 ## Currently Unsupported by Prismio
-
+ 
 - LinkedList/deque: `linked_list`
 - Ordered tree set/map: `binary_search_tree`
 - Binary heap/priority queue: `priority_queue`
 - Map deletion: `mixed_map_removal`
+- User-space atomics & memory barriers: `lock_free_queue`
+- Mutual exclusion locks in std: `mutex_contention`
+- Persistent work-stealing thread pool: `work_stealing_pool`
+- Async runtime & non-blocking I/O loop: `async_event_loop`
+- Network socket subsystem (std.net): `tcp_echo_server`
+- Memory-mapped file I/O: `mmap_file_io`
+- Regular expression engine & compiler: `regex_matching`
 - JSON data model and parser: `json_parse`
 - JSON data model, escaping, and serializer: `json_serialize`
+- Compile-time derive / reflection: `generic_serialization`
+- Explicit SIMD vector types & intrinsics: `simd_vector_ops`
+- Pluggable custom container allocators: `custom_allocator_churn`
 
 Potential future workloads unlocked by these facilities include LRU caches,
-ordered range queries, Dijkstra/A*, churn-heavy maps, and JSON processing
-pipelines.
+ordered range queries, Dijkstra/A*, high-concurrency event loops, lock-free ring
+buffers, mmap log parsers, and zero-copy serialization pipelines.
 
 ## Infrastructure changes
 

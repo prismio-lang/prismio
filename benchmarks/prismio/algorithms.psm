@@ -345,3 +345,320 @@ fn benchTreeTraversal(scale: Int) -> Int {
     }
     return checksum
 }
+
+struct BenchHeapHandle {
+    size: Int
+}
+
+fn benchHeapPush(data: List<I64>, h: BenchHeapHandle, val: I64) {
+    if (h.size < list_len(data)) {
+        list_set(data, h.size, val)
+    } else {
+        list_push(data, val)
+    }
+    let mut i = h.size
+    h.size = h.size + 1
+
+    while (i > 0) {
+        let p = (i - 1) / 2
+        if (list_get(data, i) < list_get(data, p)) {
+            let tmp = list_get(data, i)
+            list_set(data, i, list_get(data, p))
+            list_set(data, p, tmp)
+            i = p
+        } else {
+            break
+        }
+    }
+}
+
+fn benchHeapPop(data: List<I64>, h: BenchHeapHandle) -> I64 {
+    let top = list_get(data, 0)
+    h.size = h.size - 1
+    list_set(data, 0, list_get(data, h.size))
+    let n = h.size
+    let mut i = 0
+    while (true) {
+        let left = 2 * i + 1
+        let right = 2 * i + 2
+        let mut smallest = i
+        if (left < n and list_get(data, left) < list_get(data, smallest)) {
+            smallest = left
+        }
+        if (right < n and list_get(data, right) < list_get(data, smallest)) {
+            smallest = right
+        }
+        if (smallest != i) {
+            let tmp = list_get(data, i)
+            list_set(data, i, list_get(data, smallest))
+            list_set(data, smallest, tmp)
+            i = smallest
+        } else {
+            break
+        }
+    }
+    return top
+}
+
+fn benchDijkstraShortestPath(scale: Int) -> Int {
+    let vCount = 1000 * scale
+    let eCount = vCount + 5000 * scale
+
+    let mut head: List<Int> = list_new_with_capacity(vCount)
+    let mut vi = 0
+    while (vi < vCount) {
+        list_push(head, -1)
+        vi = vi + 1
+    }
+
+    let mut edgeTo: List<Int> = list_new_with_capacity(eCount)
+    let mut edgeWeight: List<Int> = list_new_with_capacity(eCount)
+    let mut edgeNext: List<Int> = list_new_with_capacity(eCount)
+    let mut ei = 0
+    while (ei < eCount) {
+        list_push(edgeTo, 0)
+        list_push(edgeWeight, 0)
+        list_push(edgeNext, 0)
+        ei = ei + 1
+    }
+
+    let mut edgeIdx = 0
+    let mut ri = 0
+    while (ri < vCount) {
+        list_set(edgeTo, edgeIdx, (ri + 1) % vCount)
+        list_set(edgeWeight, edgeIdx, (ri % 30) + 1)
+        list_set(edgeNext, edgeIdx, list_get(head, ri))
+        list_set(head, ri, edgeIdx)
+        edgeIdx = edgeIdx + 1
+        ri = ri + 1
+    }
+
+    let mut seed = 47
+    while (edgeIdx < eCount) {
+        seed = benchRandom(seed)
+        let u = seed % vCount
+        seed = benchRandom(seed)
+        let v = seed % vCount
+        seed = benchRandom(seed)
+        let w = (seed % 50) + 1
+
+        list_set(edgeTo, edgeIdx, v)
+        list_set(edgeWeight, edgeIdx, w)
+        list_set(edgeNext, edgeIdx, list_get(head, u))
+        list_set(head, u, edgeIdx)
+        edgeIdx = edgeIdx + 1
+    }
+
+    let inf = 1000000000
+    let mut dist: List<Int> = list_new_with_capacity(vCount)
+    let mut di = 0
+    while (di < vCount) {
+        list_push(dist, inf)
+        di = di + 1
+    }
+    list_set(dist, 0, 0)
+
+    let mut heap: List<I64> = list_new_with_capacity(eCount)
+    let h = BenchHeapHandle { size: 0 }
+    benchHeapPush(heap, h, 0 as I64)
+
+    while (h.size > 0) {
+        let top = benchHeapPop(heap, h)
+        let d = (top >> (32 as I64)) as Int
+        let u = (top & (4294967295 as I64)) as Int
+
+        if (d <= list_get(dist, u)) {
+            let mut e = list_get(head, u)
+            while (e != -1) {
+                let v = list_get(edgeTo, e)
+                let alt = d + list_get(edgeWeight, e)
+                if (alt < list_get(dist, v)) {
+                    list_set(dist, v, alt)
+                    let entry = ((alt as I64) << (32 as I64)) | ((v as I64) & (4294967295 as I64))
+                    benchHeapPush(heap, h, entry)
+                }
+                e = list_get(edgeNext, e)
+            }
+        }
+    }
+
+    let mut checksum: I64 = 0
+    let mut i = 0
+    while (i < vCount) {
+        let d = list_get(dist, i)
+        if (d < inf) {
+            let term = ((d as I64) * ((i % 100 + 1) as I64)) % 1000000007
+            checksum = (checksum + term) % 1000000007
+        }
+        i = i + 1
+    }
+
+    return checksum as Int
+}
+
+fn benchLz4Compress(scale: Int) -> Int {
+    let n = 20000 * scale
+    let mut input: List<Int> = list_new_with_capacity(n)
+
+    let mut seed = 83
+    let mut i = 0
+    while (i < n) {
+        seed = benchRandom(seed)
+        if (i > 20 and (seed % 4) == 0) {
+            let offset = 12 + (seed % 8)
+            list_push(input, list_get(input, i - offset))
+        } else {
+            list_push(input, 32 + (seed % 95))
+        }
+        i = i + 1
+    }
+
+    let mut table: List<Int> = list_new_with_capacity(4096)
+    let mut ti = 0
+    while (ti < 4096) {
+        list_push(table, -1)
+        ti = ti + 1
+    }
+
+    let mut pos = 0
+    let mut tokenCount = 0
+    let mut literalLen = 0
+    let mut checksum: I64 = 0
+
+    while (pos + 4 <= n) {
+        let b0 = list_get(input, pos)
+        let b1 = list_get(input, pos + 1)
+        let b2 = list_get(input, pos + 2)
+        let b3 = list_get(input, pos + 3)
+
+        let h = ((b0 << 12) ^ (b1 << 8) ^ (b2 << 4) ^ b3) % 4096
+        let refPos = list_get(table, h)
+        list_set(table, h, pos)
+
+        if (refPos != -1 and (pos - refPos) < 65535 and
+            list_get(input, refPos) == b0 and list_get(input, refPos + 1) == b1 and
+            list_get(input, refPos + 2) == b2 and list_get(input, refPos + 3) == b3) {
+
+            let mut matchLen = 4
+            while (pos + matchLen < n and list_get(input, pos + matchLen) == list_get(input, refPos + matchLen) and matchLen < 255) {
+                matchLen = matchLen + 1
+            }
+
+            let offset = pos - refPos
+            let term: I64 = (literalLen * 10007 + matchLen * 31 + offset) as I64
+            checksum = (checksum * 31 + term) % 1000000007
+            tokenCount = tokenCount + 1
+            literalLen = 0
+            pos = pos + matchLen
+        } else {
+            literalLen = literalLen + 1
+            pos = pos + 1
+        }
+    }
+
+    checksum = (checksum + (tokenCount as I64) + (literalLen as I64)) % 1000000007
+    return checksum as Int
+}
+
+struct BenchSeedHolder {
+    val: Int
+}
+
+struct BenchPosHolder {
+    val: Int
+}
+
+fn benchBuildOneExpr(depth: Int, s: BenchSeedHolder) -> String {
+    if (depth <= 0) {
+        s.val = benchRandom(s.val)
+        return ((s.val % 100) + 1).toString()
+    }
+    s.val = benchRandom(s.val)
+    let opIdx = s.val % 3
+    let mut opStr = "+"
+    if (opIdx == 1) { opStr = "-" }
+    else if (opIdx == 2) { opStr = "*" }
+    let left = benchBuildOneExpr(depth - 1, s)
+    let right = benchBuildOneExpr(depth - 1, s)
+    let inner = "(" + opStr + " " + left
+    return inner + " " + right + ")"
+}
+
+fn benchParseSExpr(text: String, p: BenchPosHolder, nodes: List<Int>) -> Int {
+    let n = text.length()
+    while (p.val < n and (text.byteAt(p.val) == 32 or text.byteAt(p.val) == 10)) {
+        p.val = p.val + 1
+    }
+    if (p.val >= n) { return -1 }
+    if (text.byteAt(p.val) == 40) { // '('
+        p.val = p.val + 1
+        while (p.val < n and text.byteAt(p.val) == 32) {
+            p.val = p.val + 1
+        }
+        let opByte = text.byteAt(p.val)
+        p.val = p.val + 1
+        let leftIdx = benchParseSExpr(text, p, nodes)
+        let rightIdx = benchParseSExpr(text, p, nodes)
+        while (p.val < n and text.byteAt(p.val) == 32) {
+            p.val = p.val + 1
+        }
+        if (p.val < n and text.byteAt(p.val) == 41) { // ')'
+            p.val = p.val + 1
+        }
+        let nodeIdx = list_len(nodes) / 3
+        list_push(nodes, opByte)
+        list_push(nodes, leftIdx)
+        list_push(nodes, rightIdx)
+        return nodeIdx
+    } else {
+        let mut num = 0
+        while (p.val < n and text.byteAt(p.val) >= 48 and text.byteAt(p.val) <= 57) {
+            num = num * 10 + (text.byteAt(p.val) - 48)
+            p.val = p.val + 1
+        }
+        let nodeIdx = list_len(nodes) / 3
+        list_push(nodes, num)
+        list_push(nodes, -1)
+        list_push(nodes, -1)
+        return nodeIdx
+    }
+}
+
+fn benchEvalNode(nodes: List<Int>, idx: Int) -> Int {
+    let val = list_get(nodes, idx * 3)
+    let leftIdx = list_get(nodes, idx * 3 + 1)
+    if (leftIdx == -1) {
+        return val
+    }
+    let rightIdx = list_get(nodes, idx * 3 + 2)
+    let left: I64 = benchEvalNode(nodes, leftIdx) as I64
+    let right: I64 = benchEvalNode(nodes, rightIdx) as I64
+    if (val == 43) { return ((left + right) % 1000000007) as Int } // '+'
+    if (val == 45) { return ((left - right + 1000000007) % 1000000007) as Int } // '-'
+    if (val == 42) { return ((left * right) % 1000000007) as Int } // '*'
+    return 0
+}
+
+fn benchSExprParse(scale: Int) -> Int {
+    let count = 400 * scale
+    let s = BenchSeedHolder { val: 42 }
+    let mut allText = ""
+    let mut i = 0
+    while (i < count) {
+        allText = allText + benchBuildOneExpr(4, s) + "\n"
+        i = i + 1
+    }
+
+    let nodes: List<Int> = list_new()
+    let p = BenchPosHolder { val: 0 }
+    let n = allText.length()
+    let mut checksum: I64 = 0
+    while (p.val < n) {
+        let root = benchParseSExpr(allText, p, nodes)
+        if (root >= 0) {
+            let ev: I64 = benchEvalNode(nodes, root) as I64
+            checksum = (checksum + ev) % 1000000007
+        }
+    }
+    return checksum as Int
+}

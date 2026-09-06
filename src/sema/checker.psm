@@ -506,6 +506,12 @@ private fn semaStringConcatChain(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     semaBecomeCall(expr, "concat", parts.head)
+    // CALL_EXPR.i3 = 3 records that this call came from String `+`. Codegen may
+    // consume the left buffer when an owning assignment immediately replaces it;
+    // an explicit `.concat` remains the always-immutable API. Keeping the origin
+    // is also the alias-safety boundary: native compiler code uses explicit
+    // concat while assembling names that can already be indexed elsewhere.
+    expr.i3 = 3
     return semaExpr(module, expr)
 }
 

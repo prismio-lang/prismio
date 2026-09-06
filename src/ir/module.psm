@@ -1517,6 +1517,12 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_fresh()
     ir_declare_function_end()
 
+    ir_declare_function_begin("list_new_with_capacity_inline", "ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("i32")
+    ir_declare_function_fresh()
+    ir_declare_function_end()
+
     ir_declare_function_begin("list_set_elem_releaser", "void")
     ir_declare_function_param("ptr")
     ir_declare_function_param("ptr")
@@ -1572,6 +1578,15 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_begin("str_equals", "i32")
     ir_declare_function_param("ptr")
     ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    // Consuming String append. Unlike a constructor its return may alias the
+    // first argument, so it deliberately carries no `fresh`/`noalias` marker.
+    ir_declare_function_begin("str_append_reuse", "ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
     ir_declare_function_end()
 
     ir_declare_function_begin("list_get_inline_scalar", "i64")

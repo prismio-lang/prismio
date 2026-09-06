@@ -1,0 +1,55 @@
+fn benchGraphBfs(scale: Int) -> Int {
+    let width = 120 * scale
+    let total = width * width
+    let mut seen: List<Bool> = list_new_with_capacity(total)
+    let mut queue: List<Int> = list_new_with_capacity(total)
+    let mut i = 0
+    while (i < total) {
+        list_push(seen, false)
+        i = i + 1
+    }
+    list_push(queue, 0)
+    list_set(seen, 0, true)
+    let mut head = 0
+    let mut checksum = 0
+    while (head < list_len(queue)) {
+        let node = list_get(queue, head)
+        head = head + 1
+        checksum = (checksum + node) % 1000000007
+        let x = node % width
+        let y = node / width
+        if (x > 0) {
+            let next = node - 1
+            if (list_get(seen, next) == false) {
+                list_set(seen, next, true)
+                list_push(queue, next)
+            }
+        }
+        if (x + 1 < width) {
+            let next = node + 1
+            if (list_get(seen, next) == false) {
+                list_set(seen, next, true)
+                list_push(queue, next)
+            }
+        }
+        if (y > 0) {
+            let next = node - width
+            if (list_get(seen, next) == false) {
+                list_set(seen, next, true)
+                list_push(queue, next)
+            }
+        }
+        if (y + 1 < width) {
+            let next = node + width
+            if (list_get(seen, next) == false) {
+                list_set(seen, next, true)
+                list_push(queue, next)
+            }
+        }
+    }
+    return checksum + head
+}
+
+fn main() -> Int {
+    return benchGraphBfs(1)
+}

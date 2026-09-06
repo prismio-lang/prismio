@@ -1,0 +1,237 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-06T05:36:43.916728+00:00",
+  "runs": 9,
+  "build_commands": {
+    "prismio": "/Users/vibrant/Desktop/Projects/Prismio/prismio/build/critical-g1 build /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/prismio/suite.psm -o /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/build/prismio-suite",
+    "cpp": "/opt/homebrew/opt/llvm/bin/clang++ -O3 -std=c++20 -pthread /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/cpp/suite.cpp /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/cpp/algorithms.cpp /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/cpp/data_structures.cpp /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/cpp/compute.cpp /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/cpp/memory.cpp /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/cpp/io.cpp -o /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/build/cpp-suite",
+    "rust": "rustc -C opt-level=3 --edition=2021 /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/rust/suite.rs -o /Users/vibrant/Desktop/Projects/Prismio/prismio/benchmarks/build/rust-suite"
+  },
+  "compile_ns": {
+    "prismio": 1439748916,
+    "cpp": 1851692916,
+    "rust": 266353292
+  },
+  "benchmarks": [
+    {
+      "name": "gcd_lcm",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu",
+      "result": 504265700,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 25653833,
+          "wall_ns_median": 27518375,
+          "elapsed_ns_samples": [
+            47551333,
+            28091250,
+            24490417,
+            26449125,
+            25653833,
+            24207167,
+            22306875,
+            25808500,
+            23076542
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 24175583,
+          "wall_ns_median": 26100792,
+          "elapsed_ns_samples": [
+            44674334,
+            24955708,
+            18096166,
+            17919500,
+            23891583,
+            24376458,
+            24175583,
+            25279416,
+            22611167
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 24230958,
+          "wall_ns_median": 26032167,
+          "elapsed_ns_samples": [
+            42631250,
+            24623750,
+            26271333,
+            20990459,
+            22152542,
+            22253500,
+            24530792,
+            21384625,
+            24230958
+          ]
+        }
+      }
+    },
+    {
+      "name": "graph_bfs",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "memory",
+      "result": 542195018,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 657958,
+          "wall_ns_median": 2310000,
+          "elapsed_ns_samples": [
+            656458,
+            657958,
+            657208,
+            653417,
+            680833,
+            645625,
+            661000,
+            659916,
+            719417
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 582958,
+          "wall_ns_median": 2343500,
+          "elapsed_ns_samples": [
+            596625,
+            581042,
+            581584,
+            582958,
+            590750,
+            581334,
+            585708,
+            622458,
+            581500
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 589000,
+          "wall_ns_median": 2307083,
+          "elapsed_ns_samples": [
+            588625,
+            593917,
+            590458,
+            579083,
+            594541,
+            589000,
+            591959,
+            583959,
+            588833
+          ]
+        }
+      }
+    },
+    {
+      "name": "transient_allocation",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation",
+      "result": 339103,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 6333625,
+          "wall_ns_median": 8022375,
+          "elapsed_ns_samples": [
+            6470750,
+            6321583,
+            6389875,
+            6333625,
+            6319584,
+            6272833,
+            6281750,
+            6346625,
+            6345125
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 1795750,
+          "wall_ns_median": 3653375,
+          "elapsed_ns_samples": [
+            1781292,
+            1803417,
+            1786958,
+            1818959,
+            1869500,
+            1788208,
+            1795750,
+            1768917,
+            1799250
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 1837750,
+          "wall_ns_median": 3606083,
+          "elapsed_ns_samples": [
+            1823333,
+            1837750,
+            1808125,
+            1850125,
+            1884917,
+            1826792,
+            1996000,
+            1898125,
+            1811250
+          ]
+        }
+      }
+    },
+    {
+      "name": "allocation_mutation",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation-memory",
+      "result": 36000000,
+      "languages": {
+        "prismio": {
+          "elapsed_ns_median": 6930292,
+          "wall_ns_median": 9077750,
+          "elapsed_ns_samples": [
+            7018250,
+            7517833,
+            6826083,
+            7099583,
+            6644250,
+            6930292,
+            6792250,
+            8480750,
+            6853875
+          ]
+        },
+        "cpp": {
+          "elapsed_ns_median": 6343792,
+          "wall_ns_median": 8521542,
+          "elapsed_ns_samples": [
+            6343792,
+            6246708,
+            6605167,
+            6229625,
+            6674416,
+            6281834,
+            6259333,
+            8532125,
+            6757333
+          ]
+        },
+        "rust": {
+          "elapsed_ns_median": 6372583,
+          "wall_ns_median": 8584750,
+          "elapsed_ns_samples": [
+            6073875,
+            6401417,
+            6318250,
+            6575500,
+            6285625,
+            6300000,
+            6372583,
+            8781959,
+            6445000
+          ]
+        }
+      }
+    }
+  ],
+  "artifacts": {
+    "html_report": "aif/evidence/critical-gaps-2026-09-06/report.html",
+    "raw_data": "aif/evidence/critical-gaps-2026-09-06/scalar-length.json"
+  }
+}

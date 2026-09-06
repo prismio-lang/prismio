@@ -1,3 +1,6 @@
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
 use crate::common::{next_random, BenchTree, BENCH_MOD};
 
 fn gcd_value(mut a: i32, mut b: i32) -> i32 {
@@ -155,4 +158,234 @@ pub fn tree_traversal(scale: i32) -> i32 {
     let tree = build_tree(13 + scale / 4, 1); let mut checksum = 0;
     for _ in 0..8 * scale { checksum = (checksum + tree_sum(tree.as_deref())) % BENCH_MOD; }
     checksum
+}
+
+pub fn dijkstra_shortest_path(scale: i32) -> i32 {
+    let v_count = 1000 * scale;
+    let e_count = v_count + 5000 * scale;
+
+    let mut head = vec![-1i32; v_count as usize];
+    let mut edge_to = vec![0i32; e_count as usize];
+    let mut edge_weight = vec![0i32; e_count as usize];
+    let mut edge_next = vec![0i32; e_count as usize];
+
+    let mut edge_idx = 0;
+    for ri in 0..v_count {
+        edge_to[edge_idx as usize] = (ri + 1) % v_count;
+        edge_weight[edge_idx as usize] = (ri % 30) + 1;
+        edge_next[edge_idx as usize] = head[ri as usize];
+        head[ri as usize] = edge_idx;
+        edge_idx += 1;
+    }
+
+    let mut seed = 47;
+    while edge_idx < e_count {
+        seed = next_random(seed);
+        let u = seed % v_count;
+        seed = next_random(seed);
+        let v = seed % v_count;
+        seed = next_random(seed);
+        let w = (seed % 50) + 1;
+
+        edge_to[edge_idx as usize] = v;
+        edge_weight[edge_idx as usize] = w;
+        edge_next[edge_idx as usize] = head[u as usize];
+        head[u as usize] = edge_idx;
+        edge_idx += 1;
+    }
+
+    const INF: i32 = 1000000000;
+    let mut dist = vec![INF; v_count as usize];
+    dist[0] = 0;
+
+    let mut pq = BinaryHeap::new();
+    pq.push(Reverse((0i32, 0i32))); // (dist, u)
+
+    while let Some(Reverse((d, u))) = pq.pop() {
+        if d > dist[u as usize] {
+            continue;
+        }
+
+        let mut e = head[u as usize];
+        while e != -1 {
+            let v = edge_to[e as usize];
+            let alt = d + edge_weight[e as usize];
+            if alt < dist[v as usize] {
+                dist[v as usize] = alt;
+                pq.push(Reverse((alt, v)));
+            }
+            e = edge_next[e as usize];
+        }
+    }
+
+    let mut checksum: i64 = 0;
+    for i in 0..v_count {
+        let d = dist[i as usize];
+        if d < INF {
+            let term = (d as i64 * (i as i64 % 100 + 1)) % BENCH_MOD as i64;
+            checksum = (checksum + term) % BENCH_MOD as i64;
+        }
+    }
+    checksum as i32
+}
+
+pub fn lz4_compress(scale: i32) -> i32 {
+    let n = 20000 * scale;
+    let mut input = Vec::with_capacity(n as usize);
+
+    let mut seed = 83;
+    for i in 0..n {
+        seed = next_random(seed);
+        if i > 20 && (seed % 4) == 0 {
+            let offset = 12 + (seed % 8);
+            input.push(input[(i - offset) as usize]);
+        } else {
+            input.push((32 + (seed % 95)) as u8);
+        }
+    }
+
+    let mut table = vec![-1i32; 4096];
+    let mut pos = 0usize;
+    let mut token_count = 0i64;
+    let mut literal_len = 0i64;
+    let mut checksum: i64 = 0;
+
+    while pos + 4 <= n as usize {
+        let b0 = input[pos] as i32;
+        let b1 = input[pos + 1] as i32;
+        let b2 = input[pos + 2] as i32;
+        let b3 = input[pos + 3] as i32;
+
+        let h = (((b0 << 12) ^ (b1 << 8) ^ (b2 << 4) ^ b3) % 4096) as usize;
+        let ref_pos = table[h];
+        table[h] = pos as i32;
+
+        if ref_pos != -1 && (pos as i32 - ref_pos) < 65535 {
+            let rpos = ref_pos as usize;
+            if input[rpos] as i32 == b0 && input[rpos + 1] as i32 == b1 &&
+               input[rpos + 2] as i32 == b2 && input[rpos + 3] as i32 == b3 {
+
+                let mut match_len = 4usize;
+                while pos + match_len < n as usize && input[pos + match_len] == input[rpos + match_len] && match_len < 255 {
+                    match_len += 1;
+                }
+
+                let offset = (pos as i32 - ref_pos) as i64;
+                let term = literal_len * 10007 + match_len as i64 * 31 + offset;
+                checksum = (checksum * 31 + term) % BENCH_MOD as i64;
+                token_count += 1;
+                literal_len = 0;
+                pos += match_len;
+                continue;
+            }
+        }
+
+        literal_len += 1;
+        pos += 1;
+    }
+
+    checksum = (checksum + token_count + literal_len) % BENCH_MOD as i64;
+    checksum as i32
+}
+
+fn build_one_sexpr(depth: i32, seed: &mut i32) -> String {
+    if depth <= 0 {
+        *seed = next_random(*seed);
+        return ((*seed % 100) + 1).to_string();
+    }
+    *seed = next_random(*seed);
+    let op = match *seed % 3 {
+        1 => '-',
+        2 => '*',
+        _ => '+',
+    };
+    let left = build_one_sexpr(depth - 1, seed);
+    let right = build_one_sexpr(depth - 1, seed);
+    format!("({} {} {})", op, left, right)
+}
+
+struct SExprAST {
+    tag: i32,
+    val: i32,
+    left: Option<Box<SExprAST>>,
+    right: Option<Box<SExprAST>>,
+}
+
+fn parse_sexpr_ast(s: &[u8], pos: &mut usize) -> Option<SExprAST> {
+    let n = s.len();
+    while *pos < n && (s[*pos] == b' ' || s[*pos] == b'\n') {
+        *pos += 1;
+    }
+    if *pos >= n {
+        return None;
+    }
+    if s[*pos] == b'(' {
+        *pos += 1;
+        while *pos < n && s[*pos] == b' ' {
+            *pos += 1;
+        }
+        let op = s[*pos] as i32;
+        *pos += 1;
+        let left = parse_sexpr_ast(s, pos);
+        let right = parse_sexpr_ast(s, pos);
+        while *pos < n && s[*pos] == b' ' {
+            *pos += 1;
+        }
+        if *pos < n && s[*pos] == b')' {
+            *pos += 1;
+        }
+        Some(SExprAST {
+            tag: 1,
+            val: op,
+            left: left.map(Box::new),
+            right: right.map(Box::new),
+        })
+    } else {
+        let mut num = 0;
+        while *pos < n && s[*pos] >= b'0' && s[*pos] <= b'9' {
+            num = num * 10 + (s[*pos] - b'0') as i32;
+            *pos += 1;
+        }
+        Some(SExprAST {
+            tag: 0,
+            val: num,
+            left: None,
+            right: None,
+        })
+    }
+}
+
+fn eval_sexpr_ast(e: &SExprAST) -> i32 {
+    if e.tag == 0 {
+        return e.val;
+    }
+    let left = eval_sexpr_ast(e.left.as_ref().unwrap()) as i64;
+    let right = eval_sexpr_ast(e.right.as_ref().unwrap()) as i64;
+    if e.val == '+' as i32 {
+        ((left + right) % BENCH_MOD as i64) as i32
+    } else if e.val == '-' as i32 {
+        ((left - right + BENCH_MOD as i64) % BENCH_MOD as i64) as i32
+    } else {
+        ((left * right) % BENCH_MOD as i64) as i32
+    }
+}
+
+pub fn s_expression_parse(scale: i32) -> i32 {
+    let count = 400 * scale;
+    let mut all_text = String::with_capacity((count * 60) as usize);
+    let mut seed = 42;
+    for _ in 0..count {
+        all_text.push_str(&build_one_sexpr(4, &mut seed));
+        all_text.push('\n');
+    }
+
+    let bytes = all_text.as_bytes();
+    let mut pos = 0;
+    let mut checksum: i64 = 0;
+    while pos < bytes.len() {
+        if let Some(expr) = parse_sexpr_ast(bytes, &mut pos) {
+            checksum = (checksum + eval_sexpr_ast(&expr) as i64) % BENCH_MOD as i64;
+        }
+    }
+    checksum as i32
 }

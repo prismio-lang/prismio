@@ -1288,9 +1288,32 @@ static void tag_list_region(LLVMValueRef inst, int elements) {
                     LLVMMetadataAsValue(g_ctx, LLVMMDNodeInContext2(g_ctx, &there, 1)));
 }
 
+// Valid list lengths, capacities and element strides are nonnegative i32s.
+// In particular, a signed `head < list_len(queue)` then also establishes the
+// unsigned upper bound used by the total (zero-on-failure) scalar accessor.
+static void tag_list_count_range(LLVMContextRef ctx, LLVMValueRef load) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+    LLVMMetadataRef limits[2] = {
+        LLVMValueAsMetadata(LLVMConstNull(i32)),
+        LLVMValueAsMetadata(LLVMConstInt(i32, 2147483648ULL, 0)),
+    };
+    LLVMSetMetadata(load, LLVMGetMDKindIDInContext(ctx, "range", 5),
+        LLVMMetadataAsValue(ctx, LLVMMDNodeInContext2(ctx, limits, 2)));
+}
+
+static void tag_invariant_load(LLVMValueRef load) {
+    unsigned kind = LLVMGetMDKindIDInContext(g_ctx, "invariant.load", 14);
+    LLVMMetadataRef empty = LLVMMDNodeInContext2(g_ctx, NULL, 0);
+    LLVMSetMetadata(load, kind, LLVMMetadataAsValue(g_ctx, empty));
+}
+
 static void tag_list_header(LLVMValueRef inst, const char *type) {
     tag_scalar(inst, type);
     tag_list_region(inst, 0);
+    // A store returns void; only loads may carry !range.
+    if (strcmp(type, "i32") == 0 && LLVMTypeOf(inst) == LLVMInt32TypeInContext(g_ctx)) {
+        tag_list_count_range(g_ctx, inst);
+    }
 }
 
 static void tag_list_element(LLVMValueRef inst, const char *type) {
@@ -1315,6 +1338,17 @@ void ir_store_ptr(const char *type, const char *value, const char *ptr_value) {
     LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
                                         resolve_value(ptr_value, "ptr"));
     tag_scalar(store, type);
+}
+
+// Initialising a slot returned by list_push_slot or its guarded inline form.
+// Both representations allocate the body separately from every list header.
+// Keep scalar TBAA (literal stores deliberately have no struct-path tag), but
+// expose the same region separation used by scalar element stores.
+void ir_list_store_ptr(const char *type, const char *value, const char *ptr_value) {
+    if (block_done()) return;
+    LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
+                                        resolve_value(ptr_value, "ptr"));
+    tag_list_element(store, type);
 }
 
 int ir_struct_load_ptr(const char *type, const char *ptr_value,
@@ -1881,7 +1915,8 @@ static int type_key_is_flat(const char *key, int depth) {
     if (key[0] == '%') return struct_is_flat_by_name(key + 1, depth + 1);
     return strcmp(key, "i1") == 0 || strcmp(key, "i8") == 0 || strcmp(key, "i16") == 0
         || strcmp(key, "i32") == 0 || strcmp(key, "i64") == 0
-        || strcmp(key, "float") == 0 || strcmp(key, "double") == 0;
+        || strcmp(key, "float") == 0 || strcmp(key, "double") == 0
+        || strcmp(key, "ptr") == 0;
 }
 
 static int struct_is_flat_by_name(const char *name, int depth) {
@@ -2044,6 +2079,28 @@ static LLVMTypeRef rt_list_header_type(void) {
 #define RT_LIST_FIELD_CAP       2
 #define RT_LIST_FIELD_ELEM_SIZE 6
 
+int ir_list_len(const char *list) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    if (block_done()) return intern_value(LLVMConstInt(i32, 0, 0));
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+    LLVMValueRef len_ptr =
+        LLVMBuildStructGEP2(g_builder, rt_list_header_type(), hdr, RT_LIST_FIELD_LEN, "");
+    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+    tag_list_header(len, "i32");
+    return intern_value(len);
+}
+
+int ir_list_data(const char *list) {
+    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    if (block_done()) return intern_value(LLVMConstNull(ptrty));
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+    LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+        g_builder, rt_list_header_type(), hdr, RT_LIST_FIELD_DATA, "");
+    LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+    tag_list_header(data, "ptr");
+    return intern_value(data);
+}
+
 // One receiver's half of the loop guard: does this list hold `stride`-byte
 // bodies inline? Emitted in the preheader and ANDed with its siblings.
 int ir_list_is_flat(const char *list, int stride) {
@@ -2054,6 +2111,7 @@ int ir_list_is_flat(const char *list, int stride) {
         LLVMBuildStructGEP2(g_builder, rt_list_header_type(), hdr, RT_LIST_FIELD_ELEM_SIZE, "");
     LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
     tag_list_header(elem_size, "i32");
+    tag_invariant_load(elem_size);
     return intern_value(LLVMBuildICmp(g_builder, LLVMIntEQ, elem_size,
                                       LLVMConstInt(i32, (unsigned long long)stride, 0), ""));
 }
@@ -2122,6 +2180,44 @@ void ir_list_flat_copy(const char *dst, const char *src, const char *from,
     // bound stay hoisted across it.
     tag_list_region(move, 1);
     (void)i32;
+}
+
+void ir_list_flat_zero_append(const char *list, const char *count, int stride) {
+    if (block_done()) return;
+    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef i1 = LLVMInt1TypeInContext(g_ctx);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef listty = rt_list_header_type();
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+    LLVMValueRef amount = resolve_value(count, "i64");
+    LLVMValueRef len_ptr = LLVMBuildStructGEP2(
+        g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+    tag_list_header(len, "i32");
+    LLVMValueRef data = LLVMBuildLoad2(
+        g_builder, ptrty,
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, ""), "");
+    tag_list_header(data, "ptr");
+    LLVMValueRef width = LLVMConstInt(i64, (unsigned long long)stride, 0);
+    LLVMValueRef offset = LLVMBuildMul(
+        g_builder, LLVMBuildSExt(g_builder, len, i64, ""), width, "");
+    LLVMValueRef start = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+    LLVMValueRef bytes = LLVMBuildMul(g_builder, amount, width, "");
+
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "llvm.memset.p0.i64");
+    LLVMTypeRef params[4] = {ptrty, i8, i64, i1};
+    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 4, 0);
+    if (!fn) fn = LLVMAddFunction(g_module, "llvm.memset.p0.i64", fnty);
+    LLVMValueRef args[4] = {
+        start, LLVMConstInt(i8, 0, 0), bytes, LLVMConstInt(i1, 0, 0)
+    };
+    LLVMBuildCall2(g_builder, fnty, fn, args, 4, "");
+    LLVMValueRef new_len = LLVMBuildAdd(
+        g_builder, len, LLVMBuildTrunc(g_builder, amount, i32, ""), "");
+    LLVMValueRef store = LLVMBuildStore(g_builder, new_len, len_ptr);
+    tag_list_header(store, "i32");
 }
 
 // The write end of the flat-`List` view: `list_push_slot` without the call.
@@ -2251,6 +2347,50 @@ int ir_list_has_room(const char *list, const char *need) {
                                       resolve_value(need, "i64"), ""));
 }
 
+// A pure, counted scalar fill can grow an empty buffer before its loop. Reuse
+// the ordinary growth path so arenas, verification and boxed opt-out retain
+// their existing allocation policy. No live elements are moved here. The
+// bound keeps both capacity doubling and byte sizes representable on wasm32.
+void ir_list_prepare_fill(const char *list, const char *need, int stride) {
+    if (block_done() || stride <= 0) return;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef listty = rt_list_header_type();
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+    LLVMValueRef count = resolve_value(need, "i64");
+    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32,
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, ""), "");
+    LLVMValueRef empty = LLVMBuildICmp(g_builder, LLVMIntEQ, len, LLVMConstNull(i32), "");
+    int flat_id = ir_list_is_flat(list, stride);
+    LLVMValueRef flat = g_values[flat_id];
+    LLVMValueRef enough = LLVMBuildICmp(g_builder, LLVMIntSGE, count,
+        LLVMConstInt(i64, 64, 0), "");
+    LLVMValueRef bounded = LLVMBuildICmp(g_builder, LLVMIntSLE, count,
+        LLVMConstInt(i64, 2147483647ULL / (2ULL * (unsigned)stride), 0), "");
+    LLVMValueRef eligible = LLVMBuildAnd(g_builder, LLVMBuildAnd(g_builder, empty, flat, ""),
+        LLVMBuildAnd(g_builder, enough, bounded, ""), "");
+    int check = ir_get_label();
+    int grow = ir_get_label();
+    int done = ir_get_label();
+    LLVMBuildCondBr(g_builder, eligible, block_for(check), block_for(done));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(check));
+    LLVMValueRef cap = LLVMBuildLoad2(g_builder, i32,
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_CAP, ""), "");
+    LLVMValueRef room = LLVMBuildICmp(g_builder, LLVMIntSGE,
+        LLVMBuildSExt(g_builder, cap, i64, ""), count, "");
+    LLVMBuildCondBr(g_builder, room, block_for(done), block_for(grow));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(grow));
+    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), &ptrty, 1, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "list_inline_grow");
+    if (!fn) fn = LLVMAddFunction(g_module, "list_inline_grow", fnty);
+    LLVMBuildCall2(g_builder, fnty, fn, &hdr, 1, "");
+    LLVMBuildBr(g_builder, block_for(check));
+    LLVMPositionBuilderAtEnd(g_builder, block_for(done));
+}
+
 // The scalar push under E1's guard: a typed store and a length bump, with no
 // test of any kind in the loop body.
 //
@@ -2259,7 +2399,7 @@ int ir_list_has_room(const char *list, const char *need) {
 // representation all still reached through the runtime.
 void ir_list_flat_push_scalar(const char *list, const char *value,
                               const char *elem_type, int stride,
-                              const char *guard) {
+                              const char *guard, int check_capacity) {
     if (block_done()) return;
     LLVMTypeRef elemty = type_from_key(elem_type);
     LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
@@ -2273,14 +2413,23 @@ void ir_list_flat_push_scalar(const char *list, const char *value,
     int fast = ir_get_label();
     int slow = ir_get_label();
     int join = ir_get_label();
-    LLVMBuildCondBr(g_builder, resolve_value(guard, "i1"),
-                    block_for(fast), block_for(slow));
-
-    LLVMPositionBuilderAtEnd(g_builder, block_for(fast));
+    LLVMValueRef can_push = resolve_value(guard, "i1");
     LLVMValueRef len_ptr =
         LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
     LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
     tag_list_header(len, "i32");
+    if (check_capacity) {
+        LLVMValueRef cap = LLVMBuildLoad2(
+            g_builder, i32,
+            LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_CAP, ""), "");
+        tag_list_header(cap, "i32");
+        can_push = LLVMBuildAnd(
+            g_builder, can_push,
+            LLVMBuildICmp(g_builder, LLVMIntSLT, len, cap, ""), "");
+    }
+    LLVMBuildCondBr(g_builder, can_push, block_for(fast), block_for(slow));
+
+    LLVMPositionBuilderAtEnd(g_builder, block_for(fast));
     LLVMValueRef data = LLVMBuildLoad2(
         g_builder, ptrty,
         LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, ""), "");
@@ -2307,8 +2456,8 @@ void ir_list_flat_push_scalar(const char *list, const char *value,
     }
     LLVMTypeRef params[3] = {ptrty, i64, i32};
     LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 3, 0);
-    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "list_push_inline_scalar");
-    if (!fn) fn = LLVMAddFunction(g_module, "list_push_inline_scalar", fnty);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "list_push_inline_scalar_slow");
+    if (!fn) fn = LLVMAddFunction(g_module, "list_push_inline_scalar_slow", fnty);
     LLVMValueRef args[3] = {
         hdr, bits, LLVMConstInt(i32, (unsigned long long)stride, 0)
     };
@@ -2377,6 +2526,7 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
             LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, "");
         LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
         tag_list_header(elem_size, "i32");
+        tag_invariant_load(elem_size);
         is_flat = LLVMBuildICmp(g_builder, LLVMIntEQ, elem_size,
                                 LLVMConstInt(i32, (unsigned long long)stride, 0), "");
     }
@@ -2470,7 +2620,9 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
 // was re-read per access. Measured in aif/evidence/RESULTS-bounds-check-ceiling.md.
 int ir_list_flat_scalar_elem(const char *list, const char *index,
                              const char *elem_type, int stride,
-                             const char *guard, int check_bounds) {
+                             const char *guard, int check_bounds,
+                             const char *hoisted_bound,
+                             const char *hoisted_data) {
     LLVMTypeRef elemty = type_from_key(elem_type);
     if (block_done()) return intern_value(LLVMConstNull(elemty));
 
@@ -2484,10 +2636,15 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
 
     LLVMValueRef is_flat;
     if (is_constant_true_guard(guard) && !check_bounds) {
-        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
-            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
-        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
-        tag_list_header(data, "ptr");
+        LLVMValueRef data;
+        if (hoisted_data && hoisted_data[0]) {
+            data = resolve_value(hoisted_data, "ptr");
+        } else {
+            LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+                g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+            data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+            tag_list_header(data, "ptr");
+        }
         LLVMValueRef offset = LLVMBuildMul(
             g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
             LLVMConstInt(i64, (unsigned long long)stride, 0), "");
@@ -2497,10 +2654,24 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
         return intern_value(flat_val);
     }
     if (is_constant_true_guard(guard) && check_bounds) {
-        LLVMValueRef len_ptr = LLVMBuildStructGEP2(
-            g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
-        LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
-        tag_list_header(len, "i32");
+        LLVMValueRef len;
+        if (hoisted_bound && hoisted_bound[0]) {
+            len = resolve_value(hoisted_bound, "i32");
+        } else {
+            LLVMValueRef len_ptr = LLVMBuildStructGEP2(
+                g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+            len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+            tag_list_header(len, "i32");
+        }
+        LLVMValueRef data;
+        if (hoisted_data && hoisted_data[0]) {
+            data = resolve_value(hoisted_data, "ptr");
+        } else {
+            LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+                g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+            data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+            tag_list_header(data, "ptr");
+        }
         LLVMValueRef in_bounds = LLVMBuildICmp(
             g_builder, LLVMIntULT, idx, len, "");
         int present = ir_get_label();
@@ -2509,10 +2680,6 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
         LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(absent));
 
         LLVMPositionBuilderAtEnd(g_builder, block_for(present));
-        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
-            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
-        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
-        tag_list_header(data, "ptr");
         LLVMValueRef offset = LLVMBuildMul(
             g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
             LLVMConstInt(i64, (unsigned long long)stride, 0), "");
@@ -2540,6 +2707,7 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
             g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, "");
         LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
         tag_list_header(elem_size, "i32");
+        tag_invariant_load(elem_size);
         is_flat = LLVMBuildICmp(
             g_builder, LLVMIntEQ, elem_size,
             LLVMConstInt(i32, (unsigned long long)stride, 0), "");
@@ -2553,10 +2721,15 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
     LLVMPositionBuilderAtEnd(g_builder, block_for(flat));
     LLVMValueRef flat_val;
     if (!check_bounds) {
-        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
-            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
-        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
-        tag_list_header(data, "ptr");
+        LLVMValueRef data;
+        if (hoisted_data && hoisted_data[0]) {
+            data = resolve_value(hoisted_data, "ptr");
+        } else {
+            LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+                g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+            data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+            tag_list_header(data, "ptr");
+        }
         LLVMValueRef offset = LLVMBuildMul(
             g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
             LLVMConstInt(i64, (unsigned long long)stride, 0), "");
@@ -2565,10 +2738,24 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
         tag_list_element(flat_val, elem_type);
         LLVMBuildBr(g_builder, block_for(join));
     } else {
-    LLVMValueRef len_ptr = LLVMBuildStructGEP2(
-        g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
-    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
-    tag_list_header(len, "i32");
+    LLVMValueRef len;
+    if (hoisted_bound && hoisted_bound[0]) {
+        len = resolve_value(hoisted_bound, "i32");
+    } else {
+        LLVMValueRef len_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+        len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+        tag_list_header(len, "i32");
+    }
+    LLVMValueRef data;
+    if (hoisted_data && hoisted_data[0]) {
+        data = resolve_value(hoisted_data, "ptr");
+    } else {
+        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+        data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+        tag_list_header(data, "ptr");
+    }
     LLVMValueRef in_bounds = LLVMBuildICmp(
         g_builder, LLVMIntULT, idx, len, "");
     int present = ir_get_label();
@@ -2577,10 +2764,6 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
     LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(absent));
 
     LLVMPositionBuilderAtEnd(g_builder, block_for(present));
-    LLVMValueRef data_ptr = LLVMBuildStructGEP2(
-        g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
-    LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
-    tag_list_header(data, "ptr");
     LLVMValueRef offset = LLVMBuildMul(
         g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
         LLVMConstInt(i64, (unsigned long long)stride, 0), "");
@@ -2645,7 +2828,9 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
 // doing nothing at all for an out-of-range index.
 void ir_list_flat_scalar_set(const char *list, const char *index,
                              const char *value, const char *elem_type,
-                             int stride, const char *guard, int check_bounds) {
+                             int stride, const char *guard, int check_bounds,
+                             const char *hoisted_bound,
+                             const char *hoisted_data) {
     if (block_done()) return;
 
     LLVMTypeRef elemty = type_from_key(elem_type);
@@ -2660,10 +2845,15 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
 
     LLVMValueRef is_flat;
     if (is_constant_true_guard(guard) && !check_bounds) {
-        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
-            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
-        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
-        tag_list_header(data, "ptr");
+        LLVMValueRef data;
+        if (hoisted_data && hoisted_data[0]) {
+            data = resolve_value(hoisted_data, "ptr");
+        } else {
+            LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+                g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+            data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+            tag_list_header(data, "ptr");
+        }
         LLVMValueRef offset = LLVMBuildMul(
             g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
             LLVMConstInt(i64, (unsigned long long)stride, 0), "");
@@ -2673,20 +2863,30 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
         return;
     }
     if (is_constant_true_guard(guard) && check_bounds) {
-        LLVMValueRef len_ptr = LLVMBuildStructGEP2(
-            g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
-        LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
-        tag_list_header(len, "i32");
+        LLVMValueRef len;
+        if (hoisted_bound && hoisted_bound[0]) {
+            len = resolve_value(hoisted_bound, "i32");
+        } else {
+            LLVMValueRef len_ptr = LLVMBuildStructGEP2(
+                g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+            len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+            tag_list_header(len, "i32");
+        }
+        LLVMValueRef data;
+        if (hoisted_data && hoisted_data[0]) {
+            data = resolve_value(hoisted_data, "ptr");
+        } else {
+            LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+                g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+            data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+            tag_list_header(data, "ptr");
+        }
         LLVMValueRef in_bounds = LLVMBuildICmp(
             g_builder, LLVMIntULT, idx, len, "");
         int present = ir_get_label();
         int join = ir_get_label();
         LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(join));
         LLVMPositionBuilderAtEnd(g_builder, block_for(present));
-        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
-            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
-        LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
-        tag_list_header(data, "ptr");
         LLVMValueRef offset = LLVMBuildMul(
             g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
             LLVMConstInt(i64, (unsigned long long)stride, 0), "");
@@ -2704,6 +2904,7 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
             g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, "");
         LLVMValueRef elem_size = LLVMBuildLoad2(g_builder, i32, size_ptr, "");
         tag_list_header(elem_size, "i32");
+        tag_invariant_load(elem_size);
         is_flat = LLVMBuildICmp(
             g_builder, LLVMIntEQ, elem_size,
             LLVMConstInt(i32, (unsigned long long)stride, 0), "");
@@ -2716,11 +2917,25 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
 
     LLVMPositionBuilderAtEnd(g_builder, block_for(flat));
     int store_at = flat;
+    LLVMValueRef data;
+    if (hoisted_data && hoisted_data[0]) {
+        data = resolve_value(hoisted_data, "ptr");
+    } else {
+        LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+            g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
+        data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
+        tag_list_header(data, "ptr");
+    }
     if (check_bounds) {
-        LLVMValueRef len_ptr = LLVMBuildStructGEP2(
-            g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
-        LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
-        tag_list_header(len, "i32");
+        LLVMValueRef len;
+        if (hoisted_bound && hoisted_bound[0]) {
+            len = resolve_value(hoisted_bound, "i32");
+        } else {
+            LLVMValueRef len_ptr = LLVMBuildStructGEP2(
+                g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+            len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+            tag_list_header(len, "i32");
+        }
         LLVMValueRef in_bounds = LLVMBuildICmp(
             g_builder, LLVMIntULT, idx, len, "");
         int present = ir_get_label();
@@ -2729,10 +2944,6 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
         store_at = present;
     }
     (void)store_at;
-    LLVMValueRef data_ptr = LLVMBuildStructGEP2(
-        g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
-    LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
-    tag_list_header(data, "ptr");
     LLVMValueRef offset = LLVMBuildMul(
         g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
         LLVMConstInt(i64, (unsigned long long)stride, 0), "");
@@ -5163,6 +5374,47 @@ static void ir_mark_data_view_lookup_loads_invariant(LLVMContextRef ctx,
     }
 }
 
+static int is_elem_size_load(LLVMContextRef ctx, LLVMValueRef inst) {
+    if (LLVMGetInstructionOpcode(inst) != LLVMLoad) return 0;
+    if (LLVMTypeOf(inst) != LLVMInt32TypeInContext(ctx)) return 0;
+    LLVMValueRef ptr = LLVMGetOperand(inst, 0);
+    if (!ptr || LLVMGetInstructionOpcode(ptr) != LLVMGetElementPtr) return 0;
+    int num_ops = LLVMGetNumOperands(ptr);
+    for (int i = 1; i < num_ops; i++) {
+        LLVMValueRef idx = LLVMGetOperand(ptr, i);
+        if (LLVMIsAConstantInt(idx)) {
+            unsigned long long val = LLVMConstIntGetZExtValue(idx);
+            if (val == 36 || (num_ops == 3 && i == 2 && val == 6)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void ir_tag_list_mutator_decl(LLVMContextRef ctx, LLVMValueRef fn) {
+    unsigned k_mem = LLVMGetEnumAttributeKindForName("memory", 6);
+    if (k_mem) {
+        LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateEnumAttribute(ctx, k_mem, 15));
+    }
+    unsigned k_nounwind = LLVMGetEnumAttributeKindForName("nounwind", 8);
+    if (k_nounwind) {
+        LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateEnumAttribute(ctx, k_nounwind, 0));
+    }
+    unsigned k_willreturn = LLVMGetEnumAttributeKindForName("willreturn", 10);
+    if (k_willreturn) {
+        LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateEnumAttribute(ctx, k_willreturn, 0));
+    }
+    unsigned k_cap = LLVMGetEnumAttributeKindForName("captures", 8);
+    if (k_cap) {
+        LLVMAddAttributeAtIndex(fn, 1, LLVMCreateEnumAttribute(ctx, k_cap, 0));
+    }
+    unsigned k_nonnull = LLVMGetEnumAttributeKindForName("nonnull", 7);
+    if (k_nonnull) {
+        LLVMAddAttributeAtIndex(fn, 1, LLVMCreateEnumAttribute(ctx, k_nonnull, 0));
+    }
+}
+
 // Read `runtime_ir`, keep the named functions as `available_externally` bodies
 // plus their compiler-generated private cold blocks, reduce everything else to
 // a declaration, drop what nothing refers to, and write the result to
@@ -5198,6 +5450,36 @@ int ir_curate_module(const char *runtime_ir, const char *const *names, int count
         const char *name = LLVMGetValueName2(fn, &len);
         int curated = ir_curated_function_kind(name, names, count);
         if (curated == 1) {
+            if (strcmp(name, "list_len") == 0) {
+                for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(fn); block;
+                     block = LLVMGetNextBasicBlock(block)) {
+                    for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst;
+                         inst = LLVMGetNextInstruction(inst)) {
+                        if (LLVMGetInstructionOpcode(inst) == LLVMLoad
+                                && LLVMTypeOf(inst) == LLVMInt32TypeInContext(ctx)) {
+                            tag_list_count_range(ctx, inst);
+                        }
+                    }
+                }
+            }
+            if (strcmp(name, "list_get_inline_scalar") == 0
+                    || strcmp(name, "list_set_inline_scalar") == 0
+                    || strcmp(name, "list_push_inline_scalar") == 0
+                    || strcmp(name, "list_get_inline") == 0) {
+                unsigned kind = LLVMGetMDKindIDInContext(ctx, "invariant.load", 14);
+                LLVMMetadataRef empty = LLVMMDNodeInContext2(ctx, NULL, 0);
+                LLVMValueRef inv_md = LLVMMetadataAsValue(ctx, empty);
+                for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(fn); block;
+                     block = LLVMGetNextBasicBlock(block)) {
+                    for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst;
+                         inst = LLVMGetNextInstruction(inst)) {
+                        if (is_elem_size_load(ctx, inst)) {
+                            LLVMSetMetadata(inst, kind, inv_md);
+                            tag_list_count_range(ctx, inst);
+                        }
+                    }
+                }
+            }
             if (strcmp(name, "data_view_check_index") == 0
                     || strcmp(name, "data_view_column") == 0
                     || strcmp(name, "data_view_len") == 0) {
@@ -5250,6 +5532,43 @@ int ir_curate_module(const char *runtime_ir, const char *const *names, int count
                 removed = 1;
             }
             g = next;
+        }
+    }
+
+    for (LLVMValueRef fn = LLVMGetFirstFunction(m); fn; fn = LLVMGetNextFunction(fn)) {
+        if (!LLVMGetFirstBasicBlock(fn)) {
+            size_t len = 0;
+            const char *name = LLVMGetValueName2(fn, &len);
+            if (strcmp(name, "list_push_inline_scalar_slow") == 0
+                    || strcmp(name, "list_inline_grow") == 0
+                    || strcmp(name, "list_push_grow") == 0
+                    || strcmp(name, "list_set_elem_inline") == 0
+                    || strcmp(name, "list_set_elem_owner") == 0
+                    || strcmp(name, "list_set_elem_releaser") == 0
+                    || strcmp(name, "list_set") == 0
+                    || strcmp(name, "list_push") == 0) {
+                ir_tag_list_mutator_decl(ctx, fn);
+            }
+            if (strcmp(name, "list_new") == 0
+                    || strcmp(name, "list_new_with_capacity") == 0
+                    || strcmp(name, "list_new_with_capacity_inline") == 0) {
+                unsigned k_noalias = LLVMGetEnumAttributeKindForName("noalias", 7);
+                if (k_noalias) {
+                    LLVMAddAttributeAtIndex(fn, 0u, LLVMCreateEnumAttribute(ctx, k_noalias, 0));
+                }
+                unsigned k_mem = LLVMGetEnumAttributeKindForName("memory", 6);
+                if (k_mem) {
+                    LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateEnumAttribute(ctx, k_mem, 12));
+                }
+                unsigned k_nounwind = LLVMGetEnumAttributeKindForName("nounwind", 8);
+                if (k_nounwind) {
+                    LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateEnumAttribute(ctx, k_nounwind, 0));
+                }
+                unsigned k_willreturn = LLVMGetEnumAttributeKindForName("willreturn", 10);
+                if (k_willreturn) {
+                    LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateEnumAttribute(ctx, k_willreturn, 0));
+                }
+            }
         }
     }
 

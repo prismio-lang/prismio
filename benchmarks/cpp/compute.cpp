@@ -1,6 +1,10 @@
 #include "benchmarks.hpp"
 
 #include <cmath>
+#include <condition_variable>
+#include <mutex>
+#include <optional>
+#include <queue>
 #include <thread>
 #include <vector>
 
@@ -136,4 +140,299 @@ int parallel_reduction(int scale) {
     for (int i = 0; i < 4; ++i) workers[i] = std::thread([&, i] { results[i] = band_sum(seeds[i], steps); });
     for (auto& worker : workers) worker.join();
     return (((results[0] + results[1]) % BENCH_MOD) + ((results[2] + results[3]) % BENCH_MOD)) % BENCH_MOD;
+}
+
+static inline uint32_t rot_r32(uint32_t x, int n) {
+    return (x >> n) | (x << (32 - n));
+}
+
+int sha256(int scale) {
+    static const uint32_t K[64] = {
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    };
+
+    uint32_t h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+    uint32_t h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+
+    const int total_blocks = 200 * scale;
+    int seed = 42;
+    uint32_t w[64];
+
+    for (int b = 0; b < total_blocks; ++b) {
+        for (int i = 0; i < 16; ++i) {
+            seed = bench_next_random(seed);
+            uint32_t v1 = static_cast<uint32_t>(seed);
+            seed = bench_next_random(seed);
+            uint32_t v2 = static_cast<uint32_t>(seed);
+            w[i] = (v1 << 16) | v2;
+        }
+
+        for (int t = 16; t < 64; ++t) {
+            uint32_t s0 = rot_r32(w[t - 15], 7) ^ rot_r32(w[t - 15], 18) ^ (w[t - 15] >> 3);
+            uint32_t s1 = rot_r32(w[t - 2], 17) ^ rot_r32(w[t - 2], 19) ^ (w[t - 2] >> 10);
+            w[t] = w[t - 16] + s0 + w[t - 7] + s1;
+        }
+
+        uint32_t a = h0, b_val = h1, c = h2, d = h3;
+        uint32_t e = h4, f = h5, g = h6, h = h7;
+
+        for (int step = 0; step < 64; ++step) {
+            uint32_t s1 = rot_r32(e, 6) ^ rot_r32(e, 11) ^ rot_r32(e, 25);
+            uint32_t ch = (e & f) ^ ((~e) & g);
+            uint32_t temp1 = h + s1 + ch + K[step] + w[step];
+            uint32_t s0 = rot_r32(a, 2) ^ rot_r32(a, 13) ^ rot_r32(a, 22);
+            uint32_t maj = (a & b_val) ^ (a & c) ^ (b_val & c);
+            uint32_t temp2 = s0 + maj;
+
+            h = g; g = f; f = e; e = d + temp1;
+            d = c; c = b_val; b_val = a; a = temp1 + temp2;
+        }
+
+        h0 += a; h1 += b_val; h2 += c; h3 += d;
+        h4 += e; h5 += f; h6 += g; h7 += h;
+    }
+
+    return static_cast<int>((h0 ^ h1 ^ h2 ^ h3 ^ h4 ^ h5 ^ h6 ^ h7) & 0x7fffffff);
+}
+
+int blake3_chunk(int scale) {
+    const int total_chunks = 300 * scale;
+    int seed = 99;
+
+    const uint32_t IV[8] = {
+        0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
+        0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19
+    };
+    const uint8_t MSG_PERM[16] = {
+        2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8
+    };
+
+    uint32_t total_checksum = 0;
+    uint32_t m[16], v[16], next_m[16];
+
+    auto g_step = [](uint32_t& a, uint32_t& b, uint32_t& c, uint32_t& d, uint32_t mx, uint32_t my) {
+        a = a + b + mx; d = rot_r32(d ^ a, 16);
+        c = c + d;      b = rot_r32(b ^ c, 12);
+        a = a + b + my; d = rot_r32(d ^ a, 8);
+        c = c + d;      b = rot_r32(b ^ c, 7);
+    };
+
+    for (int chunk = 0; chunk < total_chunks; ++chunk) {
+        for (int i = 0; i < 16; ++i) {
+            seed = bench_next_random(seed);
+            uint32_t v1 = static_cast<uint32_t>(seed);
+            seed = bench_next_random(seed);
+            uint32_t v2 = static_cast<uint32_t>(seed);
+            m[i] = (v1 << 16) | v2;
+        }
+
+        for (int i = 0; i < 8; ++i) v[i] = IV[i];
+        v[8] = IV[0]; v[9] = IV[1]; v[10] = IV[2]; v[11] = IV[3];
+        v[12] = static_cast<uint32_t>(chunk);
+        v[13] = 0;
+        v[14] = 1024;
+        v[15] = 0;
+
+        for (int round = 0; round < 7; ++round) {
+            g_step(v[0], v[4], v[8],  v[12], m[0], m[1]);
+            g_step(v[1], v[5], v[9],  v[13], m[2], m[3]);
+            g_step(v[2], v[6], v[10], v[14], m[4], m[5]);
+            g_step(v[3], v[7], v[11], v[15], m[6], m[7]);
+
+            g_step(v[0], v[5], v[10], v[15], m[8],  m[9]);
+            g_step(v[1], v[6], v[11], v[12], m[10], m[11]);
+            g_step(v[2], v[7], v[8],  v[13], m[12], m[13]);
+            g_step(v[3], v[4], v[9],  v[14], m[14], m[15]);
+
+            for (int i = 0; i < 16; ++i) next_m[i] = m[MSG_PERM[i]];
+            for (int i = 0; i < 16; ++i) m[i] = next_m[i];
+        }
+
+        uint32_t chunk_hash = 0;
+        for (int i = 0; i < 8; ++i) chunk_hash ^= (v[i] ^ v[i + 8]);
+        total_checksum = (total_checksum * 31 + chunk_hash) & 0x7fffffff;
+    }
+
+    return static_cast<int>(total_checksum);
+}
+
+struct BenchSphere {
+    double x, y, z, r;
+    int cr, cg, cb;
+};
+
+int raytracer_sphere(int scale) {
+    const int width = 50 * scale;
+    const int height = 50 * scale;
+
+    const BenchSphere spheres[4] = {
+        {0.0, 0.0, 3.0, 1.0, 255, 30, 30},
+        {2.0, 1.0, 4.0, 1.0, 30, 255, 30},
+        {-2.0, 1.0, 4.0, 1.0, 30, 30, 255},
+        {0.0, -1001.0, 0.0, 1000.0, 200, 200, 200}
+    };
+
+    const double light_x = -10.0, light_y = 20.0, light_z = -10.0;
+    const double cam_x = 0.0, cam_y = 0.0, cam_z = -5.0;
+
+    long long checksum = 0;
+
+    for (int py = 0; py < height; ++py) {
+        double screen_y = -((py + 0.5) / height * 2.0 - 1.0);
+        for (int px = 0; px < width; ++px) {
+            double screen_x = (px + 0.5) / width * 2.0 - 1.0;
+            double dir_x = screen_x, dir_y = screen_y, dir_z = 2.0;
+            double inv_len = 1.0 / std::sqrt(dir_x * dir_x + dir_y * dir_y + dir_z * dir_z);
+            dir_x *= inv_len; dir_y *= inv_len; dir_z *= inv_len;
+
+            double closest_t = 1e30;
+            int hit_idx = -1;
+            for (int s = 0; s < 4; ++s) {
+                double oc_x = cam_x - spheres[s].x;
+                double oc_y = cam_y - spheres[s].y;
+                double oc_z = cam_z - spheres[s].z;
+                double b = oc_x * dir_x + oc_y * dir_y + oc_z * dir_z;
+                double c = (oc_x * oc_x + oc_y * oc_y + oc_z * oc_z) - spheres[s].r * spheres[s].r;
+                double disc = b * b - c;
+                if (disc > 0.0) {
+                    double t = -b - std::sqrt(disc);
+                    if (t > 0.001 && t < closest_t) {
+                        closest_t = t;
+                        hit_idx = s;
+                    }
+                }
+            }
+
+            if (hit_idx >= 0) {
+                double hx = cam_x + closest_t * dir_x;
+                double hy = cam_y + closest_t * dir_y;
+                double hz = cam_z + closest_t * dir_z;
+
+                double nx = (hx - spheres[hit_idx].x) / spheres[hit_idx].r;
+                double ny = (hy - spheres[hit_idx].y) / spheres[hit_idx].r;
+                double nz = (hz - spheres[hit_idx].z) / spheres[hit_idx].r;
+
+                double lx = light_x - hx, ly = light_y - hy, lz = light_z - hz;
+                double ldist = std::sqrt(lx * lx + ly * ly + lz * lz);
+                lx /= ldist; ly /= ldist; lz /= ldist;
+
+                double sh_ox = hx + nx * 0.001, sh_oy = hy + ny * 0.001, sh_oz = hz + nz * 0.001;
+                bool in_shadow = false;
+                for (int s = 0; s < 4; ++s) {
+                    double oc_x = sh_ox - spheres[s].x;
+                    double oc_y = sh_oy - spheres[s].y;
+                    double oc_z = sh_oz - spheres[s].z;
+                    double b = oc_x * lx + oc_y * ly + oc_z * lz;
+                    double c = (oc_x * oc_x + oc_y * oc_y + oc_z * oc_z) - spheres[s].r * spheres[s].r;
+                    double disc = b * b - c;
+                    if (disc > 0.0) {
+                        double t = -b - std::sqrt(disc);
+                        if (t > 0.001 && t < ldist) {
+                            in_shadow = true;
+                            break;
+                        }
+                    }
+                }
+
+                double dot = nx * lx + ny * ly + nz * lz;
+                if (dot < 0.0) dot = 0.0;
+                double intensity = 0.15 + (in_shadow ? 0.0 : dot * 0.85);
+                int r = static_cast<int>(spheres[hit_idx].cr * intensity);
+                int g = static_cast<int>(spheres[hit_idx].cg * intensity);
+                int b_col = static_cast<int>(spheres[hit_idx].cb * intensity);
+                if (r > 255) r = 255;
+                if (g > 255) g = 255;
+                if (b_col > 255) b_col = 255;
+                long long pix_val = static_cast<long long>(r) * 65537 + static_cast<long long>(g) * 257 + b_col;
+                checksum = (checksum * 31 + pix_val) % BENCH_MOD;
+            } else {
+                checksum = (checksum * 31 + 17) % BENCH_MOD;
+            }
+        }
+    }
+    return static_cast<int>(checksum);
+}
+
+template <typename T>
+class BoundedQueue {
+public:
+    explicit BoundedQueue(size_t cap) : cap_(cap), closed_(false) {}
+
+    void send(T val) {
+        std::unique_lock<std::mutex> lock(mu_);
+        not_full_.wait(lock, [this] { return queue_.size() < cap_ || closed_; });
+        if (closed_) return;
+        queue_.push(std::move(val));
+        not_empty_.notify_one();
+    }
+
+    std::optional<T> recv() {
+        std::unique_lock<std::mutex> lock(mu_);
+        not_empty_.wait(lock, [this] { return !queue_.empty() || closed_; });
+        if (queue_.empty()) return std::nullopt;
+        T val = std::move(queue_.front());
+        queue_.pop();
+        not_full_.notify_one();
+        return val;
+    }
+
+    void close() {
+        std::unique_lock<std::mutex> lock(mu_);
+        closed_ = true;
+        not_full_.notify_all();
+        not_empty_.notify_all();
+    }
+
+private:
+    size_t cap_;
+    bool closed_;
+    std::mutex mu_;
+    std::condition_variable not_full_;
+    std::condition_variable not_empty_;
+    std::queue<T> queue_;
+};
+
+int channel_pipeline(int scale) {
+    int count = 5000 * scale;
+    BoundedQueue<int> ch1(64);
+    BoundedQueue<int> ch2(64);
+
+    std::thread w1([&]() {
+        for (int i = 0; i < count; ++i) {
+            int x = (i * 25173 + 13849) % 65521;
+            ch1.send(x);
+        }
+        ch1.close();
+    });
+
+    std::thread w2([&]() {
+        while (true) {
+            auto taken = ch1.recv();
+            if (!taken.has_value()) break;
+            int x = *taken;
+            long long y = ((long long)x * 17 + 31) % BENCH_MOD;
+            ch2.send(static_cast<int>(y));
+        }
+        ch2.close();
+    });
+
+    long long checksum = 0;
+    while (true) {
+        auto taken = ch2.recv();
+        if (!taken.has_value()) break;
+        int y = *taken;
+        checksum = (checksum * 31 + y) % BENCH_MOD;
+    }
+
+    w1.join();
+    w2.join();
+
+    return static_cast<int>(checksum);
 }

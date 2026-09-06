@@ -336,7 +336,18 @@ private fn generateStatement(stmt: ASTNode) {
                 old = ir_get_temp_name(ir_load(storeType, ir_get_var_slot(varName)))
             }
 
-            let mut val = generateExpression(ptr_to_node(stmt.child2))
+            // A uniquely-owned String accumulator can hand its old buffer to
+            // the replacement concat. The helper returns empty for every other
+            // expression shape, which then takes the ordinary immutable path.
+            let mut consumedOld = false
+            let mut val = ""
+            if (releasesOld and storeType.equals("struct:prismio.str")) {
+                val = generateStringReinitConcat(stmt.child2, varName, old)
+                consumedOld = val.equals("") == false
+            }
+            if (consumedOld == false) {
+                val = generateExpression(ptr_to_node(stmt.child2))
+            }
             // The same clone the declaration makes, for the same reason and it
             // was not obvious that both needed it: a literal stored here leaves
             // .rodata in a slot the *next* assignment frees. That is what aborted
@@ -348,7 +359,9 @@ private fn generateStatement(stmt: ASTNode) {
             if (ir_var_is_global(varName) == 1) {
                 ir_store_global(storeType, val, varName)
             } else {
-                if (releasesOld) { generateDisplacedRelease(old, val, dropKindOf(ptr_to_node(stmt.child2)), varType) }
+                if (releasesOld and consumedOld == false) {
+                    generateDisplacedRelease(old, val, dropKindOf(ptr_to_node(stmt.child2)), varType)
+                }
                 ir_store(storeType, val, ir_get_var_slot(varName))
             }
         }
@@ -426,6 +439,10 @@ private fn generateStatement(stmt: ASTNode) {
                                     structName, fieldIndex)
             }
         }
+        if (targetNode.kind == NodeKind.IDENTIFIER_EXPR
+                and targetNode.s1.equals(irLoopHeaderBoundIndex)) {
+            irLoopHeaderBoundActive = false
+        }
     }
 
     if (stmt.kind == NodeKind.RETURN_STATEMENT) {
@@ -453,12 +470,11 @@ private fn generateStatement(stmt: ASTNode) {
     }
 
     if (stmt.kind == NodeKind.IF_STATEMENT) {
-        let condVal = generateExpression(ptr_to_node(stmt.child1))
-
         let thenLabel = ir_get_label()
         let elseLabel = ir_get_label()
         let endLabel = ir_get_label()
 
+        let condVal = generateExpression(ptr_to_node(stmt.child1))
         if (nodeExists(stmt.child3)) {
             ir_cond_br_numbered(condVal, thenLabel, elseLabel)
         } else {
@@ -496,7 +512,25 @@ private fn generateStatement(stmt: ASTNode) {
         let savedGuard = irLoopFlatGuard
         let savedRange = irLoopRangeProved
         let savedPush = irLoopPushGuard
+        let savedHeaderList = irLoopHeaderBoundList
+        let savedHeaderIndex = irLoopHeaderBoundIndex
+        let savedHeaderActive = irLoopHeaderBoundActive
+        let savedHoistedBoundList = irLoopHoistedBoundList
+        let savedHoistedBoundValue = irLoopHoistedBoundValue
+        let savedHoistedDataValue = irLoopHoistedDataValue
         irLoopRangeProved = false
+        irLoopHeaderBoundList = ""
+        irLoopHeaderBoundIndex = ""
+        irLoopHeaderBoundActive = false
+        irLoopHoistedBoundList = ""
+        irLoopHoistedBoundValue = ""
+        irLoopHoistedDataValue = ""
+
+        // A successful bulk zero append bypasses the loop entirely. Emit it
+        // before preparing the ordinary push guard so the fast arm does not
+        // pay the fallback loop's duplicate capacity and representation tests.
+        generateWholeBufferZeroFill(ptr_to_node(stmt.child1), ptr_to_node(stmt.child2),
+                                    endLabel)
         irLoopPushGuard = generateLoopPushGuard(ptr_to_node(stmt.child1),
                                                 ptr_to_node(stmt.child2))
 
@@ -528,6 +562,7 @@ private fn generateStatement(stmt: ASTNode) {
             ir_cond_br_numbered(fastCondVal, fastBodyLabel, endLabel)
 
             ir_label_numbered(fastBodyLabel)
+            irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
             ir_loop_push(fastCondLabel, endLabel)
             ir_drop_barrier_push()
             irLoopDepth = irLoopDepth + 1
@@ -547,6 +582,7 @@ private fn generateStatement(stmt: ASTNode) {
             ir_cond_br_numbered(slowCondVal, slowBodyLabel, endLabel)
 
             ir_label_numbered(slowBodyLabel)
+            irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
             ir_loop_push(slowCondLabel, endLabel)
             ir_drop_barrier_push()
             irLoopDepth = irLoopDepth + 1
@@ -561,6 +597,12 @@ private fn generateStatement(stmt: ASTNode) {
             irLoopFlatGuard = strClone(savedGuard)
             irLoopRangeProved = savedRange
             irLoopPushGuard = strClone(savedPush)
+            irLoopHeaderBoundList = strClone(savedHeaderList)
+            irLoopHeaderBoundIndex = strClone(savedHeaderIndex)
+            irLoopHeaderBoundActive = savedHeaderActive
+            irLoopHoistedBoundList = strClone(savedHoistedBoundList)
+            irLoopHoistedBoundValue = strClone(savedHoistedBoundValue)
+            irLoopHoistedDataValue = strClone(savedHoistedDataValue)
             ir_label_numbered(endLabel)
             return
         }
@@ -578,6 +620,7 @@ private fn generateStatement(stmt: ASTNode) {
         ir_cond_br_numbered(condVal, bodyLabel, endLabel)
 
         ir_label_numbered(bodyLabel)
+        irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
         ir_loop_push(condLabel, endLabel)
         ir_drop_barrier_push()
         irLoopDepth = irLoopDepth + 1
@@ -592,6 +635,12 @@ private fn generateStatement(stmt: ASTNode) {
         irLoopFlatGuard = savedGuard
         irLoopRangeProved = savedRange
         irLoopPushGuard = savedPush
+        irLoopHeaderBoundList = savedHeaderList
+        irLoopHeaderBoundIndex = savedHeaderIndex
+        irLoopHeaderBoundActive = savedHeaderActive
+        irLoopHoistedBoundList = savedHoistedBoundList
+        irLoopHoistedBoundValue = savedHoistedBoundValue
+        irLoopHoistedDataValue = savedHoistedDataValue
         ir_label_numbered(endLabel)
     }
 

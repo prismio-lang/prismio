@@ -81,3 +81,194 @@ fn benchKeyValueUpdate(scale: Int) -> Int {
     }
     return checksum
 }
+
+fn popcount64(val: I64) -> Int {
+    let mut x = val
+    let m1: I64 = 6148914691236517205
+    let m2: I64 = 3689348814741910323
+    let m4: I64 = 1085102592571150095
+    let h01: I64 = 72340172838076673
+
+    x = x - ((x >> (1 as I64)) & m1)
+    x = (x & m2) + ((x >> (2 as I64)) & m2)
+    x = (x + (x >> (4 as I64))) & m4
+    return (((x * h01) >> (56 as I64)) & (255 as I64)) as Int
+}
+
+fn benchFlatBitset(scale: Int) -> Int {
+    let n = 50000 * scale
+    let words = (n + 63) / 64
+
+    let mut a: List<I64> = list_new_with_capacity(words)
+    let mut b: List<I64> = list_new_with_capacity(words)
+    let mut c: List<I64> = list_new_with_capacity(words)
+
+    let mut initW = 0
+    while (initW < words) {
+        list_push(a, 0 as I64)
+        list_push(b, 0 as I64)
+        list_push(c, 0 as I64)
+        initW = initW + 1
+    }
+
+    let mut seed = 77
+    let mut i = 0
+    let one: I64 = 1
+    while (i < n) {
+        seed = benchRandom(seed)
+        let wIdx = i / 64
+        let bIdx = (i % 64) as I64
+        if (seed % 3 == 0) {
+            list_set(a, wIdx, list_get(a, wIdx) | (one << bIdx))
+        }
+        seed = benchRandom(seed)
+        if (seed % 5 == 0) {
+            list_set(b, wIdx, list_get(b, wIdx) | (one << bIdx))
+        }
+        i = i + 1
+    }
+
+    let magic: I64 = 87802765997552500
+    let mut round = 0
+    while (round < 10) {
+        let mut w = 0
+        while (w < words) {
+            let aw = list_get(a, w)
+            let bw = list_get(b, w)
+            let cw = (aw & bw) | ((~aw) & (bw ^ magic))
+            list_set(c, w, cw)
+            list_set(a, w, aw ^ cw)
+            let shifted = (bw << (1 as I64)) | ((bw >> (63 as I64)) & (1 as I64))
+            list_set(b, w, shifted)
+            w = w + 1
+        }
+        round = round + 1
+    }
+
+    let mut countA: I64 = 0
+    let mut countB: I64 = 0
+    let mut countC: I64 = 0
+    let mut w2 = 0
+    while (w2 < words) {
+        countA = countA + (popcount64(list_get(a, w2)) as I64)
+        countB = countB + (popcount64(list_get(b, w2)) as I64)
+        countC = countC + (popcount64(list_get(c, w2)) as I64)
+        w2 = w2 + 1
+    }
+
+    let checksum = (countA * 10007 + countB * 31 + countC) % 1000000007
+    return checksum as Int
+}
+
+fn benchTrieSearch(scale: Int) -> Int {
+    let numKeys = 8000 * scale
+    let numQueries = 15000 * scale
+
+    let mut c0: List<Int> = list_new()
+    let mut c1: List<Int> = list_new()
+    let mut c2: List<Int> = list_new()
+    let mut c3: List<Int> = list_new()
+    let mut counts: List<Int> = list_new()
+
+    list_push(c0, -1)
+    list_push(c1, -1)
+    list_push(c2, -1)
+    list_push(c3, -1)
+    list_push(counts, 0)
+
+    let mut seed = 53
+    let mut k = 0
+    while (k < numKeys) {
+        seed = benchRandom(seed)
+        let len = 6 + (seed % 10)
+        let mut curr = 0
+        let mut i = 0
+        while (i < len) {
+            seed = benchRandom(seed)
+            let branch = seed % 4
+            let mut nextNode = -1
+            if (branch == 0) {
+                if (list_get(c0, curr) == -1) {
+                    let newIdx = list_len(c0)
+                    list_push(c0, -1)
+                    list_push(c1, -1)
+                    list_push(c2, -1)
+                    list_push(c3, -1)
+                    list_push(counts, 0)
+                    list_set(c0, curr, newIdx)
+                }
+                nextNode = list_get(c0, curr)
+            } else if (branch == 1) {
+                if (list_get(c1, curr) == -1) {
+                    let newIdx = list_len(c0)
+                    list_push(c0, -1)
+                    list_push(c1, -1)
+                    list_push(c2, -1)
+                    list_push(c3, -1)
+                    list_push(counts, 0)
+                    list_set(c1, curr, newIdx)
+                }
+                nextNode = list_get(c1, curr)
+            } else if (branch == 2) {
+                if (list_get(c2, curr) == -1) {
+                    let newIdx = list_len(c0)
+                    list_push(c0, -1)
+                    list_push(c1, -1)
+                    list_push(c2, -1)
+                    list_push(c3, -1)
+                    list_push(counts, 0)
+                    list_set(c2, curr, newIdx)
+                }
+                nextNode = list_get(c2, curr)
+            } else {
+                if (list_get(c3, curr) == -1) {
+                    let newIdx = list_len(c0)
+                    list_push(c0, -1)
+                    list_push(c1, -1)
+                    list_push(c2, -1)
+                    list_push(c3, -1)
+                    list_push(counts, 0)
+                    list_set(c3, curr, newIdx)
+                }
+                nextNode = list_get(c3, curr)
+            }
+            curr = nextNode
+            i = i + 1
+        }
+        list_set(counts, curr, list_get(counts, curr) + 1)
+        k = k + 1
+    }
+
+    let mut checksum = 0
+    let mut qSeed = 101
+    let mut q = 0
+    while (q < numQueries) {
+        qSeed = benchRandom(qSeed)
+        let qLen = 3 + (qSeed % 8)
+        let mut curr = 0
+        let mut found = true
+        let mut qi = 0
+        while (qi < qLen) {
+            qSeed = benchRandom(qSeed)
+            let branch = qSeed % 4
+            let mut nextNode = -1
+            if (branch == 0) { nextNode = list_get(c0, curr) }
+            else if (branch == 1) { nextNode = list_get(c1, curr) }
+            else if (branch == 2) { nextNode = list_get(c2, curr) }
+            else { nextNode = list_get(c3, curr) }
+
+            if (nextNode == -1) {
+                found = false
+                break
+            }
+            curr = nextNode
+            qi = qi + 1
+        }
+        if (found) {
+            checksum = (checksum + curr * 31 + list_get(counts, curr) + 1) % 1000000007
+        }
+        q = q + 1
+    }
+
+    return checksum
+}

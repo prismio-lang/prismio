@@ -42,6 +42,17 @@ fn benchRun(name: String, scale: Int, inputPath: String, outputPath: String) -> 
     if (name.equals("file_write")) { return benchFileWrite(scale, outputPath) }
     if (name.equals("line_processing")) { return benchLineProcessing(inputPath) }
     if (name.equals("tokenization")) { return benchTokenization(scale) }
+    if (name.equals("dijkstra_shortest_path")) { return benchDijkstraShortestPath(scale) }
+    if (name.equals("lz4_compress")) { return benchLz4Compress(scale) }
+    if (name.equals("s_expression_parse")) { return benchSExprParse(scale) }
+    if (name.equals("flat_bitset")) { return benchFlatBitset(scale) }
+    if (name.equals("trie_search")) { return benchTrieSearch(scale) }
+    if (name.equals("sha256")) { return benchSha256(scale) }
+    if (name.equals("blake3_chunk")) { return benchBlake3Chunk(scale) }
+    if (name.equals("raytracer_sphere")) { return benchRaytracerSphere(scale) }
+    if (name.equals("channel_pipeline")) { return benchChannelPipeline(scale) }
+    if (name.equals("base64_codec")) { return benchBase64Codec(scale) }
+    if (name.equals("csv_parse")) { return benchCsvParse(scale) }
     return -1
 }
 

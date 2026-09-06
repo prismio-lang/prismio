@@ -38,6 +38,17 @@ int run(const std::string& name, int scale, const std::string& input, const std:
     if (name == "file_write") return file_write(scale, output);
     if (name == "line_processing") return line_processing(input);
     if (name == "tokenization") return tokenization(scale);
+    if (name == "dijkstra_shortest_path") return dijkstra_shortest_path(scale);
+    if (name == "lz4_compress") return lz4_compress(scale);
+    if (name == "s_expression_parse") return s_expression_parse(scale);
+    if (name == "flat_bitset") return flat_bitset(scale);
+    if (name == "trie_search") return trie_search(scale);
+    if (name == "sha256") return sha256(scale);
+    if (name == "blake3_chunk") return blake3_chunk(scale);
+    if (name == "raytracer_sphere") return raytracer_sphere(scale);
+    if (name == "channel_pipeline") return channel_pipeline(scale);
+    if (name == "base64_codec") return base64_codec(scale);
+    if (name == "csv_parse") return csv_parse(scale);
     return -1;
 }
 

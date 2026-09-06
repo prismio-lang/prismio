@@ -210,7 +210,7 @@ What replaced it is stronger for the case that dominates. See §6.
 ## 6 · The invariants
 
 The representation is only as good as the properties that hold everywhere. There
-are five, and each one is load-bearing — the failure mode is in the right-hand
+are seven, and each one is load-bearing — the failure mode is in the right-hand
 column.
 
 | # | invariant | established by | breaks as |
@@ -220,6 +220,8 @@ column.
 | 3 | `count > 12` ⟹ the source is not inline | `strSubstring` tests it one line above | a view offsets a non-pointer |
 | 4 | A view is **never** NUL-terminated | it ends inside a longer buffer | reads past the view |
 | 5 | `__builtin_string_put_byte` only writes long-form buffers | every caller writes into a fresh `str_with_capacity` | the write lands in a scratch copy and is lost |
+| 6 | `str_append_reuse` receives an **owned long-form** base whose old value dies at the assignment | codegen offers it only for an AIF-proved owning `s = s + suffix` | reallocating read-only, arena, or shared storage |
+| 7 | An aliased suffix is rebased after growth | the runtime records its offset before `realloc` and appends with `memmove` | `s = s + s` or appending a view reads the old address |
 
 **Invariant 1 is what pays for the missing prefix.** If two short strings hold
 the same text, and their lengths are equal, and everything past the length is
@@ -288,6 +290,28 @@ its own small-string form when a `String` reaches a C parameter.
 Everything else needed no change. Byte access already reads through field 0,
 which a view has; the release already answers "not mine" from the tag.
 
+### Growing an owned String without changing its value semantics
+
+Ordinary `concat` is still immutable: it allocates the exact result and copies
+its arguments. One assignment shape carries stronger information:
+`s = s + suffix` says that the old `s` is dead at the store, and AIF can prove
+whether that slot owns its value. For that shape codegen calls
+`str_append_reuse`; every other spelling keeps the ordinary concat path.
+
+The 16-byte ABI has nowhere to add a capacity word, so capacity remains hidden
+behind the allocation. `rt_base_usable_size` reads the allocator's usable size
+(`malloc_size`, `malloc_usable_size`, or `_msize`). If it is large enough the
+append writes in place. Otherwise the runtime doubles capacity until it covers
+the requested length and reallocates once. Repeated append is therefore
+amortised O(1) per byte rather than copying the whole prefix each iteration,
+without growing every String, struct, list element, or call boundary to 24 bytes.
+
+This combines the representation already chosen for Prismio with the mature
+growth rule used by Swift's uniquely-owned contiguous String storage and Rust's
+`String::push_str`. The ownership proof is the essential boundary: capacity is
+an implementation detail of a value that has one owner, never permission to
+mutate a value another binding can observe.
+
 ---
 
 ## 9 · Results
@@ -333,6 +357,26 @@ single-workload regression in this suite. The floor for one pass is about ±4%.
 | 54,000 small blocks: malloc/free vs pool vs none | 2,225 µs / 168 µs / 176 µs |
 | `borrow` → `readonly`, short haystack searched in a loop | min 5.28 ms → 4.84 ms |
 | copy ladder vs `memcpy` call | 1.107× on the full row |
+
+### 9.4 Repeated append and `csv_parse`
+
+The unchanged scale-4 CSV workload constructs 10,000 rows (327,647 final
+bytes) with `csvData = csvData + line`, then parses them. Before consuming
+append, construction copied 1,637,899,970 cumulative bytes — about 4,999 times
+the final size — and dominated 99.7% of the row.
+
+Nine-run medians on the same host:
+
+| | before | consuming append | C++ | Rust |
+|---|---:|---:|---:|---:|
+| `csv_parse` | 103.827 ms | **2.486 ms** | 1.382 ms | 2.358 ms |
+
+That is **41.8× faster** end to end, 1.80× C++ and 1.05× Rust. The `--verify`
+ledger moved from 1.638 GB peak live memory and 50,002 leaked allocations to
+786 KB peak and two fixed harness-output allocations (18 bytes), with zero
+invalid or double releases. `tests/test_100_string_append_reuse.psm` makes the
+complexity check deterministic: 9,192 appends plus 1,000 formatting allocations
+must stay at or below 1,100 total allocations, rather than timing a CI machine.
 
 ---
 
@@ -446,3 +490,5 @@ free. A prefix cannot go there for the reason in §5, but a hash could.
 - [`string-rosetta-rs`](https://github.com/rosetta-rs/string-rosetta-rs) — sizes and inline capacities of the Rust ecosystem's variants.
 - [musl](https://git.musl-libc.org/cgit/musl/tree/src/string/aarch64/memcpy.S) and [Folly](https://github.com/facebook/folly/blob/main/folly/memcpy.S) — the overlapping-load small-copy ladder §9.3 measures.
 - Raymond Chen, [*An informal comparison of the three major implementations of std::string*](https://devblogs.microsoft.com/oldnewthing/20240510-00/?p=109742) — where `libc++`'s 22 bytes comes from.
+- Swift, [`String.swift`](https://github.com/swiftlang/swift/blob/main/stdlib/public/core/String.swift) and [`StringDesign.rst`](https://github.com/swiftlang/swift/blob/main/docs/StringDesign.rst) — value semantics, unique-buffer mutation, SSO and exponential growth.
+- Rust, [`String`](https://doc.rust-lang.org/alloc/string/struct.String.html) and [`RawVec`](https://github.com/rust-lang/rust/blob/main/library/alloc/src/raw_vec/mod.rs) — `push_str`, reserve checks and amortised growth.

@@ -204,6 +204,24 @@ PRISMIO_NOINLINE void* rt_base_alloc(size_t size) {
     return malloc(size);
 }
 
+// The reallocating half of the allocator seam. A growable String keeps its
+// public ABI as a plain char pointer, so capacity is allocator metadata rather
+// than another word in every String value. The three supported host families
+// expose that metadata directly; an unfamiliar allocator answers zero and the
+// append path remains correct by growing on every call.
+PRISMIO_NOINLINE void* rt_base_realloc(void* p, size_t size) {
+    return realloc(p, size);
+}
+
+size_t rt_base_usable_size(void* p) {
+    if (!p) return 0;
+#ifdef RT_USABLE_SIZE
+    return RT_USABLE_SIZE(p);
+#else
+    return 0;
+#endif
+}
+
 #ifdef RT_USABLE_SIZE
 // Split out so that `rt_free` below has no path that needs a frame: both of its
 // exits are tail calls, which matters because the shape that gets nothing from
@@ -620,6 +638,59 @@ char* str_with_capacity(int length) {
     return result;
 }
 
+// Consume an owned long String and append one borrowed String to it.
+//
+// This is the mutation hidden underneath value semantics: codegen calls it only
+// for `s = s + x` after AIF has proved that `s` owns its slot. Capacity
+// doubles on a miss, making a repeated append amortized O(1), while the ordinary
+// concat remains an immutable one-allocation operation everywhere else.
+//
+// `suffix` may be `base` itself or a view into it. Record the offset before a
+// realloc and rebase it afterwards; without that, `s = s + s` is a use of the
+// old pointer after realloc moved the allocation.
+char* str_append_reuse(char* base, int base_length,
+                       const char* suffix, int suffix_length) {
+    if (!base || base_length < 0 || suffix_length < 0) {
+        fprintf(stderr, "runtime error: invalid String append\n");
+        exit(1);
+    }
+
+    size_t left = (size_t)base_length;
+    size_t right = (size_t)suffix_length;
+    if (right > (size_t)INT32_MAX - left) {
+        fprintf(stderr, "runtime error: String length exceeds %d bytes\n", INT32_MAX);
+        exit(1);
+    }
+    size_t needed = left + right + 1;
+    size_t capacity = rt_base_usable_size(base);
+
+    uintptr_t base_addr = (uintptr_t)base;
+    uintptr_t suffix_addr = (uintptr_t)suffix;
+    int suffix_in_base = suffix_addr >= base_addr && suffix_addr <= base_addr + left;
+    size_t suffix_offset = suffix_in_base ? (size_t)(suffix_addr - base_addr) : 0;
+
+    if (capacity < needed) {
+        size_t grown = capacity;
+        if (grown < left + 1) grown = left + 1;
+        if (grown < 16) grown = 16;
+        while (grown < needed) {
+            if (grown > SIZE_MAX / 2) { grown = needed; break; }
+            grown *= 2;
+        }
+        char* moved = (char*)rt_base_realloc(base, grown);
+        if (!moved) {
+            fprintf(stderr, "runtime error: out of memory growing String\n");
+            exit(1);
+        }
+        base = moved;
+        if (suffix_in_base) suffix = base + suffix_offset;
+    }
+
+    memmove(base + left, suffix, right);
+    base[left + right] = '\0';
+    return base;
+}
+
 char* int_to_str(int n) {
     char* result = (char*)rt_alloc(32);  // enough for any int
     sprintf(result, "%d", n);
@@ -933,6 +1004,10 @@ void prismio_memory_thread_cleanup(void) {
 #define AIF_VERIFY_BUCKETS 4096
 #define AIF_VERIFY_POISON  0xDD
 
+// The realloc verifier is defined before release so it can share the allocation
+// path; keep the public declaration visible in ordinary runtime builds too.
+void aif_verify_release(void* p);
+
 typedef struct AifLive {
     struct AifLive* next;
     void* p;
@@ -1058,6 +1133,35 @@ void* aif_verify_alloc(size_t size) {
     }
     aif_ledger_leave();
     return p;
+}
+
+size_t aif_verify_usable_size(void* p) {
+    if (!p) return 0;
+    size_t size = 0;
+    aif_ledger_enter();
+    unsigned b = aif_live_hash(p);
+    for (AifLive* n = aif_live[b]; n; n = n->next) {
+        if (n->p == p) { size = n->size; break; }
+    }
+    aif_ledger_leave();
+    return size;
+}
+
+void* aif_verify_realloc(void* p, size_t size) {
+    if (!p) return aif_verify_alloc(size);
+    size_t old_size = aif_verify_usable_size(p);
+    if (old_size == 0) {
+        aif_ledger_enter();
+        aif_violations++;
+        aif_ledger_leave();
+        fprintf(stderr, "aif-verify: realloc of a pointer that is not live (%p)\n", p);
+        return NULL;
+    }
+    void* moved = aif_verify_alloc(size);
+    if (!moved) return NULL;
+    memcpy(moved, p, old_size < size ? old_size : size);
+    aif_verify_release(p);
+    return moved;
 }
 
 void aif_verify_release(void* p) {
@@ -1688,15 +1792,17 @@ typedef struct {
     int elem_size;
 } RtList;
 
-static void* list_new_cap(int cap) {
+static void* list_new_cap(int cap, int elem_size) {
     RtList* l = (RtList*)rt_alloc(sizeof(RtList));
     l->len = 0;
     l->cap = cap;
     l->elem_own = AIF_ELEM_NONE;
     l->elem_release = 0;
     l->arena = rt_arena_slot();
-    l->elem_size = 0;
-    l->data = cap > 0 ? (void**)rt_alloc(sizeof(void*) * (size_t)cap) : NULL;
+    l->elem_size = elem_size;
+    size_t stride = elem_size > 0 ? (size_t)elem_size : sizeof(void*);
+    size_t bytes = cap > 0 ? (size_t)cap * stride : 0;
+    l->data = bytes > 0 ? (void**)rt_alloc(bytes) : NULL;
     return l;
 }
 
@@ -1712,7 +1818,7 @@ static void* list_new_cap(int cap) {
 // pointer, and only `push` allocates. The growth functions below start at 4 when
 // they find capacity 0, so the sequence a list actually sees is unchanged from
 // its first push onwards.
-void* list_new(void) { return list_new_cap(0); }
+__attribute__((malloc)) void* list_new(void) { return list_new_cap(0, 0); }
 
 // Vec::with_capacity. A hint about size, not a bound: the list still grows by
 // doubling past `n`, so a wrong hint costs memory or a realloc and never
@@ -1730,8 +1836,12 @@ void* list_new(void) { return list_new_cap(0); }
 // is the natural thing to write when the count is computed and comes out empty,
 // and a zero-length data block would make the first push read cap 0 and double it
 // to 0 forever.
-void* list_new_with_capacity(int n) {
-    return list_new_cap(n > 0 ? n : 4);
+__attribute__((malloc)) void* list_new_with_capacity(int n) {
+    return list_new_cap(n > 0 ? n : 4, 0);
+}
+
+__attribute__((malloc)) void* list_new_with_capacity_inline(int n, int elem_size) {
+    return list_new_cap(n > 0 ? n : 4, elem_size);
 }
 
 void list_set_elem_owner(void* lp, int mode) {
@@ -2045,7 +2155,7 @@ void list_push_inline_scalar_slow(void* lp, unsigned long long bits, int elem_si
 
 void list_push_inline_scalar(void* lp, unsigned long long bits, int elem_size) {
     RtList* l = (RtList*)lp;
-    if (l->elem_size != elem_size || l->len >= l->cap) {
+    if (__builtin_expect(l->elem_size != elem_size || l->len >= l->cap, 0)) {
         list_push_inline_scalar_slow(lp, bits, elem_size);
         return;
     }

@@ -44,6 +44,17 @@ fn run(name: &str, scale: i32, input: &str, output: &str) -> i32 {
         "file_write" => io::file_write(scale, output),
         "line_processing" => io::line_processing(input),
         "tokenization" => io::tokenization(scale),
+        "dijkstra_shortest_path" => algorithms::dijkstra_shortest_path(scale),
+        "lz4_compress" => algorithms::lz4_compress(scale),
+        "s_expression_parse" => algorithms::s_expression_parse(scale),
+        "flat_bitset" => data_structures::flat_bitset(scale),
+        "trie_search" => data_structures::trie_search(scale),
+        "sha256" => compute::sha256(scale),
+        "blake3_chunk" => compute::blake3_chunk(scale),
+        "raytracer_sphere" => compute::raytracer_sphere(scale),
+        "channel_pipeline" => compute::channel_pipeline(scale),
+        "base64_codec" => io::base64_codec(scale),
+        "csv_parse" => io::csv_parse(scale),
         _ => -1,
     }
 }

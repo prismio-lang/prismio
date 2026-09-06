@@ -6853,6 +6853,51 @@ int aif_owns_call_result_at_node(const void* node) {
     return any ? agreed : AIF_ELEM_NONE;
 }
 
+// A return effect, deliberately separate from the escape state of its allocation
+// site. One allocation expression represents every dynamic invocation of a
+// function. If one concat result is pushed into a List, `in_container` is raised
+// on that shared site; that says nothing about a different invocation returned
+// to a local binding. Treating it as though it did made one unrelated filesystem
+// call suppress ownership for every two-part String.concat in the program.
+//
+// A function is a direct fresh producer when every tracked return comes from an
+// allocation expression in that function and no return is untracked. This is an
+// effect of the function body, not of any caller, so it remains true when the
+// abstract site also appears in a parameter set through a later invocation.
+static int fresh_return_disposition(int f) {
+    if (f < 0 || fn_returns_partial(f)) return AIF_ELEM_NONE;
+    int rk = key_find(AIF_KEY_RET, f, 0);
+    if (rk < 0 || rk >= pt_len || !bits_any(&pt[rk])) return AIF_ELEM_NONE;
+
+    int agreed = AIF_ELEM_NONE;
+    for (int s = 0; s < site_count; s++) {
+        if (!bits_test(&pt[rk], s)) continue;
+        if (sites[s].fn != f) return AIF_ELEM_NONE;
+
+        int d = AIF_ELEM_NONE;
+        if (sites[s].kind == AIF_K_LIST) {
+            d = AIF_ELEM_LIST;
+        } else if (sites[s].kind == AIF_K_STRUCT
+                   && type_releases_of(nominal_find_id(sites[s].type))) {
+            d = AIF_ELEM_TYPED;
+        } else if (sites[s].kind != AIF_K_ARRAY && sites[s].kind != AIF_K_OPAQUE) {
+            d = AIF_ELEM_OBJECT;
+        }
+        if (d == AIF_ELEM_NONE) return AIF_ELEM_NONE;
+        if (agreed != AIF_ELEM_NONE && agreed != d) return AIF_ELEM_NONE;
+        agreed = d;
+    }
+    return agreed;
+}
+
+int aif_fresh_call_result_at_node(const void* node) {
+    if (node == NULL || aif_arena_at_node(node)) return AIF_ELEM_NONE;
+    for (NodeCall* n = call_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node == node) return fresh_return_disposition(n->fn);
+    }
+    return AIF_ELEM_NONE;
+}
+
 // Manifest ordering
 // SPEC 6.2 makes the record order normative -- byte-wise ascending by symbol --
 // because an unstable order makes every diff useless. The frontend builds each

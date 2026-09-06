@@ -1,0 +1,144 @@
+import std.io
+
+fn fill(xs: List<Int>, start: Int, end: Int) {
+    let mut i = start
+    while (i < end) {
+        list_push(xs, (i * 7 - 13) % 997)
+        i = i + 1
+    }
+}
+
+fn inclusiveFill(xs: List<Int>, end: Int) {
+    let mut i = 0
+    while (i <= end) {
+        list_push(xs, i)
+        i = i + 1
+    }
+}
+
+// Compile-only: the induction variable wraps, so this function intentionally
+// has no finite trip count. Its push must never use a finite capacity promise.
+fn wrappingInclusiveFill(xs: List<Int>, start: Int) {
+    let mut i = start
+    while (i <= 2147483647) {
+        list_push(xs, i)
+        i = i + 1
+    }
+}
+
+fn nearLimitFill(xs: List<Int>) {
+    let mut i = 2147483583
+    while (i <= 2147483646) {
+        list_push(xs, i)
+        i = i + 1
+    }
+}
+
+fn interruptedFill(xs: List<Int>, n: Int) {
+    let mut i = 0
+    while (i < n) {
+        if (i == 70) { break }
+        list_push(xs, i)
+        i = i + 1
+    }
+}
+
+fn observedValue(xs: List<Int>) -> Int { return list_len(xs) }
+
+fn observedFill(xs: List<Int>, n: Int) {
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, observedValue(xs))
+        i = i + 1
+    }
+}
+
+fn checkFill(n: Int) -> Int {
+    let xs: List<Int> = list_new()
+    fill(xs, 3, n + 3)
+    if (list_len(xs) != n) { return 1 }
+    let mut k = 0
+    while (k < n) {
+        if (list_get(xs, k) != ((k + 3) * 7 - 13) % 997) { return 2 }
+        k = k + 1
+    }
+    // A populated list must keep its contents when the same fill helper is
+    // called again and growth occurs during the append.
+    fill(xs, 0, 129)
+    if (list_len(xs) != n + 129) { return 3 }
+    k = 0
+    while (k < 129) {
+        if (list_get(xs, n + k) != (k * 7 - 13) % 997) { return 4 }
+        k = k + 1
+    }
+    if (list_get(xs, -1) != 0 or list_get(xs, n + 129) != 0) { return 5 }
+    list_set(xs, -1, 900)
+    list_set(xs, n + 129, 900)
+    if (list_len(xs) != n + 129) { return 6 }
+    return 0
+}
+
+struct FillPair { x: Int, y: Int }
+struct FillRow { pair: FillPair, life: Int, weight: Float }
+
+fn structFill(n: Int) -> Int {
+    let rows: List<FillRow> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(rows, FillRow {
+            pair: FillPair { x: i, y: -i }, life: i + 9, weight: 2.0
+        })
+        i = i + 1
+    }
+    i = 0
+    while (i < n) {
+        let r = list_get(rows, i)
+        if (r.pair.x != i or r.pair.y != -i or r.life != i + 9) { return 7 }
+        r.life = r.life - 1
+        r.weight = r.weight + 3.0
+        if (list_len(rows) != n or r.life != i + 8 or r.weight != 5.0) { return 8 }
+        i = i + 1
+    }
+    return 0
+}
+
+fn queueGrowth(n: Int) -> Int {
+    let queue: List<Int> = list_new()
+    list_push(queue, 0)
+    let mut head = 0
+    while (head < list_len(queue)) {
+        let node = list_get(queue, head)
+        if (node != head) { return 9 }
+        if (node < n) { list_push(queue, node + 1) }
+        head = head + 1
+    }
+    if (head != n + 1) { return 10 }
+    return 0
+}
+
+fn main() -> Int {
+    if (checkFill(0) != 0 or checkFill(1) != 0 or checkFill(63) != 0
+            or checkFill(64) != 0 or checkFill(65) != 0 or checkFill(127) != 0
+            or checkFill(128) != 0 or checkFill(129) != 0 or checkFill(4096) != 0) {
+        return 11
+    }
+    let empty: List<Int> = list_new()
+    fill(empty, 90, -1)
+    inclusiveFill(empty, -1)
+    if (list_len(empty) != 0) { return 12 }
+    inclusiveFill(empty, 128)
+    if (list_len(empty) != 129 or list_get(empty, 128) != 128) { return 13 }
+    let stopped: List<Int> = list_new()
+    interruptedFill(stopped, 200)
+    if (list_len(stopped) != 70 or list_get(stopped, 69) != 69) { return 14 }
+    let observed: List<Int> = list_new()
+    observedFill(observed, 129)
+    if (list_len(observed) != 129 or list_get(observed, 128) != 128) { return 15 }
+    if (structFill(129) != 0 or queueGrowth(4096) != 0) { return 16 }
+    let limit: List<Int> = list_new()
+    nearLimitFill(limit)
+    if (list_len(limit) != 64 or list_get(limit, 0) != 2147483583
+            or list_get(limit, 63) != 2147483646) { return 17 }
+    println("PASS: counted fill, struct regions, and growing queue")
+    return 0
+}

@@ -121,7 +121,11 @@ internal fn nodeProducesOwnedValue(exprPtr: Ptr) -> Bool {
     // binding hands that one to the caller -- so it still guards the scope-exit
     // drop, and the branch below still applies it. Neither is about a value an
     // assignment displaced, which is what this predicate answers.
+    let expr = ptr_to_node(exprPtr)
+    let stringFresh = nodeGetType(expr).kind == TypeKind.STRING
+        and aif_fresh_call_result_at_node(exprPtr) != AIF_ELEM_NONE
     return aif_owns_call_result_at_node(exprPtr) != AIF_ELEM_NONE
+        or stringFresh
         or nodeIsStringLiteralExpr(exprPtr)
 }
 
@@ -400,11 +404,37 @@ private fn irArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
 }
 
 private fn irOwnedTemporaryKind(argNode: ASTNode) -> Int {
-    let owned = aif_owns_call_result_at_node(node_to_ptr(argNode))
+    let mut owned = aif_owns_call_result_at_node(node_to_ptr(argNode))
+    if (owned == AIF_ELEM_NONE) {
+        owned = aif_fresh_call_result_at_node(node_to_ptr(argNode))
+    }
     if (nodeGetType(argNode).kind == TypeKind.DATAVIEW) { return IR_DROP_DATAVIEW }
     if (owned == AIF_ELEM_LIST) { return IR_DROP_LIST }
     if (owned == AIF_ELEM_TYPED) { return IR_DROP_TYPED }
     return IR_DROP_OBJECT
+}
+
+// String.concat copies every argument into its own result and retains none of
+// them. That explicit effect makes a direct-fresh argument safe to release even
+// when the allocation site's global `in_container` bit was raised by some other
+// invocation. Do not generalise this to arbitrary calls: a value aggregate such
+// as TypeInfo may return an argument in one of its fields without the current
+// points-to model exposing that as a direct parameter return.
+private fn irConcatArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
+    if (argNode.kind != NodeKind.CALL_EXPR) { return false }
+    return aif_fresh_call_result_at_node(node_to_ptr(argNode)) != AIF_ELEM_NONE
+}
+
+private fn generateOwnedTemporaryRelease(value: String, kind: Int, declType: String) {
+    if (kind == IR_DROP_LIST) {
+        ir_free_list(value)
+    } else if (kind == IR_DROP_DATAVIEW) {
+        ir_free_data_view(value)
+    } else if (kind == IR_DROP_TYPED) {
+        ir_free_typed(value, releaseFnName(structTypeName(declType)))
+    } else {
+        ir_free_object(value)
+    }
 }
 
 // Released after the enclosing call returns, never before it: the callee borrows
@@ -419,17 +449,71 @@ private fn generateOwnedTemporaryReleases(vals: List<String>, kinds: List<Int>, 
         let value: String = list_get(vals, i)
         let kind: Int = list_get(kinds, i)
         let declType: String = list_get(types, i)
-        if (kind == IR_DROP_LIST) {
-            ir_free_list(value)
-        } else if (kind == IR_DROP_DATAVIEW) {
-            ir_free_data_view(value)
-        } else if (kind == IR_DROP_TYPED) {
-            ir_free_typed(value, releaseFnName(structTypeName(declType)))
-        } else {
-            ir_free_object(value)
-        }
+        generateOwnedTemporaryRelease(value, kind, declType)
         i = i + 1
     }
+}
+
+// Lower the ownership-proved accumulator form to a consuming append.
+//
+// The ordinary String.concat remains immutable. This path is offered only by an
+// assignment whose destination owns the value it is displacing, and only when
+// that exact destination is the first argument of the two-part concat. It is the
+// value-semantic equivalent of Swift's unique-buffer mutation and Rust String's
+// push_str: the old value is dead at the store, so its capacity can become the
+// replacement's without exposing mutation in the language.
+//
+// Empty means "not this shape"; a generated LLVM value is always named `%...`.
+internal fn generateStringReinitConcat(exprPtr: Ptr, target: String, old: String) -> String {
+    if (nodeIsNull(exprPtr)) { return "" }
+    let expr = ptr_to_node(exprPtr)
+    if (expr.kind != NodeKind.CALL_EXPR or nodeIsNull(expr.child1)) { return "" }
+    if (expr.i3 != 3) { return "" }
+    let callee = ptr_to_node(expr.child1)
+    if (callee.kind != NodeKind.IDENTIFIER_EXPR or callee.s1.equals("concat") == false) {
+        return ""
+    }
+    if (nodeGetType(expr).kind != TypeKind.STRING or nodeIsNull(expr.child2)) { return "" }
+
+    let first = ptr_to_node(expr.child2)
+    if (first.kind != NodeKind.IDENTIFIER_EXPR or first.s1.equals(target) == false) {
+        return ""
+    }
+    if (nodeIsNull(first.next)) { return "" }
+    let suffixNode = ptr_to_node(first.next)
+    if (nodeExists(suffixNode.next)) { return "" }
+    if (nodeGetType(suffixNode).kind != TypeKind.STRING) { return "" }
+
+    // Decide this before generating the call. Call lowering consumes the
+    // resolved symbol parked in CALL_EXPR.s2 while forming the LLVM callee
+    // name, so asking afterwards loses the `toString__Int` producer contract.
+    let releaseSuffix = irArgumentIsOwnedTemporary(suffixNode)
+        or irConcatArgumentIsOwnedTemporary(suffixNode)
+    let suffixDropKind = irOwnedTemporaryKind(suffixNode)
+    let suffixDropType = getExprType(suffixNode)
+    let suffix = generateExpression(suffixNode)
+    let oldWide = ir_get_temp_name(ir_extract_value("struct:prismio.str", old, 1))
+    let suffixWide = ir_get_temp_name(ir_extract_value("struct:prismio.str", suffix, 1))
+    let oldNarrow = ir_get_temp_name(ir_trunc("i64", oldWide, "i32"))
+    let suffixNarrow = ir_get_temp_name(ir_trunc("i64", suffixWide, "i32"))
+    let oldLen = ir_get_temp_name(ir_and("i32", oldNarrow, "2147483647"))
+    let suffixLen = ir_get_temp_name(ir_and("i32", suffixNarrow, "2147483647"))
+    let total = ir_get_temp_name(ir_add("i32", oldLen, suffixLen))
+
+    ir_call_begin()
+    ir_call_arg_cstr(old, 0)
+    ir_call_arg("i32", oldLen)
+    ir_call_arg_cstr(suffix, 1)
+    ir_call_arg("i32", suffixLen)
+    let raw = ir_get_temp_name(ir_call_end("ptr", "str_append_reuse"))
+
+    // A produced suffix is borrowed only for the append call. It remains a
+    // distinct owner afterwards even if its bytes happened to alias the old
+    // buffer, so discharge it at the same point the general call path does.
+    if (releaseSuffix) {
+        generateOwnedTemporaryRelease(suffix, suffixDropKind, suffixDropType)
+    }
+    return fatWithLength(raw, total)
 }
 
 // Whether `name` is ever the whole initialiser of another binding -- `let u = t`.
@@ -754,7 +838,7 @@ private fn inlineElemSizeOfCall(expr: ASTNode) -> Int {
 // T3 site in this codebase is an opaque extern return and a refcount header in
 // front of one is memory nobody allocated. Walking twice is cheaper than
 // allocating once here.
-private fn irFlatGuardCount(nodePtr: Ptr) -> Int {
+private fn irFlatGuardCount(nodePtr: Ptr, bodyPtr: Ptr) -> Int {
     if (nodeIsNull(nodePtr)) { return 0 }
     let n = ptr_to_node(nodePtr)
 
@@ -767,8 +851,14 @@ private fn irFlatGuardCount(nodePtr: Ptr) -> Int {
             // The receiver is evaluated a second time in the preheader, so it has
             // to be something evaluating twice cannot change: a name, or a field
             // read off one. `w.velocities` is the shape every corpus loop uses.
-            if (irIsPureReceiver(ptr_to_node(n.child2)) == false) { return 0 - 1 }
-            found = 1
+            let recv = ptr_to_node(n.child2)
+            if (irIsPureReceiver(recv) == false) { return 0 - 1 }
+            let base = irReceiverBaseName(recv)
+            if (base.equals("") == false and irBodyBindsName(bodyPtr, base)) {
+                found = 0
+            } else {
+                found = 1
+            }
         } else if (isStaticBoxedListGet(n, fname)) {
             // The typed boxed accessor reloads the current header at its site,
             // so it needs no representation guard and does not make an
@@ -778,14 +868,29 @@ private fn irFlatGuardCount(nodePtr: Ptr) -> Int {
             // Writes through the block without stamping, growing or
             // reallocating it. The receiver is evaluated a second time in the
             // preheader, so it must be something evaluating twice cannot change.
-            if (irIsPureReceiver(ptr_to_node(n.child2)) == false) { return 0 - 1 }
-            found = 1
+            let recv = ptr_to_node(n.child2)
+            if (irIsPureReceiver(recv) == false) { return 0 - 1 }
+            let base = irReceiverBaseName(recv)
+            if (base.equals("") == false and irBodyBindsName(bodyPtr, base)) {
+                found = 0
+            } else {
+                found = 1
+            }
         } else if (irCallIsGuardSafe(fname)) {
             // A call the compiler lowers itself, to an operation that touches no
             // list. It cannot reallocate or free one, so it has nothing to say
             // about this loop's guard. Without this a `__builtin_max` in the body
             // would decline the loop exactly as an opaque call does -- which is
             // the trap a hand-written `maxInt` helper still falls into.
+            found = 0
+        } else if (fname.equals("list_len")) {
+            // Reading list length touches only the header field without reallocating
+            // or freeing any list block.
+            found = 0
+        } else if (flatPushStride(n, fname) > 0) {
+            // A typed push into an inline list. The list's element representation
+            // (elem_size) is invariant across growth, and a distinct receiver cannot
+            // move another list's element block.
             found = 0
         } else {
             // **Any other call declines the whole loop.** It could push to one of
@@ -796,21 +901,21 @@ private fn irFlatGuardCount(nodePtr: Ptr) -> Int {
         }
     }
 
-    let a = irFlatGuardCountChain(n.child1)
+    let a = irFlatGuardCountChain(n.child1, bodyPtr)
     if (a < 0) { return 0 - 1 }
-    let b = irFlatGuardCountChain(n.child2)
+    let b = irFlatGuardCountChain(n.child2, bodyPtr)
     if (b < 0) { return 0 - 1 }
-    let c = irFlatGuardCountChain(n.child3)
+    let c = irFlatGuardCountChain(n.child3, bodyPtr)
     if (c < 0) { return 0 - 1 }
     return found + a + b + c
 }
 
-private fn irFlatGuardCountChain(head: Ptr) -> Int {
+private fn irFlatGuardCountChain(head: Ptr, bodyPtr: Ptr) -> Int {
     let mut total = 0
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
-        let one = irFlatGuardCount(node_to_ptr(n))
+        let one = irFlatGuardCount(node_to_ptr(n), bodyPtr)
         if (one < 0) { return 0 - 1 }
         total = total + one
         p = n.next
@@ -828,6 +933,15 @@ private fn irCallIsGuardSafe(fname: String) -> Bool {
     // itself, plus every Prismio function irBodyTouchesNothing proved calls
     // nothing and indexes nothing.
     return ir_is_guard_safe_fn(fname) == 1
+}
+
+private fn irReceiverBaseName(recv: ASTNode) -> String {
+    if (recv.kind == NodeKind.IDENTIFIER_EXPR) { return recv.s1 }
+    if (recv.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        if (nodeIsNull(recv.child1)) { return "" }
+        return irReceiverBaseName(ptr_to_node(recv.child1))
+    }
+    return ""
 }
 
 private fn irIsPureReceiver(recv: ASTNode) -> Bool {
@@ -854,12 +968,12 @@ private fn irStringListContains(xs: List<String>, s: String) -> Bool {
 // predicate into the slot. The slot is the accumulator, which is what removes
 // the need to hold the receivers anywhere -- mem2reg turns the load/and/store
 // chain back into one `and` tree in the preheader.
-private fn irEmitFlatGuards(nodePtr: Ptr, slot: String) {
+private fn irEmitFlatGuards(nodePtr: Ptr, slot: String, bodyPtr: Ptr) {
     let mut seen: List<String> = list_new()
-    irEmitFlatGuardsRec(nodePtr, slot, seen)
+    irEmitFlatGuardsRec(nodePtr, slot, seen, bodyPtr)
 }
 
-private fn irEmitFlatGuardsRec(nodePtr: Ptr, slot: String, seen: List<String>) {
+private fn irEmitFlatGuardsRec(nodePtr: Ptr, slot: String, seen: List<String>, bodyPtr: Ptr) {
     if (nodeIsNull(nodePtr)) { return }
     let n = ptr_to_node(nodePtr)
 
@@ -870,36 +984,110 @@ private fn irEmitFlatGuardsRec(nodePtr: Ptr, slot: String, seen: List<String>) {
         if (stride <= 0) { stride = flatSetScalarStride(n, fname) }
         if (stride > 0) {
             let recvNode = ptr_to_node(n.child2)
-            let mut key = ""
-            if (recvNode.kind == NodeKind.IDENTIFIER_EXPR) {
-                key = recvNode.s1
-            }
-            let mut alreadySeen = false
-            if (key.equals("") == false) {
-                alreadySeen = irStringListContains(seen, key)
-            }
-            if (alreadySeen == false) {
-                if (key.equals("") == false) { list_push(seen, strClone(key)) }
-                let one = ir_get_temp_name(ir_list_is_flat(
-                    generateExpression(recvNode), stride))
-                let prev = ir_get_temp_name(ir_load("i1", slot))
-                ir_store("i1", ir_get_temp_name(ir_and("i1", prev, one)), slot)
+            let base = irReceiverBaseName(recvNode)
+            if (base.equals("") == false and irBodyBindsName(bodyPtr, base)) {
+                // Bound inside this loop's body; cannot be evaluated in preheader.
+            } else {
+                let mut key = ""
+                if (recvNode.kind == NodeKind.IDENTIFIER_EXPR) {
+                    key = recvNode.s1
+                }
+                let mut alreadySeen = false
+                if (key.equals("") == false) {
+                    alreadySeen = irStringListContains(seen, key)
+                }
+                if (alreadySeen == false) {
+                    if (key.equals("") == false) { list_push(seen, strClone(key)) }
+                    let one = ir_get_temp_name(ir_list_is_flat(
+                        generateExpression(recvNode), stride))
+                    let prev = ir_get_temp_name(ir_load("i1", slot))
+                    ir_store("i1", ir_get_temp_name(ir_and("i1", prev, one)), slot)
+                }
             }
         }
     }
 
-    irEmitFlatGuardsChain(n.child1, slot, seen)
-    irEmitFlatGuardsChain(n.child2, slot, seen)
-    irEmitFlatGuardsChain(n.child3, slot, seen)
+    irEmitFlatGuardsChain(n.child1, slot, seen, bodyPtr)
+    irEmitFlatGuardsChain(n.child2, slot, seen, bodyPtr)
+    irEmitFlatGuardsChain(n.child3, slot, seen, bodyPtr)
 }
 
-private fn irEmitFlatGuardsChain(head: Ptr, slot: String, seen: List<String>) {
+private fn irEmitFlatGuardsChain(head: Ptr, slot: String, seen: List<String>, bodyPtr: Ptr) {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
-        irEmitFlatGuardsRec(node_to_ptr(n), slot, seen)
+        irEmitFlatGuardsRec(node_to_ptr(n), slot, seen, bodyPtr)
         p = n.next
     }
+}
+
+// Whether this body can change one identifier receiver's length. Calls not
+// explicitly understood already make irFlatGuardCount decline the loop; among
+// accepted calls, a typed push is the only length-changing operation.
+private fn irBodyPushesList(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.CALL_EXPR and nodeExists(n.child1)
+            and nodeExists(n.child2)) {
+        let fname = ptr_to_node(n.child1).s1
+        let recv = ptr_to_node(n.child2)
+        if (flatPushStride(n, fname) > 0
+                and recv.kind == NodeKind.IDENTIFIER_EXPR
+                and recv.s1.equals(name)) {
+            return true
+        }
+    }
+    if (irBodyPushesListChain(n.child1, name)) { return true }
+    if (irBodyPushesListChain(n.child2, name)) { return true }
+    return irBodyPushesListChain(n.child3, name)
+}
+
+private fn irBodyPushesListChain(head: Ptr, name: String) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (irBodyPushesList(node_to_ptr(n), name)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+// Capture the first flat scalar receiver whose length the loop cannot change.
+// A single receiver covers the important mixed-container shape (a growing work
+// queue plus a fixed visited/score array) without allocating analysis tables in
+// the self-hosted compiler.
+private fn irCaptureStableListBound(nodePtr: Ptr, bodyPtr: Ptr) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.CALL_EXPR and nodeExists(n.child1)
+            and nodeExists(n.child2)) {
+        let fname = ptr_to_node(n.child1).s1
+        let mut stride = flatGetStride(n, fname)
+        if (stride <= 0) { stride = flatSetScalarStride(n, fname) }
+        let recv = ptr_to_node(n.child2)
+        if (stride > 0 and recv.kind == NodeKind.IDENTIFIER_EXPR
+                and irBodyBindsName(bodyPtr, recv.s1) == false
+                and irBodyPushesList(bodyPtr, recv.s1) == false) {
+            irLoopHoistedBoundList = strClone(recv.s1)
+            let listValue = generateExpression(recv)
+            irLoopHoistedBoundValue = ir_get_temp_name(ir_list_len(listValue))
+            irLoopHoistedDataValue = ir_get_temp_name(ir_list_data(listValue))
+            return true
+        }
+    }
+    if (irCaptureStableListBoundChain(n.child1, bodyPtr)) { return true }
+    if (irCaptureStableListBoundChain(n.child2, bodyPtr)) { return true }
+    return irCaptureStableListBoundChain(n.child3, bodyPtr)
+}
+
+private fn irCaptureStableListBoundChain(head: Ptr, bodyPtr: Ptr) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (irCaptureStableListBound(node_to_ptr(n), bodyPtr)) { return true }
+        p = n.next
+    }
+    return false
 }
 
 // The loop's one flat-List guard, emitted into the preheader, or "" for a loop
@@ -914,7 +1102,8 @@ private fn irEmitFlatGuardsChain(head: Ptr, slot: String, seen: List<String>) {
 // Conservative in one direction only. If the guard is false at run time every
 // site takes `list_get_inline`, which is exactly what they did before.
 internal fn generateLoopFlatGuard(cond: ASTNode, body: ASTNode) -> String {
-    if (irFlatGuardCount(node_to_ptr(body)) <= 0) { return "" }
+    let bodyPtr = node_to_ptr(body)
+    if (irFlatGuardCount(bodyPtr, bodyPtr) <= 0) { return "" }
 
     // If an enclosing loop already established that all lists are flat, we only
     // need a guard if this loop can prove its own range.
@@ -925,7 +1114,7 @@ internal fn generateLoopFlatGuard(cond: ASTNode, body: ASTNode) -> String {
         let slot = ir_get_var_slot(name)
         ir_alloca("i1", slot)
         ir_store("i1", "true", slot)
-        let proved = generateLoopRangeGuards(node_to_ptr(cond), node_to_ptr(body), slot)
+        let proved = generateLoopRangeGuards(node_to_ptr(cond), bodyPtr, slot)
         if (proved) {
             irLoopRangeProved = true
             return slot
@@ -940,9 +1129,42 @@ internal fn generateLoopFlatGuard(cond: ASTNode, body: ASTNode) -> String {
     let slot = ir_get_var_slot(name)
     ir_alloca("i1", slot)
     ir_store("i1", "true", slot)
-    irEmitFlatGuards(node_to_ptr(body), slot)
-    irLoopRangeProved = generateLoopRangeGuards(node_to_ptr(cond), node_to_ptr(body), slot)
+    irEmitFlatGuards(bodyPtr, slot, bodyPtr)
+    irCaptureStableListBound(bodyPtr, bodyPtr)
+    generateLoopHeaderBound(cond, bodyPtr, slot)
+    irLoopRangeProved = generateLoopRangeGuards(node_to_ptr(cond), bodyPtr, slot)
     return slot
+}
+
+// Capture the one per-iteration fact carried by a growing-list condition:
+//
+//     while (head < list_len(queue)) { let x = list_get(queue, head); ... }
+//
+// `list_len(queue)` is deliberately allowed to change as the body appends. The
+// condition still proves the current `head` at the top of every iteration. A
+// non-negative preheader conjunct supplies the half an unsigned bounds check
+// also needs; once the body assigns `head`, stmt.psm expires this fact, so a
+// later `queue[head]` remains checked.
+private fn generateLoopHeaderBound(cond: ASTNode, bodyPtr: Ptr, slot: String) {
+    if (cond.kind != NodeKind.BINARY_EXPR or cond.s1.equals("<") == false) { return }
+    if (nodeIsNull(cond.child1) or nodeIsNull(cond.child2)) { return }
+    let index = ptr_to_node(cond.child1)
+    let bound = ptr_to_node(cond.child2)
+    if (index.kind != NodeKind.IDENTIFIER_EXPR or bound.kind != NodeKind.CALL_EXPR) { return }
+    if (nodeIsNull(bound.child1) or nodeIsNull(bound.child2)) { return }
+    if (ptr_to_node(bound.child1).s1.equals("list_len") == false) { return }
+    let listNode = ptr_to_node(bound.child2)
+    if (listNode.kind != NodeKind.IDENTIFIER_EXPR) { return }
+    if (nodeExists(listNode.next)) { return }
+    if (irBodyBindsName(bodyPtr, listNode.s1)) { return }
+
+    let value = generateExpression(index)
+    let nonNegative = ir_get_temp_name(ir_icmp_sge("i32", value, "0"))
+    let prev = ir_get_temp_name(ir_load("i1", slot))
+    ir_store("i1", ir_get_temp_name(ir_and("i1", prev, nonNegative)), slot)
+    irLoopHeaderBoundList = strClone(listNode.s1)
+    irLoopHeaderBoundIndex = strClone(index.s1)
+    irLoopHeaderBoundActive = true
 }
 
 // A term the preheader may evaluate and the loop may not change: an integer
@@ -1647,6 +1869,67 @@ internal fn generateWholeBufferCopy(cond: ASTNode, body: ASTNode, endLabel: Int)
     return true
 }
 
+private fn irIsZeroScalar(nodePtr: Ptr) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind != NodeKind.LITERAL_EXPR) { return false }
+    if (n.i1 == TokenType.NUMBER_LITERAL) { return n.s1.equals("0") }
+    if (n.i1 == TokenType.BOOL_LITERAL) { return n.s1.equals("false") }
+    return false
+}
+
+// A counted append of scalar zeroes is a byte fill. The fast arm is guarded by
+// the same representation and capacity facts as E1, so an unusual unstamped or
+// undersized list still executes the original loop unchanged.
+internal fn generateWholeBufferZeroFill(cond: ASTNode, body: ASTNode,
+                                        endLabel: Int) -> Bool {
+    if (cond.kind != NodeKind.BINARY_EXPR or cond.s1.equals("<") == false) {
+        return false
+    }
+    if (nodeIsNull(cond.child1) or nodeIsNull(cond.child2)) { return false }
+    let ivNode = ptr_to_node(cond.child1)
+    if (ivNode.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    let iv = ivNode.s1
+    let bodyPtr = node_to_ptr(body)
+    let boundNode = ptr_to_node(cond.child2)
+    if (irIsInvariantTerm(boundNode, iv, bodyPtr) == false) { return false }
+    if (irCountAssigns(bodyPtr, iv) != 1) { return false }
+    if (irIVStepText(bodyPtr, iv, "+").equals("1") == false) { return false }
+    if (irIVUpdateIsLast(bodyPtr, iv) == false) { return false }
+
+    let callPtr = irLoneCall(body, iv)
+    if (nodeIsNull(callPtr)) { return false }
+    let push = ptr_to_node(callPtr)
+    if (nodeIsNull(push.child1)) { return false }
+    let stride = flatPushStride(push, ptr_to_node(push.child1).s1)
+    if (stride <= 0) { return false }
+    let recvPtr = irCallArg(push, 0)
+    if (irStableReceiver(recvPtr, bodyPtr) == false) { return false }
+    if (irIsZeroScalar(irCallArg(push, 1)) == false) { return false }
+
+    let start = ir_get_temp_name(ir_sext("i32", generateExpression(ivNode), "i64"))
+    let finish = ir_get_temp_name(ir_sext("i32", generateExpression(boundNode), "i64"))
+    let count = ir_get_temp_name(ir_sub("i64", finish, start))
+    let recv = ptr_to_node(recvPtr)
+    let nonNegative = ir_get_temp_name(ir_icmp_sge("i64", count, "0"))
+    let flat = ir_get_temp_name(ir_list_is_flat(generateExpression(recv), stride))
+    let room = ir_get_temp_name(ir_list_has_room(generateExpression(recv), count))
+    let ok = ir_get_temp_name(ir_and("i1", nonNegative,
+        ir_get_temp_name(ir_and("i1", flat, room))))
+    let fillLabel = ir_get_label()
+    let slowLabel = ir_get_label()
+    ir_cond_br_numbered(ok, fillLabel, slowLabel)
+
+    ir_label_numbered(fillLabel)
+    ir_list_flat_zero_append(generateExpression(recv), count, stride)
+    ir_store(storageType(getExprType(ivNode)), generateExpression(boundNode),
+             ir_get_var_slot(iv))
+    ir_br_numbered(endLabel)
+
+    ir_label_numbered(slowLabel)
+    return true
+}
+
 // `count <= list_len(receiver)`, in i64.
 private fn irWithinLength(recv: ASTNode, count: String) -> String {
     ir_call_begin()
@@ -1785,6 +2068,18 @@ private fn irEmitPushChain(head: Ptr, bodyPtr: Ptr, trip: String, slot: String) 
     }
 }
 
+private fn irScalarFillValue(nodePtr: Ptr) -> Bool {
+    if (nodeIsNull(nodePtr)) { return true }
+    let n = ptr_to_node(nodePtr)
+    if (nodeHasType(n) == false) { return false }
+    if (scalarInlineBytes(typeIrKey(nodeGetType(n))) <= 0) { return false }
+    if (n.kind == NodeKind.LITERAL_EXPR or n.kind == NodeKind.IDENTIFIER_EXPR) {
+        return true
+    }
+    if (n.kind != NodeKind.BINARY_EXPR and n.kind != NodeKind.UNARY_EXPR) { return false }
+    return irScalarFillValue(n.child1) and irScalarFillValue(n.child2)
+}
+
 // E1. HotSpot's loop predication, aimed at the capacity check instead of the
 // range check.
 //
@@ -1797,9 +2092,8 @@ private fn irEmitPushChain(head: Ptr, bodyPtr: Ptr, trip: String, slot: String) 
 //
 // It does not. Proving the whole loop's capacity once in the preheader makes the
 // body checkless -- strictly less work than the rejected form, which still
-// branched -- and a list from `list_new()` has capacity 0, fails the conjunct and
-// takes the ordinary path for one compare per loop *entry*. **The runtime guard
-// is the profile**, evaluated where the offline one was being asked for.
+// branched. Empty lists can now prepare capacity for a pure scalar fill before
+// this test; all other insufficient-capacity loops retain the ordinary path.
 internal fn generateLoopPushGuard(cond: ASTNode, body: ASTNode) -> String {
     let bodyPtr = node_to_ptr(body)
     if (irPushGuardOk(bodyPtr, bodyPtr) == false) { return "" }
@@ -1822,8 +2116,30 @@ internal fn generateLoopPushGuard(cond: ASTNode, body: ASTNode) -> String {
     let bound = ir_get_temp_name(ir_sext("i32", generateExpression(boundNode), "i64"))
     let span = ir_get_temp_name(ir_sub("i64", bound, init))
     let mut trip = strClone(span)
+    let mut finite = "true"
+    let mut preparedTrip = strClone(span)
     if (cond.s1.equals("<=")) {
         trip = ir_get_temp_name(ir_add("i64", span, "1"))
+        // i = i + 1 wraps after Int.MAX. That loop has no finite append bound,
+        // even when its first few iterations fit in the current capacity.
+        finite = ir_get_temp_name(ir_icmp_slt("i64", bound, "2147483647"))
+        let valid = ir_get_temp_name(ir_zext("i1", finite, "i64"))
+        preparedTrip = ir_get_temp_name(ir_mul("i64", trip, valid))
+    }
+
+    // Exactly one unconditional append, followed by the induction update.
+    // No call in its value, early exit, aliasing receiver, or extra statement
+    // can observe the earlier growth. Populated and tiny lists are declined
+    // at runtime, and retain the ordinary checked push path.
+    let fillPtr = irLoneCall(body, iv)
+    if (nodeExists(fillPtr)) {
+        let fill = ptr_to_node(fillPtr)
+        if (nodeExists(fill.child1)) {
+            let stride = flatPushStride(fill, ptr_to_node(fill.child1).s1)
+            if (stride > 0 and irScalarFillValue(irCallArg(fill, 1))) {
+                ir_list_prepare_fill(generateExpression(ptr_to_node(fill.child2)), preparedTrip, stride)
+            }
+        }
     }
 
     let name = "pushguard.".concat(strFromInt(irLoopPushGuardCounter))
@@ -1831,7 +2147,7 @@ internal fn generateLoopPushGuard(cond: ASTNode, body: ASTNode) -> String {
     ir_set_var_type(name, "Bool")
     let slot = ir_get_var_slot(name)
     ir_alloca("i1", slot)
-    ir_store("i1", "true", slot)
+    ir_store("i1", finite, slot)
     irEmitPushGuards(bodyPtr, bodyPtr, trip, slot)
     return slot
 }
@@ -1839,7 +2155,7 @@ internal fn generateLoopPushGuard(cond: ASTNode, body: ASTNode) -> String {
 // E1's scalar push: under the loop's capacity guard, a typed store and a length
 // bump. True when it emitted the call itself.
 private fn generateGuardedScalarPush(expr: ASTNode, funcName: String) -> Bool {
-    if (irLoopPushGuard.equals("")) { return false }
+    if (irLoopPushGuard.equals("") and irLoopFlatGuard.equals("")) { return false }
     if (flatPushStride(expr, funcName) <= 0) { return false }
     let listNode = ptr_to_node(expr.child2)
     let valueNode = ptr_to_node(listNode.next)
@@ -1854,8 +2170,15 @@ private fn generateGuardedScalarPush(expr: ASTNode, funcName: String) -> Bool {
 
     let listVal = generateExpression(listNode)
     let valueVal = generateExpression(valueNode)
-    let guard = ir_get_temp_name(ir_load("i1", irLoopPushGuard))
-    ir_list_flat_push_scalar(listVal, valueVal, ekey, stride, guard)
+    let mut guard = "1"
+    let mut checkCapacity = 1
+    if (irLoopPushGuard.equals("") == false) {
+        guard = ir_get_temp_name(ir_load("i1", irLoopPushGuard))
+        checkCapacity = 0
+    } else if (irLoopFlatGuard.equals("1") == false) {
+        guard = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
+    }
+    ir_list_flat_push_scalar(listVal, valueVal, ekey, stride, guard, checkCapacity)
     return true
 }
 
@@ -1965,14 +2288,14 @@ private fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
     if (irLoopPushGuard.equals("") == false) {
         let pushGuard = ir_get_temp_name(ir_load("i1", irLoopPushGuard))
         let fast = ir_get_temp_name(ir_list_flat_push(listVal, esize, pushGuard))
-        generateStructLiteralFields(valueNode, valueNode.s1, fast)
+        generateStructLiteralFields(valueNode, valueNode.s1, fast, true)
         return true
     }
     ir_call_begin()
     ir_call_arg("ptr", listVal)
     ir_call_arg("i32", strFromInt(esize))
     let slot = ir_get_temp_name(ir_call_end("ptr", "list_push_slot"))
-    generateStructLiteralFields(valueNode, valueNode.s1, slot)
+    generateStructLiteralFields(valueNode, valueNode.s1, slot, true)
     return true
 }
 
@@ -2044,6 +2367,7 @@ private fn generateElemInlineStamp(expr: ASTNode, funcName: String, result: Stri
 
     let esize = inlineElemSizeOfList(expr)
     if (esize <= 0) { return }
+    if (funcName.equals("list_new_with_capacity")) { return }
 
     ir_call_begin()
     ir_call_arg("ptr", result)
@@ -2051,7 +2375,7 @@ private fn generateElemInlineStamp(expr: ASTNode, funcName: String, result: Stri
     ir_call_end("void", "list_set_elem_inline")
 }
 
-private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: String) {
+private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: String, listElement: Bool) {
     let mut fieldPtr = expr.child1
     while (nodeExists(fieldPtr)) {
         let field = ptr_to_node(fieldPtr)
@@ -2063,7 +2387,7 @@ private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPt
             let init = ptr_to_node(field.child1)
             let innerName = structTypeName(fieldType)
             if (init.kind == NodeKind.STRUCT_LITERAL_EXPR) {
-                generateStructLiteralFields(init, innerName, ir_get_temp_name(slot))
+                generateStructLiteralFields(init, innerName, ir_get_temp_name(slot), listElement)
             } else {
                 // An inline field is the object's own storage, so this **copies**
                 // and the source keeps whatever ownership it had. Where the source
@@ -2117,7 +2441,11 @@ private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPt
             // is where the whole measured prize is: declining only initialisers
             // leaves g1, g3, g4, g5, g6 and g9 mnemonic-identical to the full
             // slice and returns g2 to its baseline exactly.
-            ir_store_ptr(fieldType, fieldVal, ir_get_temp_name(slot))
+            if (listElement) {
+                ir_list_store_ptr(fieldType, fieldVal, ir_get_temp_name(slot))
+            } else {
+                ir_store_ptr(fieldType, fieldVal, ir_get_temp_name(slot))
+            }
         }
         fieldPtr = field.next
     }
@@ -2193,7 +2521,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
         if (expr.i3 == 2 and irReuseValue.equals("") == false) {
             let reused = irReuseValue
             irReuseValue = ""
-            generateStructLiteralFields(expr, structName, reused)
+            generateStructLiteralFields(expr, structName, reused, false)
             return reused
         }
 
@@ -2255,7 +2583,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
             ir_call_end("void", "cyc_set_type")
         }
 
-        generateStructLiteralFields(expr, structName, memName)
+        generateStructLiteralFields(expr, structName, memName, false)
         return memName
     }
 
@@ -3027,14 +3355,30 @@ internal fn generateExpression(expr: ASTNode) -> String {
                 guard = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
             }
             let mut checkBounds = 1
-            if (irLoopRangeProved) { checkBounds = 0 }
+            if (irLoopRangeProved) {
+                checkBounds = 0
+            } else if (irLoopHeaderBoundActive
+                    and listNode.kind == NodeKind.IDENTIFIER_EXPR
+                    and ptr_to_node(listNode.next).kind == NodeKind.IDENTIFIER_EXPR
+                    and listNode.s1.equals(irLoopHeaderBoundList)
+                    and ptr_to_node(listNode.next).s1.equals(irLoopHeaderBoundIndex)) {
+                checkBounds = 0
+            }
             if (flatRet.equals("ptr")) {
                 return ir_get_temp_name(ir_list_flat_elem(
                     listVal, indexVal, flatStride, guard, checkBounds))
             }
             if (scalarInlineBytes(flatRet) > 0) {
+                let mut hoistedBound = ""
+                let mut hoistedData = ""
+                if (listNode.kind == NodeKind.IDENTIFIER_EXPR
+                        and listNode.s1.equals(irLoopHoistedBoundList)) {
+                    hoistedBound = strClone(irLoopHoistedBoundValue)
+                    hoistedData = strClone(irLoopHoistedDataValue)
+                }
                 return ir_get_temp_name(ir_list_flat_scalar_elem(
-                    listVal, indexVal, flatRet, flatStride, guard, checkBounds))
+                    listVal, indexVal, flatRet, flatStride, guard, checkBounds,
+                    hoistedBound, hoistedData))
             }
         }
 
@@ -3059,8 +3403,16 @@ internal fn generateExpression(expr: ASTNode) -> String {
             }
             let mut checkBounds2 = 1
             if (irLoopRangeProved) { checkBounds2 = 0 }
+            let mut hoistedBound2 = ""
+            let mut hoistedData2 = ""
+            if (setList.kind == NodeKind.IDENTIFIER_EXPR
+                    and setList.s1.equals(irLoopHoistedBoundList)) {
+                hoistedBound2 = strClone(irLoopHoistedBoundValue)
+                hoistedData2 = strClone(irLoopHoistedDataValue)
+            }
             ir_list_flat_scalar_set(listVal2, indexVal2, valueVal2, elemKey,
-                                    flatSetStride, guard2, checkBounds2)
+                                    flatSetStride, guard2, checkBounds2,
+                                    hoistedBound2, hoistedData2)
             return ""
         }
 
@@ -3103,6 +3455,17 @@ internal fn generateExpression(expr: ASTNode) -> String {
                 // runtime/llvm-api-backend.c for why the tag sits there rather
                 // than at bit 63, where it would have cost an inline byte instead.
                 return ir_get_temp_name(ir_and("i32", narrow, "2147483647"))
+            }
+        }
+
+        // List length is the header's second field (RT_LIST_FIELD_LEN).
+        // Emitted inline with tag_list_header range metadata so loops can
+        // hoist the bound and eliminate per-iteration function call overhead.
+        if (funcName.equals("list_len") and nodeExists(expr.child2)) {
+            let a0 = ptr_to_node(expr.child2)
+            if (nodeExists(a0.next) == false) {
+                let listVal = generateExpression(a0)
+                return ir_get_temp_name(ir_list_len(listVal))
             }
         }
 
@@ -3302,6 +3665,13 @@ internal fn generateExpression(expr: ASTNode) -> String {
         let mut argIndex = 0
         while (nodeExists(argPtr)) {
             let argNode = ptr_to_node(argPtr)
+            // Query ownership before generateExpression: regular call lowering
+            // consumes CALL_EXPR.s2 when it takes the resolved symbol name.
+            let releaseOwnedTemp = irArgumentIsOwnedTemporary(argNode)
+                or (funcName.equals("concat")
+                    and irConcatArgumentIsOwnedTemporary(argNode))
+            let ownedTempKind = irOwnedTemporaryKind(argNode)
+            let ownedTempType = getExprType(argNode)
             let argVal = generateExpression(argNode)
             let argStore = storageType(getExprType(argNode))
             // Cloned: `argStore` is affine and the branches below still name it.
@@ -3309,10 +3679,10 @@ internal fn generateExpression(expr: ASTNode) -> String {
             // Cloned because `argVal` is affine and the argument itself still
             // has to consume it below -- the same reason the two branches under
             // this one each name it exactly once.
-            if (irArgumentIsOwnedTemporary(argNode)) {
+            if (releaseOwnedTemp) {
                 list_push(ownedTempVals, strClone(argVal))
-                list_push(ownedTempKinds, irOwnedTemporaryKind(argNode))
-                list_push(ownedTempTypes, getExprType(argNode))
+                list_push(ownedTempKinds, ownedTempKind)
+                list_push(ownedTempTypes, ownedTempType)
             }
             // Crossing into C: a String is `{ptr, i64}` here and `const char*`
             // there, so the pointer half goes and the length stays. The buffer is
@@ -3406,6 +3776,13 @@ internal fn generateExpression(expr: ASTNode) -> String {
                 }
             }
         }
+        if (funcName.equals("list_new_with_capacity")) {
+            let newCapInlineSize = inlineElemSizeOfList(expr)
+            if (newCapInlineSize > 0) {
+                callName = "list_new_with_capacity_inline"
+                ir_call_arg("i32", strFromInt(newCapInlineSize))
+            }
+        }
         // REQUIREMENTS 4. The checked unwrap is an ordinary call that returns
         // its argument, which is why it needs no new control flow here: the
         // runtime aborts on a null rather than codegen branching around one.
@@ -3417,7 +3794,9 @@ internal fn generateExpression(expr: ASTNode) -> String {
 
         // Whether the temporaries above may be released once this call returns.
         //
-        // Three conditions, and each one is a hazard that was reachable:
+        // Ordinary calls need three conditions, and each one is a hazard that
+        // was reachable. String.concat has the explicit copy/no-retain effect
+        // described below and is the deliberately narrow exception:
         //
         //  * **A known Prismio callee.** An extern's result is described by its
         //    FFI contract and `alias` hands an argument back; aif_fn_may_return_param
@@ -3446,9 +3825,15 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // in for the case the points-to fact genuinely misses -- a callee
         // returning a *view* of a parameter, which carries provenance rather than
         // sites -- and that case now has its own fact, so the stand-in can go.
-        let releaseTemps = isForeign == false
-            and aif_fn_may_return_param(callName) == 0
-            and aif_fn_may_return_view_of_param(callName) == 0
+        // concat is a stronger, local contract than the context-insensitive
+        // may-return summaries: every overload allocates its own result and
+        // byte-copies every argument. A shared allocation site elsewhere can
+        // conservatively make those summaries say "may alias", but it cannot
+        // make this particular call retain an argument.
+        let releaseTemps = funcName.equals("concat")
+            or (isForeign == false
+                and aif_fn_may_return_param(callName) == 0
+                and aif_fn_may_return_view_of_param(callName) == 0)
 
         if (retType.equals("void")) {
             ir_call_end("void", callName)

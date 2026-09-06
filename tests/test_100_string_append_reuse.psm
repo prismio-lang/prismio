@@ -1,0 +1,115 @@
+// A consuming String append is legal only for `s = s + suffix` when `s` owns
+// the value it displaces. These cases exercise the edges that make the lowering
+// more than a peephole: suffix aliases, a globally contaminated concat site,
+// formatter temporaries, and the unchanged immutable concat API.
+
+import std.io
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn repeated_append(n: Int) -> String {
+    let mut out = "abcdefghijkl".concat("m")
+    let mut i = 0
+    while (i < n) {
+        out = out + "xyz"
+        i = i + 1
+    }
+    return out
+}
+
+// The suffix is the allocation being reallocated. `memcpy` is not sufficient:
+// the runtime must retain its offset and rebase it if realloc moves the block.
+fn self_append() -> String {
+    let mut out = "abcdefghijklm".concat("")
+    out = out + out
+    return out
+}
+
+// A long slice is a view into `out`, not an allocation of its own. The same
+// rebase rule must preserve it while the owned base grows.
+fn view_append() -> String {
+    let mut out = "abcdefghijklmnop".concat("")
+    out = out + out[2..16]
+    return out
+}
+
+// String.concat has one allocation site per overload across the module. Storing
+// one result in a container makes that site globally `in_container`; it must not
+// erase the direct-fresh fact for an unrelated owning accumulator invocation.
+fn contaminated_site(n: Int) -> String {
+    let mut saved: List<String> = list_new()
+    list_push(saved, "left".concat("right"))
+
+    let mut out = "abcdefghijkl".concat("m")
+    let mut i = 0
+    while (i < n) {
+        out = out + "q"
+        i = i + 1
+    }
+    drop(saved)
+    return out
+}
+
+// The formatter result is borrowed by append for one call and released after
+// it. This is the short temporary that csv_parse creates four times per row.
+fn formatted_append(n: Int) -> String {
+    let mut out = "abcdefghijkl".concat("m")
+    let mut i = 0
+    while (i < n) {
+        out = out + (i % 10).toString()
+        i = i + 1
+    }
+    return out
+}
+
+fn main() -> Int {
+    let grown = repeated_append(4096)
+    if (grown.length != 12301) { return fail("repeated append length") }
+    if (grown[13] != 'x' or grown[12300] != 'z') {
+        return fail("repeated append contents")
+    }
+    drop(grown)
+
+    let doubled = self_append()
+    if (doubled != "abcdefghijklmabcdefghijklm") {
+        return fail("self append")
+    }
+    drop(doubled)
+
+    let viewed = view_append()
+    if (viewed != "abcdefghijklmnopcdefghijklmnop") {
+        return fail("view append")
+    }
+    drop(viewed)
+
+    let contaminated = contaminated_site(4096)
+    if (contaminated.length != 4109 or contaminated[4108] != 'q') {
+        return fail("contaminated concat site")
+    }
+    drop(contaminated)
+
+    let formatted = formatted_append(1000)
+    if (formatted.length != 1013 or formatted[13] != '0'
+        or formatted[1012] != '9') {
+        return fail("formatted append")
+    }
+    drop(formatted)
+
+    // Explicit concat keeps value semantics; only the assignment form above is
+    // consuming. Both values must remain independently readable.
+    let base = "abcdefghijklm".concat("")
+    let copy = base.concat("x")
+    if (base != "abcdefghijklm" or copy != "abcdefghijklmx") {
+        return fail("concat remained immutable")
+    }
+    drop(copy)
+    drop(base)
+
+    println("string append reuse ok")
+    return 0
+}
