@@ -65,6 +65,19 @@
     {"name":"json_serialize","category":"io","status":"unsupported","profile":"cpu-allocation","missing_feature":"Standard JSON serializer and character escaping engine in stdlib"},
     {"name":"tcp_echo_server","category":"io","status":"unsupported","profile":"io-concurrency","missing_feature":"Network socket API (std.net, POSIX socket FFI wrappers)"},
     {"name":"mmap_file_io","category":"io","status":"unsupported","profile":"io","missing_feature":"Memory-mapped file I/O (mmap / MapViewOfFile) in std.fs"},
-    {"name":"generic_serialization","category":"io","status":"unsupported","profile":"cpu-allocation","missing_feature":"Compile-time reflection, procedural macros, or derive code generation attributes"}
+    {"name":"generic_serialization","category":"io","status":"unsupported","profile":"cpu-allocation","missing_feature":"Compile-time reflection, procedural macros, or derive code generation attributes"},
+
+    {"name":"pointer_chase","category":"adversarial","status":"implemented","profile":"memory-latency"},
+    {"name":"random_gather","category":"adversarial","status":"implemented","profile":"memory"},
+    {"name":"branch_mispredict","category":"adversarial","status":"implemented","profile":"cpu-control-flow"},
+    {"name":"strided_memory","category":"adversarial","status":"implemented","profile":"memory-layout"},
+    {"name":"allocation_escape","category":"adversarial","status":"implemented","profile":"allocation"},
+    {"name":"function_call_overhead","category":"adversarial","status":"implemented","profile":"cpu-calls"},
+    {"name":"indirect_calls","category":"adversarial","status":"implemented","profile":"cpu-dispatch"},
+    {"name":"dependency_chain","category":"adversarial","status":"implemented","profile":"cpu-ilp"},
+    {"name":"aos_vs_soa","category":"adversarial","status":"implemented","profile":"memory-layout"},
+    {"name":"switch_dispatch","category":"adversarial","status":"implemented","profile":"cpu-control-flow"},
+    {"name":"memcpy_mix","category":"adversarial","status":"implemented","profile":"memory-copy"},
+    {"name":"dead_code_elimination","category":"adversarial","status":"implemented","profile":"compiler-optimization"}
   ]
 }

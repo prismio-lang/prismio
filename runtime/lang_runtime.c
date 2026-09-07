@@ -648,7 +648,19 @@ char* str_with_capacity(int length) {
 // `suffix` may be `base` itself or a view into it. Record the offset before a
 // realloc and rebase it afterwards; without that, `s = s + s` is a use of the
 // old pointer after realloc moved the allocation.
-char* str_append_reuse(char* base, int base_length,
+static size_t str_append_bit_ceil(size_t needed) {
+    uint32_t value = (uint32_t)needed;
+    if (value <= 16) return 16;
+    value--;
+    value |= value >> 1;
+    value |= value >> 2;
+    value |= value >> 4;
+    value |= value >> 8;
+    value |= value >> 16;
+    return (size_t)value + 1;
+}
+
+char* str_append_reuse(char* base, int base_length, long long base_word,
                        const char* suffix, int suffix_length) {
     if (!base || base_length < 0 || suffix_length < 0) {
         fprintf(stderr, "runtime error: invalid String append\n");
@@ -662,21 +674,28 @@ char* str_append_reuse(char* base, int base_length,
         exit(1);
     }
     size_t needed = left + right + 1;
-    size_t capacity = rt_base_usable_size(base);
+    uint64_t word = (uint64_t)base_word;
+    int base_is_inline = (word & UINT64_C(0x80000000)) != 0;
+    int base_is_geometric = !base_is_inline && (word & UINT64_C(0x200000000)) != 0;
+    size_t capacity = base_is_geometric ? str_append_bit_ceil(left + 1) : 0;
 
     uintptr_t base_addr = (uintptr_t)base;
     uintptr_t suffix_addr = (uintptr_t)suffix;
     int suffix_in_base = suffix_addr >= base_addr && suffix_addr <= base_addr + left;
     size_t suffix_offset = suffix_in_base ? (size_t)(suffix_addr - base_addr) : 0;
 
-    if (capacity < needed) {
-        size_t grown = capacity;
-        if (grown < left + 1) grown = left + 1;
-        if (grown < 16) grown = 16;
-        while (grown < needed) {
-            if (grown > SIZE_MAX / 2) { grown = needed; break; }
-            grown *= 2;
+    if (base_is_inline) {
+        size_t grown = str_append_bit_ceil(needed);
+        char* moved = (char*)rt_base_alloc(grown);
+        if (!moved) {
+            fprintf(stderr, "runtime error: out of memory growing String\n");
+            exit(1);
         }
+        memmove(moved, base, left);
+        base = moved;
+        if (suffix_in_base) suffix = base + suffix_offset;
+    } else if (!base_is_geometric || capacity < needed) {
+        size_t grown = str_append_bit_ceil(needed);
         char* moved = (char*)rt_base_realloc(base, grown);
         if (!moved) {
             fprintf(stderr, "runtime error: out of memory growing String\n");
@@ -695,6 +714,48 @@ char* int_to_str(int n) {
     char* result = (char*)rt_alloc(32);  // enough for any int
     sprintf(result, "%d", n);
     return result;
+}
+
+// Format a 32-bit Prismio Int directly into the two words used by the inline
+// String representation. Every possible result is at most eleven bytes, so an
+// allocation would only throw away capacity already present in the value.
+//
+// Two digits per divide matches the source-level U64 formatter, but writing the
+// finished bytes into caller scratch lets codegen immediately capture them in
+// the `{ptr, i64}` pair. The scratch is zeroed so equal inline strings remain
+// bit-identical, including all bytes after the logical length.
+int str_int_inline_words(int value, uint64_t words[2]) {
+    static const char pairs[] =
+        "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899";
+    char reversed[12];
+    char* end = reversed + sizeof(reversed);
+    char* at = end;
+    int negative = value < 0;
+    uint32_t magnitude = negative ? (uint32_t)(-(int64_t)value) : (uint32_t)value;
+
+    while (magnitude >= 100) {
+        uint32_t quotient = magnitude / 100;
+        uint32_t pair = (magnitude - quotient * 100) * 2;
+        at -= 2;
+        at[0] = pairs[pair];
+        at[1] = pairs[pair + 1];
+        magnitude = quotient;
+    }
+    if (magnitude < 10) {
+        *--at = (char)('0' + magnitude);
+    } else {
+        uint32_t pair = magnitude * 2;
+        at -= 2;
+        at[0] = pairs[pair];
+        at[1] = pairs[pair + 1];
+    }
+    if (negative) *--at = '-';
+
+    int length = (int)(end - at);
+    words[0] = 0;
+    words[1] = 0;
+    memcpy(words, at, (size_t)length);
+    return length;
 }
 
 char* str_clone(const char* s) {

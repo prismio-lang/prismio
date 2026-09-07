@@ -1585,6 +1585,7 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_begin("str_append_reuse", "ptr")
     ir_declare_function_param("ptr")
     ir_declare_function_param("i32")
+    ir_declare_function_param("i64")
     ir_declare_function_param("ptr")
     ir_declare_function_param("i32")
     ir_declare_function_end()

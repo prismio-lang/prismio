@@ -365,15 +365,15 @@ bytes) with `csvData = csvData + line`, then parses them. Before consuming
 append, construction copied 1,637,899,970 cumulative bytes — about 4,999 times
 the final size — and dominated 99.7% of the row.
 
-Nine-run medians on the same host:
+Medians on the same host (nine-run baseline; 21-run final comparison):
 
 | | before | consuming append | C++ | Rust |
 |---|---:|---:|---:|---:|
-| `csv_parse` | 103.827 ms | **2.486 ms** | 1.382 ms | 2.358 ms |
+| `csv_parse` | 103.827 ms | **1.958 ms** | 1.253 ms | 1.933 ms |
 
-That is **41.8× faster** end to end, 1.80× C++ and 1.05× Rust. The `--verify`
+That is **53.0× faster** end to end, 1.56× C++ and 1.01× Rust. The `--verify`
 ledger moved from 1.638 GB peak live memory and 50,002 leaked allocations to
-786 KB peak and two fixed harness-output allocations (18 bytes), with zero
+786 KB peak and two fixed harness-output allocations (about 20 bytes), with zero
 invalid or double releases. `tests/test_100_string_append_reuse.psm` makes the
 complexity check deterministic: 9,192 appends plus 1,000 formatting allocations
 must stay at or below 1,100 total allocations, rather than timing a CI machine.

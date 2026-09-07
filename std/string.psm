@@ -1167,47 +1167,11 @@ fn strFromUnsigned(value: U64) -> String {
     return out
 }
 
-// Decimal text for an integer.
-//
-// Negation happens in U64 so that I64.min converts: its positive magnitude does
-// not fit in I64 but does fit in U64. The same reasoning as
-// std/io.psm's formatter, which this deliberately mirrors.
-// One allocation, sign included.
-//
-// This used to call `strFromUnsigned` and then `str_concat(digits, "")` -- the
-// concat existing only to satisfy the rule that a returned value must be this
-// function's own allocation, since a pass-through gets no owner. That made every
-// integer format allocate and copy **twice**. Writing the sign into the same
-// buffer as the digits removes the second one, and the measured components say
-// it is where the time was: malloc/free at this rate costs 0.0049s and the whole
-// operation was 0.078s.
+// Decimal text for an Int. Every 32-bit result is at most eleven bytes including
+// the sign, so the compiler formats it directly into String's twelve-byte inline
+// payload. U64 keeps the allocating builder above because it may need 20 bytes.
 fn strFromInt(value: Int) -> String {
-    let negative = value < 0
-    let mut v = value as U64
-    if (negative) { v =(0 as U64) -(value as I64 as U64) }
-
-    let digits = strDigitCount(v)
-    let mut offset = 0
-    if (negative) { offset = 1 }
-
-    let out = str_with_capacity(digits + offset)
-    if (negative) { __builtin_string_put_byte(out, 0, '-') }
-
-    let table = strTwoDigitTable()
-    let mut i = offset + digits - 1
-    while (v >= 100) {
-        let pair =((v % 100) as Int) * 2
-        __builtin_string_put_byte(out, i, __builtin_string_byte_at(table, pair + 1))
-        __builtin_string_put_byte(out, i - 1, __builtin_string_byte_at(table, pair))
-        i = i - 2
-        v = v / 100
-    }
-    let pair =((v % 100) as Int) * 2
-    __builtin_string_put_byte(out, i, __builtin_string_byte_at(table, pair + 1))
-    if (i > offset) {
-        __builtin_string_put_byte(out, i - 1, __builtin_string_byte_at(table, pair))
-    }
-    return out
+    return __builtin_string_from_int(value)
 }
 
 // ---------------------------------------------------------------------------

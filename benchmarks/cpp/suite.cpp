@@ -49,6 +49,18 @@ int run(const std::string& name, int scale, const std::string& input, const std:
     if (name == "channel_pipeline") return channel_pipeline(scale);
     if (name == "base64_codec") return base64_codec(scale);
     if (name == "csv_parse") return csv_parse(scale);
+    if (name == "pointer_chase") return pointer_chase(scale);
+    if (name == "random_gather") return random_gather(scale);
+    if (name == "branch_mispredict") return branch_mispredict(scale);
+    if (name == "strided_memory") return strided_memory(scale);
+    if (name == "allocation_escape") return allocation_escape(scale);
+    if (name == "function_call_overhead") return function_call_overhead(scale);
+    if (name == "indirect_calls") return indirect_calls(scale);
+    if (name == "dependency_chain") return dependency_chain(scale);
+    if (name == "aos_vs_soa") return aos_vs_soa(scale);
+    if (name == "switch_dispatch") return switch_dispatch(scale);
+    if (name == "memcpy_mix") return memcpy_mix(scale);
+    if (name == "dead_code_elimination") return dead_code_elimination(scale);
     return -1;
 }
 

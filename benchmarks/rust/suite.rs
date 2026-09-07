@@ -1,4 +1,5 @@
 mod algorithms;
+mod adversarial;
 mod common;
 mod compute;
 mod data_structures;
@@ -55,6 +56,18 @@ fn run(name: &str, scale: i32, input: &str, output: &str) -> i32 {
         "channel_pipeline" => compute::channel_pipeline(scale),
         "base64_codec" => io::base64_codec(scale),
         "csv_parse" => io::csv_parse(scale),
+        "pointer_chase" => adversarial::pointer_chase(scale),
+        "random_gather" => adversarial::random_gather(scale),
+        "branch_mispredict" => adversarial::branch_mispredict(scale),
+        "strided_memory" => adversarial::strided_memory(scale),
+        "allocation_escape" => adversarial::allocation_escape(scale),
+        "function_call_overhead" => adversarial::function_call_overhead(scale),
+        "indirect_calls" => adversarial::indirect_calls(scale),
+        "dependency_chain" => adversarial::dependency_chain(scale),
+        "aos_vs_soa" => adversarial::aos_vs_soa(scale),
+        "switch_dispatch" => adversarial::switch_dispatch(scale),
+        "memcpy_mix" => adversarial::memcpy_mix(scale),
+        "dead_code_elimination" => adversarial::dead_code_elimination(scale),
         _ => -1,
     }
 }

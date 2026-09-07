@@ -4044,6 +4044,46 @@ int ir_str_inline(const char *base, const char *start, const char *count) {
     return intern_value(pair);
 }
 
+// Format one 32-bit Int into String's inline pair.
+//
+// The runtime helper owns the decimal algorithm and writes at most eleven bytes
+// into the per-function scratch slot. Keeping pair construction here avoids a
+// target-specific C struct-return ABI and lets LLVM capture the bytes in
+// registers immediately. The helper zeroes the complete scratch, preserving the
+// bitwise-equality invariant used by ir_str_eq.
+int ir_str_from_int(const char *value) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+
+    LLVMValueRef input = coerce_for(resolve_value(value, "i32"), "i32");
+    LLVMValueRef buf = str_scratch_slot();
+    LLVMTypeRef params[2] = {i32, ptr};
+    LLVMTypeRef helper_ty = LLVMFunctionType(i32, params, 2, 0);
+    LLVMValueRef helper = LLVMGetNamedFunction(g_module, "str_int_inline_words");
+    if (!helper) helper = LLVMAddFunction(g_module, "str_int_inline_words", helper_ty);
+    LLVMValueRef args[2] = {input, buf};
+    LLVMValueRef n = LLVMBuildCall2(g_builder, helper_ty, helper, args, 2, "");
+
+    LLVMValueRef at8 = byte_gep(buf, LLVMConstInt(i32, 8, 0));
+    LLVMValueRef w0 = LLVMBuildLoad2(g_builder, i64, buf, "");
+    LLVMValueRef w1hi = LLVMBuildLoad2(g_builder, i32, at8, "");
+    LLVMValueRef tagged_len = LLVMBuildOr(
+        g_builder, LLVMBuildZExt(g_builder, n, i64, ""),
+        LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), "");
+    LLVMValueRef word = LLVMBuildOr(
+        g_builder, tagged_len,
+        LLVMBuildShl(g_builder, LLVMBuildZExt(g_builder, w1hi, i64, ""),
+                     LLVMConstInt(i64, 32, 0), ""), "");
+
+    LLVMTypeRef sty = named_struct("prismio.str");
+    LLVMValueRef pair = LLVMGetUndef(sty);
+    pair = LLVMBuildInsertValue(g_builder, pair,
+                                LLVMBuildIntToPtr(g_builder, w0, ptr, ""), 0, "");
+    pair = LLVMBuildInsertValue(g_builder, pair, word, 1, "");
+    return intern_value(pair);
+}
+
 int ir_const_str(const char *global_name, int length) {
     LLVMValueRef g = LLVMGetNamedGlobal(g_module, global_name);
     if (!g) backend_fail("unknown string global", global_name);

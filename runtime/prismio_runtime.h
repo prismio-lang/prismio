@@ -66,6 +66,7 @@ void  aif_verify_arm(void);
 void* rt_base_alloc(size_t size);
 void* rt_base_realloc(void* p, size_t size);
 size_t rt_base_usable_size(void* p);
+int str_int_inline_words(int value, uint64_t words[2]);
 void  rt_free(void* p);
 #endif
 #endif

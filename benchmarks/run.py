@@ -30,6 +30,7 @@ CPP_SOURCES = tuple(HERE / "cpp" / name for name in (
     "compute.cpp",
     "memory.cpp",
     "io.cpp",
+    "adversarial.cpp",
 ))
 
 

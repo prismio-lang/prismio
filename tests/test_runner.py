@@ -5916,7 +5916,7 @@ def run_aif_verify_test():
         "extern_alias_escape": 0,
         # Consuming String append. The fixture performs 9,192 logical appends,
         # including self/view aliases and a concat site also stored in a list.
-        # Geometric growth plus 1,000 integer formatter buffers measures 1,040
+        # Geometric growth plus 1,000 integer formatter buffers measures 1,039
         # allocations; immutable concat-per-iteration is over 10,000. The exact
         # leak count protects ownership, while the ceiling below protects the
         # amortised architecture rather than timing a noisy CI host.

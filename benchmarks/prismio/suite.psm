@@ -1,4 +1,5 @@
 import algorithms
+import adversarial
 import common
 import compute
 import data_structures
@@ -53,6 +54,18 @@ fn benchRun(name: String, scale: Int, inputPath: String, outputPath: String) -> 
     if (name.equals("channel_pipeline")) { return benchChannelPipeline(scale) }
     if (name.equals("base64_codec")) { return benchBase64Codec(scale) }
     if (name.equals("csv_parse")) { return benchCsvParse(scale) }
+    if (name.equals("pointer_chase")) { return benchPointerChase(scale) }
+    if (name.equals("random_gather")) { return benchRandomGather(scale) }
+    if (name.equals("branch_mispredict")) { return benchBranchMispredict(scale) }
+    if (name.equals("strided_memory")) { return benchStridedMemory(scale) }
+    if (name.equals("allocation_escape")) { return benchAllocationEscape(scale) }
+    if (name.equals("function_call_overhead")) { return benchFunctionCallOverhead(scale) }
+    if (name.equals("indirect_calls")) { return benchIndirectCalls(scale) }
+    if (name.equals("dependency_chain")) { return benchDependencyChain(scale) }
+    if (name.equals("aos_vs_soa")) { return benchAosVsSoa(scale) }
+    if (name.equals("switch_dispatch")) { return benchSwitchDispatch(scale) }
+    if (name.equals("memcpy_mix")) { return benchMemcpyMix(scale) }
+    if (name.equals("dead_code_elimination")) { return benchDeadCodeElimination(scale) }
     return -1
 }
 

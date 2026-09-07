@@ -65,3 +65,16 @@ int sha256(int scale);
 int blake3_chunk(int scale);
 int raytracer_sphere(int scale);
 int channel_pipeline(int scale);
+
+int pointer_chase(int scale);
+int random_gather(int scale);
+int branch_mispredict(int scale);
+int strided_memory(int scale);
+int allocation_escape(int scale);
+int function_call_overhead(int scale);
+int indirect_calls(int scale);
+int dependency_chain(int scale);
+int aos_vs_soa(int scale);
+int switch_dispatch(int scale);
+int memcpy_mix(int scale);
+int dead_code_elimination(int scale);

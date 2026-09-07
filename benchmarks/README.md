@@ -85,7 +85,7 @@ Release compilation:
 
 ```text
 Prismio: <compiler> build benchmarks/prismio/suite.psm -o benchmarks/build/prismio-suite
-C++:     clang++ -O3 -std=c++20 -pthread benchmarks/cpp/{suite,algorithms,data_structures,compute,memory,io}.cpp -o benchmarks/build/cpp-suite
+C++:     clang++ -O3 -std=c++20 -pthread benchmarks/cpp/{suite,algorithms,data_structures,compute,memory,io,adversarial}.cpp -o benchmarks/build/cpp-suite
 Rust:    rustc -C opt-level=3 --edition=2021 benchmarks/rust/suite.rs -o benchmarks/build/rust-suite
 ```
 
@@ -96,8 +96,8 @@ public `String.equals(...)` API.
 
 ## Coverage
 
-The catalog contains 61 distinct workloads across the requested five
-categories. Forty-five are implemented in all three languages. Sixteen remain
+The catalog contains 73 distinct workloads across six categories. Fifty-seven
+are implemented in all three languages. Sixteen remain
 in the catalog as unsupported Prismio capabilities; their exact records are in
 [`UNSUPPORTED.md`](UNSUPPORTED.md).
 
@@ -108,7 +108,8 @@ in the catalog as unsupported Prismio capabilities; their exact records are in
 | Compute | 14 | 4 | 18 |
 | Memory | 6 | 1 | 7 |
 | I/O and serialization | 6 | 5 | 11 |
-| **Total** | **45** | **16** | **61** |
+| Adversarial | 12 | 0 | 12 |
+| **Total** | **57** | **16** | **73** |
 
 Every benchmark has one canonical workload definition so results stay directly
 comparable between runs. `--runs` controls sampling without changing the work
@@ -138,6 +139,39 @@ status, and workload profile.
   `file_write`, `line_processing`, `tokenization`, `base64_codec`, `csv_parse`;
   unsupported: `json_parse`, `json_serialize`, `tcp_echo_server`, `mmap_file_io`,
   `generic_serialization`.
+- Adversarial (12 implemented): `pointer_chase`, `random_gather`,
+  `branch_mispredict`, `strided_memory`, `allocation_escape`,
+  `function_call_overhead`, `indirect_calls`, `dependency_chain`, `aos_vs_soa`,
+  `switch_dispatch`, `memcpy_mix`, `dead_code_elimination`.
+
+### Adversarial benchmark design
+
+These are diagnostic compiler and machine-behavior probes rather than general
+algorithms. Their inputs are deterministic, and pseudo-random data is generated
+before each hot loop rather than by a runtime RNG inside it.
+
+- `pointer_chase` builds a shuffled single-cycle index chain, so each load
+  determines the address of the next load. `random_gather` uses a separately
+  generated irregular index stream.
+- `branch_mispredict` uses pre-generated unpredictable conditions.
+  `strided_memory` runs strides 1, 2, 4, 8, 16, 32, 64, and 128 with bounded
+  offsets, covering contiguous through cache- and TLB-hostile access.
+- `allocation_escape` repeatedly creates and consumes provably local structs.
+  `function_call_overhead` repeatedly invokes a tiny direct-call candidate.
+- Prismio closure values lower to statically specialized structs and calls; they
+  are not runtime function pointers. Therefore `indirect_calls` uses the closest
+  currently legitimate common workload: an unpredictable opcode dispatch to
+  four same-signature functions. It should be upgraded to a true function-value
+  table if Prismio gains an indirect callable representation.
+- `dependency_chain` uses wrapping 32-bit arithmetic with a genuine
+  loop-carried dependency. `aos_vs_soa` performs both equivalent layouts and
+  rejects differing checksums.
+- `switch_dispatch` contains 256 cases and runs sequential, randomized, and
+  strongly biased case streams. `memcpy_mix` performs copy/modify/copy/modify
+  sequences over 8, 16, 32, 64, 256, 4096, and 65536-byte logical buffers; the
+  source loops intentionally leave recognition and lowering to each optimizer.
+- `dead_code_elimination` computes a pure, expensive result that is deliberately
+  unobserved and returns a constant. The loop must not be kept alive artificially.
 
 ## Original g1-g9 audit
 

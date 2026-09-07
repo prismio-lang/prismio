@@ -78,6 +78,7 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     // string it was cut from, and therefore what makes this a borrow rather than
     // a view. See `aifFfiProduces` for the other half of its contract.
     if (name.equals("__builtin_string_inline")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_string_from_int")) { return AIF_FFI_BORROW }
     // The view retains nothing *of its own*; that its result points into the
     // first argument is the return contract, answered by `aifFfiAliasOf`.
     if (name.equals("__builtin_string_view")) { return AIF_FFI_BORROW }
@@ -321,6 +322,7 @@ internal fn aifFfiProduces(name: String) -> Bool {
     // `strSubstring` whose two paths disagree about who owns the result -- and an
     // owned value that costs nothing to release is the conservative side of that.
     if (name.equals("__builtin_string_inline")) { return true }
+    if (name.equals("__builtin_string_from_int")) { return true }
     if (name.equals("read_file")) { return true }
     if (name.equals("get_directory")) { return true }
     if (name.equals("join_path")) { return true }

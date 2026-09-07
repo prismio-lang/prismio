@@ -381,6 +381,7 @@ extern fn ir_call_arg_cstr(argValue: String, isBorrow: Int)
 // form** -- see `ir_str_view` in runtime/llvm-api-backend.c.
 extern fn ir_str_view(base: String, start: String, count: String) -> Int
 extern fn ir_str_inline(base: String, start: String, count: String) -> Int
+extern fn ir_str_from_int(value: String) -> Int
 extern fn ir_global_str_var(name: String, strGlobal: String, length: Int)
 
 extern fn ir_load_ptr(type: String, ptrValue: String) -> Int

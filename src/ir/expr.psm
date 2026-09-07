@@ -121,12 +121,25 @@ internal fn nodeProducesOwnedValue(exprPtr: Ptr) -> Bool {
     // binding hands that one to the caller -- so it still guards the scope-exit
     // drop, and the branch below still applies it. Neither is about a value an
     // assignment displaced, which is what this predicate answers.
-    let expr = ptr_to_node(exprPtr)
-    let stringFresh = nodeGetType(expr).kind == TypeKind.STRING
-        and aif_fresh_call_result_at_node(exprPtr) != AIF_ELEM_NONE
     return aif_owns_call_result_at_node(exprPtr) != AIF_ELEM_NONE
-        or stringFresh
+        or nodeIsStringConcatOperator(exprPtr)
         or nodeIsStringLiteralExpr(exprPtr)
+}
+
+// Sema stamps only the String `+` rewrite. Unlike the context-insensitive
+// allocation site, this operation has a per-invocation contract: std.string's
+// concat body allocates one result, byte-copies every argument and retains none.
+// That remains true when an unrelated invocation of the shared site is stored
+// in a container, and is narrower than claiming arbitrary fresh-return calls.
+private fn nodeIsStringConcatOperator(exprPtr: Ptr) -> Bool {
+    if (nodeIsNull(exprPtr)) { return false }
+    let expr = ptr_to_node(exprPtr)
+    if (expr.kind != NodeKind.CALL_EXPR or expr.i3 != 3
+        or nodeGetType(expr).kind != TypeKind.STRING or nodeIsNull(expr.child1)) {
+        return false
+    }
+    let callee = ptr_to_node(expr.child1)
+    return callee.kind == NodeKind.IDENTIFIER_EXPR and callee.s1.equals("concat")
 }
 
 internal fn nodeIsStringLiteralExpr(exprPtr: Ptr) -> Bool {
@@ -405,24 +418,10 @@ private fn irArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
 
 private fn irOwnedTemporaryKind(argNode: ASTNode) -> Int {
     let mut owned = aif_owns_call_result_at_node(node_to_ptr(argNode))
-    if (owned == AIF_ELEM_NONE) {
-        owned = aif_fresh_call_result_at_node(node_to_ptr(argNode))
-    }
     if (nodeGetType(argNode).kind == TypeKind.DATAVIEW) { return IR_DROP_DATAVIEW }
     if (owned == AIF_ELEM_LIST) { return IR_DROP_LIST }
     if (owned == AIF_ELEM_TYPED) { return IR_DROP_TYPED }
     return IR_DROP_OBJECT
-}
-
-// String.concat copies every argument into its own result and retains none of
-// them. That explicit effect makes a direct-fresh argument safe to release even
-// when the allocation site's global `in_container` bit was raised by some other
-// invocation. Do not generalise this to arbitrary calls: a value aggregate such
-// as TypeInfo may return an argument in one of its fields without the current
-// points-to model exposing that as a direct parameter return.
-private fn irConcatArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
-    if (argNode.kind != NodeKind.CALL_EXPR) { return false }
-    return aif_fresh_call_result_at_node(node_to_ptr(argNode)) != AIF_ELEM_NONE
 }
 
 private fn generateOwnedTemporaryRelease(value: String, kind: Int, declType: String) {
@@ -488,7 +487,6 @@ internal fn generateStringReinitConcat(exprPtr: Ptr, target: String, old: String
     // resolved symbol parked in CALL_EXPR.s2 while forming the LLVM callee
     // name, so asking afterwards loses the `toString__Int` producer contract.
     let releaseSuffix = irArgumentIsOwnedTemporary(suffixNode)
-        or irConcatArgumentIsOwnedTemporary(suffixNode)
     let suffixDropKind = irOwnedTemporaryKind(suffixNode)
     let suffixDropType = getExprType(suffixNode)
     let suffix = generateExpression(suffixNode)
@@ -499,11 +497,22 @@ internal fn generateStringReinitConcat(exprPtr: Ptr, target: String, old: String
     let oldLen = ir_get_temp_name(ir_and("i32", oldNarrow, "2147483647"))
     let suffixLen = ir_get_temp_name(ir_and("i32", suffixNarrow, "2147483647"))
     let total = ir_get_temp_name(ir_add("i32", oldLen, suffixLen))
+    let oldData = ir_get_temp_name(ir_str_data(old))
+    let suffixData = ir_get_temp_name(ir_str_data(suffix))
 
     ir_call_begin()
-    ir_call_arg_cstr(old, 0)
+    // This runtime call is length-aware, so it needs raw bytes rather than the
+    // NUL-terminated FFI coercion. In particular, preserving a long view here
+    // lets str_append_reuse recognise that it aliases `old` and rebase the
+    // offset after realloc instead of first allocating a temporary copy.
+    ir_call_arg("ptr", oldData)
     ir_call_arg("i32", oldLen)
-    ir_call_arg_cstr(suffix, 1)
+    // The word carries the inline and geometric-capacity tags. An inline
+    // accumulator owns its bytes
+    // by value, so the runtime promotes it into a geometric heap buffer on the
+    // first long append instead of asking malloc for the capacity of stack data.
+    ir_call_arg("i64", oldWide)
+    ir_call_arg("ptr", suffixData)
     ir_call_arg("i32", suffixLen)
     let raw = ir_get_temp_name(ir_call_end("ptr", "str_append_reuse"))
 
@@ -513,7 +522,7 @@ internal fn generateStringReinitConcat(exprPtr: Ptr, target: String, old: String
     if (releaseSuffix) {
         generateOwnedTemporaryRelease(suffix, suffixDropKind, suffixDropType)
     }
-    return fatWithLength(raw, total)
+    return fatWithLengthFlag(raw, total, "8589934592")
 }
 
 // Whether `name` is ever the whole initialiser of another binding -- `let u = t`.
@@ -791,6 +800,18 @@ private fn fatWithLength(raw: String, len: String) -> String {
     let u = ir_get_temp_name(ir_undef("struct:prismio.str"))
     let withPtr = ir_get_temp_name(ir_insert_value("struct:prismio.str", u, raw, "ptr", 0))
     return ir_get_temp_name(ir_insert_value("struct:prismio.str", withPtr, wide, "i64", 1))
+}
+
+// A long String whose allocation follows the consuming append power-of-two
+// policy. Bit 33 is otherwise unused in the long form; carrying this fact lets
+// the next append derive capacity from length with a few integer operations
+// instead of calling malloc_size on every iteration.
+private fn fatWithLengthFlag(raw: String, len: String, flag: String) -> String {
+    let wide = ir_get_temp_name(ir_sext("i32", len, "i64"))
+    let word = ir_get_temp_name(ir_or("i64", wide, flag))
+    let u = ir_get_temp_name(ir_undef("struct:prismio.str"))
+    let withPtr = ir_get_temp_name(ir_insert_value("struct:prismio.str", u, raw, "ptr", 0))
+    return ir_get_temp_name(ir_insert_value("struct:prismio.str", withPtr, word, "i64", 1))
 }
 
 private fn callIsPrismioFn(funcName: String) -> Bool {
@@ -3572,6 +3593,18 @@ internal fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
+        // A Prismio Int needs at most eleven decimal bytes, including the sign,
+        // so its complete text fits in the existing inline String payload. The
+        // backend formats into one reusable stack scratch and captures the two
+        // words immediately: no heap allocation and no temporary owner.
+        if (funcName.equals("__builtin_string_from_int")
+            and nodeExists(expr.child2)) {
+            let a0 = ptr_to_node(expr.child2)
+            if (nodeExists(a0.next) == false) {
+                return ir_get_temp_name(ir_str_from_int(generateExpression(a0)))
+            }
+        }
+
         // A view of another string: no allocation, no copy, nothing to release.
         //
         // `strSubstring` takes this whenever the result is longer than the twelve
@@ -3668,8 +3701,6 @@ internal fn generateExpression(expr: ASTNode) -> String {
             // Query ownership before generateExpression: regular call lowering
             // consumes CALL_EXPR.s2 when it takes the resolved symbol name.
             let releaseOwnedTemp = irArgumentIsOwnedTemporary(argNode)
-                or (funcName.equals("concat")
-                    and irConcatArgumentIsOwnedTemporary(argNode))
             let ownedTempKind = irOwnedTemporaryKind(argNode)
             let ownedTempType = getExprType(argNode)
             let argVal = generateExpression(argNode)

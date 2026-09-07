@@ -216,13 +216,14 @@ private fn generateStatement(stmt: ASTNode) {
             // holds memory the binding owns at *every* point, not only at the
             // scope exit, and that is what licenses the release in the assignment
             // below. A literal initialiser is the one thing that would break the
-            // invariant on the binding's first line -- `let mut s = ""` puts a
-            // .rodata pointer in the slot and the first assignment would free it
-            // -- so it is cloned. One allocation per binding, not per iteration.
+            // invariant on the binding's first line -- `let mut s = ""` must not
+            // put a borrowed .rodata pointer in a slot whose next assignment
+            // releases it. Short literals use the value-owned inline form;
+            // longer ones need one heap clone per binding, not per iteration.
             let accumulates = irOwningAccumulator(varName)
                 and nodeProducesOwnedValue(stmt.child2)
             if (accumulates and nodeIsStringLiteralExpr(stmt.child2)) {
-                initVal = generateStringClone(initVal)
+                initVal = generateOwnedStringLiteral(initVal, stmt.child2)
             }
 
             ir_store(storeType, initVal, slot)
@@ -354,7 +355,7 @@ private fn generateStatement(stmt: ASTNode) {
             // the compiler's own --verify build, one generation after the
             // declaration alone looked sufficient.
             if (releasesOld and nodeIsStringLiteralExpr(stmt.child2)) {
-                val = generateStringClone(val)
+                val = generateOwnedStringLiteral(val, stmt.child2)
             }
             if (ir_var_is_global(varName) == 1) {
                 ir_store_global(storeType, val, varName)
@@ -838,10 +839,16 @@ private fn generateRegionExits(count: Int) {
     }
 }
 
-// A heap copy of a string literal, so a slot that owns its contents never holds
-// a .rodata pointer. The runtime already reached this conclusion once, in
-// str_substring's out-of-range answer, and for the same reason.
-private fn generateStringClone(value: String) -> String {
+// A value-owned spelling of a literal for an owning mutable slot. Twelve bytes
+// or fewer belong in the String pair itself: copying those into a heap block
+// discarded the SSO representation exactly where C++ benefits from it most.
+// A longer literal still needs a heap copy because the slot will release it.
+private fn generateOwnedStringLiteral(value: String, exprPtr: Ptr) -> String {
+    let expr = ptr_to_node(exprPtr)
+    let length = __builtin_string_len(expr.s1)
+    if (length <= 12) {
+        return ir_get_temp_name(ir_str_inline(value, "0", strFromInt(length)))
+    }
     ir_call_begin()
     ir_call_arg("ptr", value)
     // This handwritten call bypasses CALL_EXPR's general foreign-return path,

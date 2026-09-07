@@ -13,7 +13,7 @@ fn fail(message: String) -> Int {
 }
 
 fn repeated_append(n: Int) -> String {
-    let mut out = "abcdefghijkl".concat("m")
+    let mut out = "abcdefghijklm"
     let mut i = 0
     while (i < n) {
         out = out + "xyz"
@@ -25,7 +25,7 @@ fn repeated_append(n: Int) -> String {
 // The suffix is the allocation being reallocated. `memcpy` is not sufficient:
 // the runtime must retain its offset and rebase it if realloc moves the block.
 fn self_append() -> String {
-    let mut out = "abcdefghijklm".concat("")
+    let mut out = "abcdefghijklm"
     out = out + out
     return out
 }
@@ -33,8 +33,8 @@ fn self_append() -> String {
 // A long slice is a view into `out`, not an allocation of its own. The same
 // rebase rule must preserve it while the owned base grows.
 fn view_append() -> String {
-    let mut out = "abcdefghijklmnop".concat("")
-    out = out + out[2..16]
+    let mut out = "abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+    out = out + out[2..40]
     return out
 }
 
@@ -45,7 +45,7 @@ fn contaminated_site(n: Int) -> String {
     let mut saved: List<String> = list_new()
     list_push(saved, "left".concat("right"))
 
-    let mut out = "abcdefghijkl".concat("m")
+    let mut out = "abcdefghijklm"
     let mut i = 0
     while (i < n) {
         out = out + "q"
@@ -58,7 +58,7 @@ fn contaminated_site(n: Int) -> String {
 // The formatter result is borrowed by append for one call and released after
 // it. This is the short temporary that csv_parse creates four times per row.
 fn formatted_append(n: Int) -> String {
-    let mut out = "abcdefghijkl".concat("m")
+    let mut out = "abcdefghijklm"
     let mut i = 0
     while (i < n) {
         out = out + (i % 10).toString()
@@ -82,7 +82,7 @@ fn main() -> Int {
     drop(doubled)
 
     let viewed = view_append()
-    if (viewed != "abcdefghijklmnopcdefghijklmnop") {
+    if (viewed != "abcdefghijklmnopqrstuvwxyz0123456789ABCDcdefghijklmnopqrstuvwxyz0123456789ABCD") {
         return fail("view append")
     }
     drop(viewed)
