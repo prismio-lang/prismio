@@ -12,8 +12,9 @@ this can work -- a user-owned prefix needs neither.
 **Layout**, and it is the same on every platform:
 
     <prefix>/bin/prismio[.exe]
-    <prefix>/lib/          runtime and backend archives, plus runtime.hash
-    <prefix>/stdlib/       the standard library, shipped as source
+    <prefix>/lib/runtime/  module-level runtime bitcode
+    <prefix>/lib/          compiler backend archive, plus runtime.hash
+    <prefix>/stdlib/       one compiled .plib artifact per standard module
 
 That is what package.py produces, and both of the compiler's search rules are
 built around it: find_in_lib_dir tries `<exe_dir>/../lib`, and standardModulePath
@@ -26,9 +27,9 @@ install could never find its own `stdlib/` -- and the PowerShell installer never
 copied one, which is why the gap went unnoticed: it only ever wrote over an
 installation that already had the standard library in place.
 
-Without `lib/` the compiler still works: it falls back to compiling the runtime
-from sources embedded in the binary. That fallback is silent, which is exactly
-why this verifies afterwards that the install can build and run a program.
+Runtime bitcode is mandatory. A missing or corrupt module is an incomplete
+installation and the compiler asks the user to reinstall instead of silently
+building a different runtime from embedded sources.
 """
 import argparse
 import os
@@ -46,7 +47,8 @@ RESET = "" if WINDOWS else "\033[0m"
 
 DEFAULT_PREFIX = r"C:\Program Files\Prismio" if WINDOWS else "/usr/local"
 EXE = "prismio.exe" if WINDOWS else "prismio"
-ARCHIVES = ["runtime.lib", "backend.lib", "runtime.a", "backend.a", "runtime.hash"]
+LIB_FILES = ["backend.lib", "backend.a", "runtime.hash"]
+RUNTIME_MODULES = ["lang_runtime", "program_support"]
 
 PROBE = """import std.io
 
@@ -93,7 +95,8 @@ def main() -> int:
     bin_dir = prefix / "bin"
     lib_dir = prefix / "lib"
     stdlib_dir = prefix / "stdlib"
-    for directory in (bin_dir, lib_dir, stdlib_dir):
+    third_party_dir = prefix / "third_party"
+    for directory in (bin_dir, lib_dir, stdlib_dir, third_party_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     # Keep the outgoing binary so a bad install can be undone.
@@ -108,16 +111,44 @@ def main() -> int:
         installed.chmod(0o755)
     print(f"  {EXE:<14} {installed.stat().st_size:>10} bytes")
 
-    for name in ARCHIVES:
+    for name in LIB_FILES:
         origin = dist / "lib" / name
         if origin.is_file():
             shutil.copyfile(origin, lib_dir / name)
             print(f"  lib/{name:<14} {(lib_dir / name).stat().st_size:>10} bytes")
 
-    # The standard library ships as source and is read at compile time, so an
-    # install without it compiles nothing that imports `std.*` -- which is every
-    # program that prints.
-    modules = sorted((dist / "stdlib").glob("*.psm"))
+    llvm_paths = dist / "third_party" / "llvm-paths.json"
+    if llvm_paths.is_file():
+        shutil.copyfile(llvm_paths, third_party_dir / llvm_paths.name)
+
+    runtime_source = dist / "lib" / "runtime"
+    runtime_dest = lib_dir / "runtime"
+    runtime_dest.mkdir(parents=True, exist_ok=True)
+    bitcode_modules = sorted(runtime_source.glob("*.bc"))
+    required_runtime = {
+        f"{name}{variant}.bc"
+        for name in RUNTIME_MODULES
+        for variant in ("", ".verify")
+    }
+    present_runtime = {module.name for module in bitcode_modules}
+    missing_runtime = sorted(required_runtime - present_runtime)
+    if missing_runtime:
+        print(f"{RED}incomplete package: missing runtime module(s): "
+              f"{', '.join(missing_runtime)}{RESET}", file=sys.stderr)
+        return 1
+    for module in bitcode_modules:
+        shutil.copyfile(module, runtime_dest / module.name)
+    print(f"  lib/runtime/   {len(bitcode_modules):>10} bitcode modules")
+
+    # Each importable standard module ships as one PLIB containing its frontend
+    # interface/generic templates and its LLVM bitcode implementation.
+    modules = sorted((dist / "stdlib").glob("*.plib"))
+    if not modules:
+        print(f"{RED}incomplete package: no standard-library PLIB modules{RESET}",
+              file=sys.stderr)
+        return 1
+    for stale_source in stdlib_dir.glob("*.psm"):
+        stale_source.unlink()
     for module in modules:
         shutil.copyfile(module, stdlib_dir / module.name)
     print(f"  stdlib/        {len(modules):>10} modules")

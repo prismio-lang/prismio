@@ -872,12 +872,55 @@ static void apply_param_attrs(LLVMValueRef fn) {
     }
 }
 
+static void tag_alloc_fn(LLVMValueRef fn, const char *name) {
+    if (strcmp(name, "malloc") == 0) {
+        unsigned k_allockind = LLVMGetEnumAttributeKindForName("allockind", 9);
+        unsigned k_nounwind = LLVMGetEnumAttributeKindForName("nounwind", 8);
+        unsigned k_willreturn = LLVMGetEnumAttributeKindForName("willreturn", 10);
+        // llvm::AllocFnKind is a bitset: Alloc = 1, Uninitialized = 8.
+        // A string attribute with the same spelling is syntactically valid but
+        // invisible to LLVM's allocation-elision analyses.
+        if (k_allockind) LLVMAddAttributeAtIndex(
+            fn, ~0U /* LLVMAttributeFunctionIndex */,
+            LLVMCreateEnumAttribute(g_ctx, k_allockind, 1U | 8U));
+        LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateStringAttribute(g_ctx, "alloc-family", 12, "malloc", 6));
+        if (k_nounwind) LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateEnumAttribute(g_ctx, k_nounwind, 0));
+        if (k_willreturn) LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateEnumAttribute(g_ctx, k_willreturn, 0));
+    }
+}
+
+static void tag_free_fn(LLVMValueRef fn, const char *name) {
+    if (strcmp(name, "rt_free") == 0 || strcmp(name, "free") == 0) {
+        unsigned k_allockind = LLVMGetEnumAttributeKindForName("allockind", 9);
+        unsigned k_allocptr = LLVMGetEnumAttributeKindForName("allocptr", 8);
+        unsigned k_nounwind = LLVMGetEnumAttributeKindForName("nounwind", 8);
+        unsigned k_willreturn = LLVMGetEnumAttributeKindForName("willreturn", 10);
+        // llvm::AllocFnKind::Free = 4. This is deliberately attached even when
+        // the definition is visible: LangRef explicitly permits eliding a
+        // matching alloc/free pair despite allocator-internal side effects.
+        if (k_allockind) LLVMAddAttributeAtIndex(
+            fn, ~0U /* LLVMAttributeFunctionIndex */,
+            LLVMCreateEnumAttribute(g_ctx, k_allockind, 4U));
+        LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateStringAttribute(g_ctx, "alloc-family", 12, "malloc", 6));
+        if (k_allocptr) LLVMAddAttributeAtIndex(fn, 1U, LLVMCreateEnumAttribute(g_ctx, k_allocptr, 0));
+        if (k_nounwind) LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateEnumAttribute(g_ctx, k_nounwind, 0));
+        if (k_willreturn) LLVMAddAttributeAtIndex(fn, ~0U, LLVMCreateEnumAttribute(g_ctx, k_willreturn, 0));
+    }
+}
+
 static LLVMValueRef materialize_function(void) {
     LLVMTypeRef fnty = LLVMFunctionType(g_pending_ret, g_pending_params,
                                         (unsigned)g_pending_param_count, 0);
     LLVMValueRef existing = LLVMGetNamedFunction(g_module, g_pending_fn_name);
-    if (existing) return existing; // a forward `declare` already created it
-    return LLVMAddFunction(g_module, g_pending_fn_name, fnty);
+    if (existing) {
+        tag_alloc_fn(existing, g_pending_fn_name);
+        tag_free_fn(existing, g_pending_fn_name);
+        return existing; // a forward `declare` already created it
+    }
+    LLVMValueRef fn = LLVMAddFunction(g_module, g_pending_fn_name, fnty);
+    tag_alloc_fn(fn, g_pending_fn_name);
+    tag_free_fn(fn, g_pending_fn_name);
+    return fn;
 }
 
 // A return that is a fresh allocation: `noalias` at the return index, which is
@@ -899,6 +942,8 @@ void ir_declare_function_fresh(void) { g_pending_ret_noalias = 1; }
 
 void ir_declare_function_end(void) {
     LLVMValueRef fn = materialize_function();
+    tag_alloc_fn(fn, g_pending_fn_name);
+    tag_free_fn(fn, g_pending_fn_name);
     if (!g_pending_ret_noalias) return;
     unsigned kind = LLVMGetEnumAttributeKindForName("noalias", 7);
     if (!kind) return;
@@ -992,6 +1037,23 @@ void ir_br_numbered(int target) {
 void ir_cond_br_numbered(const char *cond, int t, int f) {
     if (block_done()) return;
     LLVMBuildCondBr(g_builder, resolve_value(cond, "i1"), block_for(t), block_for(f));
+}
+
+int ir_switch_begin(const char *value, int default_label, int case_count) {
+    if (block_done()) return intern_value(NULL);
+    LLVMValueRef dispatch = LLVMBuildSwitch(
+        g_builder, resolve_value(value, "i32"), block_for(default_label),
+        case_count > 0 ? (unsigned)case_count : 0);
+    return intern_value(dispatch);
+}
+
+void ir_switch_case(int switch_id, int value, int label) {
+    if (switch_id < 0 || switch_id >= g_value_count || !g_values[switch_id]) {
+        backend_fail("switch handle out of range", NULL);
+    }
+    LLVMAddCase(g_values[switch_id],
+                LLVMConstInt(LLVMInt32TypeInContext(g_ctx), (unsigned)value, 0),
+                block_for(label));
 }
 
 void ir_br(const char *label) { (void)label; backend_fail("named branches are not supported", label); }
@@ -1499,6 +1561,20 @@ int ir_alloc_stack(const char *struct_name) {
     return intern_value(hot);
 }
 
+static LLVMValueRef get_or_declare_alloc_fn(const char *name, LLVMTypeRef alloc_ty) {
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, name);
+    if (!fn) fn = LLVMAddFunction(g_module, name, alloc_ty);
+    tag_alloc_fn(fn, name);
+    return fn;
+}
+
+static LLVMValueRef get_or_declare_free_fn(const char *name, LLVMTypeRef free_ty) {
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, name);
+    if (!fn) fn = LLVMAddFunction(g_module, name, free_ty);
+    tag_free_fn(fn, name);
+    return fn;
+}
+
 // The second half of a split object.
 //
 // Allocated through the **same allocator the hot record came from**, and that is
@@ -1521,8 +1597,7 @@ static void attach_cold(const StructType *s, LLVMValueRef hot, const char *alloc
     }
 
     LLVMTypeRef alloc_ty = LLVMFunctionType(ptr, &size_ty, 1, 0);
-    LLVMValueRef fn = LLVMGetNamedFunction(g_module, alloc_fn);
-    if (!fn) fn = LLVMAddFunction(g_module, alloc_fn, alloc_ty);
+    LLVMValueRef fn = get_or_declare_alloc_fn(alloc_fn, alloc_ty);
 
     LLVMValueRef args[1] = {size};
     LLVMValueRef cold = LLVMBuildCall2(g_builder, alloc_ty, fn, args, 1, "");
@@ -1546,8 +1621,7 @@ int ir_alloc_object(const char *struct_name) {
     }
 
     LLVMTypeRef alloc_ty = LLVMFunctionType(ptr, &size_ty, 1, 0);
-    LLVMValueRef alloc_fn = LLVMGetNamedFunction(g_module, g_alloc_fn);
-    if (!alloc_fn) alloc_fn = LLVMAddFunction(g_module, g_alloc_fn, alloc_ty);
+    LLVMValueRef alloc_fn = get_or_declare_alloc_fn(g_alloc_fn, alloc_ty);
 
     LLVMValueRef args[1] = {size};
     LLVMValueRef hot = LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, "");
@@ -1713,8 +1787,7 @@ static void ir_release_call(const char *value, const char *fn_name) {
     LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
 
     LLVMTypeRef free_ty = LLVMFunctionType(voidty, &ptr, 1, 0);
-    LLVMValueRef free_fn = LLVMGetNamedFunction(g_module, fn_name);
-    if (!free_fn) free_fn = LLVMAddFunction(g_module, fn_name, free_ty);
+    LLVMValueRef free_fn = get_or_declare_free_fn(fn_name, free_ty);
 
     LLVMValueRef raw = resolve_uncoerced(value);
     LLVMValueRef arg;
@@ -1767,8 +1840,7 @@ void ir_free_cold(const char *struct_name, const char *value) {
     tag_struct_record(cold, s, 0, (unsigned)s->hot_count, "ptr");
 
     LLVMTypeRef free_ty = LLVMFunctionType(voidty, &ptr, 1, 0);
-    LLVMValueRef free_fn = LLVMGetNamedFunction(g_module, g_free_fn);
-    if (!free_fn) free_fn = LLVMAddFunction(g_module, g_free_fn, free_ty);
+    LLVMValueRef free_fn = get_or_declare_free_fn(g_free_fn, free_ty);
 
     LLVMValueRef args[1] = {cold};
     LLVMBuildCall2(g_builder, free_ty, free_fn, args, 1, "");
@@ -1915,8 +1987,7 @@ static int type_key_is_flat(const char *key, int depth) {
     if (key[0] == '%') return struct_is_flat_by_name(key + 1, depth + 1);
     return strcmp(key, "i1") == 0 || strcmp(key, "i8") == 0 || strcmp(key, "i16") == 0
         || strcmp(key, "i32") == 0 || strcmp(key, "i64") == 0
-        || strcmp(key, "float") == 0 || strcmp(key, "double") == 0
-        || strcmp(key, "ptr") == 0;
+        || strcmp(key, "float") == 0 || strcmp(key, "double") == 0;
 }
 
 static int struct_is_flat_by_name(const char *name, int depth) {
@@ -3419,8 +3490,7 @@ static void release_call_temps(const CallFrame *f) {
     // there so that both halves of a pairing swap together, and this is a
     // release like any other: the ledger must see it.
     LLVMTypeRef fty = LLVMFunctionType(voidty, &ptr, 1, 0);
-    LLVMValueRef fn = LLVMGetNamedFunction(g_module, g_free_fn);
-    if (!fn) fn = LLVMAddFunction(g_module, g_free_fn, fty);
+    LLVMValueRef fn = get_or_declare_free_fn(g_free_fn, fty);
     for (int i = 0; i < f->temp_count; i++) {
         LLVMValueRef args[1] = {f->temps[i]};
         LLVMBuildCall2(g_builder, fty, fn, args, 1, "");
@@ -3751,6 +3821,19 @@ int ir_str_byte_at(const char *base, const char *index) {
     return intern_value(LLVMBuildSelect(g_builder, inlined, from_pair, from_heap, ""));
 }
 
+// The caller's length switch proved this String cannot use the twelve-byte
+// inline form. Avoid constructing and selecting a scratch representation when
+// CSDO needs one discriminator byte from a long bucket.
+int ir_str_byte_at_long(const char *base, int index) {
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMValueRef pair = resolve_value(base, "struct:prismio.str");
+    if (!is_prismio_str(pair)) backend_fail("long byte read needs String", base);
+    LLVMValueRef data = LLVMBuildExtractValue(g_builder, pair, 0, "");
+    LLVMValueRef at = byte_gep(data, LLVMConstInt(i32, (unsigned)index, 0));
+    return intern_value(LLVMBuildLoad2(g_builder, i8, at, ""));
+}
+
 // String equality, with the comparison the representation makes free.
 //
 // **Two short strings are equal exactly when their pairs are bit-identical.**
@@ -3858,6 +3941,40 @@ int ir_str_eq(const char *lhs, const char *rhs) {
     LLVMBasicBlockRef blocks[3] = {from_short, check, from_slow};
     LLVMAddIncoming(phi, vals, blocks, 3);
     return intern_value(phi);
+}
+
+// CSDO reaches this only after its length switch proved that `value` is exactly
+// strlen(literal) bytes long. Keep the comparison as a direct, constant-width
+// memcmp: LLVM's target lowering can replace it with the cheapest legal integer
+// loads and compares, while the str_equals_n runtime wrapper hides those
+// constants across the separately compiled runtime boundary.
+int ir_str_eq_literal(const char *value, const char *literal) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef size_ty = type_from_key(g_ptr_int);
+
+    LLVMValueRef pair = resolve_value(value, "struct:prismio.str");
+    if (!is_prismio_str(pair)) backend_fail("literal compare needs String", value);
+
+    // A String longer than the inline capacity necessarily keeps its data in
+    // field zero. This fact is explicit here because LLVM cannot derive the
+    // representation invariant from the preceding integer switch.
+    LLVMValueRef data = strlen(literal) > PRISMIO_STR_INLINE_MAX
+        ? LLVMBuildExtractValue(g_builder, pair, 0, "")
+        : coerce_for(pair, "ptr");
+    LLVMValueRef constant = LLVMBuildGlobalStringPtr(g_builder, literal, "str.dispatch");
+    LLVMTypeRef params[3] = {ptr, ptr, size_ty};
+    LLVMTypeRef fty = LLVMFunctionType(i32, params, 3, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "memcmp");
+    if (!fn) fn = LLVMAddFunction(g_module, "memcmp", fty);
+    LLVMValueRef args[3] = {
+        data,
+        constant,
+        LLVMConstInt(size_ty, (unsigned long long)strlen(literal), 0),
+    };
+    LLVMValueRef compared = LLVMBuildCall2(g_builder, fty, fn, args, 3, "");
+    return intern_value(LLVMBuildICmp(
+        g_builder, LLVMIntEQ, compared, LLVMConstInt(i32, 0, 0), ""));
 }
 
 // A **view**: `count` bytes of `base` from `start`, owning nothing.
@@ -4042,6 +4159,82 @@ int ir_str_inline(const char *base, const char *start, const char *count) {
                                 LLVMBuildIntToPtr(g_builder, w0, ptr, ""), 0, "");
     pair = LLVMBuildInsertValue(g_builder, pair, word, 1, "");
     return intern_value(pair);
+}
+
+// Join two to six strings directly into the short representation.
+//
+// std/string.psm proves that the sum is at most twelve before reaching this
+// entry point. Keeping the operation in IR is important: a C helper would force
+// every `{ptr, i64}` operand through the platform aggregate ABI and return the
+// same aggregate through memory, while here LLVM can keep the pair in registers
+// and fold literal lengths and copies at the call site.
+static int ir_str_inline_concat_n(const char **values, unsigned count) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+
+    LLVMValueRef buf = str_scratch_slot();
+    LLVMValueRef at8 = byte_gep(buf, LLVMConstInt(i32, 8, 0));
+    LLVMBuildStore(g_builder, LLVMConstInt(i64, 0, 0), buf);
+    LLVMBuildStore(g_builder, LLVMConstInt(i64, 0, 0), at8);
+
+    LLVMValueRef offset = LLVMConstInt(i32, 0, 0);
+    for (unsigned i = 0; i < count; i++) {
+        LLVMValueRef part = resolve_value(values[i], "struct:prismio.str");
+        if (!is_prismio_str(part)) backend_fail("inline concat needs String", values[i]);
+        LLVMValueRef word = LLVMBuildExtractValue(g_builder, part, 1, "");
+        LLVMValueRef length = LLVMBuildAnd(
+            g_builder, LLVMBuildTrunc(g_builder, word, i32, ""),
+            LLVMConstInt(i32, 0x7fffffffU, 0), "");
+        LLVMValueRef source = coerce_for(part, "ptr");
+        LLVMBuildMemCpy(g_builder, byte_gep(buf, offset), 1, source, 1,
+                        LLVMBuildZExt(g_builder, length, i64, ""));
+        offset = LLVMBuildAdd(g_builder, offset, length, "");
+    }
+
+    LLVMValueRef w0 = LLVMBuildLoad2(g_builder, i64, buf, "");
+    LLVMValueRef w1hi = LLVMBuildLoad2(g_builder, i32, at8, "");
+    LLVMValueRef tagged_len = LLVMBuildOr(
+        g_builder, LLVMBuildZExt(g_builder, offset, i64, ""),
+        LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), "");
+    LLVMValueRef word = LLVMBuildOr(
+        g_builder, tagged_len,
+        LLVMBuildShl(g_builder, LLVMBuildZExt(g_builder, w1hi, i64, ""),
+                     LLVMConstInt(i64, 32, 0), ""), "");
+
+    LLVMTypeRef sty = named_struct("prismio.str");
+    LLVMValueRef pair = LLVMGetUndef(sty);
+    pair = LLVMBuildInsertValue(g_builder, pair,
+                                LLVMBuildIntToPtr(g_builder, w0, ptr, ""), 0, "");
+    pair = LLVMBuildInsertValue(g_builder, pair, word, 1, "");
+    return intern_value(pair);
+}
+
+int ir_str_inline_concat2(const char *a, const char *b) {
+    const char *values[2] = {a, b};
+    return ir_str_inline_concat_n(values, 2);
+}
+
+int ir_str_inline_concat3(const char *a, const char *b, const char *c) {
+    const char *values[3] = {a, b, c};
+    return ir_str_inline_concat_n(values, 3);
+}
+
+int ir_str_inline_concat4(const char *a, const char *b, const char *c, const char *d) {
+    const char *values[4] = {a, b, c, d};
+    return ir_str_inline_concat_n(values, 4);
+}
+
+int ir_str_inline_concat5(const char *a, const char *b, const char *c, const char *d,
+                          const char *e) {
+    const char *values[5] = {a, b, c, d, e};
+    return ir_str_inline_concat_n(values, 5);
+}
+
+int ir_str_inline_concat6(const char *a, const char *b, const char *c, const char *d,
+                          const char *e, const char *f) {
+    const char *values[6] = {a, b, c, d, e, f};
+    return ir_str_inline_concat_n(values, 6);
 }
 
 // Format one 32-bit Int into String's inline pair.
@@ -5590,6 +5783,7 @@ int ir_curate_module(const char *runtime_ir, const char *const *names, int count
                 ir_tag_list_mutator_decl(ctx, fn);
             }
             if (strcmp(name, "list_new") == 0
+                    || strcmp(name, "list_new_inline") == 0
                     || strcmp(name, "list_new_with_capacity") == 0
                     || strcmp(name, "list_new_with_capacity_inline") == 0) {
                 unsigned k_noalias = LLVMGetEnumAttributeKindForName("noalias", 7);
@@ -5673,7 +5867,220 @@ int ir_link_modules(const char *dest_ir, const char *src_ir, const char *out_pat
         if (err) LLVMDisposeMessage(err);
         failed = 1;
     }
+    LLVMDisposeModule(dm);
+    LLVMContextDispose(ctx);
+    return failed;
+}
 
+static void copy_attributes_at_index(LLVMValueRef from, LLVMValueRef to,
+                                     LLVMAttributeIndex index) {
+    unsigned count = LLVMGetAttributeCountAtIndex(from, index);
+    if (!count) return;
+
+    LLVMAttributeRef* attributes =
+        (LLVMAttributeRef*)malloc(sizeof(LLVMAttributeRef) * count);
+    if (!attributes) return;
+    LLVMGetAttributesAtIndex(from, index, attributes);
+    for (unsigned i = 0; i < count; i++) {
+        LLVMAddAttributeAtIndex(to, index, attributes[i]);
+    }
+    free(attributes);
+}
+
+// The program module owns the language-level declaration contract. LLVM's
+// linker quite reasonably prefers the attributes on an incoming definition,
+// but clang cannot infer Prismio facts such as rt_free being the matching
+// deallocator for malloc. Preserve those facts on the definition before the
+// declaration is replaced. This is intentionally generic: PLIB functions keep
+// their ownership/alias contracts by the same rule, without maintaining a list
+// of privileged runtime names.
+static void preserve_program_declaration_contracts(LLVMModuleRef program,
+                                                   LLVMModuleRef library) {
+    for (LLVMValueRef declaration = LLVMGetFirstFunction(program); declaration;
+         declaration = LLVMGetNextFunction(declaration)) {
+        if (LLVMCountBasicBlocks(declaration) != 0) continue;
+
+        size_t name_len = 0;
+        const char* name = LLVMGetValueName2(declaration, &name_len);
+        if (!name || !name_len) continue;
+
+        LLVMValueRef definition = LLVMGetNamedFunction(library, name);
+        if (!definition || LLVMCountBasicBlocks(definition) == 0) continue;
+        if (LLVMCountParams(declaration) != LLVMCountParams(definition)) continue;
+
+        copy_attributes_at_index(declaration, definition,
+                                 LLVMAttributeFunctionIndex);
+        copy_attributes_at_index(declaration, definition,
+                                 LLVMAttributeReturnIndex);
+        unsigned params = LLVMCountParams(declaration);
+        for (unsigned i = 1; i <= params; i++) {
+            copy_attributes_at_index(declaration, definition, i);
+        }
+    }
+}
+
+// Packaged C bitcode is target-shaped but not target-owned. Clang stamps every
+// C function with the CPU/features of the packaging machine; retaining those
+// strings after merging makes LLVM reject otherwise profitable inlining into
+// attribute-less Prismio functions as "conflicting attributes". The final
+// clang invocation already selects the build target for the combined module,
+// so discard only these per-function code-generation choices and let that one
+// invocation apply a coherent target policy to the whole program.
+static void clear_packaging_target_attributes(LLVMModuleRef library) {
+    static const char* const keys[] = {
+        "target-cpu", "target-features", "tune-cpu",
+    };
+    for (LLVMValueRef function = LLVMGetFirstFunction(library); function;
+         function = LLVMGetNextFunction(function)) {
+        for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+            LLVMRemoveStringAttributeAtIndex(
+                function, LLVMAttributeFunctionIndex, keys[i],
+                (unsigned)strlen(keys[i]));
+        }
+    }
+}
+
+// RtList's inline-element stride is immutable: typed lists receive it in their
+// constructor, and untyped lists remain boxed with a zero stride. The old
+// curated-runtime path attached that fact only inside a hand-written list of
+// hot accessors. Full runtime bitcode can state it structurally instead:
+// recognize every load of the field in every imported body. This lets
+// LICM/loop-unswitching hoist the layout choice without deciding in advance
+// which runtime functions deserve optimization.
+static void mark_runtime_structural_invariants(LLVMContextRef ctx,
+                                               LLVMModuleRef runtime) {
+    unsigned invariant_kind =
+        LLVMGetMDKindIDInContext(ctx, "invariant.load", 14);
+    LLVMMetadataRef empty = LLVMMDNodeInContext2(ctx, NULL, 0);
+    LLVMValueRef invariant = LLVMMetadataAsValue(ctx, empty);
+
+    for (LLVMValueRef function = LLVMGetFirstFunction(runtime); function;
+         function = LLVMGetNextFunction(function)) {
+        for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(function); block;
+             block = LLVMGetNextBasicBlock(block)) {
+            for (LLVMValueRef instruction = LLVMGetFirstInstruction(block);
+                 instruction;
+                 instruction = LLVMGetNextInstruction(instruction)) {
+                if (!is_elem_size_load(ctx, instruction)) continue;
+                LLVMSetMetadata(instruction, invariant_kind, invariant);
+                tag_list_count_range(ctx, instruction);
+            }
+        }
+    }
+}
+
+// A precompiled module is an optimisation-bearing library interface, not merely
+// another implementation object. Give eligible concrete functions the same
+// modest hint at that boundary and leave the final decision to LLVM's cost
+// model. A zero instruction limit admits the whole source-level PLIB; runtime
+// callers use a uniform small-function limit. This avoids
+// the greedy bottom-up failure where a small runtime helper first expands into
+// a std function, making the more valuable std-to-program inline miss the
+// ordinary threshold. `inlinehint` raises that threshold; it is neither
+// `alwaysinline` nor a hand-maintained list of blessed functions.
+static unsigned function_instruction_count(LLVMValueRef function,
+                                           unsigned stop_after) {
+    unsigned count = 0;
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(function); block;
+         block = LLVMGetNextBasicBlock(block)) {
+        for (LLVMValueRef instruction = LLVMGetFirstInstruction(block);
+             instruction;
+             instruction = LLVMGetNextInstruction(instruction)) {
+            count++;
+            if (stop_after && count > stop_after) return count;
+        }
+    }
+    return count;
+}
+
+static void mark_library_interface_functions(LLVMModuleRef program,
+                                             LLVMModuleRef library,
+                                             unsigned instruction_limit) {
+    unsigned kind = LLVMGetEnumAttributeKindForName("inlinehint", 10);
+    if (!kind) return;
+    for (LLVMValueRef function = LLVMGetFirstFunction(library); function;
+         function = LLVMGetNextFunction(function)) {
+        if (LLVMCountBasicBlocks(function) == 0) continue;
+        if (instruction_limit
+                && function_instruction_count(function, instruction_limit)
+                       > instruction_limit) {
+            continue;
+        }
+        LLVMAttributeRef hint =
+            LLVMCreateEnumAttribute(LLVMGetModuleContext(library), kind, 0);
+        LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex, hint);
+
+        size_t name_len = 0;
+        const char* name = LLVMGetValueName2(function, &name_len);
+        LLVMValueRef declaration =
+            name && name_len ? LLVMGetNamedFunction(program, name) : NULL;
+        if (declaration) {
+            LLVMAddAttributeAtIndex(declaration, LLVMAttributeFunctionIndex,
+                                    hint);
+        }
+    }
+}
+
+// Link a precompiled library/runtime bitcode module into a program module. The
+// final clang invocation optimises the combined graph, so bitcode bodies remain
+// available for cross-module inlining and dead-code elimination.
+int ir_link_library_module(const char *dest_ir, const char *src_ir,
+                           const char *out_path, int library_interface) {
+    LLVMContextRef ctx = LLVMContextCreate();
+    LLVMMemoryBufferRef dbuf = NULL, sbuf = NULL;
+    LLVMModuleRef dm = NULL, sm = NULL;
+    char *err = NULL;
+
+    if (LLVMCreateMemoryBufferWithContentsOfFile(dest_ir, &dbuf, &err) != 0) {
+        fprintf(stderr, "ERROR: could not read program IR %s: %s\n", dest_ir,
+                err ? err : "(no detail)");
+        if (err) LLVMDisposeMessage(err);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+    if (LLVMParseIRInContext(ctx, dbuf, &dm, &err) != 0) {
+        fprintf(stderr, "ERROR: could not parse program IR %s: %s\n", dest_ir,
+                err ? err : "(no detail)");
+        if (err) LLVMDisposeMessage(err);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+    if (LLVMCreateMemoryBufferWithContentsOfFile(src_ir, &sbuf, &err) != 0) {
+        fprintf(stderr, "ERROR: Prismio runtime module is unreadable: %s\n", src_ir);
+        if (err) LLVMDisposeMessage(err);
+        LLVMDisposeModule(dm);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+    if (LLVMParseIRInContext(ctx, sbuf, &sm, &err) != 0) {
+        fprintf(stderr, "ERROR: Prismio runtime module is invalid: %s\n", src_ir);
+        if (err) LLVMDisposeMessage(err);
+        LLVMDisposeModule(dm);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+
+    preserve_program_declaration_contracts(dm, sm);
+    clear_packaging_target_attributes(sm);
+    // PLIB functions are the source-level module boundary, so all of them get
+    // the cost model's modest interface hint. Runtime bitcode is much larger:
+    // hint only universally small boundary functions, keeping a large helper
+    // from changing the greedy inliner's order merely because it was shipped in
+    // bitcode rather than an archive. LLVM still makes the final cost decision.
+    mark_library_interface_functions(dm, sm, library_interface ? 0u : 64u);
+    if (!library_interface) mark_runtime_structural_invariants(ctx, sm);
+
+    int failed = 0;
+    if (LLVMLinkModules2(dm, sm) != 0) {
+        fprintf(stderr, "ERROR: could not link Prismio runtime module %s\n", src_ir);
+        failed = 1;
+    }
+    if (!failed && LLVMPrintModuleToFile(dm, out_path, &err) != 0) {
+        fprintf(stderr, "ERROR: could not write merged program IR: %s\n",
+                err ? err : "(no detail)");
+        if (err) LLVMDisposeMessage(err);
+        failed = 1;
+    }
     LLVMDisposeModule(dm);
     LLVMContextDispose(ctx);
     return failed;

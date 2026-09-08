@@ -168,6 +168,244 @@ private fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: St
     }
 }
 
+// A terminal constant-string dispatch arm:
+//
+//     if (name.equals("literal")) { return value }
+//
+// Method checking has already rewritten the call to `equals(name, literal)`
+// and stamped its resolved symbol on s2. Requiring that exact symbol avoids
+// capturing an unrelated user method called `equals`; requiring a one-return
+// body makes reordering the mutually-exclusive tests semantics-preserving.
+// The subject is returned as the capability token for the chain, or empty when
+// this statement is not an optimisable arm.
+private fn stringDispatchSubject(stmt: ASTNode) -> String {
+    if (stmt.kind != NodeKind.IF_STATEMENT or nodeExists(stmt.child3)
+        or nodeIsNull(stmt.child1) or nodeIsNull(stmt.child2)) {
+        return ""
+    }
+
+    let cond = ptr_to_node(stmt.child1)
+    if (cond.kind != NodeKind.CALL_EXPR
+        or cond.s2.equals("equals__String_String") == false
+        or nodeIsNull(cond.child2)) {
+        return ""
+    }
+
+    let subject = ptr_to_node(cond.child2)
+    if (subject.kind != NodeKind.IDENTIFIER_EXPR or nodeIsNull(subject.next)) {
+        return ""
+    }
+    let literal = ptr_to_node(subject.next)
+    if (nodeIsStringLiteralExpr(subject.next) == false or nodeExists(literal.next)) {
+        return ""
+    }
+
+    let body = ptr_to_node(stmt.child2)
+    if (nodeIsNull(body.child1)) { return "" }
+    let only = ptr_to_node(body.child1)
+    if (only.kind != NodeKind.RETURN_STATEMENT or nodeExists(only.next)) {
+        return ""
+    }
+    return subject.s1
+}
+
+private fn stringDispatchLiteral(stmt: ASTNode) -> ASTNode {
+    let cond = ptr_to_node(stmt.child1)
+    let subject = ptr_to_node(cond.child2)
+    return ptr_to_node(subject.next)
+}
+
+private fn stringDispatchCount(firstPtr: Ptr, subject: String) -> Int {
+    let mut count = 0
+    let mut current = firstPtr
+    while (nodeExists(current)) {
+        let armSubject = stringDispatchSubject(ptr_to_node(current))
+        if (armSubject.equals(subject) == false) { break }
+        count = count + 1
+        current = ptr_to_node(current).next
+    }
+    return count
+}
+
+private fn stringDispatchLengthSeen(lengths: List<Int>, wanted: Int) -> Bool {
+    let mut i = 0
+    while (i < list_len(lengths)) {
+        if (list_get(lengths, i) == wanted) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+private fn stringDispatchByteSeen(values: List<Int>, wanted: Int) -> Bool {
+    let mut i = 0
+    while (i < list_len(values)) {
+        if (list_get(values, i) == wanted) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// gperf's useful idea without its table: choose the byte position that splits
+// this equal-length bucket into the most classes. The length check makes every
+// position safe to read, and the full literal comparison below remains the
+// proof for strings outside the static set that happen to share the chosen byte.
+private fn stringDispatchBestByte(firstPtr: Ptr, count: Int, length: Int) -> Int {
+    let mut bestPosition = -1
+    let mut bestClasses = 1
+    let mut position = 0
+    while (position < length) {
+        let mut values: List<Int> = list_new()
+        let mut scan = firstPtr
+        let mut scanned = 0
+        while (scanned < count) {
+            let literal = stringDispatchLiteral(ptr_to_node(scan))
+            if (__builtin_string_len(literal.s1) == length) {
+                let byte = charCode(literal.s1.charAt(position))
+                if (stringDispatchByteSeen(values, byte) == false) {
+                    list_push(values, byte)
+                }
+            }
+            scan = ptr_to_node(scan).next
+            scanned = scanned + 1
+        }
+        if (list_len(values) > bestClasses) {
+            bestClasses = list_len(values)
+            bestPosition = position
+        }
+        position = position + 1
+    }
+    return bestPosition
+}
+
+private fn generateStringDispatchCandidates(firstPtr: Ptr, count: Int,
+                                             subjectValue: String, length: Int,
+                                             bytePosition: Int, byteValue: Int,
+                                             defaultLabel: Int) {
+    let mut scan = firstPtr
+    let mut scanned = 0
+    while (scanned < count) {
+        let arm = ptr_to_node(scan)
+        let literal = stringDispatchLiteral(arm)
+        let matchesLength = __builtin_string_len(literal.s1) == length
+        let mut matchesByte = true
+        if (matchesLength and bytePosition >= 0) {
+            matchesByte = charCode(literal.s1.charAt(bytePosition)) == byteValue
+        }
+        if (matchesLength and matchesByte) {
+            debugAt(arm)
+            let equal = ir_get_temp_name(ir_str_eq_literal(subjectValue, literal.s1))
+            let bodyLabel = ir_get_label()
+            let nextLabel = ir_get_label()
+            ir_cond_br_numbered(equal, bodyLabel, nextLabel)
+
+            ir_label_numbered(bodyLabel)
+            generateBlock(ptr_to_node(arm.child2))
+            if (ir_has_returned() == 0) { ir_br_numbered(defaultLabel) }
+            ir_clear_returned()
+            ir_label_numbered(nextLabel)
+        }
+        scan = arm.next
+        scanned = scanned + 1
+    }
+    ir_br_numbered(defaultLabel)
+}
+
+// Emit one length switch for a run of terminal String.equals literal arms.
+// LLVM receives the case set as an integer switch, so dense lengths become a
+// jump table. Within a bucket the original source order is retained and only
+// literals of the already-matched length need content comparisons.
+private fn generateStringDispatch(firstPtr: Ptr, count: Int) -> Ptr {
+    let first = ptr_to_node(firstPtr)
+    let firstCond = ptr_to_node(first.child1)
+    let firstSubject = ptr_to_node(firstCond.child2)
+    let subjectValue = generateExpression(firstSubject)
+    let wide = ir_get_temp_name(ir_extract_value("struct:prismio.str", subjectValue, 1))
+    let narrow = ir_get_temp_name(ir_trunc("i64", wide, "i32"))
+    let lengthValue = ir_get_temp_name(ir_and("i32", narrow, "2147483647"))
+
+    let mut lengths: List<Int> = list_new()
+    let mut labels: List<Int> = list_new()
+    let mut scan = firstPtr
+    let mut scanned = 0
+    while (scanned < count) {
+        let literal = stringDispatchLiteral(ptr_to_node(scan))
+        let length = __builtin_string_len(literal.s1)
+        if (stringDispatchLengthSeen(lengths, length) == false) {
+            list_push(lengths, length)
+            list_push(labels, ir_get_label())
+        }
+        scan = ptr_to_node(scan).next
+        scanned = scanned + 1
+    }
+
+    let defaultLabel = ir_get_label()
+    let switchId = ir_switch_begin(lengthValue, defaultLabel, list_len(lengths))
+    let mut group = 0
+    while (group < list_len(lengths)) {
+        ir_switch_case(switchId, list_get(lengths, group), list_get(labels, group))
+        group = group + 1
+    }
+
+    group = 0
+    while (group < list_len(lengths)) {
+        let groupLength = list_get(lengths, group)
+        ir_label_numbered(list_get(labels, group))
+
+        let bytePosition = stringDispatchBestByte(firstPtr, count, groupLength)
+        if (bytePosition < 0) {
+            generateStringDispatchCandidates(firstPtr, count, subjectValue,
+                                             groupLength, -1, 0, defaultLabel)
+        } else {
+            let mut rawByte = 0
+            if (groupLength > 12) {
+                rawByte = ir_str_byte_at_long(subjectValue, bytePosition)
+            } else {
+                rawByte = ir_str_byte_at(subjectValue, strFromInt(bytePosition))
+            }
+            let byte8 = ir_get_temp_name(rawByte)
+            let byte32 = ir_get_temp_name(ir_zext("i8", byte8, "i32"))
+            let mut byteValues: List<Int> = list_new()
+            let mut byteLabels: List<Int> = list_new()
+
+            scan = firstPtr
+            scanned = 0
+            while (scanned < count) {
+                let literal = stringDispatchLiteral(ptr_to_node(scan))
+                if (__builtin_string_len(literal.s1) == groupLength) {
+                    let byte = charCode(literal.s1.charAt(bytePosition))
+                    if (stringDispatchByteSeen(byteValues, byte) == false) {
+                        list_push(byteValues, byte)
+                        list_push(byteLabels, ir_get_label())
+                    }
+                }
+                scan = ptr_to_node(scan).next
+                scanned = scanned + 1
+            }
+
+            let byteSwitch = ir_switch_begin(byte32, defaultLabel, list_len(byteValues))
+            let mut byteGroup = 0
+            while (byteGroup < list_len(byteValues)) {
+                ir_switch_case(byteSwitch, list_get(byteValues, byteGroup),
+                               list_get(byteLabels, byteGroup))
+                byteGroup = byteGroup + 1
+            }
+            byteGroup = 0
+            while (byteGroup < list_len(byteValues)) {
+                ir_label_numbered(list_get(byteLabels, byteGroup))
+                generateStringDispatchCandidates(firstPtr, count, subjectValue,
+                                                 groupLength, bytePosition,
+                                                 list_get(byteValues, byteGroup),
+                                                 defaultLabel)
+                byteGroup = byteGroup + 1
+            }
+        }
+        group = group + 1
+    }
+
+    ir_label_numbered(defaultLabel)
+    return scan
+}
+
 private fn generateStatement(stmt: ASTNode) {
     // The line table, in one place. Every instruction this statement and its
     // subexpressions build inherits this location, including the calls codegen
@@ -1002,6 +1240,22 @@ internal fn generateBlock(block: ASTNode) {
     let mut stmtPtr = block.child1
     while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
+        // CSDO: dispatch tables are source-level chains, before ordinary IF
+        // lowering turns them into unrelated branches. Four arms is the point
+        // where the length switch repays its setup. A narrowed automatic arena
+        // is statement-indexed, so retain the ordinary path when one is active;
+        // debug builds likewise preserve one condition per source line.
+        if (rangeFirst < 0 and ir_debug_enabled() == 0) {
+            let dispatchSubject = stringDispatchSubject(stmt)
+            if (dispatchSubject.equals("") == false) {
+                let dispatchCount = stringDispatchCount(stmtPtr, dispatchSubject)
+                if (dispatchCount >= 4) {
+                    stmtPtr = generateStringDispatch(stmtPtr, dispatchCount)
+                    stmtIndex = stmtIndex + dispatchCount
+                    continue
+                }
+            }
+        }
         if (rangeFirst == stmtIndex) {
             ir_region_begin()
             ir_region_enter()

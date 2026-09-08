@@ -1,0 +1,48 @@
+// Constant-string dispatch must preserve source semantics for inline strings,
+// long strings, views, equal-length collisions, duplicate arms, and misses.
+
+import std.io
+import std.string
+
+fn classify(value: String) -> Int {
+    if (value.equals("cat")) { return 1 }
+    if (value.equals("car")) { return 2 }
+    if (value.equals("cap")) { return 3 }
+    if (value.equals("alpha_dispatch_01")) { return 11 }
+    if (value.equals("bravo_dispatch_02")) { return 12 }
+    if (value.equals("charl_dispatch_03")) { return 13 }
+    if (value.equals("alpha_dispatch_01")) { return 99 }
+    return -1
+}
+
+fn check(value: String, expected: Int, label: String) -> Int {
+    let actual = classify(value)
+    if (actual != expected) {
+        print("FAIL: ")
+        print(label)
+        print(" got ")
+        println(actual)
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    if (check("cat", 1, "short hit") != 0) { return 1 }
+    if (check("car", 2, "short collision") != 0) { return 1 }
+    if (check("can", -1, "short miss") != 0) { return 1 }
+    if (check("alpha_dispatch_01", 11, "long hit") != 0) { return 1 }
+    if (check("alpha_dispatch_09", -1, "long verified miss") != 0) { return 1 }
+    if (check("different_length", -1, "length miss") != 0) { return 1 }
+
+    let shortSource = "xxcatyy"
+    let shortValue = shortSource[2..5]
+    if (check(shortValue, 1, "inline substring") != 0) { return 1 }
+
+    let longSource = "xxalpha_dispatch_01yy"
+    let longView = longSource[2..19]
+    if (check(longView, 11, "long view") != 0) { return 1 }
+
+    println("string dispatch ok")
+    return 0
+}

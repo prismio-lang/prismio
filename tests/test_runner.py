@@ -850,79 +850,84 @@ def run_ums_test():
     # running, which is status rather than output, and while it went to stdout
     # it prefixed `aif --manifest` with a human line and broke that format's
     # one guarantee: that its first line is `aif-manifest 1`.
-    with preserved_project_host() as (compiler_artifact, compiler_candidate), \
-            tempfile.TemporaryDirectory(prefix="prismio-launcher-") as launcher_dir:
+    # Snapshot the tested generation before preserved_project_host removes the
+    # active project host. PRISMIO_EXE is commonly that exact path in local and
+    # CI runs; copying it after entering the preservation context therefore
+    # tried to copy a file the test had just deleted.
+    with tempfile.TemporaryDirectory(prefix="prismio-launcher-") as launcher_dir:
         launcher = Path(launcher_dir) / ("prismio.exe" if os.name == "nt" else "prismio")
         shutil.copy2(PRISMIO_EXE, launcher)
 
-        project_build = subprocess.run(
-            [str(launcher), "build"], capture_output=True, text=True,
-            cwd=str(PROJECT_ROOT / "ums"),
-        )
-        if (project_build.returncode != 0 or not compiler_artifact.exists()
-                or "compiler host: stage-0" not in project_build.stderr):
-            print(f"{RED}[FAIL] ums: stage 0 did not build the first project host{RESET}")
-            print(project_build.stdout or project_build.stderr)
-            return False
+        with preserved_project_host() as (compiler_artifact, compiler_candidate):
 
-        local_build = subprocess.run(
-            [str(launcher), "build"], capture_output=True, text=True,
-            cwd=str(PROJECT_ROOT / "ums"),
-        )
-        if (local_build.returncode != 0
-                or "compiler host: project-local" not in local_build.stderr
-                or "staged project compiler:" not in local_build.stdout
-                or "promoted project compiler:" not in local_build.stdout):
-            print(f"{RED}[FAIL] ums: the complete build command was not hosted{RESET}")
-            print(local_build.stdout or local_build.stderr)
-            return False
+            project_build = subprocess.run(
+                [str(launcher), "build"], capture_output=True, text=True,
+                cwd=str(PROJECT_ROOT / "ums"),
+            )
+            if (project_build.returncode != 0 or not compiler_artifact.exists()
+                    or "compiler host: stage-0" not in project_build.stderr):
+                print(f"{RED}[FAIL] ums: stage 0 did not build the first project host{RESET}")
+                print(project_build.stdout or project_build.stderr)
+                return False
 
-        forwarded_version = subprocess.run(
-            [str(launcher), "--version"], capture_output=True, text=True,
-            cwd=str(PROJECT_ROOT),
-        )
-        if (forwarded_version.returncode != 0
-                or "compiler host: project-local" not in forwarded_version.stderr
-                or "prismio 0.1.0" not in forwarded_version.stdout):
-            print(f"{RED}[FAIL] ums: a non-build command was not forwarded to the host{RESET}")
-            print(forwarded_version.stdout or forwarded_version.stderr)
-            return False
+            local_build = subprocess.run(
+                [str(launcher), "build"], capture_output=True, text=True,
+                cwd=str(PROJECT_ROOT / "ums"),
+            )
+            if (local_build.returncode != 0
+                    or "compiler host: project-local" not in local_build.stderr
+                    or "staged project compiler:" not in local_build.stdout
+                    or "promoted project compiler:" not in local_build.stdout):
+                print(f"{RED}[FAIL] ums: the complete build command was not hosted{RESET}")
+                print(local_build.stdout or local_build.stderr)
+                return False
 
-        # A direct local invocation has no global parent waiting to promote its
-        # sibling candidate, so it must fail rather than overwrite itself.
-        self_build = subprocess.run(
-            [str(compiler_artifact), "build"], capture_output=True, text=True,
-            cwd=str(PROJECT_ROOT),
-        )
-        if self_build.returncode == 0 or "P1051" not in (self_build.stdout + self_build.stderr):
-            print(f"{RED}[FAIL] ums: a project compiler tried to replace itself{RESET}")
-            print(self_build.stdout or self_build.stderr)
-            return False
+            forwarded_version = subprocess.run(
+                [str(launcher), "--version"], capture_output=True, text=True,
+                cwd=str(PROJECT_ROOT),
+            )
+            if (forwarded_version.returncode != 0
+                    or "compiler host: project-local" not in forwarded_version.stderr
+                    or "prismio 0.1.0" not in forwarded_version.stdout):
+                print(f"{RED}[FAIL] ums: a non-build command was not forwarded to the host{RESET}")
+                print(forwarded_version.stdout or forwarded_version.stderr)
+                return False
 
-        # A corrupt active generation falls back to stage 0 rather than becoming
-        # a permanent dead end. The command is not replayed after a host failure;
-        # fallback happens only because the preflight could not start the host.
-        compiler_artifact.write_bytes(b"not a Prismio compiler\n")
-        fallback_build = subprocess.run(
-            [str(launcher), "build"], capture_output=True, text=True,
-            cwd=str(PROJECT_ROOT),
-        )
-        fallback_output = fallback_build.stdout + fallback_build.stderr
-        if (fallback_build.returncode != 0 or "P1052" not in fallback_output
-                or "compiler host: stage-0" not in fallback_output):
-            print(f"{RED}[FAIL] ums: a broken project compiler did not fall back to stage 0{RESET}")
-            print(fallback_output)
-            return False
+            # A direct local invocation has no global parent waiting to promote its
+            # sibling candidate, so it must fail rather than overwrite itself.
+            self_build = subprocess.run(
+                [str(compiler_artifact), "build"], capture_output=True, text=True,
+                cwd=str(PROJECT_ROOT),
+            )
+            if self_build.returncode == 0 or "P1051" not in (self_build.stdout + self_build.stderr):
+                print(f"{RED}[FAIL] ums: a project compiler tried to replace itself{RESET}")
+                print(self_build.stdout or self_build.stderr)
+                return False
 
-        clean = subprocess.run(
-            [str(launcher), "clean"], capture_output=True, text=True,
-            cwd=str(PROJECT_ROOT / "ums"),
-        )
-        if (clean.returncode != 0 or compiler_artifact.exists()
-                or "compiler host: project-local" not in clean.stderr):
-            print(f"{RED}[FAIL] ums: hosted clean did not remove the compiler after it exited{RESET}")
-            print(clean.stdout or clean.stderr)
-            return False
+            # A corrupt active generation falls back to stage 0 rather than becoming
+            # a permanent dead end. The command is not replayed after a host failure;
+            # fallback happens only because the preflight could not start the host.
+            compiler_artifact.write_bytes(b"not a Prismio compiler\n")
+            fallback_build = subprocess.run(
+                [str(launcher), "build"], capture_output=True, text=True,
+                cwd=str(PROJECT_ROOT),
+            )
+            fallback_output = fallback_build.stdout + fallback_build.stderr
+            if (fallback_build.returncode != 0 or "P1052" not in fallback_output
+                    or "compiler host: stage-0" not in fallback_output):
+                print(f"{RED}[FAIL] ums: a broken project compiler did not fall back to stage 0{RESET}")
+                print(fallback_output)
+                return False
+
+            clean = subprocess.run(
+                [str(launcher), "clean"], capture_output=True, text=True,
+                cwd=str(PROJECT_ROOT / "ums"),
+            )
+            if (clean.returncode != 0 or compiler_artifact.exists()
+                    or "compiler host: project-local" not in clean.stderr):
+                print(f"{RED}[FAIL] ums: hosted clean did not remove the compiler after it exited{RESET}")
+                print(clean.stdout or clean.stderr)
+                return False
 
     print(f"{GREEN}[PASS] ums: manifest lowering, validation, build planning, "
           f"native linkage, host routing, dependency resolution and the lockfile{RESET}")
@@ -5696,10 +5701,7 @@ def run_aif_verify_test():
         # pairing on the same side of the swap. Without that these would be
         # violations, not leaks.
         #
-        # The four that remain, and the count is load-bearing rather than
-        # incidental -- a wrong free in this fixture is a *legal* release as far
-        # as the accounting goes, so it shows up here as one fewer leak and not
-        # as a violation:
+        # The two residual values used to be load-bearing heap leaks:
         #
         #   9 bytes  `owned` in main, which reborrow() binds to a local name.
         #            E-BIND cannot name a scope inside a callee, so it raises the
@@ -5717,7 +5719,10 @@ def run_aif_verify_test():
         # And three until plain-object ownership transfer landed: the fifth was
         # `escapes() -> String`, the 4-byte T2 return, which the caller now owns
         # and frees.
-        "test_45_aif_affine_collections": 2,
+        # Both values are now short inline Strings and allocate no block at all.
+        # Their ownership discrimination remains covered by the fixture's value
+        # checks; the runtime ledger therefore correctly reads zero.
+        "test_45_aif_affine_collections": 0,
         # AIF item 3. Every container in this fixture releases its elements, and
         # every binding that receives one from a known callee releases the
         # container -- so the ordinary cases are zero and what is left is one
@@ -5828,13 +5833,11 @@ def run_aif_verify_test():
         #   S35b (M2.0, extern-allocated)   27 allocated, 19 released,  8 leaked
         #   S36b (M2.0b, callee-returned)   27 allocated, 25 released,  2 leaked
         #
-        # The 2 are both deliberate: borrow_reassign's initialiser, which the
-        # guard must decline because the slot ends up holding `h.name`, and
-        # `piece` in main -- callee_accumulator returns a value makePiece
-        # allocated, so main owns it only two hops from its site and ownership
-        # transfer survives one. A drop to 1 means the two-hop case landed; a rise
-        # to 8 means M2.0b's predicate stopped firing.
-        "test_72_reassigned_ownership": 2,
+        # Those two strings now fit in the inline representation and create no
+        # physical allocation. Zero here is therefore allocation elimination,
+        # not an illicit release; the fixture still checks that the borrowed
+        # field remains intact.
+        "test_72_reassigned_ownership": 0,
         # M2.1a, and the first entry in this table for a *self-referential* type.
         # Zero, against 100 on the generation before it with the same 106
         # allocations -- the feature reclaims, it does not allocate less, so a
@@ -5916,15 +5919,16 @@ def run_aif_verify_test():
         "extern_alias_escape": 0,
         # Consuming String append. The fixture performs 9,192 logical appends,
         # including self/view aliases and a concat site also stored in a list.
-        # Geometric growth plus 1,000 integer formatter buffers measures 1,039
-        # allocations; immutable concat-per-iteration is over 10,000. The exact
+        # Geometric growth with allocation-free inline integer formatting and
+        # short concat measures under 50 allocations; immutable
+        # concat-per-iteration is over 10,000. The exact
         # leak count protects ownership, while the ceiling below protects the
         # amortised architecture rather than timing a noisy CI host.
         "test_100_string_append_reuse": 0,
     }
 
     max_allocations = {
-        "test_100_string_append_reuse": 1100,
+        "test_100_string_append_reuse": 80,
     }
 
     exe = TEST_DIR / "aif_verify_probe.exe"
@@ -6312,6 +6316,70 @@ def run_single_loop_inline_test():
         return False
     print(f"{GREEN}[PASS] unique single-loop call is inlined; crowded and "
           f"debug calls retain boundaries{RESET}")
+    return True
+
+
+def run_string_dispatch_codegen_test():
+    """Release CSDO is two-stage; debug keeps source-level conditions."""
+    print(f"\n{BLUE}--- Running string_dispatch_codegen ---{RESET}")
+    src = TEST_DIR / "test_133_string_dispatch.psm"
+    problems = []
+
+    def function_body(ir):
+        match = re.search(r'^define i32 @classify__String\([^\n]*\) [^{]*\{\n(.*?)^}',
+                          ir, re.MULTILINE | re.DOTALL)
+        if not match:
+            problems.append("classify__String is missing from emitted IR")
+            return ""
+        return match.group(1)
+
+    with tempfile.TemporaryDirectory(prefix="prismio-string-dispatch-") as td:
+        release = Path(td) / "release.ll"
+        debug = Path(td) / "debug.ll"
+        wasm = Path(td) / "wasm.ll"
+        for label, out, extra in (("release", release, []),
+                                  ("debug", debug, ["-g"])):
+            built = run_command([str(PRISMIO_EXE), "build", str(src),
+                                 *extra, "-o", str(out)])
+            if built.returncode != 0 or not out.exists():
+                problems.append(f"{label} IR build failed: "
+                                f"{elide_middle((built.stdout or '') + (built.stderr or ''))}")
+
+        built = run_command([str(PRISMIO_EXE), "build", str(src),
+                             "--target", "wasm32-unknown-unknown", "-o", str(wasm)])
+        if built.returncode != 0 or not wasm.exists():
+            problems.append("wasm IR build failed: "
+                            f"{elide_middle((built.stdout or '') + (built.stderr or ''))}")
+
+        if release.exists():
+            body = function_body(release.read_text(encoding="utf-8", errors="replace"))
+            if body.count("switch i32") != 3:
+                problems.append("release IR lacks one length and two selected-byte switches")
+            if len(re.findall(r'call [^\n]*@memcmp\(', body)) != 7:
+                problems.append("release IR does not expose all seven fixed-width comparisons")
+            if re.search(r'call [^\n]*@equals__String_String\(', body):
+                problems.append("release IR retained the linear String.equals chain")
+
+        if wasm.exists():
+            body = function_body(wasm.read_text(encoding="utf-8", errors="replace"))
+            calls = re.findall(r'call i32 @memcmp\([^\n]+\)', body)
+            if len(calls) != 7 or any(
+                    not re.search(r', i32 \d+\)$', call) for call in calls):
+                problems.append("wasm literal comparisons do not use 32-bit size_t")
+
+        if debug.exists():
+            body = function_body(debug.read_text(encoding="utf-8", errors="replace"))
+            if "switch i32" in body or "@memcmp(" in body:
+                problems.append("debug IR unexpectedly applied CSDO")
+            if len(re.findall(r'call [^\n]*@equals__String_String\(', body)) != 7:
+                problems.append("debug IR did not retain all seven source conditions")
+
+    if problems:
+        print(f"{RED}[FAIL] constant-string dispatch lowering changed{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] release uses length/byte dispatch; debug preserves the chain{RESET}")
     return True
 
 
@@ -6803,6 +6871,106 @@ def run_curated_closure_test():
     return True
 
 
+def run_module_artifact_test():
+    """Installed std/runtime artifacts are sharded, mandatory, and executable."""
+    print(f"\n{BLUE}--- Running module_artifacts ---{RESET}")
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-module-artifacts-") as tmp:
+        wd = Path(tmp)
+        dist = wd / "dist"
+        package = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "tools" / "package.py"),
+             "--compiler", str(Path(PRISMIO_EXE).resolve()), "--out", str(dist)],
+            capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+            env=dict(os.environ, PRISMIO_INTERNAL_HOSTED="1"))
+        if package.returncode != 0:
+            print(f"{RED}[FAIL] module artifacts: packaging failed{RESET}")
+            print("  " + (package.stderr or package.stdout).strip()[-500:])
+            return False
+
+        runtime = dist / "lib" / "runtime"
+        expected_runtime = {
+            "lang_runtime.bc", "lang_runtime.verify.bc",
+            "program_support.bc", "program_support.verify.bc",
+        }
+        actual_runtime = {path.name for path in runtime.glob("*.bc")}
+        if actual_runtime != expected_runtime:
+            problems.append(f"runtime modules are {sorted(actual_runtime)}, expected "
+                            f"{sorted(expected_runtime)}")
+        if any((dist / "lib" / name).exists()
+               for name in ("runtime.a", "runtime.lib", "runtime.bc")):
+            problems.append("a monolithic runtime archive/bitcode artifact was shipped")
+
+        expected_std = {path.with_suffix(".plib").name
+                        for path in (PROJECT_ROOT / "std").glob("*.psm")}
+        actual_std = {path.name for path in (dist / "stdlib").glob("*.plib")}
+        if actual_std != expected_std:
+            problems.append("stdlib PLIB set does not match std/*.psm")
+        if list((dist / "stdlib").glob("*.psm")):
+            problems.append("standard-library source files were shipped")
+        for plib in (dist / "stdlib").glob("*.plib"):
+            if plib.read_bytes()[:8] != b"PRPLIB2\n":
+                problems.append(f"{plib.name} is not a PLIB v2 artifact")
+
+        compiler = dist / "bin" / ("prismio.exe" if os.name == "nt" else "prismio")
+        source = wd / "probe.psm"
+        source.write_text('import std.io\nimport std.string\n\n'
+                          'fn main() -> Int {\n'
+                          '    println("module".concat("-", "wise"))\n'
+                          '    return 0\n}\n')
+        env = dict(os.environ, PRISMIO_INTERNAL_HOSTED="1")
+
+        def build(output, extra=None):
+            return subprocess.run(
+                [str(compiler), "build", str(source), *(extra or []),
+                 "-o", str(output)], capture_output=True, text=True,
+                cwd=str(wd), env=env)
+
+        for name, extra in (("normal", []), ("verify", ["--verify"])):
+            executable = wd / (name + (".exe" if os.name == "nt" else ""))
+            made = build(executable, extra)
+            ran = (subprocess.run([str(executable)], capture_output=True, text=True)
+                   if executable.exists() else None)
+            if (made.returncode != 0 or ran is None or ran.returncode != 0
+                    or ran.stdout.strip() != "module-wise"):
+                problems.append(f"packaged {name} build did not compile and run")
+
+        missing_path = runtime / "program_support.bc"
+        aside = runtime / "program_support.bc.aside"
+        missing_path.rename(aside)
+        missing = build(wd / "missing")
+        aside.rename(missing_path)
+        said = (missing.stdout or "") + (missing.stderr or "")
+        if (missing.returncode == 0 or "Missing runtime module" not in said
+                or "Reinstall Prismio" not in said):
+            problems.append("a missing runtime module did not demand reinstall")
+
+        original = missing_path.read_bytes()
+        missing_path.write_bytes(b"not LLVM bitcode")
+        corrupt = build(wd / "corrupt")
+        missing_path.write_bytes(original)
+        said = (corrupt.stdout or "") + (corrupt.stderr or "")
+        if (corrupt.returncode == 0 or "runtime module is invalid" not in said
+                or "Reinstall Prismio" not in said):
+            problems.append("a corrupt runtime module did not demand reinstall")
+
+        separation = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "tools" / "verify_separation.py"),
+             "--dist", str(dist)], capture_output=True, text=True,
+            cwd=str(PROJECT_ROOT), env=env)
+        if separation.returncode != 0:
+            problems.append("verify_separation.py rejected the packaged artifacts")
+
+    if problems:
+        print(f"{RED}[FAIL] module artifacts{RESET}")
+        for problem in problems:
+            print(f"  - {problem}")
+        return False
+    print(f"{GREEN}[PASS] per-module PLIB/runtime bitcode, normal + verify, "
+          f"strict reinstall diagnostics{RESET}")
+    return True
+
+
 def main():
     global PRISMIO_EXE
     args = parse_runner_args()
@@ -6857,7 +7025,6 @@ def main():
         ("layout_cost_model", run_layout_cost_model_test),
         ("split_release", run_split_release_test),
         ("forced_layout", run_forced_layout_test),
-        ("object_cache", run_object_cache_test),
         ("bootstrap_cache_key", run_bootstrap_cache_key_test),
         ("bootstrap_command", run_bootstrap_command_test),
         ("manifest_parseable", run_manifest_parseable_test),
@@ -6883,13 +7050,14 @@ def main():
         ("inline_runtime_default", run_inline_runtime_default_test),
         ("runtime_object_from_ir", run_runtime_object_from_ir_test),
         ("single_loop_inline", run_single_loop_inline_test),
+        ("string_dispatch_codegen", run_string_dispatch_codegen_test),
         ("task_release", run_task_release_test),
         ("string_operator_ledger", run_string_operator_ledger_test),
         ("overflow_checks", run_overflow_checks_test),
         ("curated_closure", run_curated_closure_test),
         ("curated_emits", run_curated_emits_test),
         ("target_cross", run_target_test),
-        ("runtime_library", run_runtime_library_test),
+        ("module_artifacts", run_module_artifact_test),
         ("incremental_manifest", run_incremental_manifest_test),
         ("jit", run_jit_test),
     ]

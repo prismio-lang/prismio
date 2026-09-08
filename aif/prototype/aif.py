@@ -108,10 +108,16 @@ FFI_CONTRACTS = {
     '__builtin_string_byte_at': {0: 'borrow'},
     '__builtin_string_put_byte': {0: 'borrow'},
     # Copies twelve bytes of its operand into the pair it returns, so it borrows
-    # the source and the result is independent of it. Producing, and the only
-    # entry in FFI_RETURNS_PRODUCE that produces without allocating -- the German
-    # short form is sixteen bytes of value with nothing behind it.
+    # the source and the result is independent of it. Producing without
+    # allocating: the German short form is sixteen bytes of value with nothing
+    # behind it. Inline concat and integer formatting below use the same model.
     '__builtin_string_inline': {0: 'borrow'},
+    '__builtin_string_concat_inline2': {0: 'borrow', 1: 'borrow'},
+    '__builtin_string_concat_inline3': {0: 'borrow', 1: 'borrow', 2: 'borrow'},
+    '__builtin_string_concat_inline4': {0: 'borrow', 1: 'borrow', 2: 'borrow', 3: 'borrow'},
+    '__builtin_string_concat_inline5': {0: 'borrow', 1: 'borrow', 2: 'borrow', 3: 'borrow', 4: 'borrow'},
+    '__builtin_string_concat_inline6': {0: 'borrow', 1: 'borrow', 2: 'borrow', 3: 'borrow', 4: 'borrow', 5: 'borrow'},
+    '__builtin_string_from_int': {0: 'borrow'},
     # The view form. Retains nothing of its own; that the result points into
     # argument 0 is a return contract, not a parameter one.
     '__builtin_string_view': {0: 'borrow'},
@@ -186,6 +192,9 @@ FFI_RETURNS_PRODUCE = {
     'soa', 'aos',
     'str_concat', 'str_substring', 'str_slice',
     '__builtin_string_inline',
+    '__builtin_string_concat_inline2', '__builtin_string_concat_inline3',
+    '__builtin_string_concat_inline4', '__builtin_string_concat_inline5',
+    '__builtin_string_concat_inline6', '__builtin_string_from_int',
     'int_to_str',
     'read_file', 'get_directory', 'join_path',
     # What comes out of a channel was allocated by the sending task and is this

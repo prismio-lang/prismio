@@ -38,9 +38,9 @@ fn view_append() -> String {
     return out
 }
 
-// String.concat has one allocation site per overload across the module. Storing
-// one result in a container makes that site globally `in_container`; it must not
-// erase the direct-fresh fact for an unrelated owning accumulator invocation.
+// String.concat has one abstract result site per overload across the module.
+// Storing one result in a container makes that site globally `in_container`; it
+// must not erase the direct-fresh fact for another owning accumulator invocation.
 fn contaminated_site(n: Int) -> String {
     let mut saved: List<String> = list_new()
     list_push(saved, "left".concat("right"))
@@ -109,6 +109,49 @@ fn main() -> Int {
     }
     drop(copy)
     drop(base)
+
+    // Every fixed-arity concat overload takes the allocation-free path when
+    // the complete result fits in String's twelve-byte inline payload.
+    let c2 = "a".concat("b")
+    let c3 = "a".concat("b", "c")
+    let c4 = "a".concat("b", "c", "d")
+    let c5 = "a".concat("b", "c", "d", "e")
+    let c6 = "a".concat("b", "c", "d", "e", "f")
+    let c12 = "1234".concat("56", "78", "9", "0", "AB")
+    if (c2 != "ab" or c3 != "abc" or c4 != "abcd"
+        or c5 != "abcde" or c6 != "abcdef" or c12 != "1234567890AB") {
+        return fail("inline concat arities")
+    }
+    drop(c12)
+    drop(c6)
+    drop(c5)
+    drop(c4)
+    drop(c3)
+    drop(c2)
+
+    // Thirteen bytes must retain the ordinary allocating concat path.
+    let c13 = "1234".concat("56", "78", "9", "0", "ABC")
+    if (c13 != "1234567890ABC") { return fail("long concat fallback") }
+    drop(c13)
+
+    // Decimal formatting is another inline producer. Cover both signs and the
+    // asymmetric 32-bit minimum, whose magnitude cannot be held in an Int.
+    let zero = 0
+    let negative = 0 - 42
+    let maximum = 2147483647
+    let minimum = (0 - 2147483647) - 1
+    let zeroText = zero.toString()
+    let negativeText = negative.toString()
+    let maximumText = maximum.toString()
+    let minimumText = minimum.toString()
+    if (zeroText != "0" or negativeText != "-42"
+        or maximumText != "2147483647" or minimumText != "-2147483648") {
+        return fail("integer inline formatting")
+    }
+    drop(minimumText)
+    drop(maximumText)
+    drop(negativeText)
+    drop(zeroText)
 
     println("string append reuse ok")
     return 0

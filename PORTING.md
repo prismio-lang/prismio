@@ -69,14 +69,17 @@ relative to its own location — no environment variables, no hardcoded prefixes
 
 ```
 dist/Prismio/bin/prismio
-dist/Prismio/lib/runtime.a     linked into every compiled program
+dist/Prismio/lib/runtime/lang_runtime.bc
+dist/Prismio/lib/runtime/program_support.bc
 dist/Prismio/lib/backend.a     linked into the compiler only
 dist/Prismio/lib/runtime.hash  content hash of the runtime sources
-dist/Prismio/stdlib/
+dist/Prismio/stdlib/*.plib     one compiled artifact per standard module
 ```
 
 Install by putting `dist/Prismio/bin` on `PATH`. Keep `bin/` and `lib/` siblings;
-that relationship is how `prismio` finds its libraries.
+that relationship is how `prismio` finds its libraries. Runtime and imported
+PLIB bitcode are merged before the final LLVM optimisation pass. Missing runtime
+modules are a broken installation; there is no embedded-source fallback.
 
 ## Why this works: the IR is target-neutral
 

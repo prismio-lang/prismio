@@ -8,6 +8,30 @@ import common.text
 import common.diagnostics
 import std.string
 
+extern fn compiler_library_emission_module() -> String produce(free)
+extern fn compiler_plib_module_registered(module: String borrow) -> Int
+
+// A PLIB contributes the original non-generic definitions for its module as
+// bitcode. Generic instantiations remain program-specific and are emitted from
+// the template carried by the interface section. While package.py is producing
+// one PLIB, the entry file has no qualifier and imported dependencies do.
+private fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
+    let qualifier = strClone(diag_file_module(func.file))
+    let emissionModule = compiler_library_emission_module()
+    if (emissionModule.equals("") == false) {
+        // PLIBs own concrete definitions from their entry module only. Generic
+        // instantiations depend on the importing program's concrete type graph
+        // and are emitted there from the interface template.
+        return qualifier.equals("") and nodeIsNull(func.genericInfo)
+    }
+    if (qualifier.equals("") == false
+        and compiler_plib_module_registered(qualifier) == 1
+        and nodeIsNull(func.genericInfo)) {
+        return false
+    }
+    return true
+}
+
 // Keep the language addition inert for programs that do not use it. Runtime
 // declarations are ordinary IR and therefore part of the reproducibility
 // snapshot even when no call reaches them; emitting the Slice family
@@ -198,6 +222,14 @@ internal fn functionHasStringParam(func: ASTNode) -> Bool {
         paramPtr = param.next
     }
     return false
+}
+
+internal fn functionReturnsString(func: ASTNode) -> Bool {
+    return isFatStringKey(storageType(getDeclaredReturnType(func, func.child3)))
+}
+
+internal fn functionNeedsTaskThunk(func: ASTNode) -> Bool {
+    return functionHasStringParam(func) or functionReturnsString(func)
 }
 
 internal fn taskFunctionForCall(call: ASTNode) -> Ptr {
@@ -454,8 +486,8 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
 // stride`, and the index range against `len`. A read cannot change either. Nor
 // can a write: `list_set` and its inline siblings store into a slot that already
 // exists. Only growth and teardown can -- `list_push` and its family reallocate
-// through `list_inline_grow`, `list_set_elem_inline` frees and re-widths the
-// block outright, and `list_release` frees it. So those are the primitives that
+// through `list_inline_grow`, and `list_release` frees it. So those are the
+// primitives that
 // disqualify, and `l[i]`, `list_get` and `list_set` do not.
 //
 // `rc_release` and `cyc_release` are in the set for a less obvious reason: they
@@ -468,7 +500,6 @@ private fn irPrimitiveMovesBlock(name: String) -> Bool {
     if (name.equals("list_push_slot")) { return true }
     if (name.equals("list_push_grow")) { return true }
     if (name.equals("list_inline_grow")) { return true }
-    if (name.equals("list_set_elem_inline")) { return true }
     if (name.equals("list_release")) { return true }
     if (name.equals("rc_release")) { return true }
     if (name.equals("rc_release_atomic")) { return true }
@@ -539,7 +570,13 @@ private fn irChainMovesNoBlock(head: Ptr) -> Bool {
 // function, leaving LLVM to implement both ABIs on every target.
 private fn generateTaskThunk(func: ASTNode) {
     let retType = storageType(getDeclaredReturnType(func, func.child3))
-    ir_function_begin(taskThunkName(func), retType)
+    let stringResult = isFatStringKey(strClone(retType))
+    let mut thunkRetType = strClone(retType)
+    // The task runtime has a pointer result lane, not a `{ptr, i64}` lane.
+    // Materialise String's inline/view forms into owned storage below and use
+    // the pointer signature the runtime actually calls through.
+    if (stringResult) { thunkRetType = "ptr" }
+    ir_function_begin(taskThunkName(func), thunkRetType)
 
     let mut paramPtr = func.child1
     let mut i = 0
@@ -570,8 +607,12 @@ private fn generateTaskThunk(func: ASTNode) {
         ir_call_end("void", functionSymbolName(func))
         ir_ret_void()
     } else {
-        let result = ir_get_temp_name(ir_call_end(retType, functionSymbolName(func)))
-        ir_ret(retType, result)
+        let result = ir_get_temp_name(ir_call_end(strClone(retType), functionSymbolName(func)))
+        if (stringResult) {
+            ir_ret("ptr", scalarToSlot(strClone(retType), result))
+        } else {
+            ir_ret(strClone(retType), result)
+        }
     }
     ir_function_end()
 }
@@ -613,7 +654,7 @@ internal fn collectStringsExpr(expr: ASTNode) {
             let target = taskFunctionForCall(call)
             if (nodeExists(target)) {
                 let func = ptr_to_node(target)
-                if (functionHasStringParam(func)) { func.i3 = 1 }
+                if (functionNeedsTaskThunk(func)) { func.i3 = 1 }
             }
             // The call owns the complete argument subtree, including literals.
             // Missing this case made `spawn f("text")` reach codegen unnamed.
@@ -1487,8 +1528,10 @@ fn generateModule(module: ASTNode) {
 
     // Populated from main's real argc/argv (see generateFunction) so cli_arg()/
     // cli_arg_count() in runtime/program_support.c work the same on every platform.
-    ir_global_var("prismio_argc", "i32", "0", 0)
-    ir_global_var("prismio_argv", "ptr", "null", 0)
+    if (compiler_library_emission_module().equals("")) {
+        ir_global_var("prismio_argc", "i32", "0", 0)
+        ir_global_var("prismio_argv", "ptr", "null", 0)
+    }
 
     // Declare runtime functions
     //
@@ -1512,6 +1555,11 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_fresh()
     ir_declare_function_end()
 
+    ir_declare_function_begin("list_new_inline", "ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_fresh()
+    ir_declare_function_end()
+
     ir_declare_function_begin("list_new_with_capacity", "ptr")
     ir_declare_function_param("i32")
     ir_declare_function_fresh()
@@ -1526,13 +1574,6 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_begin("list_set_elem_releaser", "void")
     ir_declare_function_param("ptr")
     ir_declare_function_param("ptr")
-    ir_declare_function_end()
-
-    // M4.2. The element size a container stores inline, or nothing at all when
-    // it is never called -- a list not stamped with one keeps the boxed layout.
-    ir_declare_function_begin("list_set_elem_inline", "void")
-    ir_declare_function_param("ptr")
-    ir_declare_function_param("i32")
     ir_declare_function_end()
 
     // M4.2, destination passing: the address of a freshly reserved element, so a
@@ -1850,7 +1891,11 @@ fn generateModule(module: ASTNode) {
     while (nodeExists(relDefPtr)) {
         let relStmt = ptr_to_node(relDefPtr)
         if (relStmt.kind == NodeKind.STRUCT_DECL) {
-            if (aif_type_releases(relStmt.s1) == 1) {
+            // These helpers describe the concrete program's merged type graph,
+            // so the importing program emits them once. Putting copies in each
+            // PLIB would multiply-define helpers shared by two std modules.
+            if (compiler_library_emission_module().equals("")
+                and aif_type_releases(relStmt.s1) == 1) {
                 generateReleaseFn(relStmt)
             }
         }
@@ -1865,7 +1910,8 @@ fn generateModule(module: ASTNode) {
     while (nodeExists(cycDefPtr)) {
         let cycStmt = ptr_to_node(cycDefPtr)
         if (cycStmt.kind == NodeKind.STRUCT_DECL) {
-            if (aif_type_in_cycle(cycStmt.s1) == 1) {
+            if (compiler_library_emission_module().equals("")
+                and aif_type_in_cycle(cycStmt.s1) == 1) {
                 generateCyclicChildrenFn(cycStmt)
             }
         }
@@ -1971,7 +2017,9 @@ fn generateModule(module: ASTNode) {
                 retType = "i32"
             }
             ir_set_fn_return_type(functionSymbolName(stmt), retType)
-            collectStringsFunction(stmt)
+            if (shouldEmitFunctionFromSource(stmt)) {
+                collectStringsFunction(stmt)
+            }
         }
 
         stmtPtr = stmt.next
@@ -1991,7 +2039,7 @@ fn generateModule(module: ASTNode) {
             // exactly the kind of thing that works until it does not.
             if (irProfileMode and stmt2.s1.equals("main")) {
                 // replaced by generateWorkloadDriver
-            } else {
+            } else if (shouldEmitFunctionFromSource(stmt2)) {
                 generateFunction(stmt2)
                 if (stmt2.i3 == 1) { generateTaskThunk(stmt2) }
             }
@@ -2023,7 +2071,12 @@ fn generateModule(module: ASTNode) {
     // here** rather than beside the impl it describes: a vtable entry is the
     // address of a compiled function, and unlike a call it carries no argument
     // types to synthesise a forward declaration from.
-    generateVtables(module)
+    // Like ownership helpers, vtables are selected from the fully merged
+    // program. PLIBs provide method bodies; the importing program owns the one
+    // table that points at them.
+    if (compiler_library_emission_module().equals("")) {
+        generateVtables(module)
+    }
 
     // Before ir_module_end, and before ir_write_file's verifier runs: an
     // unfinalised DIBuilder leaves temporary metadata nodes in the module, which

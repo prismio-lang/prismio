@@ -1,8 +1,8 @@
 // Program support -- the runtime half of the former driver.c.
 //
 // Everything here is callable by a compiled Prismio program and belongs in
-// runtime.lib / runtime.a. It must not depend on llc, clang, or anything else to
-// do with *producing* a program; that all lives in build_driver.c (backend.lib).
+// its own installed runtime bitcode module. It must not depend on llc, clang, or
+// anything else to do with *producing* a program; that all lives in build_driver.c.
 
 #include "prismio_platform.h"
 #include "prismio_runtime.h"
@@ -222,14 +222,21 @@ static int compare_names(const void* a, const void* b) {
     return strcmp(*(const char* const*)a, *(const char* const*)b);
 }
 
-// Records `filename` as a module name, minus its .psm suffix; ignores anything
-// else. The suffix is re-checked here rather than trusted to the Win32 search
-// pattern, which also matches 8.3 short names and would let through a file whose
-// real extension is longer.
+// Records source (.psm) and compiled-library (.plib) modules by stem; ignores
+// everything else. A directory containing both forms still names the module
+// once, which keeps package imports deterministic during toolchain development.
 static void append_module_name(char*** names, int* count, int* capacity,
                                const char* filename) {
     size_t len = strlen(filename);
-    if (len <= 4 || strcmp(filename + len - 4, ".psm") != 0) return;
+    if (len <= 4 || (strcmp(filename + len - 4, ".psm") != 0
+                    && strcmp(filename + len - 5, ".plib") != 0)) return;
+
+    size_t suffix = strcmp(filename + len - 4, ".psm") == 0 ? 4 : 5;
+    size_t stem_len = len - suffix;
+    for (int i = 0; i < *count; i++) {
+        if (strlen((*names)[i]) == stem_len
+            && strncmp((*names)[i], filename, stem_len) == 0) return;
+    }
 
     if (*count == *capacity) {
         *capacity = *capacity ? *capacity * 2 : 16;
@@ -240,9 +247,9 @@ static void append_module_name(char*** names, int* count, int* capacity,
         }
     }
 
-    char* stem = (char*)malloc(len - 3);
-    memcpy(stem, filename, len - 4);
-    stem[len - 4] = '\0';
+    char* stem = (char*)malloc(stem_len + 1);
+    memcpy(stem, filename, stem_len);
+    stem[stem_len] = '\0';
     (*names)[(*count)++] = stem;
 }
 
@@ -263,7 +270,7 @@ char* list_modules(const char* directory) {
 
 #ifdef _WIN32
     char pattern[1024];
-    snprintf(pattern, sizeof(pattern), "%s%c*.psm", directory, PRISMIO_PATH_SEP);
+    snprintf(pattern, sizeof(pattern), "%s%c*.*", directory, PRISMIO_PATH_SEP);
 
     WIN32_FIND_DATAA entry;
     HANDLE search = FindFirstFileA(pattern, &entry);

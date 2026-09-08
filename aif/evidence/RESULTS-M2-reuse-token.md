@@ -13,8 +13,8 @@ following are proved:
 
 1. the match scrutinee is a direct `sink` parameter of the current function;
 2. the converged AIF parameter points-to set is non-empty, consuming, move-only,
-   at most `Borrowed`, at most `Transferred`, non-foreign, and not stored in a
-   container;
+   uniquely heap-backed (`T2`), at most `Borrowed`, at most `Transferred`,
+   non-foreign, and not stored in a container;
 3. the arm consists of one direct return of the same enum representation and
    the same tag; and
 4. every move-only payload binder is transferred into the returned constructor.

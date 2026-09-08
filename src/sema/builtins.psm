@@ -31,6 +31,11 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // with a prefixed name -- the prefix is implementation, not surface.
     if (name.equals("__builtin_string_eq")) { return typeBool() }
     if (name.equals("__builtin_string_inline")) { return typeString() }
+    if (name.equals("__builtin_string_concat_inline2")) { return typeString() }
+    if (name.equals("__builtin_string_concat_inline3")) { return typeString() }
+    if (name.equals("__builtin_string_concat_inline4")) { return typeString() }
+    if (name.equals("__builtin_string_concat_inline5")) { return typeString() }
+    if (name.equals("__builtin_string_concat_inline6")) { return typeString() }
     if (name.equals("__builtin_string_from_int")) { return typeString() }
     if (name.equals("__builtin_string_view")) { return typeString() }
 
@@ -216,6 +221,26 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         semaCheckValue(module, i0, typeString(), "inline string source")
         semaCheckValue(module, i1, typeInt(), "inline string start")
         semaCheckValue(module, ptr_to_node(i1.next), typeInt(), "inline string length")
+        return true
+    }
+
+    // The short result of String.concat. std/string.psm proves that the sum of
+    // these operands is at most twelve; the backend copies them directly into
+    // the pair and therefore creates no heap allocation or temporary owner.
+    let mut inlineConcatArity = 0
+    if (name.equals("__builtin_string_concat_inline2")) { inlineConcatArity = 2 }
+    if (name.equals("__builtin_string_concat_inline3")) { inlineConcatArity = 3 }
+    if (name.equals("__builtin_string_concat_inline4")) { inlineConcatArity = 4 }
+    if (name.equals("__builtin_string_concat_inline5")) { inlineConcatArity = 5 }
+    if (name.equals("__builtin_string_concat_inline6")) { inlineConcatArity = 6 }
+    if (inlineConcatArity > 0) {
+        if (semaCheckArity(call, name, argPtr, inlineConcatArity) == false) { return true }
+        let mut partPtr = argPtr
+        while (nodeExists(partPtr)) {
+            let part = ptr_to_node(partPtr)
+            semaCheckValue(module, part, typeString(), "inline concatenation operand")
+            partPtr = part.next
+        }
         return true
     }
 

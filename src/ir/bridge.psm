@@ -126,6 +126,10 @@ extern fn ir_br(label: String)
 extern fn ir_br_numbered(labelNum: Int)
 extern fn ir_cond_br(condition: String, trueLabel: String, falseLabel: String)
 extern fn ir_cond_br_numbered(condition: String, trueLabel: Int, falseLabel: Int)
+// A dense integer dispatch. Cases may be added after the terminator is built;
+// LLVM owns their final ordering and chooses a jump table when profitable.
+extern fn ir_switch_begin(value: String, defaultLabel: Int, caseCount: Int) -> Int
+extern fn ir_switch_case(switchId: Int, value: Int, label: Int)
 
 // Loop context (break/continue targets)
 extern fn ir_loop_push(continueLabel: Int, breakLabel: Int)
@@ -358,11 +362,17 @@ extern fn ir_str_data(value: String) -> Int
 // materialising a short string to get a pointer puts three stores in the caller's
 // byte loop that LICM cannot lift, which measured 0.63x on `line_processing`.
 extern fn ir_str_byte_at(base: String, index: String) -> Int
+// CSDO calls this only in a length bucket greater than the twelve-byte inline
+// capacity, so field zero is known to be the data pointer.
+extern fn ir_str_byte_at_long(base: String, index: Int) -> Int
 // String equality. Two short strings are equal exactly when their pairs are
 // bit-identical, so the common case is two integer compares and no call at all;
 // unequal lengths are rejected from the pair too. See `ir_str_eq` in
 // runtime/llvm-api-backend.c for why there is no four-byte prefix here.
 extern fn ir_str_eq(lhs: String, rhs: String) -> Int
+// CSDO has already proved the length before asking this question. Passing the
+// literal itself keeps both its bytes and width constant in LLVM IR.
+extern fn ir_str_eq_literal(value: String, literal: String) -> Int
 
 // An argument whose `extern fn` declares it `borrow`, which RUNTIME.md defines
 // as "the callee reads the argument and does not retain it" -- LLVM's
@@ -381,6 +391,11 @@ extern fn ir_call_arg_cstr(argValue: String, isBorrow: Int)
 // form** -- see `ir_str_view` in runtime/llvm-api-backend.c.
 extern fn ir_str_view(base: String, start: String, count: String) -> Int
 extern fn ir_str_inline(base: String, start: String, count: String) -> Int
+extern fn ir_str_inline_concat2(a: String, b: String) -> Int
+extern fn ir_str_inline_concat3(a: String, b: String, c: String) -> Int
+extern fn ir_str_inline_concat4(a: String, b: String, c: String, d: String) -> Int
+extern fn ir_str_inline_concat5(a: String, b: String, c: String, d: String, e: String) -> Int
+extern fn ir_str_inline_concat6(a: String, b: String, c: String, d: String, e: String, f: String) -> Int
 extern fn ir_str_from_int(value: String) -> Int
 extern fn ir_global_str_var(name: String, strGlobal: String, length: Int)
 

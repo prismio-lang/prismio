@@ -64,10 +64,10 @@ private fn aifDeclaredContract(name: String, index: Int) -> Int {
 // everywhere else -- `aifDeclaredContract` reads it that way -- so this is a
 // factoring wart rather than a missing mechanism.
 //
-// Concatenation is not a builtin for an unrelated reason: it stays native
-// Prismio. What forced its move out of the `str*` surface was the pass-through
-// rule, not a contract this table could not spell. See the note over the five
-// operator targets in `impl String`, std/string.psm.
+// Concatenation remains native Prismio for its length test and long allocation
+// path. Only the already-proved short arm is a builtin, so codegen can assemble
+// the inline pair without a heap object. See the five operator targets in
+// `impl String`, std/string.psm.
 private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     if (name.equals("__builtin_string_len")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_string_byte_at")) { return AIF_FFI_BORROW }
@@ -78,6 +78,11 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     // string it was cut from, and therefore what makes this a borrow rather than
     // a view. See `aifFfiProduces` for the other half of its contract.
     if (name.equals("__builtin_string_inline")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_string_concat_inline2")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_string_concat_inline3")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_string_concat_inline4")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_string_concat_inline5")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_string_concat_inline6")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_string_from_int")) { return AIF_FFI_BORROW }
     // The view retains nothing *of its own*; that its result points into the
     // first argument is the return contract, answered by `aifFfiAliasOf`.
@@ -322,6 +327,11 @@ internal fn aifFfiProduces(name: String) -> Bool {
     // `strSubstring` whose two paths disagree about who owns the result -- and an
     // owned value that costs nothing to release is the conservative side of that.
     if (name.equals("__builtin_string_inline")) { return true }
+    if (name.equals("__builtin_string_concat_inline2")) { return true }
+    if (name.equals("__builtin_string_concat_inline3")) { return true }
+    if (name.equals("__builtin_string_concat_inline4")) { return true }
+    if (name.equals("__builtin_string_concat_inline5")) { return true }
+    if (name.equals("__builtin_string_concat_inline6")) { return true }
     if (name.equals("__builtin_string_from_int")) { return true }
     if (name.equals("read_file")) { return true }
     if (name.equals("get_directory")) { return true }

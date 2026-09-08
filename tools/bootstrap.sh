@@ -5,10 +5,9 @@
 #   tools/bootstrap.sh --compiler build/gen0 --out build/gen1
 #
 # POSIX counterpart of tools/bootstrap.ps1, and the same idea: do the link by hand
-# so every runtime source is compiled fresh from the working tree. Asking an
-# existing binary to `build src/main.psm` instead would have it supply the runtime
-# from the copy embedded inside itself, which silently carries the *previous*
-# generation's runtime/*.c into the new compiler.
+# so every runtime and backend source is compiled fresh from the working tree.
+# A normal user build consumes installed bitcode and deliberately cannot build a
+# compiler backend, so bootstrap remains the explicit source-based path.
 #
 # --seed starts from bootstrap/prismio-seed.ll, committed LLVM IR for the compiler.
 # A host with no prismio binary cannot compile src/main.psm to get one, and that is
@@ -80,11 +79,8 @@ die()   { printf '\033[31mFAILED: %s\033[0m\n' "$1" >&2; exit 1; }
 # entry here poisons a compiler generation rather than a test binary. So:
 #
 #   * every runtime/*.h goes into every entry -- a header changes what a .c
-#     compiles to without changing a byte of it. embedded_sources.h is one of
-#     them and is regenerated whenever any runtime/*.c changes, so a session
-#     editing the runtime invalidates all seven and gets nothing from the cache.
-#     That is the right side to be wrong on, and the session editing only .psm
-#     files -- which is most of them -- hits all seven;
+#     compiles to without changing a byte of it. Over-invalidating all entries
+#     for a header edit is the safe side to be wrong on;
 #   * the compile flags go in, including the LLVM include path, because
 #     -DPRISMIO_LLVM_REAL_HEADERS makes the backend's object depend on which
 #     LLVM's headers it saw;
@@ -119,15 +115,13 @@ cache_entry() {
     [ "${PRISMIO_OBJ_CACHE:-1}" = "0" ] && return 0
     [ -f "$REPO/runtime/$entry_src" ] || return 0
 
-    # Hashed once for the whole run, not once per source: embedded_sources.h
-    # alone is half a megabyte, and seven passes over it was most of what the
-    # cache cost on a miss.
+    # Hashed once for the whole run, not once per source.
     if [ -z "${HEADER_KEY:-}" ]; then
         HEADER_KEY="$( { for h in "$REPO"/runtime/*.h; do printf '|%s|' "${h##*/}"; cat "$h"; done; } | hash_stdin )"
         [ -n "$HEADER_KEY" ] || return 0
     fi
 
-    entry_key="$( { printf 'bootstrap|%s|-O2 -DPRISMIO_LLVM_REAL_HEADERS -I%s|%s|' \
+    entry_key="$( { printf 'bootstrap|%s|-O2 -DPRISMIO_LLVM_REAL_HEADERS -DPRISMIO_BOOTSTRAP_COMPAT -I%s|%s|' \
                            "$entry_src" "$entry_inc" "$HEADER_KEY"
                     cat "$REPO/runtime/$entry_src"
                   } | hash_stdin )"
@@ -241,7 +235,8 @@ for c in $RUNTIME_SOURCES; do
     fi
 
     step "cc $c"
-    clang -O2 -DPRISMIO_LLVM_REAL_HEADERS -Wno-deprecated-declarations \
+    clang -O2 -DPRISMIO_LLVM_REAL_HEADERS -DPRISMIO_BOOTSTRAP_COMPAT \
+          -Wno-deprecated-declarations \
           -I"$LLVM_INC" -I"$REPO/runtime" \
           -c "$REPO/runtime/$c" -o "$WORK/${c%.c}.o" &
 

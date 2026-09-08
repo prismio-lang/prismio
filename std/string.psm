@@ -1665,15 +1665,17 @@ impl String {
     // the body reads **2,001 / 2,001 / 0**. A version of `concat` that forwarded
     // to a private helper would leak once per `+` in every program.
     //
-    // Two to six parts in **one** allocation, for the same reason `a + b + c`
-    // lowers to one call rather than two: a nested join allocates an intermediate
-    // that nothing names, and RUNTIME.md 3.1 is that a value nothing names is a
-    // value nothing frees. Six is where it stops because `strJoin` is the right
-    // answer past that.
+    // Two to six parts in **one construction**: no allocation when the result
+    // fits in the inline pair, and one allocation otherwise. `a + b + c` lowers
+    // to one call rather than a nested join whose intermediate nothing names;
+    // RUNTIME.md 3.1 is that a value nothing names is a value nothing frees. Six
+    // is where it stops because `strJoin` is the right answer past that.
     fn concat(self, other: String) -> String {
         let alen = __builtin_string_len(self)
         let blen = __builtin_string_len(other)
-        let out = str_with_capacity(alen + blen)
+        let total = alen + blen
+        if (total <= 12) { return __builtin_string_concat_inline2(self, other) }
+        let out = str_with_capacity(total)
         strCopyRangeInto(out, 0, self, 0, alen)
         strCopyRangeInto(out, alen, other, 0, blen)
         return out
@@ -1683,7 +1685,9 @@ impl String {
         let alen = __builtin_string_len(self)
         let blen = __builtin_string_len(b)
         let clen = __builtin_string_len(c)
-        let out = str_with_capacity(alen + blen + clen)
+        let total = alen + blen + clen
+        if (total <= 12) { return __builtin_string_concat_inline3(self, b, c) }
+        let out = str_with_capacity(total)
         strCopyRangeInto(out, 0, self, 0, alen)
         strCopyRangeInto(out, alen, b, 0, blen)
         strCopyRangeInto(out, alen + blen, c, 0, clen)
@@ -1695,7 +1699,9 @@ impl String {
         let blen = __builtin_string_len(b)
         let clen = __builtin_string_len(c)
         let dlen = __builtin_string_len(d)
-        let out = str_with_capacity(alen + blen + clen + dlen)
+        let total = alen + blen + clen + dlen
+        if (total <= 12) { return __builtin_string_concat_inline4(self, b, c, d) }
+        let out = str_with_capacity(total)
         strCopyRangeInto(out, 0, self, 0, alen)
         strCopyRangeInto(out, alen, b, 0, blen)
         strCopyRangeInto(out, alen + blen, c, 0, clen)
@@ -1709,7 +1715,9 @@ impl String {
         let clen = __builtin_string_len(c)
         let dlen = __builtin_string_len(d)
         let elen = __builtin_string_len(e)
-        let out = str_with_capacity(alen + blen + clen + dlen + elen)
+        let total = alen + blen + clen + dlen + elen
+        if (total <= 12) { return __builtin_string_concat_inline5(self, b, c, d, e) }
+        let out = str_with_capacity(total)
         strCopyRangeInto(out, 0, self, 0, alen)
         strCopyRangeInto(out, alen, b, 0, blen)
         strCopyRangeInto(out, alen + blen, c, 0, clen)
@@ -1725,7 +1733,9 @@ impl String {
         let dlen = __builtin_string_len(d)
         let elen = __builtin_string_len(e)
         let flen = __builtin_string_len(f)
-        let out = str_with_capacity(alen + blen + clen + dlen + elen + flen)
+        let total = alen + blen + clen + dlen + elen + flen
+        if (total <= 12) { return __builtin_string_concat_inline6(self, b, c, d, e, f) }
+        let out = str_with_capacity(total)
         strCopyRangeInto(out, 0, self, 0, alen)
         strCopyRangeInto(out, alen, b, 0, blen)
         strCopyRangeInto(out, alen + blen, c, 0, clen)

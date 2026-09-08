@@ -161,7 +161,8 @@ blocks in with strings. Only the `str_with_capacity` histogram is about strings.
   field 1, bits  0..30   byte length (max 2 GiB)
   field 1, bit      31   INLINE
   field 1, bits 32..63   INLINE ? data[8..11]
-                                : bit 32 = VIEW, bits 33..63 reserved
+                                : bit 32 = VIEW, bit 33 = GEOMETRIC,
+                                  bits 34..63 reserved
   field 0                INLINE ? data[0..7]
                                 : the data pointer
 ```
@@ -220,8 +221,9 @@ column.
 | 3 | `count > 12` ⟹ the source is not inline | `strSubstring` tests it one line above | a view offsets a non-pointer |
 | 4 | A view is **never** NUL-terminated | it ends inside a longer buffer | reads past the view |
 | 5 | `__builtin_string_put_byte` only writes long-form buffers | every caller writes into a fresh `str_with_capacity` | the write lands in a scratch copy and is lost |
-| 6 | `str_append_reuse` receives an **owned long-form** base whose old value dies at the assignment | codegen offers it only for an AIF-proved owning `s = s + suffix` | reallocating read-only, arena, or shared storage |
+| 6 | `str_append_reuse` receives an **owned inline or long-form** base whose old value dies at the assignment | codegen offers it only for an AIF-proved owning `s = s + suffix` | reallocating read-only, arena, or shared storage |
 | 7 | An aliased suffix is rebased after growth | the runtime records its offset before `realloc` and appends with `memmove` | `s = s + s` or appending a view reads the old address |
+| 8 | GEOMETRIC long strings have capacity `bit_ceil(length + 1)`, minimum 16 | append stamps bit 33 whenever it promotes or reallocates | an in-place append writes beyond the block |
 
 **Invariant 1 is what pays for the missing prefix.** If two short strings hold
 the same text, and their lengths are equal, and everything past the length is
@@ -292,25 +294,47 @@ which a view has; the release already answers "not mine" from the tag.
 
 ### Growing an owned String without changing its value semantics
 
-Ordinary `concat` is still immutable: it allocates the exact result and copies
-its arguments. One assignment shape carries stronger information:
+Ordinary `concat` is still immutable: it constructs an independent result and
+copies its arguments. One assignment shape carries stronger information:
 `s = s + suffix` says that the old `s` is dead at the store, and AIF can prove
 whether that slot owns its value. For that shape codegen calls
 `str_append_reuse`; every other spelling keeps the ordinary concat path.
 
-The 16-byte ABI has nowhere to add a capacity word, so capacity remains hidden
-behind the allocation. `rt_base_usable_size` reads the allocator's usable size
-(`malloc_size`, `malloc_usable_size`, or `_msize`). If it is large enough the
-append writes in place. Otherwise the runtime doubles capacity until it covers
-the requested length and reallocates once. Repeated append is therefore
-amortised O(1) per byte rather than copying the whole prefix each iteration,
-without growing every String, struct, list element, or call boundary to 24 bytes.
+The 16-byte ABI has nowhere to add a capacity word, so bit 33 records a narrower
+fact: this long string was allocated by the consuming append growth policy. For
+such a value capacity is exactly `bit_ceil(length + 1)`, with a minimum of 16,
+and is derived with five shifts and ORs. An inline accumulator promotes directly
+to that form; an unmarked long owner is reallocated and marked on its first
+consuming append. Repeated append is therefore amortised O(1) per byte rather
+than copying the whole prefix each iteration, without growing every String,
+struct, list element, or call boundary to 24 bytes.
+
+The marker replaced an earlier correct but slower implementation that called
+`malloc_size`/`malloc_usable_size`/`_msize` on every append. The macOS query
+measured about 14 ns, which is visible ten thousand times in `csv_parse`. The
+logical-capacity marker is allocator-independent and ABI-neutral.
 
 This combines the representation already chosen for Prismio with the mature
 growth rule used by Swift's uniquely-owned contiguous String storage and Rust's
 `String::push_str`. The ownership proof is the essential boundary: capacity is
 an implementation detail of a value that has one owner, never permission to
 mutate a value another binding can observe.
+
+### Producing short values without allocating
+
+Small-string storage only pays when producers use it. Three general producers
+now do:
+
+- mutable literals of at most twelve bytes are stored inline rather than cloned;
+- every 32-bit `Int.toString()` is formatted directly into the pair with a
+  two-digit lookup table (including `Int.min`, at eleven bytes);
+- every fixed-arity `String.concat` from two through six operands first sums the
+  lengths and builds the result inline when the total is at most twelve.
+
+The concat size test stays in `std/string.psm`; its compiler builtin emits only
+the copies. Long results retain the ordinary exact-allocation path. This is the
+same broad architecture as mature SSO strings, but it uses Prismio's existing
+16-byte German-string value rather than widening the ABI to libc++'s 24 bytes.
 
 ---
 
@@ -365,18 +389,26 @@ bytes) with `csvData = csvData + line`, then parses them. Before consuming
 append, construction copied 1,637,899,970 cumulative bytes — about 4,999 times
 the final size — and dominated 99.7% of the row.
 
-Medians on the same host (nine-run baseline; 21-run final comparison):
+Medians on the same host (nine-run baseline; 21-run stage/final comparisons):
 
-| | before | consuming append | C++ | Rust |
-|---|---:|---:|---:|---:|
-| `csv_parse` | 103.827 ms | **1.958 ms** | 1.253 ms | 1.933 ms |
+| implementation stage | median |
+|---|---:|
+| original Prismio | 103.827 ms |
+| consuming append | 1.958 ms |
+| + inline literals/Int and logical capacity | 1.303 ms |
+| **+ allocation-free short concat (final)** | **1.074 ms** |
+| C++ in the final run | 1.340 ms |
+| Rust in the final run | 1.935 ms |
 
-That is **53.0× faster** end to end, 1.56× C++ and 1.01× Rust. The `--verify`
-ledger moved from 1.638 GB peak live memory and 50,002 leaked allocations to
-786 KB peak and two fixed harness-output allocations (about 20 bytes), with zero
-invalid or double releases. `tests/test_100_string_append_reuse.psm` makes the
-complexity check deterministic: 9,192 appends plus 1,000 formatting allocations
-must stay at or below 1,100 total allocations, rather than timing a CI machine.
+The final implementation is **96.7× faster** end to end than the starting
+Prismio row, **19.8% faster than C++**, and 44.5% faster than Rust. Every row
+returned checksum `664934317`; the tracked benchmark sources were unchanged.
+
+The complete final CSV workload under `--verify` reports 23,218 allocations,
+23,218 releases, zero leaks and zero invalid/double releases, with 786 KB peak
+live memory. `tests/test_100_string_append_reuse.psm` makes the complexity check
+deterministic: 9,192 logical appends plus 1,000 integer conversions must stay at
+or below 80 allocations (currently 40), rather than timing a noisy CI host.
 
 ---
 
@@ -476,8 +508,9 @@ obviously worth making. It has not been measured.
 silently skipped. `readonly`, which is the half that matters for hoisting, maps
 fine.
 
-**Nothing uses the reserved bits.** Bits 33–63 of a long string's length word are
-free. A prefix cannot go there for the reason in §5, but a hash could.
+**Most reserved bits remain unused.** Bit 33 records the consuming append growth
+policy; bits 34–63 of a long string's length word remain free. A prefix cannot go
+there for the reason in §5, but a hash could.
 
 ---
 
@@ -488,6 +521,8 @@ free. A prefix cannot go there for the reason in §5, but a hash could.
 - Apache DataFusion, [*Using StringView to Make Queries Faster*](https://datafusion.apache.org/blog/2024/09/13/string-view-german-style-strings-part-1/) — measured wins, and the warning that a naive port is slower.
 - Polar Signals, [*Das Problem mit German Strings*](https://www.polarsignals.com/blog/posts/2025/08/26/das-problem-mit-german-strings) — the memory-overhead counterargument.
 - [`string-rosetta-rs`](https://github.com/rosetta-rs/string-rosetta-rs) — sizes and inline capacities of the Rust ecosystem's variants.
+- LLVM libc++, [`basic_string`](https://github.com/llvm/llvm-project/blob/main/libcxx/include/string) — inline/long union representation and growth machinery used by the C++ comparison.
+- dtolnay, [`itoa`](https://github.com/dtolnay/itoa) — allocation-free integer formatting into caller-owned storage.
 - [musl](https://git.musl-libc.org/cgit/musl/tree/src/string/aarch64/memcpy.S) and [Folly](https://github.com/facebook/folly/blob/main/folly/memcpy.S) — the overlapping-load small-copy ladder §9.3 measures.
 - Raymond Chen, [*An informal comparison of the three major implementations of std::string*](https://devblogs.microsoft.com/oldnewthing/20240510-00/?p=109742) — where `libc++`'s 22 bytes comes from.
 - Swift, [`String.swift`](https://github.com/swiftlang/swift/blob/main/stdlib/public/core/String.swift) and [`StringDesign.rst`](https://github.com/swiftlang/swift/blob/main/docs/StringDesign.rst) — value semantics, unique-buffer mutation, SSO and exponential growth.

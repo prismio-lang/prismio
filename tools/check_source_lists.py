@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""Check that every hand-maintained list of runtime sources agrees.
+"""Check that every hand-maintained list of toolchain sources agrees.
 
-The set of C files that make up the toolchain is written down in six places --
-the toolchain table and the embedded-source switch in build_driver.c, the
-embedding generator, both bootstrap scripts and both packaging scripts. Nothing
-made them agree, and they had already drifted: generate_embedded_sources.ps1
-still listed llvm-bridge.c, deleted several changes earlier, and had never
-learned about ir_symbols.c or llvm-api-backend.c. Running it would have written
-an embedded_sources.h that compiled and then failed at link time, or worse,
-shipped a compiler carrying a runtime that no longer existed.
+The set of C files that make up the toolchain is written down in the compiler
+driver, both bootstrap scripts, and the packager. Runtime files are packaged as
+individual bitcode modules; compiler-only files are packaged in the backend
+archive. This check keeps those roles from drifting silently.
 
 Adding a file to runtime/ should fail loudly here until every list knows about
 it, which is cheaper than discovering it on someone else's machine.
@@ -67,25 +63,6 @@ def toolchain_table():
     return all_files, compiled, backend, runtime_lib
 
 
-def embedded_switch_order():
-    """The case order in prismio_embedded_text(); must match the table's order."""
-    text = read(RUNTIME / "build_driver.c")
-    m = re.search(r"static const char\* prismio_embedded_text\(int index\)\s*\{(.*?)\n\}", text, re.S)
-    if not m:
-        raise Failure("could not find prismio_embedded_text() in build_driver.c")
-
-    cases = re.findall(r"case\s+(\d+):\s*return\s+(\w+);", m.group(1))
-    return [sym for _, sym in sorted(cases, key=lambda c: int(c[0]))]
-
-
-def embedded_generator_list():
-    text = read(RUNTIME / "generate_embedded_sources.py")
-    m = re.search(r"EMBEDDED_FILES\s*=\s*\[(.*?)\]", text, re.S)
-    if not m:
-        raise Failure("could not find EMBEDDED_FILES in generate_embedded_sources.py")
-    return re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', m.group(1))
-
-
 def bootstrap_ps1_list():
     text = read(TOOLS / "bootstrap.ps1")
     m = re.search(r"\$runtimeSources\s*=\s*@\((.*?)\)", text, re.S)
@@ -122,8 +99,12 @@ def package_lists():
     return out
 
 
-def symbol_for(filename: str) -> str:
-    return "prismio_embedded_" + re.sub(r"[^A-Za-z0-9]", "_", filename)
+def package_runtime_bitcode():
+    text = read(TOOLS / "package.py")
+    m = re.search(r"^RUNTIME_BITCODE\s*=\s*\[(.*?)\]", text, re.S | re.M)
+    if not m:
+        raise Failure("could not find RUNTIME_BITCODE in package.py")
+    return re.findall(r'"([^"]+)"', m.group(1))
 
 
 def main() -> int:
@@ -150,30 +131,12 @@ def main() -> int:
         )
         compare("runtime/*.c on disk vs prismio_toolchain_files[]", on_disk, sorted(compiled))
 
-        compare(
-            "build_driver.c prismio_embedded_text() switch",
-            embedded_switch_order(),
-            [symbol_for(f) for f in all_files],
-        )
-
-        gen = embedded_generator_list()
-        compare(
-            "generate_embedded_sources.py EMBEDDED_FILES (files)",
-            [f for f, _ in gen],
-            all_files,
-        )
-        compare(
-            "generate_embedded_sources.py EMBEDDED_FILES (symbols)",
-            [s for _, s in gen],
-            [symbol_for(f) for f in all_files],
-        )
-
         compare("tools/bootstrap.ps1 $runtimeSources", bootstrap_ps1_list(), compiled)
         compare("tools/bootstrap.sh RUNTIME_SOURCES", bootstrap_sh_list(), compiled)
 
         packaged = package_lists()
-        for name, expected in (("runtime", runtime_lib), ("backend", backend)):
-            compare(f"tools/package.py {name} archive", packaged.get(name, []), expected)
+        compare("tools/package.py runtime bitcode", package_runtime_bitcode(), runtime_lib)
+        compare("tools/package.py backend archive", packaged.get("backend", []), backend)
 
     except Failure as exc:
         print(f"FAILED: {exc}")
@@ -183,7 +146,7 @@ def main() -> int:
         print("Toolchain source lists disagree:\n")
         for p in problems:
             print(f"  {p}\n")
-        print("Fix every list above, then re-run runtime/generate_embedded_sources.py.")
+        print("Fix every list above, then re-run this check.")
         return 1
 
     print(f"Toolchain source lists agree ({len(compiled)} compiled sources, "

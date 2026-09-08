@@ -3,14 +3,9 @@
 #   .\tools\bootstrap.ps1 -Out build\gen0.exe                        # from the seed
 #   .\tools\bootstrap.ps1 -Compiler build\gen0.exe -Out build\gen1.exe
 #
-# Why this exists: the repository previously had no build script at all, so the
-# only way to rebuild the compiler was `prismio build src\main.psm`, which asks the
-# *bootstrapping* binary to supply the runtime -- from the copy embedded inside
-# itself, not from runtime\ on disk. Edits to runtime sources were therefore
-# invisible to the next generation unless embedded_sources.h was regenerated and
-# the old compiler rebuilt first. This script sidesteps that by doing the link by
-# hand: the frontend produces IR, and every runtime source is compiled fresh from
-# the working tree.
+# This explicit bootstrap path links every runtime and backend source from the
+# working tree. Normal user builds consume installed module-level bitcode and do
+# not carry compiler-backend code.
 #
 # runtime.c is deliberately absent from the source list -- it no longer exists. It
 # used to be a full-text #include of the other runtime sources and would have
@@ -118,8 +113,7 @@ function Get-CacheEntry {
     $path = Join-Path $Repo "runtime\$Source"
     if (-not (Test-Path $path)) { return '' }
 
-    # Hashed once for the whole run, not once per source: embedded_sources.h
-    # alone is half a megabyte.
+    # Hashed once for the whole run, not once per source.
     if ([string]::IsNullOrEmpty($script:headerKey)) {
         $acc = New-Object System.Collections.Generic.List[byte]
         foreach ($h in (Get-ChildItem (Join-Path $Repo 'runtime') -Filter '*.h' | Sort-Object Name)) {
@@ -131,7 +125,7 @@ function Get-CacheEntry {
 
     $acc = New-Object System.Collections.Generic.List[byte]
     $acc.AddRange([System.Text.Encoding]::UTF8.GetBytes(
-        "bootstrap|$Source|-O2 -DPRISMIO_LLVM_REAL_HEADERS -I$Include|$($script:headerKey)|"))
+        "bootstrap|$Source|-O2 -DPRISMIO_LLVM_REAL_HEADERS -DPRISMIO_BOOTSTRAP_COMPAT -I$Include|$($script:headerKey)|"))
     $acc.AddRange([System.IO.File]::ReadAllBytes($path))
     $key = Get-Sha256 -Bytes $acc.ToArray()
 
@@ -213,7 +207,8 @@ foreach ($c in $runtimeSources) {
     }
 
     $obj = Join-Path $work ([System.IO.Path]::GetFileNameWithoutExtension($c) + '.obj')
-    Invoke-Step "cc $c" 'clang' @('-O2', '-DPRISMIO_LLVM_REAL_HEADERS', '-Wno-deprecated-declarations',
+    Invoke-Step "cc $c" 'clang' @('-O2', '-DPRISMIO_LLVM_REAL_HEADERS', '-DPRISMIO_BOOTSTRAP_COMPAT',
+                                  '-Wno-deprecated-declarations',
                                   "-I$($llvm.include)", "-I$(Join-Path $Repo 'runtime')",
                                   '-c', (Join-Path $Repo "runtime\$c"), '-o', $obj)
 

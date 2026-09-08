@@ -310,6 +310,8 @@ LLVMValueRef LLVMBuildMemCpy(LLVMBuilderRef, LLVMValueRef Dst, unsigned DstAlign
 typedef struct LLVMOpaqueAttributeRef *LLVMAttributeRef;
 unsigned LLVMGetEnumAttributeKindForName(const char *Name, size_t SLen);
 LLVMAttributeRef LLVMCreateEnumAttribute(LLVMContextRef, unsigned KindID, unsigned long long Val);
+LLVMAttributeRef LLVMCreateStringAttribute(LLVMContextRef C, const char *K, unsigned KLength,
+                                           const char *V, unsigned VLength);
 void LLVMAddAttributeAtIndex(LLVMValueRef F, unsigned Idx, LLVMAttributeRef A);
 // Attributes on one call rather than on the callee. A foreign function's
 // contract is written at its `extern fn` declaration in Prismio, and the place
@@ -343,6 +345,10 @@ LLVMValueRef LLVMBuildRetVoid(LLVMBuilderRef);
 LLVMValueRef LLVMBuildBr(LLVMBuilderRef, LLVMBasicBlockRef Dest);
 LLVMValueRef LLVMBuildCondBr(LLVMBuilderRef, LLVMValueRef If, LLVMBasicBlockRef Then,
                              LLVMBasicBlockRef Else);
+LLVMValueRef LLVMBuildSwitch(LLVMBuilderRef, LLVMValueRef V,
+                             LLVMBasicBlockRef Else, unsigned NumCases);
+void LLVMAddCase(LLVMValueRef Switch, LLVMValueRef OnVal,
+                 LLVMBasicBlockRef Dest);
 LLVMValueRef LLVMBuildUnreachable(LLVMBuilderRef);
 // The flat-`List` element views' merges. The pointer form uses `select` between
 // an in-range address and null; both pointer and scalar forms use `phi` to join

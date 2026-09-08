@@ -128,7 +128,8 @@ internal fn nodeProducesOwnedValue(exprPtr: Ptr) -> Bool {
 
 // Sema stamps only the String `+` rewrite. Unlike the context-insensitive
 // allocation site, this operation has a per-invocation contract: std.string's
-// concat body allocates one result, byte-copies every argument and retains none.
+// concat body constructs one independent result, byte-copies every argument and
+// retains none. Short results live in the pair; long ones allocate exactly once.
 // That remains true when an unrelated invocation of the shared site is stored
 // in a container, and is narrower than claiming arbitrary fresh-return calls.
 private fn nodeIsStringConcatOperator(exprPtr: Ptr) -> Bool {
@@ -2380,22 +2381,6 @@ private fn scalarSpillToSlot(storeType: String, value: String) -> String {
     return "%".concat(slot)
 }
 
-private fn generateElemInlineStamp(expr: ASTNode, funcName: String, result: String) {
-    if (funcName.equals("list_new") == false
-        and funcName.equals("list_new_with_capacity") == false) {
-        return
-    }
-
-    let esize = inlineElemSizeOfList(expr)
-    if (esize <= 0) { return }
-    if (funcName.equals("list_new_with_capacity")) { return }
-
-    ir_call_begin()
-    ir_call_arg("ptr", result)
-    ir_call_arg("i32", strFromInt(esize))
-    ir_call_end("void", "list_set_elem_inline")
-}
-
 private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: String, listElement: Bool) {
     let mut fieldPtr = expr.child1
     while (nodeExists(fieldPtr)) {
@@ -2954,7 +2939,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
         let taskFunc = taskFunctionForCall(call)
         if (nodeExists(taskFunc)) {
             let func = ptr_to_node(taskFunc)
-            if (functionHasStringParam(func)) { target = taskThunkName(func) }
+            if (functionNeedsTaskThunk(func)) { target = taskThunkName(func) }
         }
 
         // Which of prismio_task_invoke's three families the runtime must call
@@ -3593,6 +3578,58 @@ internal fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
+        // A concatenation whose complete result fits inside the String pair.
+        // The size branch is in std/string.psm; this side only evaluates each
+        // operand once and asks the backend to emit the straight-line copies.
+        if (funcName.equals("__builtin_string_concat_inline2")
+            and nodeExists(expr.child2)) {
+            let c0 = ptr_to_node(expr.child2)
+            let c1 = ptr_to_node(c0.next)
+            return ir_get_temp_name(ir_str_inline_concat2(
+                generateExpression(c0), generateExpression(c1)))
+        }
+        if (funcName.equals("__builtin_string_concat_inline3")
+            and nodeExists(expr.child2)) {
+            let c0 = ptr_to_node(expr.child2)
+            let c1 = ptr_to_node(c0.next)
+            let c2 = ptr_to_node(c1.next)
+            return ir_get_temp_name(ir_str_inline_concat3(
+                generateExpression(c0), generateExpression(c1), generateExpression(c2)))
+        }
+        if (funcName.equals("__builtin_string_concat_inline4")
+            and nodeExists(expr.child2)) {
+            let c0 = ptr_to_node(expr.child2)
+            let c1 = ptr_to_node(c0.next)
+            let c2 = ptr_to_node(c1.next)
+            let c3 = ptr_to_node(c2.next)
+            return ir_get_temp_name(ir_str_inline_concat4(
+                generateExpression(c0), generateExpression(c1), generateExpression(c2),
+                generateExpression(c3)))
+        }
+        if (funcName.equals("__builtin_string_concat_inline5")
+            and nodeExists(expr.child2)) {
+            let c0 = ptr_to_node(expr.child2)
+            let c1 = ptr_to_node(c0.next)
+            let c2 = ptr_to_node(c1.next)
+            let c3 = ptr_to_node(c2.next)
+            let c4 = ptr_to_node(c3.next)
+            return ir_get_temp_name(ir_str_inline_concat5(
+                generateExpression(c0), generateExpression(c1), generateExpression(c2),
+                generateExpression(c3), generateExpression(c4)))
+        }
+        if (funcName.equals("__builtin_string_concat_inline6")
+            and nodeExists(expr.child2)) {
+            let c0 = ptr_to_node(expr.child2)
+            let c1 = ptr_to_node(c0.next)
+            let c2 = ptr_to_node(c1.next)
+            let c3 = ptr_to_node(c2.next)
+            let c4 = ptr_to_node(c3.next)
+            let c5 = ptr_to_node(c4.next)
+            return ir_get_temp_name(ir_str_inline_concat6(
+                generateExpression(c0), generateExpression(c1), generateExpression(c2),
+                generateExpression(c3), generateExpression(c4), generateExpression(c5)))
+        }
+
         // A Prismio Int needs at most eleven decimal bytes, including the sign,
         // so its complete text fits in the existing inline String payload. The
         // backend formats into one reusable stack scratch and captures the two
@@ -3731,6 +3768,18 @@ internal fn generateExpression(expr: ASTNode) -> String {
                     // the scratch buffer's address in the list, and the release at
                     // teardown was a free of the stack.
                     ir_call_arg("ptr", scalarToSlot("struct:prismio.str", argVal))
+                } else if (irCallReturnsAlias(expr)) {
+                    // An alias return may outlive this expression or even this
+                    // frame. Inline String bytes live in a stack pair, and a
+                    // view may point inside another owner, so neither scratch
+                    // pointer is a valid physical implementation of that
+                    // contract. Materialise a stable owned buffer before the
+                    // call. Long owned strings pass through unchanged; short
+                    // and view forms copy. With the contract's intentionally
+                    // broad "any argument or static" meaning, copying every
+                    // candidate is the conservative direction: an unchosen
+                    // candidate can leak, but the chosen alias cannot dangle.
+                    ir_call_arg("ptr", scalarToSlot("struct:prismio.str", argVal))
                 } else if (aif_extern_contract(funcName, argIndex).equals("borrow")) {
                     // **The contract, spent rather than merely checked.**
                     // RUNTIME.md defines `borrow` as "the callee reads the
@@ -3781,10 +3830,10 @@ internal fn generateExpression(expr: ASTNode) -> String {
             callName = expr.s2
         }
         // M4.2. The inline family, chosen from the list's static element type.
-        // `list_push_inline` takes the size as well, so an unstamped-but-empty
-        // list can stamp itself: a `let mut xs = list_new()` with no annotation
-        // reaches the push with `List<Invalid>` and is boxed, and one with an
-        // annotation reaches it already stamped.
+        // `list_push_inline` takes the size as well so it can reject a mismatched
+        // representation safely. A `let mut xs = list_new()` with no annotation
+        // is `List<Invalid>` at every site and stays boxed; a typed flat list is
+        // born inline through `list_new_inline` below.
         if (inlineSize > 0) {
             let mut inlineName = inlineOpName(funcName)
             // A scalar element takes the by-value pair. `list_get` is unaffected:
@@ -3798,13 +3847,20 @@ internal fn generateExpression(expr: ASTNode) -> String {
             }
             if (inlineName.equals("") == false) {
                 callName = inlineName
-                // `list_push_inline` has always taken the size so an unstamped
-                // empty list can stamp itself. The scalar pair takes it as well,
-                // and `list_set_inline` -- the struct one -- still does not.
+                // The push and scalar operations carry the size as a defensive
+                // representation check. `list_set_inline` -- the struct one --
+                // still does not need it.
                 if (funcName.equals("list_push")
                         or (scalarElem and funcName.equals("list_set"))) {
                     ir_call_arg("i32", strFromInt(inlineSize))
                 }
+            }
+        }
+        if (funcName.equals("list_new")) {
+            let newInlineSize = inlineElemSizeOfList(expr)
+            if (newInlineSize > 0) {
+                callName = "list_new_inline"
+                ir_call_arg("i32", strFromInt(newInlineSize))
             }
         }
         if (funcName.equals("list_new_with_capacity")) {
@@ -3969,18 +4025,9 @@ internal fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
-        // M4.2. Inline element storage, stamped at the same place and for the
-        // same reason the disposition above is: construction is the only point
-        // that names the element type, and the container has to be told before
-        // its first push.
-        //
-        // The decision is a function of the **type**, not of the list, and that
-        // is deliberate. `list_get` on an inline list hands back the address of
-        // an element body; pushing that address into a second list of the same
-        // type must copy bytes rather than store a pointer, and it does exactly
-        // that as long as both lists agree. Keying on the type is what makes
-        // them agree.
-        generateElemInlineStamp(expr, funcName, result)
+        // M4.2's representation was selected by the constructor above. Keeping
+        // that decision a function of the static element type makes two lists
+        // of the same type agree, without a mutable post-construction stamp.
         return result
     }
 

@@ -28,6 +28,8 @@ extern fn get_directory(path: String) -> String
 extern fn join_path(directory: String, filename: String) -> String
 extern fn file_exists(path: String) -> Int
 extern fn list_modules(directory: String) -> String produce(free)
+extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(free)
+extern fn compiler_plib_error() -> String produce(free)
 
 // The last statement appended to the module being merged. Reset with the module
 // in resolveImports(); see appendStatement() for why it is a cache rather than
@@ -232,7 +234,20 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
 
     let seen = visited.concat(key)
 
-    let content = read_file(importPath)
+    let mut content = ""
+    if (strEndsWith(importPath, ".plib")) {
+        content = compiler_plib_interface(importPath, moduleName)
+        if (content.equals("")) {
+            diag_error_at_code("P1001", site.file, site.line, site.col, site.len,
+                "compiled standard-library module ".concat(diagQuote(moduleName),
+                    " is missing, incompatible, or corrupted: ", compiler_plib_error()))
+            diag_note("reinstall Prismio and try again")
+            diag_finish()
+            exit(1)
+        }
+    } else {
+        content = read_file(importPath)
+    }
     if (content.equals("") and file_exists(importPath) == 0) {
         diag_error_at_code("P1001", site.file, site.line, site.col, site.len,
             "cannot read imported module ".concat(diagQuote(moduleName),
@@ -247,7 +262,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     // declaration came from.
     let file = diag_add_file(importPath, content)
     // ...and the name it was reached by, which the id alone cannot recover: the
-    // installed layout stores `std/string.psm` at `stdlib/string.psm`, so a
+    // installed layout stores `std/string.psm` as `stdlib/string.plib`, so a
     // qualifier derived from the path would differ between a checkout and an
     // install. Every module arrives here with its logical path already built --
     // mergePackageImport composes `pkg.leaf` before calling -- so this one line
@@ -331,7 +346,7 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
 // definitions.
 //
 // `leaf` is the file name, because the installed layout flattens the package:
-// `std/map.psm` in a checkout is `stdlib/map.psm` once installed.
+// `std/map.psm` in a checkout is `stdlib/map.plib` once installed.
 fn standardModulePath(baseDir: String, leaf: String) -> String {
     let besideEntry = join_path(baseDir, "std/".concat(leaf))
     if (file_exists(besideEntry) == 1) { return besideEntry }
@@ -361,8 +376,12 @@ fn standardModulePath(baseDir: String, leaf: String) -> String {
 
     let toolchainRoot = get_directory(executable_directory())
 
-    let installed = join_path(toolchainRoot, "stdlib/".concat(leaf))
-    if (file_exists(installed) == 1) { return installed }
+    // Installed standard modules are compiled, module-level PLIB artifacts.
+    // `leaf` still arrives as `string.psm` because checkout resolution uses the
+    // source spelling; replace only that suffix for the installed lookup.
+    let plibLeaf = strSubstring(leaf, 0, __builtin_string_len(leaf) - 4).concat(".plib")
+    let packaged = join_path(toolchainRoot, "stdlib/".concat(plibLeaf))
+    if (file_exists(packaged) == 1) { return packaged }
 
     let besideBuild = join_path(toolchainRoot, "std/".concat(leaf))
     if (file_exists(besideBuild) == 1) { return besideBuild }

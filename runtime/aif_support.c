@@ -5065,6 +5065,20 @@ static void bracket_invalidate(void) {
     bracket_place_ready = 0;
 }
 
+static int site_is_loop_struct(int site_id, int caller_scope) {
+    if (sites[site_id].kind != AIF_K_STRUCT) return 0;
+    if (!fits_on_stack(&sites[site_id])) return 0;
+    if (sites[site_id].in_container) return 0;
+
+    if (caller_scope >= 0 && scopes[caller_scope].loop_depth > 0) return 1;
+    if (scopes[sites[site_id].scope].loop_depth > 0) return 1;
+    int f = sites[site_id].fn;
+    for (int j = 0; j < call_edge_count; j++) {
+        if (call_edges[j].callee == f && scopes[call_edges[j].scope].loop_depth > 0) return 1;
+    }
+    return 0;
+}
+
 static void bracket_place(void) {
     if (bracket_place_ready) return;
     bracket_place_ready = 1;
@@ -5121,11 +5135,21 @@ static void bracket_place(void) {
         for (int s = 0; s < site_count; s++) {
             int f = sites[s].fn;
             if (f < 0 || f >= fn_count || !bits_test(&bracket_place_extent, f)) continue;
-            // Regime (a) means a function is in at most one extent -- SHARED_BODY
-            // rejects a body reachable from outside the one that would be
-            // bracketed. Asserted rather than assumed: two answers for one site
-            // would be two arenas, and the wrong one is a use-after-free.
-            if (site_bracket[s] >= 0 && site_bracket[s] != r) { site_bracket[s] = -1; continue; }
+            if (scopes[r].region_name < 0 && site_is_loop_struct(s, e->scope)) {
+                continue;
+            }
+            // If an inner arena (inside a callee in the extent) already claimed
+            // this site, that inner arena is tighter and takes precedence.
+            if (site_bracket[s] >= 0 && site_bracket[s] != r) {
+                int existing_owner = scopes[site_bracket[s]].owner;
+                if (existing_owner != caller_fn && existing_owner >= 0 && existing_owner < fn_count
+                    && bits_test(&bracket_place_extent, existing_owner)) {
+                    // Inner arena in a callee already claimed it; preserve it.
+                    continue;
+                }
+                site_bracket[s] = -1;
+                continue;
+            }
             site_bracket[s] = r;
         }
     }
@@ -5270,6 +5294,7 @@ static long bracket_candidate_serves(int cand, long* held, long* live) {
             int tier = aif_tier_of(k);
             if (tier != AIF_T1 && tier != AIF_T2) continue;
             if (sites[k].no_stack) continue;
+            if (site_is_loop_struct(k, e->scope)) continue;
             long w = weight_in_own_fn(sites[k].scope) * callw;
             served += w;
             if (held) *held += (long)sites[k].bytes * w;
@@ -5813,6 +5838,11 @@ static int bits_any(const Bits* b);
 // that records them; the consuming call is a distinct transfer, and the token
 // stays inside it. Shared is the first state with another owner. A mixed/shared
 // path declines as a whole and codegen keeps allocating in the ordinary way.
+// The storage must also be T2: returning a reused T0 stack slot or T1 arena
+// address would preserve the bytes but not the allocation disposition. The
+// caller currently owns a constructor result and therefore releases it as a
+// heap object; teaching call-result provenance about an alias return is the
+// prerequisite for safely widening reuse beyond unique heap objects.
 // T-Cross and foreign values are excluded explicitly: neither is memory this
 // activation may mutate as its sole owner, even if a future change makes its A
 // fact look optimistic. The query uses key_find rather than interning after the
@@ -5827,6 +5857,7 @@ int aif_param_reusable(const char* symbol, int index) {
     for (int s = 0; s < site_count; s++) {
         if (!bits_test(&pt[key], s)) continue;
         if (!site_is_move_only(&sites[s])) return 0;
+        if (aif_tier_of(s) != AIF_T2) return 0;
         if (sites[s].A > AIF_A_BORROWED) return 0;
         if (sites[s].T > AIF_T_TRANSFERRED) return 0;
         if (sites[s].foreign || sites[s].in_container) return 0;

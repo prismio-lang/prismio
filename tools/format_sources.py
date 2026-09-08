@@ -3,7 +3,7 @@
 
 The language does not yet have a syntax-aware formatter. This tool supplies the
 safe common denominator for source files: LF line endings, no trailing spaces,
-and exactly one final newline. It never rewrites generated embedded sources.
+and exactly one final newline.
 """
 
 import argparse
@@ -17,7 +17,7 @@ FORMATTED_SUFFIXES = {
     ".c", ".h", ".ps1", ".psm", ".py", ".sh", ".ums", ".yaml", ".yml"
 }
 EXCLUDED_PREFIXES = ("build/", "dist/", "graphify-out/")
-EXCLUDED_FILES = {"runtime/embedded_sources.h"}
+EXCLUDED_FILES = set()
 
 
 def repository_files():

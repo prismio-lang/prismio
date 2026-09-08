@@ -8,14 +8,14 @@ packages, so a break in here fails the suite. It did not used to be called by
 anything, and spent two days unable to compile its own probe.
 
 The rule being checked: the LLVM backend is a compiler-only component. A program
-compiled by Prismio links the runtime archive and nothing else, so no backend
-symbol may appear in a user binary -- while the compiler itself must contain the
-backend.
+compiled by Prismio merges the module-level runtime bitcode and imported PLIB
+bitcode, so no backend symbol may appear in a user binary -- while the compiler
+itself must contain the backend.
 
 Two independent checks, because they can fail separately:
 
-  1. Archive symbol tables (nm) -- proves the libraries were built from the right
-     translation units in the first place.
+  1. Runtime-bitcode and backend-archive symbol tables (nm) -- proves the
+     artifacts were built from the right translation units in the first place.
   2. A byte signature in the produced executable -- proves the *link step* only
      pulled in the runtime. A linked binary's symbol table says nothing about
      which static-archive members were folded in, so nm cannot answer this one;
@@ -72,8 +72,8 @@ def find_library(dist: Path, stem: str):
     return None
 
 
-def defined_symbols(nm: str, archive: Path) -> str:
-    result = subprocess.run([nm, "--defined-only", str(archive)],
+def defined_symbols(nm: str, artifact: Path) -> str:
+    result = subprocess.run([nm, "--defined-only", str(artifact)],
                             capture_output=True, text=True)
     return result.stdout
 
@@ -103,32 +103,40 @@ def main() -> int:
         print("error: neither llvm-nm nor nm found on PATH", file=sys.stderr)
         return 1
 
-    print("Archive contents")
-    runtime_lib = find_library(dist, "runtime")
+    print("Toolchain artifact contents")
+    runtime_modules = sorted((dist / "lib" / "runtime").glob("*.bc"))
     backend_lib = find_library(dist, "backend")
-    check("runtime library exists", runtime_lib is not None,
-          runtime_lib.name if runtime_lib else "none")
+    expected_runtime = {
+        "lang_runtime.bc", "lang_runtime.verify.bc",
+        "program_support.bc", "program_support.verify.bc",
+    }
+    check("all module-level runtime bitcode exists",
+          {path.name for path in runtime_modules} == expected_runtime,
+          ", ".join(path.name for path in runtime_modules) or "none")
+    check("no monolithic native runtime archive is shipped",
+          find_library(dist, "runtime") is None)
     check("backend library exists", backend_lib is not None,
           backend_lib.name if backend_lib else "none")
 
-    if runtime_lib and backend_lib:
-        runtime_symbols = defined_symbols(nm, runtime_lib)
+    if runtime_modules and backend_lib:
+        runtime_symbols = "\n".join(defined_symbols(nm, path)
+                                    for path in runtime_modules)
         backend_symbols = defined_symbols(nm, backend_lib)
 
         # Mach-O nm prefixes C symbols with an underscore; match both flavours.
         ir_defined = re.compile(r"^\S* +[TtDdSsBb] +_?ir_[a-z]", re.M)
         in_runtime = len(ir_defined.findall(runtime_symbols))
         in_backend = len(ir_defined.findall(backend_symbols))
-        check("runtime library defines no ir_* backend symbols", in_runtime == 0,
+        check("runtime modules define no ir_* backend symbols", in_runtime == 0,
               f"found {in_runtime}")
         check("backend library defines the ir_* backend symbols", in_backend > 0,
               f"found {in_backend}")
 
-        check("runtime library provides cli_arg_count",
+        check("runtime modules provide cli_arg_count",
               "cli_arg_count" in runtime_symbols)
         check("backend library provides compiler_build_executable",
               "compiler_build_executable" in backend_symbols)
-        check("runtime library does NOT provide compiler_build_executable",
+        check("runtime modules do NOT provide compiler_build_executable",
               "compiler_build_executable" not in runtime_symbols)
 
     print("\nCompiled user program")

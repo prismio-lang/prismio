@@ -204,22 +204,11 @@ PRISMIO_NOINLINE void* rt_base_alloc(size_t size) {
     return malloc(size);
 }
 
-// The reallocating half of the allocator seam. A growable String keeps its
-// public ABI as a plain char pointer, so capacity is allocator metadata rather
-// than another word in every String value. The three supported host families
-// expose that metadata directly; an unfamiliar allocator answers zero and the
-// append path remains correct by growing on every call.
+// The reallocating half of the allocator seam. Consuming String append carries
+// its geometric-growth fact in a reserved representation bit, so this path does
+// not need to query allocator metadata on every append.
 PRISMIO_NOINLINE void* rt_base_realloc(void* p, size_t size) {
     return realloc(p, size);
-}
-
-size_t rt_base_usable_size(void* p) {
-    if (!p) return 0;
-#ifdef RT_USABLE_SIZE
-    return RT_USABLE_SIZE(p);
-#else
-    return 0;
-#endif
 }
 
 #ifdef RT_USABLE_SIZE
@@ -1853,6 +1842,8 @@ typedef struct {
     int elem_size;
 } RtList;
 
+static int list_inline_enabled(void);
+
 static void* list_new_cap(int cap, int elem_size) {
     RtList* l = (RtList*)rt_alloc(sizeof(RtList));
     l->len = 0;
@@ -1881,6 +1872,15 @@ static void* list_new_cap(int cap, int elem_size) {
 // its first push onwards.
 __attribute__((malloc)) void* list_new(void) { return list_new_cap(0, 0); }
 
+// A statically typed flat list receives its representation at construction.
+// `elem_size` is consequently immutable for the entire allocation lifetime,
+// which is both a simpler ABI and the exact contract LLVM's invariant-load
+// metadata requires. An untyped list stays boxed; it is never changed into a
+// different representation after an observer can acquire the handle.
+__attribute__((malloc)) void* list_new_inline(int elem_size) {
+    return list_new_cap(0, list_inline_enabled() ? elem_size : 0);
+}
+
 // Vec::with_capacity. A hint about size, not a bound: the list still grows by
 // doubling past `n`, so a wrong hint costs memory or a realloc and never
 // correctness. That is what keeps it outside SPEC 5's annotation budget -- it is
@@ -1902,7 +1902,8 @@ __attribute__((malloc)) void* list_new_with_capacity(int n) {
 }
 
 __attribute__((malloc)) void* list_new_with_capacity_inline(int n, int elem_size) {
-    return list_new_cap(n > 0 ? n : 4, elem_size);
+    return list_new_cap(n > 0 ? n : 4,
+                        list_inline_enabled() ? elem_size : 0);
 }
 
 void list_set_elem_owner(void* lp, int mode) {
@@ -1993,13 +1994,12 @@ static void list_copy_elem(void* dst, const void* src, size_t size) {
     memcpy(dst, src, size);
 }
 
-// Switch an empty list to inline storage. Stamped by codegen at construction
-// when the element type is known there, and lazily by the push entry points when
-// it is not -- `list_new()` types as `List<Invalid>` on its own, so an
-// unannotated binding has no element type until something is pushed into it.
-//
-// Refused once anything is in the list, which is fact 4: a half-converted list
-// would read a pointer block as a body block.
+// A previous compiler generation stamped typed lists after construction. Keep
+// that transition only in a compiler built by the bootstrap scripts: its own IR
+// may have been emitted by the preceding generation. Packaged runtime bitcode
+// never contains this symbol, so every user program observes the immutable
+// constructor ABI above.
+#ifdef PRISMIO_BOOTSTRAP_COMPAT
 void list_set_elem_inline(void* lp, int elem_size) {
     if (!lp || elem_size <= 0) return;
     if (!list_inline_enabled()) return;
@@ -2031,6 +2031,7 @@ void list_set_elem_inline(void* lp, int elem_size) {
     size_t bytes = (size_t)l->cap * (size_t)elem_size;
     l->data = (void**)(l->arena ? arena_alloc_at(l->arena, bytes) : rt_alloc(bytes));
 }
+#endif
 
 // Storage is one contiguous block that **doubles like the boxed one does**, so a
 // sequential walk is a sequential walk and LLVM sees a constant stride.
@@ -2108,8 +2109,7 @@ PRISMIO_NOINLINE void* list_push_slot_boxed(void* lp, int elem_size) {
 void* list_push_slot(void* lp, int elem_size) {
     RtList* l = (RtList*)lp;
     if (!l->elem_size) {
-        if (l->len == 0) list_set_elem_inline(lp, elem_size);
-        if (!l->elem_size) return list_push_slot_boxed(lp, elem_size);
+        return list_push_slot_boxed(lp, elem_size);
     }
     if (l->len >= l->cap) list_inline_grow(l);
     void* slot = (unsigned char*)l->data + (size_t)l->len * (size_t)l->elem_size;
@@ -2123,8 +2123,8 @@ void* list_push_slot(void* lp, int elem_size) {
 void list_push_inline(void* lp, void* value, int elem_size) {
     RtList* l = (RtList*)lp;
     if (!l->elem_size) {
-        if (l->len == 0) list_set_elem_inline(lp, elem_size);
-        if (!l->elem_size) { list_push(lp, value); return; }
+        list_push(lp, value);
+        return;
     }
     if (l->len >= l->cap) list_inline_grow(l);
     list_copy_elem((unsigned char*)l->data + (size_t)l->len * (size_t)l->elem_size,
@@ -2204,8 +2204,8 @@ unsigned long long list_get_inline_scalar(void* lp, int index, int elem_size) {
 void list_push_inline_scalar_slow(void* lp, unsigned long long bits, int elem_size) {
     RtList* l = (RtList*)lp;
     if (!l->elem_size) {
-        if (l->len == 0) list_set_elem_inline(lp, elem_size);
-        if (!l->elem_size) { list_push(lp, (void*)(uintptr_t)bits); return; }
+        list_push(lp, (void*)(uintptr_t)bits);
+        return;
     }
     if (l->elem_size != elem_size) { list_push(lp, (void*)(uintptr_t)bits); return; }
     if (l->len >= l->cap) list_inline_grow(l);
@@ -2578,8 +2578,8 @@ void* data_view_to_list(void* vp) {
     RtDataView* view = (RtDataView*)vp;
     if (!view || view->source) data_view_fail("view is not ready for materialisation");
 
-    RtList* rows = (RtList*)list_new_with_capacity(view->len);
-    list_set_elem_inline(rows, view->elem_size);
+    RtList* rows =
+        (RtList*)list_new_with_capacity_inline(view->len, view->elem_size);
     for (int i = 0; i < view->len; i++) {
         unsigned char* row = (unsigned char*)list_push_slot(rows, view->elem_size);
         memset(row, 0, (size_t)view->elem_size);

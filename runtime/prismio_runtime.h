@@ -50,7 +50,6 @@ void  aif_verify_release(void* p);
 void  aif_verify_arm(void);
 #define rt_base_alloc(n) aif_verify_alloc(n)
 #define rt_base_realloc(p, n) aif_verify_realloc((p), (n))
-#define rt_base_usable_size(p) aif_verify_usable_size(p)
 #define rt_free(p)       aif_verify_release(p)
 #else
 // Functions rather than macros over malloc/free, because the ordinary build
@@ -65,7 +64,6 @@ void  aif_verify_arm(void);
 // `g_free_fn` to match it (src/driver/compile.psm).
 void* rt_base_alloc(size_t size);
 void* rt_base_realloc(void* p, size_t size);
-size_t rt_base_usable_size(void* p);
 int str_int_inline_words(int value, uint64_t words[2]);
 void  rt_free(void* p);
 #endif
@@ -73,7 +71,7 @@ void  rt_free(void* p);
 
 // Program support: the half of the old driver.c that a *compiled Prismio program*
 // can legitimately call at its own runtime. Implemented in program_support.c and
-// destined for runtime.lib / runtime.a.
+// destined for the installed program_support bitcode module.
 //
 // The dividing line is "would a user's program ever call this?". Command-line
 // access and plain file/path helpers: yes -- tests/test_19_runtime_split.psm

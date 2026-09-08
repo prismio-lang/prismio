@@ -2,7 +2,7 @@
 // accounting behind every message the compiler prints.
 //
 // Compiler-only (backend.lib). A compiled Prismio program never reports a
-// diagnostic, so none of this belongs in runtime.lib.
+// diagnostic, so none of this belongs in installed runtime bitcode.
 //
 // Why this lives in C rather than in Prismio: rendering a diagnostic needs the
 // *original source text* of whichever file the node came from, long after the
