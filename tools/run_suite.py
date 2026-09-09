@@ -12,7 +12,9 @@ copy is the whole point. Three fixtures make the difference:
 - the object-cache and cold-build fixtures assert what a build recompiles, which
   a compiler already running in this process tree perturbs.
 
-Copying costs a few megabytes once and removes all three interactions. Every
+What is copied is the *toolchain*, not the binary: the compiler, the runtime
+bitcode beside it and the compiled standard modules, in the layout it resolves
+them from. A few megabytes once, and it removes all three interactions. Every
 argument is forwarded to the runner, so `prismio suite -k foo --list` works.
 
     python tools/run_suite.py [--compiler PATH] [runner args...]
@@ -28,14 +30,18 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-# The project host first, and the order matters. It is a standalone binary, so a
-# copy of it is a working compiler. `dist/Prismio/bin/prismio` is one file in a
-# *layout* -- it finds `../stdlib` beside itself -- so a copy of just that file
-# is a compiler that cannot resolve `std.*`, and the ums fixture fails on it.
+# The project host first, because it is the compiler the working tree just built.
 DEFAULT_CANDIDATES = (
     REPO / ".prismio" / "build" / "debug" / "prismio",
     REPO / "dist" / "Prismio" / "bin" / "prismio",
 )
+
+
+def shown_root(path: Path):
+    try:
+        return path.relative_to(REPO)
+    except ValueError:
+        return path
 
 
 def main() -> int:
@@ -60,19 +66,38 @@ def main() -> int:
             return 1
 
     with tempfile.TemporaryDirectory(prefix="prismio-suite-") as tmp:
-        # Named generations never redirect to build.ums's project host. Calling
-        # this copy `prismio` silently tested an older project compiler instead
-        # of --compiler. The UMS fixture creates its own `prismio` launcher when
-        # it specifically tests routing, and preserves the project host itself.
-        copy = Path(tmp) / ("suite-compiler.exe" if sys.platform == "win32" else "suite-compiler")
+        # **A compiler is a layout, not a file.** It finds runtime bitcode at
+        # `<exe>/../lib/runtime` and compiled standard modules at
+        # `<exe>/../stdlib`, so a lone copy of one builds nothing at all -- it
+        # reports "Missing runtime module" for a toolchain the developer never
+        # installed. Both candidates above sit in such a layout: `dist/Prismio`
+        # is one because packaging made it, and `.prismio/build` is one because
+        # `prismio build` now leaves the runtime and standard library beside the
+        # host it built. So the copy reproduces the shape rather than the file.
+        #
+        # Named `suite-compiler` and not `prismio`, because a binary called
+        # `prismio` redirects to build.ums's project host -- which silently
+        # tested an older compiler than `--compiler` named. The UMS fixture makes
+        # its own `prismio` launcher when it is specifically testing routing.
+        prefix = Path(tmp)
+        copy = prefix / "bin" / ("suite-compiler.exe" if sys.platform == "win32" else "suite-compiler")
+        copy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, copy)
         copy.chmod(0o755)
 
-        try:
-            shown = source.relative_to(REPO)
-        except ValueError:
-            shown = source
-        print(f"suite: testing a copy of {shown}")
+        toolchain = source.parent.parent
+        missing = [str(d) for d in ("lib", "stdlib")
+                   if not (toolchain / d).is_dir()]
+        if missing:
+            print(f"run_suite: {shown_root(source)} is not in a toolchain layout; "
+                  f"no {', '.join(missing)} beside it.")
+            print("Build one with `prismio build`, or package one with `prismio dist`.")
+            return 1
+        for directory in ("lib", "stdlib", "third_party"):
+            if (toolchain / directory).is_dir():
+                shutil.copytree(toolchain / directory, prefix / directory)
+
+        print(f"suite: testing a copy of {shown_root(source)}")
         result = subprocess.run(
             [sys.executable, "-u", str(REPO / "tests" / "test_runner.py"),
              "--compiler", str(copy), *forwarded],

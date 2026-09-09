@@ -33,6 +33,16 @@ extern fn command_quote_arg(argument: String borrow) -> String produce(free)
 // candidate has to start before it can replace that generation, and promotion
 // is a binary rename rather than compiler_publish_file's text copy.
 extern fn compiler_check_executable(exeFile: String borrow) -> Int
+extern fn compiler_check_host_abi(exeFile: String borrow, abi: String borrow) -> Int
+extern fn compiler_host_abi() -> String alias
+// Builds `<root>/lib/runtime/*.bc` and `<root>/stdlib/*.plib` with `compiler`,
+// from the Prismio checkout that compiler was found in. Returns how many
+// standard-library modules the toolchain now has -- rebuilt here or reused from
+// `<root>/lib/toolchain.stamp`, which records what each artifact was built from
+// so an unchanged input is not built twice -- 0 when there is no checkout to
+// build them from, and -1 on failure. Reads both paths and keeps neither.
+extern fn compiler_emit_local_toolchain(root: String borrow,
+                                        compiler: String borrow) -> Int
 extern fn compiler_forward_cli(host: String borrow) -> Int
 extern fn compiler_is_current_executable(path: String borrow) -> Int
 extern fn compiler_is_hosted() -> Int
@@ -397,20 +407,59 @@ private fn cliWantsMachineOutput() -> Bool {
     return false
 }
 
+// Which compiler is about to run this command, said out loud every time there is
+// a choice to report.
+//
+// The launcher used to say only when it forwarded, so "global, because the host
+// is missing" and "global, because the host would not start" both looked like an
+// ordinary build -- and a global compiler quietly serving a project that pins a
+// local one is the shape the `list_set_elem_inline` failure arrived in.
+private fn announceToolchain(kind: String, path: String) {
+    if (cliWantsMachineOutput()) { return }
+    eprint("Using ")
+    eprint(kind)
+    eprint(" toolchain: ")
+    eprintln(path)
+}
+
+// The rest of the toolchain, beside the host that was just built.
+//
+// A compiler alone in a build directory can build itself and nothing else: the
+// runtime is installed bitcode with no source fallback, and `lib/runtime` is
+// looked for beside the executable. So the host's own build produces the
+// libraries next to it, which is also what makes a `std/` or `runtime/` edit
+// reach the next program the project builds -- the reason to pin a host at all.
+//
+// The toolchain root is the profile directory's parent, so `.prismio/build`
+// holds `debug/prismio`, `lib/runtime/*.bc` and `stdlib/*.plib` in exactly the
+// shape an install has.
+private fn emitUmsToolchainLibraries(hostPath: String, compilerPath: String) -> Int {
+    let root = get_directory(get_directory(hostPath))
+    let modules = compiler_emit_local_toolchain(root, compilerPath)
+    if (modules < 0) {
+        diag_error_code("P1067", "the project compiler was built without its runtime and standard library")
+        diag_note("it can build itself and nothing else until this succeeds")
+        return 1
+    }
+    if (modules > 0 and cliWantsMachineOutput() == false) {
+        eprint("local toolchain: ")
+        eprint(root)
+        eprint(" (")
+        eprint(modules)
+        eprintln(" standard-library modules)")
+    }
+    return 0
+}
+
 private fn buildUmsHostTarget(target: UmsTarget) -> Int {
     let candidate = strClone(target.outputPath).concat(".next")
     if (file_exists(candidate) == 1) { delete_file(candidate) }
 
-    let currentPath = join_path(executable_directory(), pathLeaf(cli_arg(0)))
     let replacesSelf = compiler_is_current_executable(target.outputPath) == 1
     if (replacesSelf and compiler_is_hosted() == 0) {
         diag_error_code("P1051", "the project-local compiler cannot replace itself without its global parent")
         diag_note("run `prismio build` through the installed global compiler")
         return 1
-    }
-    if (compiler_is_hosted() == 0 and cliWantsMachineOutput() == false) {
-        eprint("compiler host: stage-0 ")
-        eprintln(currentPath)
     }
 
     let built = compileSource(target.sourcePath, strClone(candidate),
@@ -422,11 +471,20 @@ private fn buildUmsHostTarget(target: UmsTarget) -> Int {
     }
     if (replacesSelf) {
         if (checkUmsCompilerCandidate(strClone(candidate)) != 0) { return 1 }
+        // The candidate emits the libraries, not the compiler running this: they
+        // have to be what the generation about to be promoted produces, and it
+        // has just been checked. The launcher renames it over this binary after
+        // this process exits, so the host path is still where it will live.
+        if (emitUmsToolchainLibraries(target.outputPath, candidate) != 0) { return 1 }
         print("staged project compiler: ")
         println(candidate)
         return 0
     }
-    return promoteUmsCompilerCandidate(candidate, target.outputPath)
+    let promoted = promoteUmsCompilerCandidate(candidate, target.outputPath)
+    if (promoted != 0) { return promoted }
+    // Promotion renamed the candidate onto the host path, so the two arguments
+    // are now one file.
+    return emitUmsToolchainLibraries(target.outputPath, target.outputPath)
 }
 
 // A binary named `prismio` is the user-facing launcher. Named bootstrap
@@ -437,6 +495,49 @@ private fn isGlobalLauncher() -> Bool {
     return name.equals("prismio") or name.equals("prismio.exe")
 }
 
+// Build the one target whose output is the configured `toolchain.host`, or
+// report -1 when this profile does not produce it.
+//
+// -1 is not a failure. `toolchain.host` names an artifact path, so the profile
+// that produces it is a fact about the manifest rather than something the
+// launcher can be told, and "not this one" is an ordinary answer to give.
+private fn buildUmsHostTargetIn(workspace: UmsWorkspace) -> Int {
+    let mut index = 0
+    while (index < workspace.targetCount()) {
+        let target = workspace.target(index)
+        if (isUmsHostTarget(workspace, target)) {
+            return buildUmsTarget(workspace, target)
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+// Rebuild the project's compiler host with this compiler, and nothing else.
+//
+// Only the host, because this is not the build the user asked for: it is the
+// repair that has to happen first for that build to mean anything. The typed
+// command is still forwarded afterwards, to the repaired host, with its own
+// arguments and its own profile -- so `prismio build --release` repairs the
+// debug host it was going to run and then does the release build in it.
+//
+// Both profiles are tried rather than assuming the manifest spells the host
+// under `debug`. A project where no target builds it at all yields -1, which the
+// caller reads as "nothing to repair here" and falls back to stage 0 -- the same
+// answer it already gives for a host that will not start.
+private fn repairUmsProjectHost() -> Int {
+    let debugWorkspace = umsLoadProject(".", "debug")
+    if (debugWorkspace.valid == false) {
+        umsDiagnosticsPrint(debugWorkspace.diagnostics)
+        return 1
+    }
+    let debugBuild = buildUmsHostTargetIn(debugWorkspace)
+    if (debugBuild >= 0) { return debugBuild }
+
+    let releaseWorkspace = umsLoadProject(".", "release")
+    return buildUmsHostTargetIn(releaseWorkspace)
+}
+
 // Returns -1 when the current compiler should process the command itself.
 // Otherwise the return value is the hosted command's result and `main` returns
 // it immediately; a failed hosted command is never replayed under stage 0.
@@ -444,23 +545,71 @@ fn dispatchToUmsHost() -> Int {
     if (isGlobalLauncher() == false or compiler_is_hosted() == 1) { return -1 }
 
     let host = umsProjectHost(".")
-    if (__builtin_string_len(host) == 0 or file_exists(host) == 0 or
-        compiler_is_current_executable(host) == 1) {
+    if (__builtin_string_len(host) == 0) { return -1 }
+
+    // This binary *is* the declared host, invoked directly rather than through a
+    // parent. It is the local toolchain; there is nothing to forward to.
+    if (compiler_is_current_executable(host) == 1) {
+        announceToolchain("local", host)
+        return -1
+    }
+
+    let currentPath = join_path(executable_directory(), pathLeaf(cli_arg(0)))
+    if (file_exists(host) == 0) {
+        announceToolchain("global", currentPath)
         return -1
     }
     if (compiler_check_executable(host) != 0) {
         diag_warning_code("P1052", "the configured project host is not runnable")
-        diag_note("falling back to the global compiler")
+        announceToolchain("global", currentPath)
         return -1
+    }
+
+    // A host from an earlier generation starts, answers `--version`, and cannot
+    // build anything: the code it emits names runtime symbols the installed
+    // runtime no longer defines. That failure arrives as a linker's
+    // undefined-symbol list naming *generated* functions, with nothing in it
+    // pointing at the compiler that emitted them -- so the mismatch is asked
+    // about here, before a command is forwarded into it.
+    //
+    // `clean` is exempt, and that exemption is the whole of the special-casing:
+    // it removes this project's artifacts and then the launcher removes the host
+    // itself, so rebuilding the binary that is about to be deleted buys nothing.
+    let cleaning = cli_arg_count() > 1 and cli_arg(1).equals("clean")
+    if (cleaning == false and
+        compiler_check_host_abi(host, compiler_host_abi()) != 0) {
+        diag_warning_code("P1064", "the project compiler is from an older toolchain generation")
+        diag_note("rebuilding ".concat(host, " with the global compiler first"))
+
+        // Named before the rebuild rather than after it, because the rebuild is
+        // the part that can fail and the reader needs to know whose diagnostics
+        // they are about to read.
+        announceToolchain("global", currentPath)
+        let repaired = repairUmsProjectHost()
+        if (repaired < 0) {
+            diag_warning_code("P1065", "no target in this project builds the configured compiler host")
+            announceToolchain("global", currentPath)
+            return -1
+        }
+        if (repaired != 0) { return repaired }
+
+        // Promotion already proved the new host starts. This proves the thing it
+        // was rebuilt for, and it can still fail: a global compiler older than
+        // the project's sources produces a host that runs and is still the wrong
+        // generation. Forwarding into it would reproduce the original link error
+        // with a rebuild in front of it.
+        if (compiler_check_host_abi(host, compiler_host_abi()) != 0) {
+            diag_error_code("P1066", "the rebuilt project compiler reports a different generation")
+            diag_note("the installed compiler is older than this project's sources")
+            diag_note("bootstrap one from source: tools/bootstrap.sh --seed --out build/g1")
+            return 1
+        }
     }
 
     let candidate = strClone(host).concat(".next")
     if (file_exists(candidate) == 1) { delete_file(candidate) }
 
-    if (cliWantsMachineOutput() == false) {
-        eprint("compiler host: project-local ")
-        eprintln(host)
-    }
+    announceToolchain("local", host)
     let result = compiler_forward_cli(host)
     if (result != 0) {
         if (file_exists(candidate) == 1) { delete_file(candidate) }

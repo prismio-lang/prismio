@@ -1,4 +1,5 @@
 import common
+import std.string
 
 struct BenchMemoryParticle {
     x: Float,
@@ -171,4 +172,35 @@ fn benchRecursiveTreeRebuild(scale: Int) -> Int {
     let tree = benchBuildMemoryTree(12 + scale / 4, 1)
     let done = benchTreePasses(tree, 4 * scale)
     return benchMemoryTreeSum(done)
+}
+
+// Owned-string construction, which nothing else in the suite measures.
+// `tokenization` scans a string, `string_search` searches one and `csv_parse`
+// splits one; all three read. This one *builds*, which is where an affine string
+// pays: every piece is an allocation the caller owns, and the join is a second
+// pass that has to size the result before it copies.
+//
+// A running `result = result + piece` would be a different benchmark and a worse
+// one -- quadratic in all three languages, and unavailable in Prismio, which
+// ships no string builder. Collecting pieces and joining once is what each
+// language's library is actually for.
+fn benchStringJoin(scale: Int) -> Int {
+    let n = 60000 * scale
+    let mut parts: List<String> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(parts, "field".concat((i % 9973).toString()))
+        i = i + 1
+    }
+
+    let joined = join(parts, ",")
+    let length = joined.length()
+
+    let mut checksum = length % 1000000007
+    let mut at = 0
+    while (at < length) {
+        checksum = (checksum + (joined.charAt(at) as Int)) % 1000000007
+        at = at + 997
+    }
+    return checksum
 }

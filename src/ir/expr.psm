@@ -692,16 +692,11 @@ private fn irTypeIsProfilableInt(t: String) -> Bool {
     return false
 }
 
-// M4.2. Tell a freshly constructed list to store its elements inline, when the
-// element type's layout allows it.
-//
-// The element type is the constructing expression's own, which is the annotated
-// binding's when there is one and `List<Invalid>` when there is not. A list the
-// stamp misses is not lost: the push entry points stamp lazily while the list is
-// still empty, and they read the same static type this does -- so the two can
-// only agree.
+// M4.2. Choose inline element storage in the constructor when the element
+// type's layout allows it. An unannotated `List<Invalid>` remains boxed for its
+// lifetime; representation is never changed after construction.
 // The element size a container stores inline for this type, or 0 when the
-// type's layout forbids it. One place, so the stamp, the push slot and every
+// type's layout forbids it. One place, so the constructor, push slot and every
 // access cannot disagree about which types are inline -- a disagreement would
 // read a body as a pointer.
 private fn inlineElemSize(typeName: String) -> Int {
@@ -716,7 +711,7 @@ private fn inlineElemSize(typeName: String) -> Int {
 
 // The inline element size of the list this expression denotes, or 0.
 //
-// **The list's own static type, at every site, and nothing else.** The stamp and
+// **The list's own static type, at every site, and nothing else.** Construction and
 // the accesses have to agree, and the one fact both can read is the type sema
 // gave the list expression: a `List<T>` reached through an identifier, a field
 // or a call all carry it, and a `list_new()` with no annotation carries
@@ -1901,7 +1896,7 @@ private fn irIsZeroScalar(nodePtr: Ptr) -> Bool {
 }
 
 // A counted append of scalar zeroes is a byte fill. The fast arm is guarded by
-// the same representation and capacity facts as E1, so an unusual unstamped or
+// the same representation and capacity facts as E1, so a boxed or
 // undersized list still executes the original loop unchanged.
 internal fn generateWholeBufferZeroFill(cond: ASTNode, body: ASTNode,
                                         endLabel: Int) -> Bool {
@@ -2205,7 +2200,7 @@ private fn generateGuardedScalarPush(expr: ASTNode, funcName: String) -> Bool {
 }
 
 // Whether this is a two-argument `list_get` on a statically known List. The
-// element may still be `Invalid`: such a list can never be stamped inline, so
+// element may still be `Invalid`: such a list is never constructed inline, so
 // its stable representation is the ordinary pointer-slot form.
 private fn isTypedListGet(expr: ASTNode, funcName: String) -> Bool {
     if (funcName.equals("list_get") == false) { return false }
@@ -2249,16 +2244,15 @@ private fn flatGetStride(expr: ASTNode, funcName: String) -> Int {
 // This answers a different question from `flatGetStride`, and the difference is
 // the whole point: it is not about serving the site -- the write still goes to
 // `list_set_inline_scalar` -- but about whether the site invalidates the loop's
-// guard. It does not. No member of the `list_set` family stamps `elem_size`,
+// guard. It does not. No member of the `list_set` family changes `elem_size`,
 // grows the block or reallocates it: the boxed one bounds-checks and stores into
 // `l->data[index]`, the inline one copies into the existing row, and the scalar
-// one falls back to the boxed setter when the widths disagree. `list_push` does
-// all three -- `list_push_inline_scalar_slow` calls `list_set_elem_inline` and
-// `list_inline_grow` -- which is why it must keep declining.
+// one falls back to the boxed setter when the widths disagree. `list_push` can
+// still grow through `list_inline_grow`, which is why it must keep declining.
 //
 // **Scalars only, and that is not conservatism for its own sake.** The struct
 // setter runs `list_release_source` and the boxed one an `rc_release`, and a
-// releaser is user code that could reach the same list and stamp or grow it
+// releaser is user code that could reach the same list and grow it
 // behind the guard. A scalar element has neither.
 private fn flatSetScalarStride(expr: ASTNode, funcName: String) -> Int {
     if (funcName.equals("list_set") == false) { return 0 }

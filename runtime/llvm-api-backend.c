@@ -2115,9 +2115,8 @@ int ir_array_alloca(const char *elem_type, int count) {
 // entry point.
 //
 // **The static fact is weaker than the dynamic one, and that is why the fallback
-// stays.** Codegen knows the element *type* is inline-eligible; it does not know
-// this *list* is stamped inline, because the stamp is lazy and
-// PRISMIO_INLINE_ELEMS=0 leaves every list boxed. So the guard is
+// stays.** Codegen knows the element *type* is inline-eligible; the runtime knob
+// may still have constructed this particular list boxed. So the guard is
 // `elem_size == stride`, not `!= 0`, and its false arm is a call to the very
 // function this replaces -- whatever that function would have done it still
 // does, and only the case it was going to answer with `data + i * stride` is
@@ -2329,9 +2328,8 @@ int ir_list_flat_push(const char *list, int stride, const char *guard) {
     LLVMValueRef cap = LLVMBuildLoad2(g_builder, i32, cap_ptr, "");
     tag_list_header(cap, "i32");
 
-    // Stamped at this stride, and room for one more. An unstamped list has
-    // elem_size 0 and fails the first test, so the lazy stamp still happens in
-    // the runtime on the first push exactly as it did.
+    // Constructed at this stride, and room for one more. A boxed list has
+    // elem_size 0 and fails the first test, so it stays on the boxed path.
     //
     // **With a `guard` the test is not here at all.** The loop's preheader has
     // already proved `elem_size == stride` and `cap - len >= trip_count` for
@@ -5775,7 +5773,6 @@ int ir_curate_module(const char *runtime_ir, const char *const *names, int count
             if (strcmp(name, "list_push_inline_scalar_slow") == 0
                     || strcmp(name, "list_inline_grow") == 0
                     || strcmp(name, "list_push_grow") == 0
-                    || strcmp(name, "list_set_elem_inline") == 0
                     || strcmp(name, "list_set_elem_owner") == 0
                     || strcmp(name, "list_set_elem_releaser") == 0
                     || strcmp(name, "list_set") == 0
@@ -5940,6 +5937,48 @@ static void clear_packaging_target_attributes(LLVMModuleRef library) {
     }
 }
 
+// Remember which definitions arrived through PLIB/runtime modules. They cannot
+// be pruned one module at a time: a later runtime module may still refer to a
+// symbol from an earlier one. The final runtime merge removes imported
+// definitions with no IR users, then repeats because deleting one wrapper can
+// make its callees dead. Reachable definitions retain external linkage, so this
+// does not feed a stronger visibility promise into LLVM's inliner.
+static void mark_imported_definitions(LLVMModuleRef library) {
+    static const char key[] = "prismio-imported";
+    LLVMContextRef context = LLVMGetModuleContext(library);
+    for (LLVMValueRef function = LLVMGetFirstFunction(library); function;
+         function = LLVMGetNextFunction(function)) {
+        if (LLVMCountBasicBlocks(function) == 0) continue;
+        LLVMAddAttributeAtIndex(
+            function, LLVMAttributeFunctionIndex,
+            LLVMCreateStringAttribute(context, key, sizeof(key) - 1, "", 0));
+    }
+}
+
+static void prune_unused_imported_definitions(LLVMModuleRef module) {
+    static const char key[] = "prismio-imported";
+    int removed = 1;
+    while (removed) {
+        removed = 0;
+        for (LLVMValueRef function = LLVMGetFirstFunction(module); function; ) {
+            LLVMValueRef next = LLVMGetNextFunction(function);
+            LLVMAttributeRef marker = LLVMGetStringAttributeAtIndex(
+                function, LLVMAttributeFunctionIndex, key, sizeof(key) - 1);
+            if (marker && LLVMCountBasicBlocks(function) != 0
+                    && !LLVMGetFirstUse(function)) {
+                LLVMDeleteFunction(function);
+                removed = 1;
+            }
+            function = next;
+        }
+    }
+    for (LLVMValueRef function = LLVMGetFirstFunction(module); function;
+         function = LLVMGetNextFunction(function)) {
+        LLVMRemoveStringAttributeAtIndex(
+            function, LLVMAttributeFunctionIndex, key, sizeof(key) - 1);
+    }
+}
+
 // RtList's inline-element stride is immutable: typed lists receive it in their
 // constructor, and untyped lists remain boxed with a zero stride. The old
 // curated-runtime path attached that fact only inside a hand-written list of
@@ -5972,40 +6011,80 @@ static void mark_runtime_structural_invariants(LLVMContextRef ctx,
 // A precompiled module is an optimisation-bearing library interface, not merely
 // another implementation object. Give eligible concrete functions the same
 // modest hint at that boundary and leave the final decision to LLVM's cost
-// model. A zero instruction limit admits the whole source-level PLIB; runtime
+// model. A zero cost limit admits the whole source-level PLIB; runtime
 // callers use a uniform small-function limit. This avoids
 // the greedy bottom-up failure where a small runtime helper first expands into
 // a std function, making the more valuable std-to-program inline miss the
 // ordinary threshold. `inlinehint` raises that threshold; it is neither
 // `alwaysinline` nor a hand-maintained list of blessed functions.
-static unsigned function_instruction_count(LLVMValueRef function,
-                                           unsigned stop_after) {
-    unsigned count = 0;
+static unsigned function_interface_cost(LLVMValueRef function,
+                                        unsigned stop_after) {
+    unsigned cost = 0;
     for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(function); block;
          block = LLVMGetNextBasicBlock(block)) {
         for (LLVMValueRef instruction = LLVMGetFirstInstruction(block);
              instruction;
              instruction = LLVMGetNextInstruction(instruction)) {
-            count++;
-            if (stop_after && count > stop_after) return count;
+            // A call carries substantially more expansion/call-graph risk than
+            // arithmetic or a field access. This is only an eligibility filter;
+            // LLVM's real target-aware inline cost model still decides later.
+            LLVMOpcode opcode = LLVMGetInstructionOpcode(instruction);
+            cost += (opcode == LLVMCall || opcode == LLVMInvoke) ? 16u : 1u;
+            if (stop_after && cost > stop_after) return cost;
         }
     }
-    return count;
+    return cost;
+}
+
+static int function_calls_named(LLVMValueRef function, const char *wanted) {
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(function); block;
+         block = LLVMGetNextBasicBlock(block)) {
+        for (LLVMValueRef instruction = LLVMGetFirstInstruction(block);
+             instruction;
+             instruction = LLVMGetNextInstruction(instruction)) {
+            LLVMOpcode opcode = LLVMGetInstructionOpcode(instruction);
+            if (opcode != LLVMCall && opcode != LLVMInvoke) continue;
+            LLVMValueRef callee = LLVMGetCalledValue(instruction);
+            if (!callee) continue;
+            size_t name_len = 0;
+            const char *name = LLVMGetValueName2(callee, &name_len);
+            if (name && strlen(wanted) == name_len
+                    && memcmp(name, wanted, name_len) == 0) return 1;
+        }
+    }
+    return 0;
 }
 
 static void mark_library_interface_functions(LLVMModuleRef program,
                                              LLVMModuleRef library,
-                                             unsigned instruction_limit) {
+                                             unsigned cost_limit) {
     unsigned kind = LLVMGetEnumAttributeKindForName("inlinehint", 10);
     if (!kind) return;
     for (LLVMValueRef function = LLVMGetFirstFunction(library); function;
          function = LLVMGetNextFunction(function)) {
         if (LLVMCountBasicBlocks(function) == 0) continue;
-        if (instruction_limit
-                && function_instruction_count(function, instruction_limit)
-                       > instruction_limit) {
+        // Environment inspection and TLS-address selection are process/thread
+        // policy, not arithmetic to expose to a caller. Their calls remain
+        // dynamic after inlining, while the expanded control flow changes the
+        // greedy inliner's later decisions and register allocation. Preserve a
+        // boundary for any imported wrapper with either semantic shape; this is
+        // deliberately a property of the IR, not a list of benchmark or runtime
+        // function names.
+        if (function_calls_named(function, "getenv")
+                || function_calls_named(function,
+                                        "llvm.threadlocal.address.p0")) {
+            unsigned noinline_kind =
+                LLVMGetEnumAttributeKindForName("noinline", 8);
+            if (noinline_kind) {
+                LLVMAddAttributeAtIndex(
+                    function, LLVMAttributeFunctionIndex,
+                    LLVMCreateEnumAttribute(
+                        LLVMGetModuleContext(library), noinline_kind, 0));
+            }
             continue;
         }
+        unsigned cost = function_interface_cost(function, cost_limit);
+        if (cost_limit && cost > cost_limit) continue;
         LLVMAttributeRef hint =
             LLVMCreateEnumAttribute(LLVMGetModuleContext(library), kind, 0);
         LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex, hint);
@@ -6021,14 +6100,19 @@ static void mark_library_interface_functions(LLVMModuleRef program,
     }
 }
 
-// Link a precompiled library/runtime bitcode module into a program module. The
-// final clang invocation optimises the combined graph, so bitcode bodies remain
-// available for cross-module inlining and dead-code elimination.
-int ir_link_library_module(const char *dest_ir, const char *src_ir,
-                           const char *out_path, int library_interface) {
+// Link every selected PLIB/runtime bitcode module in one LLVM context. Parsing
+// and printing the growing program once per input made a module-wise package
+// accidentally quadratic in serialization work; a large program crossed the
+// text-IR boundary sixteen times before optimization. The artifacts remain
+// independently replaceable and independently validated on disk, but linking
+// them is one transaction and the final clang invocation sees the same graph.
+int ir_link_library_modules(const char *dest_ir,
+                            const char *const *src_irs,
+                            const int *link_modes, int module_count,
+                            const char *out_path) {
     LLVMContextRef ctx = LLVMContextCreate();
-    LLVMMemoryBufferRef dbuf = NULL, sbuf = NULL;
-    LLVMModuleRef dm = NULL, sm = NULL;
+    LLVMMemoryBufferRef dbuf = NULL;
+    LLVMModuleRef dm = NULL;
     char *err = NULL;
 
     if (LLVMCreateMemoryBufferWithContentsOfFile(dest_ir, &dbuf, &err) != 0) {
@@ -6045,36 +6129,48 @@ int ir_link_library_module(const char *dest_ir, const char *src_ir,
         LLVMContextDispose(ctx);
         return 1;
     }
-    if (LLVMCreateMemoryBufferWithContentsOfFile(src_ir, &sbuf, &err) != 0) {
-        fprintf(stderr, "ERROR: Prismio runtime module is unreadable: %s\n", src_ir);
-        if (err) LLVMDisposeMessage(err);
-        LLVMDisposeModule(dm);
-        LLVMContextDispose(ctx);
-        return 1;
-    }
-    if (LLVMParseIRInContext(ctx, sbuf, &sm, &err) != 0) {
-        fprintf(stderr, "ERROR: Prismio runtime module is invalid: %s\n", src_ir);
-        if (err) LLVMDisposeMessage(err);
-        LLVMDisposeModule(dm);
-        LLVMContextDispose(ctx);
-        return 1;
-    }
-
-    preserve_program_declaration_contracts(dm, sm);
-    clear_packaging_target_attributes(sm);
-    // PLIB functions are the source-level module boundary, so all of them get
-    // the cost model's modest interface hint. Runtime bitcode is much larger:
-    // hint only universally small boundary functions, keeping a large helper
-    // from changing the greedy inliner's order merely because it was shipped in
-    // bitcode rather than an archive. LLVM still makes the final cost decision.
-    mark_library_interface_functions(dm, sm, library_interface ? 0u : 64u);
-    if (!library_interface) mark_runtime_structural_invariants(ctx, sm);
-
     int failed = 0;
-    if (LLVMLinkModules2(dm, sm) != 0) {
-        fprintf(stderr, "ERROR: could not link Prismio runtime module %s\n", src_ir);
-        failed = 1;
+    for (int i = 0; i < module_count && !failed; i++) {
+        const char *role = link_modes[i] == 1
+            ? "standard-library" : "runtime";
+        LLVMMemoryBufferRef sbuf = NULL;
+        LLVMModuleRef sm = NULL;
+        if (LLVMCreateMemoryBufferWithContentsOfFile(src_irs[i], &sbuf, &err) != 0) {
+            fprintf(stderr, "ERROR: Prismio %s module is unreadable: %s\n"
+                    "       Reinstall Prismio and try again.\n",
+                    role, src_irs[i]);
+            if (err) { LLVMDisposeMessage(err); err = NULL; }
+            failed = 1;
+            break;
+        }
+        if (LLVMParseIRInContext(ctx, sbuf, &sm, &err) != 0) {
+            fprintf(stderr, "ERROR: Prismio %s module is invalid: %s\n"
+                    "       Reinstall Prismio and try again.\n",
+                    role, src_irs[i]);
+            if (err) { LLVMDisposeMessage(err); err = NULL; }
+            failed = 1;
+            break;
+        }
+
+        preserve_program_declaration_contracts(dm, sm);
+        clear_packaging_target_attributes(sm);
+        mark_imported_definitions(sm);
+        // Apply one structural policy to both PLIB and runtime boundaries.
+        // Large or call-heavy helpers remain visible to ordinary LTO, but do
+        // not change the greedy inliner's order merely because they were
+        // shipped as bitcode rather than source/archive code.
+        mark_library_interface_functions(dm, sm, 192u);
+        if (link_modes[i] != 1) mark_runtime_structural_invariants(ctx, sm);
+
+        if (LLVMLinkModules2(dm, sm) != 0) {
+            fprintf(stderr, "ERROR: could not link Prismio %s module %s\n"
+                    "       Reinstall Prismio and try again.\n",
+                    role, src_irs[i]);
+            failed = 1;  // sm is consumed even when linking fails
+        }
     }
+
+    if (!failed) prune_unused_imported_definitions(dm);
     if (!failed && LLVMPrintModuleToFile(dm, out_path, &err) != 0) {
         fprintf(stderr, "ERROR: could not write merged program IR: %s\n",
                 err ? err : "(no detail)");

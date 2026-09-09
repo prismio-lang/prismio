@@ -4,6 +4,96 @@
 
 ### Language
 
+- **The launcher asks a project host which generation it is, and rebuilds it
+  when the answer is wrong.** Removing a runtime symbol codegen used to emit
+  does not fail where it is removed: it fails in the *previous* compiler, which
+  is still emitting the call and now links a runtime without the definition.
+  Dropping `list_set_elem_inline` for the immutable list-layout constructor did
+  exactly that, and `prismio build` in this repository stopped being able to
+  build its own replacement — an `Undefined symbols for architecture arm64` list
+  naming `strChars`, `generateExpression` and six other *generated* functions,
+  with nothing in it pointing at the compiler that emitted them.
+
+  `PRISMIO_HOST_ABI` (`runtime/prismio_runtime.h`) versions the pairing, and
+  the hidden `prismio --internal-host-abi <token>` reports it. A host that
+  disagrees exits 1; one that predates the command rejects the argument and also
+  exits 1, which is why nothing had to be back-ported for this to work on the
+  generation it was introduced to catch. On disagreement the launcher rebuilds
+  *only* the `toolchain.host` target with itself, re-asks, and then forwards the
+  original command (`P1064`, `P1065`, `P1066`). `clean` is exempt — the launcher
+  deletes that host immediately afterwards.
+
+  The compatibility export survives one generation, under
+  `PRISMIO_BOOTSTRAP_COMPAT`, in compilers built from repository sources.
+  Packaged runtime bitcode does not contain it, so no user program observes
+  anything but the constructor ABI.
+- **Building a `toolchain.host` builds the toolchain, not just the compiler.**
+  A compiler is a layout, not a file: it resolves runtime bitcode at
+  `<exe>/../lib/runtime` and compiled standard modules at `<exe>/../stdlib`.
+  Since the runtime became installed bitcode with no source fallback, the
+  project host could build *itself* — bootstrap compiles `runtime/*.c` from the
+  checkout — and could not build one user program. Every benchmark, corpus
+  program and fixture pointed at it failed with `Missing runtime module`, naming
+  an installation the developer had never installed.
+
+  `prismio build` now writes `.prismio/build/lib/runtime/*.bc` and
+  `.prismio/build/stdlib/*.plib` beside the host it promoted, in the shape an
+  install has, so nothing in the resolver had to learn a new layout — and a
+  `std/` or `runtime/` edit reaches the next program the project builds, which
+  is the reason to pin a host at all. Measured at 1.9 s on a host build of about
+  20 s, and the artifacts are byte-identical to `tools/package.py`'s for the same
+  compiler; `run_ums_test` imports the packaging code and compares bytes, because
+  two producers of one format is a drift neither side can see.
+
+  `tools/run_suite.py` copies that layout rather than the binary.
+  `benchmarks/run.py` also pins `PRISMIO_INTERNAL_HOSTED`: a `--compiler` whose
+  file is named `prismio` was being forwarded to `toolchain.host`, so the numbers
+  came from a binary other than the one named, and checksums cannot catch that —
+  both compilers are correct.
+- **That build is incremental: an artifact whose inputs did not move is not
+  built again.** The emission above ran in full on every `prismio build` of a
+  project host — four clang invocations for the runtime and, per standard
+  library module, two compiler runs and two more clang runs — to reproduce, byte
+  for byte, the files already on disk. Measured here at 1.50 s of an 8.24 s
+  self-build; an unchanged rebuild now spends 0.23 s and the whole build takes
+  6.90 s.
+
+  `.prismio/build/lib/toolchain.stamp` records what each artifact was built
+  from, one `<name> <key>` line each. The runtime key is the hash
+  `lib/runtime.hash` already records — so a reuse and the `P1004` staleness
+  guard cannot disagree about whether the bitcode matches `runtime/` — plus the
+  clang that compiles it, by path, size and mtime. That last part is size and
+  mtime rather than content deliberately: clang is a binary this build did not
+  produce, hashing it every time would cost more than the four compiles the key
+  guards, and an in-place LLVM upgrade is precisely the gap the object cache's
+  own comment records as one nothing notices.
+
+  A PLIB's key is its `std/*.psm` source and *the compiler's own bytes*, because
+  the emission is literally `<compiler> build std/<module>.psm`: the binary is
+  the dependency, and it is the one key that covers a changed codegen, a changed
+  `--verify` lowering and a changed PLIB container format at once. So a
+  `runtime/*.c` edit rebuilds four `.bc` files and no PLIB, a `std/list.psm`
+  edit rebuilds one PLIB and no bitcode, and a `src/` edit rebuilds every PLIB.
+  A link that is not byte-reproducible costs hits and nothing else.
+
+  Existence is checked separately from the key: a deleted `.plib` is not a stale
+  one, and its inputs have not moved. `PRISMIO_TOOLCHAIN_CACHE=0` bypasses the
+  lookup and still writes the stamp, so one bypassed build does not cost the
+  next one its hits; `PRISMIO_TOOLCHAIN_CACHE_TRACE=1` prints one
+  `[toolchain reused|rebuilt] <name>` line per artifact, which is what
+  `run_ums_test` asserts against — "the build was faster" is not an observation
+  a test can make on a shared host, and an mtime cannot tell a file that was not
+  rewritten from one rewritten with the same bytes.
+- **The launcher says which toolchain it used.** `Using local toolchain: <path>`
+  when it forwards to `toolchain.host`, `Using global toolchain: <path>` when it
+  cannot and handles the command itself — replacing `compiler host: project-local`
+  / `compiler host: stage-0`, which only ever appeared on the forwarding side. A
+  manifest that declares a host has asked for a specific compiler, and silently
+  substituting the global one when that compiler is missing, unrunnable or too
+  old is how a project ends up built by something it did not choose. A manifest
+  with no `toolchain` block has made no such choice and is told nothing.
+- `std.io` gains `eprint(Int)`. Status lines count things, and the compiler
+  reports how many standard-library modules it rebuilt.
 - The host-routing banner is suppressed when the output is a format. Choosing a
   stream was never the fix: on stdout it broke `aif --manifest`, and on stderr it
   broke `--diagnostic-format=json`, whose JSON Lines go there. It now prints for

@@ -1,5 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::collections::HashMap;
 
 use crate::common::{next_random, BenchTree, BENCH_MOD};
 
@@ -388,4 +389,84 @@ pub fn s_expression_parse(scale: i32) -> i32 {
         }
     }
     checksum as i32
+}
+
+pub fn word_frequency(scale: i32) -> i32 {
+    let sentence = "the quick brown fox jumps over the lazy dog while the fox naps ";
+    let mut text = String::with_capacity(sentence.len() * 400 * scale as usize);
+    for _ in 0..400 * scale { text.push_str(sentence); }
+
+    let words: Vec<&str> = text.split_whitespace().collect();
+
+    let mut counts: HashMap<&str, i32> = HashMap::new();
+    for word in &words {
+        let entry = *counts.get(word).unwrap_or(&0);
+        counts.insert(word, entry + 1);
+    }
+
+    let vocabulary = ["the", "quick", "brown", "fox", "jumps",
+                      "over", "lazy", "dog", "while", "naps"];
+    let mut tally: Vec<i32> = Vec::with_capacity(vocabulary.len());
+    for word in vocabulary.iter() {
+        tally.push(*counts.get(word).unwrap_or(&0));
+    }
+
+    tally.sort_unstable();
+
+    let mut checksum = counts.len() as i32;
+    for t in 0..tally.len() {
+        checksum = (checksum + (t as i32 + 1) * tally[t]) % BENCH_MOD;
+    }
+    checksum
+}
+
+pub fn sort_strings(scale: i32) -> i32 {
+    let n = 20000 * scale;
+    let mut items: Vec<String> = Vec::with_capacity(n as usize);
+    let mut seed = 7;
+    for i in 0..n {
+        seed = next_random(seed);
+        let mut entry = String::with_capacity(16);
+        entry.push_str("key");
+        entry.push_str(&(seed % 65521).to_string());
+        entry.push('-');
+        entry.push_str(&(i % 977).to_string());
+        items.push(entry);
+    }
+
+    items.sort_unstable();
+
+    let mut checksum = 0;
+    for k in 0..n as usize {
+        checksum = (checksum + (k as i32 + 1) * items[k].as_bytes()[3] as i32) % BENCH_MOD;
+    }
+    checksum
+}
+
+pub fn edit_distance(scale: i32) -> i32 {
+    let (a, b) = ("kitten_sitting_flitting_knitting_", "sitting_kitten_blitting_knotting_");
+    let (mut left, mut right) = (String::new(), String::new());
+    for _ in 0..6 * scale { left.push_str(a); right.push_str(b); }
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let (rows, columns) = (left.len() as i32, right.len() as i32);
+    let stride = columns + 1;
+
+    let mut table: Vec<i32> = vec![0; (2 * stride) as usize];
+    for j in 0..=columns { table[j as usize] = j; }
+
+    for i in 1..=rows {
+        let current = (i % 2) * stride;
+        let previous = ((i - 1) % 2) * stride;
+        table[current as usize] = i;
+        let left_char = left[(i - 1) as usize];
+        for c in 1..=columns {
+            let cost = 1 - (left_char == right[(c - 1) as usize]) as i32;
+            let deletion = table[(previous + c) as usize] + 1;
+            let insertion = table[(current + c - 1) as usize] + 1;
+            let substitution = table[(previous + c - 1) as usize] + cost;
+            table[(current + c) as usize] = deletion.min(insertion).min(substitution);
+        }
+    }
+    table[((rows % 2) * stride + columns) as usize]
 }

@@ -46,6 +46,11 @@ commands {
         run("tools/run_suite.py", args)
     }
 
+    // The project host, which `prismio build` leaves as a complete toolchain:
+    // `.prismio/build/lib/runtime/*.bc` and `.prismio/build/stdlib/*.plib` are
+    // built beside it and are byte-identical to what `dist` would package. So
+    // this measures the working tree, including uncommitted `std/` and
+    // `runtime/` changes, with no packaging step in front of it.
     command("bench") {
         description = "Run the cross-language performance benchmark suite"
         run("benchmarks/run.py", "--compiler", ".prismio/build/debug/prismio", args)

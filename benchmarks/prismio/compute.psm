@@ -947,3 +947,89 @@ fn benchChannelPipeline(scale: Int) -> Int {
 
     return checksum as Int
 }
+
+// A stack machine over a decoded instruction stream: the shape of a real
+// interpreter loop, which `switch_dispatch` is not. That benchmark branches on a
+// value; this one carries a stack across iterations, so the dispatch and the
+// data traffic are dependent and the branch predictor sees a trace rather than a
+// distribution.
+//
+// Stack values are reduced modulo 46337 because 46336 squared is the largest
+// product that fits a signed 32-bit int. Prismio's `Int` wraps on overflow and
+// C++'s signed overflow is undefined, so an arm that promoted to 64 bits to stay
+// defined would be a different program -- which is how the first version of this
+// benchmark was caught, by the three checksums disagreeing.
+//
+// Instructions are two parallel Int arrays rather than a payload enum, because
+// the three arms have to be the same program: an enum with payloads, a
+// `std::variant` and a tagged struct have three different representations, and
+// the difference would be measured instead of the interpreter.
+fn benchBytecodeInterpreter(scale: Int) -> Int {
+    let program = 4096
+    let mut ops: List<Int> = list_new_with_capacity(program)
+    let mut args: List<Int> = list_new_with_capacity(program)
+    let mut seed = 11
+    let mut p = 0
+    while (p < program) {
+        seed = benchRandom(seed)
+        list_push(ops, seed % 6)
+        list_push(args, (seed % 251) + 1)
+        p = p + 1
+    }
+
+    let mut stack: List<Int> = list_new_with_capacity(64)
+    let mut s = 0
+    while (s < 64) {
+        list_push(stack, 0)
+        s = s + 1
+    }
+
+    let mut accumulator = 0
+    let mut top = 0
+    let rounds = 900 * scale
+    let mut r = 0
+    while (r < rounds) {
+        let mut pc = 0
+        while (pc < program) {
+            let op = list_get(ops, pc)
+            let argument = list_get(args, pc)
+            if (op == 0) {
+                if (top < 63) {
+                    list_set(stack, top, argument)
+                    top = top + 1
+                }
+            } else if (op == 1) {
+                if (top > 1) {
+                    let b = list_get(stack, top - 1)
+                    let a = list_get(stack, top - 2)
+                    list_set(stack, top - 2, (a + b) % 46337)
+                    top = top - 1
+                }
+            } else if (op == 2) {
+                if (top > 1) {
+                    let b = list_get(stack, top - 1)
+                    let a = list_get(stack, top - 2)
+                    list_set(stack, top - 2, (a * b) % 46337)
+                    top = top - 1
+                }
+            } else if (op == 3) {
+                if (top > 0) {
+                    top = top - 1
+                    accumulator = (accumulator + list_get(stack, top)) % 1000000007
+                }
+            } else if (op == 4) {
+                if (top > 0) {
+                    let value = list_get(stack, top - 1)
+                    list_set(stack, top - 1, (value ^ argument) % 46337)
+                }
+            } else {
+                if (top > 0 and list_get(stack, top - 1) % 2 == 0) {
+                    pc = pc + 1
+                }
+            }
+            pc = pc + 1
+        }
+        r = r + 1
+    }
+    return (accumulator + top) % 1000000007
+}

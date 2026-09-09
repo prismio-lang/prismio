@@ -10,6 +10,36 @@
 #define PRISMIO_THREAD_LOCAL _Thread_local
 #endif
 
+// What a compiler generation emits, against what the runtime it links defines.
+//
+// Removing a runtime symbol codegen used to emit does not fail where it is
+// removed. It fails one generation later, in the *previous* compiler, which is
+// still emitting the call and now links a runtime without the definition -- an
+// undefined-symbol list naming generated functions, with nothing in it pointing
+// at the removal. That is the `list_set_elem_inline` regression: the immutable
+// list-layout constructor landed, the compatibility export went away, and
+// `prismio build` in this repository stopped being able to build its own
+// replacement.
+//
+// So the pairing has a version, and the launcher asks for it before it forwards
+// a command to a project-local compiler (`--internal-host-abi`, checked in
+// compiler_check_host_abi). A compiler that answers with a different token, or
+// is old enough not to know the question, is rebuilt from source before it is
+// used.
+//
+// **Bump this in the same commit that breaks the pairing**, and only then. It is
+// not a build stamp: a bump costs every project a stage-0 rebuild of its host,
+// so an ordinary runtime or codegen edit -- one where each generation still
+// links what the other emits -- leaves it alone.
+//
+//   1  through 0.1.0. Typed lists received their inline element stride after
+//      construction, from `list_set_elem_inline`.
+//   2  the stride is a constructor argument (`list_new_inline`) and the setter
+//      is gone from packaged runtime bitcode. It survives only under
+//      PRISMIO_BOOTSTRAP_COMPAT, in compilers built from repository sources,
+//      which is what lets generation 1 build generation 2.
+#define PRISMIO_HOST_ABI "2"
+
 // The verify allocator seam.
 //
 // See the note at the top of lang_runtime.c: strings are affine, so codegen

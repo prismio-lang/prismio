@@ -379,6 +379,23 @@ which is what fixed the other three fixtures with the same shape (object cache,
 cold build, `--target`); this one needs the outer process not to be the compiler
 at all.
 
+## Toolchain layout
+
+**A compiler is a layout, not a file.** Since the runtime shipped as installed
+bitcode (`lib/runtime/*.bc`) with no toolchain-source fallback, a compiler
+resolves it beside the executable or one directory up, and a miss is a hard
+error naming the module. `std.*` hides the problem for in-repo sources —
+`standardModulePath` walks up from the *entry source*, so a checkout answers it —
+which is why the failure looks selective.
+
+`prismio build` now leaves the rest of the toolchain beside the host it builds
+(`.prismio/build/lib/runtime/*.bc`, `.prismio/build/stdlib/*.plib`), so the
+project host is a complete compiler again and `tools/run_suite.py` copies the
+layout rather than the binary. **A bare `tools/bootstrap.sh` generation in
+`build/` is still not one**: it builds the compiler and nothing else. Point
+`tests/test_runner.py --compiler` at the project host or a packaged `dist`, or
+package the generation first.
+
 ## Platform
 
 **A compiler self-hosted on Windows has no export table.** Incurred by the fix

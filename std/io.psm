@@ -3,6 +3,14 @@
 // source-level formatter, one floating-point value). The public surface is the
 // two exact-type overload sets declared here.
 
+import std.string
+
+// libc
+extern fn write(fd: Int, buffer: String borrow, count: Int) -> Int
+
+let STDOUT = 1
+let STDERR = 2
+
 extern fn prismio_rt_print(text: String borrow)
 extern fn prismio_rt_println(text: String borrow)
 extern fn prismio_rt_eprint(text: String borrow)
@@ -69,7 +77,7 @@ private fn prismioStdIoChar(value: Char) -> String {
 }
 
 fn print(value: String) {
-    prismio_rt_print(value)
+    write(STDOUT, value, value.length)
 }
 
 fn print(value: Int) {
@@ -146,10 +154,17 @@ fn println(value: String) {
 // Status and progress text belongs here rather than on stdout, so that a
 // program whose stdout is a format -- a manifest, JSON diagnostics, a pipe into
 // another tool -- can still say something to the person watching without
-// corrupting it. Only `String` is overloaded: every other `print` overload
-// exists to render a number, and no such caller has appeared for stderr.
+// corrupting it. `Int` joins `String` because a status line counts things: the
+// compiler reports how many standard-library modules it rebuilt beside a
+// project-local toolchain, and that number is status, not output. The remaining
+// width-specific overloads stay on stdout until a caller needs one here.
 fn eprint(value: String) {
     prismio_rt_eprint(value)
+}
+
+fn eprint(value: Int) {
+    let text = prismioStdIoSignedInteger(value as I64)
+    prismio_rt_eprint(text)
 }
 
 fn eprintln(value: String) {

@@ -68,6 +68,11 @@ fn run(name: &str, scale: i32, input: &str, output: &str) -> i32 {
         "switch_dispatch" => adversarial::switch_dispatch(scale),
         "memcpy_mix" => adversarial::memcpy_mix(scale),
         "dead_code_elimination" => adversarial::dead_code_elimination(scale),
+        "word_frequency" => algorithms::word_frequency(scale),
+        "sort_strings" => algorithms::sort_strings(scale),
+        "edit_distance" => algorithms::edit_distance(scale),
+        "string_join" => memory::string_join(scale),
+        "bytecode_interpreter" => compute::bytecode_interpreter(scale),
         _ => -1,
     }
 }

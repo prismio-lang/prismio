@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <queue>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 int gcd_value(int a, int b) {
@@ -376,4 +378,87 @@ int s_expression_parse(int scale) {
         }
     }
     return static_cast<int>(checksum);
+}
+
+int word_frequency(int scale) {
+    std::string text;
+    const std::string sentence = "the quick brown fox jumps over the lazy dog while the fox naps ";
+    text.reserve(sentence.size() * 400 * scale);
+    for (int r = 0; r < 400 * scale; ++r) text += sentence;
+
+    std::vector<std::string> words;
+    for (std::size_t at = 0; at < text.size();) {
+        while (at < text.size() && text[at] == ' ') ++at;
+        const std::size_t start = at;
+        while (at < text.size() && text[at] != ' ') ++at;
+        if (at > start) words.emplace_back(text, start, at - start);
+    }
+
+    std::unordered_map<std::string, int> counts;
+    for (const std::string& word : words) counts[word] = counts[word] + 1;
+
+    const std::vector<std::string> vocabulary = {"the", "quick", "brown", "fox", "jumps",
+                                                 "over", "lazy", "dog", "while", "naps"};
+    std::vector<int> tally;
+    tally.reserve(vocabulary.size());
+    for (const std::string& word : vocabulary) {
+        const auto found = counts.find(word);
+        tally.push_back(found == counts.end() ? 0 : found->second);
+    }
+
+    std::sort(tally.begin(), tally.end());
+
+    int checksum = static_cast<int>(counts.size());
+    for (std::size_t t = 0; t < tally.size(); ++t)
+        checksum = (checksum + static_cast<int>(t + 1) * tally[t]) % BENCH_MOD;
+    return checksum;
+}
+
+int sort_strings(int scale) {
+    const int n = 20000 * scale;
+    std::vector<std::string> items;
+    items.reserve(n);
+    int seed = 7;
+    for (int i = 0; i < n; ++i) {
+        seed = bench_next_random(seed);
+        std::string entry;
+        entry.reserve(16);
+        entry += "key";
+        entry += std::to_string(seed % 65521);
+        entry += "-";
+        entry += std::to_string(i % 977);
+        items.push_back(std::move(entry));
+    }
+
+    std::sort(items.begin(), items.end());
+
+    int checksum = 0;
+    for (int k = 0; k < n; ++k)
+        checksum = (checksum + (k + 1) * static_cast<int>(static_cast<unsigned char>(items[k][3]))) % BENCH_MOD;
+    return checksum;
+}
+
+int edit_distance(int scale) {
+    std::string left, right;
+    const std::string a = "kitten_sitting_flitting_knitting_", b = "sitting_kitten_blitting_knotting_";
+    for (int r = 0; r < 6 * scale; ++r) { left += a; right += b; }
+    const int rows = static_cast<int>(left.size()), columns = static_cast<int>(right.size());
+    const int stride = columns + 1;
+
+    std::vector<int> table(2 * stride, 0);
+    for (int j = 0; j <= columns; ++j) table[j] = j;
+
+    for (int i = 1; i <= rows; ++i) {
+        const int current = (i % 2) * stride, previous = ((i - 1) % 2) * stride;
+        table[current] = i;
+        const char left_char = left[i - 1];
+        for (int c = 1; c <= columns; ++c) {
+            const int cost = 1 - (left_char == right[c - 1]);
+            const int deletion = table[previous + c] + 1;
+            const int insertion = table[current + c - 1] + 1;
+            const int substitution = table[previous + c - 1] + cost;
+            table[current + c] = std::min(std::min(deletion, insertion), substitution);
+        }
+    }
+    return table[(rows % 2) * stride + columns];
 }

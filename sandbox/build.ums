@@ -1,3 +1,7 @@
+toolchain {
+    host = "../.prismio/build/debug/prismio"
+}
+
 project {
     name = "sandbox"
     version = "0.1.0"
@@ -6,6 +10,6 @@ project {
 
 targets {
     executable("sandbox") {
-        entry = "main.psm"
+        entry = "src/main.psm"
     }
 }

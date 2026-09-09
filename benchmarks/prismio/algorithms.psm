@@ -1,6 +1,8 @@
 import common
-import std.string
+import std.list
+import std.map
 import std.math
+import std.string
 
 fn benchGcd(a0: Int, b0: Int) -> Int {
     let mut a = a0
@@ -661,4 +663,120 @@ fn benchSExprParse(scale: Int) -> Int {
         }
     }
     return checksum as Int
+}
+
+// The suite's only multi-phase workload: split, count, look up, sort. Every
+// other benchmark measures one thing, and a whole-program memory model makes
+// decisions -- escape, arena placement, element disposition -- that a
+// single-phase loop cannot force into conflict. The phases share data here,
+// which is the point.
+//
+// The vocabulary is looked up rather than iterated because a hash map's
+// iteration order is a property of its hash function, and the three arms do not
+// share one. Sorting the counts restores a total order the checksum can depend
+// on.
+fn benchWordFrequency(scale: Int) -> Int {
+    let text = "the quick brown fox jumps over the lazy dog while the fox naps ".repeat(400 * scale)
+    let words = text.splitWhitespace()
+    let counts: Map<String, Int> = mapNew<String, Int>()
+
+    let mut i = 0
+    let total = list_len(words)
+    while (i < total) {
+        let word = list_get(words, i)
+        mapSet(counts, word, mapGetOr(counts, word, 0) + 1)
+        i = i + 1
+    }
+
+    let vocabulary = "the quick brown fox jumps over lazy dog while naps".splitWhitespace()
+    let mut tally: List<Int> = list_new_with_capacity(list_len(vocabulary))
+    let mut v = 0
+    while (v < list_len(vocabulary)) {
+        list_push(tally, mapGetOr(counts, list_get(vocabulary, v), 0))
+        v = v + 1
+    }
+
+    sort(tally)
+
+    let mut checksum = mapLen(counts)
+    let mut t = 0
+    while (t < list_len(tally)) {
+        checksum = (checksum + (t + 1) * list_get(tally, t)) % 1000000007
+        t = t + 1
+    }
+    return checksum
+}
+
+// Comparison sort over elements whose compare is a call rather than a
+// subtraction. `quicksort` and `mergesort` sort `Int`, where the comparison
+// vectorises and the element move is a word; here neither is true, and each arm
+// uses the unstable sort its own standard library ships.
+fn benchSortStrings(scale: Int) -> Int {
+    let n = 20000 * scale
+    let mut items: List<String> = list_new_with_capacity(n)
+    let mut seed = 7
+    let mut i = 0
+    while (i < n) {
+        seed = benchRandom(seed)
+        list_push(items, "key".concat((seed % 65521).toString(), "-", (i % 977).toString()))
+        i = i + 1
+    }
+
+    sort(items)
+
+    let mut checksum = 0
+    let mut k = 0
+    while (k < n) {
+        let word = list_get(items, k)
+        checksum = (checksum + (k + 1) * (word.charAt(3) as Int)) % 1000000007
+        k = k + 1
+    }
+    return checksum
+}
+
+// Two-dimensional dynamic programming over two strings, with rolling rows.
+// `knapsack` is one-dimensional over one array; this indexes two different
+// buffers and a third source string per iteration, which is the shape a
+// bounds-check hoist has to survive.
+fn benchEditDistance(scale: Int) -> Int {
+    let left = "kitten_sitting_flitting_knitting_".repeat(6 * scale)
+    let right = "sitting_kitten_blitting_knotting_".repeat(6 * scale)
+    let rows = left.length()
+    let columns = right.length()
+    let stride = columns + 1
+
+    // Two rows in one flat buffer, alternating by offset. A row swap would be a
+    // pointer exchange in C++ and Rust and a copy here, and a per-row copy in
+    // all three would measure `memcpy` -- which `large_buffer_copy` already
+    // does. Toggling an offset is the same program in every arm.
+    let mut table: List<Int> = list_new_with_capacity(2 * stride)
+    let mut fill = 0
+    while (fill < 2 * stride) {
+        list_push(table, 0)
+        fill = fill + 1
+    }
+    let mut j = 0
+    while (j <= columns) {
+        list_set(table, j, j)
+        j = j + 1
+    }
+
+    let mut i = 1
+    while (i <= rows) {
+        let current = (i % 2) * stride
+        let previous = ((i - 1) % 2) * stride
+        list_set(table, current, i)
+        let leftChar = left.charAt(i - 1)
+        let mut c = 1
+        while (c <= columns) {
+            let cost = 1 - ((leftChar == right.charAt(c - 1)) as Int)
+            let deletion = list_get(table, previous + c) + 1
+            let insertion = list_get(table, current + c - 1) + 1
+            let substitution = list_get(table, previous + c - 1) + cost
+            list_set(table, current + c, min(min(deletion, insertion), substitution))
+            c = c + 1
+        }
+        i = i + 1
+    }
+    return list_get(table, (rows % 2) * stride + columns)
 }

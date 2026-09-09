@@ -39,6 +39,9 @@ extern fn compiler_runtime_source_hash() -> String produce(free)
 error someone spends an afternoon on.
 */
 extern fn compiler_set_sysroot(path: String borrow )
+// A `static const char*` in C, so the caller borrows it. See PRISMIO_HOST_ABI in
+// runtime/prismio_runtime.h for what the token means and when it moves.
+extern fn compiler_host_abi() -> String alias
 extern fn executable_directory() -> String produce (free )
 extern fn get_directory(path: String) -> String
 // A `static char buf[32]` the next call overwrites.
@@ -165,6 +168,26 @@ private fn cliVersion() -> Int {
     } else {
         println(get_directory(stdRoot))
     }
+    return 0
+}
+
+// `prismio --internal-host-abi <token>` -- the handshake the launcher runs
+// against a project-local compiler before it forwards a command to it.
+//
+// Hidden, and deliberately not in `printUsage`: it is a protocol between two
+// compilers, and a user has nothing to do with the answer. It prints this
+// compiler's own token so a person debugging a repair loop can still read it,
+// and the exit status is the whole contract -- 0 when the tokens agree.
+//
+// **The interesting case is the compiler that has never heard of this command.**
+// It reaches `P1039 unknown command` and exits 1, which is the answer the
+// launcher needs. Nothing has to be back-ported into a released generation for
+// the handshake to work on it, which is the only reason it can be introduced at
+// all.
+private fn cliHostAbi() -> Int {
+    println(compiler_host_abi())
+    if (cli_arg_count() != 3) { return 1 }
+    if (cli_arg(2).equals(compiler_host_abi()) == false) { return 1 }
     return 0
 }
 
@@ -382,6 +405,14 @@ fn main() -> Int {
     let mut jitMode = false
     let mut debugMode = false
     let mut argIndex = 0
+
+    // Answered before host routing, and that ordering is the point: the question
+    // is what *this* executable emits against, and a forwarded answer would
+    // describe the project host being asked about rather than the compiler
+    // asked. It is also what stops the launcher's own probe from recursing.
+    if (cli_arg_count() >= 2 and cli_arg(1).equals("--internal-host-abi")) {
+        return cliHostAbi()
+    }
 
     let hosted = dispatchToUmsHost()
     if (hosted >= 0) { return hosted }

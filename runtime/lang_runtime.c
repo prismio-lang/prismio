@@ -1941,10 +1941,8 @@ void list_set_elem_releaser(void* lp, void (*fn)(void*)) {
 //     no owned field inside T, so an inline element's death is the block's and
 //     teardown has no per-element work at all.
 //  4. **Every entry point falls back to the boxed path when the list is not
-//     inline.** Codegen decides per element *type* and the runtime stamps
-//     lazily, so the two can only disagree by the list having been boxed first
-//     -- and then the fallback keeps it boxed instead of writing a body where a
-//     pointer belongs.
+//     inline.** Codegen decides per element *type* at construction, so a boxed
+//     list stays boxed instead of ever writing a body where a pointer belongs.
 
 void list_push(void* lp, void* value);
 void list_set(void* lp, int index, void* value);
@@ -2082,12 +2080,10 @@ static void list_release_source(RtList* l, void* e) {
 // is built in the list instead of built somewhere and copied in. Codegen emits
 // the literal's field stores against what this returns.
 //
-// The size is a parameter so an unstamped-but-empty list can stamp itself here:
-// this is the one entry point that has the element type and the list together
-// with nothing pushed yet.
-// Fact 4: still boxed, either because the knob is off or because this list was
-// pushed into through the boxed path first. A body written into a pointer slot
-// would be silent corruption, so allocate one.
+// The size is a defensive representation check. A list constructed boxed --
+// because its element type was unknown or the inline-storage knob was off --
+// stays boxed. A body written into a pointer slot would be silent corruption,
+// so allocate a box for that case.
 //
 // Outlined and exported for the same reason `list_push_grow` and
 // `list_inline_grow` are: `rt_alloc` reaches `rt_arena_hint`, `arena_depth` and

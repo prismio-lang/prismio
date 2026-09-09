@@ -83,6 +83,12 @@ def build_all(args, progress):
     env = os.environ.copy()
     if llvm_bin:
         env["PATH"] = str(llvm_bin) + os.pathsep + env.get("PATH", "")
+    # `--compiler` names the arm being measured, and a compiler whose file is
+    # called `prismio` is a launcher: run from the repository it discovers
+    # `build.ums` and forwards to `toolchain.host`, so the numbers would come
+    # from a different binary than the one named. Nothing in the output would
+    # say so -- the checksums agree, because both compilers are correct.
+    env["PRISMIO_INTERNAL_HOSTED"] = "1"
     cxx = str(llvm_bin / "clang++") if llvm_bin and (llvm_bin / "clang++").exists() else "clang++"
     commands = {
         "prismio": [str(Path(args.compiler).resolve()), "build", str(HERE / "prismio/suite.psm"), "-o", str(BUILD / "prismio-suite")],

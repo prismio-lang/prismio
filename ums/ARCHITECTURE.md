@@ -61,6 +61,19 @@ the full UMS parse and command, so it may extend UMS independently of the older
 global compiler. Without a usable host, global Prismio is stage 0 and processes
 the manifest itself.
 
+"Exists and starts" is not enough, because a host from an earlier toolchain
+generation does both. What it cannot do is build: the code it emits names
+runtime symbols the installed runtime has since stopped defining, and that
+arrives as a linker's undefined-symbol list naming *generated* functions, with
+nothing in it pointing at the compiler that emitted them. So the launcher also
+asks. `prismio --internal-host-abi <token>` is hidden, takes the asking
+compiler's own `PRISMIO_HOST_ABI` (`runtime/prismio_runtime.h`), and exits 0
+only on agreement — a compiler predating the command rejects the argument and
+exits 1, which is the same answer. On disagreement the launcher rebuilds *only*
+the `toolchain.host` target with itself, re-asks, and then forwards the original
+command to the promoted host; `P1064` reports that it did. `clean` is exempt,
+because the launcher deletes that host immediately afterwards.
+
 The launcher remains alive while the executable at `toolchain.host` builds its
 `.next` sibling. It validates and promotes that candidate after the host exits. The
 same split lets `clean` remove a running Windows compiler only after its process

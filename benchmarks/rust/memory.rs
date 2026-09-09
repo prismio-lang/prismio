@@ -57,3 +57,26 @@ fn tree_add(mut tree: Option<Box<BenchTree>>, amount: i32) -> Option<Box<BenchTr
 pub fn recursive_tree_rebuild(scale: i32) -> i32 {
     let mut tree = build_memory_tree(12 + scale/4, 1); for _ in 0..4*scale { tree = tree_add(tree, 1); } memory_tree_sum(tree.as_deref())
 }
+
+pub fn string_join(scale: i32) -> i32 {
+    let n = 60000 * scale;
+    let mut parts: Vec<String> = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let mut piece = String::with_capacity(16);
+        piece.push_str("field");
+        piece.push_str(&(i % 9973).to_string());
+        parts.push(piece);
+    }
+
+    let joined = parts.join(",");
+    let length = joined.len() as i32;
+    let bytes = joined.as_bytes();
+
+    let mut checksum = length % BENCH_MOD;
+    let mut at = 0;
+    while at < length {
+        checksum = (checksum + bytes[at as usize] as i32) % BENCH_MOD;
+        at += 997;
+    }
+    checksum
+}

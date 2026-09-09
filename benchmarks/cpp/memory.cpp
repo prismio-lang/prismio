@@ -1,5 +1,6 @@
 #include "benchmarks.hpp"
 
+#include <string>
 #include <vector>
 
 namespace {
@@ -76,4 +77,34 @@ int recursive_tree_rebuild(int scale) {
     auto tree = build_memory_tree(12 + scale / 4, 1);
     for (int pass = 0; pass < 4 * scale; ++pass) tree = tree_add(std::move(tree), 1);
     return memory_tree_sum(tree.get());
+}
+
+int string_join(int scale) {
+    const int n = 60000 * scale;
+    std::vector<std::string> parts;
+    parts.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        std::string piece;
+        piece.reserve(16);
+        piece += "field";
+        piece += std::to_string(i % 9973);
+        parts.push_back(std::move(piece));
+    }
+
+    // What Rust's `Vec<String>::join` and Prismio's `join` do internally, and
+    // what C++ has no standard call for: size the result, then copy once.
+    std::size_t total = parts.empty() ? 0 : parts.size() - 1;
+    for (const std::string& piece : parts) total += piece.size();
+    std::string joined;
+    joined.reserve(total);
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) joined += ',';
+        joined += parts[i];
+    }
+    const int length = static_cast<int>(joined.size());
+
+    int checksum = length % BENCH_MOD;
+    for (int at = 0; at < length; at += 997)
+        checksum = (checksum + static_cast<int>(static_cast<unsigned char>(joined[at]))) % BENCH_MOD;
+    return checksum;
 }

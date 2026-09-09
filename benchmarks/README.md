@@ -37,11 +37,46 @@ statement by statement**, and treat a difference in control flow -- a branch
 where another arm has a select, a call where another has an inlined operation --
 as a defect in the benchmark until measured otherwise.
 
+**A second near-miss, caught by the checksums rather than by review.**
+`bytecode_interpreter`'s multiply overflows a signed 32-bit int. Prismio's `Int`
+wraps; C++'s signed overflow is undefined, so the C++ arm was first written to
+promote to `int64_t` to stay defined. Same intent, different program — and the
+three checksums disagreed immediately. The fix was not to make one arm match the
+other but to remove the overflow from all three: stack values are reduced modulo
+**46337**, because 46336 squared is the largest product that fits. Prefer a
+value range where the three languages cannot disagree over a cast that hides the
+disagreement.
+
 A known and accepted difference remains in `mergesort`: C++ writes the merge
 step as a ternary with side effects in both arms, Prismio as an `if`/`else` with
 a store in each. Neither vectorises, so it is a spelling difference rather than
 an algorithmic one -- recorded here so the next reader does not have to
 re-derive that.
+
+## What each benchmark is for
+
+Most entries are microbenchmarks isolating one behaviour. Five deliberately are
+not, and they were added because the suite had no coverage of these shapes:
+
+| Benchmark | What it exercises that nothing else did |
+| --- | --- |
+| `word_frequency` | The only **multi-phase** workload: split, hash-map count, lookup, sort, with data shared across phases. A whole-program memory model makes escape and placement decisions that a single-phase loop cannot force into conflict. |
+| `sort_strings` | Comparison sort where the compare is a **call** and the element is not a word. `quicksort`/`mergesort` sort `Int`, where the comparison vectorises. |
+| `edit_distance` | **Two-dimensional** DP indexing two buffers and a source string per iteration. `knapsack` is one-dimensional over one array. |
+| `string_join` | Owned-string **construction**. `tokenization`, `string_search` and `csv_parse` all read strings; none builds one. |
+| `bytecode_interpreter` | Dispatch with a **carried stack**, so the branch sees a trace rather than a distribution. `switch_dispatch` branches on a value and carries nothing. |
+
+Three of the five landed in the suite's slowest-for-Prismio group on their first
+run, which is the point: a benchmark that only confirms what the existing ones
+already say has not earned its place.
+
+Two of them make a deliberate library-facility choice rather than hand-rolling.
+`word_frequency` uses each language's standard hash map, and `sort_strings` each
+language's standard unstable sort — `std::sort`, `sort_unstable`, and `sort`.
+Comparing those *is* the comparison, the same way `linked_list` is unsupported
+rather than hand-built. Where a language has no such facility the arm writes the
+loop the library would: C++ has no `join`, so `string_join`'s C++ arm sizes the
+result and copies once, which is what the other two do internally.
 
 ## Run
 
@@ -96,20 +131,20 @@ public `String.equals(...)` API.
 
 ## Coverage
 
-The catalog contains 73 distinct workloads across six categories. Fifty-seven
+The catalog contains 78 distinct workloads across six categories. Sixty-two
 are implemented in all three languages. Sixteen remain
 in the catalog as unsupported Prismio capabilities; their exact records are in
 [`UNSUPPORTED.md`](UNSUPPORTED.md).
 
 | Category | Implemented | Unsupported | Total |
 |---|---:|---:|---:|
-| Algorithms | 13 | 1 | 14 |
+| Algorithms | 16 | 1 | 17 |
 | Data structures | 6 | 5 | 11 |
-| Compute | 14 | 4 | 18 |
-| Memory | 6 | 1 | 7 |
+| Compute | 15 | 4 | 19 |
+| Memory | 7 | 1 | 8 |
 | I/O and serialization | 6 | 5 | 11 |
 | Adversarial | 12 | 0 | 12 |
-| **Total** | **57** | **16** | **73** |
+| **Total** | **62** | **16** | **78** |
 
 Every benchmark has one canonical workload definition so results stay directly
 comparable between runs. `--runs` controls sampling without changing the work
@@ -118,23 +153,24 @@ status, and workload profile.
 
 ### Catalog by category
 
-- Algorithms (13 implemented, 1 unsupported): `fibonacci`, `prime_sieve`, `gcd_lcm`,
+- Algorithms (16 implemented, 1 unsupported): `fibonacci`, `prime_sieve`, `gcd_lcm`,
   `binary_search`, `quicksort`, `mergesort`, `string_search`, `graph_bfs`,
   `knapsack`, `tree_traversal`, `dijkstra_shortest_path`, `lz4_compress`,
-  `s_expression_parse`; unsupported: `regex_matching`.
+  `s_expression_parse`, `word_frequency`, `sort_strings`, `edit_distance`;
+  unsupported: `regex_matching`.
 - Data structures (6 implemented, 5 unsupported):
   `hashmap_insert_lookup`, `vector_growth`, `vector_iteration`,
   `key_value_update`, `flat_bitset`, `trie_search`; unsupported: `linked_list`,
   `binary_search_tree`, `priority_queue`, `mixed_map_removal`, `lock_free_queue`.
-- Compute (14 implemented, 4 unsupported): `matrix_multiply`, `mandelbrot`, `fft`,
+- Compute (15 implemented, 4 unsupported): `matrix_multiply`, `mandelbrot`, `fft`,
   `numerical_integration`, `vector_dot`, `convolution`, `monte_carlo`,
   `polynomial_evaluation`, `ecs_component_update`, `parallel_reduction`,
-  `sha256`, `blake3_chunk`, `raytracer_sphere`, `channel_pipeline`;
-  unsupported: `async_event_loop`, `mutex_contention`, `work_stealing_pool`,
+  `sha256`, `blake3_chunk`, `raytracer_sphere`, `channel_pipeline`,
+  `bytecode_interpreter`; unsupported: `async_event_loop`, `mutex_contention`, `work_stealing_pool`,
   `simd_vector_ops`.
-- Memory (6 implemented, 1 unsupported): `transient_allocation`, `struct_creation`,
+- Memory (7 implemented, 1 unsupported): `transient_allocation`, `struct_creation`,
   `allocation_mutation`, `nested_collection`, `large_buffer_copy`,
-  `recursive_tree_rebuild`; unsupported: `custom_allocator_churn`.
+  `recursive_tree_rebuild`, `string_join`; unsupported: `custom_allocator_churn`.
 - I/O and serialization (6 implemented, 5 unsupported): `file_read`,
   `file_write`, `line_processing`, `tokenization`, `base64_codec`, `csv_parse`;
   unsupported: `json_parse`, `json_serialize`, `tcp_echo_server`, `mmap_file_io`,

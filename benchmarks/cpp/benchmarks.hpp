@@ -54,6 +54,12 @@ int tokenization(int scale);
 int base64_codec(int scale);
 int csv_parse(int scale);
 
+int word_frequency(int scale);
+int sort_strings(int scale);
+int edit_distance(int scale);
+int string_join(int scale);
+int bytecode_interpreter(int scale);
+
 int dijkstra_shortest_path(int scale);
 int lz4_compress(int scale);
 int s_expression_parse(int scale);

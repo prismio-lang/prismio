@@ -359,3 +359,52 @@ pub fn channel_pipeline(scale: i32) -> i32 {
 
     checksum as i32
 }
+
+pub fn bytecode_interpreter(scale: i32) -> i32 {
+    let program = 4096;
+    let mut ops: Vec<i32> = Vec::with_capacity(program);
+    let mut args: Vec<i32> = Vec::with_capacity(program);
+    let mut seed = 11;
+    for _ in 0..program {
+        seed = next_random(seed);
+        ops.push(seed % 6);
+        args.push((seed % 251) + 1);
+    }
+
+    let mut stack: Vec<i32> = vec![0; 64];
+    let mut accumulator = 0;
+    let mut top: i32 = 0;
+    let rounds = 900 * scale;
+    for _ in 0..rounds {
+        let mut pc = 0;
+        while pc < program as i32 {
+            let op = ops[pc as usize];
+            let argument = args[pc as usize];
+            if op == 0 {
+                if top < 63 { stack[top as usize] = argument; top += 1; }
+            } else if op == 1 {
+                if top > 1 {
+                    let b = stack[(top - 1) as usize];
+                    let a = stack[(top - 2) as usize];
+                    stack[(top - 2) as usize] = (a + b) % 46337;
+                    top -= 1;
+                }
+            } else if op == 2 {
+                if top > 1 {
+                    let b = stack[(top - 1) as usize];
+                    let a = stack[(top - 2) as usize];
+                    stack[(top - 2) as usize] = (a * b) % 46337;
+                    top -= 1;
+                }
+            } else if op == 3 {
+                if top > 0 { top -= 1; accumulator = (accumulator + stack[top as usize]) % BENCH_MOD; }
+            } else if op == 4 {
+                if top > 0 { stack[(top - 1) as usize] = (stack[(top - 1) as usize] ^ argument) % 46337; }
+            } else if top > 0 && stack[(top - 1) as usize] % 2 == 0 {
+                pc += 1;
+            }
+            pc += 1;
+        }
+    }
+    (accumulator + top) % BENCH_MOD
+}

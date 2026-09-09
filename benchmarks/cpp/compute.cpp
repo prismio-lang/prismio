@@ -1,6 +1,7 @@
 #include "benchmarks.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <condition_variable>
 #include <mutex>
 #include <optional>
@@ -435,4 +436,48 @@ int channel_pipeline(int scale) {
     w2.join();
 
     return static_cast<int>(checksum);
+}
+
+int bytecode_interpreter(int scale) {
+    const int program = 4096;
+    std::vector<int> ops, args;
+    ops.reserve(program);
+    args.reserve(program);
+    int seed = 11;
+    for (int p = 0; p < program; ++p) {
+        seed = bench_next_random(seed);
+        ops.push_back(seed % 6);
+        args.push_back((seed % 251) + 1);
+    }
+
+    std::vector<int> stack(64, 0);
+    int accumulator = 0, top = 0;
+    const int rounds = 900 * scale;
+    for (int r = 0; r < rounds; ++r) {
+        for (int pc = 0; pc < program; ++pc) {
+            const int op = ops[pc], argument = args[pc];
+            if (op == 0) {
+                if (top < 63) { stack[top] = argument; top = top + 1; }
+            } else if (op == 1) {
+                if (top > 1) {
+                    const int b = stack[top - 1], a = stack[top - 2];
+                    stack[top - 2] = (a + b) % 46337;
+                    top = top - 1;
+                }
+            } else if (op == 2) {
+                if (top > 1) {
+                    const int b = stack[top - 1], a = stack[top - 2];
+                    stack[top - 2] = (a * b) % 46337;
+                    top = top - 1;
+                }
+            } else if (op == 3) {
+                if (top > 0) { top = top - 1; accumulator = (accumulator + stack[top]) % BENCH_MOD; }
+            } else if (op == 4) {
+                if (top > 0) { stack[top - 1] = (stack[top - 1] ^ argument) % 46337; }
+            } else {
+                if (top > 0 && stack[top - 1] % 2 == 0) pc = pc + 1;
+            }
+        }
+    }
+    return (accumulator + top) % BENCH_MOD;
 }

@@ -61,6 +61,11 @@ int run(const std::string& name, int scale, const std::string& input, const std:
     if (name == "switch_dispatch") return switch_dispatch(scale);
     if (name == "memcpy_mix") return memcpy_mix(scale);
     if (name == "dead_code_elimination") return dead_code_elimination(scale);
+    if (name == "word_frequency") return word_frequency(scale);
+    if (name == "sort_strings") return sort_strings(scale);
+    if (name == "edit_distance") return edit_distance(scale);
+    if (name == "string_join") return string_join(scale);
+    if (name == "bytecode_interpreter") return bytecode_interpreter(scale);
     return -1;
 }
 

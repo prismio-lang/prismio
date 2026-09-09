@@ -857,37 +857,306 @@ def run_ums_test():
     with tempfile.TemporaryDirectory(prefix="prismio-launcher-") as launcher_dir:
         launcher = Path(launcher_dir) / ("prismio.exe" if os.name == "nt" else "prismio")
         shutil.copy2(PRISMIO_EXE, launcher)
+        launcher_env = os.environ.copy()
+        launcher_env.pop("PRISMIO_INTERNAL_HOSTED", None)
 
         with preserved_project_host() as (compiler_artifact, compiler_candidate):
 
             project_build = subprocess.run(
                 [str(launcher), "build"], capture_output=True, text=True,
-                cwd=str(PROJECT_ROOT / "ums"),
+                cwd=str(PROJECT_ROOT / "ums"), env=launcher_env,
             )
             if (project_build.returncode != 0 or not compiler_artifact.exists()
-                    or "compiler host: stage-0" not in project_build.stderr):
+                    or "Using global toolchain" not in project_build.stderr):
                 print(f"{RED}[FAIL] ums: stage 0 did not build the first project host{RESET}")
                 print(project_build.stdout or project_build.stderr)
                 return False
 
             local_build = subprocess.run(
                 [str(launcher), "build"], capture_output=True, text=True,
-                cwd=str(PROJECT_ROOT / "ums"),
+                cwd=str(PROJECT_ROOT / "ums"), env=launcher_env,
             )
             if (local_build.returncode != 0
-                    or "compiler host: project-local" not in local_build.stderr
+                    or "Using local toolchain" not in local_build.stderr
                     or "staged project compiler:" not in local_build.stdout
                     or "promoted project compiler:" not in local_build.stdout):
                 print(f"{RED}[FAIL] ums: the complete build command was not hosted{RESET}")
                 print(local_build.stdout or local_build.stderr)
                 return False
 
+            # A host alone in a build directory can build itself and nothing
+            # else: the runtime is installed bitcode with no source fallback, and
+            # `lib/runtime` is looked for beside the executable. So the host
+            # build produces the rest of the toolchain, and `.prismio/build` is a
+            # prefix with the profile directory as its `bin`.
+            build_root = PROJECT_ROOT / ".prismio" / "build"
+            local_runtime = build_root / "lib" / "runtime"
+            local_stdlib = build_root / "stdlib"
+            expected_runtime = {"lang_runtime.bc", "lang_runtime.verify.bc",
+                                "program_support.bc", "program_support.verify.bc"}
+            present = {p.name for p in local_runtime.glob("*.bc")}
+            std_sources = {p.stem for p in (PROJECT_ROOT / "std").glob("*.psm")}
+            local_plibs = {p.stem for p in local_stdlib.glob("*.plib")}
+            if (not expected_runtime <= present
+                    or not (build_root / "lib" / "runtime.hash").is_file()
+                    or local_plibs != std_sources):
+                print(f"{RED}[FAIL] ums: the host build did not produce a usable "
+                      f"toolchain beside it{RESET}")
+                print(f"runtime {sorted(present)}\n"
+                      f"stdlib missing {sorted(std_sources - local_plibs)}, "
+                      f"extra {sorted(local_plibs - std_sources)}")
+                return False
+
+            # **The second build must not build any of that again.** Emission
+            # is four clang invocations and, per standard library module, two
+            # compiler runs and two more clang runs -- 1.5s of an 8s self-build
+            # on the machine this was measured on, spent reproducing files that
+            # are already on disk byte for byte.
+            #
+            # Asserted against `PRISMIO_TOOLCHAIN_CACHE_TRACE` rather than
+            # against mtimes or a stopwatch, for the reason the object cache
+            # states: "the build was faster" is not an observation a test can
+            # make reliably on a shared host, and an mtime comparison cannot tell
+            # a file that was not rewritten from one that was rewritten with the
+            # same bytes.
+            #
+            # Three assertions, and the third is the one that matters. Reuse is
+            # cheap to get right and easy to get *wrong in the safe direction*
+            # -- a cache that never hits still builds correctly -- so the test
+            # that a hit is real is the test that a deleted artifact comes back.
+            cache_env = dict(launcher_env, PRISMIO_TOOLCHAIN_CACHE_TRACE="1")
+
+            def toolchain_trace(env):
+                run = subprocess.run(
+                    [str(launcher), "build"], capture_output=True, text=True,
+                    cwd=str(PROJECT_ROOT / "ums"), env=env,
+                )
+                reused, rebuilt = set(), set()
+                for line in run.stderr.splitlines():
+                    if line.startswith("[toolchain reused] "):
+                        reused.add(line[len("[toolchain reused] "):])
+                    elif line.startswith("[toolchain rebuilt] "):
+                        rebuilt.add(line[len("[toolchain rebuilt] "):])
+                return run, reused, rebuilt
+
+            expected_entries = {"runtime"} | {f"std.{name}" for name in std_sources}
+
+            cached_run, reused, rebuilt = toolchain_trace(cache_env)
+            if cached_run.returncode != 0 or reused != expected_entries or rebuilt:
+                print(f"{RED}[FAIL] ums: an unchanged rebuild did not reuse the "
+                      f"local toolchain{RESET}")
+                print(f"reused {sorted(reused)}\nrebuilt {sorted(rebuilt)}")
+                return False
+
+            # PRISMIO_TOOLCHAIN_CACHE=0 must not consult the stamp -- and must
+            # still write one, so that a single bypassed build does not cost the
+            # next one its hits too.
+            off_run, off_reused, off_rebuilt = toolchain_trace(
+                dict(cache_env, PRISMIO_TOOLCHAIN_CACHE="0"))
+            if off_run.returncode != 0 or off_rebuilt != expected_entries or off_reused:
+                print(f"{RED}[FAIL] ums: PRISMIO_TOOLCHAIN_CACHE=0 did not "
+                      f"rebuild the whole local toolchain{RESET}")
+                print(f"reused {sorted(off_reused)}\nrebuilt {sorted(off_rebuilt)}")
+                return False
+
+            # A missing artifact is not a stale one, and the key cannot see it:
+            # the inputs are unchanged, so only the existence check stands
+            # between a hit and a toolchain with a hole in it.
+            missing_plib = local_stdlib / "option.plib"
+            missing_bc = local_runtime / "program_support.verify.bc"
+            missing_plib.unlink()
+            missing_bc.unlink()
+            _, _, repaired = toolchain_trace(cache_env)
+            if (repaired != {"runtime", "std.option"}
+                    or not missing_plib.is_file() or not missing_bc.is_file()):
+                print(f"{RED}[FAIL] ums: a deleted toolchain artifact was served "
+                      f"from the stamp instead of rebuilt{RESET}")
+                print(f"rebuilt {sorted(repaired)}")
+                return False
+
+            # **Two producers, one format.** `tools/package.py` builds these for
+            # a release and `compiler_emit_local_toolchain` builds them here, so
+            # a flag or a header field can drift in one and not the other and
+            # nothing would say so -- the local toolchain would simply behave
+            # unlike the shipped one. Rather than restate the recipe a third time
+            # in this test, run the packaging code itself over the same compiler
+            # and compare bytes. One runtime module and one small standard
+            # library module is enough: the loops are shared, the recipes are not.
+            sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+            try:
+                import package as packaging
+            finally:
+                sys.path.pop(0)
+            with tempfile.TemporaryDirectory(prefix="prismio-drift-") as drift_dir:
+                drift = Path(drift_dir)
+                (drift / "runtime").mkdir()
+                (drift / "stdlib").mkdir()
+                (drift / "work").mkdir()
+                pkg_clang = packaging.llvm_clang()
+                packaging.build_runtime_bitcode(
+                    pkg_clang, "lang_runtime.c", drift / "runtime", False)
+                packaging.build_plib(pkg_clang, compiler_artifact,
+                                     PROJECT_ROOT / "std" / "option.psm",
+                                     drift / "stdlib", drift / "work")
+                drifted = [
+                    name for name, produced, packaged in (
+                        ("lib/runtime/lang_runtime.bc",
+                         local_runtime / "lang_runtime.bc",
+                         drift / "runtime" / "lang_runtime.bc"),
+                        ("stdlib/option.plib",
+                         local_stdlib / "option.plib",
+                         drift / "stdlib" / "option.plib"),
+                    )
+                    if produced.read_bytes() != packaged.read_bytes()
+                ]
+            if drifted:
+                print(f"{RED}[FAIL] ums: the project-local toolchain and "
+                      f"tools/package.py disagree on {', '.join(drifted)}{RESET}")
+                return False
+
+            # The behaviour all of that is for: a program *outside* the checkout,
+            # built by the project host. Outside, because `std.*` resolves from
+            # source by walking up from the entry file, so a fixture inside the
+            # repository would pass without a single PLIB being read.
+            with tempfile.TemporaryDirectory(prefix="prismio-outside-") as outside_dir:
+                outside = Path(outside_dir) / "outside.psm"
+                outside.write_text(
+                    "import std.io\n"
+                    "import std.string\n\n"
+                    "fn main() -> Int {\n"
+                    '    let greeting = "local".concat("-toolchain")\n'
+                    "    println(greeting)\n"
+                    "    return 0\n"
+                    "}\n",
+                    encoding="utf-8")
+                outside_exe = Path(outside_dir) / ("outside.exe" if os.name == "nt" else "outside")
+                outside_build = subprocess.run(
+                    [str(compiler_artifact), "build", str(outside),
+                     "-o", str(outside_exe)],
+                    capture_output=True, text=True, cwd=outside_dir, env=launcher_env)
+                outside_run = (subprocess.run([str(outside_exe)], capture_output=True,
+                                              text=True)
+                               if outside_exe.is_file() else None)
+                if (outside_build.returncode != 0 or outside_run is None
+                        or outside_run.stdout.strip() != "local-toolchain"):
+                    print(f"{RED}[FAIL] ums: the project host cannot build a "
+                          f"program outside the checkout{RESET}")
+                    print(outside_build.stdout + outside_build.stderr)
+                    return False
+
+            # The generation handshake, on its own, before the routing built on
+            # it. It exists because the one failure the launcher cannot see by
+            # starting a host is a host from an earlier generation: it runs, it
+            # answers `--version`, and the code it emits names runtime symbols
+            # the installed runtime no longer defines. `list_set_elem_inline` was
+            # exactly that, and the linker reported it as undefined references
+            # from *generated* functions -- nothing in that output named the
+            # compiler that emitted them.
+            abi = subprocess.run(
+                [str(launcher), "--internal-host-abi"], capture_output=True,
+                text=True, cwd=str(PROJECT_ROOT), env=launcher_env,
+            )
+            token = abi.stdout.strip()
+            agrees = subprocess.run(
+                [str(launcher), "--internal-host-abi", token], capture_output=True,
+                text=True, cwd=str(PROJECT_ROOT), env=launcher_env,
+            )
+            disagrees = subprocess.run(
+                [str(launcher), "--internal-host-abi", token + "-other"],
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+                env=launcher_env,
+            )
+            # Asked in a project with a host, and answered by the binary asked.
+            # A forwarded answer would describe the host rather than the compiler
+            # holding the question, and the launcher's own probe would recurse.
+            if (not token or agrees.returncode != 0 or disagrees.returncode == 0
+                    or "Using local toolchain" in abi.stderr):
+                print(f"{RED}[FAIL] ums: the host-generation handshake does not "
+                      f"answer for the compiler asked{RESET}")
+                print(abi.stdout + abi.stderr + agrees.stderr + disagrees.stderr)
+                return False
+
+            # A stand-in for that older generation, rather than a kept copy of
+            # one: what is under test is the handshake, not any particular
+            # release. It starts, it answers `--version`, and it rejects
+            # `--internal-host-abi` the way a compiler that predates the command
+            # rejects an unknown argument. C rather than a shell script because
+            # the launcher spawns a host as an executable image, which on Windows
+            # a `.cmd` is not.
+            clang_path = shutil.which("clang")
+            if not clang_path:
+                print(f"{RED}[FAIL] ums: clang is required to build the stale-host "
+                      f"stand-in{RESET}")
+                return False
+            stale_source = Path(launcher_dir) / "stale_host.c"
+            stale_source.write_text(
+                "#include <string.h>\n"
+                "int main(int argc, char** argv) {\n"
+                "    for (int i = 1; i < argc; i++) {\n"
+                '        if (strcmp(argv[i], "--internal-host-abi") == 0) return 1;\n'
+                "    }\n"
+                "    return 0;\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            stale_host = Path(launcher_dir) / ("stale.exe" if os.name == "nt" else "stale")
+            stale_built = subprocess.run(
+                [clang_path, str(stale_source), "-o", str(stale_host)],
+                capture_output=True, text=True)
+            if stale_built.returncode != 0:
+                print(f"{RED}[FAIL] ums: could not build the stale-host stand-in{RESET}")
+                print(stale_built.stdout or stale_built.stderr)
+                return False
+
+            # `clean` is the one command exempt from the repair. It removes this
+            # project's artifacts and then the launcher removes the host itself,
+            # so rebuilding the binary about to be deleted is work thrown away.
+            shutil.copy2(stale_host, compiler_artifact)
+            stale_clean = subprocess.run(
+                [str(launcher), "clean"], capture_output=True, text=True,
+                cwd=str(PROJECT_ROOT / "ums"), env=launcher_env,
+            )
+            stale_clean_output = stale_clean.stdout + stale_clean.stderr
+            if (stale_clean.returncode != 0 or "P1064" in stale_clean_output
+                    or compiler_artifact.exists()):
+                print(f"{RED}[FAIL] ums: `clean` rebuilt the host it was about to "
+                      f"delete{RESET}")
+                print(stale_clean_output)
+                return False
+
+            # Every other command repairs first, then runs. `--version` is
+            # forwarded here because the assertion is about the rebuild in front
+            # of it: the repair is stage 0 building and promoting a new host, and
+            # the command that follows must reach *that* binary.
+            shutil.copy2(stale_host, compiler_artifact)
+            repaired = subprocess.run(
+                [str(launcher), "--version"], capture_output=True, text=True,
+                cwd=str(PROJECT_ROOT), env=launcher_env,
+            )
+            repaired_output = repaired.stdout + repaired.stderr
+            if (repaired.returncode != 0 or "P1064" not in repaired_output
+                    or "Using global toolchain" not in repaired_output
+                    or "promoted project compiler:" not in repaired.stdout
+                    or "Using local toolchain" not in repaired.stderr
+                    or "prismio 0.1.0" not in repaired.stdout):
+                print(f"{RED}[FAIL] ums: a stale project host was not rebuilt "
+                      f"before the command it could not have served{RESET}")
+                print(repaired_output)
+                return False
+
             forwarded_version = subprocess.run(
                 [str(launcher), "--version"], capture_output=True, text=True,
-                cwd=str(PROJECT_ROOT),
+                cwd=str(PROJECT_ROOT), env=launcher_env,
             )
+            # The repair is not a per-command tax: the host it promoted answers
+            # the handshake, so this second command forwards with no rebuild.
+            if "P1064" in forwarded_version.stdout + forwarded_version.stderr:
+                print(f"{RED}[FAIL] ums: a repaired host was rebuilt again by the "
+                      f"next command{RESET}")
+                print(forwarded_version.stdout + forwarded_version.stderr)
+                return False
             if (forwarded_version.returncode != 0
-                    or "compiler host: project-local" not in forwarded_version.stderr
+                    or "Using local toolchain" not in forwarded_version.stderr
                     or "prismio 0.1.0" not in forwarded_version.stdout):
                 print(f"{RED}[FAIL] ums: a non-build command was not forwarded to the host{RESET}")
                 print(forwarded_version.stdout or forwarded_version.stderr)
@@ -897,7 +1166,7 @@ def run_ums_test():
             # sibling candidate, so it must fail rather than overwrite itself.
             self_build = subprocess.run(
                 [str(compiler_artifact), "build"], capture_output=True, text=True,
-                cwd=str(PROJECT_ROOT),
+                cwd=str(PROJECT_ROOT), env=launcher_env,
             )
             if self_build.returncode == 0 or "P1051" not in (self_build.stdout + self_build.stderr):
                 print(f"{RED}[FAIL] ums: a project compiler tried to replace itself{RESET}")
@@ -910,21 +1179,21 @@ def run_ums_test():
             compiler_artifact.write_bytes(b"not a Prismio compiler\n")
             fallback_build = subprocess.run(
                 [str(launcher), "build"], capture_output=True, text=True,
-                cwd=str(PROJECT_ROOT),
+                cwd=str(PROJECT_ROOT), env=launcher_env,
             )
             fallback_output = fallback_build.stdout + fallback_build.stderr
             if (fallback_build.returncode != 0 or "P1052" not in fallback_output
-                    or "compiler host: stage-0" not in fallback_output):
+                    or "Using global toolchain" not in fallback_output):
                 print(f"{RED}[FAIL] ums: a broken project compiler did not fall back to stage 0{RESET}")
                 print(fallback_output)
                 return False
 
             clean = subprocess.run(
                 [str(launcher), "clean"], capture_output=True, text=True,
-                cwd=str(PROJECT_ROOT / "ums"),
+                cwd=str(PROJECT_ROOT / "ums"), env=launcher_env,
             )
             if (clean.returncode != 0 or compiler_artifact.exists()
-                    or "compiler host: project-local" not in clean.stderr):
+                    or "Using local toolchain" not in clean.stderr):
                 print(f"{RED}[FAIL] ums: hosted clean did not remove the compiler after it exited{RESET}")
                 print(clean.stdout or clean.stderr)
                 return False
@@ -2421,6 +2690,35 @@ def run_bootstrap_command_test():
                     f"the compiler `prismio bootstrap` built cannot `run --jit` "
                     f"(exit {j.returncode}): "
                     + elide_middle((j.stdout or "") + (j.stderr or "")))
+
+            # One-generation ABI bridge. The compiler being replaced may have
+            # emitted the old post-construction list-layout setter. Bootstrap
+            # links repository runtime sources, so that source build must carry
+            # PRISMIO_BOOTSTRAP_COMPAT even though packaged runtime bitcode must
+            # not expose the setter. Without this, `prismio build` cannot repair
+            # exactly the stale project host it exists to replace.
+            legacy_source = Path(wd) / "legacy_layout_compiler.psm"
+            legacy_source.write_text(
+                "extern fn ptr_null() -> Ptr\n"
+                "extern fn list_set_elem_inline(list: Ptr, elemSize: Int)\n\n"
+                "fn main() -> Int {\n"
+                "    list_set_elem_inline(ptr_null(), 4)\n"
+                "    return 0\n"
+                "}\n")
+            legacy_exe = Path(wd) / "legacy-layout-bridge"
+            legacy = subprocess.run(
+                [str(built), "bootstrap", str(legacy_source),
+                 "-o", str(legacy_exe)], capture_output=True, text=True,
+                cwd=str(PROJECT_ROOT))
+            legacy_run = (subprocess.run([str(legacy_exe)], capture_output=True,
+                                         text=True)
+                          if legacy_exe.is_file() else None)
+            if (legacy.returncode != 0 or legacy_run is None
+                    or legacy_run.returncode != 0):
+                problems.append(
+                    "bootstrap cannot link the previous generation's "
+                    "list-layout ABI, so a stale project host cannot self-repair: "
+                    + elide_middle((legacy.stdout or "") + (legacy.stderr or "")))
 
             if sys.platform == "darwin":
                 if not Path(str(built) + ".dSYM").is_dir():
@@ -4065,28 +4363,32 @@ def run_target_test():
     elif "unknown target triple" not in (bad.stdout or "") + (bad.stderr or ""):
         problems.append("an unresolvable triple was rejected for the wrong reason")
 
-    # 6. Two targets must not share one cached object.
+    # 6. Runtime bitcode is target-specific. An installed host package must not
+    # silently use its host modules for a different target; absent modules are
+    # an installation error naming every required artifact.
     with tempfile.TemporaryDirectory() as cache:
         env = dict(os.environ, PRISMIO_OBJ_CACHE_DIR=cache,
                    PRISMIO_OBJ_CACHE_TRACE="1")
         exe = TEST_DIR / ("target_cache" + (".exe" if os.name == "nt" else ""))
-        seen = []
-        for extra in ([], ["--target", "wasm32-unknown-unknown"]):
-            r = subprocess.run([str(PRISMIO_EXE), "build", str(source),
-                                "-o", str(exe)] + extra,
-                               capture_output=True, text=True, env=env)
-            seen.append(r.stderr or "")
+        host = subprocess.run([str(PRISMIO_EXE), "build", str(source),
+                              "-o", str(exe)], capture_output=True, text=True,
+                              env=env)
+        cross = subprocess.run(
+            [str(PRISMIO_EXE), "build", str(source), "-o", str(exe),
+             "--target", "wasm32-unknown-unknown"],
+            capture_output=True, text=True, env=env)
         cleanup_files(exe)
-        # The host build populates the cache; the cross build must miss it. A hit
-        # there means one object is being served to two targets, which links and
-        # then misbehaves.
-        if "[objcache miss] lang_runtime" not in seen[0]:
-            problems.append("the host build did not populate an empty object "
-                            "cache, so the sharing half of this test did not run")
-        elif "[objcache hit] lang_runtime" in seen[1]:
-            problems.append("a cross build reused the host's cached runtime "
-                            "object: the object cache key does not include the "
-                            "target, and two targets are sharing one object")
+        cross_output = (cross.stdout or "") + (cross.stderr or "")
+        if host.returncode != 0:
+            problems.append("the host runtime bitcode build failed")
+        if cross.returncode == 0:
+            problems.append("a wasm32 build silently reused host runtime bitcode")
+        for module in ("lang_runtime.bc", "program_support.bc"):
+            expected = f"runtime/wasm32-unknown-unknown/{module}"
+            if expected not in cross_output:
+                problems.append(f"the missing-target diagnostic did not name `{expected}`")
+        if "Reinstall Prismio and try again" not in cross_output:
+            problems.append("missing target runtime bitcode did not recommend reinstalling Prismio")
 
     # 7. The real thing, where this host can run the result.
     linked = "not attempted on this host"
@@ -4097,9 +4399,14 @@ def run_target_test():
             built = run_command([str(PRISMIO_EXE), "build", str(source),
                                  "--target", "x86_64-apple-macos",
                                  "--sysroot", sdk.stdout.strip(), "-o", str(exe)])
-            if built.returncode != 0:
+            build_output = (built.stdout or "") + (built.stderr or "")
+            if (built.returncode != 0
+                    and "Missing runtime module: lib/runtime/x86_64-apple-macos/"
+                        in build_output):
+                linked = "x86_64 runtime modules not packaged"
+            elif built.returncode != 0:
                 problems.append("a cross build for x86_64-apple-macos failed: "
-                                + (built.stdout or built.stderr or "").strip())
+                                + build_output.strip())
             else:
                 kind = run_command(["file", str(exe)]).stdout
                 if "x86_64" not in kind:
@@ -4241,8 +4548,8 @@ def run_target_test():
         return False
 
     print(f"{GREEN}[PASS] --target: triple and layout from LLVM, pointer width "
-          f"agreed by sema and codegen, -g offsets from the target, cache keyed "
-          f"per target, container fields sized from the target; layout vs clang: "
+          f"agreed by sema and codegen, -g offsets from the target, runtime "
+          f"selected per target, container fields sized from the target; layout vs clang: "
           f"{layouts}; link: {linked}{RESET}")
     return True
 
@@ -6201,33 +6508,27 @@ def run_aif_widening_test():
 
 
 def run_inline_runtime_default_test():
-    """The curated runtime merge is the default and really runs on this host.
+    """Installed runtime bitcode is merged on every ordinary release build.
 
-    The merge is deliberately fail-open: if its runtime-IR compile, curation, or
-    C-API link fails, the compiler builds the ordinary separate-runtime program.
-    That is the safe product behavior, but it means a value test alone can pass
-    while the optimization did nothing. `PRISMIO_OBJ_CACHE_TRACE` exposes a
-    marker only after a successful merge; requiring it makes the existing
-    Windows/Linux/macOS suite the portability gate the default was waiting for.
-
-    The second build pins `PRISMIO_INLINE_RUNTIME=0` as a rollback and
-    measurement control. It must still build the same program, but it must not
-    report a merge.
+    The former curated-source path was optional and fail-open, so a build could
+    silently fall back to an opaque runtime object. There is deliberately no
+    switch or fallback now: the library merge must run even when the obsolete
+    `PRISMIO_INLINE_RUNTIME=0` variable is present, and no curated-source marker
+    or runtime-object cache entry may appear.
     """
     print(f"\n{BLUE}--- Running inline_runtime_default ---{RESET}")
 
     fixture = TEST_DIR / "test_28_list.psm"
-    marker = "[inline runtime] merged curated module"
-
     with tempfile.TemporaryDirectory(prefix="prismio-inline-runtime-") as td:
         root = Path(td)
         cache = root / "cache"
 
-        def build_and_run(label, setting, expect_merge):
+        def build_and_run(label, setting):
             exe = root / f"{label}.exe"
             env = os.environ.copy()
             env["PRISMIO_OBJ_CACHE_DIR"] = str(cache)
             env["PRISMIO_OBJ_CACHE_TRACE"] = "1"
+            env["PRISMIO_BUILD_TRACE"] = "1"
             if setting is None:
                 env.pop("PRISMIO_INLINE_RUNTIME", None)
             else:
@@ -6242,10 +6543,12 @@ def run_inline_runtime_default_test():
                 print(output[:1200])
                 return False
 
-            merged = marker in output
-            if merged != expect_merge:
-                wanted = "a real curated-module merge" if expect_merge else "the opt-out path"
-                print(f"{RED}[FAIL] inline runtime {label}: expected {wanted}{RESET}")
+            required = ("[build trace] library bitcode merge",)
+            if (any(marker not in output for marker in required)
+                    or "[inline runtime]" in output
+                    or "[objcache " in output):
+                print(f"{RED}[FAIL] inline runtime {label}: bitcode-only merge "
+                      f"contract changed{RESET}")
                 print(output[:1200])
                 return False
 
@@ -6256,15 +6559,17 @@ def run_inline_runtime_default_test():
                 return False
             return True
 
-        if not build_and_run("default", None, True):
+        if not build_and_run("default", None):
             return False
-        if not list(cache.glob("curated-*.ll")):
-            print(f"{RED}[FAIL] inline runtime default: no curated cache entry was produced{RESET}")
+        if cache.exists() and any(cache.iterdir()):
+            print(f"{RED}[FAIL] inline runtime default: a user build produced "
+                  f"runtime cache artifacts{RESET}")
             return False
-        if not build_and_run("disabled", "0", False):
+        if not build_and_run("obsolete-switch", "0"):
             return False
 
-    print(f"{GREEN}[PASS] inline runtime merged by default; `=0` retained the old path{RESET}")
+    print(f"{GREEN}[PASS] runtime bitcode always merges; no source/object fallback "
+          f"or opt-out remains{RESET}")
     return True
 
 
@@ -6589,41 +6894,20 @@ def run_string_operator_ledger_test():
 
 
 def run_runtime_object_from_ir_test():
-    """A cold inline-runtime build lowers the runtime object from the curated
-    bitcode, and did not quietly fall back to recompiling the C.
-
-    The build already produced `lang_runtime.c` as an optimised module in order to
-    cut the curated ops out of it. Compiling that same translation unit a second
-    time to get the object was the whole of the 19-28% cold regression, so the
-    object is lowered from the retained bitcode with the target backend alone.
-
-    Like the merge, this fails open: a clang that rejects
-    `-Xclang -disable-llvm-passes` compiles from source instead of failing the
-    build. That is the right product behaviour and it is exactly why a value test
-    cannot gate it -- the fallback produces the same program, just slower. The
-    stage trace names which path ran, so requiring `(from IR)` here makes the
-    three-platform suite the portability gate for it.
-
-    `PRISMIO_OBJ_CACHE=0` because a warm build has no runtime object to compile
-    and no raw module to retain; the reuse exists only on the cold path.
-    """
+    """Ordinary builds consume installed modules, never runtime C or objects."""
     print(f"\n{BLUE}--- Running runtime_object_from_ir ---{RESET}")
 
     fixture = TEST_DIR / "test_28_list.psm"
-    from_ir = "lang_runtime (from IR)"
-
     with tempfile.TemporaryDirectory(prefix="prismio-runtime-from-ir-") as td:
         root = Path(td)
+        cache = root / "cache"
 
-        def build(label, inline_runtime):
+        def build(label):
             exe = root / f"{label}.exe"
             env = os.environ.copy()
-            env["PRISMIO_OBJ_CACHE"] = "0"
+            env["PRISMIO_OBJ_CACHE_DIR"] = str(cache)
+            env["PRISMIO_OBJ_CACHE_TRACE"] = "1"
             env["PRISMIO_BUILD_TRACE"] = "1"
-            if inline_runtime is None:
-                env.pop("PRISMIO_INLINE_RUNTIME", None)
-            else:
-                env["PRISMIO_INLINE_RUNTIME"] = inline_runtime
 
             built = subprocess.run(
                 [str(PRISMIO_EXE), "build", str(fixture), "-o", str(exe)],
@@ -6640,33 +6924,21 @@ def run_runtime_object_from_ir_test():
                 return None
             return output, ran.stdout
 
-        default = build("default", None)
+        default = build("default")
         if default is None:
             return False
-        if from_ir not in default[0]:
-            print(f"{RED}[FAIL] runtime object: the cold build recompiled lang_runtime.c "
-                  f"instead of lowering the retained bitcode{RESET}")
-            print(default[0][:1200])
+        output = default[0]
+        if ("[build trace] library bitcode merge" not in output
+                or "lang_runtime (from IR)" in output
+                or "[objcache " in output
+                or (cache.exists() and any(cache.iterdir()))):
+            print(f"{RED}[FAIL] runtime modules: an ordinary build used the "
+                  f"retired source/object path{RESET}")
+            print(output[:1200])
             return False
 
-        # The opt-out never produces a curated module, so there is nothing to
-        # retain and this stage must report the ordinary compile. Without this
-        # arm, a trace that printed `(from IR)` unconditionally would pass.
-        opt_out = build("disabled", "0")
-        if opt_out is None:
-            return False
-        if from_ir in opt_out[0]:
-            print(f"{RED}[FAIL] runtime object: the opt-out path claimed to lower "
-                  f"from IR, but it builds no curated module{RESET}")
-            print(opt_out[0][:1200])
-            return False
-
-        if default[1] != opt_out[1]:
-            print(f"{RED}[FAIL] runtime object: the two paths disagree on output{RESET}")
-            return False
-
-    print(f"{GREEN}[PASS] runtime object lowered from the curated bitcode; "
-          f"`=0` compiled it from source; both agree{RESET}")
+    print(f"{GREEN}[PASS] ordinary build merged installed runtime modules without "
+          f"creating source/object cache artifacts{RESET}")
     return True
 
 
@@ -6926,6 +7198,42 @@ def run_module_artifact_test():
                  "-o", str(output)], capture_output=True, text=True,
                 cwd=str(wd), env=env)
 
+        # The allocation contract must be semantic LLVM IR, not a string that
+        # merely prints like an attribute and is ignored by optimization.
+        contract_ir = wd / "contract.ll"
+        contract = build(contract_ir)
+        contract_text = contract_ir.read_text() if contract_ir.exists() else ""
+        if (contract.returncode != 0
+                or 'allockind("alloc,uninitialized")' not in contract_text
+                or 'allockind("free")' not in contract_text
+                or '"allockind"=' in contract_text
+                or "allocptr" not in contract_text):
+            problems.append("allocator/deallocator semantics were not preserved in LLVM IR")
+
+        # Production bitcode uses an immutable layout constructor. The mutable
+        # post-construction stamp exists only under PRISMIO_BOOTSTRAP_COMPAT so
+        # a preceding compiler generation can build the next one.
+        llvm_paths = dist / "third_party" / "llvm-paths.json"
+        llvm_dis = None
+        if llvm_paths.is_file():
+            try:
+                llvm_bin = Path(json.loads(llvm_paths.read_text())["bin"])
+                candidate = llvm_bin / ("llvm-dis.exe" if os.name == "nt" else "llvm-dis")
+                if candidate.is_file():
+                    llvm_dis = candidate
+            except (KeyError, ValueError, OSError):
+                pass
+        if llvm_dis:
+            runtime_ir = wd / "lang_runtime.ll"
+            disassembled = subprocess.run(
+                [str(llvm_dis), str(runtime / "lang_runtime.bc"), "-o", str(runtime_ir)],
+                capture_output=True, text=True)
+            runtime_text = runtime_ir.read_text() if runtime_ir.exists() else ""
+            if (disassembled.returncode != 0
+                    or not re.search(r'^define[^@]*@list_new_inline\(', runtime_text, re.M)
+                    or re.search(r'^define[^@]*@list_set_elem_inline\(', runtime_text, re.M)):
+                problems.append("production runtime does not enforce immutable list layout")
+
         for name, extra in (("normal", []), ("verify", ["--verify"])):
             executable = wd / (name + (".exe" if os.name == "nt" else ""))
             made = build(executable, extra)
@@ -6934,6 +7242,17 @@ def run_module_artifact_test():
             if (made.returncode != 0 or ran is None or ran.returncode != 0
                     or ran.stdout.strip() != "module-wise"):
                 problems.append(f"packaged {name} build did not compile and run")
+
+        # Imported functions with no IR users are removed after the final
+        # module merge. This keeps full bitcode from turning every executable
+        # into an export of the entire runtime surface.
+        nm = shutil.which("nm")
+        normal_exe = wd / ("normal" + (".exe" if os.name == "nt" else ""))
+        if nm and normal_exe.exists():
+            symbols = subprocess.run(
+                [nm, str(normal_exe)], capture_output=True, text=True).stdout
+            if "data_view_to_list" in symbols:
+                problems.append("an unreachable runtime function survived whole-program pruning")
 
         missing_path = runtime / "program_support.bc"
         aside = runtime / "program_support.bc.aside"
