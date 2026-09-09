@@ -146,8 +146,8 @@ violations.
 nothing carries no I/O, which is what lets a target with no stdout link at all.
 See the comment above `resolveImports` in `src/driver/imports.psm`.
 
-`eprint` and `eprintln` take a `String` and nothing else. They exist so that a
-program whose stdout carries a *format* -- `aif --manifest`, JSON diagnostics, a
+`eprint` takes a `String` or an `Int`, `eprintln` a `String`. They exist so that
+a program whose stdout carries a *format* -- `aif --manifest`, JSON diagnostics, a
 pipe into another tool -- can still report status without corrupting it. The
 compiler's own host-routing banner uses them for exactly that reason: while it
 printed to stdout, it prefixed the manifest with a human line and broke that
@@ -259,6 +259,7 @@ which the analysis widens to Shared, and the result gets no owner.
 | Contract | Means |
 |---|---|
 | `borrow` | the callee reads the argument and does not retain it |
+| `bytes` | `borrow`, and the callee reads no terminator — String parameters only |
 | `consume` | the callee takes ownership of the argument |
 | `retain_in:k` | the callee stores the argument into argument *k*'s container |
 | `produce(free)` | the return is a fresh allocation the caller must release |
@@ -269,12 +270,73 @@ pointer into `argv`; declaring it `produce(free)` hands `argv` to the
 deallocator. `src/main.psm` declares it `alias`, which is correct, and
 `std/process.psm` wraps it so no application has to know.
 
+`bytes` is the one entry that is about **marshalling rather than ownership**, and
+it exists because a String view has no terminator of its own — it ends where its
+length says, inside a buffer that continues. Under every other contract the
+boundary therefore hands the callee a NUL-terminated *copy* of a view.
+`bytes` says the callee was given the count separately and never looks for a
+terminator, so the String's own pointer crosses and no copy is made. The
+ownership half is `borrow` exactly; AIF is given no fourth state.
+
+Declare it wherever a C function takes a pointer *and* a length — `write` in
+`std/io.psm` is the case it was built for, because a retry loop advances by
+taking a view of what is left, and under `borrow` that view would be copied in
+full on every iteration. Sema rejects it on a non-String parameter (`P4110`),
+where there is no copy to suppress.
+
+**A view bound to a local escapes; one built into the call does not.**
+`__builtin_string_view` aliases its argument's storage — deliberately, so the
+base cannot be released while a view of it is live — so `let rest = view(text,
+…)` raises `text`'s escape to Caller and every caller's drop of what it passed in
+is declined with it. Writing the view directly into the call argument keeps it
+Local. `prismioStdIoWriteAll` carries a comment saying so; it cost a suite-wide
+leak to find.
+
 ---
 
 ## 4 · What is still C, and why
 
 Linked into every program: `runtime/lang_runtime.c` and
 `runtime/program_support.c`. Everything else in `runtime/` is compiler-only.
+
+### Not wrapped at all: the one libc symbol
+
+`std/io.psm` writes to the descriptor itself, so `write` is the only libc
+function a Prismio program reaches without a Prismio wrapper in front of it, and
+`tools/check_externs.py` allows it by name -- every other `extern fn` in `src/`,
+`std/` and `ums/` has to resolve to a definition this repository ships.
+
+Its declaration carries the C signature exactly: `ssize_t write(int, const
+void*, size_t)`. `Int` is `i32`, so the descriptor is `Int` while the count and
+the result are `I64`. Declaring the count `Int` compiles, links and appears to
+work -- writing a 32-bit register zero-extends on both x86-64 and AArch64 -- but
+neither ABI promises the caller left the upper half clean, and the callee reads
+all 64 bits of it.
+
+**`print` writes the whole string, and the loop that makes that true is Prismio
+source.** `write` returns how many bytes it took, and fewer than asked for is an
+ordinary outcome rather than an error -- on a descriptor someone set `O_NONBLOCK`
+on, a 4 MB print delivered 65,536 bytes and exited 0. `prismioStdIoWriteAll`
+resumes from where it stopped and reissues on `EINTR`; a descriptor that refuses
+outright ends the loop rather than spinning, which is `write_all` semantics and
+not `poll`. A broken pipe never reaches it: nothing ignores SIGPIPE, so the
+process dies of the signal as `cat` does.
+
+Two language features carry it, and neither is a runtime shim. The `bytes`
+contract above is one. The other is `__builtin_errno` with
+`__builtin_errno_intr` and `__builtin_errno_again`: `errno` is not a symbol on
+any modern platform but a dereference of a per-thread location whose accessor
+libc names itself, so codegen picks that name from the *target* triple --
+`__error`, `__errno_location` or `_errno` -- and emits the call inline. The
+program links libc's entry point directly. The two constants are folded for the
+target, because they are C macros with nowhere else to read them from: `EINTR` is
+4 everywhere this compiler targets, `EAGAIN` is 35 on Darwin and the BSDs and 11
+elsewhere.
+
+`prismio_rt_print_float` and `prismio_rt_println_float` are what is left of the
+console runtime, because `%g` has no source-level formatter yet. Both flush
+stdout before returning, which is what keeps a `printf` and a `write` to the
+same descriptor in order.
 
 ### Wrapped, and the wrapper is the supported API
 
@@ -305,6 +367,18 @@ opposite things belongs behind a wrapper.
 released by calling `str_split_free`, which the ownership analysis knew nothing
 about. `strSplit` returns a `List<String>`, which is an owned container the
 analysis already understands.
+
+**Deleted, not superseded:** `prismio_rt_print`, `prismio_rt_println`,
+`prismio_rt_eprint`, `prismio_rt_eprintln`, and the `print`/`println`/`print_int`
+/`println_int`/`print_bool`/`println_bool`/`print_char`/`println_char` family
+underneath them. `std.io` reaches the descriptor itself, so nothing declared
+them any more. `prismio_rt_print_float` and `prismio_rt_println_float` are the
+only console functions left in C.
+
+A program outside this tree that declared one of them by hand will now fail to
+link, naming the symbol. `benchmarks/prismio/common.psm` was the one in-tree
+case: it prints without importing `std.io` on purpose, and now declares `write`
+the same way `std/io.psm` does.
 
 ### Not user-facing
 

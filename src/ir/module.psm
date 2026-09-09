@@ -760,7 +760,14 @@ private fn irRuntimeProvides(name: String) -> Bool {
 // so; and a zero of the right width otherwise.
 private fn generateExternStub(ext: ASTNode) {
     let retType = getDeclaredReturnType(ext, ext.child2)
-    let retSig = storageType(retType)
+    // `ffiType`, exactly as declareExternFunction above uses it. This is a
+    // *definition* standing in for that declaration, so it has to have the
+    // signature the call sites were generated against: a String parameter
+    // reaches a foreign function as its pointer half, and a stub that takes the
+    // fat pair instead fails module verification with "Call parameter type does
+    // not match function signature". Nothing caught it until an `extern` taking
+    // a String was one the runtime does not provide -- `write`.
+    let retSig = ffiType(storageType(retType))
 
     ir_function_begin(functionSymbolName(ext), retSig)
     let mut paramPtr = ext.child1
@@ -768,7 +775,7 @@ private fn generateExternStub(ext: ASTNode) {
     while (nodeExists(paramPtr)) {
         let paramNode = ptr_to_node(paramPtr)
         let pTypeNode = ptr_to_node(paramNode.child1)
-        ir_function_param(storageType(mapTypeNode(pTypeNode)), "p_s".concat(strFromInt(i)))
+        ir_function_param(ffiType(storageType(mapTypeNode(pTypeNode))), "p_s".concat(strFromInt(i)))
         i = i + 1
         paramPtr = paramNode.next
     }
@@ -1999,6 +2006,11 @@ fn generateModule(module: ASTNode) {
             } else {
                 ir_global_var(stmt.s1, storageType(varType), initVal, 0)
             }
+            // Private to this module. An importing module emits its own copy of
+            // this global rather than a reference to ours, so two copies reach
+            // the linker whenever a program takes a module from a `.plib` as
+            // well as from source -- which is every build outside the checkout.
+            ir_global_set_internal(stmt.s1)
             // `varType`, not `storageType(varType)`: the debug layer wants the
             // uncollapsed key, since `struct:T` is what tells it to describe a
             // T rather than an anonymous pointer.

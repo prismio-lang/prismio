@@ -264,94 +264,20 @@ static int rt_arena_slot(void) {
     return *rt_arena_hint_state() > 0 ? arena_current_slot() : 0;
 }
 
-// Println function - prints a string and adds a newline
-void println(const char* str) {
-    printf("%s\n", str);
-    fflush(stdout);
-}
-
-// Print function - prints a string without newline
-void print(const char* str) {
-    printf("%s", str);
-    fflush(stdout);
-}
-
-void print_int(int value) {
-    printf("%d", value);
-    fflush(stdout);
-}
-
-// Print integer with newline
-void println_int(int value) {
-    printf("%d\n", value);
-    fflush(stdout);
-}
-
-void print_float(double value) {
+// The whole of the console runtime. Every other `print` and `println` overload
+// formats in std/io.psm and writes to the descriptor itself; these two are what
+// is left, because `%g` has no source-level formatter yet.
+//
+// The flush is not cosmetic here. std.io reaches stdout with `write`, which does
+// not pass through this buffer, so a float left sitting in it would be overtaken
+// by the next line the program prints.
+void prismio_rt_print_float(double value) {
     printf("%g", value);
     fflush(stdout);
 }
 
-// Print float with newline
-void println_float(double value) {
-    printf("%g\n", value);
-    fflush(stdout);
-}
-
-// Private ABI used by std/io.psm. See the WASM branch for why the old symbols
-// remain available even though new Prismio programs do not declare them.
-void prismio_rt_print(const char* str) {
-    print(str);
-}
-
-void prismio_rt_println(const char* str) {
-    println(str);
-}
-
-// Status output that must not land in a machine-readable stdout. The host
-// routing banner used to go through println, which prefixed `aif --manifest`
-// with a human status line and broke the one guarantee that manifest makes --
-// that its first line is `aif-manifest 1`. stderr is where a line describing
-// *which compiler is running* belongs, and keeping it unbuffered here means it
-// still interleaves correctly with the stdout it is no longer part of.
-void prismio_rt_eprint(const char* str) {
-    fputs(str, stderr);
-    fflush(stderr);
-}
-
-void prismio_rt_eprintln(const char* str) {
-    fputs(str, stderr);
-    fputc('\n', stderr);
-    fflush(stderr);
-}
-
-void prismio_rt_print_float(double value) {
-    print_float(value);
-}
-
 void prismio_rt_println_float(double value) {
-    println_float(value);
-}
-
-void print_bool(int value) {
-    printf("%s", value ? "true" : "false");
-    fflush(stdout);
-}
-
-// Print boolean with newline
-void println_bool(int value) {
-    printf("%s\n", value ? "true" : "false");
-    fflush(stdout);
-}
-
-void print_char(char c) {
-    printf("%c", c);
-    fflush(stdout);
-}
-
-// Print character with newline
-void println_char(char c) {
-    printf("%c\n", c);
+    printf("%g\n", value);
     fflush(stdout);
 }
 

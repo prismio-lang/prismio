@@ -629,6 +629,10 @@ private fn parseAifAnnotations(p: Parser, node: ASTNode) {
 // declaration, so adding them later breaks nothing.
 private fn isFfiContractName(name: String) -> Bool {
     if (name.equals("borrow")) { return true }
+    // Marshalling, not ownership: `bytes` borrows exactly like `borrow` and
+    // differs only in what reaches the callee -- the String's own pointer rather
+    // than a NUL-terminated copy of it. See semaIsParameterContract.
+    if (name.equals("bytes")) { return true }
     if (name.equals("retain")) { return true }
     if (name.equals("retain_in")) { return true }
     if (name.equals("consume")) { return true }

@@ -3439,6 +3439,22 @@ internal fn generateExpression(expr: ASTNode) -> String {
             return ir_get_temp_name(ir_call_end("i32", "llvm.abs.i32"))
         }
 
+        // errno, and the two numbers worth comparing it against. Builtins rather
+        // than externs because `errno` has no symbol to declare: it is a macro
+        // for a dereference of a per-thread location, and the accessor's name is
+        // the platform's. The backend picks that name from the target triple and
+        // emits the call inline, so the program links libc directly and the
+        // runtime gains nothing.
+        if (funcName.equals("__builtin_errno")) {
+            return ir_get_temp_name(ir_errno_load())
+        }
+        if (funcName.equals("__builtin_errno_intr")) {
+            return ir_get_temp_name(ir_errno_constant("EINTR"))
+        }
+        if (funcName.equals("__builtin_errno_again")) {
+            return ir_get_temp_name(ir_errno_constant("EAGAIN"))
+        }
+
         // Byte length is the pair's second field. This is a reserved compiler
         // builtin, not an extern: its source spelling carries no declaration,
         // LLVM symbol or link requirement.
@@ -3774,6 +3790,20 @@ internal fn generateExpression(expr: ASTNode) -> String {
                     // candidate is the conservative direction: an unchosen
                     // candidate can leak, but the chosen alias cannot dangle.
                     ir_call_arg("ptr", scalarToSlot("struct:prismio.str", argVal))
+                } else if (aif_extern_contract(funcName, argIndex).equals("bytes")) {
+                    // **The one contract that changes what crosses, not who
+                    // owns it.** The default hands a callee a `char*` it can
+                    // read to a NUL, which for a view means materialising a
+                    // terminated copy first. `bytes` is the declaration saying
+                    // the callee was given the count separately and never looks
+                    // for a terminator, so the String's own pointer goes
+                    // through: no branch, no copy, no release afterwards.
+                    //
+                    // This is what lets a retry loop over `write` be written in
+                    // Prismio. Advancing the buffer produces a view of the
+                    // remainder, and under the default that view would be copied
+                    // -- the whole remainder, on every iteration.
+                    ir_call_arg_borrow("ptr", argVal)
                 } else if (aif_extern_contract(funcName, argIndex).equals("borrow")) {
                     // **The contract, spent rather than merely checked.**
                     // RUNTIME.md defines `borrow` as "the callee reads the

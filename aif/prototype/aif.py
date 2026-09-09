@@ -87,6 +87,9 @@ FFI_CONTRACTS = {
     # never to escape. Optimistic, i.e. unsound, and the compiler had the same
     # off-by-one -- which is how a differential test agrees on a wrong answer.
     'list_set':       {0: 'borrow', 1: 'borrow', 2: ('retain_in', 0)},
+    # Same shape as `list_set`: the stored value is argument 2. Kept beside it
+    # because the two are one entry in `aifRuntimeContract`.
+    'list_set_exclusive': {0: 'borrow', 1: 'borrow', 2: ('retain_in', 0)},
     'list_get':       {0: 'borrow'},          # returns an alias into arg 0
     'list_len':       {0: 'borrow'},
     'list_new':       {},                     # produces a fresh container
@@ -98,6 +101,10 @@ FFI_CONTRACTS = {
     'soa':            {0: 'consume'},
     'aos':            {0: 'consume'},
     'data_len':       {0: 'borrow'},
+    # SPEC 8.4 slices. `slice_set` stores argument 2 into the slice, exactly as
+    # `list_set` does; `aifCompilerBuiltinContract` has both.
+    'slice_len':      {0: 'borrow'},
+    'slice_set':      {0: 'borrow', 1: 'borrow', 2: ('retain_in', 0)},
     'str_concat':     {0: 'borrow', 1: 'borrow'},
     'str_equals':     {0: 'borrow', 1: 'borrow'},
     'str_substring':  {0: 'borrow'},
@@ -107,6 +114,11 @@ FFI_CONTRACTS = {
     '__builtin_string_len': {0: 'borrow'},
     '__builtin_string_byte_at': {0: 'borrow'},
     '__builtin_string_put_byte': {0: 'borrow'},
+    # `==` on two Strings lowers to this. Missing here, it made every caller of
+    # `equals` -- which is most of std.string -- call something undescribed, and
+    # so blocked bracketing for all of them: `br-opaque` read one higher than the
+    # compiler's on any program that compares strings.
+    '__builtin_string_eq': {0: 'borrow', 1: 'borrow'},
     # Copies twelve bytes of its operand into the pair it returns, so it borrows
     # the source and the result is independent of it. Producing without
     # allocating: the German short form is sixteen bytes of value with nothing
@@ -121,6 +133,13 @@ FFI_CONTRACTS = {
     # The view form. Retains nothing of its own; that the result points into
     # argument 0 is a return contract, not a parameter one.
     '__builtin_string_view': {0: 'borrow'},
+    # errno and its two comparison constants: no arguments, nothing retained,
+    # nothing placed. Present so `call_is_summarised` answers yes, exactly as
+    # `aifCompilerBuiltinContract` does in src/aif/contracts.psm -- an
+    # undescribed callee blocks bracketing for its whole caller.
+    '__builtin_errno': {},
+    '__builtin_errno_intr': {},
+    '__builtin_errno_again': {},
     'print':          {0: 'borrow'},
     'println':        {0: 'borrow'},
     # v0.1 concurrency. `chan_send` **consumes** its message rather than
@@ -156,7 +175,13 @@ FFI_RETURNS_ENDPOINT = {'chan_new', 'chan_share'}
 # src/aif/contracts.psm has said so since optionals landed; this is the half that
 # nothing had exercised. Verified discriminating: removed, tests/test_96_channels
 # reports `opaque-ret: compiler=0 oracle=4`.
-FFI_RETURNS_ALIAS_OF = {'expect': 0}
+# Must match `aifFfiAliasOf` in src/aif/contracts.psm. `__builtin_string_view`
+# hands back a pointer into its first argument with a length and allocates
+# nothing, so its result *is* that argument's storage -- which is also what keeps
+# the base alive while a view of it is live. Without the entry the oracle reads
+# it as an opaque extern return: a fresh site, escape raised to Caller, and one
+# more `extern-alloc` and `opaque-ret` than the compiler reports.
+FFI_RETURNS_ALIAS_OF = {'expect': 0, '__builtin_string_view': 0}
 
 # Externs that read an element back out of a container: name -> argument index.
 #
@@ -175,14 +200,44 @@ def base_type(ty):
     return ty if at < 0 else ty[:at]
 
 
+# Every container type an element key was asked for, as (base, full). Read by
+# elem_key_reconcile below. A module-level list because the oracle is one run of
+# one program, exactly as `elem_uses` is a static array in aif_support.c.
+ELEM_USES = []
+
+
+def elem_spelling_resolved(ty):
+    """Whether this spelling names one container rather than every instance of a
+    base. Mirrors elem_spelling_resolved in runtime/aif_support.c."""
+    if '<' not in ty:
+        return False                 # a bare base names every instance
+    if 'Invalid' in ty:
+        return False                 # inference had nothing to give
+    return True
+
+
 def elem_key(container_type):
     """A container's contents, as a field key.
 
-    Object-insensitive through base_type for the reason base_type exists: keying
-    on the spelled type would put `list_new()`'s `List<Invalid>` and an annotated
-    `List<Item>` on different keys, and a lost edge is the unsound direction.
+    **Keyed on the full spelling**, so `List<Actor>` and `List<Order>` are
+    separate. That is sound because a container's static type is the same at
+    every mention -- Prismio has no subtyping, and generics are monomorphised
+    before this walk -- and it is what stops an element read coming back holding
+    every element of every container of that base.
+
+    The exception is a spelling the frontend could not resolve: a bare `List`, or
+    `List<Invalid>`. Those really can name the same container as a resolved
+    spelling, so elem_key_reconcile binds a tainted base's keys together and
+    restores the old merged answer for exactly those types.
+
+    This used to key on `base_type` unconditionally. The compiler stopped doing
+    that on 2026-08-28 and the oracle did not follow, which is what
+    `tools/aif_differential.py` was reporting as 23 sites of `ums/` reading
+    Shared here and Unique there -- an element read that returned the union of
+    every `List` in the program.
     """
-    return ('field', base_type(container_type), '@elem')
+    ELEM_USES.append((base_type(container_type), container_type))
+    return ('field', container_type, '@elem')
 
 # Return contracts (FFI 5.2). 'produce' = a fresh owned value the caller must
 # release; anything undeclared has UNKNOWN provenance and must be treated
@@ -1190,12 +1245,35 @@ class Engine:
                 return True
         return False
 
+    def elem_key_reconcile(self):
+        """Bind a tainted base's element keys together, both ways.
+
+        A base with even one unresolved spelling has all of its element keys
+        merged, which is the behaviour keying on the full type replaced. Runs
+        before the fixed point because it adds constraints. Mirrors
+        elem_key_reconcile in runtime/aif_support.c.
+        """
+        tainted = {base for base, full in ELEM_USES
+                   if not elem_spelling_resolved(full)}
+        if not tainted:
+            return
+        for base, full in ELEM_USES:
+            if base not in tainted:
+                continue
+            precise = ('field', full, '@elem')
+            bare = ('field', base, '@elem')
+            if precise == bare:
+                continue
+            self.constraints.append(('bind', precise, vs_ref(bare)))
+            self.constraints.append(('bind', bare, vs_ref(precise)))
+
     def solve(self, max_rounds=200):
         """Round-synchronous (Jacobi) iteration, per INFERENCE 5.1: every round
         reads the previous round's state, so the result cannot depend on the
         order constraints happen to be listed in."""
         scopes = self.m.scopes
         self.rounds = 0
+        self.elem_key_reconcile()
         if not self.solve_points_to(max_rounds):
             self.delta_pt = True
             self.pt_rounds = self.rounds
@@ -1733,7 +1811,12 @@ def report(model, eng, converged, args):
         by_kind[site.kind][t] += 1
         records.append((site, t, eng.E[sid], eng.A[sid], eng.C[sid], eng.T[sid]))
 
-    total = max(1, sum(tiers.values()))
+    total = sum(tiers.values())
+    # `max(1, ...)` guards the percentages below against a program with no
+    # allocation sites. It used to be folded into `total` itself, which meant the
+    # *reported* count was 1 for such a program and the differential read
+    # `sites: compiler=0 oracle=1` on `fn main() -> Int { return 0 }`.
+    denom = max(1, total)
     cheap = tiers['T0'] + tiers['T1'] + tiers['T2']
 
     print(f"aif-manifest 1 (prototype)")
@@ -1751,13 +1834,13 @@ def report(model, eng, converged, args):
     print("# tier distribution  (BENCHMARKS H1: static D over abstract values)")
     for t in ('T0', 'T1', 'T2', 'T3', 'T4b', 'T4a'):
         n = tiers[t]
-        bar = '#' * int(60 * n / total)
-        print(f"  {t:4} {n:6}  {100*n/total:5.1f}%  {bar}")
-    print(f"\n  T0-T2 (no runtime bookkeeping): {cheap} / {total} = "
-          f"{100*cheap/total:.1f}%")
+        bar = '#' * int(60 * n / denom)
+        print(f"  {t:4} {n:6}  {100*n/denom:5.1f}%  {bar}")
+    print(f"\n  T0-T2 (no runtime bookkeeping): {cheap} / {denom} = "
+          f"{100*cheap/denom:.1f}%")
     print(f"  H1 kill criterion is < 70%.  "
-          f"{'PASS' if 100*cheap/total >= 70 else 'FAIL'}"
-          f"{'  (>= 90% = the stated claim)' if 100*cheap/total >= 90 else ''}")
+          f"{'PASS' if 100*cheap/denom >= 70 else 'FAIL'}"
+          f"{'  (>= 90% = the stated claim)' if 100*cheap/denom >= 90 else ''}")
 
     print("\n# by allocation kind -- where the residue actually lives")
     hdr = f"  {'kind':8} {'sites':>6} " + ' '.join(f'{t:>6}' for t in

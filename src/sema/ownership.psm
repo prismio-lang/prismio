@@ -158,11 +158,25 @@ private fn semaContractArgument(encoded: String) -> String {
 
 private fn semaIsParameterContract(name: String) -> Bool {
     if (name.equals("borrow")) { return true }
+    if (name.equals("bytes")) { return true }
     if (name.equals("retain")) { return true }
     if (name.equals("retain_in")) { return true }
     if (name.equals("consume")) { return true }
     if (name.equals("out")) { return true }
     return false
+}
+
+// `bytes` is the only contract that describes *marshalling* rather than
+// ownership, and it is a String-only question: a view ends where its length
+// says, inside a buffer that continues, so the boundary normally hands the
+// callee a NUL-terminated copy of it. `bytes` says the callee does not read to a
+// terminator -- it was given the count separately -- so the String's own pointer
+// goes through untouched, and the copy is not made.
+//
+// Ownership is unchanged: the callee reads and retains nothing, exactly as under
+// `borrow`, which is what aifDeclaredContract maps it to.
+private fn semaContractIsStringOnly(name: String) -> Bool {
+    return name.equals("bytes")
 }
 
 // SPEC 8.4: a Slice is a language view descriptor, not a C buffer. The FFI
@@ -217,7 +231,12 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
                     diag_error_at_code("P4103", param.file, param.line, param.col, __builtin_string_len(param.s1),
                         diagQuote(name).concat(" is a return contract and cannot appear on parameter ",
                                                diagQuote(param.s1)))
-                    diag_note("parameters take `borrow`, `retain`, `retain_in(k)`, `consume` or `out`")
+                    diag_note("parameters take `borrow`, `bytes`, `retain`, `retain_in(k)`, `consume` or `out`")
+                } else if (semaContractIsStringOnly(name) and annotation.s1.equals("String") == false) {
+                    diag_error_at_code("P4110", param.file, param.line, param.col, __builtin_string_len(param.s1),
+                        diagQuote(name).concat(" applies to a String parameter, but ",
+                                               diagQuote(param.s1), " is ", annotation.s1))
+                    diag_note("it suppresses the NUL-terminated copy a String view would otherwise be given; no other type is copied there")
                 } else if (name.equals("retain_in")) {
                     let target = optionOr(strParseInt(semaContractArgument(encoded)), 0)
                     if (target < 0 or target >= arity) {

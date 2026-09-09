@@ -160,6 +160,11 @@ extern fn ir_is_borrowed(name: String) -> Int
 extern fn ir_global_string(name: String, strContent: String)
 extern fn ir_global_var(name: String, type: String, initValue: String, isConst: Int)
 
+// Makes a global module-private. A module-level `let` is copied into every
+// module that imports it, so external linkage makes those copies collide at
+// link time; see the note in runtime/llvm-api-backend.c.
+extern fn ir_global_set_internal(name: String)
+
 // Typed structural builders.
 // Both backends implement these identically. The frontend must build structs,
 // arrays and field access through them rather than emitting IR text, because
@@ -385,6 +390,16 @@ extern fn ir_call_arg_borrow(argType: String, argValue: String)
 // NUL-terminated copy the callee needs and releases it when the call returns.
 // The other two storage classes reach the callee with the pointer they had.
 extern fn ir_call_arg_cstr(argValue: String, isBorrow: Int)
+
+// `errno`, as a value. Not a symbol on any modern platform: it is a dereference
+// of a per-thread location whose accessor libc names itself, so the backend picks
+// the name from the *target* triple and emits the call inline. Nothing is added
+// to the runtime -- the program links libc's own entry point, as C does.
+extern fn ir_errno_load() -> Int
+
+// One of the error numbers a retry loop has to recognise, folded to a constant
+// for the target. "EINTR" or "EAGAIN".
+extern fn ir_errno_constant(which: String) -> Int
 
 // A view: `count` bytes of `base` from `start`, owning nothing and copying
 // nothing. **The caller must have established that `base` is not the inline

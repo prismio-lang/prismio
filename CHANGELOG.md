@@ -2,8 +2,190 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A module-level `let` is private to its LLVM module.** Every module that
+  imports one emits its own *definition* of it rather than a reference, which is
+  invisible while a program is one module and fatal the moment it is two: a
+  program built outside the checkout takes `std.io` from `stdlib/io.plib` *and*
+  emits its own copy, and the link failed with `Linking globals named 'STDOUT':
+  symbol multiply defined!`. Internal linkage states what was already true. This
+  was reachable from any standard-library module with a module-level `let`;
+  `std/io.psm` was the first to have one.
+- **A stubbed `extern` in a workload driver is declared with its FFI types.**
+  `generateExternStub` built the stand-in definition with `storageType` while
+  `declareExternFunction` declares the real one with `ffiType`, so a `String`
+  parameter became the 16-byte pair in the stub and the pointer half at the call.
+  Module verification rejected it — `Call parameter type does not match function
+  signature` — and every workload silently fell back to the static profile. It
+  was unreachable until an `extern` the runtime does not provide took a `String`.
+- `std/io.psm` no longer keeps the two descriptors in module-level `let`s. A
+  standard-library module's globals follow every program that imports it, into
+  its debug info among other places; two private functions carry the numbers
+  instead.
+- **`DIGlobalVariable`'s `LocalToUnit` is read off the global's linkage.** It was
+  a literal `0` with a comment saying that is what `ir_global_var`'s linkage says
+  too — and the two drifted the moment module-level globals became internal,
+  leaving debug info that described an internal global as externally visible.
+  Asking the value removes the second place the fact was written down.
+- **The AIF oracle reported one allocation site for a program that has none.**
+  `max(1, ...)` guards the tier percentages against a division by zero and had
+  been folded into the reported count itself, so `fn main() -> Int { return 0 }`
+  read `sites: compiler=0 oracle=1` in `tools/aif_differential.py`. The guard is
+  now only the divisor.
+- **The AIF oracle did not know `__builtin_string_view` returns an alias of its
+  first argument.** `aifFfiAliasOf` has said so since the view storage class
+  landed; `FFI_RETURNS_ALIAS_OF` in `aif/prototype/aif.py` still listed only
+  `expect`, so every view read as an opaque extern return — a fresh site, one
+  more `extern-alloc` and one more `opaque-ret` than the compiler. This is the
+  drift the differential exists to catch, and it was catching it.
+- **Four more names the oracle did not know were described.**
+  `__builtin_string_eq` was the one that mattered: `==` on two Strings lowers to
+  it, so every caller of `equals` — most of `std.string` — appeared to call
+  something undescribed, and bracketing was blocked for all of them.
+  `list_set_exclusive`, `slice_len` and `slice_set` were the same omission
+  without the reach. With these, every `bracketable` / `sole-regime` /
+  `br-opaque` counter agrees.
+
+- **The oracle keyed a container's elements on the base type, not the
+  instantiation.** The compiler stopped doing that on 2026-08-28 —
+  `aif_elem_key` keys on the full spelling (`List<Actor>` apart from
+  `List<Order>`) and `elem_key_reconcile` merges a base's keys only where a
+  spelling is unresolved (a bare `List`, or `List<Invalid>`). The oracle still
+  merged unconditionally, so **every `List` in the program shared one element
+  set**: `pt[('field','Token','value')]` held 113 sites of 8 unrelated types, an
+  element read came back holding all of them, and A-STORE then inherited Shared
+  from an opaque `Ptr` into every `Ums*` struct that had never been near one.
+  That was 23 sites reading T3 in the oracle and T2 in the compiler, all of them
+  in `ums/`. `elem_key` and the reconcile pass are now mirrored.
+
+  **`tools/aif_differential.py` passes: the two engines agree on all 19
+  sources.** They had not agreed on any.
+- The three `__builtin_errno*` builtins are described in both AIF
+  implementations rather than left unknown. An undescribed callee blocks
+  bracketing for its whole caller, and these take no arguments, retain nothing
+  and place nothing.
+
 ### Language
 
+- **`bytes`, an extern parameter contract about marshalling rather than
+  ownership.** A String view has no terminator of its own -- it ends where its
+  length says, inside a buffer that continues -- so every other contract hands
+  the callee a NUL-terminated *copy* of one. `bytes` says the callee was given
+  the count separately and never reads a terminator, so the String's own pointer
+  crosses and no copy is made. Ownership is `borrow` exactly, and AIF is given no
+  fourth state. Sema rejects it on a non-String parameter (`P4110`).
+
+  It is what makes a retry loop over `write` expressible: the loop advances by
+  taking a view of what is left, and under `borrow` that view was copied in full
+  on every iteration -- a `malloc` and a `memcpy` of the remainder, per pass. A
+  4 MB write measured 14.3 MB peak RSS before and 10.0 MB after, which is the one
+  extra copy disappearing.
+
+  **A view bound to a local escapes; one built into the call does not.**
+  `__builtin_string_view` aliases its argument's storage on purpose, so
+  `let rest = view(text, …)` raises `text`'s escape to Caller and declines every
+  caller's drop of what it passed in. Writing the view straight into the call
+  argument keeps it Local. This cost a leak in seven suite fixtures before
+  `aif --why` named the binding.
+- **`__builtin_errno`, with `__builtin_errno_intr` and `__builtin_errno_again`.**
+  `errno` is not a symbol on any modern platform: it is a dereference of a
+  per-thread location whose accessor libc names itself. Codegen picks that name
+  from the *target* triple -- `__error`, `__errno_location`, `_errno` -- and
+  emits the call inline, so the program links libc's entry point directly and the
+  runtime gains nothing. The two constants are folded for the target, because
+  they are C macros with nowhere else to be read from: `EINTR` is 4 everywhere
+  this compiler targets, `EAGAIN` is 35 on Darwin and the BSDs and 11 elsewhere.
+- **`print` writes the whole string.** `write` returns how many bytes it took,
+  and fewer than asked for is an ordinary outcome, not an error: on a descriptor
+  someone set `O_NONBLOCK` on -- a property of the open file description, so it is
+  inherited across fork/exec and shared by every dup of it -- a 4 MB print
+  delivered **65,536 bytes and exited 0**. `prismioStdIoWriteAll` now resumes
+  from where it stopped and reissues on `EINTR`, which means nothing was written.
+
+  A descriptor that refuses outright ends the loop rather than spinning: these are
+  `write_all` semantics, not `poll`, and `O_NONBLOCK` still needs a poll this
+  compiler cannot yet express. A broken pipe never reaches the loop at all --
+  nothing ignores SIGPIPE, so the process dies of the signal exactly as `cat`
+  does, which is what a filter should do.
+
+  A String of twelve bytes or fewer is the inline form, whose bytes live in the
+  pair rather than behind the pointer, so there is nothing to offset and
+  `__builtin_string_view` does not apply. That path reissues the whole buffer on
+  `EINTR` and does not resume, which is sound because a buffer that small is
+  below `PIPE_BUF` on every descriptor type.
+- **Console output is Prismio source over `write`, not a C shim.** Every
+  `print`, `println`, `eprint` and `eprintln` overload except the two `Float`
+  ones now formats in `std/io.psm` and writes to the descriptor itself;
+  `prismio_rt_print`, `prismio_rt_println`, `prismio_rt_eprint` and
+  `prismio_rt_eprintln` are no longer declared. `%g` has no source-level
+  formatter yet, so `Float` stays on `printf`, which is safe to mix only because
+  those two flush stdout before returning.
+
+  A `println` of a formatted value is one `write`: the newline is written into
+  the same allocation as the digits, so nothing is paid for it. `println(String)`
+  is the one overload that has to copy, because its argument is borrowed — and
+  the copy is still the cheap half. Against the `printf` path it replaces, over
+  300k lines to `/dev/null`: `println(Int)` 0.92x, `println(String)` 0.93x for a
+  43-byte line and 0.58x for a 92 KB one. Splitting the line into two `write`s
+  instead of copying was measured at 1.80x and rejected.
+
+  `write` is declared with libc's real signature — `Int` is `i32`, so the count
+  and the result are `I64`. Declaring the count `Int` compiles and appears to
+  work, because writing a 32-bit register zero-extends on both x86-64 and
+  AArch64, but neither ABI promises the caller left the upper half clean.
+  `tools/check_externs.py` allows `write` by name; it is the only libc symbol
+  a Prismio program reaches without a wrapper.
+
+  Formatting stays local to `std/io.psm` rather than calling `std.string`, which
+  is not only about link size: an `import std.string` there puts that module's
+  allocation sites into the AIF analysis of *every* program that prints. A
+  program whose whole body is `import std.io` / `fn main() -> Int { return 0 }`
+  reports 5 potential allocation sites; with the import it reported 85, and the
+  arena counts in `test_44_aif_region` moved with it.
+
+  The C behind it is gone rather than kept: `prismio_rt_print`,
+  `prismio_rt_println`, `prismio_rt_eprint`, `prismio_rt_eprintln` and the
+  `print`/`println`/`print_int`/`println_int`/`print_bool`/`println_bool`/
+  `print_char`/`println_char` family they wrapped. A program that declared one by
+  hand now fails to link naming it; `benchmarks/prismio/common.psm`, which prints
+  without importing `std.io` on purpose, declares `write` instead.
+- **A jitted module's runtime is checked for identity, not just for
+  visibility.** `--jit` resolves the runtime a module calls by searching this
+  process, which works or does not depending on how the host was linked, so one
+  symbol is looked up up front to tell a missing export table apart from a
+  codegen fault. That lookup only asked whether *something* answered. It now
+  asks whether what answered is the copy this process itself calls, by comparing
+  the address — because a name that resolves into another loaded module is
+  found, reports visible, and then corrupts the heap, which is the failure the
+  explicit `malloc`/`free` definitions already guard against from the other side
+  and which had no diagnostic at all. There is a second note for that case.
+
+  The canary is `str_with_capacity` rather than a console symbol: it is the seam
+  every String producer allocates through, so it cannot quietly become dead the
+  way `prismio_rt_println` did the moment `std/io.psm` stopped calling it.
+- **A String view crossing into C is copied onto the stack, not the heap.** A
+  view ends where its length says rather than at a NUL, so handing its pointer
+  to a C function needs a terminated copy. That copy was a `malloc`, a `memcpy`
+  and a `free`, every time.
+
+  Measured on this compiler compiling itself: **73,735 views per build, 1.3 MB
+  copied, 17.6 bytes on average** — 52.7% are 16 bytes or shorter and 99.4% are
+  32 or shorter. Nearly all of them are AST names on their way into the symbol
+  table, which are views into the source buffer by construction. A 64-byte
+  entry-block scratch takes all but 170 of them: **73,735 heap copies became
+  170**, and 1.3 MB became 13.5 KB.
+
+  **It is not faster**, and the number is recorded so it is not re-derived: the
+  front end reads 0.998x min / 1.001x p50 over 9 interleaved runs, because 73.5k
+  allocations is about 0.09% of a 4.1 s compile. What it buys is allocator
+  pressure, not wall clock. Nothing else moved with it — the non-view path is
+  bit-identical, the benchmark binary is the same size, and 3 of its 98 `bench*`
+  symbols changed, all three of them printing helpers outside the timed regions.
+
+  Safe because no callee may retain the pointer: the heap path frees its copy
+  the moment the call returns, so anything holding one was already broken.
+  `alias` externs never reach this path.
 - **The launcher asks a project host which generation it is, and rebuilds it
   when the answer is wrong.** Removing a runtime symbol codegen used to emit
   does not fail where it is removed: it fails in the *previous* compiler, which

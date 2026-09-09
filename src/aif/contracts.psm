@@ -31,6 +31,10 @@ private fn aifDeclaredContract(name: String, index: Int) -> Int {
     if (text.equals("")) { return 0 - 1 }
 
     if (text.equals("borrow")) { return AIF_FFI_BORROW }
+    // `bytes` differs from `borrow` only in how the argument is presented at the
+    // ABI. It says nothing about ownership that `borrow` does not, so there is
+    // no fourth escape state here and nothing in the lattice to widen.
+    if (text.equals("bytes")) { return AIF_FFI_BORROW }
     if (text.equals("retain")) { return AIF_FFI_RETAIN }
     if (text.equals("consume")) { return AIF_FFI_CONSUME }
     if (text.equals("out")) { return AIF_FFI_OUT }
@@ -87,6 +91,15 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     // The view retains nothing *of its own*; that its result points into the
     // first argument is the return contract, answered by `aifFfiAliasOf`.
     if (name.equals("__builtin_string_view")) { return AIF_FFI_BORROW }
+    // errno and its two comparison constants. They take no arguments, read a
+    // per-thread `int` the program does not own, and hand back a copy of it --
+    // so there is nothing to retain and nothing to place. Described here rather
+    // than left unknown because an undescribed callee blocks bracketing for the
+    // whole function that calls it, which is what `prismioStdIoWriteAll` does to
+    // every program that prints.
+    if (name.equals("__builtin_errno")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_errno_intr")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_errno_again")) { return AIF_FFI_BORROW }
     if (name.equals("slice_len")) { return AIF_FFI_BORROW }
     if (name.equals("slice_set")) {
         if (index == 2) { return AIF_FFI_RETAIN_IN_BASE + 0 }

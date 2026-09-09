@@ -39,6 +39,9 @@ SOURCE_DIRS = ("src", "std", "ums")
 # check, so a runtime symbol must never be added to it.
 LIBC_SYMBOLS = {
     "exit",
+    # std/io.psm writes to the descriptor itself rather than through a runtime
+    # shim, so `write` is the console output path for every Prismio program.
+    "write",
 }
 
 DECL = re.compile(r"^\s*extern\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)

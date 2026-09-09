@@ -1439,14 +1439,24 @@ def run_aif_human_report_test():
         if "/stdlib/" in text:
             problems.append("default report exposes the installed stdlib path")
 
-    why = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--why=1"])
-    if why.returncode != 0:
-        problems.append(f"numeric --why exited {why.returncode}")
+    # The ID is read off the report rather than hardcoded. Site numbering runs
+    # backwards through std.io's source, so any edit to that module renumbers
+    # every site, and asking for `--why=1` asserted whichever allocation
+    # happened to sort first rather than the one this case is about.
+    returned = re.search(r"^(\d+)\s+\S+\s+\S+\s+unique heap\s+returned to the caller\s*$",
+                         human.stdout, re.M)
+    if not returned:
+        problems.append("default report lists no unique-heap site to explain")
     else:
-        for wanted in ("Allocation 1", "Storage    unique heap",
-                       "Reason     returned to the caller", "E-RETURN"):
-            if wanted not in why.stdout:
-                problems.append(f"numeric --why does not contain {wanted!r}")
+        site = returned.group(1)
+        why = run_command([str(PRISMIO_EXE), "aif", str(fixture), f"--why={site}"])
+        if why.returncode != 0:
+            problems.append(f"numeric --why exited {why.returncode}")
+        else:
+            for wanted in (f"Allocation {site}", "Storage    unique heap",
+                           "Reason     returned to the caller", "E-RETURN"):
+                if wanted not in why.stdout:
+                    problems.append(f"numeric --why does not contain {wanted!r}")
 
     manifest = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--manifest"])
     if manifest.returncode != 0:
@@ -2435,11 +2445,28 @@ def run_split_release_test():
         else:
             released, leaked, violations = (int(ledger.group(2)), int(ledger.group(3)),
                                             int(ledger.group(4)))
-            if released < 2 * bodies:
+            # **Reclamation is counted where it happens, which is the arena.**
+            # `Body` reads `arena:auto -- caller region selected`, so both halves
+            # are bulk-reclaimed at region exit and never reach the heap ledger:
+            # `released` is 1 here and would be 1 whether the cold block was
+            # reclaimed or not. `aif-arena` can see it -- one object per half,
+            # against one per body when the same fixture is forced unsplit, which
+            # `forced_layout` measures as exactly `bodies` of difference.
+            arena = None
+            for line in (run.stdout + run.stderr).splitlines():
+                m = re.search(r"aif-arena:\s+(\d+) object", line)
+                if m:
+                    arena = int(m.group(1))
+            if arena is None:
                 problems.append(
-                    f"{released} released against {bodies} split objects. Both "
-                    f"halves of every body have to be reclaimed, so this cannot "
-                    f"be below {2 * bodies}: the cold blocks are leaking.")
+                    "no aif-arena line was matched, so the reclamation of the "
+                    "split halves was not checked at all")
+            elif arena < 2 * bodies:
+                problems.append(
+                    f"{arena} arena object(s) against {bodies} split objects. "
+                    f"Both halves of every body have to be placed and reclaimed, "
+                    f"so this cannot be below {2 * bodies}: the cold blocks are "
+                    f"not being allocated beside their hot halves.")
             if violations != 0:
                 problems.append(
                     f"{violations} violation(s). A split object freed twice is "
@@ -2961,7 +2988,21 @@ def run_forced_layout_test():
                     f"no aif-verify ledger at a forced cut of {cut}, so its "
                     f"accounting was not checked")
                 continue
-            released_by_cut[cut] = int(ledger.group(2))
+            # The heap ledger cannot see this fixture's objects: `Body` reads
+            # `arena:auto -- caller region selected`, so every body is
+            # bulk-reclaimed at region exit and `released` is 1 at every cut.
+            # The arena's own object count is where a cold block shows up.
+            arena = None
+            for line in (run.stdout + run.stderr).splitlines():
+                m = re.search(r"aif-arena:\s+(\d+) object", line)
+                if m:
+                    arena = int(m.group(1))
+            if arena is None:
+                problems.append(
+                    f"no aif-arena line at a forced cut of {cut}, so its "
+                    f"placement was not checked")
+                continue
+            released_by_cut[cut] = arena
             if int(ledger.group(4)) != 0:
                 problems.append(
                     f"{ledger.group(4)} violation(s) at a forced cut of {cut}. The "
@@ -2983,9 +3024,9 @@ def run_forced_layout_test():
         expected_gap = bodies
         if gap != expected_gap:
             problems.append(
-                f"forced split released {gap} more objects than forced unsplit, "
-                f"expected exactly {expected_gap} -- one cold block per body. "
-                f"A force that only moved the manifest would read 0 here.")
+                f"a forced split placed {gap} more arena objects than a forced "
+                f"unsplit, expected exactly {expected_gap} -- one cold block per "
+                f"body. A force that only moved the manifest would read 0 here.")
 
     if problems:
         for p in problems:

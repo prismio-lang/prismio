@@ -3,8 +3,6 @@
 
 import std.io
 import std.string
-extern fn print(value: String)
-extern fn println(value: String)
 
 struct UmsDiagnostic {
     code: String,

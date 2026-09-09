@@ -485,6 +485,22 @@ static LLVMValueRef resolve_value(const char *s, const char *type_key) {
 // would land on the first. Entry-block allocas are stack slots that LLVM's stack
 // colouring merges when their live ranges do not overlap, so the cost of being
 // correct here is nothing.
+// The same, sized for a view crossing into C. See str_cstr_for_call.
+#define PRISMIO_CSTR_SCRATCH 64
+
+static LLVMValueRef str_cstr_scratch_slot(void) {
+    LLVMBasicBlockRef here = LLVMGetInsertBlock(g_builder);
+    LLVMValueRef first = g_entry_block ? LLVMGetFirstInstruction(g_entry_block) : NULL;
+    if (first) LLVMPositionBuilderBefore(g_builder, first);
+    else if (g_entry_block) LLVMPositionBuilderAtEnd(g_builder, g_entry_block);
+    LLVMValueRef slot = LLVMBuildAlloca(
+        g_builder,
+        LLVMArrayType2(LLVMInt8TypeInContext(g_ctx), PRISMIO_CSTR_SCRATCH),
+        "str.cstrbuf");
+    LLVMPositionBuilderAtEnd(g_builder, here);
+    return slot;
+}
+
 static LLVMValueRef str_scratch_slot(void) {
     LLVMBasicBlockRef here = LLVMGetInsertBlock(g_builder);
     LLVMValueRef first = g_entry_block ? LLVMGetFirstInstruction(g_entry_block) : NULL;
@@ -3374,12 +3390,24 @@ void ir_call_begin(void) {
 // already end in a terminator -- an owned block carries one and an inline pair
 // gets one written into the scratch -- but a view ends where its length says,
 // inside a buffer that continues, so handing its pointer to a C function would
-// read past it. The copy is made here, recorded on the call, and released as soon
-// as the call returns.
+// read past it.
 //
 // Behind a branch so the common path pays nothing: two of the three classes
 // reach the callee with the pointer they already had.
+//
+// **The copy is a stack slot, not a heap block, wherever it fits.** Measured on
+// this compiler compiling itself: 73,735 views cross into C per build, 1.3 MB of
+// copying, and the average is 17.6 bytes -- 52.7% are 16 bytes or shorter, 99.4%
+// are 32 or shorter, and 0.2% exceed 64. Every one of those was a `malloc`, a
+// `memcpy` and a `free`. Nearly all of them are AST names on their way into the
+// symbol table, which are views into the source buffer by construction.
+//
+// The scratch is safe because **no callee may retain this pointer**: the heap
+// path frees its copy the moment the call returns, so anything that held on to
+// one was already broken. `alias` externs, the ones that do hand a pointer back,
+// never reach here -- they take the punned-slot path in expr.psm instead.
 static LLVMValueRef str_cstr_for_call(LLVMValueRef pair, LLVMValueRef *owned_out) {
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
     LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
     LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
@@ -3395,33 +3423,53 @@ static LLVMValueRef str_cstr_for_call(LLVMValueRef pair, LLVMValueRef *owned_out
             LLVMBuildAnd(g_builder, word, LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), ""),
             LLVMConstInt(i64, 0, 0), ""), "");
 
-    LLVMBasicBlockRef copy = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.cstr");
+    LLVMBasicBlockRef view = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.cstr");
+    LLVMBasicBlockRef onstack = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.cstrbuf");
+    LLVMBasicBlockRef onheap = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.cstrheap");
     LLVMBasicBlockRef join = LLVMAppendBasicBlockInContext(g_ctx, g_function, "str.cstrdone");
     LLVMBasicBlockRef from = LLVMGetInsertBlock(g_builder);
-    LLVMBuildCondBr(g_builder, is_view, copy, join);
+    LLVMBuildCondBr(g_builder, is_view, view, join);
 
-    LLVMPositionBuilderAtEnd(g_builder, copy);
+    LLVMPositionBuilderAtEnd(g_builder, view);
     LLVMValueRef n = LLVMBuildTrunc(
         g_builder, LLVMBuildAnd(g_builder, word, LLVMConstInt(i64, 0x7FFFFFFFULL, 0), ""),
         i32, "");
+    // `<` and not `<=`: index `n` has to hold the terminator.
+    LLVMValueRef fits = LLVMBuildICmp(g_builder, LLVMIntULT, n,
+        LLVMConstInt(i32, PRISMIO_CSTR_SCRATCH, 0), "");
+    LLVMBuildCondBr(g_builder, fits, onstack, onheap);
+
+    LLVMPositionBuilderAtEnd(g_builder, onstack);
+    LLVMValueRef slot = str_cstr_scratch_slot();
+    LLVMBuildMemCpy(g_builder, slot, 1, bytes, 1,
+                    LLVMBuildZExt(g_builder, n, i64, ""));
+    LLVMValueRef idx[1] = {n};
+    LLVMBuildStore(g_builder, LLVMConstInt(i8, 0, 0),
+                   LLVMBuildGEP2(g_builder, i8, slot, idx, 1, ""));
+    LLVMBasicBlockRef from_stack = LLVMGetInsertBlock(g_builder);
+    LLVMBuildBr(g_builder, join);
+
+    LLVMPositionBuilderAtEnd(g_builder, onheap);
     LLVMTypeRef cargs[2] = {ptr, i32};
     LLVMTypeRef cty = LLVMFunctionType(ptr, cargs, 2, 0);
     LLVMValueRef cfn = LLVMGetNamedFunction(g_module, "str_clone_n");
     if (!cfn) cfn = LLVMAddFunction(g_module, "str_clone_n", cty);
     LLVMValueRef call_args[2] = {bytes, n};
     LLVMValueRef made = LLVMBuildCall2(g_builder, cty, cfn, call_args, 2, "");
-    LLVMBasicBlockRef from_copy = LLVMGetInsertBlock(g_builder);
+    LLVMBasicBlockRef from_heap = LLVMGetInsertBlock(g_builder);
     LLVMBuildBr(g_builder, join);
 
     LLVMPositionBuilderAtEnd(g_builder, join);
-    LLVMValueRef arg = LLVMBuildPhi(g_builder, ptr, "");
-    LLVMValueRef av[2] = {made, bytes};
-    LLVMBasicBlockRef ab[2] = {from_copy, from};
-    LLVMAddIncoming(arg, av, ab, 2);
+    LLVMBasicBlockRef ab[3] = {from_stack, from_heap, from};
 
+    LLVMValueRef arg = LLVMBuildPhi(g_builder, ptr, "");
+    LLVMValueRef av[3] = {slot, made, bytes};
+    LLVMAddIncoming(arg, av, ab, 3);
+
+    // Only the heap path leaves something to release.
     LLVMValueRef owned = LLVMBuildPhi(g_builder, ptr, "");
-    LLVMValueRef ov[2] = {made, LLVMConstNull(ptr)};
-    LLVMAddIncoming(owned, ov, ab, 2);
+    LLVMValueRef ov[3] = {LLVMConstNull(ptr), made, LLVMConstNull(ptr)};
+    LLVMAddIncoming(owned, ov, ab, 3);
     *owned_out = owned;
     return arg;
 }
@@ -3672,6 +3720,25 @@ void ir_global_var(const char *name, const char *type, const char *init_value,
         LLVMSetInitializer(g, LLVMConstNull(ty));
     }
     if (is_const) LLVMSetGlobalConstant(g, 1);
+}
+
+// A source-level `let` at module scope, made private to this LLVM module.
+//
+// **Every module that imports one gets its own definition, not a reference.**
+// That is fine while a program is one module and fatal the moment it is two: a
+// program built outside the checkout takes `std.io` from `stdlib/io.plib` *and*
+// emits its own copy of the module's globals, and the link fails with
+// `Linking globals named 'STDOUT': symbol multiply defined!`. Private linkage
+// says what was already true -- the copies are per-module and nothing outside
+// names them -- so the duplicates stop colliding.
+//
+// Not applied to `prismio_argc` / `prismio_argv`, which codegen defines for the
+// runtime to find by name; those two are emitted through ir_global_var directly
+// and stay external.
+void ir_global_set_internal(const char *name) {
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (!g) backend_fail("cannot privatise an unknown global", name);
+    LLVMSetLinkage(g, LLVMInternalLinkage);
 }
 
 void ir_global_string(const char *name, const char *content) {
@@ -4020,6 +4087,76 @@ int ir_str_data(const char *value) {
     // again -- which put the three stores back inside the byte loop this exists
     // to keep them out of.
     return intern_value(coerce_for(resolve_value(value, "ptr"), "ptr"));
+}
+
+// errno, reached the way libc itself reaches it.
+//
+// **`errno` is not a symbol on any modern platform.** It is a macro for a
+// dereference of a per-thread location returned by a function, and the
+// function's name is the platform's own. Emitting that call inline is what keeps
+// this out of a runtime shim: the program links libc's entry point directly,
+// exactly as C does, and nothing is added to lang_runtime.c.
+//
+// The triple decides, not the host, so a cross build asks its target. An empty
+// triple means "host" (ir_target_select's fallback), which is the one case that
+// falls through to this compiler's own platform.
+static const char *errno_location_symbol(void) {
+    const char *triple = ir_target_triple();
+    if (!triple || !*triple) {
+#if defined(_WIN32)
+        return "_errno";
+#elif defined(__APPLE__)
+        return "__error";
+#else
+        return "__errno_location";
+#endif
+    }
+    if (strstr(triple, "windows") || strstr(triple, "msvc") ||
+        strstr(triple, "mingw")) {
+        return "_errno";
+    }
+    if (strstr(triple, "apple") || strstr(triple, "darwin") ||
+        strstr(triple, "macos") || strstr(triple, "ios") ||
+        strstr(triple, "bsd")) {
+        return "__error";
+    }
+    return "__errno_location";
+}
+
+int ir_errno_load(void) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef fty = LLVMFunctionType(ptr, NULL, 0, 0);
+
+    const char *sym = errno_location_symbol();
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, sym);
+    if (!fn) fn = LLVMAddFunction(g_module, sym, fty);
+
+    LLVMValueRef loc = LLVMBuildCall2(g_builder, fty, fn, NULL, 0, "");
+    return intern_value(LLVMBuildLoad2(g_builder, i32, loc, ""));
+}
+
+// The two error numbers a retry loop has to recognise, folded for the target.
+//
+// Hardcoded per platform because there is nowhere else to read them from: they
+// are C macros, and a compiler that cross-compiles cannot ask its host. This is
+// what every systems language does for the same reason.
+//
+// EINTR is 4 on Darwin, the BSDs, Linux and the Windows CRT alike. EAGAIN is the
+// one that moves: 35 on Darwin and the BSDs, 11 on Linux and the Windows CRT.
+// EWOULDBLOCK is the same value as EAGAIN everywhere this compiler targets.
+int ir_errno_constant(const char *which) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    int value = 0;
+    if (which && strcmp(which, "EINTR") == 0) {
+        value = 4;
+    } else if (which && strcmp(which, "EAGAIN") == 0) {
+        const char *sym = errno_location_symbol();
+        value = strcmp(sym, "__error") == 0 ? 35 : 11;
+    } else {
+        backend_fail("unknown errno constant", which);
+    }
+    return intern_value(LLVMConstInt(i32, (unsigned long long)value, 0));
 }
 
 // Build the short form: `count` bytes at `base + start`, held in the pair.
@@ -5278,9 +5415,15 @@ void ir_debug_local(const char *name, const char *slot, const char *type_key,
 // collects it when the DIBuilder is finalized. So this runs during the module's
 // global loop, before any function exists and with no scope stack to read.
 //
-// Scope is the compile unit rather than a file. `resolveImports` merges every
+// Scope is the compile unit rather than a file: `resolveImports` merges every
 // module into one unit here, and a Prismio global is visible across that whole
-// unit, so LocalToUnit is 0 -- which is also what ir_global_var's linkage says.
+// unit.
+//
+// **`LocalToUnit` is read off the global rather than assumed.** It used to be a
+// literal 0 with a comment saying that is what the linkage says too, and the two
+// drifted the moment module-level globals became internal -- leaving debug info
+// that called an internal global externally visible. Asking the value removes
+// the second place the fact was written down.
 void ir_debug_global(const char *name, const char *type_key, const char *type_name,
                      int file_id, int line) {
     if (!g_di) return;
@@ -5298,9 +5441,11 @@ void ir_debug_global(const char *name, const char *type_key, const char *type_na
     LLVMMetadataRef ty = di_type_for(type_key, type_name);
     if (!ty) return; // a type this layer has no description for: no entry
 
+    LLVMBool local_to_unit = LLVMGetLinkage(global) == LLVMInternalLinkage
+                             || LLVMGetLinkage(global) == LLVMPrivateLinkage;
     LLVMMetadataRef gve = LLVMDIBuilderCreateGlobalVariableExpression(
         g_di, g_di_cu, name, strlen(name), name, strlen(name), file,
-        (unsigned)line, ty, 0, g_di_empty_expr, NULL, 0);
+        (unsigned)line, ty, local_to_unit, g_di_empty_expr, NULL, 0);
     LLVMGlobalSetMetadata(global, LLVMGetMDKindIDInContext(g_ctx, "dbg", 3), gve);
 }
 
@@ -5482,41 +5627,72 @@ static int jit_failed(const char *what, LLVMErrorRef err) {
     return 1;
 }
 
-// Whether this process's own symbols are reachable through the generator the
-// JIT resolves against, which is not the same question on every platform and is
-// the whole of why `run --jit` fails on Windows and nowhere else. A Mach-O
-// executable exports its symbols to a `dlsym` by default; an ELF one does when
-// it was linked `-rdynamic`, which tools/bootstrap.sh and build_driver.c both
-// pass for exactly this reason; a COFF executable exports nothing at all unless
-// it was linked with an export table, so `GetProcAddress` over the running .exe
-// finds none of the runtime a jitted module calls.
-// **What ORC reports when that happens names the module's own functions**, not
+// Defined in lang_runtime.c, which every build of this compiler links. Declared
+// here rather than included for the same reason prismio_argc is above.
+extern char *str_with_capacity(int length);
+
+// What the generator the JIT resolves against actually finds when it is asked
+// for one of this process's own symbols.
+typedef enum {
+    // The name did not resolve at all. Whether it can is not the same question
+    // on every platform, and is the whole of why `run --jit` fails on Windows
+    // and nowhere else: a Mach-O executable exports its symbols to a `dlsym` by
+    // default; an ELF one does when it was linked `-rdynamic`, which
+    // tools/bootstrap.sh and build_driver.c both pass for exactly this reason;
+    // a COFF executable exports nothing at all unless it was linked with an
+    // export table, so `GetProcAddress` over the running .exe finds none of the
+    // runtime a jitted module calls.
+    JIT_PROCESS_OPAQUE = 0,
+    // It resolved, to something that is not the copy this process calls.
+    JIT_PROCESS_FOREIGN,
+    JIT_PROCESS_OURS,
+} JitProcessSymbols;
+
+// **What ORC reports when a lookup fails names the module's own functions**, not
 // the runtime ones it could not find -- `print__U64`, `println__String` and the
 // rest fail to materialize because their dependencies did -- which reads as a
 // codegen fault rather than a link one. So the question is asked directly here
-// instead of inferred from that list: one lookup of a symbol every generation of
-// this compiler links, reported only when something downstream actually fails.
-static int jit_process_symbols_visible(LLVMOrcLLJITRef jit) {
+// instead of inferred from that list.
+//
+// The address is compared, not merely tested for zero. Visibility alone left the
+// more dangerous answer unasked: a name that resolves to *another* loaded
+// module's copy is found, reports visible, and then corrupts the heap -- which
+// is the failure the `malloc`/`free` definitions further down exist to prevent,
+// seen from the other side, and which until now had no diagnostic at all.
+//
+// `str_with_capacity` rather than a console symbol: it is the seam every String
+// producer allocates through, so it cannot quietly become dead the way
+// `prismio_rt_println` did when std/io.psm stopped calling it.
+static JitProcessSymbols jit_process_symbols(LLVMOrcLLJITRef jit) {
     LLVMOrcExecutorAddress address = 0;
-    LLVMErrorRef err = LLVMOrcLLJITLookup(jit, &address, "prismio_rt_println");
+    LLVMErrorRef err = LLVMOrcLLJITLookup(jit, &address, "str_with_capacity");
     if (err) {
         LLVMConsumeError(err);
-        return 0;
+        return JIT_PROCESS_OPAQUE;
     }
-    return address != 0;
+    if (address == 0) return JIT_PROCESS_OPAQUE;
+    return address == (LLVMOrcExecutorAddress)(uintptr_t)(void *)&str_with_capacity
+               ? JIT_PROCESS_OURS
+               : JIT_PROCESS_FOREIGN;
 }
 
-// jit_failed, plus what the symbol list means when the process turned out to be
-// opaque. The note follows the error rather than replacing it: the list is still
+// jit_failed, plus what the symbol list means given what the process turned out
+// to be. The note follows the error rather than replacing it: the list is still
 // the evidence, and this says how to read it.
-static int jit_failed_unresolved(const char *what, LLVMErrorRef err, int visible) {
+static int jit_failed_unresolved(const char *what, LLVMErrorRef err,
+                                 JitProcessSymbols symbols) {
     int status = jit_failed(what, err);
-    if (!visible) {
+    if (symbols == JIT_PROCESS_OPAQUE) {
         fprintf(stderr,
                 "note: --jit: this process exports none of its own symbols, so the "
                 "runtime a jitted module calls cannot be resolved out of it. The "
                 "symbols named above are the module's own; they failed because "
                 "their dependencies did.\n");
+    } else if (symbols == JIT_PROCESS_FOREIGN) {
+        fprintf(stderr,
+                "note: --jit: `str_with_capacity` resolved to a copy that is not "
+                "this process's own, so a jitted module would allocate through a "
+                "different runtime than the one handing it its values.\n");
     }
     return status;
 }
@@ -6297,7 +6473,7 @@ int ir_jit_run_main(const char *program_name) {
     // Asked before the module goes in, while a lookup is still answering for
     // the generator alone rather than for a materialization that has already
     // failed.
-    int process_visible = jit_process_symbols_visible(jit);
+    JitProcessSymbols process_symbols = jit_process_symbols(jit);
 
     err = LLVMOrcLLJITAddLLVMIRModule(jit, jd, tsm);
     if (err) {
@@ -6305,7 +6481,7 @@ int ir_jit_run_main(const char *program_name) {
         // double free.
         LLVMOrcDisposeLLJIT(jit);
         return jit_failed_unresolved("could not add the module to the JIT", err,
-                                     process_visible);
+                                     process_symbols);
     }
 
     LLVMOrcExecutorAddress entry_address = 0;
@@ -6313,7 +6489,7 @@ int ir_jit_run_main(const char *program_name) {
     if (err) {
         LLVMOrcDisposeLLJIT(jit);
         return jit_failed_unresolved("could not find `main` in the jitted module",
-                                     err, process_visible);
+                                     err, process_symbols);
     }
 
     // **The two prismio_argc are not the same variable, and this is the bug this
