@@ -187,6 +187,19 @@ private fn semaDeclaresFunction(name: String) -> Bool {
     return false
 }
 
+// **An operator's lowering is bound to the library, not to whatever is in
+// scope.** `a + b` is `concat(a, b)` in std.string, and once a program may
+// declare its own `concat(String, String)` -- which it may, since a name a
+// standard-library method claims is no longer a duplicate definition -- the
+// unqualified spelling would reach that one and silently change what `+` means.
+//
+// The qualifier field is how a call says which module it meant; `token.isKeyword(w)`
+// sets it too. Overload resolution already filters on it, so this needs nothing
+// new: it is the module-qualified call the author would have had to write.
+private fn semaBindToStandardString(expr: ASTNode) {
+    expr.s1 = "std.string"
+}
+
 // Turn `expr` into a call to `name` over `args`, in place.
 //
 // In place by rewriting the kind, for the reason the payload-enum rewrite is:
@@ -279,6 +292,7 @@ private fn semaStringComparison(module: ASTNode, expr: ASTNode, op: String,
     let cmp = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(cmp, expr)
     semaBecomeCall(cmp, "compare", semaCallArgs2(leftNode, rightNode))
+    semaBindToStandardString(cmp)
 
     let zero = createNode(NodeKind.LITERAL_EXPR)
     zero.i1 = TokenType.NUMBER_LITERAL
@@ -379,6 +393,7 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
     let lengthArgs = nodeList()
     nodeListPush(lengthArgs, semaNameNode(source, source.s1))
     semaBecomeCall(length, lengthFn, lengthArgs.head)
+    if (lengthFn.equals("strLength")) { semaBindToStandardString(length) }
 
     let zero = createNode(NodeKind.LITERAL_EXPR)
     zero.i1 = TokenType.NUMBER_LITERAL
@@ -506,6 +521,7 @@ private fn semaStringConcatChain(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     semaBecomeCall(expr, "concat", parts.head)
+    semaBindToStandardString(expr)
     // CALL_EXPR.i3 = 3 records that this call came from String `+`. Codegen may
     // consume the left buffer when an owning assignment immediately replaces it;
     // an explicit `.concat` remains the always-immutable API. Keeping the origin
@@ -578,6 +594,30 @@ private fn semaPropertyRewrite(module: ASTNode, expr: ASTNode) -> Int {
     return 1
 }
 
+// **A literal's range is checked where its type stops changing, not where it is
+// first guessed.** `semaExpr` answers `Int` for a bare integer literal, and an
+// annotation, a parameter, a cast or the other side of a comparison may still
+// widen it -- so the check belongs at each of those, and at the two places a
+// defaulted literal simply stays what it was: an untyped `let`, and arithmetic
+// between two of them.
+//
+// `i2` records that this node has been reported. semaExpr runs over a node more
+// than once -- overload resolution types every argument of every candidate --
+// and without the mark one out-of-range literal is one diagnostic per candidate.
+internal fn semaCheckLiteralRange(node: ASTNode) {
+    if (semaIsIntLiteral(node) == false) { return }
+    if (node.i2 == 1) { return }
+    if (nodeHasType(node) == false) { return }
+    let t = nodeGetType(node)
+    if (t.kind != TypeKind.INT) { return }
+    // Reported already, in the vocabulary of "no integer type at all".
+    if (typeIntLiteralFitsAnyInt(node.s1) == false) { return }
+    if (typeIntLiteralFits(node.s1, t)) { return }
+    node.i2 = 1
+    semaErrorAt(node, "integer literal ".concat(diagQuote(node.s1),
+                                                " does not fit in ", typeDisplay(t)))
+}
+
 internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     if (nodeHasType(expr)) {
         return nodeGetType(expr)
@@ -585,7 +625,21 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
     if (expr.kind == NodeKind.LITERAL_EXPR) {
         let mut t = typeInvalid()
-        if (expr.i1 == TokenType.NUMBER_LITERAL) { t = typeInt() }
+        if (expr.i1 == TokenType.NUMBER_LITERAL) {
+            t = typeInt()
+            // **`Int` here is a first guess, not the answer.** A literal is
+            // re-typed by whatever it meets -- an annotation, a parameter, the
+            // other side of a comparison, a cast -- and each of those checks the
+            // range against the type it imposes. So the only thing that can be
+            // decided now is whether *no* integer type could hold it, which is
+            // worth saying at once: `99999999999999999999999` is not a number
+            // this language has, whatever it is later compared to.
+            if (typeIntLiteralFitsAnyInt(expr.s1) == false) {
+                semaErrorAt(expr, "integer literal ".concat(diagQuote(expr.s1),
+                                                            " is too large for any integer type"))
+                diag_note("the widest are `I64` and `U64`, at 64 bits")
+            }
+        }
         if (expr.i1 == TokenType.FLOAT_LITERAL) { t = typeFloat() }
         if (expr.i1 == TokenType.BOOL_LITERAL) { t = typeBool() }
         if (expr.i1 == TokenType.CHAR_LITERAL) { t = typeChar() }
@@ -626,6 +680,23 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         let source = ptr_to_node(expr.child1)
         let fromT = semaExpr(module, source)
         let toT = semaAnnotationType(module, ptr_to_node(expr.child2))
+
+        // **A bare integer literal takes the type it is being cast to, when it
+        // fits in one.** Without this `4294967296 as U64` was 0: the literal
+        // typed as `Int`, wrapped as an i32, and the cast widened the wreckage.
+        //
+        // **When it does not fit, the cast is left to truncate**, and that is
+        // not an oversight -- `as` is the explicit narrowing operator, so
+        // `300 as U8` meaning 44 is the feature rather than the bug. Making that
+        // a diagnostic would leave no way to write a deliberate truncation, and
+        // `-128 as I8` -- which parses as a negation of `128 as I8` -- would stop
+        // naming the most negative I8. The two rules only look alike: a value
+        // that fits is being *named*, and one that does not is being *cut*.
+        if (toT.kind == TypeKind.INT and semaIsIntLiteral(source) and fromT.kind == TypeKind.INT) {
+            if (typeIntLiteralFits(source.s1, toT)) {
+                nodeSetType(source, toT)
+            }
+        }
 
         let fromScalar = fromT.kind == TypeKind.INT or fromT.kind == TypeKind.FLOAT
                           or fromT.kind == TypeKind.CHAR or fromT.kind == TypeKind.BOOL
@@ -718,6 +789,12 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                 leftT = typeCopy(rightT)
             }
         }
+        // Whatever the coercion above decided, that is what these operands are.
+        // `0 - 2147483648` is the case this catches: two literals of the same
+        // type, so nothing widens either, and the second wrapped to `Int`'s most
+        // negative value -- making the subtraction produce it back.
+        semaCheckLiteralRange(leftNode)
+        semaCheckLiteralRange(rightNode)
 
         let op = expr.s1
 
@@ -1292,6 +1369,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             }
             semaBecomeCall(expr, "charAt",
                            semaCallArgs2(ptr_to_node(expr.child1), ptr_to_node(expr.child2)))
+            semaBindToStandardString(expr)
             return semaExpr(module, expr)
         }
 
@@ -1338,6 +1416,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             semaBecomeCall(expr, "slice",
                            semaCallArgs3(ptr_to_node(expr.child1), ptr_to_node(expr.child2),
                                          ptr_to_node(expr.child3)))
+            semaBindToStandardString(expr)
             return semaExpr(module, expr)
         }
 
@@ -1401,6 +1480,254 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     return typeInvalid()
 }
 
+// **`print(a, b, c)` is `print(a); print(" "); print(b); print(" "); print(c)`.**
+//
+// Python's shape, and a rewrite rather than an overload set because neither
+// library spelling exists here. The language has no variadics -- a parameter is
+// a name and a type, and nothing else (parseParameter) -- and the bounded
+// generic form, `fn print<A: Display, B: Display>(a: A, b: B)`, would make
+// std.io import std.display and through it std.string: 5 potential allocation
+// sites for a hello-world before that import and 85 after, paid by every program
+// that prints whether or not it ever passes two arguments.
+//
+// Splitting the call sends each value through the exact-type overload it already
+// had. Nothing new is imported and nothing new allocates: overload resolution,
+// ownership, AIF and codegen see the single-argument calls they have always
+// seen. The same trick the method-call and payload-enum rewrites use, for the
+// same reason -- put the feature in the AST, not in five passes.
+//
+// **A statement rewrite is the whole rewrite, not a special case.** These four
+// functions return Unit, so a call to one is only ever an expression statement.
+// There is no other position for a multi-argument print to be in, which is what
+// makes splitting the statement complete rather than partial.
+//
+// The trailing value keeps the name that was written, so `println(a, b)` still
+// writes its newline into the last formatter's own allocation rather than
+// costing a second write.
+private fn semaIsPrintName(name: String) -> Bool {
+    if (name.equals("print")) { return true }
+    if (name.equals("println")) { return true }
+    if (name.equals("eprint")) { return true }
+    if (name.equals("eprintln")) { return true }
+    return false
+}
+
+// Every piece but the last is written without a newline, and to the descriptor
+// the call named: splitting `eprintln` onto stdout would put half a status line
+// in the output a program's stdout is a format for.
+private fn semaPrintPieceName(name: String) -> String {
+    if (name.equals("eprint")) { return "eprint" }
+    if (name.equals("eprintln")) { return "eprint" }
+    return "print"
+}
+
+// Whether some declaration of this name takes exactly this many arguments.
+// Distinct from semaDeclaresFunction, which asks whether the name is declared at
+// all: the rewrite needs both answers and they mean different things here.
+private fn semaDeclaresArity(name: String, arity: Int) -> Bool {
+    let count = ir_decl_count(name)
+    let mut i = 0
+    while (i < count) {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.FUNCTION and semaParamCount(decl) == arity) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// `separator(", ")` -- recognised in a print's argument list, and nowhere else.
+//
+// A marker rather than a keyword argument because a parameter is a name and a
+// type, so `sep = ", "` has nowhere in the grammar to go. Nothing is declared
+// and nothing survives: the rewrite consumes the shape, so no pass after sema
+// ever sees one.
+//
+// Guarded on the name being undeclared, which is what keeps it from being a
+// reserved word by the back door. `separator` is an ordinary identifier, and a
+// program that declares one of its own keeps it -- the marker turns itself off
+// rather than shadowing a name the program already owns.
+private fn semaIsSeparatorMarker(arg: ASTNode) -> Bool {
+    if (arg.kind != NodeKind.CALL_EXPR) { return false }
+    if (arg.s1.equals("") == false) { return false }
+    if (nodeExists(arg.child1) == false) { return false }
+    let callee = ptr_to_node(arg.child1)
+    if (callee.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    if (callee.s1.equals("separator") == false) { return false }
+    return semaDeclaresFunction("separator") == false
+}
+
+// The marker's own argument, or null to mean "use the default".
+//
+// **What a separator may be is limited by the rewrite writing it once per gap.**
+// A literal costs nothing to repeat and a name is a read; `separator(join(a, b))`
+// would run the call once per gap, and a String it returned owned would be a
+// value nothing names -- which RUNTIME.md 3.1 makes a leak per gap rather than
+// an inefficiency. Refused with the fix named, and checking returns the default
+// afterwards so that one mistake is one diagnostic.
+private fn semaSeparatorArgument(marker: ASTNode) -> Ptr {
+    if (nodeExists(marker.child2) == false) {
+        semaErrorAt(marker, "`separator` needs the text to put between the values")
+        diag_note("write `separator(\", \")`, or leave it out for a single space")
+        return ptr_null()
+    }
+
+    let arg = ptr_to_node(marker.child2)
+    if (nodeExists(arg.next)) {
+        semaErrorAt(marker, "`separator` takes one String")
+        return ptr_null()
+    }
+
+    let isText = arg.kind == NodeKind.LITERAL_EXPR and arg.i1 == TokenType.STRING_LITERAL
+    if (isText == false and arg.kind != NodeKind.IDENTIFIER_EXPR) {
+        semaErrorAt(arg, "a separator must be a String literal or a name")
+        diag_note("the separator is written once per gap, so bind this to a `let` and pass the name")
+        return ptr_null()
+    }
+
+    return marker.child2
+}
+
+// A fresh node per gap rather than the same one linked in twice.
+//
+// Sharing would put one pointer in several places in the tree, and every pass
+// that records a fact per node -- its type, its AIF site, its debug location --
+// would be keeping several answers in one slot.
+private fn semaSeparatorCopy(sourcePtr: Ptr, anchor: ASTNode) -> ASTNode {
+    if (nodeExists(sourcePtr) == false) {
+        let space = createNode(NodeKind.LITERAL_EXPR)
+        space.i1 = TokenType.STRING_LITERAL
+        space.s1 = " "
+        nodeSpanFrom(space, anchor)
+        return space
+    }
+
+    let source = ptr_to_node(sourcePtr)
+    let copy = createNode(source.kind)
+    copy.i1 = source.i1
+    copy.s1 = strClone(source.s1)
+    nodeSpanFrom(copy, source)
+    return copy
+}
+
+// One piece of the split: `name(value)` as its own statement.
+//
+// The span comes from the value rather than from the call that is being taken
+// apart, so "no overload of `println` accepts these argument types" underlines
+// the argument that has no overload instead of a name the author wrote once.
+private fn semaPrintPieceStatement(name: String, value: ASTNode, anchor: ASTNode) -> ASTNode {
+    value.next = ptr_null()
+    let args = nodeList()
+    nodeListPush(args, value)
+
+    let call = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(call, anchor)
+    semaBecomeCall(call, name, args.head)
+
+    let piece = createNode(NodeKind.EXPRESSION_STATEMENT)
+    nodeSpanFrom(piece, anchor)
+    piece.child1 = node_to_ptr(call)
+    return piece
+}
+
+// The split itself, spliced into the statement chain the caller is walking.
+//
+// Into the chain rather than into a BLOCK of its own: codegen's statement
+// dispatch has no BLOCK case (src/ir/stmt.psm), so a block in statement position
+// would emit nothing at all -- a silent miscompile rather than an error. Both
+// walkers that reach an expression statement advance through `next` (semaBlock
+// and semaWorkloadStatements), so the pieces are checked as they are reached,
+// and AIF runs between sema and codegen, so both later passes number the same
+// chain this one leaves behind.
+//
+// Idempotent, as every rewrite in this file has to be: what it produces is
+// single-argument calls, and the condition below is two arguments or more.
+private fn semaSplitPrintStatement(module: ASTNode, stmt: ASTNode) {
+    if (nodeExists(stmt.child1) == false) { return }
+    let call = ptr_to_node(stmt.child1)
+    if (call.kind != NodeKind.CALL_EXPR) { return }
+    // A module or trait qualifier is parked on the call's `s1`, and one of those
+    // is not this spelling.
+    if (call.s1.equals("") == false) { return }
+    if (nodeExists(call.child1) == false) { return }
+
+    let callee = ptr_to_node(call.child1)
+    if (callee.kind != NodeKind.IDENTIFIER_EXPR) { return }
+    let name = callee.s1
+    if (semaIsPrintName(name) == false) { return }
+    // Without std.io imported there is no `print` to split. Overload resolution
+    // then reports "unknown function `print`" at the call, which is the mistake;
+    // rewriting first would report it at an argument.
+    if (semaDeclaresFunction(name) == false) { return }
+
+    // Take the separator off the end. It is looked for anywhere in the list so
+    // that a misplaced one is reported as the misplacement it is, rather than
+    // reaching overload resolution as an argument and being reported as a type.
+    let mut separatorPtr = ptr_null()
+    let mut previousPtr = ptr_null()
+    let mut argumentCount = 0
+    let mut scanPtr = call.child2
+    while (nodeExists(scanPtr)) {
+        let argument = ptr_to_node(scanPtr)
+        let nextPtr = argument.next
+        if (semaIsSeparatorMarker(argument)) {
+            if (nodeExists(nextPtr)) {
+                semaErrorAt(argument, "the separator must be the last argument")
+            }
+            separatorPtr = semaSeparatorArgument(argument)
+            if (nodeExists(previousPtr)) {
+                ptr_to_node(previousPtr).next = nextPtr
+            } else {
+                call.child2 = nextPtr
+            }
+        } else {
+            argumentCount = argumentCount + 1
+            previousPtr = scanPtr
+        }
+        scanPtr = nextPtr
+    }
+
+    if (argumentCount < 2) { return }
+    // An overload of this arity is a program, not a mistake to rewrite around: a
+    // program that declares its own two-argument `print` keeps it.
+    if (semaDeclaresArity(name, argumentCount)) { return }
+
+    let pieceName = semaPrintPieceName(name)
+    // The head keeps this node, so the statement the enclosing chain already
+    // points at is still the first write.
+    let head = ptr_to_node(call.child2)
+    let mut valuePtr = head.next
+    head.next = ptr_null()
+    callee.s1 = strClone(pieceName)
+
+    let following = stmt.next
+    let mut tail = stmt
+    while (nodeExists(valuePtr)) {
+        let value = ptr_to_node(valuePtr)
+        let nextValuePtr = value.next
+
+        let gap = semaSeparatorCopy(separatorPtr, value)
+        let gapStatement = semaPrintPieceStatement(pieceName, gap, gap)
+        tail.next = node_to_ptr(gapStatement)
+        tail = gapStatement
+
+        // Spelled as two calls rather than one over a chosen name, because
+        // choosing would mean binding `pieceName` inside the loop and a String
+        // is affine: the second iteration would be reading a moved-from name.
+        if (nodeExists(nextValuePtr)) {
+            let valueStatement = semaPrintPieceStatement(pieceName, value, value)
+            tail.next = node_to_ptr(valueStatement)
+            tail = valueStatement
+        } else {
+            let lastStatement = semaPrintPieceStatement(name, value, value)
+            tail.next = node_to_ptr(lastStatement)
+            tail = lastStatement
+        }
+
+        valuePtr = nextValuePtr
+    }
+    tail.next = following
+}
+
 private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
     if (stmt.kind == NodeKind.VARIABLE_DECL) {
         let mut varT = typeInvalid()
@@ -1415,6 +1742,9 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
                 semaCheckValue(module, ptr_to_node(stmt.child2), varT, "initializer for ".concat(diagQuote(stmt.s1)))
             } else {
                 varT = semaExpr(module, ptr_to_node(stmt.child2))
+                // No annotation, so nothing will widen a bare literal after
+                // this: `let n = 4294967296` is an `Int` and has to fit one.
+                semaCheckLiteralRange(ptr_to_node(stmt.child2))
             }
             semaMoveOperand(ptr_to_node(stmt.child2))
         }
@@ -1586,6 +1916,10 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
     }
 
     if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
+        // Before the expression is typed rather than after it fails: a
+        // multi-argument print has no overload, and letting resolution report
+        // that first would make the feature a diagnostic.
+        semaSplitPrintStatement(module, stmt)
         if (nodeExists(stmt.child1)) {
             semaExpr(module, ptr_to_node(stmt.child1))
         }

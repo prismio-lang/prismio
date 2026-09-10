@@ -417,6 +417,12 @@ private fn irArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
     return aif_owns_call_result_at_node(node_to_ptr(argNode)) != AIF_ELEM_NONE
 }
 
+// The declared type an owned temporary is released as. Only a typed release
+// consults it; the object and list forms ignore it.
+private fn irOwnedTemporaryDeclType(argNode: ASTNode) -> String {
+    return getExprType(argNode)
+}
+
 private fn irOwnedTemporaryKind(argNode: ASTNode) -> Int {
     let mut owned = aif_owns_call_result_at_node(node_to_ptr(argNode))
     if (nodeGetType(argNode).kind == TypeKind.DATAVIEW) { return IR_DROP_DATAVIEW }
@@ -3445,6 +3451,46 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // the platform's. The backend picks that name from the target triple and
         // emits the call inline, so the program links libc directly and the
         // runtime gains nothing.
+        // The console write. A builtin rather than an `extern fn write` for the
+        // reason errno is one: the symbol's *name* is the platform's. POSIX has
+        // `write`, the Windows CRT has `_write` and no `write` at all, so the
+        // extern spelling linked on two platforms of three and put an undefined
+        // symbol into every Windows program that printed.
+        //
+        // The count and the result follow the same triple: `ssize_t`/`size_t` on
+        // POSIX, `int`/`unsigned int` on Windows. Prismio passes an `Int` -- a
+        // String's length is an i32 -- so the widening and the narrowing here are
+        // both exact.
+        //
+        // `ir_call_arg_borrow` and not `ir_call_arg_cstr` is the `bytes`
+        // contract the extern used to carry: the callee has the count and never
+        // reads to a terminator, so the String's own pointer crosses and a view
+        // of the remainder is not copied on every iteration of the retry loop.
+        if (funcName.equals("__builtin_console_write") and nodeExists(expr.child2)) {
+            let fdNode = ptr_to_node(expr.child2)
+            let textNode = ptr_to_node(fdNode.next)
+            let countNode = ptr_to_node(textNode.next)
+
+            let fdVal = generateExpression(fdNode)
+            let textVal = generateExpression(textNode)
+            let countVal = generateExpression(countNode)
+
+            let word = ir_console_write_word()
+            ir_call_begin()
+            ir_call_arg("i32", fdVal)
+            ir_call_arg_borrow("ptr", textVal)
+            // Each arm builds its own result rather than sharing one binding: a
+            // value name is a String, and binding it once to narrow it in one
+            // branch would be a move the other branch reads back.
+            if (word.equals("i64")) {
+                ir_call_arg("i64", ir_get_temp_name(ir_sext("i32", countVal, "i64")))
+                let wide = ir_get_temp_name(ir_call_end("i64", ir_console_write_symbol()))
+                return ir_get_temp_name(ir_trunc("i64", wide, "i32"))
+            }
+            ir_call_arg("i32", countVal)
+            return ir_get_temp_name(ir_call_end("i32", ir_console_write_symbol()))
+        }
+
         if (funcName.equals("__builtin_errno")) {
             return ir_get_temp_name(ir_errno_load())
         }
@@ -3680,14 +3726,34 @@ internal fn generateExpression(expr: ASTNode) -> String {
             and nodeExists(expr.child2)) {
             let e0 = ptr_to_node(expr.child2)
             if (nodeExists(e0.next)) {
+                let rhs = ptr_to_node(e0.next)
                 let lhsVal = generateExpression(e0)
-                let rhsVal = generateExpression(ptr_to_node(e0.next))
+                let rhsVal = generateExpression(rhs)
                 // The backend compares the pairs first. Two short strings are
                 // equal exactly when their sixteen bytes match, which the layout
                 // guarantees and which costs two register compares; `str_equals`
                 // is reached only when the lengths agree and at least one side
                 // keeps its bytes behind a pointer.
-                return ir_get_temp_name(ir_str_eq(lhsVal, rhsVal))
+                let answer = ir_get_temp_name(ir_str_eq(lhsVal, rhsVal))
+
+                // **An owned operand is dropped here, because nothing else will.**
+                // `a.concat(b) == "x"` allocates a String that is never bound, and
+                // an ordinary call releases exactly that shape in its argument
+                // loop below -- `irArgumentIsOwnedTemporary`. Lowering `==` to a
+                // builtin skipped the loop and with it the drop, so the operator
+                // leaked where the `.equals()` method it is a spelling of did not:
+                // 1 allocated, 0 released. The comparison reads the bytes and
+                // retains nothing, so the release is unconditional once the
+                // answer is in hand.
+                if (irArgumentIsOwnedTemporary(e0)) {
+                    generateOwnedTemporaryRelease(lhsVal, irOwnedTemporaryKind(e0),
+                                                  irOwnedTemporaryDeclType(e0))
+                }
+                if (irArgumentIsOwnedTemporary(rhs)) {
+                    generateOwnedTemporaryRelease(rhsVal, irOwnedTemporaryKind(rhs),
+                                                  irOwnedTemporaryDeclType(rhs))
+                }
+                return answer
             }
         }
 

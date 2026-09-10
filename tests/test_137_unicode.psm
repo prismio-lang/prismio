@@ -1,0 +1,106 @@
+// `std.unicode`: what a reader sees, as against what a String stores.
+//
+// Three counts, all of them right for different questions -- `"é"` typed as `e`
+// and a combining acute is 3 bytes, 2 scalars and 1 grapheme -- plus the two
+// normal forms, which are what makes the two spellings of that string comparable
+// at all.
+//
+// The range tables are generated from the Unicode database
+// (`tools/generate_unicode_tables.py`), so the values asserted here are the
+// standard's, not a guess about it.
+
+import std.io
+import std.string
+import std.unicode
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // -- Display width -------------------------------------------------------
+    if (scalarWidth(97) != 1) { return fail("ASCII is one column") }
+    if (scalarWidth(26085) != 2) { return fail("a CJK ideograph is two") }
+    if (scalarWidth(769) != 0) { return fail("a combining mark is none") }
+    if (scalarWidth(9) != 0) { return fail("a control character is none") }
+
+    if (strDisplayWidth("abc") != 3) { return fail("width of ASCII") }
+    if (strDisplayWidth("日本") != 4) { return fail("width of CJK") }
+    if ("日本".length != 6) { return fail("bytes of CJK") }
+    if ("日本".scalarCount() != 2) { return fail("scalars of CJK") }
+
+    // A letter and its combining mark occupy the letter's column.
+    let decomposed = "é"
+    if (decomposed.length != 3) { return fail("bytes of a decomposed é") }
+    if (decomposed.scalarCount() != 2) { return fail("scalars of a decomposed é") }
+    if (strDisplayWidth(decomposed) != 1) { return fail("width of a decomposed é") }
+    if (decomposed.graphemeCount() != 1) { return fail("graphemes of a decomposed é") }
+
+    // -- Grapheme clusters ---------------------------------------------------
+    if ("abc".graphemeCount() != 3) { return fail("ASCII graphemes") }
+    // A flag is a pair of regional indicators, and one character to a reader.
+    if ("🇯🇵".scalarCount() != 2) { return fail("scalars in a flag") }
+    if ("🇯🇵".graphemeCount() != 1) { return fail("a flag is one grapheme") }
+    // Two flags are two, which is what the pairing rule is for.
+    if ("🇯🇵🇫🇷".graphemeCount() != 2) { return fail("two flags are two graphemes") }
+    // A ZWJ sequence is one however many scalars it names.
+    if ("👨‍👩‍👧".graphemeCount() != 1) { return fail("a ZWJ family is one grapheme") }
+    if ("👍🏽".graphemeCount() != 1) { return fail("a skin tone joins its emoji") }
+    // Hangul jamo compose into a syllable.
+    if ("각".graphemeCount() != 1) { return fail("Hangul jamo are one grapheme") }
+
+    let parts = "a🇯🇵b".graphemes()
+    if (list_len(parts) != 3) { return fail("graphemes splits into clusters") }
+
+    // -- Columns, not characters ---------------------------------------------
+    if (strPadEndDisplay("日本", 8, '.').equals("日本....") == false) {
+        return fail("padding to a column count")
+    }
+    if (strTruncateToWidth("日本語です", 4).equals("日本") == false) {
+        return fail("truncating to a column count")
+    }
+    // Never mid-character, whatever the budget.
+    if (strTruncateToWidth("日本語", 3).equals("日") == false) {
+        return fail("an odd budget cuts at a boundary")
+    }
+
+    // -- Normalization -------------------------------------------------------
+    let composed = "é"
+    if ((composed == decomposed)) { return fail("the two spellings differ as bytes") }
+    if (strEqualsNormalized(composed, decomposed) == false) {
+        return fail("and are the same text")
+    }
+    if (strNormalizeNfc(decomposed).equals(composed) == false) { return fail("NFD to NFC") }
+    if (strNormalizeNfd(composed).equals(decomposed) == false) { return fail("NFC to NFD") }
+
+    // Idempotent, which is what makes it a normal *form*. Bound rather than
+    // nested: an owned result passed straight into another call has nothing to
+    // hang a drop on, which RUNTIME.md 3.1 makes a leak rather than a style
+    // preference -- and this fixture runs under `--verify`.
+    let once = strNormalizeNfc(decomposed)
+    let twice = strNormalizeNfc(once)
+    if (twice.equals(composed) == false) { return fail("NFC is idempotent") }
+
+    // Canonical ordering: two marks in either order normalize alike.
+    let dotAboveFirst = "q̣̇"
+    let dotBelowFirst = "q̣̇"
+    let orderedA = strNormalizeNfd(dotAboveFirst)
+    let orderedB = strNormalizeNfd(dotBelowFirst)
+    if (orderedA.equals(orderedB) == false) { return fail("marks are canonically ordered") }
+
+    // Hangul composes by arithmetic rather than from a table.
+    if (strNormalizeNfc("각").equals("각") == false) { return fail("Hangul composes") }
+    if (strNormalizeNfd("각").scalarCount() != 3) { return fail("Hangul decomposes") }
+
+    // A singleton decomposition is excluded from composition: the Angstrom sign
+    // normalizes to A-with-ring and does not come back.
+    if (strNormalizeNfc("Å").equals("Å") == false) { return fail("a singleton is excluded") }
+
+    // Canonical, not compatibility: NFC must leave `ﬁ` alone.
+    if (strNormalizeNfc("ﬁ").equals("ﬁ") == false) { return fail("NFC is not NFKC") }
+
+    println("test_137 ok")
+    return 0
+}

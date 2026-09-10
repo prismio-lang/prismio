@@ -39,10 +39,12 @@ SOURCE_DIRS = ("src", "std", "ums")
 # check, so a runtime symbol must never be added to it.
 LIBC_SYMBOLS = {
     "exit",
-    # std/io.psm writes to the descriptor itself rather than through a runtime
-    # shim, so `write` is the console output path for every Prismio program.
-    "write",
 }
+# `write` was here. std/io.psm reaches the descriptor through
+# `__builtin_console_write` now rather than an `extern fn`, because the symbol is
+# `write` on POSIX and `_write` on the Windows CRT -- a name only the backend can
+# pick, from the target triple. A builtin carries no declaration, so there is
+# nothing for this check to see and the hole closed with it.
 
 DECL = re.compile(r"^\s*extern\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)
 

@@ -1,0 +1,127 @@
+// The parts of std.string a program cannot ship without, and the two readings of
+// a String that make them possible.
+//
+// **Byte or character is the whole subject here.** `length`, `charAt` and
+// `substring` are byte-indexed, which is right for a scanner and wrong for user
+// text; the scalar functions are the second reading. Every assertion below that
+// mentions a width is really asking which of the two answered.
+
+import std.io
+import std.string
+import std.option
+import std.display
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // -- Float text ---------------------------------------------------------
+    //
+    // `Float` was the one type that could be printed and parsed but never
+    // converted. Round-tripping is the property that matters: the text has to
+    // name the same double, or a value written to a file comes back different.
+    if (strFromFloat(0.1).equals("0.1") == false) { return fail("strFromFloat(0.1)") }
+    if (strFromFloat(100.0).equals("100") == false) { return fail("a round value is not exponential") }
+    if (strFromFloat(1.0 / 3.0).equals("0.3333333333333333") == false) {
+        return fail("a third keeps every digit it needs")
+    }
+    if (strFromFloat(1.0e21).equals("1e+21") == false) { return fail("a large value stays exponential") }
+    if (strFromFloatFixed(1.0 / 3.0, 2).equals("0.33") == false) { return fail("fixed decimals") }
+    if (show(2.5).equals("2.5") == false) { return fail("Display for Float") }
+    if ((2.5).toString().equals("2.5") == false) { return fail("Float.toString") }
+
+    // Format and parse are a pair or they are nothing.
+    let third = optionOr(strParseFloat(strFromFloat(1.0 / 3.0)), 0.0)
+    if (third != 1.0 / 3.0) { return fail("Float round-trips through its text") }
+    let huge = optionOr(strParseFloat(strFromFloat(1.0e21)), 0.0)
+    if (huge != 1.0e21) { return fail("an exponent round-trips") }
+    // Thirteen digits overflowed the old parser's 32-bit mantissa.
+    if (optionOr(strParseFloat("1234567890123"), 0.0) != 1234567890123.0) {
+        return fail("a long mantissa parses")
+    }
+    if (optionIsNone(strParseFloat("1.5kg")) == false) { return fail("trailing text is not a number") }
+    if (optionIsNone(strParseFloat(" 1.5")) == false) { return fail("leading space is not a number") }
+
+    // -- UTF-8 --------------------------------------------------------------
+    let accented = "héllo wörld"
+    if (accented.length != 13) { return fail("length is bytes") }
+    if (accented.scalarCount() != 11) { return fail("scalarCount is characters") }
+    if (accented.isValidUtf8() == false) { return fail("valid UTF-8") }
+    if (accented.isAscii()) { return fail("not ASCII") }
+    if ("plain".isAscii() == false) { return fail("ASCII") }
+
+    // Reversing bytes would put half of an `é` where a character belongs.
+    if (accented.reverse().equals("dlröw olléh") == false) { return fail("reverse moves characters") }
+    if (accented.reverse().isValidUtf8() == false) { return fail("reverse leaves valid UTF-8") }
+    if ("abc".reverse().equals("cba") == false) { return fail("reverse on ASCII") }
+
+    if (accented.scalarAt(1) != 233) { return fail("é is U+00E9") }
+    if (accented.scalarWidthAt(1) != 2) { return fail("é is two bytes") }
+    if (accented.isCharBoundary(1) == false) { return fail("byte 1 begins a character") }
+    if (accented.isCharBoundary(2)) { return fail("byte 2 is inside one") }
+    if (accented.scalarSubstring(1, 4).equals("éllo") == false) { return fail("scalarSubstring") }
+
+    if (strFromScalar(233).equals("é") == false) { return fail("encode two bytes") }
+    if (strFromScalar(128169).length != 4) { return fail("encode four bytes") }
+    if (strFromScalar(233).scalarAt(0) != 233) { return fail("encode and decode agree") }
+    // A surrogate is not a scalar and encodes as U+FFFD rather than as bytes no
+    // reader could take.
+    if (strFromScalar(55296).scalarAt(0) != 65533) { return fail("a surrogate is refused") }
+
+    let marks = accented.scalars()
+    if (list_len(marks) != 11) { return fail("scalars decodes every character") }
+    if (list_get(marks, 1) != 233) { return fail("scalars keeps order") }
+
+    // A width is characters, so a padded column lines up whatever alphabet it is
+    // in. Counted in bytes, this string is two short.
+    if (accented.padStart(13, '.').scalarCount() != 13) { return fail("padStart counts characters") }
+    if (accented.padEnd(13, '.').scalarCount() != 13) { return fail("padEnd counts characters") }
+    if ("ab".padCenter(6, '-').equals("--ab--") == false) { return fail("padCenter") }
+
+    // -- Parsing, with the range checked ------------------------------------
+    if (optionOr(strParseInt("42"), 0) != 42) { return fail("parseInt") }
+    if (optionOr(strParseInt("-42"), 0) != 0 - 42) { return fail("parseInt negative") }
+    if (optionIsNone(strParseInt("99999999999")) == false) { return fail("overflow is None") }
+    if (optionIsNone(strParseInt("2147483648")) == false) { return fail("Int max + 1 is None") }
+    if (optionOr(strParseInt("2147483647"), 0) != 2147483647) { return fail("Int max parses") }
+    // `-2147483648` is folded into the literal by the parser, so it fits `Int`.
+    // `0 - 2147483648` does not and is a diagnostic: the operand alone is out of
+    // range, exactly as it is in Rust.
+    if (optionOr(strParseInt("-2147483648"), 0) != -2147483648) { return fail("Int min parses") }
+    if (optionIsNone(strParseInt("banana")) == false) { return fail("text is not a number") }
+    if (optionIsNone(strParseInt("")) == false) { return fail("empty is not a number") }
+
+    let biggest = optionOr(strParseU64("18446744073709551615"), 0 as U64)
+    if (biggest != 18446744073709551615) { return fail("U64 max parses") }
+    if (optionIsNone(strParseU64("18446744073709551616")) == false) { return fail("U64 max + 1 is None") }
+    if (optionIsNone(strParseU64("-1")) == false) { return fail("unsigned has no negative") }
+
+    // min + max == -1 exactly, in two's complement. Spelled with casts because a
+    // bare `0 - 1` is an `Int` and this comparison is between I64s.
+    let smallest = optionOr(strParseI64("-9223372036854775808"), 0 as I64)
+    let largest = optionOr(strParseI64("9223372036854775807"), 0 as I64)
+    if (smallest + largest != (0 as I64) - (1 as I64)) { return fail("I64 min parses") }
+    if (optionIsNone(strParseI64("9223372036854775808")) == false) { return fail("I64 max + 1 is None") }
+
+    if (optionOr(strParseIntRadix("ff", 16), 0) != 255) { return fail("hex") }
+    if (optionOr(strParseIntRadix("FF", 16), 0) != 255) { return fail("hex is case-insensitive") }
+    if (optionOr(strParseIntRadix("1010", 2), 0) != 10) { return fail("binary") }
+    if (optionIsNone(strParseIntRadix("12", 99)) == false) { return fail("a radix out of range is None") }
+    if (optionIsNone(strParseIntRadix("2", 2)) == false) { return fail("a digit the radix has no room for") }
+
+    // -- Radix formatting ---------------------------------------------------
+    if (strHex(255 as U64).equals("ff") == false) { return fail("strHex") }
+    if (strBinary(5 as U64).equals("101") == false) { return fail("strBinary") }
+    if (strOctal(8 as U64).equals("10") == false) { return fail("strOctal") }
+    if (strFromIntRadix(0 - 255, 16).equals("-ff") == false) { return fail("a negative in hex") }
+    if (optionOr(strParseIntRadix(strFromIntRadix(123456, 36), 36), 0) != 123456) {
+        return fail("radix round-trips")
+    }
+    if ((255 as U64).toHex().equals("ff") == false) { return fail("U64.toHex") }
+
+    println("test_135 ok")
+    return 0
+}

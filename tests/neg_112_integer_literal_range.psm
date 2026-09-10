@@ -1,0 +1,27 @@
+// expect-error: integer literal `999` does not fit in U8
+// expect-error: integer literal `4294967296` does not fit in Int
+// expect-error: integer literal `2147483648` does not fit in Int
+// expect-error: integer literal `99999999999999999999999` is too large for any integer type
+//
+// **A literal that does not fit used to wrap in silence.** Each of these was a
+// program that said one number and ran another: the U8 stored 231, and the bare
+// `let` held 0.
+//
+// A *cast* is deliberately not here. `as` is the explicit narrowing operator, so
+// `300 as U8` meaning 44 is what it is for -- see test_36_casts. What the last
+// line checks is the other half of the rule: one diagnostic per mistake, so a
+// literal no integer type can hold is reported where it is typed and not again
+// at every place it is used.
+
+import std.io
+
+fn main() -> Int {
+    let small: U8 = 999
+    let wide = 4294967296
+    let sum = 0 - 2147483648
+    println(99999999999999999999999)
+    println(small)
+    println(wide)
+    println(sum)
+    return 0
+}

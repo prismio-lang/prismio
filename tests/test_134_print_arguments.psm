@@ -1,0 +1,76 @@
+// Several values in one `print`, and `separator(...)` to choose what goes
+// between them. Both are rewrites in the checker rather than overloads, so what
+// this fixture has to pin down is not that the text comes out -- a program
+// cannot read its own stdout -- but that the split it produces is the call that
+// was written: every value evaluated **once**, left to right, with the pieces in
+// between.
+//
+// `step` is what makes that checkable. It records the value it was handed and
+// returns it, so the log afterwards is the evaluation order, and a value
+// evaluated twice would show up twice.
+
+import std.io
+import std.string
+
+fn step(log: List<Int>, value: Int) -> Int {
+    list_push(log, value)
+    return value
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let log: List<Int> = list_new()
+
+    println(step(log, 1), step(log, 2), step(log, 3))
+    if (list_len(log) != 3) { return fail("three values, three evaluations") }
+    if (list_get(log, 0) != 1) { return fail("first value first") }
+    if (list_get(log, 1) != 2) { return fail("second value second") }
+    if (list_get(log, 2) != 3) { return fail("third value third") }
+
+    // The separator is not one of the values, and consuming it must not disturb
+    // the ones it sits after.
+    println(step(log, 4), step(log, 5), separator(" | "))
+    if (list_len(log) != 5) { return fail("the marker is not a value") }
+    if (list_get(log, 3) != 4) { return fail("order holds with a separator") }
+    if (list_get(log, 4) != 5) { return fail("order holds with a separator") }
+
+    // One value and a separator: nothing to put between, and the marker still
+    // comes off rather than reaching overload resolution as an argument.
+    print(step(log, 6), separator("!"))
+    println()
+    if (list_len(log) != 6) { return fail("a lone value with a separator") }
+
+    // Every overload the split can land on, mixed in one call.
+    println("mixed:", 1, true, 'c', 2.5)
+    println(0 - 7, 3 as U8, separator("/"))
+
+    // A name, not a literal -- read once per gap and never moved.
+    let bar = " | "
+    println("a", "b", "c", separator(bar))
+    if (bar.length != 3) { return fail("the separator name survives the split") }
+
+    // The single-argument calls these are built out of are untouched, and the
+    // empty `println` is the line on its own.
+    print("one")
+    println()
+    println("two")
+
+    // Status text still goes to stderr, and it splits the same way. The set
+    // matches stdout's type for type, which is what a split needs: the pieces
+    // before the last are `eprint` of a value whose overload has to exist.
+    eprintln("stderr:", "split", "too")
+    eprintln("count: ", 5)
+    eprintln("flag: ", true, " ch: ", 'x', separator(""))
+    eprint("float ")
+    eprintln(2.5)
+    eprintln(255 as U8, 0 - 7, separator(" / "))
+    eprintln()
+
+    println("test_134 ok")
+    return 0
+}

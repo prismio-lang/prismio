@@ -395,6 +395,9 @@ extern fn ir_call_arg_cstr(argValue: String, isBorrow: Int)
 // of a per-thread location whose accessor libc names itself, so the backend picks
 // the name from the *target* triple and emits the call inline. Nothing is added
 // to the runtime -- the program links libc's own entry point, as C does.
+// Both are `static const char*` in C, so the caller borrows them.
+extern fn ir_console_write_symbol() -> String alias
+extern fn ir_console_write_word() -> String alias
 extern fn ir_errno_load() -> Int
 
 // One of the error numbers a retry loop has to recognise, folded to a constant

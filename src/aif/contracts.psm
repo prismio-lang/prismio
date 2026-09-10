@@ -97,6 +97,11 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     // than left unknown because an undescribed callee blocks bracketing for the
     // whole function that calls it, which is what `prismioStdIoWriteAll` does to
     // every program that prints.
+    // The console write hands the descriptor a pointer and a count and keeps
+    // neither. Described here for the same reason errno is, one line down: this
+    // is the callee of `prismioStdIoWriteAll`, so leaving it unknown would block
+    // bracketing in every program that prints.
+    if (name.equals("__builtin_console_write")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_errno")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_errno_intr")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_errno_again")) { return AIF_FFI_BORROW }

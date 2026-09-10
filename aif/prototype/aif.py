@@ -133,6 +133,12 @@ FFI_CONTRACTS = {
     # The view form. Retains nothing of its own; that the result points into
     # argument 0 is a return contract, not a parameter one.
     '__builtin_string_view': {0: 'borrow'},
+    # The console write: a descriptor, a pointer and a count, retaining neither
+    # the buffer nor anything else. This is `prismioStdIoWriteAll`'s callee, so
+    # leaving it out blocks bracketing in every program that prints -- which is
+    # what it did when the write stopped being `extern fn write` and became a
+    # builtin: 15 of 19 differential sources moved on the same commit.
+    '__builtin_console_write': {0: 'borrow', 1: 'borrow', 2: 'borrow'},
     # errno and its two comparison constants: no arguments, nothing retained,
     # nothing placed. Present so `call_is_summarised` answers yes, exactly as
     # `aifCompilerBuiltinContract` does in src/aif/contracts.psm -- an

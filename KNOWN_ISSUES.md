@@ -398,6 +398,22 @@ package the generation first.
 
 ## Platform
 
+**The Windows console write is verified by its IR, not by running it.**
+`__builtin_console_write` emits `call i32 @_write(i32, ptr readonly, i32)` for
+`x86_64-pc-windows-msvc` and the POSIX `i64 @write` everywhere else, which is
+checked by cross-compiling from any host. That the *linked* program then prints
+is not checked here and cannot be from a macOS host; the Windows CI runner is
+what proves it.
+
+Two behaviours differ on Windows and are chosen rather than overlooked. Descriptor
+1 is in the CRT's **text mode**, so a `\n` reaches the console as `\r\n` — the same
+translation `printf` did before `std.io` went to the descriptor directly, and the
+reason a Windows program's stdout is not byte-identical to a POSIX one. And there
+is **no SIGPIPE**: a POSIX program whose reader has gone away dies of the signal
+as `cat` does, while on Windows the write returns an error and the retry loop
+stops, leaving the program to carry on. Neither is a defect to fix without
+deciding what `print` should mean on a platform whose console is not a byte pipe.
+
 **A compiler self-hosted on Windows has no export table.** Incurred by the fix
 that made the CI matrix green, and written down rather than done because it
 cannot be verified from a macOS host.
@@ -419,8 +435,38 @@ the entry root. Deliberately not part of 0.1.
 `--overflow-checks` is the debug-mode check; the intent forms are a separate
 feature.
 
-**`Char` is a byte, not a Unicode scalar.** There is no string interpolation and
-no iterator protocol.
+**`Char` is a byte, not a Unicode scalar**, and that is a decision rather than a
+gap: it is what makes a scan one comparison per byte. What was a gap was having
+no second reading — `std.string` now carries `scalarCount`, `scalars`,
+`scalarAt`, `scalarWidthAt`, `isCharBoundary`, `scalarSubstring`, `isValidUtf8`
+and `strFromScalar`, and `reverse` and the three `pad` functions moved to
+characters because counting bytes there produced invalid UTF-8 and misaligned
+columns. What remains: `toUpper`/`toLower`/`capitalize` are ASCII-only (full case
+mapping needs Unicode tables, and can change a string's length — `ß` uppercases
+to `SS`), and there are no grapheme clusters, no normalization, and no
+display-width function, so a padded column of CJK still does not line up.
+
+**There is no string interpolation and no iterator protocol.**
+
+**A function that returns a view of its argument declines the caller's drop of
+that argument, and the fact does not survive one level of indirection.**
+`strSubstring(owned, 1, 4)` is clean; a `strScalarSubstring` that computed its
+bounds by calling another function and then returned `strSubstring(s, a, b)` read
+**1 allocated / 0 released**, because the caller's drop of `owned` was declined
+and the view that declined it took nothing. `strStripPrefix(owned, "X")` in
+`std.string` still has this shape and leaks one allocation.
+
+The rule that avoids it is the one in the header of `std/string.psm`: a producer
+allocates its own result. `strScalarSubstring` and `strTruncateToWidth` copy for
+this reason, at one allocation each. What is not established is why the
+inference reaches `strTrim` -- which loops and then returns a view -- and not a
+function that passes its parameter to another one on the way.
+
+**A producing call nested directly inside another leaks the inner result.**
+`strToUpper(strToUpper(x))` reads 3 allocated / 2 released, and so does the same
+shape over `strTrim` or `strClone`; `concat` is special-cased in codegen's
+argument-release gate and does not. Bind the intermediate, which RUNTIME.md 3.1
+asks for anyway.
 
 ## Measurement, if you are benchmarking this
 

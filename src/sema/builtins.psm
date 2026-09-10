@@ -25,6 +25,9 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
 
     // errno and the two numbers a retry loop compares it against. Int, because
     // errno is a C `int` and these are read to be compared with each other.
+    // Bytes written, or -1. `Int` on every platform: a String's length is an
+    // i32, so no console write can ask for more than one holds.
+    if (name.equals("__builtin_console_write")) { return typeInt() }
     if (name.equals("__builtin_errno")) { return typeInt() }
     if (name.equals("__builtin_errno_intr")) { return typeInt() }
     if (name.equals("__builtin_errno_again")) { return typeInt() }
@@ -176,6 +179,16 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
     if (name.equals("__builtin_abs")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         semaCheckValue(module, ptr_to_node(argPtr), typeInt(), "integer abs operand")
+        return true
+    }
+
+    if (name.equals("__builtin_console_write")) {
+        if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
+        let fd = ptr_to_node(argPtr)
+        semaCheckValue(module, fd, typeInt(), "console write descriptor")
+        let text = ptr_to_node(fd.next)
+        semaCheckValue(module, text, typeString(), "console write buffer")
+        semaCheckValue(module, ptr_to_node(text.next), typeInt(), "console write count")
         return true
     }
 

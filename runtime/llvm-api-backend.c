@@ -390,7 +390,32 @@ static LLVMValueRef const_from_text(const char *s, LLVMTypeRef ty) {
     }
     if (strcmp(s, "true") == 0) return LLVMConstInt(ty, 1, 0);
     if (strcmp(s, "false") == 0) return LLVMConstInt(ty, 0, 0);
-    return LLVMConstInt(ty, (unsigned long long)strtoll(s, NULL, 10), 1);
+    // **`strtoll` alone cannot spell the top half of a `U64`.** It saturates at
+    // I64_MAX and sets ERANGE, so `let n: U64 = 18446744073709551615` reached
+    // LLVM as 9223372036854775807 -- a literal the front end had accepted for
+    // the type, quietly becoming a different number. An unsigned literal goes
+    // through `strtoull`, which has the range for it; anything with a sign stays
+    // on the signed path, where two's complement needs the negative bits.
+    // `0x`, `0o`, `0b`. The base is read from the prefix rather than handed to
+    // `strtoull` as 0, because that spelling also makes a leading zero octal --
+    // `010` would quietly stop being ten.
+    const char *digits = s;
+    int sign = 0;
+    if (*digits == '-' || *digits == '+') {
+        sign = (*digits == '-');
+        digits++;
+    }
+    int base = 10;
+    if (digits[0] == '0' && digits[1] != '\0') {
+        if (digits[1] == 'x' || digits[1] == 'X') { base = 16; digits += 2; }
+        else if (digits[1] == 'o' || digits[1] == 'O') { base = 8; digits += 2; }
+        else if (digits[1] == 'b' || digits[1] == 'B') { base = 2; digits += 2; }
+    }
+    if (sign) {
+        long long magnitude = (long long)strtoull(digits, NULL, base);
+        return LLVMConstInt(ty, (unsigned long long)(-magnitude), 1);
+    }
+    return LLVMConstInt(ty, strtoull(digits, NULL, base), 0);
 }
 
 // The single place that turns a frontend string into an LLVMValueRef.
@@ -4121,6 +4146,42 @@ static const char *errno_location_symbol(void) {
         return "__error";
     }
     return "__errno_location";
+}
+
+// **The console write is the one libc call whose name is not the same
+// everywhere.** POSIX spells it `write`; the Windows CRT spells it `_write` and
+// exports no `write` at all, so `extern fn write` linked on macOS and Linux and
+// left every Windows program with an undefined symbol -- for a name std.io emits
+// into anything that prints.
+//
+// Picked from the triple for the reason errno_location_symbol gives one screen
+// up: a cross build cannot ask its host what its target calls things.
+const char *ir_console_write_symbol(void) {
+    const char *triple = ir_target_triple();
+    if (!triple || !*triple) {
+#if defined(_WIN32)
+        return "_write";
+#else
+        return "write";
+#endif
+    }
+    if (strstr(triple, "windows") || strstr(triple, "msvc") ||
+        strstr(triple, "mingw")) {
+        return "_write";
+    }
+    return "write";
+}
+
+// The width of that call's count and result.
+//
+// `ssize_t write(int, const void *, size_t)` against
+// `int _write(int, const void *, unsigned int)`: both halves are the platform
+// word on POSIX and 32-bit on Windows. The Prismio side is `Int` on both, which
+// is not a narrowing -- a String's length is already an i32, so no console write
+// can ask for more than one holds -- so codegen widens the count for POSIX and
+// narrows the result back, and neither cast can lose a byte.
+const char *ir_console_write_word(void) {
+    return strcmp(ir_console_write_symbol(), "_write") == 0 ? "i32" : "i64";
 }
 
 int ir_errno_load(void) {

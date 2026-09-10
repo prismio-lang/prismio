@@ -1,0 +1,20 @@
+// expect-error: the separator must be the last argument
+// expect-error: a separator must be a String literal or a name
+// expect-error: `separator` needs the text to put between the values
+// expect-error: unknown function `separator`
+
+// `separator(...)` is a marker the print split consumes, not a function. Each of
+// these is one mistake and must be one diagnostic: reaching overload resolution
+// instead would report the first three as argument types, and the last as a name
+// that was never declared with nothing saying what it is.
+
+import std.io
+import std.string
+
+fn main() -> Int {
+    println("a", separator(", "), "b")
+    println("a", "b", separator(strFromInt(3)))
+    println("a", "b", separator())
+    let stray = separator(", ")
+    return 0
+}

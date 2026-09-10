@@ -1,10 +1,19 @@
-// expect-error: no overload of `println` accepts these argument types
+// expect-error: no overload of `twice` accepts these argument types
 // expect-error: aborting due to 1 previous error
 //
-// The std.io overload set has no two-argument candidate.
+// The overload set has no two-argument candidate.
+//
+// `println(1, 2)` was the example here, and stopped being one when several
+// values in one print became a rewrite in sema: that call is now a program. An
+// ordinary function is the honest example, because nothing rewrites around it.
 
 import std.io
+
+fn twice(value: Int) -> Int {
+    return value + value
+}
+
 fn main() -> Int {
-    println(1, 2)
+    twice(1, 2)
     return 0
 }

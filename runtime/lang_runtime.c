@@ -14,6 +14,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+// DBL_MAX, for the two infinities the round-trip search cannot reach.
+#include <float.h>
+#include <errno.h>
 
 #if defined(__aarch64__) || defined(_M_ARM64)
 #include <arm_neon.h>
@@ -264,21 +267,179 @@ static int rt_arena_slot(void) {
     return *rt_arena_hint_state() > 0 ? arena_current_slot() : 0;
 }
 
-// The whole of the console runtime. Every other `print` and `println` overload
-// formats in std/io.psm and writes to the descriptor itself; these two are what
-// is left, because `%g` has no source-level formatter yet.
+// **The shortest decimal text that reads back as the same double.**
 //
-// The flush is not cosmetic here. std.io reaches stdout with `write`, which does
-// not pass through this buffer, so a float left sitting in it would be overtaken
-// by the next line the program prints.
+// `%g` is six significant digits, so it is a *lossy* view of a value: 1/3
+// printed and parsed back is a different number, and the program has no way to
+// tell. Every shipped language resolved this the same way -- Python since 3.1,
+// Rust, Go, Swift -- by printing the shortest text that round-trips, so that
+// what you read is exactly what the program holds.
+//
+// Found by search rather than by Ryu or Grisu: ask for one significant digit,
+// parse it back, and widen until it matches. Seventeen digits always suffice for
+// a binary64, which is the loop's bound. A Ryu port would be faster and is
+// several hundred lines of tables; this is two library calls per attempt and
+// converges in one for the values programs actually print -- 0.1, 2.5, 100 --
+// because those *are* one or two digits.
+//
+// The three values with no decimal form are spelled out rather than left to the
+// C library, which disagrees with itself about them: glibc gives `inf`, some
+// give `INF`, MSVC has historically given `1.#INF`. A NaN also fails the
+// round-trip test by definition, so it has to leave before the loop.
+static int prismio_format_double(double value, char *out, size_t cap) {
+    if (value != value) return snprintf(out, cap, "nan");
+    if (value > DBL_MAX) return snprintf(out, cap, "inf");
+    if (value < -DBL_MAX) return snprintf(out, cap, "-inf");
+
+    for (int digits = 1; digits < 17; digits++) {
+        int n = snprintf(out, cap, "%.*g", digits, value);
+        if (n < 0 || (size_t)n >= cap) break;
+        if (strtod(out, NULL) != value) continue;
+
+        // **Fewest digits is not the same as the form a reader expects.**
+        // `%.1g` of 100 is `1e+02`, which round-trips and is the shortest digit
+        // count, and no language prints it: `%g` goes exponential as soon as the
+        // exponent reaches the precision, so one significant digit sends every
+        // round number there. Widening the precision is what brings it back --
+        // `%.3g` is `100` -- and more digits of a value that already round-trips
+        // still round-trips, so this cannot change which double is meant.
+        //
+        // Bounded by the same seventeen, which is what leaves the genuinely
+        // exponential values alone: nothing under that precision writes 1e+21 or
+        // 1e-308 in full, so they keep the form they should have.
+        if (memchr(out, 'e', (size_t)n) == NULL) return n;
+        for (int wider = digits + 1; wider <= 17; wider++) {
+            int w = snprintf(out, cap, "%.*g", wider, value);
+            if (w < 0 || (size_t)w >= cap) break;
+            if (memchr(out, 'e', (size_t)w) == NULL) return w;
+        }
+        return snprintf(out, cap, "%.*g", digits, value);
+    }
+    return snprintf(out, cap, "%.17g", value);
+}
+
+// The same text, as a String the caller owns. `std.string`'s `strFromFloat` is
+// this; `Float` was the one type that could be printed and parsed but never
+// converted, so a float could not be joined, written to a file, or built into a
+// message.
+//
+// Sized from the format rather than guessed: 32 bytes holds `-1.2345678901234567e-308`
+// and everything shorter, and the assert is what would catch a libc that
+// disagreed rather than letting it truncate silently.
+char* str_from_double(double value) {
+    char buf[40];
+    int n = prismio_format_double(value, buf, sizeof buf);
+    if (n < 0 || (size_t)n >= sizeof buf) {
+        fprintf(stderr, "runtime error: Float text longer than %zu bytes\n", sizeof buf);
+        exit(1);
+    }
+    char* result = (char*)rt_alloc((size_t)n + 1);
+    memcpy(result, buf, (size_t)n + 1);
+    return result;
+}
+
+// Fixed-point, for the callers that want a column rather than a value: prices,
+// percentages, a table of timings. Distinct from the above because it is a
+// *presentation* choice and is not required to round-trip.
+char* str_from_double_fixed(double value, int decimals) {
+    if (decimals < 0) decimals = 0;
+    if (decimals > 30) decimals = 30;
+    char buf[400];
+    int n = snprintf(buf, sizeof buf, "%.*f", decimals, value);
+    if (n < 0 || (size_t)n >= sizeof buf) {
+        fprintf(stderr, "runtime error: Float text longer than %zu bytes\n", sizeof buf);
+        exit(1);
+    }
+    char* result = (char*)rt_alloc((size_t)n + 1);
+    memcpy(result, buf, (size_t)n + 1);
+    return result;
+}
+
+// **Parsing is `strtod`, for the same reason formatting is `snprintf`.**
+//
+// The source-level parser this replaces accumulated the mantissa in an `Int` --
+// 32 bits, while its own guard allowed eighteen digits, so `"1234567890123"`
+// wrapped and returned a number the text does not say. It also divided by ten
+// once per decimal place, which is not the nearest double but a walk away from
+// it, and it had no exponent case at all: `1e+21` and `1e-308` are what
+// `strFromFloat` produces for large and small values, and neither could be read
+// back. `strtod` is correctly rounded, and it is the same function the formatter
+// checks its candidates against -- so format and parse agree by construction.
+//
+// Split in two because a Prismio `extern` returns one value and this answers two
+// questions. Both calls repeat the parse; a float parse is not a hot path in
+// this compiler, which parses none.
+//
+// **Stricter than `strtod` on purpose.** The whole string must be consumed, so
+// `"1.5kg"` is not 1.5, and leading space is refused rather than skipped --
+// matching `strParseInt`, and keeping "did this text mean a number" a question
+// with one answer.
+static int prismio_double_scan(const char* s, double* out) {
+    if (!s || !*s) return 0;
+    if (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r' || *s == '\f' || *s == '\v') return 0;
+    errno = 0;
+    char* end = NULL;
+    double value = strtod(s, &end);
+    if (!end || *end != '\0') return 0;
+    if (out) *out = value;
+    return 1;
+}
+
+int str_double_valid(const char* s) {
+    return prismio_double_scan(s, NULL);
+}
+
+double str_double_value(const char* s) {
+    double value = 0.0;
+    prismio_double_scan(s, &value);
+    return value;
+}
+
+// The whole of the console runtime. Every other `print` and `println` overload
+// formats in std/io.psm and writes to the descriptor itself; these four are what
+// is left, because the round-trip search above is C.
+//
+// **They print exactly what `strFromFloat` returns**, which is the point of
+// routing both through `prismio_format_double`: a value that reaches the console
+// and the same value converted to a String must not disagree, or one of the two
+// is lying about what the program holds.
+//
+// The flush is not cosmetic here. std.io reaches the descriptor with the console
+// write, which does not pass through this buffer, so a float left sitting in it
+// would be overtaken by the next line the program prints.
 void prismio_rt_print_float(double value) {
-    printf("%g", value);
+    char buf[40];
+    prismio_format_double(value, buf, sizeof buf);
+    fputs(buf, stdout);
     fflush(stdout);
 }
 
 void prismio_rt_println_float(double value) {
-    printf("%g\n", value);
+    char buf[40];
+    prismio_format_double(value, buf, sizeof buf);
+    fputs(buf, stdout);
+    fputc('\n', stdout);
     fflush(stdout);
+}
+
+// The same two on stderr, so that the stderr overload set is the stdout one and
+// a status line may carry a float. `stderr` is unbuffered by every C library
+// this targets, so the flush is belt-and-braces rather than load-bearing -- but
+// the ordering argument above applies here too: std.io reaches descriptor 2 with
+// the console write, which does not pass through this buffer.
+void prismio_rt_eprint_float(double value) {
+    char buf[40];
+    prismio_format_double(value, buf, sizeof buf);
+    fputs(buf, stderr);
+    fflush(stderr);
+}
+
+void prismio_rt_eprintln_float(double value) {
+    char buf[40];
+    prismio_format_double(value, buf, sizeof buf);
+    fputs(buf, stderr);
+    fputc('\n', stderr);
+    fflush(stderr);
 }
 
 int str_equals(const char* s1, const char* s2) {

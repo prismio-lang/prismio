@@ -5530,13 +5530,21 @@ def run_debug_info_test():
             # sema infers it from the field, and the debug layer has to carry
             # that through. Bound from a field with no annotation is how this
             # compiler binds an enum nearly everywhere.
-            seen = next((t for t in nodes.values()
-                         if "DILocalVariable" in t and 'name: "seen"' in t), "")
-            ref = re.search(r"type: !(\d+)", seen)
-            if not seen:
+            # *Every* `seen`, not the first one. The standard library is
+            # compiled into this program, so a local named `seen` anywhere in
+            # std/*.psm used to be the one this found -- and the fixture failed
+            # describing a variable it was never about. The assertion keeps its
+            # teeth either way: if the inferred enum were flattened to Int, none
+            # of them would be an enumeration.
+            candidates = [t for t in nodes.values()
+                          if "DILocalVariable" in t and 'name: "seen"' in t]
+            def describes_enum(text):
+                ref = re.search(r"type: !(\d+)", text)
+                return bool(ref) and "DW_TAG_enumeration_type" in nodes.get(int(ref.group(1)), "")
+            if not candidates:
                 problems.append("no DILocalVariable for `seen`, so the "
                                 "inferred-enum case is not being checked")
-            elif not ref or "DW_TAG_enumeration_type" not in nodes.get(int(ref.group(1)), ""):
+            elif not any(describes_enum(t) for t in candidates):
                 problems.append("`seen` is bound from an enum-typed struct field "
                                 "and is not described as the enum -- an inferred "
                                 "enum is being flattened to Int")

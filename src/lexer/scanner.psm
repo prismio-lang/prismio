@@ -22,7 +22,16 @@ struct Lexer {
     line: Int,
     col: Int,
     file: Int,
-    length: Int
+    length: Int,
+    // String interpolation, as a lexer *mode* rather than a queue of tokens.
+    //
+    // Inside `${...}` the scanner is lexing an ordinary expression, and the `}`
+    // that ends it is the one at brace depth zero -- so a struct literal or a
+    // closure body in there closes its own braces without ending the string.
+    // `interpOpen` is how many interpolations are currently open (0 or 1) and
+    // `interpBrace` the depth within the innermost one.
+    interpOpen: Int,
+    interpBrace: Int
 }
 
 fn createLexer(input: String, file: Int) -> Lexer {
@@ -43,7 +52,9 @@ fn createLexer(input: String, file: Int) -> Lexer {
         line: 1,
         col: 1,
         file: file,
-        length: __builtin_string_len(input)
+        length: __builtin_string_len(input),
+        interpOpen: 0,
+        interpBrace: 0
     }
 }
 
@@ -190,6 +201,9 @@ private fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) 
             else if (esc == '\\') { decoded = '\\' }
             else if (esc == '"') { decoded = '"' }
             else if (esc == '\'') { decoded = '\'' }
+            // So that a literal `${` can be written in a string that would
+            // otherwise interpolate there.
+            else if (esc == '$') { decoded = '$' }
             else if (esc == '0') {
                 lexerFatal(lex, line, baseCol + i,
                     "a NUL escape cannot appear in a string literal, because String is NUL-terminated")
@@ -233,11 +247,72 @@ private fn lexIdentifier(lex: Lexer) -> Token {
 
 // A '.' only continues the number when a digit follows it, so `0..n` scans as
 // `0`, `..`, `n` rather than as the float `0.` followed by `.n`.
+private fn isHexDigit(c: Char) -> Bool {
+    if (isDigit(c)) { return true }
+    if (c >= 'a' and c <= 'f') { return true }
+    if (c >= 'A' and c <= 'F') { return true }
+    return false
+}
+
+private fn isOctalDigit(c: Char) -> Bool {
+    return c >= '0' and c <= '7'
+}
+
+private fn isBinaryDigit(c: Char) -> Bool {
+    return c == '0' or c == '1'
+}
+
+// `0xFF`, `0o755`, `0b1010`. The prefix is kept in the token text rather than
+// converted here, so a diagnostic quotes what was written and the range check in
+// sema reads the same spelling the backend does.
+//
+// **A leading zero is not octal.** `010` is ten, as it has always been, because
+// C's rule -- where a zero-padded decimal silently changes base -- is a defect
+// every language designed since has declined to repeat. Octal is `0o` and only
+// `0o`.
+//
+// Each prefix needs at least one digit after it or it is not one: `0x` alone
+// stays the number 0 followed by the name `x`, which is what a lexer that
+// consumed the prefix eagerly would have made unspellable.
+private fn lexRadixDigits(lex: Lexer, marker: Char, alternate: Char) -> Bool {
+    let current = lexerCurrent(lex)
+    if (current != marker and current != alternate) { return false }
+
+    let mut count = 0
+    loop {
+        let c = lexerPeek(lex, count + 1)
+        let mut ok = isHexDigit(c)
+        if (marker == 'o') { ok = isOctalDigit(c) }
+        if (marker == 'b') { ok = isBinaryDigit(c) }
+        if (ok == false) { break }
+        count = count + 1
+    }
+    if (count == 0) { return false }
+
+    lexerAdvance(lex)
+    let mut taken = 0
+    while (taken < count) {
+        lexerAdvance(lex)
+        taken = taken + 1
+    }
+    return true
+}
+
 private fn lexNumber(lex: Lexer) -> Token {
     let line = lex.line
     let col = lex.col
     let start = lex.pos
     let mut isFloat = false
+
+    if (lexerCurrent(lex) == '0') {
+        lexerAdvance(lex)
+        if (lexRadixDigits(lex, 'x', 'X')
+            or lexRadixDigits(lex, 'o', 'O')
+            or lexRadixDigits(lex, 'b', 'B')) {
+            let radixText = strSubstring(lex.input, start, lex.pos - start)
+            return lexerToken(lex, TokenType.NUMBER_LITERAL, radixText, line, col, start)
+        }
+    }
 
     while (isDigit(lexerCurrent(lex))) {
         lexerAdvance(lex)
@@ -251,6 +326,31 @@ private fn lexNumber(lex: Lexer) -> Token {
         }
     }
 
+    // **`6.022e23`, and `1e9` without a dot.** Scientific notation was not
+    // lexed at all, which made a whole range of values unwritable -- and made
+    // `strFromFloat` asymmetric with the language, because the text it produces
+    // for a large or small value (`1e+21`, `1e-308`) could not be typed back
+    // into a program as the literal it names.
+    //
+    // Consumed only when a digit actually follows the `e` and its optional sign,
+    // so an identifier is never eaten: `1e` is the number 1 followed by the name
+    // `e`, exactly as it was. The backend needs nothing -- a double constant is
+    // `atof` of this text, and `atof` has read exponents since C89.
+    let exponent = lexerCurrent(lex) == 'e' or lexerCurrent(lex) == 'E'
+    if (exponent) {
+        let signed = lexerPeek(lex, 1) == '+' or lexerPeek(lex, 1) == '-'
+        let mut digitAt = 1
+        if (signed) { digitAt = 2 }
+        if (isDigit(lexerPeek(lex, digitAt))) {
+            isFloat = true
+            lexerAdvance(lex)
+            if (signed) { lexerAdvance(lex) }
+            while (isDigit(lexerCurrent(lex))) {
+                lexerAdvance(lex)
+            }
+        }
+    }
+
     let value = strSubstring(lex.input, start, lex.pos - start)
     if (isFloat) {
         return lexerToken(lex, TokenType.FLOAT_LITERAL, value, line, col, start)
@@ -258,22 +358,24 @@ private fn lexNumber(lex: Lexer) -> Token {
     return lexerToken(lex, TokenType.NUMBER_LITERAL, value, line, col, start)
 }
 
-// Two passes. The first finds the closing quote, stepping over backslash pairs so
-// an escaped quote does not end the literal. Escapes are then decoded only if the
-// literal actually contains one, which keeps the common case on the cheap
-// str_slice path instead of concatenating per character.
-private fn lexString(lex: Lexer) -> Token {
-    let line = lex.line
-    let col = lex.col
-    let start = lex.pos
-
-    lexerAdvance(lex)
+// One run of literal text, ending at the closing quote or at an unescaped `${`.
+//
+// Two passes, as before: the scan steps over backslash pairs so an escaped quote
+// does not end the literal, and escapes are decoded only if there is one, which
+// keeps the common case on the cheap str_slice path instead of concatenating per
+// character. `lex.pos` is left *on* the `"` or the `$`, so the caller decides
+// what kind of token this chunk belongs to.
+private fn lexStringChunk(lex: Lexer) -> String {
     let bodyStart = lex.pos
     let bodyCol = lex.col
+    let startLine = lex.line
     let mut hasEscape = false
 
-    while (lexerCurrent(lex) != '"' and lex.pos < lex.length) {
-        if (lexerCurrent(lex) == '\\') {
+    while (lex.pos < lex.length) {
+        let c = lexerCurrent(lex)
+        if (c == '"') { break }
+        if (c == '$' and lexerPeek(lex, 1) == '{') { break }
+        if (c == '\\') {
             hasEscape = true
             lexerAdvance(lex) // consume the backslash; the pair is skipped below
         }
@@ -282,6 +384,41 @@ private fn lexString(lex: Lexer) -> Token {
     }
 
     let mut value = strSubstring(lex.input, bodyStart, lex.pos - bodyStart)
+    // Decoded in place rather than through a second `raw` binding: strings are
+    // affine, so `let value = raw` moves and the decode call would then be
+    // reading a moved-from name.
+    if (hasEscape) {
+        value = lexerDecodeEscapes(lex, value, startLine, bodyCol)
+    }
+    return value
+}
+
+// **Interpolation is a lexer mode, not a second grammar.**
+//
+// `"total: ${count} items"` becomes INTERP_BEGIN("total: "), the real tokens of
+// `count`, INTERP_END(" items"). The expression's tokens are lexed from the
+// source at their own positions, which is the whole reason for doing it here: a
+// mistake inside `${...}` underlines what the author wrote, rather than a
+// reconstruction of it with invented line numbers.
+private fn lexString(lex: Lexer) -> Token {
+    let line = lex.line
+    let col = lex.col
+    let start = lex.pos
+
+    lexerAdvance(lex)
+    let value = lexStringChunk(lex)
+
+    if (lexerCurrent(lex) == '$') {
+        if (lex.interpOpen > 0) {
+            lexerFatal(lex, line, col,
+                "an interpolated string cannot contain another interpolated string")
+        }
+        lexerAdvance(lex)
+        lexerAdvance(lex)
+        lex.interpOpen = 1
+        lex.interpBrace = 0
+        return lexerToken(lex, TokenType.INTERP_BEGIN, value, line, col, start)
+    }
 
     if (lexerCurrent(lex) == '"') {
         lexerAdvance(lex)
@@ -289,14 +426,33 @@ private fn lexString(lex: Lexer) -> Token {
         lexerFatal(lex, line, col, "unterminated string literal")
     }
 
-    // Decoded in place rather than through a second `raw` binding: strings are
-    // affine, so `let value = raw` moves and the decode call would then be
-    // reading a moved-from name.
-    if (hasEscape) {
-        value = lexerDecodeEscapes(lex, value, line, bodyCol)
+    return lexerToken(lex, TokenType.STRING_LITERAL, value, line, col, start)
+}
+
+// The `}` that closes an interpolation, and the literal run after it. Reached
+// from lexerNextToken when the brace depth inside the interpolation is zero --
+// so a struct literal or an `if` in there closes its own braces first.
+private fn lexInterpolationResume(lex: Lexer) -> Token {
+    let line = lex.line
+    let col = lex.col
+    let start = lex.pos
+
+    lexerAdvance(lex)
+    let value = lexStringChunk(lex)
+
+    if (lexerCurrent(lex) == '$') {
+        lexerAdvance(lex)
+        lexerAdvance(lex)
+        return lexerToken(lex, TokenType.INTERP_PART, value, line, col, start)
     }
 
-    return lexerToken(lex, TokenType.STRING_LITERAL, value, line, col, start)
+    if (lexerCurrent(lex) == '"') {
+        lexerAdvance(lex)
+    } else {
+        lexerFatal(lex, line, col, "unterminated string literal")
+    }
+    lex.interpOpen = 0
+    return lexerToken(lex, TokenType.INTERP_END, value, line, col, start)
 }
 
 // The value is stored as the character's numeric code, not as its text, so that
@@ -442,6 +598,11 @@ private fn lexerNextToken(lex: Lexer) -> Token {
 
     let c = lexerCurrent(lex)
 
+    // The end of `${...}`: back into the string this expression was written in.
+    if (lex.interpOpen > 0 and lex.interpBrace == 0 and c == '}') {
+        return lexInterpolationResume(lex)
+    }
+
     if (isIdentStart(c)) { return lexIdentifier(lex) }
     if (isDigit(c)) { return lexNumber(lex) }
     if (c == '"') { return lexString(lex) }
@@ -450,7 +611,13 @@ private fn lexerNextToken(lex: Lexer) -> Token {
     // separator but ".." is not.
     if (isOperator(c)) { return lexOperator(lex) }
     if (c == '.' and lexerPeek(lex, 1) == '.') { return lexRange(lex) }
-    if (isSeparator(c)) { return lexSeparator(lex) }
+    if (isSeparator(c)) {
+        if (lex.interpOpen > 0) {
+            if (c == '{') { lex.interpBrace = lex.interpBrace + 1 }
+            if (c == '}') { lex.interpBrace = lex.interpBrace - 1 }
+        }
+        return lexSeparator(lex)
+    }
 
     return lexUnexpected(lex, c)
 }

@@ -2,6 +2,7 @@ import ast.nodes
 import common.text
 import common.target
 import std.string
+import std.option
 
 // As with NodeKind (ast.psm), **nothing may take ordinal 0**: a TypeInfo is
 // punned as a String and `kind` is its first field, so a zero-valued kind makes
@@ -119,6 +120,77 @@ fn typeIntBits(t: TypeInfo) -> Int {
     if (t.llvm.equals("i32")) { return 32 }
     if (t.llvm.equals("i64")) { return 64 }
     return 0
+}
+
+// 2^k, for the integer-literal range check. Written as a loop because there is
+// no shift operator and 2^64 is not a literal any type here can hold; callers
+// asking for 64 are the ones that name the boundary themselves.
+private fn typeTwoToThe(k: Int) -> U64 {
+    let mut power = 1 as U64
+    let mut i = 0
+    while (i < k) {
+        power = power * (2 as U64)
+        i = i + 1
+    }
+    return power
+}
+
+// Whether a decimal integer literal's text names a value this type can hold.
+//
+// **A literal that does not fit used to wrap in silence.** `4294967296 as U64`
+// was 0, because the literal typed as `Int` -- i32 -- and the cast widened what
+// was left after it wrapped; `let small: U8 = 999` stored 231 for the same
+// reason. Both are a program saying one number and running another, with no
+// diagnostic anywhere, which is the class of defect `strParseInt` returning
+// `None` on overflow exists to remove. The same rule belongs at compile time.
+//
+// The magnitude goes through `strParseU64`, so a literal too long for any 64-bit
+// type is caught by the parse rather than by arithmetic that would itself wrap.
+// The asymmetric negative bound is deliberate: two's complement reaches one
+// further down than up, so `-2147483648` fits `Int` and `2147483648` does not.
+fn typeIntLiteralFits(text: String, t: TypeInfo) -> Bool {
+    let bits = typeIntBits(t)
+    if (bits == 0 or bits > 64) { return true }
+    if (bits == 1) { return true }
+
+    let negative = strStartsWith(text, "-")
+    let unsigned = typeIntIsUnsigned(t)
+    if (negative and unsigned) { return false }
+
+    let mut at = 0
+    if (negative or strStartsWith(text, "+")) { at = 1 }
+
+    // `0xFF`, `0o755`, `0b1010`. The literal keeps the spelling it was written
+    // with, so the range check reads the base off the prefix exactly as the
+    // backend does -- and a leading zero is not octal in either place.
+    let mut radix = 10
+    if (strByteAt(text, at) == 48 and __builtin_string_len(text) > at + 1) {
+        let marker = strByteAt(text, at + 1)
+        if (marker == 120 or marker == 88) { radix = 16 }
+        if (marker == 111 or marker == 79) { radix = 8 }
+        if (marker == 98 or marker == 66) { radix = 2 }
+        if (radix != 10) { at = at + 2 }
+    }
+
+    let digits = strSubstring(text, at, __builtin_string_len(text) - at)
+    let parsed = strParseU64Radix(digits, radix)
+    if (optionIsNone(parsed)) { return false }
+    let magnitude = optionOr(parsed, 0 as U64)
+
+    if (unsigned) {
+        if (bits == 64) { return true }
+        return magnitude < typeTwoToThe(bits)
+    }
+    if (negative) { return magnitude <= typeTwoToThe(bits - 1) }
+    return magnitude < typeTwoToThe(bits - 1)
+}
+
+// Whether any 64-bit integer type could hold this literal: `I64` when it is
+// negative, `U64` otherwise. The question `semaExpr` can answer about a literal
+// before anything has told it what type it is.
+fn typeIntLiteralFitsAnyInt(text: String) -> Bool {
+    if (strStartsWith(text, "-")) { return typeIntLiteralFits(text, typeI64()) }
+    return typeIntLiteralFits(text, typeU64())
 }
 
 fn typeIntIsUnsigned(t: TypeInfo) -> Bool {

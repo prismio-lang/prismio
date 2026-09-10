@@ -816,12 +816,22 @@ fn strRepeat(s: String, times: Int) -> String {
     return out
 }
 
+// **`width` counts characters.** It counted bytes, which lines a column up only
+// while every value in it is ASCII: one `é` is two bytes, so a padded table with
+// one accented name in it had that row a column short. Scalars are what a reader
+// sees, so scalars are what a width means.
+//
+// Still not a *display* width -- an East Asian character occupies two terminal
+// columns and a combining mark none -- which needs tables this library does not
+// carry. For the alphabets a column of names is usually in, character count is
+// the answer; for CJK, measure with your own table and pad by bytes.
+//
+// `pad` is a `Char` and therefore one byte, so the padding itself is ASCII.
 fn strPadStart(s: String, width: Int, pad: Char) -> String {
     let slen = __builtin_string_len(s)
-    let mut outLen = width
-    if (slen > outLen) { outLen = slen }
-    let out = str_with_capacity(outLen)
-    let padLen = outLen - slen
+    let mut padLen = width - strScalarCount(s)
+    if (padLen < 0) { padLen = 0 }
+    let out = str_with_capacity(slen + padLen)
     let mut i = 0
     while (i < padLen) {
         __builtin_string_put_byte(out, i, pad)
@@ -833,18 +843,25 @@ fn strPadStart(s: String, width: Int, pad: Char) -> String {
 
 fn strPadEnd(s: String, width: Int, pad: Char) -> String {
     let slen = __builtin_string_len(s)
-    let mut outLen = width
-    if (slen > outLen) { outLen = slen }
-    let out = str_with_capacity(outLen)
+    let mut padLen = width - strScalarCount(s)
+    if (padLen < 0) { padLen = 0 }
+    let out = str_with_capacity(slen + padLen)
     strCopyRangeInto(out, 0, s, 0, slen)
     let mut j = slen
-    while (j < outLen) {
+    while (j < slen + padLen) {
         __builtin_string_put_byte(out, j, pad)
         j = j + 1
     }
     return out
 }
 
+// **ASCII, and only ASCII.** `charToUpper` maps `a`-`z` and leaves every other
+// byte exactly as it was, so a multi-byte character passes through unchanged
+// rather than being mangled -- the result is always valid UTF-8, and `é` is
+// still `é`. Full case mapping needs Unicode tables this library does not carry,
+// and one of its rules is that a string can change length: `ß` uppercases to
+// `SS`, which no in-place byte loop can express.
+//
 // Written out twice rather than sharing a body with an `upper: Bool` flag.
 // `return strMapChars(s, true)` is a pass-through -- the buffer was allocated a
 // frame down, `aif_owns_call_result_at_node` declines it, and the caller gets no
@@ -873,13 +890,26 @@ fn strToLower(s: String) -> String {
     return out
 }
 
+// **Characters, not bytes.** Reversing the bytes of `"héllo"` produces a string
+// whose second character is half of an `é` followed by the other half -- not a
+// different string, an *invalid* one, and nothing downstream can recover from
+// it. Each scalar moves as a unit instead, so the bytes of a character stay in
+// order while the characters go the other way.
+//
+// A byte that is not part of a well-formed sequence moves on its own and
+// unchanged, which makes this exact for ASCII and for binary held in a String,
+// and leaves invalid input no worse than it arrived.
 fn strReverse(s: String) -> String {
     let slen = __builtin_string_len(s)
     let out = str_with_capacity(slen)
-    let mut i = 0
-    while (i < slen) {
-        __builtin_string_put_byte(out, i, __builtin_string_byte_at(s, slen - 1 - i))
-        i = i + 1
+    let mut read = 0
+    let mut write = slen
+    while (read < slen) {
+        let mut width = strScalarWidthAt(s, read)
+        if (width == 0) { width = 1 }
+        write = write - width
+        strCopyRangeInto(out, write, s, read, width)
+        read = read + width
     }
     return out
 }
@@ -1070,15 +1100,7 @@ fn strJoin(parts: List<String>, sep: String) -> String {
 // Numbers
 // ---------------------------------------------------------------------------
 
-private fn strParseIntFrom(s: String, at: Int, acc: Int, negative: Bool, slen: Int) -> Option<Int> {
-    if (at >= slen) {
-        if (negative) { return Option<Int>.Some(0 - acc) }
-        return Option<Int>.Some(acc)
-    }
-    let c = __builtin_string_byte_at(s, at)
-    if (charIsDigit(c) == false) { return Option<Int>.None }
-    return strParseIntFrom(s, at + 1, acc * 10 + charDigitValue(c), negative, slen)
-}
+
 
 // `None` rather than a sentinel when the text is not an integer.
 //
@@ -1087,17 +1109,7 @@ private fn strParseIntFrom(s: String, at: Int, acc: Int, negative: Bool, slen: I
 // them apart. REQUIREMENTS 14's whole argument against sentinels is this
 // function.
 fn strParseInt(s: String) -> Option<Int> {
-    let slen = __builtin_string_len(s)
-    if (slen == 0) { return Option<Int>.None }
-    if (__builtin_string_byte_at(s, 0) == '-') {
-        if (slen == 1) { return Option<Int>.None }
-        return strParseIntFrom(s, 1, 0, true, slen)
-    }
-    if (__builtin_string_byte_at(s, 0) == '+') {
-        if (slen == 1) { return Option<Int>.None }
-        return strParseIntFrom(s, 1, 0, false, slen)
-    }
-    return strParseIntFrom(s, 0, 0, false, slen)
+    return strParseIntRadix(s, 10)
 }
 
 // Compared, not divided.
@@ -1322,12 +1334,14 @@ fn strCapitalize(s: String) -> String {
 
 // An odd amount of padding puts the extra byte at the end, so that centring a
 // run of strings to the same width keeps their left edges aligned.
+// Characters either side, for the reason `strPadStart` gives. An odd remainder
+// goes to the right, so `strPadCenter("ab", 5, '-')` is `-ab--`.
 fn strPadCenter(s: String, width: Int, pad: Char) -> String {
     let slen = __builtin_string_len(s)
-    let mut outLen = width
-    if (slen > outLen) { outLen = slen }
-    let total = outLen - slen
+    let mut total = width - strScalarCount(s)
+    if (total < 0) { total = 0 }
     let left = total / 2
+    let outLen = slen + total
     let out = str_with_capacity(outLen)
     let mut i = 0
     while (i < left) {
@@ -1443,6 +1457,9 @@ fn strLines(s: String) -> List<String> {
     return out
 }
 
+// One `Char` per **byte**, because a `Char` is a byte. For text that may not be
+// ASCII this is not the character list its name suggests -- `strScalars` is,
+// and returns `List<Int>` because a code point does not fit a `Char`.
 fn strChars(s: String) -> List<Char> {
     let slen = __builtin_string_len(s)
     let out: List<Char> = list_new()
@@ -1549,50 +1566,26 @@ fn strParseBool(s: String) -> Option<Bool> {
 //
 // Rejects what it cannot represent rather than guessing: empty text, a lone
 // sign, a lone dot, any non-digit, and more than 18 significant digits.
+extern fn str_double_valid(text: String borrow) -> Int
+extern fn str_double_value(text: String borrow) -> Float
+
+// **Reads back what `strFromFloat` writes, and nothing else.**
+//
+// The parser this replaces was source-level, and wrong three ways: its mantissa
+// accumulated in an `Int` while its own guard allowed eighteen digits, so a long
+// number wrapped and came back as a `Some` holding a different value; it divided
+// by ten once per decimal place, which lands near the nearest double rather than
+// on it; and it had no exponent case, so `1e+21` -- which is exactly what
+// `strFromFloat` produces for a large value -- did not parse. `strtod` is
+// correctly rounded and is the function the formatter checks its own candidates
+// against, so the pair round-trips by construction.
+//
+// Stricter than C: the whole string must be a number, so `"1.5kg"` and `" 1.5"`
+// are `None` rather than 1.5. `"inf"`, `"-inf"` and `"nan"` parse, because
+// `strFromFloat` writes them.
 fn strParseFloat(s: String) -> Option<Float> {
-    let slen = __builtin_string_len(s)
-    if (slen == 0) { return Option<Float>.None }
-
-    let mut i = 0
-    let mut negative = false
-    if (__builtin_string_byte_at(s, 0) == '-') {
-        negative = true
-        i = 1
-    } else if (__builtin_string_byte_at(s, 0) == '+') {
-        i = 1
-    }
-    if (i >= slen) { return Option<Float>.None }
-
-    let mut digits = 0
-    let mut mantissa = 0
-    let mut scale = 0
-    let mut seenDot = false
-    while (i < slen) {
-        let c = __builtin_string_byte_at(s, i)
-        if (c == '.') {
-            if (seenDot) { return Option<Float>.None }
-            seenDot = true
-            i = i + 1
-        } else if (charIsDigit(c)) {
-            if (digits >= 18) { return Option<Float>.None }
-            mantissa = mantissa * 10 + charDigitValue(c)
-            digits = digits + 1
-            if (seenDot) { scale = scale + 1 }
-            i = i + 1
-        } else {
-            return Option<Float>.None
-        }
-    }
-    if (digits == 0) { return Option<Float>.None }
-
-    let mut value = mantissa as Float
-    let mut k = 0
-    while (k < scale) {
-        value = value / 10.0
-        k = k + 1
-    }
-    if (negative) { value = 0.0 - value }
-    return Option<Float>.Some(value)
+    if (str_double_valid(s) == 0) { return Option<Float>.None }
+    return Option<Float>.Some(str_double_value(s))
 }
 
 // The parse, or the caller's number. For the very common case where a bad value
@@ -1643,6 +1636,442 @@ fn join(parts: List<String>, sep: String) -> String {
 // the frontend -- so the search internals (`strTwoWayIndexOfFrom`,
 // `strMaximalSuffix`, `strSearchByteRank`) and the digit tables deliberately
 // have no method: they are implementation, not surface.
+// ---------------------------------------------------------------------------
+// Float text
+// ---------------------------------------------------------------------------
+
+// **The shortest decimal text that reads back as the same double.**
+//
+// `Float` used to be the one type a program could print and parse but never
+// convert: there was no `strFromFloat`, so a float could not be joined into a
+// line, written to a file, used as a map key's text, or built into a message.
+// The formatting itself is C, because finding the shortest round-tripping form
+// means parsing candidates back, and `strtod` is where that lives -- see
+// `prismio_format_double` in runtime/lang_runtime.c.
+//
+// **`print(f)` writes exactly this text**, because both go through that one
+// function. A value that reaches the console and the same value converted to a
+// String must not disagree, or one of the two is lying about what the program
+// holds -- which is what `%g`'s six significant digits did: `1.0 / 3.0` printed
+// as `0.333333`, and reading that back gives a different number.
+//
+// Wrapping an `extern` that produces is a pass-through, which normally costs the
+// caller its drop (see the note over `concat`). It does not here, and the reason
+// is the argument: the leak needs the callee's allocation to be in both the
+// return's points-to set and a parameter's, and a `Float` parameter has no
+// points-to set at all. `tests/test_135_string_production.psm` measures it.
+extern fn str_from_double(value: Float) -> String produce(free)
+extern fn str_from_double_fixed(value: Float, decimals: Int) -> String produce(free)
+
+fn strFromFloat(value: Float) -> String {
+    return str_from_double(value)
+}
+
+// A fixed number of decimals, for a column rather than a value -- prices,
+// percentages, a table of timings. Not required to round-trip, which is the
+// difference: `strFromFloatFixed(1.0 / 3.0, 2)` is `0.33` and means it.
+// `decimals` is clamped to 0..30.
+fn strFromFloatFixed(value: Float, decimals: Int) -> String {
+    return str_from_double_fixed(value, decimals)
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8
+// ---------------------------------------------------------------------------
+
+// **A String is bytes, and these are the functions that read it as text.**
+//
+// `Char` is a byte in 0.1 and `length`, `charAt`, `substring` and the operators
+// that lower to them are byte-indexed. That is the right default for a compiler
+// -- it is what makes a scan one comparison per byte -- and it is a trap for
+// anything else, because a byte index can fall inside a character. Nothing here
+// changes those; they add the second reading, so a program that handles user
+// text can ask for scalars and get an answer that is right for every language.
+//
+// A **scalar** is a Unicode code point, in the range 0..0x10FFFF minus the
+// surrogates, held in an `Int` because a `Char` cannot hold one.
+
+// How many bytes the scalar starting with this byte occupies: 0xxxxxxx is one,
+// 110xxxxx two, 1110xxxx three, 11110xxx four. A continuation byte (10xxxxxx) is
+// not a lead and answers 0, which is what makes "is this a boundary" the same
+// question as "is this a lead".
+private fn strUtf8LeadWidth(lead: Int) -> Int {
+    if (lead < 128) { return 1 }
+    if (lead < 192) { return 0 }
+    if (lead < 224) { return 2 }
+    if (lead < 240) { return 3 }
+    if (lead < 248) { return 4 }
+    return 0
+}
+
+private fn strUtf8ContinuationsOk(s: String, at: Int, slen: Int, count: Int) -> Bool {
+    let mut k = 1
+    while (k <= count) {
+        if (at + k >= slen) { return false }
+        let b = strByteAt(s, at + k)
+        if (b < 128 or b > 191) { return false }
+        k = k + 1
+    }
+    return true
+}
+
+// The scalar beginning at byte `at`, or -1 when the bytes there are not a
+// well-formed sequence.
+//
+// **Well-formed is narrower than decodable**, and the three cases it excludes
+// are the ones that have been security bugs elsewhere. An *overlong* encoding
+// spells an ASCII character in two or more bytes, which is how a filter looking
+// for `/` or `.` gets walked past. A *surrogate* (U+D800..U+DFFF) is not a
+// scalar at all -- it is half of a UTF-16 pair and has no business in UTF-8.
+// And nothing above U+10FFFF is Unicode. Each answers -1 rather than a number no
+// caller can act on.
+fn strScalarAt(s: String, at: Int) -> Int {
+    let slen = __builtin_string_len(s)
+    if (at < 0 or at >= slen) { return 0 - 1 }
+
+    let lead = strByteAt(s, at)
+    let width = strUtf8LeadWidth(lead)
+    if (width == 0) { return 0 - 1 }
+    if (width == 1) { return lead }
+    if (strUtf8ContinuationsOk(s, at, slen, width - 1) == false) { return 0 - 1 }
+
+    let mut scalar = lead - 192
+    if (width == 3) { scalar = lead - 224 }
+    if (width == 4) { scalar = lead - 240 }
+    let mut k = 1
+    while (k < width) {
+        scalar = scalar * 64 + (strByteAt(s, at + k) - 128)
+        k = k + 1
+    }
+
+    if (width == 2 and scalar < 128) { return 0 - 1 }
+    if (width == 3 and scalar < 2048) { return 0 - 1 }
+    if (width == 4 and scalar < 65536) { return 0 - 1 }
+    if (scalar >= 55296 and scalar <= 57343) { return 0 - 1 }
+    if (scalar > 1114111) { return 0 - 1 }
+    return scalar
+}
+
+// The width in bytes of the scalar at `at`, or 0 when there is not one there.
+// Walking a String by scalar is this in a loop: `i = i + strScalarWidthAt(s, i)`.
+fn strScalarWidthAt(s: String, at: Int) -> Int {
+    if (strScalarAt(s, at) < 0) { return 0 }
+    return strUtf8LeadWidth(strByteAt(s, at))
+}
+
+// Whether a byte index falls between characters rather than inside one. The
+// question to ask before `substring`, whose indices are bytes.
+fn strIsCharBoundary(s: String, at: Int) -> Bool {
+    let slen = __builtin_string_len(s)
+    if (at == 0 or at == slen) { return true }
+    if (at < 0 or at > slen) { return false }
+    let b = strByteAt(s, at)
+    return b < 128 or b > 191
+}
+
+fn strIsAscii(s: String) -> Bool {
+    let slen = __builtin_string_len(s)
+    let mut i = 0
+    while (i < slen) {
+        if (strByteAt(s, i) > 127) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Whether every byte is part of a well-formed sequence. Worth asking once at the
+// boundary where text enters a program -- a file, an argument, a socket -- after
+// which the rest of this section can be used without checking again.
+fn strIsValidUtf8(s: String) -> Bool {
+    let slen = __builtin_string_len(s)
+    let mut i = 0
+    while (i < slen) {
+        let width = strScalarWidthAt(s, i)
+        if (width == 0) { return false }
+        i = i + width
+    }
+    return true
+}
+
+// How many characters, as opposed to `length`'s bytes.
+//
+// Counts lead bytes rather than decoding, so it costs one comparison per byte
+// and answers for invalid input too: a byte that is not a continuation counts as
+// one character. That is what makes it usable for padding, where refusing to
+// answer would be worse than approximating.
+fn strScalarCount(s: String) -> Int {
+    let slen = __builtin_string_len(s)
+    let mut count = 0
+    let mut i = 0
+    while (i < slen) {
+        let b = strByteAt(s, i)
+        if (b < 128 or b > 191) { count = count + 1 }
+        i = i + 1
+    }
+    return count
+}
+
+// Every scalar, in order. An ill-formed byte becomes U+FFFD, the replacement
+// character, and advances one byte -- the substitution the Unicode standard
+// specifies, so that decoding never fails and never silently drops input.
+fn strScalars(s: String) -> List<Int> {
+    let slen = __builtin_string_len(s)
+    let out: List<Int> = list_new()
+    let mut i = 0
+    while (i < slen) {
+        let scalar = strScalarAt(s, i)
+        if (scalar < 0) {
+            list_push(out, 65533)
+            i = i + 1
+        } else {
+            list_push(out, scalar)
+            i = i + strUtf8LeadWidth(strByteAt(s, i))
+        }
+    }
+    return out
+}
+
+// One scalar as its UTF-8 bytes. A value that is not a scalar -- negative, a
+// surrogate, or above U+10FFFF -- encodes as U+FFFD rather than as bytes no
+// reader could decode.
+fn strFromScalar(scalar: Int) -> String {
+    let mut value = scalar
+    if (value < 0 or value > 1114111) { value = 65533 }
+    if (value >= 55296 and value <= 57343) { value = 65533 }
+
+    if (value < 128) {
+        let one = str_with_capacity(1)
+        __builtin_string_put_byte(one, 0, value as Char)
+        return one
+    }
+    if (value < 2048) {
+        let two = str_with_capacity(2)
+        __builtin_string_put_byte(two, 0, (192 + value / 64) as Char)
+        __builtin_string_put_byte(two, 1, (128 + value % 64) as Char)
+        return two
+    }
+    if (value < 65536) {
+        let three = str_with_capacity(3)
+        __builtin_string_put_byte(three, 0, (224 + value / 4096) as Char)
+        __builtin_string_put_byte(three, 1, (128 + (value / 64) % 64) as Char)
+        __builtin_string_put_byte(three, 2, (128 + value % 64) as Char)
+        return three
+    }
+    let four = str_with_capacity(4)
+    __builtin_string_put_byte(four, 0, (240 + value / 262144) as Char)
+    __builtin_string_put_byte(four, 1, (128 + (value / 4096) % 64) as Char)
+    __builtin_string_put_byte(four, 2, (128 + (value / 64) % 64) as Char)
+    __builtin_string_put_byte(four, 3, (128 + value % 64) as Char)
+    return four
+}
+
+// `count` characters starting at the `start`-th, both counted in scalars rather
+// than bytes. The safe form of `substring` for text that is not known to be
+// ASCII: it cannot cut a character in half, because it never chooses a byte
+// index that is not a boundary.
+// The byte offset of the `index`-th character, or the end of the string.
+//
+// **Walking is here rather than in the function below**, and that is not
+// factoring for its own sake. `strSubstring` returns a *view* of its argument,
+// and the analysis carries "returns a view of parameter 0" through a direct
+// return but not out of a function that loops first -- so a version of
+// `strScalarSubstring` with these loops in its body read 1 allocated / 0
+// released for `strScalarSubstring(owned, 1, 4)`: the caller's drop of `owned`
+// was declined, and the view that declined it took nothing.
+private fn strScalarOffset(s: String, index: Int) -> Int {
+    let slen = __builtin_string_len(s)
+    let mut at = 0
+    let mut seen = 0
+    while (seen < index and at < slen) {
+        let mut width = strScalarWidthAt(s, at)
+        if (width == 0) { width = 1 }
+        at = at + width
+        seen = seen + 1
+    }
+    return at
+}
+
+fn strScalarSubstring(s: String, start: Int, count: Int) -> String {
+    let first = strScalarOffset(s, start)
+    let last = strScalarOffset(s, start + count)
+
+    // **A copy, where `strSubstring` would hand back a view.**
+    //
+    // A view aliases its source, and the analysis keeps the source alive by
+    // declining the caller's drop of it -- which it can do for `strSubstring`
+    // itself, whose result is `__builtin_string_view` of a parameter and says so.
+    // It cannot follow that fact out of a function that passes the parameter to
+    // another one on the way, and the measurement is unambiguous:
+    // `strScalarSubstring(owned, 1, 4)` read 1 allocated / 0 released. Owning the
+    // result costs one allocation and is the rule the header of this file states
+    // for every producer here.
+    let out = str_with_capacity(last - first)
+    strCopyRangeInto(out, 0, s, first, last - first)
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// Radix formatting
+// ---------------------------------------------------------------------------
+
+private fn strRadixDigits() -> String {
+    return "0123456789abcdefghijklmnopqrstuvwxyz"
+}
+
+// Base 2 through 36, lowercase, no prefix -- a caller wanting `0x` writes it.
+// A radix outside that range is a programming error rather than a runtime one,
+// and is clamped rather than made every call site handle an `Option`.
+fn strFromU64Radix(value: U64, radix: Int) -> String {
+    let mut base = radix
+    if (base < 2) { base = 2 }
+    if (base > 36) { base = 36 }
+    let wide = base as U64
+
+    let mut digits = 1
+    let mut counting = value
+    while (counting >= wide) {
+        counting = counting / wide
+        digits = digits + 1
+    }
+
+    let out = str_with_capacity(digits)
+    let table = strRadixDigits()
+    let mut remaining = value
+    let mut at = digits - 1
+    loop {
+        __builtin_string_put_byte(out, at, table.charAt((remaining % wide) as Int))
+        if (at == 0) { break }
+        remaining = remaining / wide
+        at = at - 1
+    }
+    return out
+}
+
+fn strFromIntRadix(value: Int, radix: Int) -> String {
+    if (value >= 0) { return strFromU64Radix(value as U64, radix) }
+
+    // The magnitude through U64, so that the most negative Int -- whose positive
+    // is not an Int -- formats like any other rather than overflowing on the way.
+    let magnitude = (0 as U64) - (value as I64 as U64)
+    let digitsText = strFromU64Radix(magnitude, radix)
+    let width = __builtin_string_len(digitsText)
+    let out = str_with_capacity(width + 1)
+    __builtin_string_put_byte(out, 0, '-')
+    strCopyRangeInto(out, 1, digitsText, 0, width)
+    return out
+}
+
+fn strHex(value: U64) -> String { return strFromU64Radix(value, 16) }
+fn strOctal(value: U64) -> String { return strFromU64Radix(value, 8) }
+fn strBinary(value: U64) -> String { return strFromU64Radix(value, 2) }
+
+// ---------------------------------------------------------------------------
+// Parsing, with the range checked
+// ---------------------------------------------------------------------------
+
+// The largest U64, written as a subtraction because an integer literal is typed
+// `Int` and 18446744073709551615 is not one. The same trick names the I64 bounds
+// below, and it is exact: unsigned wrapping is defined.
+private fn strMaxU64() -> U64 {
+    return (0 as U64) - (1 as U64)
+}
+
+private fn strDigitValueIn(c: Int, radix: Int) -> Int {
+    let mut value = 0 - 1
+    if (c >= 48 and c <= 57) { value = c - 48 }
+    if (c >= 97 and c <= 122) { value = c - 97 + 10 }
+    if (c >= 65 and c <= 90) { value = c - 65 + 10 }
+    if (value < 0 or value >= radix) { return 0 - 1 }
+    return value
+}
+
+// **`None` on overflow, and that is the fix this replaces.** The accumulator ran
+// `acc * 10 + digit` with no bound, so `"99999999999"` came back as a `Some`
+// holding a wrapped number -- a parse that reported success and produced a value
+// the text does not say. Every digit is now checked before it is added: against
+// the largest value that can still be multiplied, and then against what is left
+// after multiplying.
+private fn strParseU64Body(s: String, at: Int, slen: Int, radix: Int) -> Option<U64> {
+    if (at >= slen) { return Option<U64>.None }
+    let wide = radix as U64
+    let ceiling = strMaxU64() / wide
+
+    let mut acc = 0 as U64
+    let mut i = at
+    while (i < slen) {
+        let digit = strDigitValueIn(strByteAt(s, i), radix)
+        if (digit < 0) { return Option<U64>.None }
+        if (acc > ceiling) { return Option<U64>.None }
+        acc = acc * wide
+        if (acc > strMaxU64() - (digit as U64)) { return Option<U64>.None }
+        acc = acc + (digit as U64)
+        i = i + 1
+    }
+    return Option<U64>.Some(acc)
+}
+
+// A leading `+` is accepted and a leading `-` is not: an unsigned parse of a
+// negative number has no answer, and wrapping to a large positive one is the
+// class of bug this whole section exists to remove.
+fn strParseU64Radix(s: String, radix: Int) -> Option<U64> {
+    if (radix < 2 or radix > 36) { return Option<U64>.None }
+    let slen = __builtin_string_len(s)
+    if (slen == 0) { return Option<U64>.None }
+    if (strByteAt(s, 0) == 43) { return strParseU64Body(s, 1, slen, radix) }
+    return strParseU64Body(s, 0, slen, radix)
+}
+
+fn strParseU64(s: String) -> Option<U64> {
+    return strParseU64Radix(s, 10)
+}
+
+private fn strMaxI64Magnitude() -> U64 {
+    return strMaxU64() / (2 as U64)
+}
+
+fn strParseI64Radix(s: String, radix: Int) -> Option<I64> {
+    if (radix < 2 or radix > 36) { return Option<I64>.None }
+    let slen = __builtin_string_len(s)
+    if (slen == 0) { return Option<I64>.None }
+
+    let negative = strByteAt(s, 0) == 45
+    let mut start = 0
+    if (negative or strByteAt(s, 0) == 43) { start = 1 }
+    if (start >= slen) { return Option<I64>.None }
+
+    let magnitude = strParseU64Body(s, start, slen, radix)
+    if (optionIsNone(magnitude)) { return Option<I64>.None }
+    let value = optionOr(magnitude, 0 as U64)
+
+    if (negative == false) {
+        if (value > strMaxI64Magnitude()) { return Option<I64>.None }
+        return Option<I64>.Some(value as I64)
+    }
+    // The negative range reaches one further than the positive one, and its end
+    // has no positive counterpart to negate -- so it is named rather than
+    // computed, which is also what keeps the negation below in range.
+    if (value > strMaxI64Magnitude() + (1 as U64)) { return Option<I64>.None }
+    if (value == strMaxI64Magnitude() + (1 as U64)) {
+        return Option<I64>.Some((0 as I64) - (strMaxI64Magnitude() as I64) - (1 as I64))
+    }
+    return Option<I64>.Some((0 as I64) - (value as I64))
+}
+
+fn strParseI64(s: String) -> Option<I64> {
+    return strParseI64Radix(s, 10)
+}
+
+fn strParseIntRadix(s: String, radix: Int) -> Option<Int> {
+    let wide = strParseI64Radix(s, radix)
+    if (optionIsNone(wide)) { return Option<Int>.None }
+    let value = optionOr(wide, 0 as I64)
+    // `Int` is i32 (RUNTIME.md), so a value that fits an I64 and not an Int is a
+    // number this function cannot return. It says so rather than truncating.
+    if (value > 2147483647 as I64) { return Option<Int>.None }
+    if (value < (0 - 2147483647 - 1) as I64) { return Option<Int>.None }
+    return Option<Int>.Some(value as Int)
+}
+
 impl String {
     // -----------------------------------------------------------------------
     // The five the operators lower to
@@ -1911,8 +2340,28 @@ impl String {
     fn allChars<F>(self, keep: F) -> Bool { return strAllChars(self, keep) }
     fn anyChars<F>(self, keep: F) -> Bool { return strAnyChars(self, keep) }
 
+    // **The second reading of the same bytes.** `length`, `charAt` and
+    // `substring` above are byte-indexed and stay that way; these count and cut
+    // by character, which is what user text needs. See the UTF-8 section for why
+    // both exist.
+    fn isAscii(self) -> Bool { return strIsAscii(self) }
+    fn isValidUtf8(self) -> Bool { return strIsValidUtf8(self) }
+    fn scalarCount(self) -> Int { return strScalarCount(self) }
+    fn scalars(self) -> List<Int> { return strScalars(self) }
+    fn scalarAt(self, at: Int) -> Int { return strScalarAt(self, at) }
+    fn scalarWidthAt(self, at: Int) -> Int { return strScalarWidthAt(self, at) }
+    fn isCharBoundary(self, at: Int) -> Bool { return strIsCharBoundary(self, at) }
+    fn scalarSubstring(self, start: Int, count: Int) -> String {
+        return strScalarSubstring(self, start, count)
+    }
+
     fn parseInt(self) -> Option<Int> { return strParseInt(self) }
+    fn parseInt(self, radix: Int) -> Option<Int> { return strParseIntRadix(self, radix) }
     fn parseIntOr(self, fallback: Int) -> Int { return strParseIntOr(self, fallback) }
+    fn parseI64(self) -> Option<I64> { return strParseI64(self) }
+    fn parseI64(self, radix: Int) -> Option<I64> { return strParseI64Radix(self, radix) }
+    fn parseU64(self) -> Option<U64> { return strParseU64(self) }
+    fn parseU64(self, radix: Int) -> Option<U64> { return strParseU64Radix(self, radix) }
     fn parseFloat(self) -> Option<Float> { return strParseFloat(self) }
     fn parseBool(self) -> Option<Bool> { return strParseBool(self) }
 }
@@ -1942,10 +2391,26 @@ impl Char {
 // `count.toString()` picks the `Int` body and nothing else.
 impl Int {
     fn toString(self) -> String { return strFromInt(self) }
+    fn toString(self, radix: Int) -> String { return strFromIntRadix(self, radix) }
+}
+
+impl I64 {
+    fn toString(self) -> String { return strFromInt(self as Int) }
 }
 
 impl U64 {
     fn toString(self) -> String { return strFromUnsigned(self) }
+    fn toString(self, radix: Int) -> String { return strFromU64Radix(self, radix) }
+    fn toHex(self) -> String { return strHex(self) }
+    fn toOctal(self) -> String { return strOctal(self) }
+    fn toBinary(self) -> String { return strBinary(self) }
+}
+
+// The type that had no conversion at all until `strFromFloat`. `toString` is the
+// round-trip text; `toString(decimals)` is the fixed-point presentation form.
+impl Float {
+    fn toString(self) -> String { return strFromFloat(self) }
+    fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self, decimals) }
 }
 
 impl Bool {

@@ -79,7 +79,76 @@ internal fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
     if (owner.equals("") == false) {
         return owner.concat("_", fnNode.s1, "__", signature)
     }
+
+    // **A program may define a name the standard library also defines.**
+    //
+    // A method is a free function whose first parameter is the receiver, so
+    // `impl Char { fn isDigit(self) }` in std.string declares `isDigit(Char)`
+    // *globally* -- and a program with its own `fn isDigit(c: Char) -> Bool` was
+    // a duplicate definition rather than an overload. That is the global method
+    // namespace charging for something the program never asked for, which is the
+    // same sentence three lines up about traits, and it gets the same answer: the
+    // symbol is qualified so the two can coexist.
+    //
+    // The program's is the one qualified, not the library's. Nothing outside a
+    // program's own build refers to its symbols, while `stdlib/*.plib` is a
+    // shipped artifact whose names are its ABI.
+    //
+    // Which of the two a call reaches is not this function's business -- see
+    // `semaModulePreference` in the overload resolution below, which prefers the
+    // caller's own world and so gives the program its own definition and leaves
+    // std.string calling std.string.
+    if (semaShadowsStandardLibrary(module, fnNode, signature)) {
+        return semaModulePrefix(fnNode.file).concat("__", fnNode.s1, "__", signature)
+    }
     return fnNode.s1.concat("__", signature)
+}
+
+// The module path as a symbol fragment: `app.text` becomes `app_text`.
+private fn semaModulePrefix(file: Int) -> String {
+    let qualifier = semaFileQualifier(file)
+    return strReplaceAll(qualifier, ".", "_")
+}
+
+private fn semaFileIsStandardLibrary(file: Int) -> Bool {
+    let qualifier = semaFileQualifier(file)
+    return strStartsWith(qualifier, "std.")
+}
+
+// Whether this declaration is a program's own, with a standard-library function
+// of the same name and parameter types already claiming the plain symbol.
+private fn semaShadowsStandardLibrary(module: ASTNode, fnNode: ASTNode, signature: String) -> Bool {
+    if (semaFileIsStandardLibrary(fnNode.file)) { return false }
+
+    let count = ir_decl_count(fnNode.s1)
+    let mut i = 0
+    while (i < count) {
+        let decl = ptr_to_node(ir_decl_at(fnNode.s1, i))
+        if (decl.kind == NodeKind.FUNCTION and semaFileIsStandardLibrary(decl.file)) {
+            let other = semaParamSignature(module, decl.child1)
+            if (other.equals(signature)) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// **A call reaches its own module's world first.**
+//
+// Once a program may declare `isDigit(Char)` beside the standard library's, two
+// candidates match the same call and one of them has to win. It is the caller's
+// own: a program that defines a name means to use it, and std.string calling
+// `isDigit` means its own -- otherwise defining one would change the behaviour of
+// the library underneath it, which is the reverse of what shadowing is for.
+private fn semaModulePreference(call: ASTNode, decl: ASTNode) -> Int {
+    let callerIsStd = semaFileIsStandardLibrary(call.file)
+    let declIsStd = semaFileIsStandardLibrary(decl.file)
+    if (callerIsStd) {
+        if (declIsStd) { return 1 }
+        return 0
+    }
+    if (declIsStd) { return 0 }
+    return 1
 }
 
 // One entry per trait-impl method: `s1` is the owning trait's name and the span
@@ -481,7 +550,11 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         if (isCandidate) {
             nameSeen = true
             if (semaSignatureMatchesCall(module, stmt, argPtr)) {
-                let literalScore = semaDefaultLiteralScore(module, stmt, argPtr)
+                // The module preference outranks the literal one: which
+                // *definition* a call means is settled before how well its
+                // untyped literals fit that definition's parameters.
+                let literalScore = semaModulePreference(call, stmt) * 1000
+                                   + semaDefaultLiteralScore(module, stmt, argPtr)
                 if (literalScore > bestLiteralScore) {
                     bestPtr = stmtPtr
                     bestLiteralScore = literalScore
@@ -533,6 +606,18 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         return createNode(NodeKind.MODULE)
     }
     semaErrorAt(call, "unknown function ".concat(diagQuote(name)))
+    // The one name that is a shape somewhere else. `separator(...)` is consumed
+    // by the print split in the checker and is a function nowhere, so reaching
+    // resolution at all means it was written outside a print's argument list.
+    if (name.equals("separator")) {
+        diag_note("`separator(...)` is a marker, not a function: write it as the last argument of `print` or `println`")
+    }
+    // The other name a program can reach without writing it. `"${x}"` lowers to
+    // `show(x)`, so a missing `std.display` reports a function the author never
+    // typed -- with nothing to connect it to the string they did type.
+    if (name.equals("show")) {
+        diag_note("string interpolation lowers to `show(...)`: add `import std.display`")
+    }
     return createNode(NodeKind.MODULE)
 }
 

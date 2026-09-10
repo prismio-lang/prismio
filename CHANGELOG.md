@@ -2,7 +2,121 @@
 
 ## Unreleased
 
+### Added
+
+- **String interpolation.** `"total: ${count} items"`, with any expression inside
+  `${...}` and `\$` for a literal one. A lexer mode and a parser rewrite: by the
+  time sema sees one it is a `concat` over `show(...)` of each value, so a user
+  type interpolates as soon as it implements `Display`. Parts past the largest
+  `concat` overload are joined in groups rather than chained, which keeps a long
+  interpolation linear in its own length.
+- **`0xFF`, `0o755`, `0b1010`.** Hex, octal and binary integer literals. A leading
+  zero is *not* octal -- `010` is ten -- because C's rule is the one defect every
+  language designed since has declined to repeat.
+- **`std.unicode`**: `strDisplayWidth` and `scalarWidth` (terminal columns, East
+  Asian Width), `strGraphemeCount` / `strGraphemes` / `strGraphemeWidthAt`
+  (what a person calls a character -- a flag, a ZWJ family and a skin-toned emoji
+  are each one), `strTruncateToWidth`, `strPadStartDisplay` / `strPadEndDisplay`,
+  and `strNormalizeNfc` / `strNormalizeNfd` / `strEqualsNormalized`.
+  The range tables are generated from the Unicode database by
+  `tools/generate_unicode_tables.py` (Unicode 13.0.0) rather than hand-written,
+  and the normalizer is checked against CPython's over 800 comparisons.
+  A separate module because it carries 100 KB of tables that a program laying out
+  no columns should not build.
+- **A program may define a name the standard library defines.** `fn isDigit(c:
+  Char) -> Bool` beside `std.string`'s was a *duplicate definition*, because a
+  method is a free function whose first parameter is the receiver. Such a symbol
+  is now qualified by its module and overload resolution prefers the caller's own
+  world, so the program gets its definition and `std.string` keeps calling its
+  own. The five operator lowerings -- `concat`, `slice`, `charAt`, `compare`,
+  `equals`, and `strLength` for `for ... in` -- are bound to `std.string`
+  explicitly, so shadowing one of those names cannot change what `+` means.
+
+- **`strFromFloat`** -- the shortest decimal text that reads back as the same
+  double. `Float` was the one type a program could print and parse but never
+  convert, so a float could not be joined, written to a file, or built into a
+  message. `print(f)`, `Display for Float` and `Float.toString()` all go through
+  the same formatter, so none of them can disagree; `strFromFloatFixed(v, n)` is
+  the presentation form for a column.
+- **UTF-8 as a second reading of a String.** `strIsAscii`, `strIsValidUtf8`,
+  `strScalarCount`, `strScalars`, `strScalarAt`, `strScalarWidthAt`,
+  `strIsCharBoundary`, `strFromScalar` and `strScalarSubstring`, with methods to
+  match. `length`, `charAt` and `substring` stay byte-indexed -- that is what
+  makes a scan one comparison per byte -- and these are what user text needs.
+- **Range-checked integer parsing.** `strParseI64`, `strParseU64` and the
+  `*Radix` forms of all three, each answering `None` rather than a wrapped
+  number.
+- **Radix formatting**: `strFromIntRadix`, `strFromU64Radix`, `strHex`,
+  `strOctal`, `strBinary`, and `toString(radix)` / `toHex()` methods.
+- **Scientific notation in float literals.** `6.022e23` and `1e9` did not lex at
+  all, which also meant `strFromFloat`'s own output for a large or small value
+  could not be typed back into a program.
+
+- **`print` and `println` take several values**, separated by a space:
+  `println("x", 1, true)`. A statement rewrite in sema rather than a variadic or
+  an overload set -- the call is split into the single-argument calls that
+  already existed, so nothing new is imported and nothing new allocates. The
+  alternative, a `Display`-bounded generic, would make `std.io` import
+  `std.string` and take a hello-world from 5 potential allocation sites to 85.
+  A declaration of your own with that arity is called rather than split.
+- **`separator(", ")` as the last argument** chooses what goes between them.
+  A marker the rewrite consumes, not a function, because a parameter is a name
+  and a type and there is nowhere in the grammar for `sep = ", "` to go. It takes
+  a literal or a name: the separator is written once per gap, and an owned String
+  from a call would be a value nothing names. A program that declares a
+  `separator` of its own keeps it.
+- `println()` and `eprintln()` with no arguments write the line break on its own.
+- **`eprint` and `eprintln` take every type their stdout twins do.** `String` and
+  `Int` were the whole of the stderr set; several values in one call is what made
+  that a hole rather than a gap, because `eprintln("count: ", n)` splits into an
+  `eprint` of the text and an `eprintln` of the value. `prismio_rt_eprint_float`
+  and `prismio_rt_eprintln_float` join the runtime pair for `%g`.
+
 ### Fixed
+
+- **`a.concat(b) == "x"` leaked the temporary.** An ordinary call releases an
+  owned argument that nothing binds; `==` lowers to a builtin, which skipped that
+  path -- so the operator leaked where the `.equals()` method it is a spelling of
+  did not. 1 allocated, 0 released, in a shape string interpolation makes easy to
+  write.
+
+- **`strReverse` reversed bytes.** On any string with a multi-byte character in
+  it that produces invalid UTF-8 -- not a different string, a broken one. It
+  moves scalars now, so the bytes of a character stay in order while the
+  characters go the other way.
+- **`strPadStart`, `strPadEnd` and `strPadCenter` counted bytes**, so a column
+  containing one accented name was a character short. A width is characters.
+- **`strParseInt` had no overflow check.** `"99999999999"` came back as a `Some`
+  holding a wrapped number -- a parse reporting success and producing a value the
+  text does not say.
+- **`strParseFloat` was wrong three ways**: a 32-bit mantissa under an
+  eighteen-digit guard, so a long number wrapped; a division per decimal place,
+  which lands near the nearest double rather than on it; and no exponent case, so
+  it could not read back what `strFromFloat` writes. It is `strtod` now, and
+  stricter than C: the whole string must be a number, so `"1.5kg"` and `" 1.5"`
+  are `None`.
+- **An integer literal that does not fit its type is a diagnostic.** It used to
+  wrap in silence: `let small: U8 = 999` stored 231, `let n = 4294967296` stored
+  0, and `4294967296 as U64` -- a *widening* cast -- produced 0 because the
+  literal wrapped as an i32 first. A literal now takes the type it is cast to
+  when it fits in one, and `as` keeps truncating when it does not, because that
+  is what the explicit narrowing operator is for (`300 as U8` is 44).
+- **A `U64` literal above `I64`'s maximum reached LLVM as `I64_MAX`.**
+  `const_from_text` parsed every integer constant with `strtoll`, which saturates
+  there, so `let n: U64 = 18446744073709551615` was silently 9223372036854775807.
+
+- **Console output links on Windows.** `std/io.psm` declared
+  `extern fn write`, which is a POSIX name: the Windows CRT spells it `_write`
+  and exports no `write`, so every program that printed left an undefined symbol
+  for the linker. The call is `__builtin_console_write` now, and the backend
+  picks the symbol and both word widths from the *target triple* -- the same
+  mechanism the errno accessor already used, so a cross build asks its target
+  rather than its host. `--target x86_64-pc-windows-msvc` emits
+  `call i32 @_write(i32, ptr readonly, i32)`; POSIX targets emit the `i64` `write`
+  they did before, byte for byte. The `bytes` contract survives the move, so a
+  view of the remainder is still not copied on every iteration of the retry loop.
+  `write` also leaves `tools/check_externs.py`'s libc allowlist, which closes that
+  hole: a builtin carries no declaration to allow.
 
 - **A module-level `let` is private to its LLVM module.** Every module that
   imports one emits its own *definition* of it rather than a reference, which is

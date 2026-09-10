@@ -32,7 +32,24 @@ enum TokenType {
 
     KEYWORD,
     UNKNOWN,
-    EOF
+    EOF,
+
+    // String interpolation: `"total: ${count} items"`.
+    //
+    // **Three kinds rather than one, because the parser has to know where it
+    // is.** A literal chunk and an embedded expression alternate, and the
+    // expression's tokens are the real ones -- lexed from the source at their
+    // own positions, so a mistake inside `${...}` underlines the source the
+    // author wrote rather than a reconstruction of it. INTERP_BEGIN carries the
+    // text before the first `${`, INTERP_PART the text between one `}` and the
+    // next `${`, and INTERP_END the text after the last `}`. Any of the three
+    // may carry the empty string.
+    //
+    // Added at the end of the enum on purpose: these are ordinals, and the
+    // committed seed and the IDE plugin both match on them by number.
+    INTERP_BEGIN,
+    INTERP_PART,
+    INTERP_END
 }
 
 // `line`/`col` are 1-based and point at the token's first character; `len` is its

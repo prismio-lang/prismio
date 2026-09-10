@@ -1,0 +1,635 @@
+// Terminal width and grapheme clusters -- the two questions `std.string`'s
+// scalar functions cannot answer.
+//
+// **A separate module because of what it carries.** The range tables next door
+// are 17 KB of generated data, and a program that never lays out a column should
+// not have them in its build. `std.string` covers bytes and scalars; this covers
+// what a *reader* sees, which is neither.
+//
+// The three levels, and why a library needs all of them:
+//
+//   bytes      `length`, `charAt`, `substring` -- storage, and what a scan costs.
+//   scalars    `scalarCount`, `scalars` -- characters, in the Unicode sense.
+//   graphemes  `strGraphemeCount` here -- what a person would call a character.
+//
+// `"é"` written as `e` plus a combining acute is 3 bytes, 2 scalars and 1
+// grapheme. Deleting a character means deleting a grapheme; measuring a column
+// means adding widths, which are not one per scalar either -- a CJK ideograph
+// occupies two and a combining mark none.
+
+import std.string
+import std.unicode_tables
+
+// Six hex digits, at a byte offset in a generated table.
+//
+// The generator emits uppercase and fixed width so this is arithmetic rather
+// than parsing: no bounds test, no separator scan, and every range is at a
+// computable offset, which is what makes the search below a binary one.
+private fn unicodeHexAt(table: String, at: Int) -> Int {
+    let mut value = 0
+    let mut i = 0
+    while (i < 6) {
+        let c = strByteAt(table, at + i)
+        let mut digit = c - 48
+        if (c >= 65) { digit = c - 65 + 10 }
+        value = value * 16 + digit
+        i = i + 1
+    }
+    return value
+}
+
+// The tables are sorted by first scalar and do not overlap, so membership is a
+// binary search: about ten probes over the 692-range width table, against 692
+// comparisons for a walk.
+private fn unicodeInTable(table: String, scalar: Int) -> Bool {
+    let mut low = 0
+    let mut high = (__builtin_string_len(table) / 12) - 1
+    while (low <= high) {
+        let mid = (low + high) / 2
+        let at = mid * 12
+        if (scalar < unicodeHexAt(table, at)) {
+            high = mid - 1
+        } else if (scalar > unicodeHexAt(table, at + 6)) {
+            low = mid + 1
+        } else {
+            return true
+        }
+    }
+    return false
+}
+
+// How many terminal columns one scalar occupies: 0, 1 or 2.
+//
+// **This is a terminal's answer, not a font's.** East Asian Width is what every
+// terminal emulator, `wcwidth` and every table-drawing program agrees to use;
+// a proportional font agrees with none of them, and no property in Unicode
+// describes one.
+//
+// A control character is 0 rather than -1: `wcwidth` reports failure that way
+// and every caller here is measuring a column, where "contributes nothing" is
+// both true and useful. Refusing to answer would only move the decision.
+fn scalarWidth(scalar: Int) -> Int {
+    if (scalar <= 0) { return 0 }
+    if (unicodeInTable(unicodeZeroTable(), scalar)) { return 0 }
+    if (unicodeInTable(unicodeWideTable(), scalar)) { return 2 }
+    return 1
+}
+
+// The columns a string occupies, which is what a padded table has to agree on.
+//
+// `strScalarCount` is the wrong measure for one and `length` is wronger: the
+// three-column string `"日本"` is 6 bytes, 2 scalars and 4 columns.
+fn strDisplayWidth(s: String) -> Int {
+    let slen = __builtin_string_len(s)
+    let mut total = 0
+    let mut i = 0
+    while (i < slen) {
+        let scalar = strScalarAt(s, i)
+        if (scalar < 0) {
+            total = total + 1
+            i = i + 1
+        } else {
+            total = total + scalarWidth(scalar)
+            i = i + strScalarWidthAt(s, i)
+        }
+    }
+    return total
+}
+
+private fn unicodeIsRegionalIndicator(scalar: Int) -> Bool {
+    return scalar >= 127462 and scalar <= 127487
+}
+
+// A skin-tone modifier. Category `Sk`, so it is not in the generated extend
+// table and has to be named: it is one of the few characters that continues a
+// cluster without being a mark.
+private fn unicodeIsEmojiModifier(scalar: Int) -> Bool {
+    return scalar >= 127995 and scalar <= 127999
+}
+
+private fn unicodeHangulKind(scalar: Int) -> Int {
+    if (scalar >= 4352 and scalar <= 4447) { return 1 }
+    if (scalar >= 4448 and scalar <= 4519) { return 2 }
+    if (scalar >= 4520 and scalar <= 4607) { return 3 }
+    if (scalar >= 44032 and scalar <= 55203) {
+        if ((scalar - 44032) % 28 == 0) { return 4 }
+        return 5
+    }
+    return 0
+}
+
+// Whether a cluster that has just taken `previous` continues into `next`.
+//
+// **A documented subset of UAX #29, not the whole of it.** These are the rules
+// that decide real text: a mark joins the letter before it, a ZWJ sequence is
+// one emoji however many scalars it names, a flag is a pair of regional
+// indicators, a skin tone joins the hand it colours, and Hangul jamo compose
+// into a syllable. What is not here is `Prepend`, the `Extended_Pictographic`
+// property (a ZWJ is treated as joining whatever follows it, which is what an
+// emoji sequence always is), and the indic conjunct rules of Unicode 15.
+private fn unicodeContinuesCluster(previous: Int, next: Int, sawZwj: Bool,
+                                   regionals: Int) -> Bool {
+    if (previous == 13 and next == 10) { return true }
+    if (next == 8205) { return true }
+    if (sawZwj) { return true }
+    if (unicodeInTable(unicodeExtendTable(), next)) { return true }
+    if (unicodeIsEmojiModifier(next)) { return true }
+    if (unicodeIsRegionalIndicator(previous) and unicodeIsRegionalIndicator(next)) {
+        return regionals % 2 == 1
+    }
+
+    let before = unicodeHangulKind(previous)
+    let after = unicodeHangulKind(next)
+    if (before == 1 and (after == 1 or after == 2 or after == 4 or after == 5)) { return true }
+    if ((before == 4 or before == 2) and (after == 2 or after == 3)) { return true }
+    if ((before == 5 or before == 3) and after == 3) { return true }
+    return false
+}
+
+// The length in bytes of the grapheme cluster beginning at byte `at`.
+//
+// Walking a string by grapheme is this in a loop, exactly as
+// `strScalarWidthAt` is for scalars. Returns 0 when `at` is past the end.
+fn strGraphemeWidthAt(s: String, at: Int) -> Int {
+    let slen = __builtin_string_len(s)
+    if (at < 0 or at >= slen) { return 0 }
+
+    let mut cursor = at
+    let mut previous = strScalarAt(s, cursor)
+    let mut step = strScalarWidthAt(s, cursor)
+    if (step == 0) { step = 1 }
+    cursor = cursor + step
+
+    let mut sawZwj = false
+    let mut regionals = 0
+    if (unicodeIsRegionalIndicator(previous)) { regionals = 1 }
+
+    while (cursor < slen) {
+        let next = strScalarAt(s, cursor)
+        if (next < 0) { break }
+        if (unicodeContinuesCluster(previous, next, sawZwj, regionals) == false) { break }
+
+        sawZwj = next == 8205
+        if (unicodeIsRegionalIndicator(next)) { regionals = regionals + 1 }
+        previous = next
+        cursor = cursor + strScalarWidthAt(s, cursor)
+    }
+    return cursor - at
+}
+
+// How many characters a person would say this string has.
+//
+// `"é"` typed as `e` and a combining acute is two scalars and one of these;
+// a flag is two scalars and one; a family emoji can be seven.
+fn strGraphemeCount(s: String) -> Int {
+    let slen = __builtin_string_len(s)
+    let mut count = 0
+    let mut i = 0
+    while (i < slen) {
+        let step = strGraphemeWidthAt(s, i)
+        if (step <= 0) { break }
+        count = count + 1
+        i = i + step
+    }
+    return count
+}
+
+fn strGraphemes(s: String) -> List<String> {
+    let slen = __builtin_string_len(s)
+    let out: List<String> = list_new()
+    let mut i = 0
+    while (i < slen) {
+        let step = strGraphemeWidthAt(s, i)
+        if (step <= 0) { break }
+        list_push(out, strSubstring(s, i, step))
+        i = i + step
+    }
+    return out
+}
+
+// The longest prefix that fits in `columns`, cut at a cluster boundary.
+//
+// The operation a table needs when a value is too long for its column, and the
+// one every naive implementation gets wrong twice: by cutting mid-character, and
+// by counting a CJK ideograph as one column and overflowing the row.
+fn strTruncateToWidth(s: String, columns: Int) -> String {
+    // Owned rather than a view of `s`, for the reason `strScalarSubstring` in
+    // std/string.psm gives: the "returns a view of parameter 0" fact does not
+    // survive a function that hands that parameter to another one, and a view
+    // whose source is then dropped by nobody is a leak rather than a saving.
+    let taken = unicodeWidthPrefix(s, columns)
+    let out = str_with_capacity(taken)
+    let mut i = 0
+    while (i < taken) {
+        __builtin_string_put_byte(out, i, __builtin_string_byte_at(s, i))
+        i = i + 1
+    }
+    return out
+}
+
+// **The measuring is here so that the cut is a one-liner**, and that shape is
+// load-bearing rather than tidy. `strSubstring` returns a *view* of its
+// argument, and the analysis carries "returns a view of parameter 0" through a
+// direct return -- but not out of a function that loops first: with the loop
+// inline, `strTruncateToWidth(owned, 4)` read 1 allocated / 0 released, because
+// the caller's drop of `owned` was declined and nothing else took it.
+private fn unicodeWidthPrefix(s: String, columns: Int) -> Int {
+    let slen = __builtin_string_len(s)
+    let mut taken = 0
+    let mut used = 0
+    while (taken < slen) {
+        let step = strGraphemeWidthAt(s, taken)
+        if (step <= 0) { break }
+
+        // The cluster's columns, summed in place. `strDisplayWidth` of a
+        // `strSubstring` would read better and allocate a String per cluster
+        // that nothing names -- which RUNTIME.md 3.1 makes a leak, not garbage.
+        let mut clusterWidth = 0
+        let mut at = taken
+        while (at < taken + step) {
+            let scalar = strScalarAt(s, at)
+            if (scalar < 0) {
+                clusterWidth = clusterWidth + 1
+                at = at + 1
+            } else {
+                clusterWidth = clusterWidth + scalarWidth(scalar)
+                at = at + strScalarWidthAt(s, at)
+            }
+        }
+
+        if (used + clusterWidth > columns) { break }
+        used = used + clusterWidth
+        taken = taken + step
+    }
+    return taken
+}
+
+// Padding to a column count rather than a character count.
+//
+// `std.string`'s `padStart` counts characters, which lines up every alphabet
+// whose characters are one column wide. These are for the ones that are not.
+fn strPadStartDisplay(s: String, columns: Int, pad: Char) -> String {
+    let slen = __builtin_string_len(s)
+    let mut padLen = columns - strDisplayWidth(s)
+    if (padLen < 0) { padLen = 0 }
+    let out = str_with_capacity(slen + padLen)
+    let mut i = 0
+    while (i < padLen) {
+        __builtin_string_put_byte(out, i, pad)
+        i = i + 1
+    }
+    let mut j = 0
+    while (j < slen) {
+        __builtin_string_put_byte(out, padLen + j, __builtin_string_byte_at(s, j))
+        j = j + 1
+    }
+    return out
+}
+
+fn strPadEndDisplay(s: String, columns: Int, pad: Char) -> String {
+    let slen = __builtin_string_len(s)
+    let mut padLen = columns - strDisplayWidth(s)
+    if (padLen < 0) { padLen = 0 }
+    let out = str_with_capacity(slen + padLen)
+    let mut i = 0
+    while (i < slen) {
+        __builtin_string_put_byte(out, i, __builtin_string_byte_at(s, i))
+        i = i + 1
+    }
+    let mut j = 0
+    while (j < padLen) {
+        __builtin_string_put_byte(out, slen + j, pad)
+        j = j + 1
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// Normalization
+// ---------------------------------------------------------------------------
+
+// **The same text can be spelled two ways, and `==` compares bytes.**
+//
+// `é` is either U+00E9 or `e` followed by U+0301, and both are correct. A user
+// typing one and a file holding the other are not equal, do not hash alike, and
+// do not sort together -- which is how a name lookup fails for one person in a
+// thousand and nobody can reproduce it. macOS hands out filenames decomposed and
+// most everything else composes, so a program that reads a path and compares it
+// to a literal is already in this. Normalize once, at the boundary, then compare.
+//
+// NFC composes (the shorter, usual form) and NFD decomposes. Both are canonical:
+// they never change what the text *means*, unlike the compatibility forms NFKC
+// and NFKD, which fold `ﬁ` into `fi` and are deliberately not here.
+
+private fn unicodeCombiningClass(scalar: Int) -> Int {
+    let table = unicodeCombiningTable()
+    let mut low = 0
+    let mut high = (__builtin_string_len(table) / 14) - 1
+    while (low <= high) {
+        let mid = (low + high) / 2
+        let at = mid * 14
+        if (scalar < unicodeHexAt(table, at)) {
+            high = mid - 1
+        } else if (scalar > unicodeHexAt(table, at + 6)) {
+            low = mid + 1
+        } else {
+            let c = strByteAt(table, at + 12)
+            let d = strByteAt(table, at + 13)
+            let mut high4 = c - 48
+            if (c >= 65) { high4 = c - 65 + 10 }
+            let mut low4 = d - 48
+            if (d >= 65) { low4 = d - 65 + 10 }
+            return high4 * 16 + low4
+        }
+    }
+    return 0
+}
+
+// The offset of this scalar's entry in the decomposition table, or -1.
+private fn unicodeDecompositionAt(scalar: Int) -> Int {
+    let table = unicodeDecompositionTable()
+    let stride = unicodeDecompositionStride()
+    let mut low = 0
+    let mut high = (__builtin_string_len(table) / stride) - 1
+    while (low <= high) {
+        let mid = (low + high) / 2
+        let at = mid * stride
+        let source = unicodeHexAt(table, at)
+        if (scalar < source) {
+            high = mid - 1
+        } else if (scalar > source) {
+            low = mid + 1
+        } else {
+            return at
+        }
+    }
+    return 0 - 1
+}
+
+// Hangul is arithmetic rather than a table: eleven thousand syllables that
+// decompose by division and compose by multiplication, which is why Unicode
+// gives them a rule instead of eleven thousand entries.
+private fn unicodeHangulDecompose(scalar: Int, out: List<Int>) -> Bool {
+    if (scalar < 44032 or scalar > 55203) { return false }
+    let index = scalar - 44032
+    list_push(out, 4352 + index / 588)
+    list_push(out, 4449 + (index % 588) / 28)
+    let trailing = index % 28
+    if (trailing != 0) { list_push(out, 4519 + trailing) }
+    return true
+}
+
+private fn unicodeHangulCompose(first: Int, second: Int) -> Int {
+    if (first >= 4352 and first <= 4370 and second >= 4449 and second <= 4469) {
+        return 44032 + ((first - 4352) * 21 + (second - 4449)) * 28
+    }
+    if (first >= 44032 and first <= 55203 and (first - 44032) % 28 == 0
+        and second >= 4520 and second <= 4546) {
+        return first + (second - 4519)
+    }
+    return 0 - 1
+}
+
+private fn unicodeComposePair(first: Int, second: Int) -> Int {
+    let hangul = unicodeHangulCompose(first, second)
+    if (hangul >= 0) { return hangul }
+
+    let table = unicodeCompositionTable()
+    let mut low = 0
+    let mut high = (__builtin_string_len(table) / 18) - 1
+    while (low <= high) {
+        let mid = (low + high) / 2
+        let at = mid * 18
+        let a = unicodeHexAt(table, at)
+        if (first < a) {
+            high = mid - 1
+        } else if (first > a) {
+            low = mid + 1
+        } else {
+            let b = unicodeHexAt(table, at + 6)
+            if (second < b) {
+                high = mid - 1
+            } else if (second > b) {
+                low = mid + 1
+            } else {
+                return unicodeHexAt(table, at + 12)
+            }
+        }
+    }
+    return 0 - 1
+}
+
+// **The sort is what makes NFD a normal form.** Two marks on the same letter can
+// be typed in either order and mean the same thing, so a decomposition that kept
+// the typing order would still have two spellings. Ordering by combining class
+// -- stably, and never across a starter -- is what collapses them to one.
+private fn unicodeCanonicalOrder(scalars: List<Int>) {
+    let n = list_len(scalars)
+    let mut i = 1
+    while (i < n) {
+        let ccc = unicodeCombiningClass(list_get(scalars, i))
+        if (ccc != 0) {
+            let mut j = i
+            while (j > 0) {
+                let previous = unicodeCombiningClass(list_get(scalars, j - 1))
+                if (previous == 0 or previous <= ccc) { break }
+                let held = list_get(scalars, j - 1)
+                list_set(scalars, j - 1, list_get(scalars, j))
+                list_set(scalars, j, held)
+                j = j - 1
+            }
+        }
+        i = i + 1
+    }
+}
+
+private fn unicodeScalarByteLength(scalar: Int) -> Int {
+    if (scalar < 128) { return 1 }
+    if (scalar < 2048) { return 2 }
+    if (scalar < 65536) { return 3 }
+    return 4
+}
+
+private fn unicodeEncodedLength(scalars: List<Int>) -> Int {
+    let n = list_len(scalars)
+    let mut total = 0
+    let mut i = 0
+    while (i < n) {
+        total = total + unicodeScalarByteLength(list_get(scalars, i))
+        i = i + 1
+    }
+    return total
+}
+
+// **Fills a buffer the caller allocated, and that is not a style choice.**
+//
+// A function whose `return` is another function's allocation is a pass-through,
+// and its caller gets no drop as soon as an argument is itself owned -- the same
+// rule the header of std/string.psm states, and measured here: with
+// `let once = strNormalizeNfc(x)` and `strNormalizeNfc(once)`, a version of
+// these that returned `unicodeEncodeScalars(...)` read 10 allocated / 8
+// released. Each public producer below allocates its own result and calls this
+// to fill it, which is what makes them 1-for-1.
+private fn unicodeWriteScalars(out: String, scalars: List<Int>) {
+    let n = list_len(scalars)
+    let mut at = 0
+    let mut k = 0
+    while (k < n) {
+        let value = list_get(scalars, k)
+        if (value < 128) {
+            __builtin_string_put_byte(out, at, value as Char)
+            at = at + 1
+        } else if (value < 2048) {
+            __builtin_string_put_byte(out, at, (192 + value / 64) as Char)
+            __builtin_string_put_byte(out, at + 1, (128 + value % 64) as Char)
+            at = at + 2
+        } else if (value < 65536) {
+            __builtin_string_put_byte(out, at, (224 + value / 4096) as Char)
+            __builtin_string_put_byte(out, at + 1, (128 + (value / 64) % 64) as Char)
+            __builtin_string_put_byte(out, at + 2, (128 + value % 64) as Char)
+            at = at + 3
+        } else {
+            __builtin_string_put_byte(out, at, (240 + value / 262144) as Char)
+            __builtin_string_put_byte(out, at + 1, (128 + (value / 4096) % 64) as Char)
+            __builtin_string_put_byte(out, at + 2, (128 + (value / 64) % 64) as Char)
+            __builtin_string_put_byte(out, at + 3, (128 + value % 64) as Char)
+            at = at + 4
+        }
+        k = k + 1
+    }
+}
+
+// The decomposed scalars, canonically ordered. Both public forms start here.
+private fn unicodeDecomposedScalars(s: String) -> List<Int> {
+    let slen = __builtin_string_len(s)
+    let out: List<Int> = list_new()
+    let table = unicodeDecompositionTable()
+
+    let mut i = 0
+    while (i < slen) {
+        let scalar = strScalarAt(s, i)
+        if (scalar < 0) {
+            // Not well-formed UTF-8. Kept as U+FFFD, the same substitution
+            // `strScalars` makes, so normalizing never destroys input silently.
+            list_push(out, 65533)
+            i = i + 1
+        } else {
+            i = i + strScalarWidthAt(s, i)
+            if (unicodeHangulDecompose(scalar, out) == false) {
+                let at = unicodeDecompositionAt(scalar)
+                if (at < 0) {
+                    list_push(out, scalar)
+                } else {
+                    let c = strByteAt(table, at + 6)
+                    let d = strByteAt(table, at + 7)
+                    let mut count = c - 48
+                    if (c >= 65) { count = c - 65 + 10 }
+                    let mut lowDigit = d - 48
+                    if (d >= 65) { lowDigit = d - 65 + 10 }
+                    count = count * 16 + lowDigit
+
+                    let mut part = 0
+                    while (part < count) {
+                        list_push(out, unicodeHexAt(table, at + 8 + part * 6))
+                        part = part + 1
+                    }
+                }
+            }
+        }
+    }
+
+    unicodeCanonicalOrder(out)
+    return out
+}
+
+// Canonical decomposition: `é` becomes `e` and a combining acute.
+fn strNormalizeNfd(s: String) -> String {
+    let scalars = unicodeDecomposedScalars(s)
+    let out = str_with_capacity(unicodeEncodedLength(scalars))
+    unicodeWriteScalars(out, scalars)
+    return out
+}
+
+// Canonical composition: the usual form, and the one to compare and store in.
+//
+// Decompose first, then compose -- which is not a detour. Composing the input
+// directly would keep whatever order its marks were typed in, and two spellings
+// that decompose alike have to come back identical or this is not a normal form.
+fn strNormalizeNfc(s: String) -> String {
+    let decomposed = unicodeDecomposedScalars(s)
+    let n = list_len(decomposed)
+    if (n == 0) { return str_with_capacity(0) }
+
+    let out: List<Int> = list_new()
+    list_push(out, list_get(decomposed, 0))
+    let mut starter = 0
+    // -1 rather than 0: nothing stands between the starter and the next
+    // character yet, and a class of 0 there would block a second starter from
+    // composing -- which is exactly what Hangul L and V are.
+    let mut lastClass = 0 - 1
+    if (unicodeCombiningClass(list_get(decomposed, 0)) != 0) { starter = 0 - 1 }
+
+    let mut i = 1
+    while (i < n) {
+        let scalar = list_get(decomposed, i)
+        let ccc = unicodeCombiningClass(scalar)
+
+        let mut consumed = false
+        if (starter >= 0 and (lastClass < 0 or lastClass < ccc)) {
+            let composed = unicodeComposePair(list_get(out, starter), scalar)
+            if (composed >= 0) {
+                list_set(out, starter, composed)
+                consumed = true
+            }
+        }
+
+        if (consumed == false) {
+            if (ccc == 0) {
+                starter = list_len(out)
+                lastClass = 0 - 1
+            } else {
+                lastClass = ccc
+            }
+            list_push(out, scalar)
+        }
+        i = i + 1
+    }
+
+    let text = str_with_capacity(unicodeEncodedLength(out))
+    unicodeWriteScalars(text, out)
+    return text
+}
+
+// Whether two strings mean the same text, whatever spelling each arrived in.
+//
+// This is what `==` cannot answer: it compares bytes, and the two spellings of
+// `é` have different ones. Normalizing both is the whole implementation, and
+// naming it is what stops every caller writing that out and half of them
+// forgetting.
+fn strEqualsNormalized(a: String, b: String) -> Bool {
+    let left = strNormalizeNfc(a)
+    let right = strNormalizeNfc(b)
+    return left.equals(right)
+}
+
+impl String {
+    fn displayWidth(self) -> Int { return strDisplayWidth(self) }
+    fn graphemeCount(self) -> Int { return strGraphemeCount(self) }
+    fn graphemes(self) -> List<String> { return strGraphemes(self) }
+    fn graphemeWidthAt(self, at: Int) -> Int { return strGraphemeWidthAt(self, at) }
+    fn truncateToWidth(self, columns: Int) -> String {
+        return strTruncateToWidth(self, columns)
+    }
+    fn padStartDisplay(self, columns: Int, pad: Char) -> String {
+        return strPadStartDisplay(self, columns, pad)
+    }
+    fn padEndDisplay(self, columns: Int, pad: Char) -> String {
+        return strPadEndDisplay(self, columns, pad)
+    }
+
+    fn normalizeNfc(self) -> String { return strNormalizeNfc(self) }
+    fn normalizeNfd(self) -> String { return strNormalizeNfd(self) }
+    fn equalsNormalized(self, other: String) -> Bool {
+        return strEqualsNormalized(self, other)
+    }
+}

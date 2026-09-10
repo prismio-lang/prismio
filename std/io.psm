@@ -3,18 +3,25 @@
 // question of a line on stdout overtaking one on stderr. The public surface is
 // the two exact-type overload sets declared here.
 //
-// `write` is `ssize_t write(int, const void*, size_t)`. Its descriptor is a C
-// `int`, which is Prismio's `Int`; its count and its result are 64-bit, which
-// `Int` is not. Declaring the count `Int` compiles and appears to work, because
-// writing a 32-bit register zero-extends on both x86-64 and AArch64 -- but
-// neither ABI promises the caller left the upper half clean, and the callee
-// reads all 64 bits of it.
-// `bytes` rather than the default `borrow`: it says the callee was handed the
+// **The write is a builtin, not an `extern fn`, because its symbol is spelled
+// differently on the three platforms this ships for.** POSIX has
+// `ssize_t write(int, const void*, size_t)`; the Windows CRT has
+// `int _write(int, const void*, unsigned int)` and exports no `write` at all, so
+// the extern spelling linked on macOS and Linux and left an undefined symbol in
+// every Windows program that printed. The name and both word widths are picked
+// from the target triple in the backend, exactly as `__builtin_errno`'s accessor
+// is, and the program still links its C library's own entry point directly --
+// there is no runtime shim in front of it.
+//
+// The count and the result are `Int` on every target. That is not a narrowing of
+// the POSIX signature: a String's length is an i32, so no console write can ask
+// for more bytes than one holds.
+//
+// It carries the `bytes` contract the extern declared: the callee was handed the
 // count separately and never reads to a terminator, so the String's own pointer
 // crosses untouched. The retry loop below advances by taking a view of what is
 // left, and under the default that view would be copied -- the whole remainder,
-// on every iteration -- to supply a terminator `write` does not look at.
-extern fn write(fd: Int, buffer: String bytes, count: I64) -> I64
+// on every iteration -- to supply a terminator the write does not look at.
 
 // Float is the one type with no source-level formatter, so `%g` is still C.
 // Mixing `printf` with the writes below is safe only because both of these
@@ -22,6 +29,8 @@ extern fn write(fd: Int, buffer: String bytes, count: I64) -> I64
 // later `write` to get in front of.
 extern fn prismio_rt_print_float(value: Float)
 extern fn prismio_rt_println_float(value: Float)
+extern fn prismio_rt_eprint_float(value: Float)
+extern fn prismio_rt_eprintln_float(value: Float)
 
 extern fn str_with_capacity(length: Int) -> String produce(free)
 
@@ -33,7 +42,7 @@ extern fn str_with_capacity(length: Int) -> String produce(free)
 // because an interrupted `write` moved no bytes.
 private fn prismioStdIoWriteShort(fd: Int, text: String, total: Int) -> Int {
     loop {
-        let n = write(fd, text, total as I64) as Int
+        let n = __builtin_console_write(fd, text, total)
         if (n > 0) { return n }
         if (n == 0) { return 0 }
         if (__builtin_errno() != __builtin_errno_intr()) { return 0 }
@@ -65,8 +74,8 @@ private fn prismioStdIoWriteAll(fd: Int, text: String) -> Int {
         // aliases `text` -- that is the whole point, and how the base is kept
         // alive under it -- so a `let` here raises the base's escape to Caller
         // and every caller's drop of what it handed us is declined with it.
-        let n = write(fd, __builtin_string_view(text, done, total - done),
-                      (total - done) as I64) as Int
+        let n = __builtin_console_write(fd, __builtin_string_view(text, done, total - done),
+                                        total - done)
         if (n > 0) {
             done = done + n
         } else if (n < 0 and __builtin_errno() == __builtin_errno_intr()) {
@@ -233,6 +242,13 @@ fn print(value: Char) {
     prismioStdIoOut(text)
 }
 
+// Python's `print()` -- the line break on its own, and the obvious way to end a
+// line a `print` began. A literal rather than a formatter, so it is one write
+// that allocates nothing: no site to number, and none of the IDs below move.
+fn println() {
+    prismioStdIoOut("\n")
+}
+
 // The one overload whose newline cannot share a formatter's allocation: the
 // argument is borrowed, so the line must be copied before it can carry one.
 // The copy is the cheap half. Over 300k lines to /dev/null, against the
@@ -252,10 +268,14 @@ fn println(value: String) {
 // Status and progress text belongs here rather than on stdout, so that a
 // program whose stdout is a format -- a manifest, JSON diagnostics, a pipe into
 // another tool -- can still say something to the person watching without
-// corrupting it. `Int` joins `String` because a status line counts things: the
-// compiler reports how many standard-library modules it rebuilt beside a
-// project-local toolchain, and that number is status, not output. The remaining
-// width-specific overloads stay on stdout until a caller needs one here.
+// corrupting it.
+//
+// **The set matches stdout's, type for type.** It did not: `String` and `Int`
+// were the whole of it, on the argument that the remaining widths could wait
+// until a caller needed one. Several values in one call is what made that a
+// hole rather than a gap -- `eprintln("count: ", n)` splits into `eprint` of the
+// text and `eprintln` of the value, so a missing stderr overload turned a
+// working stdout line into a diagnostic the moment it moved to stderr.
 fn eprint(value: String) {
     prismioStdIoErr(value)
 }
@@ -263,6 +283,72 @@ fn eprint(value: String) {
 fn eprint(value: Int) {
     let text = prismioStdIoSignedInteger(value as I64, '\0')
     prismioStdIoErr(text)
+}
+
+fn eprint(value: I8) {
+    let text = prismioStdIoSignedInteger(value as I64, '\0')
+    prismioStdIoErr(text)
+}
+
+fn eprint(value: I16) {
+    let text = prismioStdIoSignedInteger(value as I64, '\0')
+    prismioStdIoErr(text)
+}
+
+fn eprint(value: I64) {
+    let text = prismioStdIoSignedInteger(value, '\0')
+    prismioStdIoErr(text)
+}
+
+fn eprint(value: Isize) {
+    let text = prismioStdIoSignedInteger(value as I64, '\0')
+    prismioStdIoErr(text)
+}
+
+fn eprint(value: U8) {
+    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
+    prismioStdIoErr(text)
+}
+
+fn eprint(value: U16) {
+    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
+    prismioStdIoErr(text)
+}
+
+fn eprint(value: U32) {
+    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
+    prismioStdIoErr(text)
+}
+
+fn eprint(value: U64) {
+    let text = prismioStdIoUnsignedInteger(value, '\0')
+    prismioStdIoErr(text)
+}
+
+fn eprint(value: Usize) {
+    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
+    prismioStdIoErr(text)
+}
+
+fn eprint(value: Float) {
+    prismio_rt_eprint_float(value)
+}
+
+fn eprint(value: Bool) {
+    if (value) {
+        prismioStdIoErr("true")
+    } else {
+        prismioStdIoErr("false")
+    }
+}
+
+fn eprint(value: Char) {
+    let text = prismioStdIoChar(value, '\0')
+    prismioStdIoErr(text)
+}
+
+fn eprintln() {
+    prismioStdIoErr("\n")
 }
 
 fn eprintln(value: String) {
@@ -275,6 +361,73 @@ fn eprintln(value: String) {
     }
     __builtin_string_put_byte(out, width, '\n')
     prismioStdIoErr(out)
+}
+
+fn eprintln(value: Int) {
+    let text = prismioStdIoSignedInteger(value as I64, '\n')
+    prismioStdIoErr(text)
+}
+
+fn eprintln(value: I8) {
+    let text = prismioStdIoSignedInteger(value as I64, '\n')
+    prismioStdIoErr(text)
+}
+
+fn eprintln(value: I16) {
+    let text = prismioStdIoSignedInteger(value as I64, '\n')
+    prismioStdIoErr(text)
+}
+
+fn eprintln(value: I64) {
+    let text = prismioStdIoSignedInteger(value, '\n')
+    prismioStdIoErr(text)
+}
+
+fn eprintln(value: Isize) {
+    let text = prismioStdIoSignedInteger(value as I64, '\n')
+    prismioStdIoErr(text)
+}
+
+fn eprintln(value: U8) {
+    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
+    prismioStdIoErr(text)
+}
+
+fn eprintln(value: U16) {
+    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
+    prismioStdIoErr(text)
+}
+
+fn eprintln(value: U32) {
+    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
+    prismioStdIoErr(text)
+}
+
+fn eprintln(value: U64) {
+    let text = prismioStdIoUnsignedInteger(value, '\n')
+    prismioStdIoErr(text)
+}
+
+fn eprintln(value: Usize) {
+    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
+    prismioStdIoErr(text)
+}
+
+fn eprintln(value: Float) {
+    prismio_rt_eprintln_float(value)
+}
+
+fn eprintln(value: Bool) {
+    if (value) {
+        prismioStdIoErr("true\n")
+    } else {
+        prismioStdIoErr("false\n")
+    }
+}
+
+fn eprintln(value: Char) {
+    let text = prismioStdIoChar(value, '\n')
+    prismioStdIoErr(text)
 }
 
 fn println(value: Int) {

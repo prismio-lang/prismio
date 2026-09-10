@@ -235,7 +235,7 @@ missing_features:
   - user-space arena or bump allocator parameters for List and Map
 
 reason:
-  Prismio's AIF (Allocation Inference Framework) determines allocation tiers
+  Prismio's AIF (Adaptive Inference Framework) determines allocation tiers
   at compile time. Users cannot supply custom allocators or region handles into
   standard containers.
 

@@ -128,7 +128,7 @@ violations.
 
 | Module | Import | Covers |
 |---|---|---|
-| `std/io.psm` | `import std.io` | `print` / `println` overloads, and `eprint` / `eprintln` for stderr |
+| `std/io.psm` | `import std.io` | `print` / `println` overloads, several values in one call, and `eprint` / `eprintln` for stderr |
 | `std/string.psm` | `import std.string` | strings, characters, parsing — **and the String operators** |
 | `std/fs.psm` | `import std.fs` | files, paths, directory listing |
 | `std/process.psm` | `import std.process` | arguments, subprocesses |
@@ -146,7 +146,37 @@ violations.
 nothing carries no I/O, which is what lets a target with no stdout link at all.
 See the comment above `resolveImports` in `src/driver/imports.psm`.
 
-`eprint` takes a `String` or an `Int`, `eprintln` a `String`. They exist so that
+**One call may carry several values**, separated by a space:
+
+```prismio
+print("Total: ", 5)                       // Total:  5
+println("x", 1, true, 'c', 2.5)           // x 1 true c 2.5
+println(1, 2, 3, separator(", "))         // 1, 2, 3
+println()                                 // the line break on its own
+```
+
+There is no variadic function behind this and no new overload. `print(a, b, c)`
+is rewritten in sema into `print(a); print(" "); print(b); print(" "); print(c)`,
+so each value goes through the exact-type overload it always had -- and the
+trailing `println` keeps its name, so the newline still shares the last
+formatter's allocation. `semaSplitPrintStatement` in `src/sema/checker.psm` is
+the rewrite; it fires only where there was no program before, so a declaration
+of your own with that arity is called instead of being split.
+
+`separator(...)` is a marker, not a function: it is recognised as the last
+argument of one of these calls and consumed there. It takes a String literal or
+a name, because the rewrite writes it once per gap -- `separator(join(a, b))`
+would run that call per gap, and a String it returned owned would be a value
+nothing names, which §3.1 makes a leak rather than an inefficiency. A program
+that declares a `separator` of its own keeps it, and the marker turns itself off.
+
+The library reason it is a rewrite: the alternative is `fn print<A: Display,
+B: Display>(a: A, b: B)`, which makes `std.io` import `std.display` and through
+it `std.string`. A hello-world reports 5 potential allocation sites today and 85
+with that import, paid by every program that prints.
+
+`eprint` and `eprintln` take the same types `print` and `println` do, and split
+the same way. They exist so that
 a program whose stdout carries a *format* -- `aif --manifest`, JSON diagnostics, a
 pipe into another tool -- can still report status without corrupting it. The
 compiler's own host-routing banner uses them for exactly that reason: while it
@@ -299,19 +329,29 @@ leak to find.
 Linked into every program: `runtime/lang_runtime.c` and
 `runtime/program_support.c`. Everything else in `runtime/` is compiler-only.
 
-### Not wrapped at all: the one libc symbol
+### Not wrapped at all: the console write
 
-`std/io.psm` writes to the descriptor itself, so `write` is the only libc
-function a Prismio program reaches without a Prismio wrapper in front of it, and
-`tools/check_externs.py` allows it by name -- every other `extern fn` in `src/`,
-`std/` and `ums/` has to resolve to a definition this repository ships.
+`std/io.psm` writes to the descriptor itself, so the console write is the only
+libc call a Prismio program reaches with no Prismio wrapper in front of it.
+`tools/check_externs.py` allows `exit` by name -- every other `extern fn` in
+`src/`, `std/` and `ums/` has to resolve to a definition this repository ships.
+`write` used to be the second name on that list; a builtin carries no
+declaration, so the hole closed when the console write became one.
 
-Its declaration carries the C signature exactly: `ssize_t write(int, const
-void*, size_t)`. `Int` is `i32`, so the descriptor is `Int` while the count and
-the result are `I64`. Declaring the count `Int` compiles, links and appears to
-work -- writing a 32-bit register zero-extends on both x86-64 and AArch64 -- but
-neither ABI promises the caller left the upper half clean, and the callee reads
-all 64 bits of it.
+**It is a builtin rather than an `extern fn`, because the symbol's name is not
+the same on the three platforms this ships for.** POSIX has
+`ssize_t write(int, const void*, size_t)`; the Windows CRT has
+`int _write(int, const void*, unsigned int)` and exports no `write` at all, so
+the extern spelling linked on macOS and Linux and left an undefined symbol in
+every Windows program that printed. `__builtin_console_write` picks the name and
+both word widths from the *target triple* in the backend -- the same mechanism
+and the same reason as the errno accessor below -- and the program still links
+its own C library's entry point directly, with no runtime shim in front of it.
+
+The count and the result are `Int` on every target, which is not a narrowing of
+the POSIX signature: a String's length is an i32, so no console write can ask for
+more bytes than one holds. Codegen widens the count to `size_t` for POSIX and
+narrows the `ssize_t` back, and neither cast can lose a byte.
 
 **`print` writes the whole string, and the loop that makes that true is Prismio
 source.** `write` returns how many bytes it took, and fewer than asked for is an
@@ -333,10 +373,21 @@ target, because they are C macros with nowhere else to read them from: `EINTR` i
 4 everywhere this compiler targets, `EAGAIN` is 35 on Darwin and the BSDs and 11
 elsewhere.
 
-`prismio_rt_print_float` and `prismio_rt_println_float` are what is left of the
-console runtime, because `%g` has no source-level formatter yet. Both flush
-stdout before returning, which is what keeps a `printf` and a `write` to the
-same descriptor in order.
+`prismio_rt_print_float` and `prismio_rt_println_float`, with their
+`prismio_rt_eprint_float` and `prismio_rt_eprintln_float` twins, are what is left
+of the console runtime. Each flushes before returning, which is what keeps a
+`printf` and a console write to the same descriptor in order.
+
+**Float text is C because round-tripping is.** `prismio_format_double` writes the
+shortest decimal that `strtod` reads back as the same double -- found by asking
+for one significant digit and widening until it matches -- and `str_from_double`
+is that text as a String the caller owns. `%g`'s six digits are not a *view* of a
+value but a different value: `1.0 / 3.0` printed that way and read back is not
+the number the program held. `strFromFloat`, `print(f)` and `Display for Float`
+all go through the one function, so none of them can disagree with the others.
+`str_double_valid` and `str_double_value` are the other direction, and are
+`strtod` for the same reason -- correctly rounded, and the exact inverse the
+formatter checks its own candidates against.
 
 ### Wrapped, and the wrapper is the supported API
 

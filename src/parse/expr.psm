@@ -218,6 +218,113 @@ private fn parseStructLiteral(p: Parser, name: Token) -> ASTNode {
     return structLit
 }
 
+// A literal chunk of an interpolated string, dropped when it is empty: `"${a}${b}"`
+// is two parts rather than five, which matters because `concat` is an overload
+// set with a largest arity and every empty part spends one.
+private fn interpolationChunk(p: Parser, parts: NodeList, tok: Token) {
+    if (__builtin_string_len(tok.value) == 0) { return }
+    let chunk = parserNodeFrom(NodeKind.LITERAL_EXPR, tok)
+    chunk.i1 = TokenType.STRING_LITERAL
+    chunk.s1 = tok.value
+    nodeListPush(parts, chunk)
+}
+
+// `show(value)` -- the conversion every interpolated value goes through.
+private fn interpolationShow(value: ASTNode) -> ASTNode {
+    value.next = ptr_null()
+    let callee = createNode(NodeKind.IDENTIFIER_EXPR)
+    callee.s1 = "show"
+    nodeSpanFrom(callee, value)
+
+    let call = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(call, value)
+    call.child1 = node_to_ptr(callee)
+    call.child2 = node_to_ptr(value)
+    return call
+}
+
+// The parts as one `concat`, or as a tree of them when there are more parts than
+// `impl String` has an overload for.
+//
+// **Grouped rather than chained.** `a.concat(b).concat(c)` copies the prefix once
+// per step, so a long interpolation would be quadratic in its own length; six at
+// a time is one allocation per group and one more to join the groups, which for
+// any interpolation a person writes is two levels at most.
+private fn interpolationJoin(p: Parser, parts: Ptr, anchor: Token) -> ASTNode {
+    let mut count = 0
+    let mut walk = parts
+    while (nodeExists(walk)) {
+        count = count + 1
+        walk = ptr_to_node(walk).next
+    }
+
+    if (count == 0) {
+        let empty = parserNodeFrom(NodeKind.LITERAL_EXPR, anchor)
+        empty.i1 = TokenType.STRING_LITERAL
+        empty.s1 = ""
+        return empty
+    }
+    if (count == 1) { return ptr_to_node(parts) }
+
+    if (count <= 6) {
+        let call = parserNodeFrom(NodeKind.CALL_EXPR, anchor)
+        let callee = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, anchor)
+        callee.s1 = "concat"
+        call.child1 = node_to_ptr(callee)
+        call.child2 = parts
+        return call
+    }
+
+    // More than one group: take six at a time, join each, and recurse over the
+    // results.
+    let groups = nodeList()
+    let mut restPtr = parts
+    while (nodeExists(restPtr)) {
+        let groupHead = restPtr
+        let mut taken = 1
+        let mut tail = ptr_to_node(restPtr)
+        while (taken < 6 and nodeExists(tail.next)) {
+            tail = ptr_to_node(tail.next)
+            taken = taken + 1
+        }
+        restPtr = tail.next
+        tail.next = ptr_null()
+        nodeListPush(groups, interpolationJoin(p, groupHead, anchor))
+    }
+    return interpolationJoin(p, groups.head, anchor)
+}
+
+private fn parseInterpolation(p: Parser) -> ASTNode {
+    let opening = p.current()
+    let parts = nodeList()
+
+    interpolationChunk(p, parts, opening)
+    p.advance()
+
+    loop {
+        nodeListPush(parts, interpolationShow(parseExpression(p, 0)))
+
+        let edge = p.current()
+        if (edge.type == TokenType.INTERP_PART) {
+            interpolationChunk(p, parts, edge)
+            p.advance()
+        } else if (edge.type == TokenType.INTERP_END) {
+            interpolationChunk(p, parts, edge)
+            p.advance()
+            break
+        } else {
+            // The lexer only ever emits these three together, so reaching here
+            // means the expression consumed the closing token -- report against
+            // the expression rather than leaving the parser adrift.
+            diag_error_at_code("P3102", edge.file, edge.line, edge.col, edge.len,
+                "expected the end of `\${...}` in an interpolated string")
+            break
+        }
+    }
+
+    return interpolationJoin(p, parts.head, opening)
+}
+
 private fn parseArrayLiteral(p: Parser) -> ASTNode {
     let arrayLit = p.node(NodeKind.ARRAY_LITERAL_EXPR)
 
@@ -372,6 +479,22 @@ private fn parsePrimary(p: Parser) -> ASTNode {
     //
     // `0..n` is unaffected: `..` lexes as RANGE, which is not the SEPARATOR `.`
     // parseSuffixes matches on.
+    // **`"total: ${count} items"`, and it is `concat` by the time anyone else
+    // sees it.**
+    //
+    // The lexer hands over INTERP_BEGIN, the expression's own tokens, then
+    // INTERP_PART or INTERP_END -- so the expression is parsed by
+    // `parseExpression` like any other, with its real positions, and nothing
+    // downstream needs a case for interpolation. Sema, ownership, AIF and codegen
+    // see the call this builds.
+    //
+    // Each value is wrapped in `show(...)`, the `Display` trait's method, which
+    // is what makes a user type interpolate the moment it implements `Display`
+    // rather than only the builtins doing so.
+    if (current.type == TokenType.INTERP_BEGIN) {
+        return parseInterpolation(p)
+    }
+
     if (isLiteralToken(current)) {
         let literal = p.node(NodeKind.LITERAL_EXPR)
         literal.i1 = current.type
