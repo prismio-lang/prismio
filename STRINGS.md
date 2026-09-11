@@ -216,7 +216,7 @@ column.
 
 | # | invariant | established by | breaks as |
 |---|---|---|---|
-| 1 | An inline string's bytes past its length are **zero** | `ir_str_inline` zeroes the buffer and writes exactly `[0, n)` | equality answers wrong |
+| 1 | An inline string's bytes past its length are **zero** | `ir_str_inline` zeroes the buffer and writes exactly `[0, n)` | equality and order answer wrong |
 | 2 | INLINE **dominates** VIEW in the tag test | bit 32 is data when bit 31 is set | a free of twelve bytes of text |
 | 3 | `count > 12` ⟹ the source is not inline | `strSubstring` tests it one line above | a view offsets a non-pointer |
 | 4 | A view is **never** NUL-terminated | it ends inside a longer buffer | reads past the view |
@@ -232,6 +232,14 @@ strings is two integer compares in registers — no dereference, no call, no len
 walk. That is strictly stronger than a four-byte prefix for the case the
 histogram says dominates. Measured: **48×** — 193 µs against 9.35 ms for four
 million comparisons.
+
+The same invariant lets two short strings **order** from their pairs. Byte-swap
+field 0, and byte-swap each half of word 1 in place, and the pair reads as one
+128-bit integer holding the twelve bytes most-significant first with the length
+below them — so `compare` is one unsigned integer compare in registers
+(`ir_str_compare`). Over the `sort_strings` keys that is **1.13 ns** a call,
+against 3.28 ns for the byte loop it replaced and 1.53 ns for libc++'s
+`std::string::compare`.
 
 Invariant 1 is also why `ir_str_inline`'s copy ladder is written to cover exactly
 `[0, n)` and not one byte more. `[0,8) ∪ [n-8,n)` is contiguous for `n ≤ 12`

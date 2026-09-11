@@ -78,3 +78,54 @@ testing only the sign folds it to one compare.
 | `--verify` on that fixture | 15 allocated, 14 released, 1 leaked, 0 violations -- the identical ledger the previous compiler gives with the builtin replaced by a `.compare()` shim, so the one leak (the views' base) predates this |
 | `tools/run_suite.py` | 317/317 |
 | `tools/aif_differential.py` | agree on 19/19, output identical |
+
+## `String.compare`, step two: `std` uses it
+
+`String.compare` is now `__builtin_string_compare(self, other)`. Its callers are
+`cmp` for String and through it every String sort. The compiler calls neither,
+but `std.string` is emitted into every program that imports it, so the IR of 86
+programs moved by exactly that one body. In the suite binary, 10 of 537
+functions changed: `compare`, `Ord.cmp`, the closure's `call`, and the seven
+String instantiations of the sort.
+
+The compare, per call beyond reading the two elements: 1.6M random pairs of the
+`sort_strings` keys, the minimum of nine inside each run, five runs alternating
+the three binaries. The sort: std `sort` against `std::sort` on 80,000 elements,
+the minimum of seven inside each run, five runs alternating.
+
+| | Byte loop | Builtin | C++ |
+| --- | ---: | ---: | ---: |
+| compare, per call | 3.26-3.31 ns | 1.13-1.18 ns | 1.44-1.63 ns |
+| sort, 80,000 `sort_strings` keys | 10.33 ms | 5.09 ms | 5.86 ms |
+| sort, 80,000 random `Int`s (no String code; a control) | 3.36 ms | 3.30 ms | 0.97 ms |
+
+So the compare is now under libc++'s, and a String sort in `std` is 0.87x of
+`std::sort` where it was 1.76x.
+
+The suite binary before and after, 15 alternating runs, checksums equal. The
+last four rows are controls whose code the mnemonic diff shows unchanged:
+
+| Benchmark | new/old min | new/old median |
+| --- | ---: | ---: |
+| `sort_strings` | 0.563 | 0.563 |
+| `word_frequency` | 1.013 | 1.015 |
+| `string_join` | 0.983 | 0.998 |
+| `edit_distance` | 0.972 | 0.986 |
+| `lz4_compress` | 1.012 | 1.004 |
+
+`sort_strings` against the other languages, each pairing its own 15 alternating
+runs of the suite binaries, checksums equal. The "before" column reproduces the
+1.45x and 1.53x the previous results file recorded:
+
+| | Prismio/C++ min | median | Prismio/Rust min | median |
+| --- | ---: | ---: | ---: | ---: |
+| before | 1.438 | 1.466 | 1.537 | 1.529 |
+| after | 0.827 | 0.780 | 0.854 | 0.845 |
+
+| Check | Result |
+| --- | --- |
+| Fixpoint, `src/main.psm` IR | `5731660d24e13baa08a3d4fa3f9afce8` at gen1 and gen2 |
+| The seed committed in step one | a compiler bootstrapped from it builds this tree -- `std/string.psm` calling the builtin -- to the same `5731660d...`, which is what landing the builtin first was for |
+| `test_143_string_compare` | PASS; `--verify` 15/14/1, 0 violations, unchanged |
+| `tools/run_suite.py` | 317/317 |
+| `tools/aif_differential.py` | agree on 19/19, output identical |
