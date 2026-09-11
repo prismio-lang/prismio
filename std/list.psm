@@ -27,20 +27,29 @@ private fn listSortNintherCutoff() -> Int { return 128 }
 // pdqsort's block, and the length of the two offset buffers `sortBy` allocates.
 private fn listSortBlock() -> Int { return 64 }
 
-// Every element move in this file. `list_swap` exchanges the two slots and has
-// no ownership effect, which is the only move right for every representation.
-// Reading two elements and writing them back through `list_set` was not: an
-// inline element's `list_get` answers an address inside the list's block, so
-// the second write copied back what the first had just written -- one element
-// duplicated, one lost -- and `list_set_inline` then freed the interior address
-// it copied from. `sortBy` on a list of flat structs aborted in `free`.
-private fn listSwap<T>(items: List<T>, i: Int, j: Int) {
-    list_swap(items, i, j)
-}
+// **Every element move in this file is `list_swap`.** It exchanges two slots
+// and has no ownership effect, which is the only move right for every
+// representation. Reading two elements and writing them back through `list_set`
+// was not: an inline element's `list_get` answers an address inside the list's
+// block, so the second write copied back what the first had just written -- one
+// element duplicated, one lost -- and `list_set_inline` then freed the interior
+// address it copied from. `sortBy` on a list of flat structs aborted in `free`.
+//
+// **Called directly, not through a one-line wrapper, and the difference is
+// measured.** The flat-list guard looks through a call to a function proved to
+// move no block, and a wrapper around `list_swap` is one; `irFlatGuardCount`
+// does not recognise `list_swap` itself, so a loop that calls it is declined.
+// Declined is what insertion sort wants: its inner loop is entered once per
+// element and runs a few iterations, and a guard is paid per entry. Through the
+// wrapper that loop was versioned -- 216 instructions for Ints against 143 --
+// and 80,000 random Ints sorted in 2.01 ms against 1.70; flat structs 0.876x.
+// String and boxed lists have no guard either way. Already-sorted and reversed
+// Ints, whose loops the guard did help, are 7% and 11% slower, at 0.09 and
+// 0.16 ms. Teaching the guard `list_swap` would version these loops again.
 
 // Order two elements with one comparison.
 private fn listSort2<T, F>(items: List<T>, i: Int, j: Int, order: F) {
-    if (order(list_get(items, j), list_get(items, i)) < 0) { listSwap(items, i, j) }
+    if (order(list_get(items, j), list_get(items, i)) < 0) { list_swap(items, i, j) }
 }
 
 private fn listSort3<T, F>(items: List<T>, i: Int, j: Int, k: Int, order: F) {
@@ -55,7 +64,7 @@ private fn listInsertionSort<T, F>(items: List<T>, begin: Int, end: Int, order: 
     while (i < end) {
         let mut j = i
         while (j > begin and order(list_get(items, j - 1), list_get(items, j)) > 0) {
-            listSwap(items, j - 1, j)
+            list_swap(items, j - 1, j)
             j = j - 1
         }
         i = i + 1
@@ -71,7 +80,7 @@ private fn listPartialInsertionSort<T, F>(items: List<T>, begin: Int, end: Int, 
     while (i < end) {
         let mut j = i
         while (j > begin and order(list_get(items, j - 1), list_get(items, j)) > 0) {
-            listSwap(items, j - 1, j)
+            list_swap(items, j - 1, j)
             j = j - 1
             moves = moves + 1
         }
@@ -91,7 +100,7 @@ private fn listSiftDown<T, F>(items: List<T>, base: Int, start: Int, count: Int,
             child = child + 1
         }
         if (order(list_get(items, base + root), list_get(items, base + child)) >= 0) { return }
-        listSwap(items, base + root, base + child)
+        list_swap(items, base + root, base + child)
         root = child
     }
 }
@@ -107,7 +116,7 @@ private fn listHeapSort<T, F>(items: List<T>, begin: Int, end: Int, order: F) {
     }
     let mut last = count - 1
     while (last > 0) {
-        listSwap(items, begin, begin + last)
+        list_swap(items, begin, begin + last)
         listSiftDown(items, begin, 0, last, order)
         last = last - 1
     }
@@ -143,11 +152,11 @@ private fn listPartitionRight<T, F>(items: List<T>, begin: Int, end: Int, order:
     let mut last = end - 1
     while (last >= first and order(list_get(items, last), pivot) >= 0) { last = last - 1 }
     if (first >= last) {
-        listSwap(items, begin, first - 1)
+        list_swap(items, begin, first - 1)
         return (first - 1) * 2 + 1
     }
 
-    listSwap(items, first, last)
+    list_swap(items, first, last)
     first = first + 1
     // `[first, last)` is unclassified: `last` itself now holds a large element.
     let mut numL = 0
@@ -188,7 +197,7 @@ private fn listPartitionRight<T, F>(items: List<T>, begin: Int, end: Int, order:
         if (numR < num) { num = numR }
         let mut k = 0
         while (k < num) {
-            listSwap(items, baseL + list_get(offL, startL + k), baseR - list_get(offR, startR + k))
+            list_swap(items, baseL + list_get(offL, startL + k), baseR - list_get(offR, startR + k))
             k = k + 1
         }
         numL = numL - num
@@ -211,17 +220,17 @@ private fn listPartitionRight<T, F>(items: List<T>, begin: Int, end: Int, order:
         while (numL > 0) {
             numL = numL - 1
             last = last - 1
-            listSwap(items, baseL + list_get(offL, startL + numL), last)
+            list_swap(items, baseL + list_get(offL, startL + numL), last)
         }
         first = last
     }
     while (numR > 0) {
         numR = numR - 1
-        listSwap(items, baseR - list_get(offR, startR + numR), first)
+        list_swap(items, baseR - list_get(offR, startR + numR), first)
         first = first + 1
     }
     let pivotAt = first - 1
-    listSwap(items, begin, pivotAt)
+    list_swap(items, begin, pivotAt)
     return pivotAt * 2
 }
 
@@ -234,13 +243,13 @@ private fn listPartitionLeft<T, F>(items: List<T>, begin: Int, end: Int, order: 
     let mut first = begin + 1
     while (first <= last and order(pivot, list_get(items, first)) >= 0) { first = first + 1 }
     while (first < last) {
-        listSwap(items, first, last)
+        list_swap(items, first, last)
         last = last - 1
         while (last > begin and order(pivot, list_get(items, last)) < 0) { last = last - 1 }
         first = first + 1
         while (first <= last and order(pivot, list_get(items, first)) >= 0) { first = first + 1 }
     }
-    listSwap(items, begin, last)
+    list_swap(items, begin, last)
     return last
 }
 
@@ -281,7 +290,7 @@ private fn listSortRange<T, F>(items: List<T>, low: Int, end: Int, order: F, bad
             listSort3(items, begin + 1, begin + half - 1, end - 2, order)
             listSort3(items, begin + 2, begin + half + 1, end - 3, order)
             listSort3(items, begin + half - 1, begin + half, begin + half + 1, order)
-            listSwap(items, begin, begin + half)
+            list_swap(items, begin, begin + half)
         } else {
             listSort3(items, begin + half, begin, end - 1, order)
         }
@@ -302,12 +311,12 @@ private fn listSortRange<T, F>(items: List<T>, low: Int, end: Int, order: F, bad
                 return
             }
             if (leftSize >= listSortInsertionCutoff()) {
-                listSwap(items, begin, begin + leftSize / 4)
-                listSwap(items, pivotAt - 1, pivotAt - leftSize / 4)
+                list_swap(items, begin, begin + leftSize / 4)
+                list_swap(items, pivotAt - 1, pivotAt - leftSize / 4)
             }
             if (rightSize >= listSortInsertionCutoff()) {
-                listSwap(items, pivotAt + 1, pivotAt + 1 + rightSize / 4)
-                listSwap(items, end - 1, end - rightSize / 4)
+                list_swap(items, pivotAt + 1, pivotAt + 1 + rightSize / 4)
+                list_swap(items, end - 1, end - rightSize / 4)
             }
         } else if (packed % 2 == 1) {
             if (listPartialInsertionSort(items, begin, pivotAt, order)

@@ -394,3 +394,78 @@ experiment's copy takes 1716 on the same input. The next section is that gap.
 | `tools/run_suite.py` | 320/320 |
 | `tools/aif_differential.py` | agree on 19/19, output identical |
 | docs | `stdlib/lists.md` still described the three-way quicksort pdqsort replaced; rewritten in the website repository and left uncommitted there. Its content audit passes on 101 pages, and all 185 compiler-checked examples pass against this toolchain |
+
+## `list_swap`, called directly
+
+The port of the block partition sorted Ints 15% slower than the experiment it
+was copied from, in one binary on one input, with the same partition. Built with
+the new toolchain, the experiment's source carries both: its "std" arm is the
+port. Six variants of the experiment, each binary also carrying std's sort as a
+control. µs, the minimum of seven inside each run, five rounds rotating the arms;
+every variant agreed element by element with std's sort:
+
+| Variant of the experiment | Ints | Strings |
+| --- | ---: | ---: |
+| as measured | 1716 | 2690 |
+| the partition swaps through a wrapper | 1643 | 2639 |
+| the block size is read from a function | 1685 | 2624 |
+| both | 1622 | 2588 |
+| every helper swaps through a wrapper | 1974 | 2630 |
+| the port's partition structure | 1684 | 2645 |
+| std's sort, in each binary | 1984-2015 | 2602-2634 |
+
+Only the fifth reproduces the port. std's helpers -- insertion sort, `listSort3`,
+heapsort, the left partition -- moved elements through `listSwap`, a one-line
+wrapper around `list_swap`, and the wrapper changes the loop it is called from.
+`irBodyMovesNoBlock` counts `list_swap` as settled, so the wrapper is proved to
+move no block and the flat-list guard looks through it; `irFlatGuardCount` does
+not recognise a direct `list_swap`, and declines the loop. Through the wrapper,
+insertion sort's inner loop was versioned: 182 lines of IR and 21 blocks against
+76 and 9, 216 instructions for Ints against 143. That loop is entered once per
+element and runs a few iterations, and a guard is paid per entry -- the
+`mapProbe` result again (`RESULTS-map-probe-loop-guard.md`).
+
+So every move calls `list_swap` directly, and the wrapper is gone. Against the
+previous commit, measured as in the section above:
+
+| Input | Before | After | min ratio | median ratio |
+| --- | ---: | ---: | ---: | ---: |
+| random Ints | 2007 | 1696 | 0.845 | 0.833 |
+| `sort_strings` keys | 2633 | 2648 | 1.006 | 1.016 |
+| Ints already sorted | 86 | 92 | 1.070 | 1.070 |
+| the same, sorted under a reversed order | 141 | 157 | 1.113 | 1.142 |
+| flat `Pt`, by one field | 2023 | 1773 | 0.876 | 0.875 |
+| boxed `Named`, by a String field (20,000) | 1065 | 1053 | 0.989 | 1.021 |
+
+In one binary, std's sort now takes 1693 µs on the Ints to the experiment's 1690.
+C++ in the same rounds took 997, so an Int sort in `std` is 1.70x of C++ -- 3.7x
+before block partitioning. String and boxed lists have no flat guard either way
+and did not move. Sorted and reversed Ints did: those are the loops the guard was
+helping, 6 and 16 µs on 80,000.
+
+The suite binary, 15 runs alternating, checksums equal:
+
+| Benchmark | new/old min | new/old median |
+| --- | ---: | ---: |
+| `sort_strings` | 1.013 | 0.994 |
+| `word_frequency` | 0.986 | 1.003 |
+| `string_join` | 1.003 | 1.009 |
+| `csv_parse` | 0.997 | 1.009 |
+| `edit_distance` (code unchanged) | 1.162 | 0.999 |
+
+`sort_strings` stays 0.493x of C++ and 0.516x of Rust.
+
+**The guard is unchanged, deliberately.** Teaching `irFlatGuardCount` to recognise
+`list_swap` would be sound -- it moves no block -- and would version these loops
+again. What the per-entry law asks for is a trip-count estimate, which is
+KNOWN_ISSUES' open policy question about the guard, not something to settle in
+`std`.
+
+| Check | Result |
+| --- | --- |
+| IR of 189 programs | 6 differ from the previous commit's: the std.list carriers except `src/main.psm`, which does not change -- `listSwap` was generic and never emitted there -- so the compiler needed no bootstrap |
+| `test_142`, `test_144`, `test_145`, `test_89`, `test_141` | PASS, against the previous `std.list` and this one; the `--verify` ledgers are identical to the previous commit's |
+| Against the experiment | agrees element by element on four Int shapes and the `sort_strings` keys |
+| `tools/run_suite.py` | 320/320 |
+| `tools/aif_differential.py` | agree on 19/19, output identical |
+| The comment above `list_swap`'s callers | written after the runs above. It moves `std/list.psm`'s lines, and a closure is named by its line, so the five programs that call `sort` rename theirs (`Closure$336$2` to `Closure$345$2`). Compiled from the committed tree, each is identical to the measured IR once closure line numbers are normalised; `test_144` and `src/main.psm` are byte-identical |
