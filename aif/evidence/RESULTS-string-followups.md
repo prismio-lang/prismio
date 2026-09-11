@@ -327,3 +327,70 @@ maps on Strings: compiling `src/main.psm` to IR, five runs alternating, takes
 | `tools/run_suite.py` | 320/320 |
 | `tools/aif_differential.py` | agree on 19/19, output identical |
 | `tools/check_source_lists.py` | agree |
+
+## Block partitioning in `sort`
+
+`listPartitionRight` is now BlockQuicksort's partition (Edelkamp and Weiss), as
+pdqsort's `partition_right_branchless` has it. Up to 64 elements a side are
+classified into an offset buffer by an unconditional store and a conditional
+increment, and only then are the misplaced ones swapped, in pairs -- so the
+comparison feeds an add, not a branch. In the Int instantiation that is 14
+conditional increments (`cinc`/`csinc`) where the Hoare scan had 3. `sortBy`
+allocates the two 64-entry buffers once; a list under the insertion-sort cutoff
+returns before it allocates them. The rest of pdqsort -- pivot choice, the
+equal-pivot partition, the partial insertion sort, heapsort -- is unchanged.
+
+It was an experiment first, a copy of std's sort in one program with only the
+partition replaced, checked element by element against std's `sort` on random,
+sorted, reversed and few-distinct Ints and on the `sort_strings` keys. The port
+is checked against the experiment the same way, and agrees.
+
+**It partitions every element type, not only scalars.** It makes the same
+comparisons the Hoare scan made, so a slow comparator pays nothing extra, and it
+measured faster on every representation. 80,000 elements unless noted, µs, the
+minimum of seven inside each run, seven runs alternating, checksums equal:
+
+| Input | Hoare | Block | min ratio | median ratio |
+| --- | ---: | ---: | ---: | ---: |
+| random Ints | 3675 | 2003 | 0.545 | 0.547 |
+| `sort_strings` keys | 4731 | 2637 | 0.557 | 0.559 |
+| Ints already sorted | 84 | 86 | 1.024 | 1.000 |
+| the same, sorted under a reversed order | 123 | 141 | 1.146 | 1.068 |
+| flat `Pt`, by one field | 3876 | 2006 | 0.518 | 0.520 |
+| boxed `Named`, by a String field (20,000) | 1760 | 1037 | 0.589 | 0.607 |
+
+C++'s `std::sort` in the same rounds: 998 µs on the Ints and 6053 on the Strings.
+So an Int sort in `std` is 2.0x of C++ where it was 3.7x, and a String sort 0.44x.
+Reversed input is the one that loses: every element is misplaced there, so the
+bookkeeping buys nothing, 18 µs on 80,000.
+
+The suite binary, 15 runs alternating, checksums equal. Only sort code changed in
+it; the last three rows are controls:
+
+| Benchmark | new/old min | new/old median |
+| --- | ---: | ---: |
+| `sort_strings` | 0.639 | 0.653 |
+| `word_frequency` (its tally is a ten-element sort, now insertion sort outright) | 0.966 | 0.953 |
+| `string_join` | 0.997 | 0.974 |
+| `csv_parse` | 1.007 | 1.012 |
+| `edit_distance` | 1.001 | 0.815 |
+
+| `sort_strings` | Prismio/C++ min | median | Prismio/Rust min | median |
+| --- | ---: | ---: | ---: | ---: |
+| before | 0.749 | 0.754 | 0.807 | 0.783 |
+| after | 0.494 | 0.488 | 0.526 | 0.510 |
+
+**The port is 15% slower on Ints than the experiment it came from, and the
+partition is not why.** In one binary, std's `sort` takes 2015 µs where the
+experiment's copy takes 1716 on the same input. The next section is that gap.
+
+| Check | Result |
+| --- | --- |
+| Fixpoint, `src/main.psm` IR | `79962ed85af2f51daaea7cdd5f8a911d` at gen1 and gen2. `src/` has no `import std.list`, yet std.list's non-generic functions are in its IR, as they are in six other programs -- so the new block-size constant moves the compiler's IR by that one unused function, and this change got the full bootstrap |
+| The committed seed | a compiler bootstrapped from it builds this tree to the same `79962ed8...` |
+| IR of 189 programs | 7 differ from the previous step's: exactly the 7 that carry std.list |
+| `test_142`, `test_144`, `test_145`, `test_89`, `test_141` | PASS, against the previous `std.list` and this one |
+| `--verify` | `test_142` 1110 -> 1114 allocated, all released; `test_144` 547/546/1 -> 563/562/1, 0 violations, the 1 the known long String; `test_145` 2/2 |
+| `tools/run_suite.py` | 320/320 |
+| `tools/aif_differential.py` | agree on 19/19, output identical |
+| docs | `stdlib/lists.md` still described the three-way quicksort pdqsort replaced; rewritten in the website repository and left uncommitted there. Its content audit passes on 101 pages, and all 185 compiler-checked examples pass against this toolchain |
