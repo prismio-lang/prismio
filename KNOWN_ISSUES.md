@@ -413,15 +413,16 @@ layout rather than the binary. **A bare `tools/bootstrap.sh` generation in
 `tests/test_runner.py --compiler` at the project host or a packaged `dist`, or
 package the generation first.
 
-**`sort()` does not link when the standard library comes from a packaged
-`.plib`.** Any program calling `std.list`'s `sort` fails with an undefined
-`_call__Struct_Closure$132$1_<T>_<T>`: the closure `sort` hands to `sortBy` is
-instantiated in the program, but its `call` body is not emitted when the generic
-comes from a precompiled module. A checkout hides it because the compiler
-resolves the standard library to `./std` *relative to the current directory*, so
-a build started at the repository root reads source; from anywhere else --
-which is every installed user -- it reads the `.plib`. Reproduced with the
-installed toolchain from `/tmp`, on `List<Int>` and `List<String>` alike.
+**Almost nothing in `tests/` reads a `.plib`.** `std.*` resolves by walking up
+from the *entry file* (RUNTIME.md), so every fixture under `tests/` compiles
+`std/` from source and a defect on the installed path is invisible to the suite.
+`sort()` failed to link from every installed stdlib for that reason, with the
+suite green: the `call` of the closure `sort` hands `sortBy` was filtered out as
+a concrete stdlib function whose body the PLIB supplies, and no PLIB had it. It
+is fixed. What covers the path now is `run_runtime_library_test` -- assertion 1b
+builds `sort` against a packaged stdlib -- and `run_ums_test`'s program outside
+the checkout. Everything else a user reaches only through a `.plib` is still
+untested.
 
 ## Platform
 

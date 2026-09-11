@@ -13,8 +13,10 @@ extern fn compiler_plib_module_registered(module: String borrow) -> Int
 
 // A PLIB contributes the original non-generic definitions for its module as
 // bitcode. Generic instantiations remain program-specific and are emitted from
-// the template carried by the interface section. While package.py is producing
-// one PLIB, the entry file has no qualifier and imported dependencies do.
+// the template carried by the interface section -- and so is the `call` of a
+// closure lowered inside one, which carries the instantiation's `genericInfo`
+// for this test (see semaLowerClosure). While package.py is producing one PLIB,
+// the entry file has no qualifier and imported dependencies do.
 private fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
     let qualifier = strClone(diag_file_module(func.file))
     let emissionModule = compiler_library_emission_module()

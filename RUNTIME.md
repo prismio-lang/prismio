@@ -198,16 +198,20 @@ program's source root, and it is found by **search, in this order**
 | | Looked for | Why it is there |
 |---|---|---|
 | 1 | `<entry-dir>/std/<leaf>` | so a checkout of the compiler compiles against **its own** `std/` |
-| 2 | `<entry-dir>/../std/<leaf>` | the same, for an entry one level down such as `src/main.psm` |
+| 2 | `std/<leaf>` in each enclosing directory, nearest first | the same, for an entry below the root such as `src/main.psm` or `aif/corpus/*.psm` |
 | 3 | `<toolchain>/stdlib/<leaf>` | an installed toolchain — `install` flattens the package |
 | 4 | `<toolchain>/std/<leaf>` | a build tree, where `build/gen2` sits beside `std/` |
 
-**Rules 1 and 2 mean a `std/` directory beside your entry file *does* shadow the
-shipped library.** That is deliberate and load-bearing — it is what makes the
-compiler's own bootstrap use the tree it is being built from rather than whatever
-is installed — but it is a real hazard for an application that happens to have a
-directory of that name, so it is written down here rather than left as a
-surprise.
+**Rules 1 and 2 mean a `std/` directory beside or above your entry file *does*
+shadow the shipped library.** That is deliberate and load-bearing — it is what
+makes the compiler's own bootstrap use the tree it is being built from rather
+than whatever is installed — but it is a real hazard for an application that
+happens to have a directory of that name, so it is written down here rather than
+left as a surprise.
+
+The same rules mean **a program inside a checkout never reads a `.plib`**, so a
+defect that only the installed path has is invisible to anything built there.
+Test it from a directory with no `std/` above it.
 
 `prismio --version` prints the compiler directory and the standard library that
 resolves **from the current directory**, which is how to check which one you are

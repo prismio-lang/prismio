@@ -4815,11 +4815,18 @@ def run_runtime_library_test():
     negative control is not optional -- without it, "no trace lines" is also what
     a compiler with a broken trace would print.
 
-    Eight assertions:
+    Nine assertions:
 
       1. *The archive is linked*, and the program it produces runs. This resolves
          `import std.io` out of the installed `stdlib/` too, which is the same
          never-exercised layout.
+     1b. *A generic from the installed `stdlib/` instantiates whole.* `sort`
+         hands `sortBy` a closure, and the closure's `call` is lowered inside the
+         program's instantiation of a `.plib` generic. It was once filtered out
+         as a concrete stdlib function the PLIB's bitcode supplies, so every
+         installed program calling `sort` failed to link -- and no fixture under
+         `tests/` can see that, because `std.*` resolves from source by walking
+         up from the entry file.
       2. *The negative control.* With the archive moved aside, the same build
          must fall back and say so.
       3. *A foreign target does not get the host's archive.* `runtime.a` here was
@@ -4919,10 +4926,10 @@ def run_runtime_library_test():
         probe_compiler = installed.with_name("prismio-probe" + exe_suffix)
         shutil.copy2(installed, probe_compiler)
 
-        def build(args, cwd=wd, compiler=None):
+        def build(args, cwd=wd, compiler=None, source=None):
             env = dict(os.environ, PRISMIO_OBJ_CACHE_DIR=str(cache),
                        PRISMIO_OBJ_CACHE_TRACE="1")
-            return subprocess.run([str(compiler or installed), "build", str(probe)] + args,
+            return subprocess.run([str(compiler or installed), "build", str(source or probe)] + args,
                                   capture_output=True, text=True, cwd=str(cwd),
                                   env=env)
 
@@ -4948,6 +4955,37 @@ def run_runtime_library_test():
                 problems.append("the program linked against the runtime archive "
                                 f"did not run: exit {ran.returncode}, stdout "
                                 f"{(ran.stdout or '').strip()!r}")
+
+        # 1b. `sort` from the installed `stdlib/list.plib`, on the two element
+        # representations it is most used at. Built here, in a directory with no
+        # `std/` above it, because that is the only way a `.plib` is read at all.
+        sorter = wd / "sorter.psm"
+        sorter.write_text('import std.io\n'
+                          'import std.list\n'
+                          '\n'
+                          'fn main() -> Int {\n'
+                          '    let numbers: List<Int> = list_new()\n'
+                          '    list_push(numbers, 3)\n'
+                          '    list_push(numbers, 1)\n'
+                          '    list_push(numbers, 2)\n'
+                          '    sort(numbers)\n'
+                          '    let words: List<String> = list_new()\n'
+                          '    list_push(words, "pear")\n'
+                          '    list_push(words, "apple")\n'
+                          '    sort(words)\n'
+                          '    if (isSorted(numbers) and isSorted(words)) { println("sorted") }\n'
+                          '    return 0\n'
+                          '}\n')
+        sorter_exe = wd / ("sorter" + exe_suffix)
+        sorted_build = build(["-o", str(sorter_exe)], source=sorter)
+        sorted_run = run_command([str(sorter_exe)]) if sorter_exe.exists() else None
+        if (sorted_build.returncode != 0 or sorted_run is None
+                or (sorted_run.stdout or "").strip() != "sorted"):
+            said = (sorted_build.stdout or "") + (sorted_build.stderr or "")
+            problems.append("a program calling `sort` could not be built against "
+                            "the installed stdlib/list.plib: "
+                            + (said.strip()[-300:] if sorted_run is None else
+                               f"it ran and printed {(sorted_run.stdout or '').strip()!r}"))
 
         # 2. The negative control, without which assertion 1 proves nothing.
         aside = archive.with_name(archive.name + ".aside")

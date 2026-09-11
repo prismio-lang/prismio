@@ -2126,6 +2126,7 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
     ir_clear_local_var_types()
     ir_clear_moved()
     ir_clear_borrowed()
+    closureEnclosingGenerics = fnNode.genericInfo
 
     // Parameters live in a scope of their own, outside the body block, so the
     // body may shadow a parameter name without clobbering it.
@@ -2170,6 +2171,7 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
     }
 
     ir_scope_pop()
+    closureEnclosingGenerics = ptr_null()
 }
 
 // ---------------------------------------------------------
@@ -3505,6 +3507,11 @@ private fn semaAnnotationText(annotationPtr: Ptr) -> String {
 // the only mutable state this feature needs.
 let mut closureSerial = 0
 
+// The generic parameters of the instantiation whose body is being checked, and
+// null in any other function. `semaFunction` sets it on entry and clears it on
+// exit; `semaLowerClosure` is the only reader.
+let mut closureEnclosingGenerics: Ptr
+
 // The prefix every closure type's name carries. `$` is not a legal identifier
 // character, so no user declaration can collide with one -- which is what lets
 // the call rewrite key on the *type* rather than on the absence of a function of
@@ -3726,6 +3733,15 @@ private fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
     body.child1 = node_to_ptr(returnStatement)
     callFn.child2 = node_to_ptr(body)
     callFn.child3 = node_to_ptr(monoAnnotationFromType(bodyT))
+    // **A closure lowered inside an instantiation is part of it**, and says so
+    // the way an instantiation does: a non-null `genericInfo` is what
+    // `shouldEmitFunctionFromSource` reads as "the importing program emits
+    // this". Left null, a `call` lowered from a `.plib` module's generic body
+    // read as one of that module's concrete definitions, whose bodies the
+    // PLIB's bitcode supplies -- and it has none, because the `call` is named
+    // for the program's type arguments. `sort()` failed to link from every
+    // installed stdlib with `call__Struct_Closure$132$1_Int_Int` undefined.
+    callFn.genericInfo = closureEnclosingGenerics
 
     monoAppendDeclaration(module, callFn)
     indexTopLevel(callFn)

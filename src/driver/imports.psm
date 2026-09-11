@@ -340,10 +340,17 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
     return seen
 }
 
-// Finds a standard module in a source checkout or an installed toolchain.
-// Standard modules are compiler-owned rather than relative to an application's
-// entry file, so a local `std/` directory cannot replace the shipped
-// definitions.
+// Finds a standard module in a source checkout or an installed toolchain. The
+// order is RUNTIME.md's: a `std/` in the entry's directory or any enclosing one
+// wins over the toolchain's `stdlib/`, which is what makes a checkout of the
+// compiler build against its own tree -- and means an application's own `std/`
+// directory shadows the shipped one.
+//
+// **So a program inside the checkout never reads a `.plib`**, and a defect on
+// that path is invisible to every fixture under `tests/`: `sort()` failed to
+// link from every installed stdlib while the suite stayed green. The builds
+// that do read one are `run_runtime_library_test` and run_ums_test's program
+// outside the checkout.
 //
 // `leaf` is the file name, because the installed layout flattens the package:
 // `std/map.psm` in a checkout is `stdlib/map.plib` once installed.
