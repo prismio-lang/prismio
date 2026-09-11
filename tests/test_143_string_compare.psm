@@ -1,0 +1,133 @@
+// String order against a byte loop, in every storage class a pair can be in.
+//
+// `__builtin_string_compare` answers two inline strings from their pairs alone,
+// as one byte-swapped integer key, and everything else with `memcmp` and the
+// lengths. So the classes are the test: inline, a short string that lives on
+// the heap (its tag is clear, so it takes the byte path however short it is), a
+// long one, a literal, and a view, which is not NUL-terminated and must be read
+// by its length. And a byte past 0x7F, where a signed compare gets the order
+// backwards.
+
+import std.io
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// The order `String.compare` has always promised: by unsigned byte, then by
+// length. Written as the loop it used to be, so the builtin is checked against
+// the definition rather than against itself.
+fn referenceOrder(a: String, b: String) -> Int {
+    let alen = a.length()
+    let blen = b.length()
+    let mut n = alen
+    if (blen < n) { n = blen }
+    let mut i = 0
+    while (i < n) {
+        let av = a.byteAt(i)
+        let bv = b.byteAt(i)
+        if (av < bv) { return -1 }
+        if (av > bv) { return 1 }
+        i = i + 1
+    }
+    if (alen < blen) { return -1 }
+    if (alen > blen) { return 1 }
+    return 0
+}
+
+fn sign(v: Int) -> Int {
+    if (v < 0) { return -1 }
+    if (v > 0) { return 1 }
+    return 0
+}
+
+// Both spellings, both argument orders.
+fn agrees(a: String, b: String) -> Bool {
+    let expected = referenceOrder(a, b)
+    if (sign(__builtin_string_compare(a, b)) != expected) { return false }
+    if (sign(__builtin_string_compare(b, a)) != 0 - expected) { return false }
+    return sign(a.compare(b)) == expected
+}
+
+fn main() -> Int {
+    let words: List<String> = list_new()
+    // Inline, built whole: every length the key's two halves split at.
+    list_push(words, "")
+    list_push(words, "a")
+    list_push(words, "ab")
+    list_push(words, "abc")
+    list_push(words, "abd")
+    list_push(words, "abcdefg")
+    list_push(words, "abcdefgh")
+    list_push(words, "abcdefgi")
+    list_push(words, "abcdefghi")
+    list_push(words, "abcdefghij")
+    list_push(words, "abcdefghijkl")
+    list_push(words, "abcdefghijkm")
+    list_push(words, "abcdefghijk")
+    list_push(words, "key12345-976")
+    list_push(words, "key12345-97")
+    list_push(words, "key9-1")
+    list_push(words, "z")
+    list_push(words, "é")
+    list_push(words, "éa")
+    // Long: a thirteenth byte puts the same prefixes behind a pointer.
+    list_push(words, "abcdefghijklm")
+    list_push(words, "abcdefghijkl".concat("a"))
+    list_push(words, "abcdefghijklmnopqrstuvwxyz")
+    list_push(words, "key12345-976-and-more")
+    // Short, on the heap: `strToLower` allocates at any length, so these carry
+    // no inline tag and compare through the byte path.
+    list_push(words, strToLower("abc"))
+    list_push(words, strToLower("abcdefghijkl"))
+    list_push(words, strToLower("abcdefgh"))
+    list_push(words, strToLower("z"))
+    list_push(words, strToLower(""))
+
+    let n = list_len(words)
+    let mut i = 0
+    while (i < n) {
+        let mut j = 0
+        while (j < n) {
+            if (agrees(list_get(words, i), list_get(words, j)) == false) {
+                return fail("order of word ".concat(i.toString(), " against word ", j.toString()))
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+
+    // Views. A slice of more than twelve bytes points into its source and ends
+    // where its length says, in the middle of it -- so a compare that read to a
+    // terminator would run on into the rest of `source`.
+    let source = "abcdefghijklmnopqrstuvwxyz".concat("0123456789")
+    let head = source.slice(0, 13)
+    let longer = source.slice(0, 14)
+    let shifted = source.slice(1, 15)
+    if (agrees(head, longer) == false) { return fail("a view against its own extension") }
+    if (agrees(head, shifted) == false) { return fail("two views of one source") }
+    if (agrees(head, "abcdefghijklm") == false) { return fail("a view against an equal literal") }
+    if (sign(head.compare("abcdefghijklm")) != 0) { return fail("a view equal to a literal") }
+    let mut k = 0
+    while (k < n) {
+        if (agrees(head, list_get(words, k)) == false) {
+            return fail("a view against word ".concat(k.toString()))
+        }
+        if (agrees(list_get(words, k), shifted) == false) {
+            return fail("word ".concat(k.toString(), " against a view"))
+        }
+        k = k + 1
+    }
+
+    // An owned temporary on either side is dropped after the answer is in hand.
+    if (sign(__builtin_string_compare("ab".concat("c"), "abd")) != -1) {
+        return fail("an owned temporary operand")
+    }
+    if (sign("abd".compare("ab".concat("c"))) != 1) { return fail("an owned temporary argument") }
+
+    println("PASS")
+    return 0
+}

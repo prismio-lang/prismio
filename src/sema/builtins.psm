@@ -39,6 +39,9 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // `strEquals`, so that the operator does not depend on a public function
     // with a prefixed name -- the prefix is implementation, not surface.
     if (name.equals("__builtin_string_eq")) { return typeBool() }
+    // The lowering target for `String.compare`, and through it `cmp` and every
+    // String sort. See `ir_str_compare` in runtime/llvm-api-backend.c.
+    if (name.equals("__builtin_string_compare")) { return typeInt() }
     if (name.equals("__builtin_string_inline")) { return typeString() }
     if (name.equals("__builtin_string_concat_inline2")) { return typeString() }
     if (name.equals("__builtin_string_concat_inline3")) { return typeString() }
@@ -228,6 +231,14 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let e0 = ptr_to_node(argPtr)
         semaCheckValue(module, e0, typeString(), "string equality operand")
         semaCheckValue(module, ptr_to_node(e0.next), typeString(), "string equality operand")
+        return true
+    }
+
+    if (name.equals("__builtin_string_compare")) {
+        if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
+        let c0 = ptr_to_node(argPtr)
+        semaCheckValue(module, c0, typeString(), "string comparison operand")
+        semaCheckValue(module, ptr_to_node(c0.next), typeString(), "string comparison operand")
         return true
     }
 

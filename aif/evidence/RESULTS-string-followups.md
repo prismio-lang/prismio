@@ -53,3 +53,28 @@ In-tree IR cannot move: an in-tree program never reads a PLIB, so
 reached. That is also why no fixture caught this. The guard is
 `run_runtime_library_test`'s new assertion 1b, which builds the same probe
 against the toolchain it packages; against the baseline's toolchain it fails.
+
+## `String.compare`, step one: the builtin, unused
+
+`src/` imports `std.string`, so the committed seed compiles `std/string.psm`,
+and a builtin used there before the seed knew it would break
+`tools/bootstrap.sh --seed` and every CI leg. So the order is CLAUDE.md's:
+teach the compiler, refresh the seed, then use it. This step is the first two.
+
+The lowering is `ir_str_compare`. Two inline strings compare as one unsigned
+128-bit key, `bswap64(field 0)` above `rev32(word 1)`: the twelve bytes
+most-significant first with the length below them, which orders exactly as the
+byte loop does because an inline pair is zero past its length (STRINGS.md
+invariant 1). Every other pair takes `memcmp` over the shorter length and then
+the lengths. The answer is -1, 0 or 1, spelled `(a > b) - (a < b)` so a caller
+testing only the sign folds it to one compare.
+
+| Check | Result |
+| --- | --- |
+| IR of every other program (184) | byte-identical to the previous step; only `src/main.psm` and the new fixture differ |
+| Fixpoint, `src/main.psm` IR | `8a4beba851e7ffaef8f05dfef80906c3` at gen1 and gen2 |
+| Seed | refreshed from gen2; a compiler bootstrapped from it builds `src/main.psm` to the same `8a4beba8...` |
+| `test_143_string_compare` | PASS: the builtin and `.compare()` agree with a byte loop in both argument orders over 28 strings -- inline, short on the heap, long -- and three views |
+| `--verify` on that fixture | 15 allocated, 14 released, 1 leaked, 0 violations -- the identical ledger the previous compiler gives with the builtin replaced by a `.compare()` shim, so the one leak (the views' base) predates this |
+| `tools/run_suite.py` | 317/317 |
+| `tools/aif_differential.py` | agree on 19/19, output identical |

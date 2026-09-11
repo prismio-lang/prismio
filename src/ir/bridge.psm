@@ -378,6 +378,9 @@ extern fn ir_str_eq(lhs: String, rhs: String) -> Int
 // CSDO has already proved the length before asking this question. Passing the
 // literal itself keeps both its bytes and width constant in LLVM IR.
 extern fn ir_str_eq_literal(value: String, literal: String) -> Int
+// String order, -1, 0 or 1. Two short strings order as one byte-swapped 128-bit
+// key in registers; see `ir_str_compare` in runtime/llvm-api-backend.c.
+extern fn ir_str_compare(lhs: String, rhs: String) -> Int
 
 // An argument whose `extern fn` declares it `borrow`, which RUNTIME.md defines
 // as "the callee reads the argument and does not retain it" -- LLVM's

@@ -3921,6 +3921,30 @@ internal fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
+        // `a.compare(b)` on String, which `cmp` and so every String sort reach.
+        // Two short strings order as one integer key in registers; see
+        // `ir_str_compare`. An owned operand is dropped here for the reason the
+        // `==` lowering above drops one.
+        if (funcName.equals("__builtin_string_compare")
+            and nodeExists(expr.child2)) {
+            let c0 = ptr_to_node(expr.child2)
+            if (nodeExists(c0.next)) {
+                let crhs = ptr_to_node(c0.next)
+                let clhsVal = generateExpression(c0)
+                let crhsVal = generateExpression(crhs)
+                let order = ir_get_temp_name(ir_str_compare(clhsVal, crhsVal))
+                if (irArgumentIsOwnedTemporary(c0)) {
+                    generateOwnedTemporaryRelease(clhsVal, irOwnedTemporaryKind(c0),
+                                                  irOwnedTemporaryDeclType(c0))
+                }
+                if (irArgumentIsOwnedTemporary(crhs)) {
+                    generateOwnedTemporaryRelease(crhsVal, irOwnedTemporaryKind(crhs),
+                                                  irOwnedTemporaryDeclType(crhs))
+                }
+                return order
+            }
+        }
+
         // **Writes go to the long form only, and every caller obeys that.** Every
         // `__builtin_string_put_byte` in std/string.psm writes into a buffer that
         // came from `str_with_capacity` two lines above, which always allocates;

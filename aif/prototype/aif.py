@@ -119,6 +119,9 @@ FFI_CONTRACTS = {
     # so blocked bracketing for all of them: `br-opaque` read one higher than the
     # compiler's on any program that compares strings.
     '__builtin_string_eq': {0: 'borrow', 1: 'borrow'},
+    # `String.compare` lowers to this, so every String sort reaches it -- the
+    # same reach, and the same bracketing loss if it were missing, as `==` above.
+    '__builtin_string_compare': {0: 'borrow', 1: 'borrow'},
     # Copies twelve bytes of its operand into the pair it returns, so it borrows
     # the source and the result is independent of it. Producing without
     # allocating: the German short form is sixteen bytes of value with nothing

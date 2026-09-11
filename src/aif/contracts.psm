@@ -77,6 +77,7 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     if (name.equals("__builtin_string_byte_at")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_string_put_byte")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_string_eq")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_string_compare")) { return AIF_FFI_BORROW }
     // Reads twelve bytes of its operand into the pair it returns and keeps no
     // reference to it -- the copy is what makes the result independent of the
     // string it was cut from, and therefore what makes this a borrow rather than

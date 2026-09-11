@@ -432,8 +432,8 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     // The string builtins that only read. A `String` is a pointer and a length
     // and holds no container, so none of them can grow, restamp or free a
     // list's element block -- which is the whole of what irBodyMovesNoBlock
-    // asks. `__builtin_string_len` was here alone and the other two are the
-    // same statement.
+    // asks. `__builtin_string_len` was here alone and the others are the same
+    // statement.
     //
     // Their absence was not a missed optimisation, it was `std.map` losing its
     // guard entirely: `hash` for String reaches `__builtin_string_byte_at` and
@@ -444,6 +444,7 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     ir_mark_guard_safe_fn("__builtin_string_len", 1)
     ir_mark_guard_safe_fn("__builtin_string_byte_at", 1)
     ir_mark_guard_safe_fn("__builtin_string_eq", 1)
+    ir_mark_guard_safe_fn("__builtin_string_compare", 1)
 
     // Optimistic start: every function with a body is assumed to move no block,
     // then the sweeps below take that away from the ones that do. Starting the

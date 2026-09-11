@@ -4067,6 +4067,137 @@ int ir_str_eq_literal(const char *value, const char *literal) {
         g_builder, LLVMIntEQ, compared, LLVMConstInt(i32, 0, 0), ""));
 }
 
+static LLVMValueRef build_bswap64(LLVMValueRef v) {
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef params[1] = {i64};
+    LLVMTypeRef fnty = LLVMFunctionType(i64, params, 1, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "llvm.bswap.i64");
+    if (!fn) fn = LLVMAddFunction(g_module, "llvm.bswap.i64", fnty);
+    LLVMValueRef args[1] = {v};
+    return LLVMBuildCall2(g_builder, fnty, fn, args, 1, "");
+}
+
+// `(a > b) - (a < b)`, as an i32. Spelled out because this is the idiom LLVM
+// canonicalises to its own three-way compare, and a sign test of that folds to
+// the one comparison the caller wanted.
+static LLVMValueRef build_three_way(LLVMValueRef a, LLVMValueRef b, int is_signed) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMValueRef gt = LLVMBuildICmp(g_builder, is_signed ? LLVMIntSGT : LLVMIntUGT, a, b, "");
+    LLVMValueRef lt = LLVMBuildICmp(g_builder, is_signed ? LLVMIntSLT : LLVMIntULT, a, b, "");
+    return LLVMBuildSub(g_builder, LLVMBuildZExt(g_builder, gt, i32, ""),
+                        LLVMBuildZExt(g_builder, lt, i32, ""), "");
+}
+
+// An inline pair's order key: its twelve bytes most-significant first, then its
+// length, as one i128.
+//
+// The high half is field 0 byte-swapped. The low half is word 1 with each 32-bit
+// half byte-swapped in place -- a rotate by 32 and then a swap of all eight
+// bytes, which AArch64 selects as one `rev32` -- which puts data[8..11] in its top
+// half and the length in the top byte of its bottom half. The tag lands below
+// the length and is set on both operands, and the length fits the byte because
+// it is at most twelve.
+static LLVMValueRef str_order_key(LLVMValueRef pair, LLVMValueRef word) {
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef i128 = LLVMInt128TypeInContext(g_ctx);
+    LLVMValueRef head = LLVMBuildPtrToInt(
+        g_builder, LLVMBuildExtractValue(g_builder, pair, 0, ""), i64, "");
+    LLVMValueRef half = LLVMConstInt(i64, 32, 0);
+    LLVMValueRef rotated = LLVMBuildOr(g_builder, LLVMBuildShl(g_builder, word, half, ""),
+                                       LLVMBuildLShr(g_builder, word, half, ""), "");
+    LLVMValueRef hi = LLVMBuildZExt(g_builder, build_bswap64(head), i128, "");
+    LLVMValueRef lo = LLVMBuildZExt(g_builder, build_bswap64(rotated), i128, "");
+    return LLVMBuildOr(g_builder, LLVMBuildShl(g_builder, hi, LLVMConstInt(i128, 64, 0), ""),
+                       lo, "");
+}
+
+// String order, answered -1, 0 or 1: by unsigned byte, then by length -- the
+// order `String.compare`'s byte loop defined. That loop cost 3.15 ns a call over
+// the `sort_strings` keys against libc++'s 1.56 ns, about half of what the
+// random-String sort was still behind.
+//
+// **Two short strings order as one 128-bit integer.** An inline pair keeps
+// data[0..7] in field 0 and data[8..11] in the top half of word 1, and is zero
+// past its length (invariant 1), so `str_order_key` can lay the twelve bytes out
+// most-significant first with the length below them. Compared unsigned, that key
+// orders exactly as the byte loop does -- the length decides only where the bytes
+// cannot, a string that is another followed by NULs -- in registers, with no
+// dereference and no call. A caller that tests only the sign, which is every
+// sort, folds the three-way answer to a single compare.
+//
+// Any other pair takes `memcmp` over the shorter length, then the lengths.
+// `coerce_for` hands back a pointer valid for the length in the pair for all
+// three storage classes, so a view is read by its length and never past it.
+int ir_str_compare(const char *lhs, const char *rhs) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMValueRef zero32 = LLVMConstInt(i32, 0, 0);
+
+    LLVMValueRef a = resolve_value(lhs, "struct:prismio.str");
+    LLVMValueRef b = resolve_value(rhs, "struct:prismio.str");
+    if (!is_prismio_str(a) || !is_prismio_str(b)) {
+        // Not the representation, as in ir_str_eq: two NUL-terminated pointers,
+        // which strcmp orders the same way.
+        LLVMValueRef pa = coerce_for(resolve_value(lhs, "ptr"), "ptr");
+        LLVMValueRef pb = coerce_for(resolve_value(rhs, "ptr"), "ptr");
+        LLVMTypeRef args[2] = {ptr, ptr};
+        LLVMTypeRef fty = LLVMFunctionType(i32, args, 2, 0);
+        LLVMValueRef fn = LLVMGetNamedFunction(g_module, "strcmp");
+        if (!fn) fn = LLVMAddFunction(g_module, "strcmp", fty);
+        LLVMValueRef call_args[2] = {pa, pb};
+        LLVMValueRef r = LLVMBuildCall2(g_builder, fty, fn, call_args, 2, "");
+        return intern_value(build_three_way(r, zero32, 1));
+    }
+
+    LLVMValueRef wa = LLVMBuildExtractValue(g_builder, a, 1, "");
+    LLVMValueRef wb = LLVMBuildExtractValue(g_builder, b, 1, "");
+    LLVMValueRef both_short = LLVMBuildICmp(
+        g_builder, LLVMIntNE,
+        LLVMBuildAnd(g_builder, LLVMBuildAnd(g_builder, wa, wb, ""),
+                     LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), ""),
+        LLVMConstInt(i64, 0, 0), "");
+
+    LLVMBasicBlockRef inl = LLVMAppendBasicBlockInContext(g_ctx, g_function, "strcmp.inline");
+    LLVMBasicBlockRef bytes = LLVMAppendBasicBlockInContext(g_ctx, g_function, "strcmp.bytes");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(g_ctx, g_function, "strcmp.done");
+    LLVMBuildCondBr(g_builder, both_short, inl, bytes);
+
+    LLVMPositionBuilderAtEnd(g_builder, inl);
+    LLVMValueRef by_key = build_three_way(str_order_key(a, wa), str_order_key(b, wb), 0);
+    LLVMBuildBr(g_builder, done);
+
+    LLVMPositionBuilderAtEnd(g_builder, bytes);
+    LLVMValueRef len_mask = LLVMConstInt(i64, 0x7FFFFFFFULL, 0);
+    LLVMValueRef la = LLVMBuildAnd(g_builder, wa, len_mask, "");
+    LLVMValueRef lb = LLVMBuildAnd(g_builder, wb, len_mask, "");
+    LLVMValueRef shorter = LLVMBuildSelect(
+        g_builder, LLVMBuildICmp(g_builder, LLVMIntULT, la, lb, ""), la, lb, "");
+    LLVMValueRef pa = coerce_for(resolve_value(lhs, "ptr"), "ptr");
+    LLVMValueRef pb = coerce_for(resolve_value(rhs, "ptr"), "ptr");
+    LLVMTypeRef size_ty = type_from_key(g_ptr_int);
+    LLVMTypeRef params[3] = {ptr, ptr, size_ty};
+    LLVMTypeRef fty = LLVMFunctionType(i32, params, 3, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "memcmp");
+    if (!fn) fn = LLVMAddFunction(g_module, "memcmp", fty);
+    LLVMValueRef count = LLVMGetIntTypeWidth(size_ty) < 64
+        ? LLVMBuildTrunc(g_builder, shorter, size_ty, "") : shorter;
+    LLVMValueRef call_args[3] = {pa, pb, count};
+    LLVMValueRef by_bytes = LLVMBuildCall2(g_builder, fty, fn, call_args, 3, "");
+    LLVMValueRef by_bytes_then_length = LLVMBuildSelect(
+        g_builder, LLVMBuildICmp(g_builder, LLVMIntNE, by_bytes, zero32, ""),
+        build_three_way(by_bytes, zero32, 1), build_three_way(la, lb, 0), "");
+    LLVMBasicBlockRef from_bytes = LLVMGetInsertBlock(g_builder);
+    LLVMBuildBr(g_builder, done);
+
+    LLVMPositionBuilderAtEnd(g_builder, done);
+    LLVMValueRef phi = LLVMBuildPhi(g_builder, i32, "");
+    LLVMValueRef vals[2] = {by_key, by_bytes_then_length};
+    LLVMBasicBlockRef blocks[2] = {inl, from_bytes};
+    LLVMAddIncoming(phi, vals, blocks, 2);
+    return intern_value(phi);
+}
+
 // A **view**: `count` bytes of `base` from `start`, owning nothing.
 //
 // No allocation, no copy, no release -- the pair points into the string it was

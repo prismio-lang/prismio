@@ -156,6 +156,7 @@ LLVMTypeRef LLVMInt8TypeInContext(LLVMContextRef C);
 LLVMTypeRef LLVMInt16TypeInContext(LLVMContextRef C);
 LLVMTypeRef LLVMInt32TypeInContext(LLVMContextRef C);
 LLVMTypeRef LLVMInt64TypeInContext(LLVMContextRef C);
+LLVMTypeRef LLVMInt128TypeInContext(LLVMContextRef C);
 LLVMTypeRef LLVMDoubleTypeInContext(LLVMContextRef C);
 LLVMTypeRef LLVMPointerTypeInContext(LLVMContextRef C, unsigned AddressSpace);
 LLVMTypeRef LLVMArrayType2(LLVMTypeRef ElementType, uint64_t ElementCount);
