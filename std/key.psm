@@ -104,22 +104,19 @@ fn keyMixWide(value: U64) -> Int {
     return (h & 2147483647) as Int
 }
 
-// FNV-1a over the bytes. Chosen over anything faster because it is four lines,
-// has no seed to get wrong, and a map keyed on strings in this language is not
-// yet on any measured hot path -- when one appears, this is the one body to
-// replace and every caller is unaffected.
-//
-// 2166136261 is FNV's 32-bit offset basis and 16777619 its prime.
+// A word at a time, in the runtime. See `str_hash` in runtime/lang_runtime.c.
+// `bytes` because the hash reads exactly `length` bytes and keeps nothing, so a
+// view is hashed where it lies without a terminator.
+extern fn str_hash(s: String bytes, length: Int) -> Int
+
+// Against the FNV-1a byte loop this replaced, a Map<String, Int> of 80,000
+// twelve-byte keys is 26% faster and a ten-word table of 3-5 byte keys 19%
+// slower. The second is the call, not the hash: the byte loop inlined into
+// `mapProbe` whole, and this makes `mapHashOf` too large to, so each lookup
+// calls it. KNOWN_ISSUES (Codegen) has the fix -- hash an inline String's two
+// words where they sit, in registers.
 fn keyHashBytes(s: String) -> Int {
-    let n = __builtin_string_len(s)
-    let mut h = 2166136261 as U32
-    let mut i = 0
-    while (i < n) {
-        h = h ^ ((__builtin_string_byte_at(s, i) as U8) as U32)
-        h = h * 16777619
-        i = i + 1
-    }
-    return (h & 2147483647) as Int
+    return str_hash(s, __builtin_string_len(s))
 }
 
 impl Key for Int {

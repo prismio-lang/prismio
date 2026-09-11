@@ -374,6 +374,28 @@ returns on `l->arena` before it reaches the element loop — so for the two list
 that lack a disposition, the loop that would use it never runs. Whoever picks
 this up should answer the three above before writing any codegen.
 
+**A short String key pays a call on every map lookup.** `Key for String` hashes
+in the runtime, a word at a time (`str_hash`), and a `Map<String, Int>` of 80,000
+twelve-byte keys inserts and looks up 26% faster for it than with the FNV byte
+loop it replaced. A ten-word table of 3-5 byte keys is 19% slower: 210 µs
+against 176 for 20,800 get-and-set pairs. The table is not the reason. Replayed
+exactly, FNV displaces five of those ten words and `str_hash` one, and over
+20,000 random ten-word vocabularies they average 0.183 and 0.182 displaced
+probes per lookup. The cost is per lookup:
+
+- `str_hash` inlined makes `mapHashOf` too large for `mapProbe` to inline, so
+  every lookup is a call. Marked `noinline` instead, the call moves to
+  `str_hash` and the time stays (212 µs).
+- An inline String is spilled to a stack scratch, terminator and all, because a
+  `bytes` argument is an address. FNV's loop paid that spill too; it did not pay
+  the call.
+
+The fix is the shape `__builtin_string_compare` already has: lower the hash, mix
+an inline pair's two words where they sit in registers, and call `str_hash` only
+for a String on the heap. As C, that mix is 0.58 ns a key against `str_hash`'s
+1.14. It is a new builtin, so it lands in CLAUDE.md's two steps. See
+`aif/evidence/RESULTS-string-followups.md`.
+
 ## Traits
 
 All 21 trait milestones are implemented and documented in `../docs`

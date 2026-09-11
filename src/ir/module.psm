@@ -461,6 +461,11 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     ir_mark_guard_safe_fn("__builtin_string_byte_at", 1)
     ir_mark_guard_safe_fn("__builtin_string_eq", 1)
     ir_mark_guard_safe_fn("__builtin_string_compare", 1)
+    // `hash` for String, which `mapProbe` reaches: it reads its argument's bytes
+    // and touches no list. Unmarked, that one runtime call would take the guard
+    // from every map's probe, `Map<Int, Int>` included -- the trap the note above
+    // describes for `__builtin_string_byte_at`.
+    ir_mark_guard_safe_fn("str_hash", 1)
 
     // Optimistic start: every function with a body is assumed to move no block,
     // then the sweeps below take that away from the ones that do. Starting the

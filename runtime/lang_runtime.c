@@ -574,6 +574,55 @@ int prismio_cstr_len(const char* s) {
     return (int)n;
 }
 
+// `Key for String`'s hash (std/key.psm), a word at a time. It replaced FNV-1a in
+// a Prismio byte loop, which spent a serial multiply on every byte of every key
+// a map looked up.
+//
+// Eight bytes per multiply, and a tail of one to seven read with two
+// overlapping loads rather than a loop: four to seven bytes are the first four
+// and the last four, one to three the first, middle and last. The length is
+// folded in first, so "ab" and "ab\0" differ.
+//
+// The finalizer is one multiply between two folds of the high half into the
+// low. A map indexes with the low bits and a multiply mixes only upward, so the
+// folds are what bring the mixed half down to where the mask reads it.
+// MurmurHash3's fmix64 spends a second multiply on the same job and measured no
+// better: std.map's displacement over 80,000 `sort_strings` keys at half load is
+// 0.214 probes per key with this, 0.212 with fmix64 and 0.208 with FNV, and
+// fmix64's lookups were the slower in both shapes the map benchmark times.
+//
+// Reads exactly `length` bytes, so a view is hashed where it lies. Answers 31
+// bits, non-negative as an Int, which is what `hash & mask` needs.
+int str_hash(const char* s, int length) {
+    if (!s || length < 0) length = 0;
+    const unsigned char* p = (const unsigned char*)s;
+    uint64_t h = 0x9E3779B97F4A7C15ULL ^ (uint64_t)(uint32_t)length;
+    int i = 0;
+    for (; i + 8 <= length; i += 8) {
+        uint64_t w;
+        memcpy(&w, p + i, 8);
+        h = (h ^ w) * 0xBF58476D1CE4E5B9ULL;
+    }
+    int rest = length - i;
+    if (rest > 0) {
+        uint64_t w;
+        if (rest >= 4) {
+            uint32_t head, tail;
+            memcpy(&head, p + i, 4);
+            memcpy(&tail, p + length - 4, 4);
+            w = (uint64_t)head | ((uint64_t)tail << 32);
+        } else {
+            w = (uint64_t)p[i] | ((uint64_t)p[i + rest / 2] << 8)
+                | ((uint64_t)p[length - 1] << 16);
+        }
+        h = (h ^ w) * 0xBF58476D1CE4E5B9ULL;
+    }
+    h ^= h >> 32;
+    h *= 0xD6E8FEB86659FD93ULL;
+    h ^= h >> 32;
+    return (int)(h & 0x7FFFFFFF);
+}
+
 // The first occurrence of `b` at or after `from`, or -1.
 //
 // `strchr`, which libc vectorises. This is the primitive that separates a

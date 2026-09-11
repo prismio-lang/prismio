@@ -1,0 +1,60 @@
+// A String key must hash the same whatever storage class it is in.
+//
+// `Key for String` hashes the bytes a word at a time in the runtime, reading
+// exactly the length in the pair. So an inline key, a short one that lives on
+// the heap, a long one and a view of the same text have to find each other --
+// and a hash that read past a view's length, or folded in a pointer or a tag
+// bit, would lose them. Then enough distinct keys of every length from 0 to 20
+// to exercise the tail reads and the table's growth.
+
+import std.io
+import std.string
+import std.map
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let m: Map<String, Int> = mapNew<String, Int>()
+    mapSet(m, "abc", 1)
+    // `strToLower` and `strToUpper` allocate whatever the length, so these are
+    // a long key and a short one on the heap.
+    mapSet(m, strToLower("DEFGHIJKLMNOP"), 2)
+    mapSet(m, strToUpper("xyz"), 3)
+    mapSet(m, "é-key", 4)
+    mapSet(m, "", 5)
+
+    if (mapGetOr(m, strToLower("ABC"), 0) != 1) { return fail("an inline key by a heap one") }
+    if (mapGetOr(m, "defghijklmnop", 0) != 2) { return fail("a heap key by a literal") }
+    if (mapGetOr(m, "XYZ", 0) != 3) { return fail("a heap-short key by an inline one") }
+    if (mapGetOr(m, "é-key", 0) != 4) { return fail("a key past 0x7F") }
+    if (mapGetOr(m, "", 0) != 5) { return fail("the empty key") }
+    if (mapGetOr(m, "abd", 0) != 0) { return fail("a key that is not there") }
+
+    // A view: thirteen bytes cut from the middle of a longer string, so it has
+    // no terminator and the text after it is not part of the key.
+    let source = "xxdefghijklmnopyy".concat("zz")
+    if (mapGetOr(m, source.slice(2, 15), 0) != 2) { return fail("a key by a view") }
+
+    let many: Map<String, Int> = mapNew<String, Int>()
+    let mut i = 0
+    while (i < 2000) {
+        let key = "k".repeat(i % 21).concat(i.toString())
+        mapSet(many, key, i)
+        i = i + 1
+    }
+    if (mapLen(many) != 2000) { return fail("distinct keys collapsed") }
+    i = 0
+    while (i < 2000) {
+        if (mapGetOr(many, "k".repeat(i % 21).concat(i.toString()), 0 - 1) != i) {
+            return fail("key ".concat(i.toString(), " not found"))
+        }
+        i = i + 1
+    }
+
+    println("PASS")
+    return 0
+}

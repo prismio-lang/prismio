@@ -242,3 +242,88 @@ arms pay for, so the arm is left as it is and flagged: in benchmarks/README.md
 beside the accepted `mergesort` difference, and in KNOWN_ISSUES, which has the
 double free as unsoundness. Once that is fixed the arm should build a node per
 expression like the other two.
+
+## `Key for String`, a word at a time
+
+`keyHashBytes` was FNV-1a in a Prismio byte loop: a serial multiply on every byte
+of every key a map looked up. It is now `str_hash` in the runtime -- eight bytes
+per multiply, a tail of one to seven bytes read with two overlapping loads, the
+length folded in first, and a finalizer of one multiply between two folds of the
+high half. `std.key` declares it `bytes`, so a view is hashed where it lies, and
+`markSingleLoopCallsiteFunctions` marks it guard-safe: unmarked, that one runtime
+call would take the flat-list guard from every map's probe, `Map<Int, Int>`
+included.
+
+**The finalizer was picked by measurement.** The first draft used MurmurHash3's
+fmix64. Raw cost is a C harness (`clang -O3`, the minimum of seven, the map
+benchmark's own keys); displacement is std.map's table -- a power of two,
+triangular probing, at most half full:
+
+| | FNV (before) | fmix64 | one multiply (this) |
+| --- | ---: | ---: | ---: |
+| raw cost, 3-5 byte words | 1.49 ns | 1.60 ns | 1.14 ns |
+| raw cost, 12-byte `sort_strings` keys | 4.47 ns | 1.37 ns | 1.31 ns |
+| displacement, 80,000 `sort_strings` keys | 0.208 | 0.212 | 0.214 |
+| displacement, 80,000 `id<N>` keys | 0.176 | 0.205 | 0.214 |
+| mean displacement, 20,000 random ten-word vocabularies | 0.183 | 0.180 | 0.182 |
+
+**A `Map<String, Int>` both ways.** `count` is 20,800 get-and-set pairs over ten
+3-5 byte words, `word_frequency`'s count phase in miniature; `distinct` inserts and
+then looks up 80,000 distinct 12-byte keys. Microseconds, the minimum of nine
+inside each run, seven runs rotating the arms, checksums equal:
+
+| | count min | median | distinct min | median |
+| --- | ---: | ---: | ---: | ---: |
+| FNV | 176 | 190 | 3604 | 3657 |
+| fmix64 | 220 | 227 | 2726 | 2768 |
+| one multiply | 210 | 220 | 2682 | 2733 |
+| fmix64, `str_hash` noinline | 239 | 247 | 2805 | 2860 |
+| one multiply, `str_hash` noinline | 212 | 219 | 2734 | 2772 |
+
+The committed toolchain against item 3's, seven runs alternating: `count` 1.104
+(min) and 1.169 (median), `distinct` 0.746 and 0.749.
+
+**The short-key loss is a call, not the table.** Replayed exactly, FNV displaces
+five of the ten words and `str_hash` one -- FNV makes 40 key comparisons a pass
+to this one's 30, and is faster anyway. The disassembly says why. FNV's loop
+inlined into `mapProbe` whole; `str_hash` inlined makes `mapHashOf` 79
+instructions, and `mapProbe` calls it on every lookup. Marked noinline instead,
+`str_hash` lets `mapHashOf` inline and the call just moves: the time does not
+change. Both versions spill an inline String to a stack scratch to hand the hash
+an address. The fix is to lower the hash the way `__builtin_string_compare` is
+lowered -- mix an inline pair's two words in registers, 0.58 ns a key in the
+harness -- and it is in KNOWN_ISSUES under Codegen.
+
+**The benchmark suite.** In the suite binary five functions changed, all on the
+`Map<String, Int>` path -- `keyHashBytes`, `Key.hash` for String, `mapProbe`,
+`mapHashOf`, `mapPlaceAll` -- and `str_hash` is new. `word_frequency` is the one
+benchmark with a String-keyed map. 15 runs alternating, checksums equal; the last
+four rows are controls whose code did not change:
+
+| Benchmark | new/old min | new/old median |
+| --- | ---: | ---: |
+| `word_frequency` | 1.000 | 1.056 |
+| `hashmap_insert_lookup` | 0.975 | 1.004 |
+| `key_value_update` | 0.987 | 0.990 |
+| `string_join` | 1.016 | 1.013 |
+| `edit_distance` | 0.973 | 1.002 |
+
+| `word_frequency` | Prismio/C++ min | median | Prismio/Rust min | median |
+| --- | ---: | ---: | ---: | ---: |
+| before | 0.704 | 0.710 | 0.743 | 0.821 |
+| after | 0.706 | 0.700 | 0.740 | 0.764 |
+
+So the suite reads it as neutral, and so does the compiler, which keys its own
+maps on Strings: compiling `src/main.psm` to IR, five runs alternating, takes
+4.756 s against item 3's 4.746 (min) and 4.779 against 4.757 (median).
+
+| Check | Result |
+| --- | --- |
+| Fixpoint, `src/main.psm` IR | `e6eeb74e645fd08e3c7d4ed30fe8c742` at gen1 and gen2, the hash the fmix64 draft reached: only runtime C differs between them |
+| The compiler's output against its own hash | item 3's compiler, which hashes with FNV, and this one build byte-identical IR from the same tree, so none of it depends on a String's hash |
+| IR of 189 programs | 13 differ from item 3's: the 12 that use `std.map` or `std.key`, `src/main.psm` among them, and the new fixture. Byte-identical to the fmix64 draft's |
+| `test_146_string_key_hash` | PASS: inline, heap-short, long and non-ASCII keys, the empty key and a 13-byte view find one another, then 2,000 keys of every length from 0 to 20 |
+| `--verify` on that fixture | 7310 allocated, 7310 released, 0 leaked, 0 violations |
+| `tools/run_suite.py` | 320/320 |
+| `tools/aif_differential.py` | agree on 19/19, output identical |
+| `tools/check_source_lists.py` | agree |
