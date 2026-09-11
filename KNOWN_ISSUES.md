@@ -185,6 +185,19 @@ sharing, and in `test_144`'s shape the previous compiler reference-counted a
 `List<Pt>`'s boxes (`rc_alloc`) because of it; with the sorts swapping, those are
 plain allocations again.
 
+**Building a recursive enum from `let`-bound children double-frees. This is
+unsoundness.** `let left = build(d - 1); let right = build(d - 1); return
+Expr.Op(op, left, right)` releases a node twice -- `release of a pointer that is
+not live`, then an abort -- on the compiler at `727c704` and today alike. The
+same tree built with the children inside the constructor call, `Expr.Op(op,
+build(d - 1), build(d - 1))`, computes the right answer and leaks instead: an
+s-expression parser written that way reads `65719 allocated, 51214 released,
+14505 leaked, 0 violation(s)`. `BenchTree` uses the inline form, which is why
+`tree_traversal` never met the first. Between them they are why
+`s_expression_parse`'s Prismio arm still stores its nodes in a flat `List<Int>`
+where the C++ and Rust arms allocate one per expression -- see
+benchmarks/README.md.
+
 **A list that hands out an element is not released, so its owned Strings leak.**
 The escape analysis stops releasing a container it has seen return an element
 (`list_get`, indexing, a slice), and every owned long String inside goes with

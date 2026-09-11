@@ -53,6 +53,23 @@ a store in each. Neither vectorises, so it is a spelling difference rather than
 an algorithmic one -- recorded here so the next reader does not have to
 re-derive that.
 
+**A known difference that is *not* accepted remains in `s_expression_parse`, and
+it favours Prismio.** C++ and Rust allocate a node per expression
+(`std::make_unique`, `Box`) and free every tree; the Prismio arm stores three
+`Int`s per node in one flat `List<Int>`, so it pays for one growing buffer where
+the others pay for about 50,000 allocations and frees. Read its ratio as a
+parse-and-evaluate comparison, not an allocation one.
+
+It stays that way because Prismio cannot yet write the allocating version
+correctly, and that is measured rather than assumed. An enum AST built the
+natural way -- `let left = ...; let right = ...; return Op(op, left, right)` --
+**double-frees** (`release of a pointer that is not live`, then an abort). The
+same tree with the children built inside the constructor call matches the
+checksum, 466763307, but **leaks 14,505 of its 65,719 allocations**, so it would
+measure allocation without the frees the other arms pay for. Both reproduce on
+the compiler at `727c704`; KNOWN_ISSUES has the reproducer. When they are fixed,
+this arm should build a node per expression like the other two.
+
 ## What each benchmark is for
 
 Most entries are microbenchmarks isolating one behaviour. Five deliberately are

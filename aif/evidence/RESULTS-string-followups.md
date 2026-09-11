@@ -219,3 +219,26 @@ The suite binary, 15 alternating runs, checksums equal:
 | `string_join` | 0.962 | 0.996 |
 | `csv_parse` | 0.987 | 0.979 |
 | `edit_distance` (control) | 1.016 | 1.000 |
+
+## `s_expression_parse`'s arms are not the same program
+
+The Prismio arm stores three `Int`s per node in one flat `List<Int>`. The C++
+and Rust arms allocate a node per expression (`std::make_unique`, `Box`) and
+free every tree -- about 50,000 allocations and frees the Prismio arm never
+pays. So the 0.71x of C++ recorded for it is a parse-and-evaluate result, not an
+allocation one.
+
+It could not be made the same program, and that is measured, on the compiler at
+`727c704` and on this one alike:
+
+| Prismio arm written as | Result |
+| --- | --- |
+| an enum AST, children bound with `let` and then moved into `Op` | double free (`release of a pointer that is not live`), abort |
+| the same enum, children built inside the constructor call | checksum 466763307, the C++ and Rust arms' answer; leaks 14,505 of 65,719 allocations, 0 violations |
+| the flat `List<Int>` it is today | checksum 466763307 |
+
+The first crashes and the second measures allocation without the frees the other
+arms pay for, so the arm is left as it is and flagged: in benchmarks/README.md
+beside the accepted `mergesort` difference, and in KNOWN_ISSUES, which has the
+double free as unsoundness. Once that is fixed the arm should build a node per
+expression like the other two.
