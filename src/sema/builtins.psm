@@ -31,6 +31,11 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (name.equals("__builtin_errno")) { return typeInt() }
     if (name.equals("__builtin_errno_intr")) { return typeInt() }
     if (name.equals("__builtin_errno_again")) { return typeInt() }
+    // The compile target's OS, architecture and environment, as the codes
+    // `std.platform` maps onto its enums. See targetOsCode in src/common/target.psm.
+    if (name.equals("__builtin_target_os")) { return typeInt() }
+    if (name.equals("__builtin_target_arch")) { return typeInt() }
+    if (name.equals("__builtin_target_env")) { return typeInt() }
 
     if (name.equals("__builtin_string_len")) { return typeInt() }
     if (name.equals("__builtin_string_byte_at")) { return typeChar() }
@@ -198,7 +203,10 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
 
     if (name.equals("__builtin_errno")
         or name.equals("__builtin_errno_intr")
-        or name.equals("__builtin_errno_again")) {
+        or name.equals("__builtin_errno_again")
+        or name.equals("__builtin_target_os")
+        or name.equals("__builtin_target_arch")
+        or name.equals("__builtin_target_env")) {
         semaCheckArity(call, name, argPtr, 0)
         return true
     }

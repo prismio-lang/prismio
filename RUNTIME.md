@@ -380,6 +380,15 @@ target, because they are C macros with nowhere else to read them from: `EINTR` i
 4 everywhere this compiler targets, `EAGAIN` is 35 on Darwin and the BSDs and 11
 elsewhere.
 
+`__builtin_target_os`, `__builtin_target_arch` and `__builtin_target_env` are
+the same mechanism with no C name behind them at all. Each lowers to a constant
+read off the target triple -- the codes are in `src/common/target.psm` -- and
+`std.platform` maps the constants onto its `Platform`, `Architecture` and
+`Environment` enums. A function that calls one is never taken from a `.plib`:
+PLIB bitcode is built once, for the host, so a cross build would get the host's
+answer. `shouldEmitFunctionFromSource` in `src/ir/module.psm` compiles it into
+each program instead.
+
 `prismio_rt_print_float` and `prismio_rt_println_float`, with their
 `prismio_rt_eprint_float` and `prismio_rt_eprintln_float` twins, are what is left
 of the console runtime. Each flushes before returning, which is what keeps a

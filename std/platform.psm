@@ -1,0 +1,91 @@
+// Where a program is compiled for: the target's operating system, architecture
+// and ABI environment, answered from the target triple while the program is
+// compiled rather than asked of the machine while it runs.
+//
+//     match (platform.current()) {
+//         Platform.Windows => { println("Windows") }
+//         Platform.Linux => { println("Linux") }
+//         Platform.MacOS => { println("macOS") }
+//         Platform.Unknown => { println("somewhere else") }
+//     }
+//     if (platform.isWindows()) { println("Windows") }
+//     if (platform.architecture() == Architecture.ARM64) { println("ARM64") }
+//
+// **Compile-target information, not a runtime query.** A cross build from macOS
+// with `--target x86_64-pc-windows-msvc` answers `Platform.Windows`. For a native
+// build the target is the machine the binary runs on, so the answer is that
+// machine's too. Every answer is a constant: `if (platform.isLinux())` compiles
+// to the branch it takes.
+//
+// **A target outside these sets answers `Unknown`** -- wasm32, iOS or FreeBSD for
+// the platform, i686 or riscv64 for the architecture. Android is `Linux`, as its
+// triple says, with an `Unknown` environment; macOS has no environment and
+// answers `Unknown` too.
+//
+// `platform` is a global of an empty type, so `platform.current()` is an ordinary
+// method call. The answers come from `__builtin_target_os`, `_arch` and `_env`,
+// which the compiler lowers to the codes in src/common/target.psm. A method that
+// calls one is compiled into each program for that program's target, and never
+// taken from `stdlib/platform.plib`, whose bitcode is built once, for the host.
+
+enum Platform {
+    Windows
+    Linux
+    MacOS
+    Unknown
+}
+
+enum Architecture {
+    X86_64
+    ARM64
+    Unknown
+}
+
+enum Environment {
+    GNU
+    Musl
+    MSVC
+    MinGW
+    Unknown
+}
+
+// The type of `platform`. It holds nothing: every answer is the compiler's.
+struct PlatformQuery {
+}
+
+// Uninitialised on purpose. A global cannot be initialised by an expression --
+// nothing runs before `main` -- and an empty struct has nothing to initialise.
+let platform: PlatformQuery
+
+impl PlatformQuery {
+    fn current(self) -> Platform {
+        let code = __builtin_target_os()
+        if (code == 1) { return Platform.Windows }
+        if (code == 2) { return Platform.Linux }
+        if (code == 3) { return Platform.MacOS }
+        return Platform.Unknown
+    }
+
+    // Each predicate reads the builtin itself rather than calling `current()`. A
+    // method that asks the target is compiled into the program; one that only
+    // called another method would be taken from the `.plib` and answer the host.
+    fn isWindows(self) -> Bool { return __builtin_target_os() == 1 }
+    fn isLinux(self) -> Bool { return __builtin_target_os() == 2 }
+    fn isMacOS(self) -> Bool { return __builtin_target_os() == 3 }
+
+    fn architecture(self) -> Architecture {
+        let code = __builtin_target_arch()
+        if (code == 1) { return Architecture.X86_64 }
+        if (code == 2) { return Architecture.ARM64 }
+        return Architecture.Unknown
+    }
+
+    fn environment(self) -> Environment {
+        let code = __builtin_target_env()
+        if (code == 1) { return Environment.GNU }
+        if (code == 2) { return Environment.Musl }
+        if (code == 3) { return Environment.MSVC }
+        if (code == 4) { return Environment.MinGW }
+        return Environment.Unknown
+    }
+}

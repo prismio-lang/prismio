@@ -15,6 +15,7 @@
 // did before targets existed. Only a named target stamps.
 
 import common.text
+import std.string
 
 // The C side keeps its `ir_` prefix because LLVM's answer lives where LLVM is:
 // runtime/llvm-api-backend.c. The record is in `common` rather than `ir` because
@@ -78,4 +79,46 @@ fn targetPtrIntType(t: Target) -> String {
 // that is four bytes rather than eight.
 fn targetPointerBytes() -> Int {
     return ir_target_pointer_bits() / 8
+}
+
+// The target's operating system, architecture and ABI environment, as the codes
+// the `__builtin_target_*` builtins lower to and `std/platform.psm` maps onto its
+// enums. 0 is Unknown in all three:
+//
+//   os    1 Windows   2 Linux   3 macOS
+//   arch  1 x86_64    2 arm64
+//   env   1 GNU       2 musl    3 MSVC    4 MinGW
+//
+// Read off the triple as LLVM was handed it -- the `--target` spelling, or LLVM's
+// own host default -- which is not normalised, so these are substring tests
+// rather than component positions: `aarch64-linux-android` and
+// `aarch64-unknown-linux-android` must answer alike. Android is Linux here
+// because its triple's OS is, and its environment, `android`, is none of the
+// four. The codes are this compiler's, not the enums' ordinals: std.platform
+// maps each one to a variant by name, so reordering an enum moves no answer.
+fn targetOsCode() -> Int {
+    let triple = ir_target_triple()
+    if (strContains(triple, "windows") or strContains(triple, "mingw")) { return 1 }
+    if (strContains(triple, "linux")) { return 2 }
+    if (strContains(triple, "darwin") or strContains(triple, "macos")) { return 3 }
+    return 0
+}
+
+fn targetArchCode() -> Int {
+    let triple = ir_target_triple()
+    if (strStartsWith(triple, "x86_64") or strStartsWith(triple, "amd64")) { return 1 }
+    if (strStartsWith(triple, "aarch64") or strStartsWith(triple, "arm64")) { return 2 }
+    return 0
+}
+
+// MSVC and MinGW before GNU: `x86_64-pc-windows-gnu` is the MinGW ABI, which LLVM
+// also spells `x86_64-w64-mingw32`, and both carry a `gnu` that is not glibc's.
+fn targetEnvCode() -> Int {
+    let triple = ir_target_triple()
+    if (strContains(triple, "msvc")) { return 3 }
+    if (strContains(triple, "mingw")) { return 4 }
+    if (strContains(triple, "windows") and strContains(triple, "gnu")) { return 4 }
+    if (strContains(triple, "musl")) { return 2 }
+    if (strContains(triple, "gnu")) { return 1 }
+    return 0
 }

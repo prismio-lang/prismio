@@ -4596,6 +4596,64 @@ def run_target_test():
     return True
 
 
+def run_platform_target_test():
+    """`std.platform`'s three builtins answer for the target, on nine triples.
+
+    `__builtin_target_os`, `_arch` and `_env` lower to constants read off the
+    triple (`targetOsCode` and its siblings in src/common/target.psm), and
+    `std.platform` maps the constants onto its enums. test_147 can only check the
+    host it runs on, so this reads the answer out of the IR for every triple the
+    mapping has a rule for, where nothing has to run: `platformCodes` in
+    tests/platform_target.psm returns os * 100 + arch * 10 + env, which LLVM's
+    builder folds to a single `ret`.
+
+    The triples are the spellings the mapping has to survive: an unnormalised
+    Android triple, MinGW spelt both ways LLVM spells it, and a target that
+    matches nothing and must answer 0 rather than a guess.
+    """
+    print(f"\n{BLUE}--- Running platform_target ---{RESET}")
+    source = TEST_DIR / "platform_target.psm"
+    expected = (
+        ("x86_64-pc-windows-msvc", 113),
+        ("x86_64-pc-windows-gnu", 114),
+        ("x86_64-w64-mingw32", 114),
+        ("x86_64-unknown-linux-gnu", 211),
+        ("aarch64-unknown-linux-musl", 222),
+        ("aarch64-linux-android", 220),
+        ("arm64-apple-macos", 320),
+        ("x86_64-apple-darwin", 310),
+        ("wasm32-unknown-unknown", 0),
+    )
+    problems = []
+    for triple, want in expected:
+        out = TEST_DIR / f"platform_target_{triple}.ll"
+        result = run_command([str(PRISMIO_EXE), "build", str(source),
+                              "--target", triple, "-o", str(out)])
+        if result.returncode != 0 or not out.exists():
+            problems.append(f"{triple}: build exited {result.returncode}: "
+                            + (result.stdout or result.stderr or "").strip()[-200:])
+            cleanup_files(out)
+            continue
+        ir = out.read_text(encoding="utf-8", errors="replace")
+        cleanup_files(out)
+        body = re.search(r'define [^\n]*@"?platformCodes[^\n]*\{(.*?)\n\}', ir, re.S)
+        got = re.search(r"ret i32 (-?\d+)", body.group(1)) if body else None
+        if not got:
+            problems.append(f"{triple}: platformCodes did not fold to one `ret i32`")
+        elif int(got.group(1)) != want:
+            problems.append(f"{triple}: os*100 + arch*10 + env is {got.group(1)}, "
+                            f"expected {want}")
+
+    if problems:
+        print(f"{RED}[FAIL] platform_target{RESET}")
+        for p in problems:
+            print(f"  - {p}")
+        return False
+    print(f"{GREEN}[PASS] platform_target: {len(expected)} triples fold to the "
+          f"expected OS, architecture and environment{RESET}")
+    return True
+
+
 def run_incremental_manifest_test():
     """INFERENCE 9's required check: an incremental result must equal a cold one.
 
@@ -7380,13 +7438,52 @@ def run_module_artifact_test():
         if separation.returncode != 0:
             problems.append("verify_separation.py rejected the packaged artifacts")
 
+        # `std.platform` from the installed `stdlib/platform.plib`. Its answers
+        # must be the program's target's, and a PLIB's bitcode is built once, for
+        # the host -- so a function that asks the target is left out of the PLIB
+        # and compiled into the program (`shouldEmitFunctionFromSource`). Natively
+        # that must still link, with no second definition coming from the PLIB;
+        # for a foreign triple the IR must define `isWindows` itself, answering
+        # for that target. Declared instead, it would be the PLIB's host answer.
+        asker = wd / "asker.psm"
+        asker.write_text('import std.io\nimport std.platform\n\n'
+                         'fn main() -> Int {\n'
+                         '    if (platform.isWindows()) { println("windows") }\n'
+                         '    if (platform.isLinux()) { println("linux") }\n'
+                         '    if (platform.isMacOS()) { println("macos") }\n'
+                         '    return 0\n}\n')
+        asker_exe = wd / ("asker" + (".exe" if os.name == "nt" else ""))
+        asked = subprocess.run([str(compiler), "build", str(asker), "-o", str(asker_exe)],
+                               capture_output=True, text=True, cwd=str(wd), env=env)
+        answered = (subprocess.run([str(asker_exe)], capture_output=True, text=True)
+                    if asker_exe.exists() else None)
+        named = (answered.stdout or "").split() if answered else []
+        if asked.returncode != 0 or answered is None or len(named) != 1:
+            problems.append("a program asking std.platform could not be built against "
+                            "the installed stdlib/platform.plib, or did not name exactly "
+                            f"one platform: {named!r} "
+                            + ((asked.stdout or "") + (asked.stderr or "")).strip()[-200:])
+        asker_ll = wd / "asker-windows.ll"
+        cross = subprocess.run([str(compiler), "build", str(asker), "--target",
+                                "x86_64-pc-windows-msvc", "-o", str(asker_ll)],
+                               capture_output=True, text=True, cwd=str(wd), env=env)
+        body = None
+        if cross.returncode == 0 and asker_ll.exists():
+            body = re.search(r'define i1 @"?isWindows__[^\n]*\{(.*?)\n\}',
+                             asker_ll.read_text(encoding="utf-8", errors="replace"), re.S)
+        if body is None or "ret i1 true" not in body.group(1):
+            problems.append("built for x86_64-pc-windows-msvc against the installed "
+                            "stdlib, `isWindows` is not defined in the program "
+                            "answering true: the host-built PLIB supplied it")
+
     if problems:
         print(f"{RED}[FAIL] module artifacts{RESET}")
         for problem in problems:
             print(f"  - {problem}")
         return False
     print(f"{GREEN}[PASS] per-module PLIB/runtime bitcode, normal + verify, "
-          f"strict reinstall diagnostics{RESET}")
+          f"strict reinstall diagnostics, std.platform answering for the "
+          f"target{RESET}")
     return True
 
 
@@ -7476,6 +7573,7 @@ def main():
         ("curated_closure", run_curated_closure_test),
         ("curated_emits", run_curated_emits_test),
         ("target_cross", run_target_test),
+        ("platform_target", run_platform_target_test),
         ("module_artifacts", run_module_artifact_test),
         ("incremental_manifest", run_incremental_manifest_test),
         ("jit", run_jit_test),

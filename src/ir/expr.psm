@@ -4,6 +4,7 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import common.target
 import std.string
 
 // `and` / `or` with the right-hand side evaluated only when it can change the
@@ -3664,6 +3665,13 @@ internal fn generateExpression(expr: ASTNode) -> String {
         if (funcName.equals("__builtin_errno_again")) {
             return ir_get_temp_name(ir_errno_constant("EAGAIN"))
         }
+
+        // The compile target, as a constant. std.platform's answers are fixed when
+        // a program is compiled, for the target it is compiled for; the codes are
+        // targetOsCode's and its siblings' in src/common/target.psm.
+        if (funcName.equals("__builtin_target_os")) { return targetOsCode().toString() }
+        if (funcName.equals("__builtin_target_arch")) { return targetArchCode().toString() }
+        if (funcName.equals("__builtin_target_env")) { return targetEnvCode().toString() }
 
         // Byte length is the pair's second field. This is a reserved compiler
         // builtin, not an extern: its source spelling carries no declaration,

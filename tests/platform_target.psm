@@ -1,0 +1,10 @@
+// The three target builtins, folded for whichever `--target` this is built for.
+// run_platform_target_test builds it for several triples and reads the answer out
+// of `platformCodes`'s `ret`: os * 100 + arch * 10 + env.
+fn platformCodes() -> Int {
+    return __builtin_target_os() * 100 + __builtin_target_arch() * 10 + __builtin_target_env()
+}
+
+fn main() -> Int {
+    return platformCodes() % 7
+}

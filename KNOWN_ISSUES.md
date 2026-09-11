@@ -477,6 +477,19 @@ builds `sort` against a packaged stdlib -- and `run_ums_test`'s program outside
 the checkout. Everything else a user reaches only through a `.plib` is still
 untested.
 
+**A cross build links the host's standard library.** A `.plib` carries one
+bitcode section, compiled for the host when the toolchain was packaged. The
+runtime is looked up per triple (`lib/runtime/<triple>/`) and the stdlib is not:
+`merge_libraries_into_program` merges every imported PLIB's one section whatever
+`--target` says, so a build for `x86_64-pc-windows-msvc` on an arm64 Mac takes
+arm64-apple bitcode for every non-generic `std` function, and nothing checks that
+the two triples agree. For a 32-bit target such as wasm32 the pointer width
+differs too. `std.platform` is the module that cannot tolerate it at all -- its
+answers would be the host's -- so a function that calls a `__builtin_target_*`
+builtin is compiled into each program rather than taken from the PLIB
+(`shouldEmitFunctionFromSource`). The general fix is a PLIB section per packaged
+triple, the way the runtime already has one.
+
 ## Platform
 
 **The Windows console write is verified by its IR, not by running it.**

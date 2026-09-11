@@ -150,6 +150,11 @@ FFI_CONTRACTS = {
     '__builtin_errno': {},
     '__builtin_errno_intr': {},
     '__builtin_errno_again': {},
+    # The compile target's codes (std.platform): no arguments, lowered to a
+    # constant, nothing retained or placed -- summarised for the same reason.
+    '__builtin_target_os': {},
+    '__builtin_target_arch': {},
+    '__builtin_target_env': {},
     'print':          {0: 'borrow'},
     'println':        {0: 'borrow'},
     # v0.1 concurrency. `chan_send` **consumes** its message rather than

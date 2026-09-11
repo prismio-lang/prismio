@@ -17,6 +17,14 @@ extern fn compiler_plib_module_registered(module: String borrow) -> Int
 // closure lowered inside one, which carries the instantiation's `genericInfo`
 // for this test (see semaLowerClosure). While package.py is producing one PLIB,
 // the entry file has no qualifier and imported dependencies do.
+//
+// **Except a function that asks about the target**, which belongs to the program
+// it is compiled into. A PLIB's bitcode is compiled once, for the host, and is
+// merged into every build that imports the module, cross builds included -- so a
+// `__builtin_target_os` folded into it would answer the host. Such a function is
+// left out of the PLIB and compiled from the interface source by each program,
+// for that program's target. The test runs only for a function a PLIB could
+// supply, so a build from source pays nothing for it.
 private fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
     let qualifier = strClone(diag_file_module(func.file))
     let emissionModule = compiler_library_emission_module()
@@ -24,14 +32,23 @@ private fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
         // PLIBs own concrete definitions from their entry module only. Generic
         // instantiations depend on the importing program's concrete type graph
         // and are emitted there from the interface template.
-        return qualifier.equals("") and nodeIsNull(func.genericInfo)
+        if (qualifier.equals("") == false or nodeExists(func.genericInfo)) { return false }
+        return functionAsksTarget(func) == false
     }
     if (qualifier.equals("") == false
         and compiler_plib_module_registered(qualifier) == 1
         and nodeIsNull(func.genericInfo)) {
-        return false
+        return functionAsksTarget(func)
     }
     return true
+}
+
+// Whether `func`'s own body calls a target builtin. Only a direct call counts:
+// std/platform.psm has each answer read the builtin itself for that reason.
+private fn functionAsksTarget(func: ASTNode) -> Bool {
+    if (moduleTreeCallsName(func.child2, "__builtin_target_os")) { return true }
+    if (moduleTreeCallsName(func.child2, "__builtin_target_arch")) { return true }
+    return moduleTreeCallsName(func.child2, "__builtin_target_env")
 }
 
 // Keep the language addition inert for programs that do not use it. Runtime
@@ -466,6 +483,10 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     // from every map's probe, `Map<Int, Int>` included -- the trap the note above
     // describes for `__builtin_string_byte_at`.
     ir_mark_guard_safe_fn("str_hash", 1)
+    // The compile target's codes: lowered to constants, so they touch nothing.
+    ir_mark_guard_safe_fn("__builtin_target_os", 1)
+    ir_mark_guard_safe_fn("__builtin_target_arch", 1)
+    ir_mark_guard_safe_fn("__builtin_target_env", 1)
 
     // Optimistic start: every function with a body is assumed to move no block,
     // then the sweeps below take that away from the ones that do. Starting the

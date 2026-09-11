@@ -1,0 +1,53 @@
+// `std.platform` answers for the target a program is compiled for, and a
+// fixture is compiled for the machine it runs on -- one of the three platforms a
+// CI leg runs, on x86_64 or arm64. So exactly one of the three predicates holds,
+// each agrees with `current()`, and the environment is one that platform can
+// have. Cross targets are checked from their IR, where nothing has to run:
+// run_platform_target_test in tests/test_runner.py.
+
+import std.io
+import std.platform
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut held = 0
+    if (platform.isWindows()) { held = held + 1 }
+    if (platform.isLinux()) { held = held + 1 }
+    if (platform.isMacOS()) { held = held + 1 }
+    if (held != 1) { return fail("exactly one of isWindows, isLinux and isMacOS") }
+
+    if (platform.isWindows() != (platform.current() == Platform.Windows)) {
+        return fail("isWindows against current")
+    }
+    if (platform.isLinux() != (platform.current() == Platform.Linux)) {
+        return fail("isLinux against current")
+    }
+    if (platform.isMacOS() != (platform.current() == Platform.MacOS)) {
+        return fail("isMacOS against current")
+    }
+
+    if (platform.architecture() != Architecture.X86_64
+            and platform.architecture() != Architecture.ARM64) {
+        return fail("a CI host is x86_64 or arm64")
+    }
+
+    if (platform.isMacOS() and platform.environment() != Environment.Unknown) {
+        return fail("macOS has no environment")
+    }
+    if (platform.isWindows() and platform.environment() != Environment.MSVC
+            and platform.environment() != Environment.MinGW) {
+        return fail("Windows is MSVC or MinGW")
+    }
+    if (platform.isLinux() and platform.environment() != Environment.GNU
+            and platform.environment() != Environment.Musl) {
+        return fail("Linux is GNU or musl")
+    }
+
+    println("PASS")
+    return 0
+}
