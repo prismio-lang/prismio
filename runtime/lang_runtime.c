@@ -2266,9 +2266,22 @@ void list_inline_grow(void* lp) {
 //
 // The arena guard is `list_release`'s, for its reason: a region reclaims in bulk
 // and every pointer inside one is interior to a chunk.
+//
+// **An address inside this list's own block is not an allocation either.** An
+// inline element's `list_get` answers one, so `list_set(xs, i, list_get(xs, j))`
+// hands this function the address it has just copied from, and releasing it
+// freed an interior pointer -- which is how `sortBy` on a list of flat structs
+// aborted in `free`. Nothing was allocated for that source, so there is nothing
+// to release.
 static void list_release_source(RtList* l, void* e) {
     if (!e || l->arena) return;
     if (l->elem_own == AIF_ELEM_NONE) return;
+    uintptr_t at = (uintptr_t)e;
+    uintptr_t base = (uintptr_t)l->data;
+    if (l->elem_size && at >= base
+            && at < base + (uintptr_t)l->cap * (uintptr_t)l->elem_size) {
+        return;
+    }
     if (l->elem_own == AIF_ELEM_LIST)              list_release(e);
     else if (l->elem_own == AIF_ELEM_RC)           rc_release(e);
     else if (l->elem_own == AIF_ELEM_CYCLE)        cyc_release(e);
@@ -2447,6 +2460,64 @@ void list_set_inline(void* lp, int index, void* value) {
     list_copy_elem((unsigned char*)l->data + (size_t)index * (size_t)l->elem_size,
                    value, (size_t)l->elem_size);
     list_release_source(l, value);
+}
+
+// Exchanges two elements in place. A swap is a permutation of what the list
+// already holds, so it has no ownership effect at all -- nothing is released,
+// retained or copied out -- whatever the element type or representation: a
+// boxed slot swaps its pointer, an inline one its bytes.
+//
+// **`std.list`'s sorts move every element with this, because `list_get` and
+// then `list_set` twice is not a swap for an inline element.** `list_get`
+// answers the slot's *address*, so once the first `list_set` has overwritten
+// slot `i`, the value saved from it names slot `j`'s bytes and the second write
+// duplicates them; and `list_set_inline` releases the address it copied from,
+// which for a flat struct is interior to this block. `sortBy` on 200
+// `struct Pt { x: Int, y: Int }` aborted in `free`.
+//
+// Out of range is a no-op, as it is for `list_set`.
+void list_swap(void* lp, int i, int j) {
+    RtList* l = (RtList*)lp;
+    if ((unsigned)i >= (unsigned)l->len || (unsigned)j >= (unsigned)l->len) return;
+    size_t size = l->elem_size ? (size_t)l->elem_size : sizeof(void*);
+    unsigned char* a = (unsigned char*)l->data + (size_t)i * size;
+    unsigned char* b = (unsigned char*)l->data + (size_t)j * size;
+    // One fixed-size exchange for each width a sort meets most -- `List<Int>`,
+    // a pointer slot or `I64`, and `List<String>`'s pair -- because as the byte
+    // loop below, `List<Int>`'s sort measured 5% slower than the two reads and
+    // two writes this replaced.
+    if (size == 4) {
+        uint32_t t;
+        memcpy(&t, a, 4);
+        memcpy(a, b, 4);
+        memcpy(b, &t, 4);
+        return;
+    }
+    if (size == 8) {
+        uint64_t t;
+        memcpy(&t, a, 8);
+        memcpy(a, b, 8);
+        memcpy(b, &t, 8);
+        return;
+    }
+    if (size == 16) {
+        uint64_t t[2];
+        memcpy(t, a, 16);
+        memcpy(a, b, 16);
+        memcpy(b, t, 16);
+        return;
+    }
+    for (; size >= 8; size -= 8, a += 8, b += 8) {
+        uint64_t t;
+        memcpy(&t, a, 8);
+        memcpy(a, b, 8);
+        memcpy(b, &t, 8);
+    }
+    for (; size > 0; size--, a++, b++) {
+        unsigned char t = *a;
+        *a = *b;
+        *b = t;
+    }
 }
 
 // `List<String>`: the element is the 16-byte pair itself.

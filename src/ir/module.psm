@@ -53,6 +53,22 @@ private fn moduleTreeUsesSlice(nodePtr: Ptr) -> Bool {
     return moduleTreeUsesSlice(node.next)
 }
 
+// Whether anything in the tree calls `name`, for a runtime declaration only the
+// programs that use it should carry. Instantiations are on the live chain by
+// now, so a call inside a generic body counts where it was instantiated.
+private fn moduleTreeCallsName(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let node = ptr_to_node(nodePtr)
+    if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)
+            and ptr_to_node(node.child1).s1.equals(name)) {
+        return true
+    }
+    if (moduleTreeCallsName(node.child1, name)) { return true }
+    if (moduleTreeCallsName(node.child2, name)) { return true }
+    if (moduleTreeCallsName(node.child3, name)) { return true }
+    return moduleTreeCallsName(node.next, name)
+}
+
 private fn moduleTreeUsesDataView(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let node = ptr_to_node(nodePtr)
@@ -518,6 +534,7 @@ private fn irPrimitiveIsSettled(name: String) -> Bool {
     if (name.equals("list_set")) { return true }
     if (name.equals("list_set_inline")) { return true }
     if (name.equals("list_set_inline_scalar")) { return true }
+    if (name.equals("list_swap")) { return true }
     if (name.equals("list_len")) { return true }
     if (name.equals("rc_retain")) { return true }
     return false
@@ -1928,6 +1945,17 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_param("i32")
     ir_declare_function_param("ptr")
     ir_declare_function_end()
+
+    // Only where something swaps, for the Slice family's reason below: emitted
+    // unconditionally, this one declaration changed the IR of all 187 programs
+    // in the snapshot and the behaviour of none.
+    if (moduleTreeCallsName(module.child1, "list_swap")) {
+        ir_declare_function_begin("list_swap", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+    }
 
     ir_declare_function_begin("list_len", "i32")
     ir_declare_function_param("ptr")

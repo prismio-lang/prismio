@@ -104,6 +104,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (name.equals("list_push")) { return typeVoid() }
     if (name.equals("list_set")) { return typeVoid() }
     if (name.equals("list_set_exclusive")) { return typeVoid() }
+    if (name.equals("list_swap")) { return typeVoid() }
     if (name.equals("slice_len")) { return typeInt() }
     if (name.equals("slice_set")) { return typeVoid() }
     if (name.equals("data_len")) { return typeInt() }
@@ -544,6 +545,23 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
             diag_note("create it with list_new and replace before list_get, slicing, or passing it to another function")
         }
         semaConsumeOperand(valueNode)
+        return true
+    }
+
+    // Exchanges two of the list's own elements. A swap is a permutation, so
+    // unlike list_set it consumes nothing -- and it is the one element move that
+    // is right for an inline element; see `list_swap` in runtime/lang_runtime.c.
+    if (name.equals("list_swap")) {
+        if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let lt = semaExpr(module, a0)
+        if (lt.kind != TypeKind.LIST) {
+            semaErrorAt(a0, "list_swap expects a List, found ".concat(typeDisplay(lt)))
+            return true
+        }
+        let a1 = ptr_to_node(a0.next)
+        semaCheckValue(module, a1, typeInt(), "list_swap index")
+        semaCheckValue(module, ptr_to_node(a1.next), typeInt(), "list_swap index")
         return true
     }
 

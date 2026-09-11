@@ -1,0 +1,178 @@
+// `sortBy` over lists whose elements live in the list's own block, and
+// `list_swap` itself.
+//
+// A flat struct is stored inline, so reading one answers an address inside the
+// list. The sorts used to move elements by reading two and writing both back
+// through `list_set`, and for an inline element the second write copied back
+// what the first had just written -- one element duplicated, one lost -- and
+// then freed the interior address it had copied from: 200 `Pt`s aborted in
+// `free`. So every shape is checked for order *and* for being a permutation, by
+// an id that has to turn up exactly once. A sort that duplicates can still come
+// out ordered, and can even keep a sum.
+//
+// No element is bound to a local: a struct read out of a list is read through
+// `list_get` at each use, the way RUNTIME.md asks.
+
+import std.io
+import std.list
+import std.string
+
+struct Pt {
+    x: Int,
+    y: Int
+}
+
+// Twenty bytes: an inline element whose size is not a multiple of eight.
+struct Wide {
+    a: Int,
+    key: Int,
+    c: Int,
+    d: Int,
+    id: Int
+}
+
+struct Small {
+    key: Int
+}
+
+// Not flat -- it holds a String -- so its slot is a pointer, and a swap moves
+// the pointer.
+struct Named {
+    name: String,
+    rank: Int,
+    id: Int
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn rnd(seed: Int) -> Int { return (seed * 25173 + 13849) % 65521 }
+
+fn freshSeen(n: Int) -> List<Bool> {
+    let seen: List<Bool> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(seen, false)
+        i = i + 1
+    }
+    return seen
+}
+
+fn main() -> Int {
+    let n = 500
+    let mut seed = 5
+
+    let points: List<Pt> = list_new()
+    let mut i = 0
+    while (i < n) {
+        seed = rnd(seed)
+        list_push(points, Pt { x: seed % 1000, y: i })
+        i = i + 1
+    }
+    sortBy(points, |a: Pt, b: Pt| a.x - b.x)
+    let seenPoints = freshSeen(n)
+    let mut k = 0
+    while (k < n) {
+        if (k > 0 and list_get(points, k - 1).x > list_get(points, k).x) {
+            return fail("Pt out of order at ".concat(k.toString()))
+        }
+        let id = list_get(points, k).y
+        if (list_get(seenPoints, id)) { return fail("Pt duplicated: ".concat(id.toString())) }
+        list_set(seenPoints, id, true)
+        k = k + 1
+    }
+
+    let wides: List<Wide> = list_new()
+    i = 0
+    while (i < n) {
+        seed = rnd(seed)
+        list_push(wides, Wide { a: i * 3, key: seed % 97, c: 7, d: i, id: i })
+        i = i + 1
+    }
+    sortBy(wides, |a: Wide, b: Wide| a.key - b.key)
+    let seenWides = freshSeen(n)
+    k = 0
+    while (k < n) {
+        if (k > 0 and list_get(wides, k - 1).key > list_get(wides, k).key) {
+            return fail("Wide out of order at ".concat(k.toString()))
+        }
+        let id = list_get(wides, k).id
+        if (list_get(wides, k).a != id * 3 or list_get(wides, k).d != id
+                or list_get(wides, k).c != 7) {
+            return fail("Wide torn at ".concat(k.toString()))
+        }
+        if (list_get(seenWides, id)) { return fail("Wide duplicated: ".concat(id.toString())) }
+        list_set(seenWides, id, true)
+        k = k + 1
+    }
+
+    let smalls: List<Small> = list_new()
+    let mut keySum = 0
+    i = 0
+    while (i < n) {
+        seed = rnd(seed)
+        list_push(smalls, Small { key: seed % 50 })
+        keySum = keySum + seed % 50
+        i = i + 1
+    }
+    sortBy(smalls, |a: Small, b: Small| b.key - a.key)
+    let mut after = 0
+    k = 0
+    while (k < n) {
+        if (k > 0 and list_get(smalls, k - 1).key < list_get(smalls, k).key) {
+            return fail("Small out of order at ".concat(k.toString()))
+        }
+        after = after + list_get(smalls, k).key
+        k = k + 1
+    }
+    if (after != keySum) { return fail("Small is not a permutation") }
+
+    // 7919 is prime, so `i * 7919 % n` is a permutation of the ranks.
+    let named: List<Named> = list_new()
+    i = 0
+    while (i < n) {
+        list_push(named, Named { name: "item-".concat(i.toString()), rank: (i * 7919) % n, id: i })
+        i = i + 1
+    }
+    sortBy(named, |a: Named, b: Named| a.rank - b.rank)
+    let seenNamed = freshSeen(n)
+    k = 0
+    while (k < n) {
+        if (list_get(named, k).rank != k) { return fail("Named out of order at ".concat(k.toString())) }
+        let id = list_get(named, k).id
+        if (list_get(named, k).name.equals("item-".concat(id.toString())) == false) {
+            return fail("Named lost its name at ".concat(k.toString()))
+        }
+        if (list_get(seenNamed, id)) { return fail("Named duplicated: ".concat(id.toString())) }
+        list_set(seenNamed, id, true)
+        k = k + 1
+    }
+
+    // `list_swap` directly, on the representations the sorts above did not
+    // exercise by hand: scalars by value, and String pairs -- one inline, one
+    // behind a pointer. A swap with itself and one out of range change nothing.
+    let ints: List<Int> = list_new()
+    list_push(ints, 10)
+    list_push(ints, 20)
+    list_push(ints, 30)
+    list_swap(ints, 0, 2)
+    list_swap(ints, 1, 1)
+    list_swap(ints, 0, 3)
+    if (list_get(ints, 0) != 30 or list_get(ints, 1) != 20 or list_get(ints, 2) != 10) {
+        return fail("list_swap on Int")
+    }
+    let words: List<String> = list_new()
+    list_push(words, "short")
+    list_push(words, "a string of more than twelve bytes")
+    list_swap(words, 0, 1)
+    if (list_get(words, 0).equals("a string of more than twelve bytes") == false
+            or list_get(words, 1).equals("short") == false) {
+        return fail("list_swap on String")
+    }
+
+    println("PASS")
+    return 0
+}

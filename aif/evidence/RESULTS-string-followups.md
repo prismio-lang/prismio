@@ -129,3 +129,93 @@ runs of the suite binaries, checksums equal. The "before" column reproduces the
 | `test_143_string_compare` | PASS; `--verify` 15/14/1, 0 violations, unchanged |
 | `tools/run_suite.py` | 317/317 |
 | `tools/aif_differential.py` | agree on 19/19, output identical |
+
+## `sortBy` on flat structs, and `list_set` within one flat list
+
+Two defects on one path, both from the same fact: a flat struct is stored
+inline, so `list_get` answers an address inside the list's own block.
+
+- `listSwap` read two elements and wrote both back through `list_set`. For an
+  inline element the first write overwrote the bytes the second read's address
+  still named, so a "swap" duplicated one element and lost the other.
+- `list_set_inline` then released the address it had copied from
+  (`list_release_source`), which for a flat struct is interior to the list's
+  block. `sortBy` on 200 `struct Pt { x: Int, y: Int }` aborted in `free` -- and
+  so did `list_set(xs, 0, list_get(xs, 2))` on a `List<Pt>`, with no sort
+  anywhere in the program. Sema accepts that line, so the unsoundness was not
+  the sort's alone.
+
+The fixes:
+
+- **`list_swap(xs, i, j)`**, a list builtin in the family of `list_get` and
+  `list_set`, lowered to a runtime call that exchanges two slots -- a pointer for
+  a boxed list, `elem_size` bytes for an inline one -- with no ownership effect.
+  Every element move in `std/list.psm` goes through it. It is declared only in a
+  module that calls it, as the Slice family is: declared unconditionally it
+  changed the IR of all 187 programs in the snapshot by one line each.
+- **`list_release_source` refuses an address inside the list's own block.**
+  Nothing was allocated for such a source, so there is nothing to release.
+
+| Check | Before (step two's compiler) | After |
+| --- | --- | --- |
+| `sortBy` on 500 `Pt` (8 bytes), `Wide` (20), `Small` (4) and `Named` (boxed), checked for order and for each id exactly once | aborts, exit 133 | PASS |
+| `test_145`: `list_set(copies, 0, list_get(copies, 2))` on an inline `List<Pt>` | aborts, exit 133 | PASS; `--verify` 2/2/0 |
+| `test_144` under `--verify` | -- | 547 allocated, 546 released, 1 leaked, 0 violations. The 1 is the long String in a list that hands out an element (KNOWN_ISSUES); both fixtures are now in `run_aif_verify_test`, which fails on any violation |
+| IR of every program that does not sort (180) | | byte-identical to step two |
+| Fixpoint, `src/main.psm` IR | | `b2dee888333a6f23ce87dc14381ae4d9` at gen1 and gen2 |
+| `tools/aif_differential.py` | | agree on 19/19, output identical |
+| `tools/run_suite.py` | | 319/319 |
+
+**A list's representation is decided for the whole program, and a fixture can
+defeat itself.** The first `test_144` also held the `list_set`-within-a-list
+check, and in that program both `List<Pt>` lists came out boxed, so its `Pt`
+sort tested nothing about interior addresses; the previous compiler had even
+reference-counted those boxes (`rc_alloc`), because the sort's own
+read-then-`list_set` looked like sharing. Split into two fixtures, `test_144`'s
+`Pt` list is `list_new_inline(8)` again and `test_145` is inline too -- checked
+in the IR, not assumed.
+
+**Found on the way, not fixed here:** `list_set(xs, i, list_get(xs, j))` on a
+*boxed* list -- a struct holding a String -- is a double free that sema accepts:
+`6 allocated, 5 released, 1 leaked, 1 violation(s)`, identically on step two's
+compiler and this one. Both slots end up naming one real allocation, so no check
+in the release path can tell them apart. It is in KNOWN_ISSUES with the
+reproducer.
+
+**The cost, measured.** Five runs alternating the three binaries, the minimum
+of seven inside each:
+
+| | Step two | This | C++ |
+| --- | ---: | ---: | ---: |
+| sort, 80,000 `sort_strings` keys | 5.21 ms | 4.63 ms | 5.93 ms |
+| sort, 80,000 random `Int`s | 3.32 ms | 3.62 ms | 0.98 ms |
+
+The String sort gains 11%, because a pair now moves as one 16-byte exchange
+rather than two reads and two `list_set_str` calls, and the `Int` sort loses 9%.
+Three things were tried against the `Int` loss and none recovered it:
+
+- **Curating `list_swap`.** Measured equal -- 3.41 against 3.42 ms on Ints, 4.91
+  against 4.91 on Strings -- because it was never a call to begin with: the
+  runtime's bitcode is merged into each program before optimisation, so the
+  partition inlines `list_swap` whether it is curated or not, 344 instructions
+  with no call against 284 with four. It is not curated.
+- **Fixed-width exchanges** for 4, 8 and 16 bytes instead of the byte loop:
+  3.57 ms, no better.
+- **A value swap for `Int` alone.** Correct for any scalar -- a scalar's
+  `list_get` answers the value, not an address -- but generic code cannot
+  select it: overload resolution picked `which<T>(List<T>)` over a concrete
+  `which(List<Int>)` even for a direct call on a `List<Int>`.
+
+Typed stores for the exchange, to give LLVM alias information the byte copy
+does not, were not tried: over memory the rest of the program reads as a
+`double` or a `void*`, a `uint64_t` store breaks strict aliasing once inlined.
+
+The suite binary, 15 alternating runs, checksums equal:
+
+| Benchmark | new/old min | new/old median |
+| --- | ---: | ---: |
+| `sort_strings` | 0.910 | 0.917 |
+| `word_frequency` (its tally is a ten-element `Int` sort) | 1.046 | 1.011 |
+| `string_join` | 0.962 | 0.996 |
+| `csv_parse` | 0.987 | 0.979 |
+| `edit_distance` (control) | 1.016 | 1.000 |

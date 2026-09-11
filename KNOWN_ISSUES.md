@@ -158,14 +158,32 @@ is 0 either side — but a real regression in allocation hygiene. The recorded f
 moves the ledger by zero; the real shape is about eight lines, and the clause to
 widen can double-free, so it needs the owners enumerated first.
 
-**`sortBy` on a `List` of flat structs frees an interior pointer. This is
-unsoundness.** A flat struct is stored inline, so `list_get` answers an address
-inside the list's own block, and `listSwap` hands that address to
-`list_set_inline`, whose `list_release_source` releases the source it copied
-from. Sorting 200 `struct Pt { x: Int, y: Int }` with `sortBy` aborts in `free`
-on the committed compiler. The pdqsort rewrite of `std/list.psm` kept every
-element move on `listSwap` so as not to widen the hole; the fix is a swap that
-exchanges slots with no ownership effect.
+**`list_set(xs, i, list_get(xs, j))` on a boxed list is a double free, and sema
+accepts it. This is unsoundness.** For a struct that owns something -- a
+`String` field -- each slot holds a pointer, and boxed `list_set` stores the
+pointer read from slot `j` into slot `i` without copying or retaining it.
+Teardown then releases that one box twice, and the box slot `i` held leaks, as
+`list_set`'s own comment says it will. `struct Tag { name: String, n: Int }`
+reads `6 allocated, 5 released, 1 leaked, 1 violation(s)`, identically on the
+compiler before `list_swap` and after it. The fix belongs where the store is
+admitted -- refuse moving a `list_get` result into a container for a non-`Copy`
+element, or copy it -- not in the release path, which cannot tell two real
+allocations apart.
+
+The inline case of the same shape is fixed. A flat struct lives in the list's
+block, so `list_get` answers an interior address, and `list_set_inline` released
+the address it had copied from: `sortBy` on flat structs aborted in `free`, and
+so did that one-line copy on a `List<Pt>`. `list_release_source` now refuses an
+address inside the list's own block, and `std.list` moves every element with
+`list_swap`, which exchanges two slots with no ownership effect -- reading two
+elements and writing both back through `list_set` had also duplicated one and
+lost the other. Guards: `test_144_sort_inline_elements` and
+`test_145_list_set_within_list`, both in `run_aif_verify_test`.
+
+The sorts used to hide the boxed case. Their read-then-`list_set` looked like
+sharing, and in `test_144`'s shape the previous compiler reference-counted a
+`List<Pt>`'s boxes (`rc_alloc`) because of it; with the sorts swapping, those are
+plain allocations again.
 
 **A list that hands out an element is not released, so its owned Strings leak.**
 The escape analysis stops releasing a container it has seen return an element

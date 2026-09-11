@@ -92,6 +92,7 @@ FFI_CONTRACTS = {
     'list_set_exclusive': {0: 'borrow', 1: 'borrow', 2: ('retain_in', 0)},
     'list_get':       {0: 'borrow'},          # returns an alias into arg 0
     'list_len':       {0: 'borrow'},
+    'list_swap':      {0: 'borrow'},          # a permutation: nothing enters or leaves
     'list_new':       {},                     # produces a fresh container
     # Vec::with_capacity. Its argument is an Int, so there is no site to give a
     # contract to -- but the *return* contract matters, and leaving it out is what

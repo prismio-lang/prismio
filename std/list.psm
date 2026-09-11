@@ -23,15 +23,15 @@ private fn listSortInsertionCutoff() -> Int { return 24 }
 // three -- rather than one median of three.
 private fn listSortNintherCutoff() -> Int { return 128 }
 
+// Every element move in this file. `list_swap` exchanges the two slots and has
+// no ownership effect, which is the only move right for every representation.
+// Reading two elements and writing them back through `list_set` was not: an
+// inline element's `list_get` answers an address inside the list's block, so
+// the second write copied back what the first had just written -- one element
+// duplicated, one lost -- and `list_set_inline` then freed the interior address
+// it copied from. `sortBy` on a list of flat structs aborted in `free`.
 private fn listSwap<T>(items: List<T>, i: Int, j: Int) {
-    if (i == j) { return }
-    // Read both, then write both. `list_set` transfers ownership in and releases
-    // nothing, so writing before both are read would leave one slot naming an
-    // element the other slot also names.
-    let a = list_get(items, i)
-    let b = list_get(items, j)
-    list_set(items, i, b)
-    list_set(items, j, a)
+    list_swap(items, i, j)
 }
 
 // Order two elements with one comparison.

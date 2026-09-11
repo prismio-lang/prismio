@@ -179,6 +179,8 @@ private fn aifRuntimeContract(name: String, index: Int) -> Int {
     if (name.equals("chan_free")) { return AIF_FFI_BORROW }
     if (name.equals("list_get")) { return AIF_FFI_BORROW }
     if (name.equals("list_len")) { return AIF_FFI_BORROW }
+    // Exchanges two of the list's own elements: nothing enters or leaves it.
+    if (name.equals("list_swap")) { return AIF_FFI_BORROW }
     // The C string layer is native Prismio now, so only the calls that are still
     // real runtime boundaries have contracts here. str_char_at, str_contains,
     // str_starts_with, str_ends_with, str_index_of and str_from_char were removed

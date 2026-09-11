@@ -6320,6 +6320,14 @@ def run_aif_verify_test():
         # leak count protects ownership, while the ceiling below protects the
         # amortised architecture rather than timing a noisy CI host.
         "test_100_string_append_reuse": 0,
+        # `sortBy` over inline and boxed elements, and `list_swap`. What this
+        # guards is the 0 violations: the sorts used to free an address inside a
+        # flat-struct list's block. The 1 is the long String in `words` -- a list
+        # that hands out an element is not released (KNOWN_ISSUES).
+        "test_144_sort_inline_elements": 1,
+        # A flat element copied within its own list, whose release of that
+        # interior address aborted in `free`. See list_release_source.
+        "test_145_list_set_within_list": 0,
     }
 
     max_allocations = {
