@@ -158,6 +158,23 @@ is 0 either side — but a real regression in allocation hygiene. The recorded f
 moves the ledger by zero; the real shape is about eight lines, and the clause to
 widen can double-free, so it needs the owners enumerated first.
 
+**`sortBy` on a `List` of flat structs frees an interior pointer. This is
+unsoundness.** A flat struct is stored inline, so `list_get` answers an address
+inside the list's own block, and `listSwap` hands that address to
+`list_set_inline`, whose `list_release_source` releases the source it copied
+from. Sorting 200 `struct Pt { x: Int, y: Int }` with `sortBy` aborts in `free`
+on the committed compiler. The pdqsort rewrite of `std/list.psm` kept every
+element move on `listSwap` so as not to widen the hole; the fix is a swap that
+exchanges slots with no ownership effect.
+
+**A list that hands out an element is not released, so its owned Strings leak.**
+The escape analysis stops releasing a container it has seen return an element
+(`list_get`, indexing, a slice), and every owned long String inside goes with
+it. Storing `List<String>` elements as pairs shrank this without fixing it: on
+`test_141`'s shapes the ledger went from 112 leaked to 8, because a String of
+twelve bytes or fewer no longer allocates at all, and the 8 are the long ones.
+`test_142`'s 1,000 long strings leak the same way.
+
 ## Naming
 
 **`std.string` claims 64 unprefixed global names, and a program that defines one
@@ -395,6 +412,16 @@ layout rather than the binary. **A bare `tools/bootstrap.sh` generation in
 `build/` is still not one**: it builds the compiler and nothing else. Point
 `tests/test_runner.py --compiler` at the project host or a packaged `dist`, or
 package the generation first.
+
+**`sort()` does not link when the standard library comes from a packaged
+`.plib`.** Any program calling `std.list`'s `sort` fails with an undefined
+`_call__Struct_Closure$132$1_<T>_<T>`: the closure `sort` hands to `sortBy` is
+instantiated in the program, but its `call` body is not emitted when the generic
+comes from a precompiled module. A checkout hides it because the compiler
+resolves the standard library to `./std` *relative to the current directory*, so
+a build started at the repository root reads source; from anywhere else --
+which is every installed user -- it reads the `.plib`. Reproduced with the
+installed toolchain from `/tmp`, on `List<Int>` and `List<String>` alike.
 
 ## Platform
 

@@ -1211,7 +1211,19 @@ private fn generateReleaseFn(structNode: ASTNode) {
             // per element, and UMS -- whose models are almost entirely `strClone`d
             // String fields -- leaked 1475 of 2112 allocations.
             let disp = generatedFieldRelease(tname, field)
-            if (disp != AIF_ELEM_NONE) {
+            if (disp != AIF_ELEM_NONE
+                    and isFatStringKey(ir_get_struct_field_type(tname, field.s1))) {
+                // **A String field is released as the whole pair.** Loaded as a
+                // `ptr` it is field 0 alone, which for an inline string is its
+                // text, and ir_free_object freed whatever address those bytes
+                // spell -- a list of `struct { name: String }` built with short
+                // names released 0x30, 0x31 and 0x32 at teardown. Given the pair,
+                // ir_release_call reads the tag and skips an inline or view form.
+                let idx = ir_get_struct_field_index(tname, field.s1)
+                let slot = ir_struct_field_ptr(tname, current, idx)
+                ir_free_object(ir_get_temp_name(ir_struct_load_ptr("struct:prismio.str",
+                    ir_get_temp_name(slot), tname, idx)))
+            } else if (disp != AIF_ELEM_NONE) {
                 let idx = ir_get_struct_field_index(tname, field.s1)
                 let slot = ir_struct_field_ptr(tname, current, idx)
                 let loaded = ir_struct_load_ptr("ptr", ir_get_temp_name(slot), tname, idx)
@@ -1638,6 +1650,21 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_param("i32")
     ir_declare_function_end()
 
+    // The same for `s = s + a + b ...`: a count, then five (pointer, length)
+    // suffix slots of which the first `count` are used.
+    ir_declare_function_begin("str_append_reuse_many", "ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("i64")
+    ir_declare_function_param("i32")
+    let mut appendSlot = 0
+    while (appendSlot < 5) {
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        appendSlot = appendSlot + 1
+    }
+    ir_declare_function_end()
+
     ir_declare_function_begin("list_get_inline_scalar", "i64")
     ir_declare_function_param("ptr")
     ir_declare_function_param("i32")
@@ -1649,6 +1676,32 @@ fn generateModule(module: ASTNode) {
     ir_declare_function_param("i32")
     ir_declare_function_param("i64")
     ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    // `List<String>` holds the pair itself. A read answers its two halves and a
+    // write takes them, so no 16-byte aggregate crosses the C ABI; see
+    // list_str_data in runtime/lang_runtime.c.
+    ir_declare_function_begin("list_str_data", "ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_str_word", "i64")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_push_str", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i64")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_set_str", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i64")
     ir_declare_function_end()
 
     if (moduleTreeUsesSlice(module.child1)) {
@@ -1690,6 +1743,30 @@ fn generateModule(module: ASTNode) {
         ir_declare_function_param("i32")
         ir_declare_function_param("i32")
         ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        // The `List<String>` accessors through a slice, as list_str_data's.
+        ir_declare_function_begin("list_slice_str_data", "ptr")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("list_slice_str_word", "i64")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("list_slice_set_str", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i64")
         ir_declare_function_end()
 
         ir_declare_function_begin("list_slice_set_inline_scalar", "void")

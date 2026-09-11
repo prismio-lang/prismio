@@ -87,13 +87,16 @@ declares or calls them. Their supported implementations are ordinary Prismio
 byte loops. The emitted IR for a program importing the module contains neither
 calls nor declarations for those six names.
 
-Search has two optional accelerators. `str_find_byte` delegates a one-byte scan
-to libc. `str_find_byte_pair` compares two predictive needle bytes at 32
-candidate starts per iteration using NEON or SSE2, with a scalar fallback. The
-substring algorithm is still Prismio: pair selection, full verification,
-Crochemore-Perrin Two-Way, and the dynamic effectiveness guard all live in
-`std/string.psm`. The C primitive supplies only the vector operation the
-language cannot express yet.
+Search has three optional accelerators. `str_find_byte` delegates a one-byte
+scan to libc. `str_find_byte_pair` compares two predictive needle bytes at 32
+candidate starts per iteration using NEON or SSE2, with a scalar fallback.
+`str_find_needle` is the whole search for a needle of 2..32 bytes: it picks the
+two rarest needle bytes, drives the same pair scan, verifies each candidate with
+`memcmp`, and answers "continue with Two-Way from here" when candidates turn
+dense. That split is measured, not stylistic: with selection and verification in
+`std/string.psm`, `string_search` paid six out-of-line rank calls per search and
+one runtime crossing per candidate, 160 µs against C++'s 51 µs. Crochemore-Perrin
+Two-Way and the long-needle prefilter policy stay in Prismio.
 
 **Capabilities — must be C.** Opening a file, reading a directory, spawning a
 process, asking the OS for the working directory. The language has no syscall
@@ -394,8 +397,10 @@ formatter checks its own candidates against.
 | C symbol | Prismio | Contract |
 |---|---|---|
 | `str_with_capacity` | internal allocation seam for `std.string` | `produce(free)` |
-| `str_own` | codegen-only: a String on its way into a container slot | — |
+| `str_own` | codegen-only: a String on its way into a boxed container slot or out through an `alias` return | — |
+| `list_str_data` `list_str_word` `list_push_str` `list_set_str` | codegen-only: `List<String>` element access, where the element is the 16-byte pair | — |
 | `str_find_byte` `str_find_byte_pair` | internal bounded search accelerators | `borrow` |
+| `str_find_needle` | internal short-needle search behind `strIndexOfFrom` | `bytes` |
 | `read_file` `get_directory` `join_path` | `readFile` `directoryOf` `joinPath` | `produce(free)` |
 | `current_directory` `executable_directory` | `currentDirectory` `executableDirectory` | `produce(free)` |
 | `list_modules` | `listModules` → `List<String>` | `produce(free)` |

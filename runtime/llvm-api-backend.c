@@ -5933,7 +5933,11 @@ int ir_curate_module(const char *runtime_ir, const char *const *names, int count
             if (strcmp(name, "list_get_inline_scalar") == 0
                     || strcmp(name, "list_set_inline_scalar") == 0
                     || strcmp(name, "list_push_inline_scalar") == 0
-                    || strcmp(name, "list_get_inline") == 0) {
+                    || strcmp(name, "list_get_inline") == 0
+                    || strcmp(name, "list_str_data") == 0
+                    || strcmp(name, "list_str_word") == 0
+                    || strcmp(name, "list_push_str") == 0
+                    || strcmp(name, "list_set_str") == 0) {
                 unsigned kind = LLVMGetMDKindIDInContext(ctx, "invariant.load", 14);
                 LLVMMetadataRef empty = LLVMMDNodeInContext2(ctx, NULL, 0);
                 LLVMValueRef inv_md = LLVMMetadataAsValue(ctx, empty);

@@ -1,0 +1,126 @@
+// `strIndexOfFrom` against a byte-by-byte reference, over generated inputs.
+//
+// Needles of 2..32 bytes are searched by the runtime (`str_find_needle`): it
+// picks two rare needle bytes, scans for them in pairs, verifies each candidate,
+// and hands dense inputs back to Two-Way with a resume position. Each of those
+// steps is a place an off-by-one hides, so the inputs aim at them -- needles
+// across the 32/33-byte cut, matches at the first and last legal start,
+// alphabets small enough that every position is a candidate, near misses that
+// force the Two-Way handoff, and haystacks and needles that are views.
+
+import std.io
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn naiveIndexOf(s: String, needle: String, from: Int) -> Int {
+    let slen = s.length()
+    let nlen = needle.length()
+    let mut i = from
+    if (i < 0) { i = 0 }
+    if (nlen == 0) {
+        if (i <= slen) { return i }
+        return -1
+    }
+    while (i + nlen <= slen) {
+        let mut k = 0
+        while (k < nlen and s.byteAt(i + k) == needle.byteAt(k)) { k = k + 1 }
+        if (k == nlen) { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+// `n` deterministic bytes over the first `alphabet` lowercase letters.
+fn generate(n: Int, alphabet: Int, seed: Int) -> String {
+    let mut out = ""
+    let mut state = seed
+    let mut i = 0
+    while (i < n) {
+        state = (state * 25173 + 13849) % 65521
+        out = out + strFromChar(((97 + state % alphabet) as U8) as Char)
+        i = i + 1
+    }
+    return out
+}
+
+fn agrees(haystack: String, needle: String, from: Int) -> Bool {
+    return strIndexOfFrom(haystack, needle, from) == naiveIndexOf(haystack, needle, from)
+}
+
+fn checkAlphabet(alphabet: Int, seed: Int) -> Int {
+    let haystack = generate(300, alphabet, seed)
+    let absent = generate(40, alphabet, seed + 7)
+    let mut lengthIndex = 0
+    while (lengthIndex < 11) {
+        let mut nlen = 2
+        if (lengthIndex == 1) { nlen = 3 }
+        if (lengthIndex == 2) { nlen = 5 }
+        if (lengthIndex == 3) { nlen = 8 }
+        if (lengthIndex == 4) { nlen = 12 }
+        if (lengthIndex == 5) { nlen = 13 }
+        if (lengthIndex == 6) { nlen = 16 }
+        if (lengthIndex == 7) { nlen = 31 }
+        if (lengthIndex == 8) { nlen = 32 }
+        if (lengthIndex == 9) { nlen = 33 }
+        if (lengthIndex == 10) { nlen = 40 }
+        let mut start = 0
+        while (start + nlen <= 300) {
+            let mut from = 0
+            while (from < 300) {
+                if (agrees(haystack, haystack.slice(start, start + nlen), from) == false) {
+                    return fail("needle from the haystack: alphabet ".concat(alphabet.toString(),
+                        " length ", nlen.toString(), " start ", start.toString()))
+                }
+                from = from + 37
+            }
+            start = start + 23
+        }
+        if (agrees(haystack, absent.slice(0, nlen), 0) == false) {
+            return fail("an absent needle, length ".concat(nlen.toString()))
+        }
+        lengthIndex = lengthIndex + 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    if (checkAlphabet(2, 11) != 0) { return 1 }
+    if (checkAlphabet(3, 29) != 0) { return 1 }
+    if (checkAlphabet(26, 5) != 0) { return 1 }
+
+    // The first and the last legal start.
+    let text = "needle in a haystack with a needle"
+    if (text.indexOf("needle", 0) != 0) { return fail("a match at the first start") }
+    if (text.indexOf("needle", 1) != 28) { return fail("a match at the last start") }
+    if (text.indexOf("needle", 29) != -1) { return fail("from past the last match") }
+
+    // Every `b` is a candidate and none matches: the pair filter sees 100 near
+    // misses seven bytes apart and has to hand over to Two-Way, which then finds
+    // the one real match at the end.
+    let mut dense = ""
+    let mut r = 0
+    while (r < 100) {
+        dense = dense + "aaaaaab"
+        r = r + 1
+    }
+    if (dense.indexOf("aaaaaaab", 0) != -1) { return fail("dense near misses") }
+    dense = dense + "aaaaaaab"
+    if (dense.indexOf("aaaaaaab", 0) != 700) { return fail("Two-Way after the handoff") }
+    if (dense.indexOf("aaaaaaab", 650) != 700) { return fail("the handoff from an offset") }
+
+    // A view as the haystack: the search must stop at the view's end, not at the
+    // terminator of the string it points into.
+    let wide = "xxxxneedlexxxxxxxxxxxxxxxxxxxxxxxneedle"
+    if (wide.slice(2, 30).indexOf("needle", 5) != -1) {
+        return fail("a view haystack read past its end")
+    }
+    if (wide.slice(2, 39).indexOf("needle", 5) != 31) { return fail("a view haystack") }
+
+    println("PASS")
+    return 0
+}

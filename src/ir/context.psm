@@ -155,6 +155,10 @@ let AIF_ELEM_TYPED = 4
 let AIF_ELEM_CYCLE = 5
 let AIF_ELEM_RC_ATOMIC = 6
 let AIF_ELEM_CYCLE_ATOMIC = 7
+// Not an analysis answer: codegen stamps it in place of OBJECT on a
+// `List<String>`, whose elements are pairs rather than pointers, so teardown
+// frees an owned long form and skips an inline one.
+let AIF_ELEM_STRING = 8
 
 // Where a value the memory model inferred lives, keyed by the AST node that
 // allocates it -- both passes walk the same tree, so the node is a name for the

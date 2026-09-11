@@ -221,8 +221,8 @@ column.
 | 3 | `count > 12` ⟹ the source is not inline | `strSubstring` tests it one line above | a view offsets a non-pointer |
 | 4 | A view is **never** NUL-terminated | it ends inside a longer buffer | reads past the view |
 | 5 | `__builtin_string_put_byte` only writes long-form buffers | every caller writes into a fresh `str_with_capacity` | the write lands in a scratch copy and is lost |
-| 6 | `str_append_reuse` receives an **owned inline or long-form** base whose old value dies at the assignment | codegen offers it only for an AIF-proved owning `s = s + suffix` | reallocating read-only, arena, or shared storage |
-| 7 | An aliased suffix is rebased after growth | the runtime records its offset before `realloc` and appends with `memmove` | `s = s + s` or appending a view reads the old address |
+| 6 | `str_append_reuse` and `str_append_reuse_many` receive an **owned inline or long-form** base whose old value dies at the assignment | codegen offers them only for an AIF-proved owning `s = s + a` or `s = s + a + b ...` | reallocating read-only, arena, or shared storage |
+| 7 | Every aliased suffix is rebased after growth, and a chain grows once | the runtime records each suffix's offset before `realloc` and appends with `memmove`; a chain is one call | `s = s + s`, `s = s + x + s` or appending a view reads the old address |
 | 8 | GEOMETRIC long strings have capacity `bit_ceil(length + 1)`, minimum 16 | append stamps bit 33 whenever it promotes or reallocates | an in-place append writes beyond the block |
 
 **Invariant 1 is what pays for the missing prefix.** If two short strings hold
@@ -279,10 +279,17 @@ Exactly three places, all consequences of invariant 4.
 slow path calls `str_equals_n` with the length out of the pair — which the fast
 path has already established is equal on both sides.
 
-**`str_own` copies by length.** A container slot is one word and the container
-frees what it holds, so a view entering a list is copied out. So is an inline
-string, whose bytes live in the caller's frame. Neither can use `str_clone`,
+**A view entering a container is copied out, by length.** A `List<String>`
+holds the 16-byte pair itself (`list_push_str` in `runtime/lang_runtime.c`), so
+an inline string goes in as it is and an owned one hands over its block, but a
+view borrows a buffer the list does not own. The copy cannot use `str_clone`,
 because that walks to a NUL.
+
+A slot used to be one word. Every short string was copied to the heap on the
+way in (`str_own`) and every read measured its length back with `strlen`:
+`sort_strings` paid 5.7 million of those calls and 80,000 mallocs for 80,000
+elements of at most twelve bytes. `str_own` remains for the fallback, a list
+built with no element type and reached through code typed `List<String>`.
 
 **The FFI boundary copies and releases.** A view crossing into C gets a
 NUL-terminated copy, made behind a branch so the other two classes pay nothing,

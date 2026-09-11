@@ -74,6 +74,19 @@
 
 ### Fixed
 
+- **A String literal stored into a container was freed at teardown.**
+  `list_push(names, "ab")` stored the literal's pair as it was -- an untagged
+  pointer into read-only data, even for two bytes -- so the list's release
+  handed `.rodata` to the deallocator: 2 violations and an abort for three
+  pushes. A literal element is now copied into an inline or owned value first,
+  as an assignment already did.
+- **A struct's String field freed its text when the string was short.** The
+  generated `__aif_release_T` loaded a String field as a bare pointer, which for
+  an inline string is its first eight characters, and freed that: a list of
+  `struct { name: String, ... }` with short names aborted at teardown releasing
+  0x30, 0x31 and 0x32 -- the bytes of "0", "1" and "2". The field is released as
+  the whole pair now, so the tag is read.
+
 - **`a.concat(b) == "x"` leaked the temporary.** An ordinary call releases an
   owned argument that nothing binds; `==` lowers to a builtin, which skipped that
   path -- so the operator leaked where the `.equals()` method it is a spelling of
@@ -553,6 +566,81 @@
   macro there. It goes through `g_free_fn` now — the seam exists so that both
   halves of a pairing swap together, and a temporary release is a release like
   any other.
+
+### String performance, third pass
+
+- **`s = s + a + b` appends in place.** A two-part `s = s + x` already reused an
+  owned accumulator's buffer; a longer `+` chain took the immutable concat and
+  copied the whole accumulator on every iteration. `str_append_reuse_many` grows
+  the base once for the chain's total and appends every suffix, rebasing any that
+  points into the old buffer -- `s = s + x + s` has to read its second `s` from
+  where the first append left it, which is why a chain is one call and not one
+  per suffix. `s_expression_parse` builds 96 KB in 1,600 such appends: its build
+  phase went from 3.00 ms to 0.80 ms (C++ `+=`: 0.93 ms), and the benchmark is
+  **2.6x faster** (0.374x, median of 15 alternating runs).
+
+- **A short-needle search is one runtime call.** `strIndexOfFrom` picked its two
+  rare needle bytes in Prismio through an out-of-line rank function -- six calls
+  for a six-byte needle -- and crossed into the runtime once per candidate.
+  `str_find_needle` does the selection, the packed-pair scan and a `memcmp`
+  verify in C, and answers "continue with Two-Way from here" when candidates turn
+  dense, so the worst case stays linear. With the crossing gone the density
+  window is memchr's 50 candidates rather than 4. `string_search` **0.73x**
+  (median of 15).
+
+- **`strJoin` reads each part once.** Its copy loop called `list_get` per byte,
+  and a String read out of a container slot was measured with `strlen`: 2.6
+  million calls joining 240,000 parts. `string_join`'s join phase went from
+  2.83 ms to 0.95 ms (C++: 1.06 ms), and the benchmark is **0.73x**.
+
+- **A `List<String>` stores the 16-byte pair itself.** A slot was one word: every
+  short String was copied to the heap on the way in (`str_own`) and every read
+  measured its length back with `strlen`. Interposed on the suite, `sort_strings`
+  made 5,748,630 `strlen` calls and 80,029 mallocs for 80,000 elements of at most
+  twelve bytes; it now makes 190 and 29, and `string_join` went from 2,612,792 and
+  240,030 to 190 and 30 -- what libc++'s small strings in a `vector<string>` save
+  C++. A typed `List<String>` is born with `elem_size == 16`; reads and writes go
+  through curated runtime calls that take and answer the pair as two halves,
+  because a 16-byte struct return is a hidden pointer on Windows x64. Teardown
+  frees an owned long form and skips an inline one (`AIF_ELEM_STRING`, codegen's
+  refinement of OBJECT). A list born with no element type still reaches code
+  typed `List<String>`, so every entry point keeps the old path for it. Phases,
+  minimum of nine alternating runs: `sort_strings` build 1.83 -> 1.06 ms (C++
+  1.69), `string_join` build 3.86 -> 1.69 ms (C++ 2.62) and join 2.86 ->
+  0.60 ms (C++ 1.10). Leaks shrank with it, because short strings no longer
+  allocate: 112 leaked -> 8 on `test_141`'s shapes.
+
+- **`strSplit`, `strSplitOn`, `strSplitWhitespace` and `strLines` keep a part of
+  twelve bytes or fewer in the pair** instead of allocating it, which now costs
+  nothing to store in the list they return.
+
+- **`strClone` keeps twelve bytes or fewer in the pair too.** A `Map<String, V>`
+  stores its keys through it (`copyOf`), and a heap copy of a short key never
+  matched the inline key it was looked up with bit for bit, so every successful
+  probe fell through to `memcmp`. With the split change, `word_frequency` went
+  from 20,876 mallocs and 47,992 `memcmp` calls to 57 and 0.
+
+- **`sort` is pattern-defeating quicksort.** The three-way quicksort it replaces
+  was pathological on ordered input: 80,000 already-sorted Ints took 16.6 ms and
+  reversed ones 12.2 ms, against 4.1 ms random. pdqsort's partial insertion sort
+  after a partition that moved nothing makes both near-linear -- **0.086 ms and
+  0.141 ms** -- and random input is 0.83x. Duplicates keep the property the
+  three-way partition was chosen for: a pivot equal to the element before its range
+  takes the equal-to-the-left partition, so an all-equal list is linear.
+  Unbalanced partitions are counted and fall back to heapsort after log2(n), so
+  the worst case is O(n log n), and both scans are bounded, so an ordering that is
+  not a strict weak order leaves an unsorted permutation rather than a read past
+  the end. The pivot stays in its slot for the whole scan, which is what keeps it
+  valid for an inline element.
+
+- **Together, against the suite binary before this pass** (15 alternating runs,
+  checksums equal): `string_join` **0.34x**, `s_expression_parse` **0.38x**,
+  `word_frequency` **0.45x**, `sort_strings` **0.70x**, `string_search` **0.71x**.
+  Against C++ in a full `benchmarks/run.py` pass they moved from 1.62x, 1.99x,
+  1.53x, 2.03x and 1.31x to **0.63x, 0.71x, 0.70x, 1.45x and 0.96x**. A
+  per-function mnemonic diff of the two suite binaries shows 30 of 504 functions
+  changed, every one of them string, list, map or sort code; the benchmarks whose
+  code did not change stayed inside the suite's layout floor.
 
 ### String performance, second pass
 

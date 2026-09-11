@@ -1,0 +1,118 @@
+// `List<String>` stores the 16-byte pair itself.
+//
+// A slot used to be one word: a short String was copied to the heap on the way
+// in, and every read measured its length back with `strlen`. The list now holds
+// the pair, so the shapes below are the ones where the pair is not obviously the
+// element: a literal (static storage the list must not free -- it used to, at
+// teardown), a view (a borrow the list must copy), a slice of the list, and a
+// list born boxed that reaches code typed `List<String>`.
+
+import std.io
+import std.list
+import std.map
+import std.string
+
+struct Roster {
+    names: List<String>
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn totalLength(names: List<String>) -> Int {
+    let mut total = 0
+    for name in names {
+        total = total + name.length()
+    }
+    return total
+}
+
+fn main() -> Int {
+    // Short strings built at run time stay in the pair.
+    let mut words: List<String> = list_new()
+    let mut i = 0
+    while (i < 100) {
+        list_push(words, "w".concat(i.toString()))
+        i = i + 1
+    }
+    if (list_len(words) != 100) { return fail("100 pushes") }
+    if (list_get(words, 42).equals("w42") == false) { return fail("list_get of a short string") }
+    if (words[7].equals("w7") == false) { return fail("indexing a short string") }
+
+    // Literals, short and long, pushed and set. The list releases what it holds,
+    // so each has to arrive as an owned copy rather than as static storage.
+    list_push(words, "ab")
+    list_push(words, "a literal longer than twelve bytes")
+    list_set(words, 0, "short")
+    list_set(words, 1, "another literal longer than twelve")
+    if (words[100].equals("ab") == false) { return fail("a pushed short literal") }
+    if (words[101].equals("a literal longer than twelve bytes") == false) {
+        return fail("a pushed long literal")
+    }
+    if (words[0].equals("short") == false) { return fail("a set short literal") }
+    if (words[1].equals("another literal longer than twelve") == false) {
+        return fail("a set long literal")
+    }
+
+    // An owned long String, and a view: a borrow of `sentence` that the list has
+    // to keep a copy of.
+    let sentence = "the quick brown fox jumps over the lazy dog"
+    list_push(words, sentence.concat("!"))
+    list_push(words, sentence.slice(4, 25))
+    if (words[102].length() != 44) { return fail("an owned long string") }
+    if (words[103].equals("quick brown fox jumps") == false) { return fail("a pushed view") }
+
+    // Iteration over every element, and a read past the end, which is the empty
+    // String it always was.
+    if (totalLength(words) != 426) { return fail("for-in over a List<String>") }
+    if (list_get(words, 1000).length() != 0) { return fail("a read past the end") }
+
+    // Sorting moves pairs between slots, inline and owned alike.
+    let mut fruit: List<String> = list_new()
+    list_push(fruit, "pear")
+    list_push(fruit, "an apple with a much longer name")
+    list_push(fruit, "fig")
+    list_push(fruit, "banana")
+    list_push(fruit, "an apple")
+    sort(fruit)
+    if (fruit[0].equals("an apple") == false) { return fail("sort: first") }
+    if (fruit[1].equals("an apple with a much longer name") == false) {
+        return fail("sort: a long string")
+    }
+    if (fruit[4].equals("pear") == false) { return fail("sort: last") }
+
+    // A map's keys are a List<String> too.
+    let counts: Map<String, Int> = mapNew<String, Int>()
+    let mut k = 0
+    while (k < 50) {
+        let key = list_get(words, k % 5)
+        mapSet(counts, key, mapGetOr(counts, key, 0) + 1)
+        k = k + 1
+    }
+    if (mapLen(counts) != 5) { return fail("five distinct keys") }
+    if (mapGetOr(counts, "short", 0) != 10) { return fail("a counted key") }
+
+    // A slice reads and writes the list's own pairs.
+    let middle = words[2..6]
+    if (middle[0].equals("w2") == false) { return fail("a slice read") }
+    slice_set(middle, 1, "replaced through a slice, long enough to own")
+    slice_set(middle, 2, "tiny")
+    if (words[3].equals("replaced through a slice, long enough to own") == false) {
+        return fail("a slice write, owned")
+    }
+    if (words[4].equals("tiny") == false) { return fail("a slice write, inline") }
+
+    // A list born boxed -- `list_new()` has no element type in a struct literal --
+    // reaching code typed `List<String>`.
+    let roster = Roster { names: list_new() }
+    list_push(roster.names, "ann")
+    list_push(roster.names, "a long name that has to live on the heap")
+    if (list_get(roster.names, 0).equals("ann") == false) { return fail("a boxed list, short") }
+    if (totalLength(roster.names) != 43) { return fail("a boxed list through a typed parameter") }
+
+    println("PASS")
+    return 0
+}

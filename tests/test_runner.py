@@ -3505,7 +3505,8 @@ def run_slice_gate_test():
         if not re.search(r"%prismio\.slice(?:\.\d+)? = type \{ ptr, i32, i32 \}", ir):
             problems.append("Slice is not emitted as { handle, offset, length }")
         for symbol in ("prismio_slice_check", "list_slice_get_inline",
-                       "list_slice_set_inline", "list_slice_get"):
+                       "list_slice_set_inline", "list_slice_get",
+                       "list_slice_str_data", "list_slice_set_str"):
             if not re.search(rf"call [^\n]*@{symbol}\b", ir):
                 problems.append(f"test_79 does not exercise @{symbol}")
     cleanup_files(out)
@@ -6918,8 +6919,12 @@ def run_string_operator_ledger_test():
         allocated, released, leaked, violations = (int(g) for g in m.groups())
         # A ledger of nothing balances trivially. The fixture allocates through
         # every one of the five, so a count this low means it stopped exercising
-        # them and the balance below proves nothing.
-        if allocated < 20:
+        # them and the balance below proves nothing. 12 rather than the 20 it
+        # was: std's split functions keep a part of twelve bytes or fewer in the
+        # pair, and a `List<String>` stores it there, which took this fixture's
+        # `split` and `lines` calls from 21 allocations to 18 without it
+        # exercising any operator less.
+        if allocated < 12:
             print(f"{RED}[FAIL] string operator ledger: only {allocated} allocation(s), "
                   f"so the fixture is no longer exercising the operators and a "
                   f"balanced ledger says nothing{RESET}")

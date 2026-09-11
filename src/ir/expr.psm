@@ -464,7 +464,7 @@ private fn generateOwnedTemporaryReleases(vals: List<String>, kinds: List<Int>, 
 //
 // The ordinary String.concat remains immutable. This path is offered only by an
 // assignment whose destination owns the value it is displacing, and only when
-// that exact destination is the first argument of the two-part concat. It is the
+// that exact destination is the first part of a `+` chain. It is the
 // value-semantic equivalent of Swift's unique-buffer mutation and Rust String's
 // push_str: the old value is dead at the store, so its capacity can become the
 // replacement's without exposing mutation in the language.
@@ -487,7 +487,7 @@ internal fn generateStringReinitConcat(exprPtr: Ptr, target: String, old: String
     }
     if (nodeIsNull(first.next)) { return "" }
     let suffixNode = ptr_to_node(first.next)
-    if (nodeExists(suffixNode.next)) { return "" }
+    if (nodeExists(suffixNode.next)) { return generateStringReinitConcatChain(first.next, old) }
     if (nodeGetType(suffixNode).kind != TypeKind.STRING) { return "" }
 
     // Decide this before generating the call. Call lowering consumes the
@@ -529,6 +529,74 @@ internal fn generateStringReinitConcat(exprPtr: Ptr, target: String, old: String
     if (releaseSuffix) {
         generateOwnedTemporaryRelease(suffix, suffixDropKind, suffixDropType)
     }
+    return fatWithLengthFlag(raw, total, "8589934592")
+}
+
+// `s = s + a + b ...`. Without this a chain took the immutable path and copied
+// the whole accumulator on every iteration: `s_expression_parse` builds 96 KB in
+// 1,600 such appends and measured 3.7x C++'s `+=` for it.
+//
+// Every suffix is generated left to right before the one runtime call, which is
+// the order the immutable concat evaluates in, and the call grows the base once.
+// See str_append_reuse_many for why one call per suffix would be unsound.
+private fn generateStringReinitConcatChain(firstSuffix: Ptr, old: String) -> String {
+    let mut scan = firstSuffix
+    while (nodeExists(scan)) {
+        let part = ptr_to_node(scan)
+        if (nodeGetType(part).kind != TypeKind.STRING) { return "" }
+        scan = part.next
+    }
+
+    let mut datas: List<String> = list_new()
+    let mut lengths: List<String> = list_new()
+    let mut ownedVals: List<String> = list_new()
+    let mut ownedKinds: List<Int> = list_new()
+    let mut ownedTypes: List<String> = list_new()
+    let oldWide = ir_get_temp_name(ir_extract_value("struct:prismio.str", old, 1))
+    let oldNarrow = ir_get_temp_name(ir_trunc("i64", oldWide, "i32"))
+    let oldLen = ir_get_temp_name(ir_and("i32", oldNarrow, "2147483647"))
+    let mut total = strClone(oldLen)
+    let mut partPtr = firstSuffix
+    while (nodeExists(partPtr)) {
+        let part = ptr_to_node(partPtr)
+        // Asked before generating, for the reason the single-suffix form gives.
+        let release = irArgumentIsOwnedTemporary(part)
+        let dropKind = irOwnedTemporaryKind(part)
+        let dropType = getExprType(part)
+        let value = generateExpression(part)
+        let wide = ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 1))
+        let narrow = ir_get_temp_name(ir_trunc("i64", wide, "i32"))
+        let length = ir_get_temp_name(ir_and("i32", narrow, "2147483647"))
+        total = ir_get_temp_name(ir_add("i32", total, length))
+        list_push(lengths, length)
+        list_push(datas, ir_get_temp_name(ir_str_data(value)))
+        if (release) {
+            list_push(ownedVals, strClone(value))
+            list_push(ownedKinds, dropKind)
+            list_push(ownedTypes, dropType)
+        }
+        partPtr = part.next
+    }
+    let oldData = ir_get_temp_name(ir_str_data(old))
+
+    ir_call_begin()
+    ir_call_arg("ptr", oldData)
+    ir_call_arg("i32", oldLen)
+    ir_call_arg("i64", oldWide)
+    ir_call_arg("i32", strFromInt(list_len(datas)))
+    let mut slot = 0
+    while (slot < 5) {
+        if (slot < list_len(datas)) {
+            ir_call_arg("ptr", list_get(datas, slot))
+            ir_call_arg("i32", list_get(lengths, slot))
+        } else {
+            ir_call_arg("ptr", "null")
+            ir_call_arg("i32", "0")
+        }
+        slot = slot + 1
+    }
+    let raw = ir_get_temp_name(ir_call_end("ptr", "str_append_reuse_many"))
+    generateOwnedTemporaryReleases(ownedVals, ownedKinds, ownedTypes)
     return fatWithLengthFlag(raw, total, "8589934592")
 }
 
@@ -756,6 +824,66 @@ private fn inlineElemSizeOfSlice(sliceExpr: ASTNode) -> Int {
     return inlineElemSize(structTypeName(ekey))
 }
 
+// A `List<String>` stores the 16-byte pair itself rather than a pointer to its
+// bytes, so neither the boxed nor the flat paths may serve it: a boxed read takes
+// the pair's first word for a pointer, and a flat one hands out an address where
+// the caller wants a value. The size is `%prismio.str`'s, StrPair in
+// runtime/lang_runtime.c.
+private fn stringPairBytes() -> Int { return 16 }
+
+private fn listHoldsStrings(listExpr: ASTNode) -> Bool {
+    if (nodeHasType(listExpr) == false) { return false }
+    let lt = nodeGetType(listExpr)
+    if (lt.kind != TypeKind.LIST or nodeIsNull(lt.child)) { return false }
+    return ptr_to_type(lt.child).kind == TypeKind.STRING
+}
+
+// A slice views its list's block, so this must agree with listHoldsStrings.
+private fn sliceHoldsStrings(sliceExpr: ASTNode) -> Bool {
+    if (nodeHasType(sliceExpr) == false) { return false }
+    let st = nodeGetType(sliceExpr)
+    if (st.kind != TypeKind.SLICE or nodeIsNull(st.child)) { return false }
+    return ptr_to_type(st.child).kind == TypeKind.STRING
+}
+
+private fn stringFromHalves(data: String, word: String) -> String {
+    let empty = ir_get_temp_name(ir_undef("struct:prismio.str"))
+    let withData = ir_get_temp_name(ir_insert_value("struct:prismio.str", empty, data, "ptr", 0))
+    return ir_get_temp_name(ir_insert_value("struct:prismio.str", withData, word, "i64", 1))
+}
+
+// Element `index` of a `List<String>`, rebuilt from the halves the runtime
+// answers with. Both calls are curated, so once inlined they share one header
+// load and one bounds test.
+private fn generateStringListElement(listVal: String, indexVal: String) -> String {
+    ir_call_begin()
+    ir_call_arg("ptr", listVal)
+    ir_call_arg("i32", indexVal)
+    let data = ir_get_temp_name(ir_call_end("ptr", "list_str_data"))
+    ir_call_begin()
+    ir_call_arg("ptr", listVal)
+    ir_call_arg("i32", indexVal)
+    let word = ir_get_temp_name(ir_call_end("i64", "list_str_word"))
+    return stringFromHalves(data, word)
+}
+
+private fn generateStringSliceElement(handle: String, offset: String, length: String,
+                                      indexVal: String) -> String {
+    ir_call_begin()
+    ir_call_arg("ptr", handle)
+    ir_call_arg("i32", offset)
+    ir_call_arg("i32", length)
+    ir_call_arg("i32", indexVal)
+    let data = ir_get_temp_name(ir_call_end("ptr", "list_slice_str_data"))
+    ir_call_begin()
+    ir_call_arg("ptr", handle)
+    ir_call_arg("i32", offset)
+    ir_call_arg("i32", length)
+    ir_call_arg("i32", indexVal)
+    let word = ir_get_temp_name(ir_call_end("i64", "list_slice_str_word"))
+    return stringFromHalves(data, word)
+}
+
 // The same question asked of a container call's first argument, which is the
 // list for all four of `list_get`, `list_set`, `list_push` and `list_len`.
 // Does this call cross into C?
@@ -886,6 +1014,10 @@ private fn irFlatGuardCount(nodePtr: Ptr, bodyPtr: Ptr) -> Int {
             // The typed boxed accessor reloads the current header at its site,
             // so it needs no representation guard and does not make an
             // otherwise-flat loop ineligible for its shared guard.
+            found = 0
+        } else if (isTypedListGet(n, fname) and listHoldsStrings(ptr_to_node(n.child2))) {
+            // A `List<String>` read goes through the curated pair accessors,
+            // which reload the header at the site in the same way.
             found = 0
         } else if (flatSetScalarStride(n, fname) > 0) {
             // Writes through the block without stamping, growing or
@@ -2227,6 +2359,8 @@ private fn isStaticBoxedListGet(expr: ASTNode, funcName: String) -> Bool {
     let lt = nodeGetType(listNode)
     if (nodeIsNull(lt.child)) { return false }
     if (ptr_to_type(lt.child).kind == TypeKind.INVALID) { return false }
+    // Not pointer slots either: a `List<String>` holds pairs.
+    if (listHoldsStrings(listNode)) { return false }
     return inlineElemSizeOfList(listNode) == 0
 }
 
@@ -2751,6 +2885,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
         if (baseType.kind == TypeKind.LIST) {
             let arrayVal = generateExpression(baseNode)
             let indexVal = generateExpression(ptr_to_node(expr.child2))
+            if (listHoldsStrings(baseNode)) { return generateStringListElement(arrayVal, indexVal) }
             ir_call_begin()
             ir_call_arg("ptr", arrayVal)
             ir_call_arg("i32", indexVal)
@@ -2780,6 +2915,9 @@ internal fn generateExpression(expr: ASTNode) -> String {
             let handle = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 0))
             let offset = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 1))
             let length = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 2))
+            if (sliceHoldsStrings(baseNode)) {
+                return generateStringSliceElement(handle, offset, length, indexVal)
+            }
             ir_call_begin()
             ir_call_arg("ptr", handle)
             ir_call_arg("i32", offset)
@@ -3248,7 +3386,25 @@ internal fn generateExpression(expr: ASTNode) -> String {
                     let sliceSetInline = inlineElemSizeOfSlice(sliceNode)
                     let mut passed = ""
                     if (isFatStringKey(valueType)) {
-                        let value = generateExpression(valueNode)
+                        let mut value = generateExpression(valueNode)
+                        // A literal is static storage and the slot is released
+                        // with the list, so the slot gets an owned copy.
+                        if (nodeIsStringLiteralExpr(node_to_ptr(valueNode))) {
+                            value = generateOwnedStringLiteral(value, node_to_ptr(valueNode))
+                        }
+                        if (sliceHoldsStrings(sliceNode)) {
+                            ir_call_begin()
+                            ir_call_arg("ptr", handle)
+                            ir_call_arg("i32", offset)
+                            ir_call_arg("i32", length)
+                            ir_call_arg("i32", index)
+                            ir_call_arg("ptr", ir_get_temp_name(
+                                ir_extract_value("struct:prismio.str", value, 0)))
+                            ir_call_arg("i64", ir_get_temp_name(
+                                ir_extract_value("struct:prismio.str", value, 1)))
+                            ir_call_end("void", "list_slice_set_str")
+                            return ""
+                        }
                         // A slice slot owns its word for the same reason a list
                         // element does, so this is `scalarToSlot` on the pair.
                         passed = scalarToSlot("struct:prismio.str", value)
@@ -3320,6 +3476,14 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // three blocks this expands into are worth their code only when a loop
         // amortises them, and emitting them everywhere cost g2 and g6 +58%
         // compile time and +34% binary for 4.9% and 2.0%.
+        // A `List<String>` element is a pair in the list's own block, which no
+        // boxed or flat read below knows how to take.
+        if (isTypedListGet(expr, funcName) and listHoldsStrings(ptr_to_node(expr.child2))) {
+            let stringList = ptr_to_node(expr.child2)
+            let stringListVal = generateExpression(stringList)
+            let stringIndexVal = generateExpression(ptr_to_node(stringList.next))
+            return generateStringListElement(stringListVal, stringIndexVal)
+        }
         let flatStride = flatGetStride(expr, funcName)
         if (flatStride == 0 and isStaticBoxedListGet(expr, funcName)
                 and irLoopDepth > 0) {
@@ -3796,6 +3960,12 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // so a scalar has to reach the slot as one -- without this the call
         // disagrees with its own declaration and the module fails verification.
         let elemArg = listElementArgIndex(funcName)
+        // `list_push`/`list_set` into a `List<String>` take the pair's two halves
+        // rather than a slot word; see list_push_str.
+        let mut stringListOp = false
+        if (elemArg >= 0 and isForeign and nodeExists(expr.child2)) {
+            stringListOp = listHoldsStrings(ptr_to_node(expr.child2))
+        }
 
         // The owned temporaries this call is about to consume, released once it
         // returns. Collected here because this is the only point where the
@@ -3843,7 +4013,24 @@ internal fn generateExpression(expr: ASTNode) -> String {
                     // the way in. Handing it the coerced pointer instead stored
                     // the scratch buffer's address in the list, and the release at
                     // teardown was a free of the stack.
-                    ir_call_arg("ptr", scalarToSlot("struct:prismio.str", argVal))
+                    //
+                    // A literal is static storage, and a container releases what
+                    // it holds -- a literal stored as it was is `.rodata` freed at
+                    // teardown -- so it goes in as an owned copy. Cloned:
+                    // `argVal` is affine and the branches below still name it.
+                    let mut element = strClone(argVal)
+                    if (nodeIsStringLiteralExpr(argPtr)) {
+                        element = generateOwnedStringLiteral(element, argPtr)
+                    }
+                    if (stringListOp) {
+                        // A `List<String>` keeps the pair itself; list_push_str.
+                        ir_call_arg("ptr", ir_get_temp_name(
+                            ir_extract_value("struct:prismio.str", element, 0)))
+                        ir_call_arg("i64", ir_get_temp_name(
+                            ir_extract_value("struct:prismio.str", element, 1)))
+                    } else {
+                        ir_call_arg("ptr", scalarToSlot("struct:prismio.str", element))
+                    }
                 } else if (irCallReturnsAlias(expr)) {
                     // An alias return may outlive this expression or even this
                     // frame. Inline String bytes live in a stack pair, and a
@@ -3946,11 +4133,18 @@ internal fn generateExpression(expr: ASTNode) -> String {
                 }
             }
         }
+        if (stringListOp) {
+            if (funcName.equals("list_push")) { callName = "list_push_str" }
+            if (funcName.equals("list_set")) { callName = "list_set_str" }
+        }
         if (funcName.equals("list_new")) {
             let newInlineSize = inlineElemSizeOfList(expr)
             if (newInlineSize > 0) {
                 callName = "list_new_inline"
                 ir_call_arg("i32", strFromInt(newInlineSize))
+            } else if (listHoldsStrings(expr)) {
+                callName = "list_new_inline"
+                ir_call_arg("i32", strFromInt(stringPairBytes()))
             }
         }
         if (funcName.equals("list_new_with_capacity")) {
@@ -3958,6 +4152,9 @@ internal fn generateExpression(expr: ASTNode) -> String {
             if (newCapInlineSize > 0) {
                 callName = "list_new_with_capacity_inline"
                 ir_call_arg("i32", strFromInt(newCapInlineSize))
+            } else if (listHoldsStrings(expr)) {
+                callName = "list_new_with_capacity_inline"
+                ir_call_arg("i32", strFromInt(stringPairBytes()))
             }
         }
         // REQUIREMENTS 4. The checked unwrap is an ordinary call that returns
@@ -4095,9 +4292,14 @@ internal fn generateExpression(expr: ASTNode) -> String {
         // therefore the disposition -- is named.
         let elemOwn = aif_elem_owner_at_node(node_to_ptr(expr))
         if (elemOwn != AIF_ELEM_NONE) {
+            // A `List<String>` owns pairs rather than pointers: AIF_ELEM_STRING.
+            let mut stampedOwn = elemOwn
+            if (elemOwn == AIF_ELEM_OBJECT and listHoldsStrings(expr)) {
+                stampedOwn = AIF_ELEM_STRING
+            }
             ir_call_begin()
             ir_call_arg("ptr", result)
-            ir_call_arg("i32", strFromInt(elemOwn))
+            ir_call_arg("i32", strFromInt(stampedOwn))
             ir_call_end("void", "list_set_elem_owner")
 
             // Struct-field ownership. An int cannot name a type, and a container

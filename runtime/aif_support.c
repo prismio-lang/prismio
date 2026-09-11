@@ -5758,6 +5758,10 @@ int aif_releases_on_overwrite_node(const void* node) {
 // T4a value that is provably acyclic, which is exactly what separates these.
 #define AIF_ELEM_RC_ATOMIC    6
 #define AIF_ELEM_CYCLE_ATOMIC 7
+// Never answered here. Codegen stamps it in place of OBJECT on a `List<String>`,
+// whose elements are pairs rather than pointers; it is listed so the three
+// tables stay one protocol (run_elem_mode_agreement_test).
+#define AIF_ELEM_STRING       8
 
 // AIF Level 5. Whether this site is allocated with a reference count.
 //

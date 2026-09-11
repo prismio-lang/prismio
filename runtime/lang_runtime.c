@@ -601,10 +601,8 @@ int str_find_byte(const char* s, int from, char b) {
 // `last` is the final legal candidate start. Both offsets must be within the
 // needle, which makes the two unaligned vector loads stay within the String when
 // the caller supplies `last = string_length - needle_length`.
-int str_find_byte_pair(const char* s, int from, int last,
-                       int offset1, char byte1, int offset2, char byte2) {
-    if (!s || from < 0 || last < from || offset1 < 0 || offset2 < 0) return -1;
-
+static inline int str_pair_scan(const char* s, int from, int last,
+                                int offset1, char byte1, int offset2, char byte2) {
     int i = from;
 #if defined(__aarch64__) || defined(_M_ARM64)
     uint8x16_t want1 = vdupq_n_u8((uint8_t)byte1);
@@ -667,6 +665,86 @@ int str_find_byte_pair(const char* s, int from, int last,
 #endif
     for (; i <= last; i++) {
         if (s[i + offset1] == byte1 && s[i + offset2] == byte2) return i;
+    }
+    return -1;
+}
+
+int str_find_byte_pair(const char* s, int from, int last,
+                       int offset1, char byte1, int offset2, char byte2) {
+    if (!s || from < 0 || last < from || offset1 < 0 || offset2 < 0) return -1;
+    return str_pair_scan(s, from, last, offset1, byte1, offset2, byte2);
+}
+
+// A lower rank means a byte is expected to be rarer in ordinary text. The letter
+// ranks are memchr::memmem's default distribution; uppercase shares its
+// lowercase rank. Only the ordering matters: the two rarest needle bytes make
+// the strongest pair filter.
+static const unsigned char str_search_letter_rank[26] = {
+    249, 216, 238, 236, 253, 227, 218, 230, 247, 135, 180, 241, 233,
+    246, 244, 231, 139, 245, 243, 251, 235, 201, 196, 240, 214, 152,
+};
+
+static int str_search_rank(unsigned char b) {
+    if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + 32);
+    if (b >= 'a' && b <= 'z') return str_search_letter_rank[b - 'a'];
+    if (b == ' ') return 255;
+    if (b >= '0' && b <= '9') return 220;
+    if (b >= 128) return 254;
+    return 100;
+}
+
+// The first match of a 2..32-byte needle at or after `from`: -1 for none, or
+// `-2 - at` when candidates are too dense for the pair filter to pay, which asks
+// the caller to continue with Two-Way from `at` so the worst case stays linear.
+//
+// **The whole search is here rather than only its vector scan.** With pair
+// selection and verification in std/string.psm, every `indexOf` paid six
+// out-of-line rank calls and one ABI crossing per candidate: `string_search`,
+// 8,000 searches with a match every 36 bytes, measured 160 us against C++'s
+// 51 us. Both lengths are passed, so neither string needs a terminator and a
+// view is searched where it lies.
+//
+// The density window is memchr's in-process one -- give up after 50 candidates
+// that skipped under 8 bytes on average -- which the Prismio loop had to cut to
+// 4 while each candidate cost a crossing.
+int str_find_needle(const char* s, int from, int length,
+                    const char* needle, int needle_length) {
+    if (!s || !needle || from < 0 || needle_length < 2 || needle_length > 32) return -1;
+    int last = length - needle_length;
+    if (from > last) return -1;
+
+    int index1 = 0;
+    int index2 = 1;
+    unsigned char byte1 = (unsigned char)needle[0];
+    unsigned char byte2 = (unsigned char)needle[1];
+    int rank1 = str_search_rank(byte1);
+    int rank2 = str_search_rank(byte2);
+    if (rank2 < rank1) {
+        index1 = 1; index2 = 0;
+        byte1 = (unsigned char)needle[1]; byte2 = (unsigned char)needle[0];
+        int held = rank1; rank1 = rank2; rank2 = held;
+    }
+    for (int p = 2; p < needle_length; p++) {
+        unsigned char b = (unsigned char)needle[p];
+        int rank = str_search_rank(b);
+        if (rank < rank1) {
+            index2 = index1; byte2 = byte1; rank2 = rank1;
+            index1 = p; byte1 = b; rank1 = rank;
+        } else if (b != byte1 && rank < rank2) {
+            index2 = p; byte2 = b; rank2 = rank;
+        }
+    }
+
+    int candidates = 0;
+    long long skipped = 0;
+    for (int i = from; i <= last;) {
+        int hit = str_pair_scan(s, i, last, index1, (char)byte1, index2, (char)byte2);
+        if (hit < 0) return -1;
+        if (memcmp(s + hit, needle, (size_t)needle_length) == 0) return hit;
+        candidates++;
+        skipped += hit - i;
+        i = hit + 1;
+        if (candidates >= 50 && skipped < (long long)candidates * 8) return -2 - i;
     }
     return -1;
 }
@@ -736,54 +814,85 @@ static size_t str_append_bit_ceil(size_t needed) {
     return (size_t)value + 1;
 }
 
-char* str_append_reuse(char* base, int base_length, long long base_word,
-                       const char* suffix, int suffix_length) {
-    if (!base || base_length < 0 || suffix_length < 0) {
+// A `+` chain names at most six Strings (semaStringConcatChain), so the base is
+// followed by at most five suffixes.
+#define STR_APPEND_MAX_PARTS 5
+
+// Make room for `needed` bytes in an owned append base, rebasing every part that
+// points into the bytes it had.
+static char* str_append_grow(char* base, size_t left, uint64_t word, size_t needed,
+                             const char** parts, int count) {
+    int base_is_inline = (word & UINT64_C(0x80000000)) != 0;
+    int base_is_geometric = !base_is_inline && (word & UINT64_C(0x200000000)) != 0;
+    if (base_is_geometric && str_append_bit_ceil(left + 1) >= needed) return base;
+
+    uintptr_t base_addr = (uintptr_t)base;
+    size_t offsets[STR_APPEND_MAX_PARTS];
+    int inside[STR_APPEND_MAX_PARTS];
+    for (int i = 0; i < count; i++) {
+        uintptr_t addr = (uintptr_t)parts[i];
+        inside[i] = addr >= base_addr && addr <= base_addr + left;
+        offsets[i] = inside[i] ? (size_t)(addr - base_addr) : 0;
+    }
+
+    size_t grown = str_append_bit_ceil(needed);
+    char* moved = base_is_inline ? (char*)rt_base_alloc(grown)
+                                 : (char*)rt_base_realloc(base, grown);
+    if (!moved) {
+        fprintf(stderr, "runtime error: out of memory growing String\n");
+        exit(1);
+    }
+    if (base_is_inline) memmove(moved, base, left);
+    for (int i = 0; i < count; i++) {
+        if (inside[i]) parts[i] = moved + offsets[i];
+    }
+    return moved;
+}
+
+// `s = s + a + b ...`, the consuming append for a whole `+` chain. The base grows
+// once for the total, and that is a correctness requirement rather than only a
+// saving: a later suffix may point into the old buffer (`s = s + x + s`, or a
+// view of `s`), and appending one suffix per call would read it through an
+// address the previous call's realloc had already freed.
+char* str_append_reuse_many(char* base, int base_length, long long base_word, int count,
+                            const char* s0, int n0, const char* s1, int n1,
+                            const char* s2, int n2, const char* s3, int n3,
+                            const char* s4, int n4) {
+    const char* parts[STR_APPEND_MAX_PARTS] = {s0, s1, s2, s3, s4};
+    int lengths[STR_APPEND_MAX_PARTS] = {n0, n1, n2, n3, n4};
+    if (!base || base_length < 0 || count < 1 || count > STR_APPEND_MAX_PARTS) {
         fprintf(stderr, "runtime error: invalid String append\n");
         exit(1);
     }
 
+    size_t total = (size_t)base_length;
+    for (int i = 0; i < count; i++) {
+        if (lengths[i] < 0) {
+            fprintf(stderr, "runtime error: invalid String append\n");
+            exit(1);
+        }
+        if ((size_t)lengths[i] > (size_t)INT32_MAX - total) {
+            fprintf(stderr, "runtime error: String length exceeds %d bytes\n", INT32_MAX);
+            exit(1);
+        }
+        total += (size_t)lengths[i];
+    }
+
     size_t left = (size_t)base_length;
-    size_t right = (size_t)suffix_length;
-    if (right > (size_t)INT32_MAX - left) {
-        fprintf(stderr, "runtime error: String length exceeds %d bytes\n", INT32_MAX);
-        exit(1);
+    base = str_append_grow(base, left, (uint64_t)base_word, total + 1, parts, count);
+    size_t at = left;
+    for (int i = 0; i < count; i++) {
+        if (lengths[i] > 0) memmove(base + at, parts[i], (size_t)lengths[i]);
+        at += (size_t)lengths[i];
     }
-    size_t needed = left + right + 1;
-    uint64_t word = (uint64_t)base_word;
-    int base_is_inline = (word & UINT64_C(0x80000000)) != 0;
-    int base_is_geometric = !base_is_inline && (word & UINT64_C(0x200000000)) != 0;
-    size_t capacity = base_is_geometric ? str_append_bit_ceil(left + 1) : 0;
-
-    uintptr_t base_addr = (uintptr_t)base;
-    uintptr_t suffix_addr = (uintptr_t)suffix;
-    int suffix_in_base = suffix_addr >= base_addr && suffix_addr <= base_addr + left;
-    size_t suffix_offset = suffix_in_base ? (size_t)(suffix_addr - base_addr) : 0;
-
-    if (base_is_inline) {
-        size_t grown = str_append_bit_ceil(needed);
-        char* moved = (char*)rt_base_alloc(grown);
-        if (!moved) {
-            fprintf(stderr, "runtime error: out of memory growing String\n");
-            exit(1);
-        }
-        memmove(moved, base, left);
-        base = moved;
-        if (suffix_in_base) suffix = base + suffix_offset;
-    } else if (!base_is_geometric || capacity < needed) {
-        size_t grown = str_append_bit_ceil(needed);
-        char* moved = (char*)rt_base_realloc(base, grown);
-        if (!moved) {
-            fprintf(stderr, "runtime error: out of memory growing String\n");
-            exit(1);
-        }
-        base = moved;
-        if (suffix_in_base) suffix = base + suffix_offset;
-    }
-
-    memmove(base + left, suffix, right);
-    base[left + right] = '\0';
+    base[total] = '\0';
     return base;
+}
+
+char* str_append_reuse(char* base, int base_length, long long base_word,
+                       const char* suffix, int suffix_length) {
+    return str_append_reuse_many(base, base_length, base_word, 1, suffix, suffix_length,
+                                 NULL, 0, NULL, 0, NULL, 0, NULL, 0);
 }
 
 char* int_to_str(int n) {
@@ -1884,6 +1993,12 @@ long long cyc_collections_run(void) {
 // T4a value that is provably acyclic -- which is exactly the difference here.
 #define AIF_ELEM_RC_ATOMIC    6
 #define AIF_ELEM_CYCLE_ATOMIC 7
+// Codegen's refinement of OBJECT for a `List<String>`, whose elements are the
+// 16-byte pairs themselves rather than pointers: teardown frees each owned long
+// form's block, and nothing for an inline pair. The analysis never answers it --
+// it answers OBJECT, and codegen, which knows the element is a String, stamps
+// this instead. A boxed list stamped with it releases exactly as OBJECT does.
+#define AIF_ELEM_STRING       8
 
 typedef struct {
     void** data;
@@ -2334,6 +2449,137 @@ void list_set_inline(void* lp, int index, void* value) {
     list_release_source(l, value);
 }
 
+// `List<String>`: the element is the 16-byte pair itself.
+//
+// A slot used to be one word, the pointer. The length was dropped on the way in
+// and measured back with `strlen` on every read, and a short String -- twelve
+// bytes in the pair, with no address of its own -- was copied to the heap on
+// every write. `sort_strings` paid 5.7 million `strlen` calls and 80,000 mallocs
+// for 80,000 elements of at most twelve bytes, where libc++'s `vector<string>`
+// pays neither because its small strings live in the vector's own block. So do
+// these: a list typed `List<String>` is born with `elem_size == sizeof(StrPair)`
+// and holds the pair exactly as codegen does.
+//
+// Every entry point takes or answers the pair as two halves rather than as a
+// struct. A 16-byte aggregate is a register pair on arm64 and SysV but a hidden
+// pointer on Windows x64; two scalars are the same on all three.
+//
+// **Each one still serves a boxed list.** `list_new()` with no element type is
+// `List<Invalid>` and born boxed, yet the handle can reach code typed
+// `List<String>` -- a struct field initialised with it is the usual way -- so a
+// read falls back to the slot's pointer and its `strlen`, and a write to
+// `str_own`, which is how every String element was handled before.
+typedef struct {
+    const char* data;
+    long long word;
+} StrPair;
+
+// The length word (STRINGS.md 3). INLINE dominates VIEW, and a macro rather than
+// a function because the curated bodies below may reference no `static`.
+#define STR_WORD_INLINE 0x80000000LL
+#define STR_WORD_VIEW   0x100000000LL
+#define STR_WORD_LENGTH 0x7FFFFFFFLL
+#define STR_WORD_IS_VIEW(w) (((w) & STR_WORD_INLINE) == 0 && ((w) & STR_WORD_VIEW) != 0)
+
+// A pair as a block a boxed slot can own. An inline pair's twelve bytes are field
+// 0 followed by the top half of the word, laid out the way ir_str_data
+// materialises them, and are rebuilt the same way for `str_own` to copy.
+static char* str_own_pair(void* raw, long long word) {
+    if (!(word & STR_WORD_INLINE)) return str_own((const char*)raw, word);
+    char bytes[16] = {0};
+    uint32_t high = (uint32_t)((unsigned long long)word >> 32);
+    memcpy(bytes, &raw, sizeof(raw));
+    memcpy(bytes + 8, &high, sizeof(high));
+    return str_own(bytes, word);
+}
+
+// The halves of element `index`; NULL and 0 out of range, which is what a boxed
+// `list_get` gave `fatFromPtr` -- a null pointer measured as empty.
+void* list_str_data(void* lp, int index) {
+    RtList* l = (RtList*)lp;
+    if ((unsigned)index >= (unsigned)l->len) return 0;
+    if (l->elem_size == (int)sizeof(StrPair)) return (void*)((StrPair*)l->data)[index].data;
+    return l->data[index];
+}
+
+// The boxed fallback's measurement, outside the curated body: clang inlines
+// `prismio_cstr_len` into anything in this file, and its over-length message is
+// a private string constant a curated body may not reference
+// (run_curated_closure_test).
+PRISMIO_NOINLINE long long list_str_word_boxed(void* lp, int index) {
+    return prismio_cstr_len((const char*)((RtList*)lp)->data[index]);
+}
+
+long long list_str_word(void* lp, int index) {
+    RtList* l = (RtList*)lp;
+    if ((unsigned)index >= (unsigned)l->len) return 0;
+    if (l->elem_size == (int)sizeof(StrPair)) return ((StrPair*)l->data)[index].word;
+    return list_str_word_boxed(lp, index);
+}
+
+// The cold half of list_push_str: no room, a view to copy out, or a list built
+// boxed. Outlined and exported for the curated module, as list_push_grow is, and
+// PRISMIO_NOINLINE for list_push_slot_boxed's reason.
+PRISMIO_NOINLINE void list_push_str_slow(void* lp, void* raw, long long word) {
+    RtList* l = (RtList*)lp;
+    if (l->elem_size != (int)sizeof(StrPair)) {
+        list_push(lp, str_own_pair(raw, word));
+        return;
+    }
+    StrPair pair = {(const char*)raw, word};
+    if (STR_WORD_IS_VIEW(word)) {
+        int length = (int)(word & STR_WORD_LENGTH);
+        pair.data = str_clone_n((const char*)raw, length);
+        pair.word = length;
+    }
+    if (l->len >= l->cap) list_inline_grow(l);
+    ((StrPair*)l->data)[l->len] = pair;
+    l->len = l->len + 1;
+}
+
+// A push moves the String in. An inline or owned pair is stored as it is -- for
+// an owned block that is the transfer `str_own` passing the pointer through
+// always was -- and a view, which borrows a buffer the list does not own, is
+// copied out first.
+void list_push_str(void* lp, void* raw, long long word) {
+    RtList* l = (RtList*)lp;
+    if (l->elem_size != (int)sizeof(StrPair) || l->len >= l->cap || STR_WORD_IS_VIEW(word)) {
+        list_push_str_slow(lp, raw, word);
+        return;
+    }
+    StrPair* slot = (StrPair*)l->data + l->len;
+    slot->data = (const char*)raw;
+    slot->word = word;
+    l->len = l->len + 1;
+}
+
+PRISMIO_NOINLINE void list_set_str_slow(void* lp, int index, void* raw, long long word) {
+    RtList* l = (RtList*)lp;
+    if (index < 0 || index >= l->len) return;
+    if (l->elem_size != (int)sizeof(StrPair)) {
+        list_set(lp, index, str_own_pair(raw, word));
+        return;
+    }
+    int length = (int)(word & STR_WORD_LENGTH);
+    StrPair* slot = (StrPair*)l->data + index;
+    slot->data = str_clone_n((const char*)raw, length);
+    slot->word = length;
+}
+
+// The displaced element is not released, for `list_set`'s reason: under OBJECT
+// the binding the value came from may own it too.
+void list_set_str(void* lp, int index, void* raw, long long word) {
+    RtList* l = (RtList*)lp;
+    if (l->elem_size != (int)sizeof(StrPair) || STR_WORD_IS_VIEW(word)) {
+        list_set_str_slow(lp, index, raw, word);
+        return;
+    }
+    if (index < 0 || index >= l->len) return;
+    StrPair* slot = (StrPair*)l->data + index;
+    slot->data = (const char*)raw;
+    slot->word = word;
+}
+
 // The debug-mode overflow check's failure path, RFC 0560's "check in debug".
 //
 // `Int` is signed 32-bit and wraps -- decided by measurement, see
@@ -2445,7 +2691,23 @@ void list_release(void* lp) {
     // M4.2, fact 3: a flat element owns nothing and was never separately
     // allocated, so the whole of an inline list's teardown is its block. Once
     // per list, unlike the three hot ops, so the branch is affordable here.
-    if (l->elem_size) { if (l->data) rt_free(l->data); rt_free(l); return; }
+    //
+    // The one inline element that owns something is a String pair: an owned long
+    // form's block. INLINE and VIEW both mean there is nothing to free (STRINGS.md
+    // invariant 2), and a list never holds a view -- list_push_str copies one out.
+    if (l->elem_size) {
+        if (l->elem_own == AIF_ELEM_STRING && l->elem_size == (int)sizeof(StrPair) && l->data) {
+            StrPair* pairs = (StrPair*)l->data;
+            for (int i = l->len - 1; i >= 0; i--) {
+                if (!(pairs[i].word & (STR_WORD_INLINE | STR_WORD_VIEW))) {
+                    rt_free((void*)pairs[i].data);
+                }
+            }
+        }
+        if (l->data) rt_free(l->data);
+        rt_free(l);
+        return;
+    }
     if (l->elem_own != AIF_ELEM_NONE) {
         for (int i = l->len - 1; i >= 0; i--) {
             void* e = l->data[i];
@@ -2738,6 +3000,19 @@ void list_slice_set(void* lp, int offset, int length, int index, void* value) {
 
 void list_slice_set_inline(void* lp, int offset, int length, int index, void* value) {
     list_set_inline(lp, list_slice_index(lp, offset, length, index), value);
+}
+
+void* list_slice_str_data(void* lp, int offset, int length, int index) {
+    return list_str_data(lp, list_slice_index(lp, offset, length, index));
+}
+
+long long list_slice_str_word(void* lp, int offset, int length, int index) {
+    return list_str_word(lp, list_slice_index(lp, offset, length, index));
+}
+
+void list_slice_set_str(void* lp, int offset, int length, int index, void* raw,
+                        long long word) {
+    list_set_str(lp, list_slice_index(lp, offset, length, index), raw, word);
 }
 
 // LAYOUT 2 -- the measured access profile

@@ -1146,11 +1146,18 @@ static int object_cache_trace(void);
 // `list_push_inline_scalar_slow`. That mirrors `list_push_grow`: the copied fast
 // path stays cheap enough to inline and no arena-allocation static leaks into a
 // program module.
+//
+// **The `List<String>` accessors are here for the same reason as the scalar
+// ones**: they are what codegen emits for every element read and write of a
+// String list, and a real `bl` per read is the cost the pair representation
+// exists to remove. Growth, view copies and the boxed fallback cross the
+// boundary through the exported `list_push_str_slow` and `list_set_str_slow`.
 static const char* const PRISMIO_CURATED_OPS[] = {
     "list_get", "list_get_inline", "list_get_inline_scalar",
     "list_set_inline_scalar", "list_push_inline_scalar", "list_set", "list_len",
     "list_set_elem_owner", "list_set_elem_releaser",
     "rc_retain", "rc_release", "list_push",
+    "list_str_data", "list_str_word", "list_push_str", "list_set_str",
     "data_view_check_index", "data_view_column", "data_view_len",
 };
 #define PRISMIO_CURATED_OP_COUNT \
@@ -1159,7 +1166,7 @@ static const char* const PRISMIO_CURATED_OPS[] = {
 // which are not bytes in lang_runtime.c. Bump this whenever that curation
 // policy changes; M4.3c added invariant ready-view loads and exposed that the
 // old key could otherwise reuse a semantically older curated module forever.
-#define PRISMIO_CURATED_SCHEMA "curated-v7-noalias-allocs"
+#define PRISMIO_CURATED_SCHEMA "curated-v8-string-pairs"
 
 // On by default after the curated-module path became part of the ordinary
 // Windows/Linux/macOS suite. `0` remains the measurement and emergency opt-out:

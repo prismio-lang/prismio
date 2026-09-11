@@ -1,0 +1,74 @@
+// `s = s + a + b ...` grows the accumulator in place.
+//
+// A two-part `s = s + x` already did; a longer chain took the immutable concat
+// and copied the whole accumulator on every iteration, which is quadratic in the
+// length being built. The chain form is one runtime call that grows once and
+// then appends every suffix, and the shapes below are the ones that call has to
+// get right: a suffix that is the base itself, a view into it, and an owned
+// temporary it must release.
+
+import std.io
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn digitsOf(n: Int) -> String {
+    return n.toString()
+}
+
+fn main() -> Int {
+    // Built across many appends, so the base is promoted from inline to the
+    // heap and then reallocated several times with suffixes still pending.
+    let mut s = ""
+    let mut i = 0
+    while (i < 500) {
+        s = s + digitsOf(i % 10) + "," + "ab"
+        i = i + 1
+    }
+    if (s.length() != 2000) { return fail("500 four-byte appends") }
+    if (s.slice(0, 8).equals("0,ab1,ab") == false) { return fail("chain order") }
+    if (s.slice(1996, 2000).equals("9,ab") == false) { return fail("last chain") }
+
+    // The base named twice in one chain. The second copy must be read from where
+    // the first append left it, not from the block the growth freed.
+    let mut twice = "0123456789abcdef"
+    twice = twice + "-" + twice
+    if (twice.equals("0123456789abcdef-0123456789abcdef") == false) {
+        return fail("s = s + x + s")
+    }
+
+    // A view of the base as a later suffix, which points into the old buffer.
+    let mut viewed = "the quick brown fox jumps"
+    viewed = viewed + " / " + viewed.slice(4, 19)
+    if (viewed.equals("the quick brown fox jumps / quick brown fox") == false) {
+        return fail("a view of the base as a suffix")
+    }
+
+    // An inline base that stays inline-sized, and one that crosses twelve bytes
+    // inside a single chain.
+    let mut small = "a"
+    small = small + "b" + "c"
+    if (small.equals("abc") == false) { return fail("an inline base") }
+    let mut crossing = "abcdefghij"
+    crossing = crossing + "klm" + "nopqrstuvwxyz"
+    if (crossing.equals("abcdefghijklmnopqrstuvwxyz") == false) {
+        return fail("an inline base promoted by one chain")
+    }
+
+    // The largest chain `+` can spell: the base and five suffixes.
+    let mut six = "1"
+    six = six + "2" + "3" + "4" + "5" + "6"
+    if (six.equals("123456") == false) { return fail("six parts") }
+
+    // Empty suffixes contribute nothing and must not be read.
+    let mut empties = "x"
+    empties = empties + "" + "y" + ""
+    if (empties.equals("xy") == false) { return fail("empty suffixes") }
+
+    println("PASS")
+    return 0
+}

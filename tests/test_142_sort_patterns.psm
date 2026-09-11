@@ -1,0 +1,122 @@
+// `sort` on the input shapes that separate a quicksort from a good one.
+//
+// The three-way quicksort this replaced was correct on all of them and took
+// 19 ms on 80,000 already-sorted Ints against 4 ms on random ones; pdqsort's
+// partial insertion sort makes the ordered shapes near-linear. Each shape is
+// checked for order and for being a permutation of its input -- a sort that
+// loses or duplicates an element can still come out ordered.
+
+import std.io
+import std.list
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn rnd(seed: Int) -> Int { return (seed * 25173 + 13849) % 65521 }
+
+// 0 random, 1 sorted, 2 reversed, 3 all equal, 4 few distinct, 5 organ pipe,
+// 6 sawtooth, 7 sorted with a few swaps.
+fn shape(n: Int, kind: Int) -> List<Int> {
+    let mut out: List<Int> = list_new_with_capacity(n)
+    let mut seed = 3
+    let mut i = 0
+    while (i < n) {
+        seed = rnd(seed)
+        // Below 30,000, so a square plus the running sum stays inside Int.
+        let mut v = seed % 30000
+        if (kind == 1) { v = i }
+        if (kind == 2) { v = n - i }
+        if (kind == 3) { v = 7 }
+        if (kind == 4) { v = seed % 5 }
+        if (kind == 5) {
+            v = i
+            if (i > n / 2) { v = n - i }
+        }
+        if (kind == 6) { v = i % 37 }
+        if (kind == 7) {
+            v = i
+            if (i % 997 == 0) { v = n - i }
+        }
+        list_push(out, v)
+        i = i + 1
+    }
+    return out
+}
+
+fn checkInts(n: Int, kind: Int) -> Int {
+    let xs = shape(n, kind)
+    let mut sum = 0
+    let mut mix = 0
+    let mut i = 0
+    while (i < n) {
+        sum = (sum + list_get(xs, i)) % 1000000007
+        mix = (mix + list_get(xs, i) * list_get(xs, i)) % 1000000007
+        i = i + 1
+    }
+    sort(xs)
+    let mut after = 0
+    let mut afterMix = 0
+    let mut k = 0
+    while (k < n) {
+        if (k > 0 and list_get(xs, k - 1) > list_get(xs, k)) {
+            return fail("unsorted: shape ".concat(kind.toString(), " n ", n.toString()))
+        }
+        after = (after + list_get(xs, k)) % 1000000007
+        afterMix = (afterMix + list_get(xs, k) * list_get(xs, k)) % 1000000007
+        k = k + 1
+    }
+    if (after != sum or afterMix != mix) {
+        return fail("not a permutation: shape ".concat(kind.toString(), " n ", n.toString()))
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut kind = 0
+    while (kind < 8) {
+        // Sizes below, at and above the insertion and ninther cutoffs.
+        if (checkInts(0, kind) != 0) { return 1 }
+        if (checkInts(1, kind) != 0) { return 1 }
+        if (checkInts(23, kind) != 0) { return 1 }
+        if (checkInts(24, kind) != 0) { return 1 }
+        if (checkInts(129, kind) != 0) { return 1 }
+        if (checkInts(5000, kind) != 0) { return 1 }
+        kind = kind + 1
+    }
+
+    // Strings: pairs that are inline and owned, with shared prefixes, sorted
+    // against their own insertion order reversed.
+    let mut words: List<String> = list_new()
+    let mut i = 0
+    while (i < 3000) {
+        let n = 2999 - i
+        if (n % 3 == 0) {
+            list_push(words, "a shared prefix that is long ".concat(n.toString()))
+        } else {
+            list_push(words, "k".concat(n.toString()))
+        }
+        i = i + 1
+    }
+    sort(words)
+    let mut k = 1
+    while (k < list_len(words)) {
+        if (list_get(words, k - 1).compare(list_get(words, k)) > 0) {
+            return fail("strings unsorted at ".concat(k.toString()))
+        }
+        k = k + 1
+    }
+    if (list_len(words) != 3000) { return fail("string count") }
+
+    // A comparator that is not a strict weak order must not hang or read past
+    // the end; the result is merely unspecified.
+    let mut noisy = shape(3000, 0)
+    sortBy(noisy, |a: Int, b: Int| (a * 7 + b * 3) % 5 - 2)
+    if (list_len(noisy) != 3000) { return fail("an inconsistent comparator lost elements") }
+
+    println("PASS")
+    return 0
+}

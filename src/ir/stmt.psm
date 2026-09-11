@@ -1081,7 +1081,7 @@ private fn generateRegionExits(count: Int) {
 // or fewer belong in the String pair itself: copying those into a heap block
 // discarded the SSO representation exactly where C++ benefits from it most.
 // A longer literal still needs a heap copy because the slot will release it.
-private fn generateOwnedStringLiteral(value: String, exprPtr: Ptr) -> String {
+internal fn generateOwnedStringLiteral(value: String, exprPtr: Ptr) -> String {
     let expr = ptr_to_node(exprPtr)
     let length = __builtin_string_len(expr.s1)
     if (length <= 12) {
