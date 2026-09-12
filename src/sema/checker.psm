@@ -1373,6 +1373,28 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             return semaExpr(module, expr)
         }
 
+        // A struct indexes through its own `at`, which is the rewrite String
+        // already gets: `x[i]` becomes `at(x, i)` and ordinary overload
+        // resolution picks the impl. Unqualified, because the target is the
+        // user's own method rather than one of std.string's six.
+        //
+        // The name is tested globally rather than on the struct, so a receiver
+        // that has no `at` of its own fails in overload resolution -- which names
+        // the argument types and is the better message. Only a program with no
+        // `at` anywhere reaches the note below.
+        if (collectionT.kind == TypeKind.STRUCT) {
+            if (semaDeclaresFunction("at")) {
+                semaBecomeCall(expr, "at",
+                               semaCallArgs2(ptr_to_node(expr.child1), ptr_to_node(expr.child2)))
+                return semaExpr(module, expr)
+            }
+            semaErrorAt(expr, "indexing ".concat(typeDisplay(collectionT),
+                                                 " needs an `at` method"))
+            diag_note("`x[i]` is `at(x, i)` -- write `fn at(self, index: Int)` in its impl")
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+
         if (collectionT.kind != TypeKind.ARRAY and collectionT.kind != TypeKind.LIST
             and collectionT.kind != TypeKind.SLICE and collectionT.kind != TypeKind.DATAVIEW) {
             semaErrorAt(expr, "indexing requires a String, array, List, Slice, or DataView, found ".concat(typeDisplay(collectionT)))

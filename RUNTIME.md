@@ -420,7 +420,7 @@ formatter checks its own candidates against.
 | `list_modules` | `listModules` → `List<String>` | `produce(free)` |
 | `command_quote_arg` | `quoteArg` | `produce(free)` |
 | `file_exists` `delete_file` `execute_command` | `fileExists` `deleteFile` `runCommand` | → `Bool` |
-| `cli_arg_count` `cli_arg` | `argCount` `arg` `argBorrowed` `argAt` `args` | `alias` |
+| `cli_arg_count` `cli_arg` | `process.args.count` `process.args[i]` | `alias` |
 
 The `Int` returns are normalised because the raw conventions disagree with each
 other: `file_exists` returns 1 for yes, while `delete_file` and `execute_command`

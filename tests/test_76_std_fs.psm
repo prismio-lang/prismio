@@ -76,38 +76,22 @@ fn main() -> Int {
 
     // --- arguments ----------------------------------------------------------
 
-    if (argCount() < 1) {
-        return fail("argCount should count the program name")
+    if (process.args.count < 1) {
+        return fail("process.args.count should count the program name")
     }
 
-    let program = arg(0)
+    let program = process.args[0]
     if (strLength(program) == 0) {
-        return fail("arg(0) should be the program name")
+        return fail("process.args[0] should be the program name")
     }
 
-    // The distinction the raw call cannot make: out of range and "the argument
-    // is the empty string" are both "" from cli_arg.
-    match (argAt(0 - 1)) {
-        Option<String>.Some(v) => { return fail("argAt should reject a negative index") }
-        Option<String>.None => { }
+    // Out of range answers `""`, which is also what an empty argument answers.
+    // `count` is the discrimination, and it is one property away.
+    if (strLength(process.args[0 - 1]) != 0) {
+        return fail("a negative index should answer the empty string")
     }
-    match (argAt(9999)) {
-        Option<String>.Some(v) => { return fail("argAt should reject an index past the end") }
-        Option<String>.None => { }
-    }
-    match (argAt(0)) {
-        Option<String>.Some(v) => {
-            if (strLength(v) == 0) { return fail("argAt(0) should be the program name") }
-        }
-        Option<String>.None => { return fail("argAt(0) should be present") }
-    }
-
-    // Borrowed from argv rather than copied. Reading it is safe for the life of
-    // the process; the analysis derives that it is not owned, so nothing here
-    // releases it.
-    let borrowed = argBorrowed(0)
-    if (strLength(borrowed) == 0) {
-        return fail("argBorrowed(0) should be the program name")
+    if (strLength(process.args[9999]) != 0) {
+        return fail("an index past the end should answer the empty string")
     }
 
     let quoted = quoteArg("a b")

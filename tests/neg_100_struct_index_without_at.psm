@@ -1,0 +1,14 @@
+// expect-error: indexing Point needs an `at` method
+//
+// `x[i]` on a struct rewrites to `at(x, i)`, so a struct that declares no `at`
+// has to say that rather than repeat the old list of built-in indexable kinds --
+// which would send the reader looking for a missing `import`.
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn main() -> Int {
+    let p = Point { x: 1, y: 2 }
+    return p[0]
+}

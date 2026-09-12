@@ -1,6 +1,6 @@
 // Command-line arguments and subprocesses.
 //
-// Two externs, and the interesting one is `cli_arg`.
+// Two externs behind the arguments, and the interesting one is `cli_arg`.
 //
 // **`cli_arg` allocates nothing.** It returns `prismio_argv[index]` -- a pointer
 // into the block the C runtime was handed at startup -- or the static `""` when
@@ -15,15 +15,13 @@
 // A `produce(free)` on it would not leak. It would hand `argv` to the
 // deallocator, which is a different and much worse category of wrong, and it is
 // the mistake the six `produce(free)` externs one module over invite. That is
-// why `arg` below returns a **copy**: the borrowed form is available as
-// `argBorrowed` for a caller that has measured and cares, but the obvious call
-// should be the safe one.
+// why `process.args[i]` returns a **copy**.
 
-import std.option
 import std.string
 
 extern fn cli_arg_count() -> Int
 extern fn cli_arg(index: Int) -> String alias
+
 extern fn execute_command(command: String borrow) -> Int
 extern fn command_quote_arg(arg: String borrow) -> String produce(free)
 
@@ -35,67 +33,62 @@ private fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
     }
 }
 
-// How many arguments the program was given, including the program name at 0.
-fn argCount() -> Int {
-    return cli_arg_count()
+// The type of `process`. It holds only the argument accessor, which holds
+// nothing either: every answer is the runtime's.
+struct ProcessQuery {
+    args: Args
 }
 
-// The argument at `index`, as a string the caller owns.
+// The command line, as the process was given it.
 //
-// A copy rather than the pointer, so that the result obeys the same rule as
-// every other owned String and a caller cannot accidentally free `argv`. One
-// small allocation per call, on a path that runs once per program.
-fn arg(index: Int) -> String {
-    let source = cli_arg(index)
-    let length = strLength(source)
-    let out = str_with_capacity(length)
-    prismioStdProcessCopyInto(out, source, length)
-    return out
-}
-
-// The argument at `index` without copying.
+//     let name = process.args[0]
+//     let mut i = 1
+//     while (i < process.args.count) {
+//         println(process.args[i])
+//         i = i + 1
+//     }
 //
-// Borrowed from `argv`, which outlives the program, so this is safe to read for
-// as long as the process runs -- and unsafe to `drop` or store in an owning
-// container. Use `arg` unless the copy is measurably in the way.
+// **`args[0]` is the program name and `count` is `argc`**, which is what the two
+// externs answer and what every other language's `argv` means. There is no
+// separate "arguments after the program name" accessor to disagree with it.
 //
-// No contract is written here because `alias` is `extern fn` vocabulary and a
-// Prismio signature has no place to put it. It is not needed: the analysis
-// derives the same fact from the body. `cli_arg` is declared `alias` with
-// nothing to alias, so it contributes no allocation site, so this function has a
-// `return` with no site behind it, so `fn_returns_partial` marks it partial and
-// its result is never owned by a caller. The unannotated form is the correct
-// one, not a gap.
-fn argBorrowed(index: Int) -> String {
-    return cli_arg(index)
+// This replaced five functions -- `argCount`, `arg`, `argBorrowed`, `argAt` and
+// `args`. `args[i]` is `at(i)`, which is the index operator's lowering target
+// (src/sema/checker.psm), and `count` is an ordinary property. Both read the two
+// externs directly, so neither builds a list to answer a question about one
+// element.
+struct Args {
 }
 
-// `None` when `index` is out of range, which the raw call cannot express -- it
-// returns `""` both for a missing argument and for an argument that is the
-// empty string.
-fn argAt(index: Int) -> Option<String> {
-    if (index < 0) { return Option<String>.None }
-    if (index >= cli_arg_count()) { return Option<String>.None }
-    let source = cli_arg(index)
-    let length = strLength(source)
-    let out = str_with_capacity(length)
-    prismioStdProcessCopyInto(out, source, length)
-    return Option<String>.Some(out)
-}
+// Uninitialised on purpose, as `platform` is. A global cannot be initialised by
+// an expression -- nothing runs before `main` -- and neither of these types has
+// anything to initialise.
+let process: ProcessQuery
 
-// Every argument after the program name.
-fn args() -> List<String> {
-    let out: List<String> = list_new()
-    let mut i = 1
-    while (i < cli_arg_count()) {
-        let source = cli_arg(i)
+impl Args {
+    // The argument at `index`, as a string the caller owns, and `""` outside
+    // `[0, count)`.
+    //
+    // A copy rather than the pointer, so that the result obeys the same rule as
+    // every other owned String and a caller cannot accidentally free `argv`. One
+    // small allocation per call, on a path that runs once per program.
+    //
+    // **Out of range and empty answer alike**, which is the C contract and not a
+    // gap: `count` is one property away, so the caller that cares can ask, and
+    // the `Option` form this replaced cost every caller a `match` to serve that
+    // one.
+    fn at(self, index: Int) -> String {
+        let source = cli_arg(index)
         let length = strLength(source)
-        let owned = str_with_capacity(length)
-        prismioStdProcessCopyInto(owned, source, length)
-        list_push(out, owned)
-        i = i + 1
+        let out = str_with_capacity(length)
+        prismioStdProcessCopyInto(out, source, length)
+        return out
     }
-    return out
+
+    // `argc`, so the program name at 0 is counted.
+    fn count(self) -> Int {
+        return cli_arg_count()
+    }
 }
 
 // True when the command ran and exited successfully. Note the inversion against

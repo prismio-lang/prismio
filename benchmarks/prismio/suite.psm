@@ -77,14 +77,14 @@ fn benchRun(name: String, scale: Int, inputPath: String, outputPath: String) -> 
 }
 
 fn main() -> Int {
-    if (argCount() < 2) {
+    if (process.args.count < 2) {
         benchPrintln("usage: suite <benchmark> [input] [output]")
         return 2
     }
-    let name = arg(1)
+    let name = process.args[1]
     let scale = 4
-    let inputPath = arg(2)
-    let outputPath = arg(3)
+    let inputPath = process.args[2]
+    let outputPath = process.args[3]
     let t0 = benchNow()
     let result = benchRun(name, scale, inputPath, outputPath)
     let t1 = benchNow()
