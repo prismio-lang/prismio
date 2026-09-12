@@ -1,0 +1,111 @@
+// `Key for String`'s hash is computed by two pieces of code now, and they have
+// to answer the same number. A key of twelve bytes or fewer held in an inline
+// pair is mixed in registers by `ir_str_hash`; every other storage class, and
+// every longer key, goes to `str_hash` in the runtime. test_146 checks that a
+// map still finds its keys, which is the symptom; this checks the number, which
+// is the cause, and the two ways it can be wrong that a map cannot show:
+//
+//   1. **The boundary.** The compiler stops taking the register path at twelve
+//      bytes and the runtime's short path starts there. If the two constants
+//      ever disagree, one length hashes two ways.
+//   2. **The degenerate multiply.** The register path is one 64x64->128 product
+//      of the pair's two words against two constants, and `lo == K1` makes that
+//      product zero whatever the rest of the key holds. Bytes 8..11 are folded
+//      back down for exactly this reason: they live above bit 32, and the map
+//      masks to the low bits. Without the fold every key sharing those eight
+//      bytes hashes alike.
+
+import std.io
+import std.string
+import std.key
+import std.map
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// The eight bytes of 0xBF58476D1CE4E5B9, least significant first, which is how
+// an inline pair's field 0 reads them.
+fn degenerateHead() -> String {
+    let mut head = ""
+    let bytes: List<Int> = list_new()
+    list_push(bytes, 185)
+    list_push(bytes, 228)
+    list_push(bytes, 229)
+    list_push(bytes, 28)
+    list_push(bytes, 109)
+    list_push(bytes, 71)
+    list_push(bytes, 88)
+    list_push(bytes, 191)
+    let mut i = 0
+    while (i < list_len(bytes)) {
+        head = head.concat(strFromChar(list_get(bytes, i) as Char))
+        i = i + 1
+    }
+    return head
+}
+
+fn main() -> Int {
+    // 1. Every length across the boundary, in both storage classes. A slice of
+    // twelve bytes or fewer is built inline and a longer one is a view, while
+    // `repeat(1)` copies the bytes into a fresh allocation whatever their length
+    // -- so each round compares a pair the backend read in registers against the
+    // same bytes the runtime measured.
+    let alphabet = "abcdefghijklmnopqrstuvwxyz"
+    let mut length = 0
+    while (length <= 16) {
+        let cut = alphabet.slice(0, length)
+        if (keyHashBytes(cut) != keyHashBytes(alphabet.slice(0, length).repeat(1))) {
+            return fail("length ".concat(length.toString(),
+                                         ": the pair and the runtime disagree"))
+        }
+        length = length + 1
+    }
+
+    // 2. Sixty-four twelve-byte keys whose first eight bytes zero the register
+    // path's product. Every one of them must still answer differently.
+    let head = degenerateHead()
+    let hashes: List<Int> = list_new()
+    let mut i = 0
+    while (i < 64) {
+        let key = head.concat(strFromChar((1 + i % 8) as Char),
+                              strFromChar((1 + i / 8) as Char), "xy")
+        if (key.length() != 12) { return fail("the degenerate key is not twelve bytes") }
+        if (keyHashBytes(key) != keyHashBytes(key.repeat(1))) {
+            return fail("a degenerate key hashes differently on the heap")
+        }
+        list_push(hashes, keyHashBytes(key))
+        i = i + 1
+    }
+    let mut a = 0
+    while (a < list_len(hashes)) {
+        let mut b = a + 1
+        while (b < list_len(hashes)) {
+            if (list_get(hashes, a) == list_get(hashes, b)) {
+                return fail("bytes 8..11 do not reach the answer when the product is zero")
+            }
+            b = b + 1
+        }
+        a = a + 1
+    }
+
+    // 3. And the map that all of this is for.
+    let m: Map<String, Int> = mapNew<String, Int>()
+    let mut k = 0
+    while (k <= 16) {
+        mapSet(m, alphabet.slice(0, k).repeat(1), k)
+        k = k + 1
+    }
+    k = 0
+    while (k <= 16) {
+        if (mapGetOr(m, alphabet.slice(0, k), 0 - 1) != k) {
+            return fail("length ".concat(k.toString(), " was stored and not found"))
+        }
+        k = k + 1
+    }
+
+    println("PASS")
+    return 0
+}

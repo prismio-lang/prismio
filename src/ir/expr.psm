@@ -3953,6 +3953,24 @@ internal fn generateExpression(expr: ASTNode) -> String {
             }
         }
 
+        // `keyHashBytes`, which every `Map<String, V>` probe reaches. A short
+        // key's twelve bytes are mixed where they sit and nothing is called; see
+        // `ir_str_hash`. An owned operand is dropped here for the reason the
+        // `==` lowering above drops one.
+        if (funcName.equals("__builtin_string_hash")
+            and nodeExists(expr.child2)) {
+            let h0 = ptr_to_node(expr.child2)
+            if (nodeExists(h0.next) == false) {
+                let hashed = generateExpression(h0)
+                let answer = ir_get_temp_name(ir_str_hash(hashed))
+                if (irArgumentIsOwnedTemporary(h0)) {
+                    generateOwnedTemporaryRelease(hashed, irOwnedTemporaryKind(h0),
+                                                  irOwnedTemporaryDeclType(h0))
+                }
+                return answer
+            }
+        }
+
         // **Writes go to the long form only, and every caller obeys that.** Every
         // `__builtin_string_put_byte` in std/string.psm writes into a buffer that
         // came from `str_with_capacity` two lines above, which always allocates;

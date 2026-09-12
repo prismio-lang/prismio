@@ -298,7 +298,8 @@ instructions, and `mapProbe` calls it on every lookup. Marked noinline instead,
 change. Both versions spill an inline String to a stack scratch to hand the hash
 an address. The fix is to lower the hash the way `__builtin_string_compare` is
 lowered -- mix an inline pair's two words in registers, 0.58 ns a key in the
-harness -- and it is in KNOWN_ISSUES under Codegen.
+harness. **Done on 2026-09-12**, as `__builtin_string_hash`:
+`RESULTS-string-hash-builtin.md` has it, and the `count` shape above is 0.55x.
 
 **The benchmark suite.** In the suite binary five functions changed, all on the
 `Map<String, Int>` path -- `keyHashBytes`, `Key.hash` for String, `mapProbe`,

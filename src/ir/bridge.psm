@@ -381,6 +381,11 @@ extern fn ir_str_eq_literal(value: String, literal: String) -> Int
 // String order, -1, 0 or 1. Two short strings order as one byte-swapped 128-bit
 // key in registers; see `ir_str_compare` in runtime/llvm-api-backend.c.
 extern fn ir_str_compare(lhs: String, rhs: String) -> Int
+// `Key for String`'s hash. A short string's twelve bytes are mixed in registers
+// and a longer one reaches `str_hash`, which answers the short case identically
+// for the storage classes that have no pair to read -- a view, or a short string
+// on the heap. See `ir_str_hash` in runtime/llvm-api-backend.c.
+extern fn ir_str_hash(value: String) -> Int
 
 // An argument whose `extern fn` declares it `borrow`, which RUNTIME.md defines
 // as "the callee reads the argument and does not retain it" -- LLVM's

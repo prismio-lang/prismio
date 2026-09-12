@@ -47,6 +47,9 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // The lowering target for `String.compare`, and through it `cmp` and every
     // String sort. See `ir_str_compare` in runtime/llvm-api-backend.c.
     if (name.equals("__builtin_string_compare")) { return typeInt() }
+    // `Key for String`'s hash, the one `std.map` reaches on every lookup. A
+    // builtin because the cost it removes is the call itself; see `ir_str_hash`.
+    if (name.equals("__builtin_string_hash")) { return typeInt() }
     if (name.equals("__builtin_string_inline")) { return typeString() }
     if (name.equals("__builtin_string_concat_inline2")) { return typeString() }
     if (name.equals("__builtin_string_concat_inline3")) { return typeString() }
@@ -248,6 +251,12 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let c0 = ptr_to_node(argPtr)
         semaCheckValue(module, c0, typeString(), "string comparison operand")
         semaCheckValue(module, ptr_to_node(c0.next), typeString(), "string comparison operand")
+        return true
+    }
+
+    if (name.equals("__builtin_string_hash")) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        semaCheckValue(module, ptr_to_node(argPtr), typeString(), "string hash operand")
         return true
     }
 

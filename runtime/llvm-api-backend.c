@@ -4198,6 +4198,110 @@ int ir_str_compare(const char *lhs, const char *rhs) {
     return intern_value(phi);
 }
 
+// `Key for String`'s hash, with a short key's twelve bytes mixed where they sit.
+//
+// `str_hash_words` in lang_runtime.c is the other half of this and answers
+// identically; the note over it is the contract, and the reason the inline case
+// cannot simply be "the loop, unrolled".
+//
+// **What this buys is the call, not the arithmetic.** `keyHashBytes` was
+// `str_hash(s, len)`, and one runtime call in it made `mapHashOf` too large for
+// `mapProbe` to inline, so every lookup of a `Map<String, V>` paid one -- 210 us
+// against the FNV byte loop's 176 on 20,800 get-and-set pairs over ten 3-5 byte
+// words, even though FNV displaces five of those ten words and this displaces
+// one. Marking `str_hash` noinline only moved the call. In a C harness the mix
+// here is 0.50 ns a key against `str_hash`'s 1.15 on the same words.
+//
+// A pair whose INLINE bit is clear keeps its bytes behind field 0 and reaches
+// `str_hash`. Field 0 is read directly rather than through `coerce_for`: that
+// branch has already established the tag, so there is no inline pair to
+// materialise a scratch copy for, and a view must be hashed where it lies
+// anyway.
+int ir_str_hash(const char *value) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef i128 = LLVMInt128TypeInContext(g_ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef params[2] = {ptr, i32};
+    LLVMTypeRef hash_ty = LLVMFunctionType(i32, params, 2, 0);
+
+    LLVMValueRef v = resolve_value(value, "struct:prismio.str");
+    if (!is_prismio_str(v)) {
+        // A literal pair folded to a constant, as in ir_str_eq. Only a view has
+        // no terminator and no view is a constant, so the runtime can measure it.
+        LLVMValueRef p = coerce_for(resolve_value(value, "ptr"), "ptr");
+        LLVMTypeRef len_ty = LLVMFunctionType(i32, &ptr, 1, 0);
+        LLVMValueRef len_fn = LLVMGetNamedFunction(g_module, "prismio_cstr_len");
+        if (!len_fn) len_fn = LLVMAddFunction(g_module, "prismio_cstr_len", len_ty);
+        LLVMValueRef measured = LLVMBuildCall2(g_builder, len_ty, len_fn, &p, 1, "");
+        LLVMValueRef fn = LLVMGetNamedFunction(g_module, "str_hash");
+        if (!fn) fn = LLVMAddFunction(g_module, "str_hash", hash_ty);
+        LLVMValueRef args[2] = {p, measured};
+        return intern_value(LLVMBuildCall2(g_builder, hash_ty, fn, args, 2, ""));
+    }
+
+    LLVMValueRef word = LLVMBuildExtractValue(g_builder, v, 1, "");
+    LLVMValueRef inlined = LLVMBuildICmp(
+        g_builder, LLVMIntNE,
+        LLVMBuildAnd(g_builder, word,
+                     LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), ""),
+        LLVMConstInt(i64, 0, 0), "");
+
+    LLVMBasicBlockRef inl = LLVMAppendBasicBlockInContext(g_ctx, g_function, "strhash.inline");
+    LLVMBasicBlockRef bytes = LLVMAppendBasicBlockInContext(g_ctx, g_function, "strhash.bytes");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(g_ctx, g_function, "strhash.done");
+    LLVMBuildCondBr(g_builder, inlined, inl, bytes);
+
+    LLVMPositionBuilderAtEnd(g_builder, inl);
+    // The two words `str_hash_words` takes. Bits 32..63 are data when INLINE is
+    // set, so clearing the tag leaves bytes 8..11 above the length and nothing
+    // else -- which is exactly the word the runtime assembles from the bytes.
+    LLVMValueRef lo = LLVMBuildPtrToInt(
+        g_builder, LLVMBuildExtractValue(g_builder, v, 0, ""), i64, "");
+    LLVMValueRef hi = LLVMBuildAnd(
+        g_builder, word, LLVMConstInt(i64, ~PRISMIO_STR_INLINE_TAG, 0), "");
+    LLVMValueRef a = LLVMBuildZExt(
+        g_builder,
+        LLVMBuildXor(g_builder, lo, LLVMConstInt(i64, 0xBF58476D1CE4E5B9ULL, 0), ""),
+        i128, "");
+    LLVMValueRef b = LLVMBuildZExt(
+        g_builder,
+        LLVMBuildXor(g_builder, hi, LLVMConstInt(i64, 0xD6E8FEB86659FD93ULL, 0), ""),
+        i128, "");
+    LLVMValueRef product = LLVMBuildMul(g_builder, a, b, "");
+    LLVMValueRef mixed = LLVMBuildXor(
+        g_builder, LLVMBuildTrunc(g_builder, product, i64, ""),
+        LLVMBuildTrunc(
+            g_builder,
+            LLVMBuildLShr(g_builder, product, LLVMConstInt(i128, 64, 0), ""), i64, ""), "");
+    mixed = LLVMBuildXor(g_builder, mixed,
+                         LLVMBuildLShr(g_builder, hi, LLVMConstInt(i64, 32, 0), ""), "");
+    LLVMValueRef by_pair = LLVMBuildTrunc(
+        g_builder,
+        LLVMBuildAnd(g_builder, mixed, LLVMConstInt(i64, 0x7FFFFFFFULL, 0), ""), i32, "");
+    LLVMBasicBlockRef from_pair = LLVMGetInsertBlock(g_builder);
+    LLVMBuildBr(g_builder, done);
+
+    LLVMPositionBuilderAtEnd(g_builder, bytes);
+    LLVMValueRef data = LLVMBuildExtractValue(g_builder, v, 0, "");
+    LLVMValueRef len = LLVMBuildTrunc(
+        g_builder,
+        LLVMBuildAnd(g_builder, word, LLVMConstInt(i64, 0x7FFFFFFFULL, 0), ""), i32, "");
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "str_hash");
+    if (!fn) fn = LLVMAddFunction(g_module, "str_hash", hash_ty);
+    LLVMValueRef call_args[2] = {data, len};
+    LLVMValueRef by_bytes = LLVMBuildCall2(g_builder, hash_ty, fn, call_args, 2, "");
+    LLVMBasicBlockRef from_bytes_only = LLVMGetInsertBlock(g_builder);
+    LLVMBuildBr(g_builder, done);
+
+    LLVMPositionBuilderAtEnd(g_builder, done);
+    LLVMValueRef phi = LLVMBuildPhi(g_builder, i32, "");
+    LLVMValueRef vals[2] = {by_pair, by_bytes};
+    LLVMBasicBlockRef blocks[2] = {from_pair, from_bytes_only};
+    LLVMAddIncoming(phi, vals, blocks, 2);
+    return intern_value(phi);
+}
+
 // A **view**: `count` bytes of `base` from `start`, owning nothing.
 //
 // No allocation, no copy, no release -- the pair points into the string it was

@@ -479,9 +479,13 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     ir_mark_guard_safe_fn("__builtin_string_eq", 1)
     ir_mark_guard_safe_fn("__builtin_string_compare", 1)
     // `hash` for String, which `mapProbe` reaches: it reads its argument's bytes
-    // and touches no list. Unmarked, that one runtime call would take the guard
-    // from every map's probe, `Map<Int, Int>` included -- the trap the note above
-    // describes for `__builtin_string_byte_at`.
+    // and touches no list. Unmarked, that one call would take the guard from
+    // every map's probe, `Map<Int, Int>` included -- the trap the note above
+    // describes for `__builtin_string_byte_at`. `str_hash` is the runtime half
+    // the builtin falls back to, reached only from emitted IR and so never named
+    // in a body this sweep walks; it is marked because the name is the key and a
+    // program may still declare it.
+    ir_mark_guard_safe_fn("__builtin_string_hash", 1)
     ir_mark_guard_safe_fn("str_hash", 1)
     // The compile target's codes: lowered to constants, so they touch nothing.
     ir_mark_guard_safe_fn("__builtin_target_os", 1)

@@ -414,7 +414,7 @@ formatter checks its own candidates against.
 | `list_str_data` `list_str_word` `list_push_str` `list_set_str` | codegen-only: `List<String>` element access, where the element is the 16-byte pair | — |
 | `str_find_byte` `str_find_byte_pair` | internal bounded search accelerators | `borrow` |
 | `str_find_needle` | internal short-needle search behind `strIndexOfFrom` | `bytes` |
-| `str_hash` | internal: `Key for String`'s hash, behind `std.key` | `bytes` |
+| `str_hash` | codegen-only: the half of `__builtin_string_hash` a pair cannot answer -- a key past twelve bytes, a view, or a short string on the heap | — |
 | `read_file` `get_directory` `join_path` | `readFile` `directoryOf` `joinPath` | `produce(free)` |
 | `current_directory` `executable_directory` | `currentDirectory` `executableDirectory` | `produce(free)` |
 | `list_modules` | `listModules` → `List<String>` | `produce(free)` |

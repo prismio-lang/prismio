@@ -1,0 +1,118 @@
+// A `Map<String, Int>` in the two shapes the hash change is aimed at:
+//
+//   count    -- 20,800 get-and-set pairs over ten 3-5 byte words, which is
+//               `word_frequency`'s count phase in miniature and the row the
+//               runtime call was costing.
+//   distinct -- 80,000 distinct `sort_strings`-shaped keys inserted and then
+//               looked up, the row the word-at-a-time hash already won.
+//
+// Keys are built before the clock starts, so what is timed is the probe.
+import std.string
+import std.map
+
+extern fn clock_gettime(clk: Int, stamp: Stamp) -> Int
+extern fn write(fd: Int, buffer: String borrow, count: I64) -> I64
+
+struct Stamp {
+    seconds: I64,
+    nanoseconds: I64
+}
+
+fn say(text: String) {
+    write(1, text, __builtin_string_len(text) as I64)
+}
+
+fn now() -> I64 {
+    let stamp = Stamp { seconds: 0, nanoseconds: 0 }
+    clock_gettime(4, stamp)
+    return stamp.seconds * 1000000000 + stamp.nanoseconds
+}
+
+fn nextRandom(seed: Int) -> Int {
+    return (seed * 25173 + 13849) % 65521
+}
+
+fn vocabulary() -> List<String> {
+    let words: List<String> = list_new()
+    list_push(words, "the")
+    list_push(words, "quick")
+    list_push(words, "brown")
+    list_push(words, "fox")
+    list_push(words, "jumps")
+    list_push(words, "over")
+    list_push(words, "lazy")
+    list_push(words, "dog")
+    list_push(words, "while")
+    list_push(words, "naps")
+    return words
+}
+
+fn distinctKeys(n: Int) -> List<String> {
+    let keys: List<String> = list_new_with_capacity(n)
+    let mut seed = 7
+    let mut i = 0
+    while (i < n) {
+        seed = nextRandom(seed)
+        list_push(keys, "key".concat((seed % 65521).toString(), "-", (i % 977).toString()))
+        i = i + 1
+    }
+    return keys
+}
+
+fn countPhase(words: List<String>, rounds: Int) -> Int {
+    let m: Map<String, Int> = mapNew<String, Int>()
+    let mut i = 0
+    while (i < rounds) {
+        let word = list_get(words, i % 10)
+        mapSet(m, word, mapGetOr(m, word, 0) + 1)
+        i = i + 1
+    }
+    return mapLen(m) + mapGetOr(m, "the", 0)
+}
+
+fn distinctPhase(keys: List<String>) -> Int {
+    let m: Map<String, Int> = mapNew<String, Int>()
+    let mut i = 0
+    while (i < list_len(keys)) {
+        mapSet(m, list_get(keys, i), i)
+        i = i + 1
+    }
+    let mut total = 0
+    i = 0
+    while (i < list_len(keys)) {
+        total = (total + mapGetOr(m, list_get(keys, i), 0)) % 1000003
+        i = i + 1
+    }
+    return mapLen(m) + total
+}
+
+fn main() -> Int {
+    let words = vocabulary()
+    let keys = distinctKeys(80000)
+
+    let mut countBest: I64 = 0
+    let mut distinctBest: I64 = 0
+    let mut checksum = 0
+    let mut round = 0
+    while (round < 9) {
+        let a = now()
+        checksum = countPhase(words, 20800)
+        let b = now()
+        if (round == 0 or (b - a) < countBest) { countBest = b - a }
+
+        let c = now()
+        checksum = checksum + distinctPhase(keys)
+        let d = now()
+        if (round == 0 or (d - c) < distinctBest) { distinctBest = d - c }
+        round = round + 1
+    }
+
+    say("count ")
+    say((countBest / 1000).toString())
+    say(" distinct ")
+    say((distinctBest / 1000).toString())
+    say(" checksum ")
+    say(checksum.toString())
+    say("\n")
+    return 0
+}

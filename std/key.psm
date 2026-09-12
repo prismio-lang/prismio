@@ -104,19 +104,20 @@ fn keyMixWide(value: U64) -> Int {
     return (h & 2147483647) as Int
 }
 
-// A word at a time, in the runtime. See `str_hash` in runtime/lang_runtime.c.
-// `bytes` because the hash reads exactly `length` bytes and keeps nothing, so a
-// view is hashed where it lies without a terminator.
-extern fn str_hash(s: String bytes, length: Int) -> Int
-
-// Against the FNV-1a byte loop this replaced, a Map<String, Int> of 80,000
-// twelve-byte keys is 26% faster and a ten-word table of 3-5 byte keys 19%
-// slower. The second is the call, not the hash: the byte loop inlined into
-// `mapProbe` whole, and this makes `mapHashOf` too large to, so each lookup
-// calls it. KNOWN_ISSUES (Codegen) has the fix -- hash an inline String's two
-// words where they sit, in registers.
+// Lowered, not called. A key of twelve bytes or fewer is mixed from the two
+// words its pair already holds and nothing is called at all; anything longer,
+// and the two storage classes with no pair to read -- a view, and a short string
+// on the heap -- reach `str_hash` in runtime/lang_runtime.c, which answers the
+// short case identically. See `ir_str_hash` in runtime/llvm-api-backend.c.
+//
+// **The call was the whole cost.** Against the FNV-1a byte loop this replaced, a
+// `Map<String, Int>` of 80,000 twelve-byte keys was 26% faster and a ten-word
+// table of 3-5 byte keys 19% slower, even though FNV displaced five of the ten
+// words to `str_hash`'s one: the byte loop inlined into `mapProbe` whole and one
+// runtime call made `mapHashOf` too large to. Lowering it removes the call in
+// the shape that pays for it.
 fn keyHashBytes(s: String) -> Int {
-    return str_hash(s, __builtin_string_len(s))
+    return __builtin_string_hash(s)
 }
 
 impl Key for Int {

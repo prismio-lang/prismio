@@ -574,13 +574,52 @@ int prismio_cstr_len(const char* s) {
     return (int)n;
 }
 
+// The twelve-byte case of `Key for String`'s hash, as a function of the two
+// words an inline pair already holds: `lo` is field 0 -- bytes 0..7, zero past
+// the length -- and `hi` is the length word with the INLINE tag cleared, so
+// bytes 8..11 sit in its top half and the length in its bottom.
+//
+// **This is the half `__builtin_string_hash` emits inline, and the two must
+// answer alike.** A five-byte view and a five-byte inline string are the same
+// key: one is hashed in registers by `ir_str_hash` (llvm-api-backend.c) and the
+// other arrives here, and a map that placed one and looks up the other finds
+// nothing unless both compute the same number. So this is not "the short case of
+// the loop below" -- it is the same arithmetic on the same two words, and
+// `str_hash` builds those words by zero-padding rather than by an overlapping
+// load, because an inline pair is zero past its length (STRINGS.md invariant 1)
+// and only zeros reproduce it.
+//
+// One 64x64->128 multiply with its halves folded together, which is wyhash's
+// `mum`, and then bytes 8..11 folded down. **The fold is load-bearing.** A mum
+// whose operand is zero answers zero whatever the other holds, and `lo` can be
+// zeroed -- it is the key's own first eight bytes against a constant. Over 4,096
+// keys sharing K1's eight bytes and differing past them, the fold is the
+// difference between 4,096 distinct answers and one; `& 0x7FFFFFFF` keeps the low
+// half, which is not where those four bytes are. The other operand cannot be
+// zeroed at all: `hi`'s low half is a length of at most twelve and K2's is
+// 0x6659FD93.
+//
+// Every target this compiler emits for is 64-bit (src/common/target.psm), so the
+// 128-bit product is the machine's own widening multiply and nothing more.
+static inline int str_hash_words(uint64_t lo, uint64_t hi) {
+    unsigned __int128 product = (unsigned __int128)(lo ^ 0xBF58476D1CE4E5B9ULL)
+                              * (uint64_t)(hi ^ 0xD6E8FEB86659FD93ULL);
+    uint64_t h = (uint64_t)product ^ (uint64_t)(product >> 64) ^ (hi >> 32);
+    return (int)(h & 0x7FFFFFFF);
+}
+
 // `Key for String`'s hash (std/key.psm), a word at a time. It replaced FNV-1a in
 // a Prismio byte loop, which spent a serial multiply on every byte of every key
 // a map looked up.
 //
-// Eight bytes per multiply, and a tail of one to seven read with two
-// overlapping loads rather than a loop: four to seven bytes are the first four
-// and the last four, one to three the first, middle and last. The length is
+// Twelve bytes or fewer go to `str_hash_words`, which is what the compiler emits
+// for an inline pair. Reaching here at that length means a storage class the
+// backend could not read in registers -- a view, or a short string on the heap --
+// so the twelve bytes are assembled zero-padded and mixed the identical way.
+//
+// Above twelve: eight bytes per multiply, and a tail of one to seven read with
+// two overlapping loads rather than a loop: four to seven bytes are the first
+// four and the last four, one to three the first, middle and last. The length is
 // folded in first, so "ab" and "ab\0" differ.
 //
 // The finalizer is one multiply between two folds of the high half into the
@@ -596,6 +635,19 @@ int prismio_cstr_len(const char* s) {
 int str_hash(const char* s, int length) {
     if (!s || length < 0) length = 0;
     const unsigned char* p = (const unsigned char*)s;
+    // Twelve is the inline capacity (PRISMIO_STR_INLINE_MAX in
+    // llvm-api-backend.c). The two spellings disagreeing is a wrong answer rather
+    // than a crash, which is what test_147's twelve- and thirteen-byte keys in
+    // both storage classes are there to catch.
+    if (length <= 12) {
+        unsigned char bytes[12] = {0};
+        memcpy(bytes, p, (size_t)length);
+        uint64_t lo;
+        uint32_t rest;
+        memcpy(&lo, bytes, 8);
+        memcpy(&rest, bytes + 8, 4);
+        return str_hash_words(lo, ((uint64_t)rest << 32) | (uint32_t)length);
+    }
     uint64_t h = 0x9E3779B97F4A7C15ULL ^ (uint64_t)(uint32_t)length;
     int i = 0;
     for (; i + 8 <= length; i += 8) {
