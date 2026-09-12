@@ -476,6 +476,35 @@ at all.
 
 ## Toolchain layout
 
+**A struct crossing a `.plib` reads its fields one slot late, and it is
+unsoundness.** A program built against a packaged `stdlib/process.plib` reads
+every field of `std.process`'s `Process`, `Child` and `SpawnOut` shifted by one:
+a mode assigned to `stdout` arrives in the runtime as `stdin`'s, and a `Child`'s
+`stdout` descriptor comes back holding the `stdin` one. The same program built
+inside the checkout, where `std.process` resolves from source, is correct. No
+diagnostic fires either way -- it is a wrong answer, not a failure.
+
+`SpawnOut` is five `I64` fields with no padding to disagree about and shifts
+anyway, so this is a field **index** rather than a layout offset.
+
+**Five shapes were tried against a probe struct added to `std/platform.psm`,
+packaged, and read from outside the tree. None reproduces it**: three plain
+`Int` fields; a `String` before three enum fields; the same plus a
+`List<String>`, which is `Process`'s exact shape; a constructor carrying the
+struct's own name; and the fields named `stdin`/`stdout`/`stderr` in case of a
+collision. Each answered correctly from `main` and from a method.
+
+So the trigger is something else about `std.process`. The one structural feature
+none of the probes shared is an `extern fn` in the same module taking a
+**struct parameter** (`proc_spawn_run(… out: SpawnOut)`). The reproducer is
+`aif/evidence/subprocess-2026-09-12/plib-field-shift.psm`, built from a directory
+with no `std/` above it.
+
+This is what `run_module_artifact_test` exists to catch and does not: it checks
+that `sort` and `std.platform` behave from an installed stdlib, and both are
+functions. **A struct crossing a PLIB has never been covered**, which is why a
+defect this size was available to find.
+
 **A compiler is a layout, not a file.** Since the runtime shipped as installed
 bitcode (`lib/runtime/*.bc`) with no toolchain-source fallback, a compiler
 resolves it beside the executable or one directory up, and a miss is a hard

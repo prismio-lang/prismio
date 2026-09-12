@@ -1,0 +1,23 @@
+import std.io
+import std.string
+import std.list
+import std.process
+
+fn main() -> Int {
+    let p = Process()
+    p.program = "/bin/echo"
+    p.arguments = ["marker"]
+    p.stdout = StreamMode.Discard
+    println("discard run=".concat(p.run().toString()))
+
+    let q = Process()
+    q.program = "/bin/echo"
+    q.arguments = ["piped"]
+    q.stdout = StreamMode.Pipe
+    let child = q.spawn()
+    println("fd=".concat(child.stdout.descriptor.toString(), " handle=", child.handle.toString()))
+    let out = child.stdout.readAll()
+    println("wait=".concat(child.wait().toString()))
+    println("out=[".concat(out, "]"))
+    return 0
+}

@@ -363,5 +363,9 @@ internal fn aifFfiProduces(name: String) -> Bool {
     if (name.equals("read_file")) { return true }
     if (name.equals("get_directory")) { return true }
     if (name.equals("join_path")) { return true }
+    // Everything a child wrote, allocated here rather than by the child. The
+    // empty and the error paths allocate too -- a literal would make the whole
+    // function's result unowned, which is str_substring's rule.
+    if (name.equals("proc_read_all")) { return true }
     return false
 }

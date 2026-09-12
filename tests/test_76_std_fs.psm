@@ -94,10 +94,10 @@ fn main() -> Int {
         return fail("an index past the end should answer the empty string")
     }
 
-    let quoted = quoteArg("a b")
-    if (strContains(quoted, "a b") == false) {
-        return fail("quoteArg should preserve the argument it quotes")
-    }
+    // The subprocess half of this module has no assertion here any more.
+    // `runCommand` and `quoteArg` are gone -- an argument vector needs no shell
+    // quoting -- and what replaced them is covered by `test_150_subprocess`,
+    // which needs a child process and so does not belong in a filesystem test.
 
     println("std.fs and std.process tests passed")
     return 0

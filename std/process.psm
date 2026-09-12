@@ -18,12 +18,34 @@
 // why `process.args[i]` returns a **copy**.
 
 import std.string
+import std.list
 
 extern fn cli_arg_count() -> Int
 extern fn cli_arg(index: Int) -> String alias
 
-extern fn execute_command(command: String borrow) -> Int
-extern fn command_quote_arg(arg: String borrow) -> String produce(free)
+// The subprocess capability. `borrow` on every String: each is read, copied by
+// the callee where it has to outlive the call, and never retained.
+//
+// **The argument vector is pushed one element at a time**, because a `List<T>`
+// does not cross the FFI boundary -- nothing in the tree passes or returns one.
+// This is the shape `ir_call_begin` / `ir_call_arg` / the call has in
+// src/ir/bridge.psm, and it carries the same constraint: one spawn may be under
+// construction at a time in a process. `Process.spawn` below is the only caller
+// and does all three in one expression, so the window is a few instructions
+// wide -- but two threads spawning concurrently would interleave into one
+// vector, and that is a real limit rather than an oversight.
+extern fn proc_spawn_begin(program: String borrow)
+extern fn proc_spawn_arg(argument: String borrow)
+extern fn proc_spawn_run(stdinMode: Int, stdoutMode: Int, stderrMode: Int,
+                         out: SpawnOut) -> Int
+extern fn proc_wait(handle: I64) -> Int
+extern fn proc_kill(handle: I64) -> Int
+extern fn proc_exec() -> Int
+extern fn proc_read_all(descriptor: Int) -> String produce(free)
+// `bytes`, so a view crosses without a NUL-terminated copy: the count is passed
+// beside it and the callee never looks for a terminator.
+extern fn proc_write(descriptor: Int, text: String bytes, length: Int) -> Int
+extern fn proc_close(descriptor: Int) -> Int
 
 private fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
     let mut i = 0
@@ -91,14 +113,197 @@ impl Args {
     }
 }
 
-// True when the command ran and exited successfully. Note the inversion against
-// the C, which returns 0 for success.
-fn runCommand(command: String) -> Bool {
-    return execute_command(command) == 0
+// Where a child's three streams come from and go to.
+//
+// The codes are a wire protocol between this file and `program_support.c`, which
+// compares against its own copy and never re-derives them. Adding a variant
+// here and not there still builds, and then redirects to the wrong place.
+enum StreamMode {
+    Inherit
+    Pipe
+    Discard
 }
 
-// One argument, quoted for the platform's shell. Use this on anything built
-// from a path or from user input before it goes into `runCommand`.
-fn quoteArg(argument: String) -> String {
-    return command_quote_arg(argument)
+private fn streamModeCode(mode: StreamMode) -> Int {
+    if (mode == StreamMode.Pipe) { return 1 }
+    if (mode == StreamMode.Discard) { return 2 }
+    return 0
+}
+
+// What `proc_spawn_run` writes back. Every field is 64-bit so that no padding
+// question arises between this declaration and the C one, and because the handle
+// needs the width: it is a pid on POSIX and a `HANDLE` on Windows, and an `Int`
+// is 32 bits.
+struct SpawnOut {
+    handle: I64,
+    stdinFd: I64,
+    stdoutFd: I64,
+    stderrFd: I64,
+    error: I64
+}
+
+// One end of a pipe to a child, or nothing.
+//
+// A stream that was inherited or discarded has no descriptor and answers -1;
+// reading it gives "" and writing it gives -1, rather than failing. That is the
+// shape a caller wants: `child.stdout.readAll()` on an inherited stdout is
+// empty, not an error to handle.
+struct Stream {
+    descriptor: Int
+}
+
+impl Stream {
+    // Everything the child has written, until it closes its end.
+    //
+    // **Blocks until EOF**, so a child that never exits never returns from here.
+    // Read after `wait` when the output is small enough to fit the pipe buffer,
+    // and before it when it is not -- a child filling the pipe blocks in `write`
+    // and never reaches its own exit, which is a deadlock this cannot detect.
+    fn readAll(self) -> String {
+        return proc_read_all(self.descriptor)
+    }
+
+    // Bytes written, or -1. Partial writes are retried, so a short count means
+    // the child closed its end.
+    fn write(self, text: String) -> Int {
+        return proc_write(self.descriptor, text, strLength(text))
+    }
+
+    // Closing the child's stdin is how it is told there is no more input; a
+    // child reading until EOF hangs without it.
+    fn close(self) -> Int {
+        return proc_close(self.descriptor)
+    }
+
+    fn isOpen(self) -> Bool {
+        return self.descriptor >= 0
+    }
+}
+
+// A running child.
+//
+// `wait` reaps it. **Nothing here reaps it otherwise** -- there is no destructor
+// to hang that on, and a `Child` dropped unwaited leaves a zombie on POSIX and an
+// open handle on Windows. A program that spawns in a loop must wait in that loop.
+struct Child {
+    handle: I64,
+    stdin: Stream,
+    stdout: Stream,
+    stderr: Stream
+}
+
+impl Child {
+    // The child's exit status: what it returned from `main`, or 128 + the signal
+    // that killed it, or -1 if it could not be waited for.
+    fn wait(self) -> Int {
+        return proc_wait(self.handle)
+    }
+
+    // Terminate it. The child's status afterwards is the platform's answer for a
+    // killed process, not a code it chose -- 128 + SIGKILL on POSIX, 1 on
+    // Windows -- so `kill` then `wait` is how the descriptors are reclaimed.
+    fn kill(self) -> Int {
+        return proc_kill(self.handle)
+    }
+}
+
+// A command to run, built up and then started.
+//
+//     let p = Process()
+//     p.program = "git"
+//     p.arguments = ["status", "--short"]
+//     p.stdout = StreamMode.Pipe
+//
+//     let child = p.spawn()
+//     let output = child.stdout.readAll()
+//     let status = child.wait()
+//
+// **The program is found on PATH and no shell is involved.** That is the whole
+// point of the vector: `runCommand`, which this replaced, handed a string to
+// `system`, so every argument built from a path or from user input had to be
+// quoted by the caller -- which is what `quoteArg` was for, and why it is gone
+// too. Here an argument containing a space, a quote or a newline is one
+// argument.
+struct Process {
+    program: String,
+    arguments: List<String>,
+    stdin: StreamMode,
+    stdout: StreamMode,
+    stderr: StreamMode
+}
+
+// A `Process` with nothing set and all three streams inherited.
+//
+// A function rather than an associated one -- there are no associated functions
+// -- and it may carry the struct's own name, so `Process()` is the constructor
+// and `Process { ... }` is still the literal.
+fn Process() -> Process {
+    return Process {
+        program: "",
+        arguments: [],
+        stdin: StreamMode.Inherit,
+        stdout: StreamMode.Inherit,
+        stderr: StreamMode.Inherit
+    }
+}
+
+private fn processPushArguments(arguments: List<String>) {
+    let mut i = 0
+    while (i < list_len(arguments)) {
+        proc_spawn_arg(list_get(arguments, i))
+        i = i + 1
+    }
+}
+
+impl Process {
+    // Start it and return immediately. A `Child` whose `handle` is -1 is a spawn
+    // that failed; `error` is gone by then, so check the handle.
+    fn spawn(self) -> Child {
+        // The three modes are read **before** the argument list, because
+        // `self.arguments` is a `List<String>` and naming an affine field is a
+        // move: read after it, `self.stdout` came back as `Inherit` whatever had
+        // been assigned, and the child's output went to the terminal.
+        let inMode = streamModeCode(self.stdin)
+        let outMode = streamModeCode(self.stdout)
+        let errMode = streamModeCode(self.stderr)
+        proc_spawn_begin(self.program)
+        processPushArguments(self.arguments)
+        // Cast, because `0 - 1` is an Int expression rather than a bare literal
+        // and only a literal takes its type from the field it initialises.
+        let absent = (0 - 1) as I64
+        let out = SpawnOut { handle: absent, stdinFd: absent, stdoutFd: absent,
+                             stderrFd: absent, error: 0 }
+        proc_spawn_run(inMode, outMode, errMode, out)
+        return Child {
+            handle: out.handle,
+            stdin: Stream { descriptor: out.stdinFd as Int },
+            stdout: Stream { descriptor: out.stdoutFd as Int },
+            stderr: Stream { descriptor: out.stderrFd as Int }
+        }
+    }
+
+    // Start it and wait: the exit status, or -1 if it could not be started.
+    //
+    // Deliberately does not read the pipes. A `run` that captured output would
+    // have to choose a size, and the choice that is right for a checksum is
+    // wrong for a build log -- `spawn` is one line longer and lets the caller
+    // decide.
+    fn run(self) -> Int {
+        let child = self.spawn()
+        if (child.handle < 0) { return 0 - 1 }
+        return child.wait()
+    }
+
+    // Replace this process. Returns only if the program could not be executed,
+    // and then -1.
+    //
+    // **Not the same thing on Windows.** There is no `execvp` there: `_execvp`
+    // starts a new process and exits this one, so the pid changes and a parent
+    // waiting on the original sees it finish. Where that matters, spawn and wait
+    // instead.
+    fn exec(self) -> Int {
+        proc_spawn_begin(self.program)
+        processPushArguments(self.arguments)
+        return proc_exec()
+    }
 }

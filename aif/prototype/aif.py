@@ -270,6 +270,9 @@ FFI_RETURNS_PRODUCE = {
     '__builtin_string_concat_inline6', '__builtin_string_from_int',
     'int_to_str',
     'read_file', 'get_directory', 'join_path',
+    # A child's output, allocated on this side. Its empty and error paths
+    # allocate too, for str_substring's reason.
+    'proc_read_all',
     # What comes out of a channel was allocated by the sending task and is this
     # frame's from here on -- `read_file`'s shape with the allocation on another
     # thread instead of in libc. See FFI_RETURNS_EXISTING for the half that is

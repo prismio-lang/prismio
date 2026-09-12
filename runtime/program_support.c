@@ -393,6 +393,492 @@ int execute_command(const char* command) {
 #endif
 }
 
+// Subprocesses: an argument vector rather than a shell line.
+//
+// `execute_command` above hands a string to `system`, which is why `quoteArg`
+// has to exist and why nothing can read a child's output. What follows is the
+// capability `std.process` wraps as `Process`: an argv the shell never sees,
+// each of the three streams inherited, piped or discarded, and a handle the
+// caller can wait on or kill.
+//
+// **The vector is accumulated across calls, because a `List<T>` does not cross
+// the FFI boundary.** Nothing in the tree passes or returns one; `list_modules`
+// joins with newlines and `std.fs` splits, which is wrong for argv because an
+// argument may contain any byte. So this is the shape `ir_call_begin` /
+// `ir_call_arg` / the call already has in `src/ir/bridge.psm`, for the same
+// reason and with the same limitation: **one spawn may be under construction at
+// a time in a process.** Two threads building one concurrently interleave into
+// one vector. Prismio's concurrency is isolation-based and this is documented in
+// `std/process.psm`, but it is a real constraint and not an oversight.
+//
+// `proc_spawn_arg` copies. The boundary already made a NUL-terminated copy for a
+// view (`ir_call_arg_cstr`) and frees it when the call returns, so a pointer
+// kept here would dangle by the time the spawn happens.
+
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+extern char** environ;
+#endif
+
+// One spelling in three places -- here, `std/process.psm`, and the fixture.
+// C_CODE_STYLE's rule about a constant that crosses a seam: the int is never
+// re-derived, so a mode added to one list and not the others still builds.
+#define PRISMIO_STDIO_INHERIT 0
+#define PRISMIO_STDIO_PIPE    1
+#define PRISMIO_STDIO_DISCARD 2
+
+// What a spawn answers, written through a pointer the caller owns -- the shape
+// `clock_gettime(clk, stamp)` uses.
+//
+// **Every field is 64-bit and that is deliberate.** It removes any question of
+// padding between this declaration and `std/process.psm`'s, and the handle needs
+// the width regardless: a Prismio `Int` is `i32` and a Windows `HANDLE` is a
+// pointer.
+typedef struct {
+    int64_t handle;
+    int64_t stdin_fd;
+    int64_t stdout_fd;
+    int64_t stderr_fd;
+    int64_t error;
+} PrismioSpawnOut;
+
+static char*  g_spawn_program = NULL;
+static char** g_spawn_argv = NULL;
+static int    g_spawn_argc = 0;
+static int    g_spawn_cap = 0;
+
+static void spawn_builder_reset(void) {
+    for (int i = 0; i < g_spawn_argc; i++) free(g_spawn_argv[i]);
+    free(g_spawn_argv);
+    free(g_spawn_program);
+    g_spawn_program = NULL;
+    g_spawn_argv = NULL;
+    g_spawn_argc = 0;
+    g_spawn_cap = 0;
+}
+
+// Plain `malloc` throughout the builder, not `rt_base_alloc`: none of it is
+// returned to Prismio and this runtime frees all of it itself, which is the
+// converse half of the allocator invariant.
+static char* spawn_dup(const char* text) {
+    size_t n = strlen(text) + 1;
+    char* copy = (char*)malloc(n);
+    if (copy) memcpy(copy, text, n);
+    return copy;
+}
+
+void proc_spawn_begin(const char* program) {
+    spawn_builder_reset();
+    g_spawn_program = spawn_dup(program ? program : "");
+}
+
+void proc_spawn_arg(const char* argument) {
+    if (!argument) return;
+    if (g_spawn_argc == g_spawn_cap) {
+        int grown = g_spawn_cap ? g_spawn_cap * 2 : 8;
+        char** bigger = (char**)realloc(g_spawn_argv, (size_t)grown * sizeof(char*));
+        if (!bigger) return;
+        g_spawn_argv = bigger;
+        g_spawn_cap = grown;
+    }
+    char* copy = spawn_dup(argument);
+    if (!copy) return;
+    g_spawn_argv[g_spawn_argc++] = copy;
+}
+
+// argv as `execvp` wants it: the program at 0, the accumulated arguments after
+// it, NULL-terminated. Freed by the caller; the elements are the builder's and
+// are not.
+static char** spawn_vector(void) {
+    char** vector = (char**)malloc((size_t)(g_spawn_argc + 2) * sizeof(char*));
+    if (!vector) return NULL;
+    vector[0] = g_spawn_program ? g_spawn_program : (char*)"";
+    for (int i = 0; i < g_spawn_argc; i++) vector[i + 1] = g_spawn_argv[i];
+    vector[g_spawn_argc + 1] = NULL;
+    return vector;
+}
+
+#ifndef _WIN32
+
+// One stream's plumbing. `child` is the descriptor the child should see as
+// `target`; `parent` is the end this process keeps, or -1 when there is none.
+//
+// Returns 0, or the errno that stopped it.
+static int spawn_stream(int mode, int target, int writable,
+                        posix_spawn_file_actions_t* actions,
+                        int* child_end, int* parent_end) {
+    *child_end = -1;
+    *parent_end = -1;
+    if (mode == PRISMIO_STDIO_INHERIT) return 0;
+
+    if (mode == PRISMIO_STDIO_DISCARD) {
+        int null_fd = open("/dev/null", writable ? O_WRONLY : O_RDONLY);
+        if (null_fd < 0) return errno;
+        *child_end = null_fd;
+        return posix_spawn_file_actions_adddup2(actions, null_fd, target);
+    }
+
+    int ends[2];
+    if (pipe(ends) != 0) return errno;
+    // A pipe the child writes hands the child `ends[1]` and keeps `ends[0]`;
+    // one the child reads is the other way round.
+    *child_end = writable ? ends[1] : ends[0];
+    *parent_end = writable ? ends[0] : ends[1];
+    return posix_spawn_file_actions_adddup2(actions, *child_end, target);
+}
+
+int proc_spawn_run(int stdin_mode, int stdout_mode, int stderr_mode,
+                   PrismioSpawnOut* out) {
+    if (!out) return -1;
+    out->handle = -1;
+    out->stdin_fd = -1;
+    out->stdout_fd = -1;
+    out->stderr_fd = -1;
+    out->error = 0;
+
+    posix_spawn_file_actions_t actions;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        out->error = errno;
+        spawn_builder_reset();
+        return -1;
+    }
+
+    int child_in = -1, child_out = -1, child_err = -1;
+    int parent_in = -1, parent_out = -1, parent_err = -1;
+    int failure = spawn_stream(stdin_mode, 0, 0, &actions, &child_in, &parent_in);
+    if (!failure) failure = spawn_stream(stdout_mode, 1, 1, &actions, &child_out, &parent_out);
+    if (!failure) failure = spawn_stream(stderr_mode, 2, 1, &actions, &child_err, &parent_err);
+
+    pid_t child = -1;
+    if (!failure) {
+        char** vector = spawn_vector();
+        if (!vector) {
+            failure = ENOMEM;
+        } else {
+            failure = posix_spawnp(&child, vector[0], &actions, NULL, vector, environ);
+            free(vector);
+        }
+    }
+
+    posix_spawn_file_actions_destroy(&actions);
+
+    // **The child's ends close here, in every outcome.** A parent holding the
+    // write end of the child's stdout pipe never sees EOF on it, so a `readAll`
+    // that looks correct hangs forever.
+    if (child_in >= 0) close(child_in);
+    if (child_out >= 0) close(child_out);
+    if (child_err >= 0) close(child_err);
+
+    if (failure) {
+        if (parent_in >= 0) close(parent_in);
+        if (parent_out >= 0) close(parent_out);
+        if (parent_err >= 0) close(parent_err);
+        out->error = failure;
+        spawn_builder_reset();
+        return -1;
+    }
+
+    out->handle = (int64_t)child;
+    out->stdin_fd = parent_in;
+    out->stdout_fd = parent_out;
+    out->stderr_fd = parent_err;
+    spawn_builder_reset();
+    return 0;
+}
+
+int proc_wait(int64_t handle) {
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid((pid_t)handle, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
+}
+
+int proc_kill(int64_t handle) {
+    return kill((pid_t)handle, SIGKILL) == 0 ? 0 : -1;
+}
+
+int proc_exec(void) {
+    char** vector = spawn_vector();
+    if (!vector) return -1;
+    execvp(vector[0], vector);
+    // Only reached when the exec failed; the vector's elements belong to the
+    // builder, so only the vector itself is this function's to free.
+    free(vector);
+    return -1;
+}
+
+int proc_write(int fd, const char* bytes, int length) {
+    if (fd < 0 || !bytes || length < 0) return -1;
+    int written = 0;
+    while (written < length) {
+        ssize_t n = write(fd, bytes + written, (size_t)(length - written));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (n == 0) break;
+        written += (int)n;
+    }
+    return written;
+}
+
+int proc_close(int fd) {
+    if (fd < 0) return -1;
+    return close(fd) == 0 ? 0 : -1;
+}
+
+#else
+
+// The Win32 half. Same five entry points, same meanings, three differences that
+// reach the caller and are documented in `std/process.psm` rather than hidden:
+// there is no real `exec`, a killed child's status is the code
+// `TerminateProcess` was given, and the handle is a `HANDLE` rather than a pid.
+//
+// **Descriptors, not handles, cross into Prismio.** `_open_osfhandle` wraps the
+// parent's pipe end in a CRT `int`, so `Stream` is one type on both platforms and
+// `proc_read_all` is one function.
+
+// One argument, quoted the way `CommandLineToArgvW` unquotes.
+//
+// Not `command_quote_arg`: that one escapes a quote and nothing else, which is
+// right for `cmd /C` and wrong here. A backslash is literal *except* in the run
+// immediately before a quote, where each one must be doubled -- so `a\` passed
+// through the simple quoter becomes `"a\"` and swallows the closing quote.
+static void spawn_quote_into(char* out, int* at, const char* argument) {
+    out[(*at)++] = '"';
+    for (int i = 0; argument[i] != '\0'; ) {
+        int slashes = 0;
+        while (argument[i] == '\\') { slashes++; i++; }
+        if (argument[i] == '\0') {
+            for (int s = 0; s < slashes * 2; s++) out[(*at)++] = '\\';
+            break;
+        }
+        if (argument[i] == '"') {
+            for (int s = 0; s < slashes * 2 + 1; s++) out[(*at)++] = '\\';
+        } else {
+            for (int s = 0; s < slashes; s++) out[(*at)++] = '\\';
+        }
+        out[(*at)++] = argument[i++];
+    }
+    out[(*at)++] = '"';
+}
+
+// The whole command line. Every argument can at worst double and gain two
+// quotes, so `2n + 3` per element bounds it.
+static char* spawn_command_line(void) {
+    size_t bound = 1;
+    const char* program = g_spawn_program ? g_spawn_program : "";
+    bound += strlen(program) * 2 + 3;
+    for (int i = 0; i < g_spawn_argc; i++) bound += strlen(g_spawn_argv[i]) * 2 + 4;
+
+    char* line = (char*)malloc(bound);
+    if (!line) return NULL;
+    int at = 0;
+    spawn_quote_into(line, &at, program);
+    for (int i = 0; i < g_spawn_argc; i++) {
+        line[at++] = ' ';
+        spawn_quote_into(line, &at, g_spawn_argv[i]);
+    }
+    line[at] = '\0';
+    return line;
+}
+
+static int spawn_stream_win(int mode, DWORD standard, int writable,
+                            HANDLE* child_end, HANDLE* parent_end) {
+    *child_end = INVALID_HANDLE_VALUE;
+    *parent_end = INVALID_HANDLE_VALUE;
+
+    SECURITY_ATTRIBUTES inheritable;
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.lpSecurityDescriptor = NULL;
+    inheritable.bInheritHandle = TRUE;
+
+    if (mode == PRISMIO_STDIO_INHERIT) {
+        *child_end = GetStdHandle(standard);
+        return 0;
+    }
+    if (mode == PRISMIO_STDIO_DISCARD) {
+        HANDLE null_handle = CreateFileA("NUL", writable ? GENERIC_WRITE : GENERIC_READ,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE, &inheritable,
+                                         OPEN_EXISTING, 0, NULL);
+        if (null_handle == INVALID_HANDLE_VALUE) return (int)GetLastError();
+        *child_end = null_handle;
+        return 0;
+    }
+
+    HANDLE read_end, write_end;
+    if (!CreatePipe(&read_end, &write_end, &inheritable, 0)) return (int)GetLastError();
+    // Only the child's end may be inherited. Without this the parent's end is
+    // duplicated into the child too, and the read never sees EOF.
+    HANDLE keep = writable ? read_end : write_end;
+    HANDLE give = writable ? write_end : read_end;
+    if (!SetHandleInformation(keep, HANDLE_FLAG_INHERIT, 0)) {
+        CloseHandle(read_end);
+        CloseHandle(write_end);
+        return (int)GetLastError();
+    }
+    *child_end = give;
+    *parent_end = keep;
+    return 0;
+}
+
+static int64_t spawn_descriptor(HANDLE handle, int writable) {
+    if (handle == INVALID_HANDLE_VALUE) return -1;
+    int fd = _open_osfhandle((intptr_t)handle, writable ? 0 : _O_RDONLY);
+    if (fd < 0) { CloseHandle(handle); return -1; }
+    return (int64_t)fd;
+}
+
+int proc_spawn_run(int stdin_mode, int stdout_mode, int stderr_mode,
+                   PrismioSpawnOut* out) {
+    if (!out) return -1;
+    out->handle = -1;
+    out->stdin_fd = -1;
+    out->stdout_fd = -1;
+    out->stderr_fd = -1;
+    out->error = 0;
+
+    HANDLE child_in, child_out, child_err;
+    HANDLE parent_in, parent_out, parent_err;
+    int failure = spawn_stream_win(stdin_mode, STD_INPUT_HANDLE, 0, &child_in, &parent_in);
+    if (!failure) failure = spawn_stream_win(stdout_mode, STD_OUTPUT_HANDLE, 1, &child_out, &parent_out);
+    if (!failure) failure = spawn_stream_win(stderr_mode, STD_ERROR_HANDLE, 1, &child_err, &parent_err);
+
+    char* line = NULL;
+    PROCESS_INFORMATION info;
+    memset(&info, 0, sizeof(info));
+    if (!failure) {
+        line = spawn_command_line();
+        if (!line) failure = (int)ERROR_NOT_ENOUGH_MEMORY;
+    }
+    if (!failure) {
+        STARTUPINFOA start;
+        memset(&start, 0, sizeof(start));
+        start.cb = sizeof(start);
+        start.dwFlags = STARTF_USESTDHANDLES;
+        start.hStdInput = child_in;
+        start.hStdOutput = child_out;
+        start.hStdError = child_err;
+        if (!CreateProcessA(NULL, line, NULL, NULL, TRUE, 0, NULL, NULL, &start, &info)) {
+            failure = (int)GetLastError();
+        }
+    }
+    free(line);
+
+    // The child's ends close here in every outcome, for the reason the POSIX
+    // half gives: a parent still holding the write end never sees EOF.
+    if (stdin_mode != PRISMIO_STDIO_INHERIT && child_in != INVALID_HANDLE_VALUE) CloseHandle(child_in);
+    if (stdout_mode != PRISMIO_STDIO_INHERIT && child_out != INVALID_HANDLE_VALUE) CloseHandle(child_out);
+    if (stderr_mode != PRISMIO_STDIO_INHERIT && child_err != INVALID_HANDLE_VALUE) CloseHandle(child_err);
+
+    if (failure) {
+        if (parent_in != INVALID_HANDLE_VALUE) CloseHandle(parent_in);
+        if (parent_out != INVALID_HANDLE_VALUE) CloseHandle(parent_out);
+        if (parent_err != INVALID_HANDLE_VALUE) CloseHandle(parent_err);
+        out->error = failure;
+        spawn_builder_reset();
+        return -1;
+    }
+
+    CloseHandle(info.hThread);
+    out->handle = (int64_t)(intptr_t)info.hProcess;
+    out->stdin_fd = spawn_descriptor(parent_in, 1);
+    out->stdout_fd = spawn_descriptor(parent_out, 0);
+    out->stderr_fd = spawn_descriptor(parent_err, 0);
+    spawn_builder_reset();
+    return 0;
+}
+
+int proc_wait(int64_t handle) {
+    HANDLE process = (HANDLE)(intptr_t)handle;
+    if (WaitForSingleObject(process, INFINITE) != WAIT_OBJECT_0) return -1;
+    DWORD status = 0;
+    if (!GetExitCodeProcess(process, &status)) { CloseHandle(process); return -1; }
+    CloseHandle(process);
+    return (int)status;
+}
+
+int proc_kill(int64_t handle) {
+    return TerminateProcess((HANDLE)(intptr_t)handle, 1) ? 0 : -1;
+}
+
+// **Windows has no `execvp`.** `_execvp` spawns a new process and exits this
+// one, so a parent waiting on the original sees it finish and the pid changes.
+// That difference is observable and is documented rather than papered over.
+int proc_exec(void) {
+    char** vector = spawn_vector();
+    if (!vector) return -1;
+    _execvp(vector[0], (const char* const*)vector);
+    free(vector);
+    return -1;
+}
+
+int proc_write(int fd, const char* bytes, int length) {
+    if (fd < 0 || !bytes || length < 0) return -1;
+    int written = 0;
+    while (written < length) {
+        int n = _write(fd, bytes + written, (unsigned int)(length - written));
+        if (n < 0) return -1;
+        if (n == 0) break;
+        written += n;
+    }
+    return written;
+}
+
+int proc_close(int fd) {
+    if (fd < 0) return -1;
+    return _close(fd) == 0 ? 0 : -1;
+}
+
+#endif
+
+// Everything the child wrote, as a String the caller owns.
+//
+// `rt_base_alloc`, because this crosses back into Prismio and codegen emits a
+// release for it. **Never a literal on any path**, including the empty and the
+// error one: a static return contributes no allocation site and makes the whole
+// function's result unowned, so the paths that did allocate leak.
+char* proc_read_all(int fd) {
+    size_t capacity = 4096;
+    size_t filled = 0;
+    char* buffer = (char*)rt_base_alloc(capacity);
+    if (!buffer) return NULL;
+
+    if (fd >= 0) {
+        for (;;) {
+            if (filled + 1 >= capacity) {
+                size_t grown = capacity * 2;
+                char* bigger = (char*)rt_base_realloc(buffer, grown);
+                if (!bigger) { rt_free(buffer); return NULL; }
+                buffer = bigger;
+                capacity = grown;
+            }
+#ifdef _WIN32
+            int n = _read(fd, buffer + filled, (unsigned int)(capacity - filled - 1));
+#else
+            ssize_t n = read(fd, buffer + filled, capacity - filled - 1);
+            if (n < 0 && errno == EINTR) continue;
+#endif
+            if (n <= 0) break;
+            filled += (size_t)n;
+        }
+    }
+    buffer[filled] = '\0';
+    return buffer;
+}
+
 int cli_arg_count(void) {
     return prismio_argc;
 }

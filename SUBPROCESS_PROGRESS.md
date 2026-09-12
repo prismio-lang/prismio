@@ -15,13 +15,14 @@ first. This file records only *where the work is*.
 | Stage | What | State |
 |---|---|---|
 | S0 | Feasibility settled | **done** |
-| S1 | POSIX capability in `runtime/program_support.c` | not started |
-| S2 | `std/process.psm` surface, and the old API removed | not started |
-| S3 | AIF contracts, both copies | not started |
-| S4 | `tests/test_150_subprocess.psm` | not started |
-| S5 | Windows half | not started |
+| S1 | Capability in `runtime/program_support.c` | **done, POSIX verified / Windows written but unbuilt here** |
+| S2 | `std/process.psm` surface, and the old API removed | **done** — works in-tree, blocked out-of-tree by B1 |
+| S3 | AIF contracts, both copies | **done** — one entry each, see below |
+| S4 | `tests/test_150_subprocess.psm` | **blocked on B1** |
+| S5 | Windows half | **written with S1**; unverifiable locally, see below |
 | S6 | Validation loop | not started |
 | S7 | Docs — RUNTIME.md, KNOWN_ISSUES, ../website, evidence | not started |
+| **B1** | **A struct crossing a PLIB reads its fields one slot late** | **open, blocks S4** |
 
 ---
 
@@ -82,22 +83,36 @@ Windows `HANDLE`.
 In `runtime/program_support.c` — the half linked into every program, never
 `build_driver.c`. No new file, so `tools/check_source_lists.py` needs nothing.
 
-- [ ] `proc_spawn_begin` / `proc_spawn_arg` — accumulate `program` and a
+- [x] `proc_spawn_begin` / `proc_spawn_arg` — accumulate `program` and a
       `char**`, each element `strdup`ed. File-local state, reset by `begin`.
       Guard: an `arg` with no `begin` is a no-op, not a crash.
-- [ ] `proc_spawn_run(in, out, err, SpawnOut*)` — `pipe()` per stream set to
+- [x] `proc_spawn_run(in, out, err, SpawnOut*)` — `pipe()` per stream set to
       pipe, `/dev/null` per stream set to discard, nothing per stream inherited;
       then `posix_spawn` with a `posix_spawn_file_actions_t`. Parent closes its
       copy of every child end. Writes `SpawnOut` and returns 0 or -1.
-- [ ] `proc_wait(handle) -> Int` — `waitpid`, `WEXITSTATUS`; -1 on error.
+- [x] `proc_wait(handle) -> Int` — `waitpid`, `WEXITSTATUS`; -1 on error.
       Restart on `EINTR`.
-- [ ] `proc_kill(handle) -> Int` — `SIGKILL`.
+- [x] `proc_kill(handle) -> Int` — `SIGKILL`.
 - [ ] `proc_exec()` — `execvp` over the accumulated vector; returns only on
       failure.
 - [ ] `proc_read(fd, max) -> String produce(free)` and
       `proc_write(fd, s) -> Int`, `proc_close(fd) -> Int`. `proc_read` must
       allocate through `rt_base_alloc` (C_CODE_STYLE's first invariant) and must
       never return a string literal on any path.
+
+Landed as `proc_spawn_begin`, `proc_spawn_arg`, `proc_spawn_run`, `proc_wait`,
+`proc_kill`, `proc_exec`, `proc_read_all`, `proc_write`, `proc_close`. The read
+is `proc_read_all(fd)` -- everything until EOF -- rather than a bounded read; a
+bounded one can be added when something needs it.
+
+**Windows cannot be compiled here.** `clang --target=x86_64-pc-windows-msvc`
+stops at `stdio.h`: there is no Windows SDK on this machine. The leg is written
+(`CreateProcess`, `CreatePipe` + `SetHandleInformation` so only the child's end
+is inheritable, `_open_osfhandle` so descriptors are the one abstraction,
+`WaitForSingleObject` + `GetExitCodeProcess`, `TerminateProcess`) and its
+argument quoting follows `CommandLineToArgvW`'s backslash rule rather than
+`command_quote_arg`'s simpler one -- but **CI is the first thing that will
+compile it**, so treat the first Windows leg as the review.
 
 **Modes:** `0 inherit, 1 pipe, 2 discard`. One spelling in three places
 (`std/process.psm`, `program_support.c`, and the fixture) — the constant-drift
@@ -131,15 +146,65 @@ and a field initialiser. **A list literal is still not accepted as a call
 argument** (KNOWN_ISSUES, Codegen), so nothing in this API may take one
 positionally.
 
-## S3 · AIF contracts
+## S3 · AIF contracts — done, and smaller than expected
 
-Every new extern in **both** tables, or bracketing is lost for the whole calling
-function and the oracle diverges silently while the suite stays green:
+**A parameter table entry was not needed.** Both tables are a *fallback*: an
+extern a source declares carries its contract in the AST and the analysis reads
+it there, which `aif.py`'s own comment says outright ("these tables never fire").
+The builtin entries exist only because a builtin has no declaration to read. So
+the ten new externs need nothing, and the one entry each side did need is the
+producing return:
 
-- [ ] `src/aif/contracts.psm` — `aifCompilerBuiltinContract`'s neighbour for
-      externs, and `aifFfiProduces` for `proc_read`.
-- [ ] `aif/prototype/aif.py` — `FFI_CONTRACTS`, and `FFI_RETURNS_PRODUCE` for
-      `proc_read`.
+- [x] `src/aif/contracts.psm` — `proc_read_all` in `aifFfiProduces`.
+- [x] `aif/prototype/aif.py` — `proc_read_all` in `FFI_RETURNS_PRODUCE`.
+
+## B1 · A struct crossing a PLIB reads its fields one slot late
+
+**This blocks S4 and it is not in this feature's code.** Everything works when
+`std.process` is resolved from source; the same program built against a packaged
+`stdlib/process.plib` reads every field of `Process`, `Child` and `SpawnOut`
+shifted by one.
+
+Measured, with the modes printed from C:
+
+| built | `p.stdout = Discard` reaches C as | `p.stdout = Pipe` |
+|---|---|---|
+| in the checkout (std from source) | `in=0 out=2 err=0`, output suppressed | `out=[piped]`, correct |
+| outside it (std from `process.plib`) | `in=2 out=0 err=0`, output on the terminal | `out=[]`, child not redirected |
+
+`in=2` is `stdout`'s value arriving in the `stdin` parameter: the read of
+`self.stdin` answered the next field. `child.stdout.descriptor` shows it too —
+it comes back holding the *stdin* descriptor. `SpawnOut` is five `I64` fields
+with no padding to disagree about and shifts anyway, so this is a **field index**
+and not a layout offset.
+
+**Five hypotheses were tried against a probe struct added to `std/platform.psm`,
+packaged, and read out of tree. None reproduces it** — each printed the right
+answer from `main` and from a method:
+
+1. three plain `Int` fields;
+2. a `String` field before three enum fields;
+3. the same plus a `List<String>` field — `Process`'s exact shape;
+4. the constructor carrying the struct's own name (`fn ShiftProbe() -> ShiftProbe`);
+5. the fields named `stdin` / `stdout` / `stderr`, in case of a collision with
+   something `std.io` declares.
+
+So the trigger is something else about `std.process` specifically. Two threads
+worth pulling before writing any code: whether it needs a **method that calls a
+private free function in the same module** (`streamModeCode`, which the probe's
+`probeCode` also did — so probably not), and whether it needs the module to
+declare **`extern fn`s taking a struct** (`proc_spawn_run(… out: SpawnOut)`),
+which no probe had and which is the one structural feature of `std.process` that
+none of them shared.
+
+Reproduce in one command from a directory with no `std/` above it:
+
+```
+PRISMIO_INTERNAL_HOSTED=1 <dist>/bin/prismio build sp4.psm -o sp4 && ./sp4
+```
+
+`sp4.psm` is in this session's scratchpad; it is fifteen lines and is worth
+re-typing from the S2 example rather than hunting for.
 
 ## S4 · The fixture
 
