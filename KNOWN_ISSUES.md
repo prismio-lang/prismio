@@ -569,6 +569,56 @@ display-width function, so a padded column of CJK still does not line up.
 
 **There is no string interpolation and no iterator protocol.**
 
+**`std.process` can run a shell command and nothing else.** `runCommand` takes a
+string, goes through the shell, and answers a `Bool`; `quoteArg` exists because
+of that. There is no argv-vector spawn, no exit code as a number, no way to read
+a child's stdout or stderr, no way to write its stdin, no kill, and no process
+replacement.
+
+The agreed shape is a configurable object rather than free functions, which is
+Foundation's `Process`:
+
+```
+let p = Process()
+p.program = "git"
+p.arguments = ["status", "--short"]
+p.stdout = StreamMode.Pipe
+
+let child = p.spawn()      // -> Child, running
+let status = p.run()       // spawn + wait, the exit status
+p.exec()                   // replace this process; does not return
+```
+
+with `Child` carrying `stdin`, `stdout`, `stderr`, `wait()` and `kill()`, and
+each of the three streams set to `inherit`, `pipe` or `discard` before the
+spawn.
+
+Everything the *language* needs for that spelling now exists, and each piece was
+the reason a piece of work landed: `p.arguments = ["a", "b"]` is the list literal
+(f3a6846), and a global of an empty type with methods is what `std.platform` and
+`process.args` already are (40aa65b, 22d0bd7). What is left is the capability,
+and it is C:
+
+- **POSIX**: `posix_spawn` or fork/execvp, `pipe`, `waitpid`, `kill`, `execvp`.
+- **Windows**: `CreateProcess`, `CreatePipe`, `WaitForSingleObject` +
+  `GetExitCodeProcess`, `TerminateProcess`. There is no `exec`; `_execvp` spawns
+  and exits, which is close but not the same, and the difference belongs in the
+  documentation rather than hidden.
+- **One abstraction across both**: an `int` file descriptor, which Windows
+  reaches through `_open_osfhandle` on the pipe handle. A `Child` then holds
+  three `Int` descriptors and the process as an **`I64`** -- not an `Int`, which
+  is `i32` and cannot hold a Windows `HANDLE`.
+- The argv vector crosses as a `List<String>`, so the runtime reads it with
+  `list_len` and `list_str_data`/`list_str_word` and must materialise a
+  NUL-terminated copy per element: an inline pair's field 0 is twelve bytes of
+  text rather than a pointer, and a view has no terminator. `str_own_pair` in
+  `lang_runtime.c` is the existing tool for exactly that.
+
+Every new `extern fn` needs its FFI contract in `std/`, its parameter entry in
+`src/aif/contracts.psm`, and the same entry in `aif/prototype/aif.py` -- an
+undescribed callee blocks bracketing for its whole caller, and the oracle is the
+half that fails silently while the suite stays green.
+
 **A function that returns a view of its argument declines the caller's drop of
 that argument, and the fact does not survive one level of indirection.**
 `strSubstring(owned, 1, 4)` is clean; a `strScalarSubstring` that computed its
