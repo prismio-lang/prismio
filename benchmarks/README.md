@@ -127,6 +127,22 @@ For unusual toolchains, invoke `benchmarks/run.py` directly and pass
 `--compiler` or `PRISMIO`. `--llvm-bin` remains available when the system Clang
 and the LLVM version used by the compiler differ.
 
+**The C++ and Rust arms are cached; the Prismio arm never is.** Those two are
+fixed reference points, so rebuilding them on every run is pure waiting -- about
+3.5 s of `clang++ -O3` and 0.9 s of `rustc` -- and a one-workload run drops from
+7.0 s to 2.1 s without them. Each is keyed on the *contents* of every file under
+`cpp/` or `rust/`, the exact build command, and the toolchain's own `--version`,
+stamped beside the binary in `benchmarks/build/`. Headers and the Rust modules
+`suite.rs` only declares are in the key even though they are not on the command
+line, which is the case an mtime-against-the-command cache gets wrong. A
+toolchain upgrade invalidates, so a Homebrew LLVM bump is never measured against
+a binary the previous one built. `results.json` names the arms it served from
+cache in `cached_builds`, because their `compile_ns` is the earlier build's.
+
+The Prismio arm is excluded on purpose: its *compiler* is the working tree, and
+"the sources did not change but the compiler did" is exactly what this matrix
+exists to measure. Pass `--rebuild` to force the other two.
+
 The runner builds one release dispatcher per language, invokes only one named
 workload per process, validates identical `result: <value>` output across all
 three languages, and records the median workload-reported nanoseconds. Input

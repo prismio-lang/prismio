@@ -3,6 +3,7 @@
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 from html import escape
 import json
 import os
@@ -32,6 +33,14 @@ CPP_SOURCES = tuple(HERE / "cpp" / name for name in (
     "io.cpp",
     "adversarial.cpp",
 ))
+
+# What a cached arm is keyed on. Wider than the compiled set on purpose: a header
+# is not on the command line and changing one changes the binary, and `rustc` is
+# handed one file that declares the rest as modules.
+CACHED_INPUTS = {
+    "cpp": ("cpp/*.cpp", "cpp/*.hpp"),
+    "rust": ("rust/*.rs",),
+}
 
 
 class Progress:
@@ -77,6 +86,38 @@ def llvm_bin_from(args):
     return homebrew if homebrew.is_dir() else None
 
 
+def toolchain_version(command, env):
+    """What the arm's compiler calls itself, so an upgrade invalidates the cache.
+
+    A `--version` costs milliseconds against a full -O3 rebuild, and without it a
+    Homebrew LLVM bump would be measured against a binary the previous one built.
+    """
+    probe = subprocess.run([command[0], "--version"], cwd=REPO, env=env,
+                           capture_output=True, text=True)
+    return (probe.stdout or "") + (probe.stderr or "")
+
+
+def build_key(language, command, env):
+    """Everything that decides the bytes of an arm's binary."""
+    digest = hashlib.sha256()
+    digest.update(command_text(command).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(toolchain_version(command, env).encode("utf-8"))
+    for pattern in CACHED_INPUTS[language]:
+        for path in sorted(HERE.glob(pattern)):
+            digest.update(path.name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def read_stamp(path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
 def build_all(args, progress):
     BUILD.mkdir(parents=True, exist_ok=True)
     llvm_bin = llvm_bin_from(args)
@@ -97,7 +138,28 @@ def build_all(args, progress):
         "rust": ["rustc", "-C", "opt-level=3", "--edition=2021", str(HERE / "rust/suite.rs"), "-o", str(BUILD / "rust-suite")],
     }
     elapsed = {}
+    cached = []
     for language in LANGUAGES:
+        binary = BUILD / (language + "-suite")
+        stamp = BUILD / (language + "-suite.stamp")
+        # **The Prismio arm is never cached.** It is the arm under development:
+        # its sources are `benchmarks/prismio/`, but its *compiler* is the working
+        # tree, and a rebuilt compiler with unchanged sources is exactly the case
+        # this measures. The other two are fixed reference points whose toolchains
+        # change on their own schedule, so a rebuild of those is pure waiting --
+        # 3.5 s of clang++ -O3 and 1.5 s of rustc per run of the matrix.
+        # The key is computed even under `--rebuild`, so that run leaves the
+        # stamp describing what it actually built. Skipping it would make the
+        # *next* run rebuild too, against a stamp naming an older binary.
+        key = build_key(language, commands[language], env) if language in CACHED_INPUTS else None
+        if key is not None and not args.rebuild:
+            previous = read_stamp(stamp)
+            if binary.exists() and previous.get("key") == key:
+                elapsed[language] = previous.get("compile_ns", 0)
+                cached.append(language)
+                progress.advance("Cached {}".format(LANGUAGE_LABELS[language]))
+                continue
+
         progress.show("Building " + LANGUAGE_LABELS[language])
         started = time.perf_counter_ns()
         result = run_command(commands[language], env=env)
@@ -105,8 +167,12 @@ def build_all(args, progress):
         if result.returncode:
             sys.exit("build failed for {}:\n{}\n{}\n{}".format(
                 language, command_text(commands[language]), result.stdout, result.stderr))
+        # Written after the build, so an interrupted or failed one leaves the
+        # stamp naming the last binary that actually exists.
+        if key is not None:
+            stamp.write_text(json.dumps({"key": key, "compile_ns": elapsed[language]}))
         progress.advance("Built {}".format(LANGUAGE_LABELS[language]))
-    return commands, elapsed
+    return commands, elapsed, cached
 
 
 def parse_output(language, benchmark, output):
@@ -172,6 +238,8 @@ def main():
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--only", action="append", metavar="NAME", help="run one benchmark; repeat the option for more")
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--rebuild", action="store_true",
+                        help="rebuild the C++ and Rust arms even when their sources and toolchains are unchanged")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--output", type=Path, default=RESULTS / "results.json")
     parser.add_argument("--open", action="store_true", help="open the generated HTML report in the default browser")
@@ -197,8 +265,9 @@ def main():
 
     build_commands = None
     compile_ns = None
+    cached_arms = []
     if not args.skip_build:
-        build_commands, compile_ns = build_all(args, progress)
+        build_commands, compile_ns, cached_arms = build_all(args, progress)
     executables = {language: BUILD / (language + "-suite") for language in LANGUAGES}
     missing = [str(path) for path in executables.values() if not path.exists()]
     if missing:
@@ -210,6 +279,10 @@ def main():
         "runs": args.runs,
         "build_commands": {key: command_text(value) for key, value in (build_commands or {}).items()},
         "compile_ns": compile_ns,
+        # Which arms were served from the previous build. Their `compile_ns` is
+        # that build's, not this run's, and saying so is the difference between a
+        # stale number and a wrong one.
+        "cached_builds": cached_arms,
         "benchmarks": [],
     }
     with tempfile.TemporaryDirectory(prefix="prismio-bench-") as temp_name:
