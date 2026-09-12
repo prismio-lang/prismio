@@ -472,10 +472,12 @@ from the *entry file* (RUNTIME.md), so every fixture under `tests/` compiles
 `sort()` failed to link from every installed stdlib for that reason, with the
 suite green: the `call` of the closure `sort` hands `sortBy` was filtered out as
 a concrete stdlib function whose body the PLIB supplies, and no PLIB had it. It
-is fixed. What covers the path now is `run_runtime_library_test` -- assertion 1b
-builds `sort` against a packaged stdlib -- and `run_ums_test`'s program outside
-the checkout. Everything else a user reaches only through a `.plib` is still
-untested.
+is fixed, and `run_module_artifact_test` builds `sort` against the toolchain it
+packages. **That check was first added to `run_runtime_library_test`, which has
+not been registered since 9bc7d36 -- its `runtime.a` premise is gone -- so for a
+day it guarded nothing.** `std.platform` is checked in `run_module_artifact_test`
+the same way, and `run_ums_test` builds a program outside the checkout.
+Everything else a user reaches only through a `.plib` is still untested.
 
 **A cross build links the host's standard library.** A `.plib` carries one
 bitcode section, compiled for the host when the toolchain was packaged. The

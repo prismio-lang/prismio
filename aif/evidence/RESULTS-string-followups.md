@@ -54,6 +54,12 @@ reached. That is also why no fixture caught this. The guard is
 `run_runtime_library_test`'s new assertion 1b, which builds the same probe
 against the toolchain it packages; against the baseline's toolchain it fails.
 
+**Correction (2026-09-12): that guard never ran.** `run_runtime_library_test`
+has not been in the suite's list since 9bc7d36, when the runtime stopped being a
+`runtime.a`, so assertion 1b was added to a function nothing calls. The probe now
+runs in `run_module_artifact_test`, the registered test that packages a
+toolchain, beside the same check for `std.platform`.
+
 ## `String.compare`, step one: the builtin, unused
 
 `src/` imports `std.string`, so the committed seed compiles `std/string.psm`,
