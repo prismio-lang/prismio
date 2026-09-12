@@ -1,0 +1,91 @@
+// `[a, b, c]` where a `List<T>` is expected.
+//
+// An array literal is a frame array with no length, so it cannot be what a
+// `List<T>` means. Where the context writes the type -- an annotation, a struct
+// field, the left of an assignment -- the literal is rewritten to `listOf(...)`,
+// std/list.psm's overload table, the same way `s[i]` is rewritten to `charAt`.
+//
+// What is pinned here: each of those three contexts, that the element type comes
+// from the context rather than from the elements (`[1, 2]` as a `List<I64>`),
+// that `[]` is an empty list of the annotated type rather than a `List<Invalid>`
+// whose element storage codegen has to guess, and that an array literal with no
+// list context is still an array.
+
+import std.io
+import std.string
+import std.list
+
+struct Job {
+    name: String,
+    arguments: List<String>
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn total(xs: List<I64>) -> I64 {
+    let mut sum: I64 = 0
+    let mut i = 0
+    while (i < list_len(xs)) {
+        sum = sum + xs[i]
+        i = i + 1
+    }
+    return sum
+}
+
+fn main() -> Int {
+    // 1. An annotation.
+    let names: List<String> = ["ada", "grace", "alan"]
+    if (list_len(names) != 3) { return fail("three names") }
+    if (names[0].equals("ada") == false) { return fail("the first name") }
+    if (names[2].equals("alan") == false) { return fail("the last name") }
+
+    // The list is a real `List<String>`, not something that merely reads like
+    // one: it is pushed to, sorted, and passed on.
+    list_push(names, "hedy")
+    sort(names)
+    if (list_len(names) != 4) { return fail("a literal list still grows") }
+    if (names[0].equals("ada") == false or names[3].equals("hedy") == false) {
+        return fail("a literal list sorts")
+    }
+
+    // 2. The element type is the context's. These are bare integer literals,
+    // which infer as Int on their own.
+    let widths: List<I64> = [1, 2, 3]
+    if (total(widths) != 6) { return fail("List<I64> from bare literals") }
+
+    // 3. Empty, which becomes `list_new()` and takes the annotation's element
+    // type -- the M4.2 rule, which codegen needs to size the element storage.
+    let nothing: List<String> = []
+    if (list_len(nothing) != 0) { return fail("an empty literal") }
+    list_push(nothing, "later")
+    if (nothing[0].equals("later") == false) { return fail("an empty literal grows") }
+
+    // 4. A struct field, initialised and then assigned.
+    let mut job = Job { name: "git", arguments: ["--short"] }
+    if (list_len(job.arguments) != 1) { return fail("a field initialiser") }
+    job.arguments = ["status", "--short", "--branch"]
+    if (list_len(job.arguments) != 3) { return fail("a field assignment") }
+    if (job.arguments[2].equals("--branch") == false) { return fail("the assigned element") }
+
+    // 5. Twelve is the cap, and twelve works.
+    let full: List<Int> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    let mut sum = 0
+    let mut i = 0
+    while (i < list_len(full)) {
+        sum = sum + full[i]
+        i = i + 1
+    }
+    if (sum != 78) { return fail("a literal at the cap") }
+
+    // 6. With no list context an array literal is still a frame array, so no
+    // program that compiled before means something different now.
+    let plain: [Int] = [7, 8, 9]
+    if (plain[1] != 8) { return fail("an array literal is still an array") }
+
+    println("PASS")
+    return 0
+}

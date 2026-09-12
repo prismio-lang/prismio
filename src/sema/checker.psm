@@ -255,6 +255,80 @@ private fn semaStringSugarAvailable(expr: ASTNode, fnName: String, what: String)
     return false
 }
 
+// The largest list literal `listOf` has an overload for. See the table in
+// std/list.psm for why there is a cap at all.
+private fn semaListLiteralMax() -> Int { return 12 }
+
+// `[a, b, c]` where a `List<T>` is expected becomes `listOf(a, b, c)`, and `[]`
+// becomes `list_new()`.
+//
+// Called from semaCheckValue, which is the one place an expression meets the
+// type its context wants -- an annotation, a parameter, a field being assigned.
+// A literal with no such context stays an array, so nothing that compiled before
+// changes meaning: `let xs = [1, 2]` is still `[Int]` on the frame.
+//
+// The elements are typed against `T` first, so a literal of bare integers can
+// become a `List<I64>` for the same reason `let x: [I64] = [1, 2]` works.
+//
+// Answers false when the node is not a list literal in a list context, and *true
+// after reporting* when it is one this cannot build -- an unimportable `listOf`,
+// or more elements than the table has an overload for. Both are errors about the
+// literal, and returning them as "handled" keeps semaCheckValue from also
+// complaining that `[T]` is not a `List<T>`.
+internal fn semaListLiteral(module: ASTNode, valNode: ASTNode, expected: TypeInfo) -> Bool {
+    if (typeIsValid(expected) == false or expected.kind != TypeKind.LIST) { return false }
+    if (valNode.kind != NodeKind.ARRAY_LITERAL_EXPR) { return false }
+
+    let args = valNode.child1
+    if (nodeExists(args) == false) {
+        semaBecomeCall(valNode, "list_new", ptr_null())
+        semaExpr(module, valNode)
+        nodeSetType(valNode, expected)
+        return true
+    }
+
+    // `monoHasTemplate` rather than `semaDeclaresFunction`, because `listOf` is
+    // generic and a template is not in the decl index -- see the note over it.
+    if (monoHasTemplate(module, "listOf", NodeKind.FUNCTION) == false) {
+        semaErrorAt(valNode, "a list literal needs `import std.list`")
+        nodeSetType(valNode, typeInvalid())
+        return true
+    }
+
+    let mut count = 0
+    let mut elemPtr = args
+    while (nodeExists(elemPtr)) {
+        let elem = ptr_to_node(elemPtr)
+        if (nodeExists(expected.child)) {
+            semaCheckValue(module, elem, ptr_to_type(expected.child), "list element")
+        }
+        count = count + 1
+        elemPtr = elem.next
+    }
+    if (count > semaListLiteralMax()) {
+        semaErrorAt(valNode, "a list literal holds at most ".concat(
+            semaListLiteralMax().toString(), " elements, found ", count.toString()))
+        diag_note("build a longer list with `list_new()` and `list_push`")
+        nodeSetType(valNode, typeInvalid())
+        return true
+    }
+
+    semaBecomeCall(valNode, "listOf", args)
+    semaExpr(module, valNode)
+    return true
+}
+
+// The value's type, building a list literal against `expected` first when that
+// is what the node is. This is semaCheckValue's job; an assignment types its
+// right-hand side with semaExpr directly -- deliberately, because an assignment
+// does not re-type an integer literal the way a declaration does -- so the one
+// hook it needs is repeated rather than the whole of semaCheckValue moved.
+private fn semaValueTypeAgainst(module: ASTNode, valNode: ASTNode, expected: TypeInfo) -> TypeInfo {
+    if (semaListLiteral(module, valNode, expected)) { return nodeGetType(valNode) }
+    return semaExpr(module, valNode)
+}
+
+
 // `a == b` is `__builtin_string_eq(a, b)`; `a != b` is its negation; the four orderings are
 // the sign of `String.compare` against zero, compared by the very operator being
 // rewritten -- which is why the ordering case re-enters semaExpr on a node whose
@@ -1865,7 +1939,7 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
         if (target.kind == NodeKind.IDENTIFIER_EXPR) {
             ir_set_reinit_target(target.s1)
         }
-        let valueT = semaExpr(module, ptr_to_node(stmt.child2))
+        let valueT = semaValueTypeAgainst(module, ptr_to_node(stmt.child2), targetT)
         semaExpectAssignable(ptr_to_node(stmt.child2), "assignment", targetT, valueT)
         semaMoveOperand(ptr_to_node(stmt.child2))
         ir_set_reinit_target("")

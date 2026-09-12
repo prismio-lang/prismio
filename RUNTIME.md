@@ -137,7 +137,7 @@ violations.
 | `std/process.psm` | `import std.process` | arguments, subprocesses |
 | `std/map.psm` | `import std.map` | `Map<K, V>` |
 | `std/option.psm` | `import std.option` | `Option<T>`, `Result<T, E>` |
-| `std/list.psm` | `import std.list` | `sort`, `sortBy`, `filter`, `binarySearch` |
+| `std/list.psm` | `import std.list` | `sort`, `sortBy`, `filter`, `binarySearch` — **and the list literal**, `[a, b, c]` |
 | `std/key.psm` | `import std.key` | the `Key` bound `Map` needs |
 | `std/ord.psm` | `import std.ord` | the `Ord` bound `sort` needs |
 | `std/copy.psm` | `import std.copy` | the `Copy` bound |

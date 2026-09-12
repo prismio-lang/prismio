@@ -277,6 +277,38 @@ path inlines without exposing allocator statics. See
 
 ## Codegen
 
+**A list literal is not accepted as a call argument.** `[a, b, c]` becomes
+`listOf(a, b, c)` where a `List<T>` is written -- an annotation, a struct field,
+the left of an assignment -- and `f(["a"])` is rejected with *"no overload of `f`
+accepts these argument types"*. Bind it first:
+
+```
+let args: List<String> = ["status", "--short"]
+run(args)
+```
+
+The rewrite itself is not the problem; resolving the *generic* it produces is.
+Two placements were built and measured against `takes(["x"])`, and both left
+`listOf` unresolved so that codegen emitted a call to the template's own name as
+though it were foreign -- a link failure, `_listOf` undefined:
+
+- **Admitted during matching, built in the argument loop** (T15's split, where a
+  concrete value is admitted where a `dyn` is wanted and wrapped once the
+  overload is chosen). `monoResolveGenericCall` runs at the top of the call arm
+  and the argument's rewrite happens after it; a second `semaExpr` over the
+  rewritten node does not help.
+- **Built during matching**, so the rewrite and the resolution happen in the same
+  place the working `takes(listOf("x"))` does. The node still typed as
+  `[String]` afterwards, so no overload matched.
+
+The same rewrite resolves perfectly well from `semaCheckValue` for a declaration
+and for an assignment, and an explicitly written `takes(listOf("x", "y"))`
+resolves in argument position. So the difference is state, not placement or
+types: whoever picks this up should start by finding which of
+`monoSolveTypeParam` and `monoTemplateAcceptsCall` declines, with the outer
+call's resolution in flight. `tests/test_149_list_literal` covers the three
+contexts that work.
+
 **A string literal in a curated runtime function breaks the link.**
 `ir_curate_module` copies a function body into the user's module as
 `available_externally` and does **not** copy the private string constants it

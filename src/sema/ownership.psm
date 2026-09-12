@@ -120,6 +120,13 @@ internal fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo
         nodeSetType(valNode, expected)
         return expected
     }
+    // A list literal, which is an array literal until its context asks for a
+    // `List<T>`. Tried after the array case above, so an annotation that says
+    // `[T]` still gets the frame array it asks for.
+    if (semaListLiteral(module, valNode, expected)) {
+        return nodeGetType(valNode)
+    }
+
     let actual = semaExpr(module, valNode)
     semaExpectAssignable(valNode, context, expected, actual)
 

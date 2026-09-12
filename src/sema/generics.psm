@@ -91,7 +91,12 @@ private fn monoFindTemplate(module: ASTNode, name: String, kind: NodeKind) -> AS
     return ptr_to_node(ptr_null())
 }
 
-private fn monoHasTemplate(module: ASTNode, name: String, kind: NodeKind) -> Bool {
+// Whether a generic template of this name exists. **The decl index does not
+// answer this**: `indexModuleDeclarations` walks `module.child1` and a template
+// lives on `module.child2`, so `ir_decl_count` reads 0 for a name a generic call
+// resolves perfectly well. Anything that needs to know a generic is available
+// before writing a call to it has to ask here.
+internal fn monoHasTemplate(module: ASTNode, name: String, kind: NodeKind) -> Bool {
     return nodeExists(node_to_ptr(monoFindTemplate(module, name, kind)))
 }
 

@@ -15,6 +15,112 @@
 import std.ord
 import std.copy
 
+// The lowering target for a list literal. `[a, b, c]` written where a `List<T>`
+// is expected becomes `listOf(a, b, c)` -- the same rewrite `s[i]` gets for
+// `charAt`, and it carries the same obligation: a program that writes a list
+// literal needs `import std.list`, and sema says so when it does not.
+//
+// **One overload per arity, because there are no varargs**, exactly as
+// `String.concat` has 2..6 and for the same reason. Twelve is the cap; past it
+// sema names it and points at `list_new`. The cap is a property of this table
+// rather than of the language, so raising it or replacing the whole table with a
+// real lowering later changes no call site.
+//
+// Each builds and returns its own list rather than delegating to a smaller
+// overload. A wrapper that took an owned list and handed it back would be the
+// pass-through shape that leaks its argument, which is the reason the table is
+// twelve near-identical functions instead of a chain.
+//
+// **`T: Copy` and `copyOf`, for the reason `Map` needs them**: a parameter is a
+// borrow, so `list_push(xs, a)` on a parameter is *"cannot move out of borrowed
+// value `a`"*. std/copy.psm's header has the whole argument, including why
+// `sink` does not fix it. The cost is that a list literal is available for the
+// element types that implement `Copy`, which is every scalar, `String`, and any
+// struct that writes the impl.
+fn listOf<T: Copy>(a: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a))
+    return xs
+}
+
+fn listOf<T: Copy>(a: T, b: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a)) list_push(xs, copyOf(b))
+    return xs
+}
+
+fn listOf<T: Copy>(a: T, b: T, c: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c))
+    return xs
+}
+
+fn listOf<T: Copy>(a: T, b: T, c: T, d: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
+    return xs
+}
+
+fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
+    list_push(xs, copyOf(e))
+    return xs
+}
+
+fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
+    list_push(xs, copyOf(e)) list_push(xs, copyOf(f))
+    return xs
+}
+
+fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
+    list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g))
+    return xs
+}
+
+fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
+    list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
+    return xs
+}
+
+fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
+    list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
+    list_push(xs, copyOf(i))
+    return xs
+}
+
+fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
+    list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
+    list_push(xs, copyOf(i)) list_push(xs, copyOf(j))
+    return xs
+}
+
+fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
+    list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
+    list_push(xs, copyOf(i)) list_push(xs, copyOf(j)) list_push(xs, copyOf(k))
+    return xs
+}
+
+fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T, l: T) -> List<T> {
+    let xs: List<T> = list_new()
+    list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
+    list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
+    list_push(xs, copyOf(i)) list_push(xs, copyOf(j)) list_push(xs, copyOf(k)) list_push(xs, copyOf(l))
+    return xs
+}
+
 // Below this, insertion sort wins: its O(n^2) has a tiny constant and no
 // partition bookkeeping. 24 is pdqsort's cut.
 private fn listSortInsertionCutoff() -> Int { return 24 }
