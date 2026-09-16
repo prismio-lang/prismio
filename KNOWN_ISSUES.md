@@ -578,18 +578,31 @@ day it guarded nothing.** `std.platform` and a `std.process` struct are checked 
 outside the checkout. Everything else a user reaches only through a `.plib` is
 still untested.
 
-**A cross build links the host's standard library.** A `.plib` carries one
-bitcode section, compiled for the host when the toolchain was packaged. The
-runtime is looked up per triple (`lib/runtime/<triple>/`) and the stdlib is not:
-`merge_libraries_into_program` merges every imported PLIB's one section whatever
-`--target` says, so a build for `x86_64-pc-windows-msvc` on an arm64 Mac takes
-arm64-apple bitcode for every non-generic `std` function, and nothing checks that
-the two triples agree. For a 32-bit target such as wasm32 the pointer width
-differs too. `std.platform` is the module that cannot tolerate it at all -- its
-answers would be the host's -- so a function that calls a `__builtin_target_*`
-builtin is compiled into each program rather than taken from the PLIB
-(`shouldEmitFunctionFromSource`). The general fix is a PLIB section per packaged
-triple, the way the runtime already has one.
+**A cross build took the host's standard library, and now takes its own.** A
+`.plib` carried one code section, built for the host, and every build merged it
+whatever `--target` said: an arm64 Mac building for `x86_64-apple-macos` linked
+arm64 bitcode for every non-generic `std` function, LLVM warned that the triples
+and data layouts differed and adopted the arm64 triple for the merged module, and
+the build succeeded. PLIB v3 carries a section per packaged target, selected at
+merge time; a target with runtime bitcode but no section is refused as an
+incomplete installation. `run_module_artifact_test` packages
+`x86_64-apple-macos` where an SDK exists and checks the section, a warning-free
+cross build, and the refusal. A mutation that always picks the host section
+fails it.
+
+What is left:
+
+- **Nothing packages a cross target by default.** `tools/package.py --target
+  <triple> --sysroot <triple>=<path>` does, and needs that target's C headers
+  to compile the runtime. `tools/release.py` builds one archive per host with
+  no `--target`, so a released toolchain still cross-builds nothing -- as it
+  did before, but now with a message rather than a mixed module.
+- **A triple is matched by its spelling.** `x86_64-apple-macos` and
+  `x86_64-apple-macosx` name one target and are two sections, for the PLIB as
+  for `lib/runtime/<triple>/`.
+- `shouldEmitFunctionFromSource` still compiles every `__builtin_target_*`
+  function into the program. It is no longer the only guard; it keeps a
+  foreign-triple `.ll`, which merges nothing, answering for its target.
 
 ## Platform
 

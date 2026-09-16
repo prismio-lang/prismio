@@ -2,14 +2,23 @@
 """Assemble an installed Prismio toolchain.
 
     python tools/package.py --compiler build/gen2 --out dist/Prismio
+    python tools/package.py --compiler build/gen2 --out dist/Prismio \
+        --target x86_64-apple-macos --sysroot x86_64-apple-macos=$(xcrun --show-sdk-path)
 
 Produces:
 
     <out>/bin/prismio[.exe]
-    <out>/lib/runtime/*.bc       linked into user IR before optimisation
-    <out>/lib/backend.{a,lib}    linked into the compiler only
-    <out>/stdlib/
+    <out>/lib/runtime/*.bc            linked into user IR before optimisation
+    <out>/lib/runtime/<triple>/*.bc   the same, for each --target
+    <out>/lib/backend.{a,lib}         linked into the compiler only
+    <out>/stdlib/*.plib               a code section for the host and each --target
     <out>/third_party/llvm-paths.json
+
+**A cross build needs both halves for its triple**, and each is looked up by the
+triple exactly as the build spells it: `--target x86_64-apple-macos` here and in
+`prismio build` must be the same string. A target is packaged by compiling the
+runtime for it, which needs that target's C headers -- hence `--sysroot`, which is
+where *this* machine keeps them.
 
 The runtime/backend split is enforced here, at the point the artifacts are
 built: each runtime translation unit becomes its own LLVM bitcode module, while
@@ -133,7 +142,16 @@ def llvm_clang() -> str:
     return candidate
 
 
-def build_runtime_bitcode(clang: str, source: str, runtime_dir: Path, verify: bool) -> None:
+def target_flags(triple: str, sysroot: str) -> list:
+    """The clang flags that name a target, as the build driver spells them."""
+    flags = [f"--target={triple}"] if triple else []
+    if sysroot:
+        flags += ["-isysroot", sysroot]
+    return flags
+
+
+def build_runtime_bitcode(clang: str, source: str, runtime_dir: Path, verify: bool,
+                          triple: str = "", sysroot: str = "") -> None:
     stem = Path(source).stem + (".verify" if verify else "")
     output = runtime_dir / f"{stem}.bc"
     # Apple/Homebrew clang configuration files may inject stack-probing
@@ -141,20 +159,22 @@ def build_runtime_bitcode(clang: str, source: str, runtime_dir: Path, verify: bo
     # portable bitcode contract and can make a later LLVM backend reject the
     # merged module, so the packaged IR leaves stack protection to the final
     # whole-program code-generation invocation.
-    command = [clang, "-O2", "-fno-stack-check", "-fno-stack-protector",
-               "-Wno-deprecated-declarations", "-emit-llvm", "-c"]
+    command = [clang, *target_flags(triple, sysroot), "-O2", "-fno-stack-check",
+               "-fno-stack-protector", "-Wno-deprecated-declarations", "-emit-llvm", "-c"]
     if verify:
         command.append("-DPRISMIO_AIF_VERIFY")
     command.extend([str(REPO / "runtime" / source), "-o", str(output)])
     run(f"bitcode {stem}", command)
-    print(f"  runtime/{output.name:<22} {output.stat().st_size:>8} bytes  <- {source}")
+    shown = f"runtime/{triple + '/' if triple else ''}{output.name}"
+    print(f"  {shown:<30} {output.stat().st_size:>8} bytes  <- {source}")
 
 
 def build_plib_ir(clang: str, compiler: Path, source: Path, work: Path,
-                  module: str, verify: bool) -> bytes:
+                  module: str, verify: bool, triple: str = "") -> bytes:
     variant = ".verify" if verify else ""
-    llvm_ir = work / f"{source.stem}.plib{variant}.ll"
-    bitcode = work / f"{source.stem}.plib{variant}.bc"
+    tag = f".{triple}" if triple else ""
+    llvm_ir = work / f"{source.stem}.plib{tag}{variant}.ll"
+    bitcode = work / f"{source.stem}.plib{tag}{variant}.bc"
     env = os.environ.copy()
     env["PRISMIO_LIBRARY_MODULE"] = module
     # package.py must use the compiler named by --compiler. From inside a Prismio
@@ -165,32 +185,52 @@ def build_plib_ir(clang: str, compiler: Path, source: Path, work: Path,
     command = [str(compiler), "build", str(source)]
     if verify:
         command.append("--verify")
+    if triple:
+        command.extend(["--target", triple])
     command.extend(["-o", str(llvm_ir)])
     result = subprocess.run(command, capture_output=True, text=True,
                             cwd=str(REPO), env=env)
     if result.returncode != 0:
-        die(f"could not compile {module}{variant} for PLIB:\n"
+        die(f"could not compile {module}{variant} for PLIB {triple or 'host'}:\n"
             f"{result.stdout}{result.stderr}")
-    run(f"bitcode {module}{variant}",
-        [clang, "-emit-llvm", "-c", "-x", "ir", str(llvm_ir), "-o", str(bitcode)])
+    run(f"bitcode {module}{variant} {triple or 'host'}",
+        [clang, *target_flags(triple, ""), "-emit-llvm", "-c", "-x", "ir",
+         str(llvm_ir), "-o", str(bitcode)])
     return bitcode.read_bytes()
 
 
-def build_plib(clang: str, compiler: Path, source: Path, stdlib: Path, work: Path) -> None:
+def build_plib(clang: str, compiler: Path, source: Path, stdlib: Path, work: Path,
+               targets: tuple = ()) -> None:
+    """PLIB v3, the layout runtime/build_driver.c reads and, for the host-only
+    case, writes byte for byte:
+
+        "PRPLIB3\\n" u32 module_len  u64 interface_len  u32 section_count
+        module  interface
+        per section: u32 triple_len  u64 code_len  u64 verify_len
+                     triple  code  verify
+
+    The host section's triple is empty, which is how a build with no `--target`
+    asks for it.
+    """
     module = f"std.{source.stem}"
 
     module_bytes = module.encode("utf-8")
-    # PLIB v2's interface payload deliberately retains generic bodies: those
-    # must be instantiated for the importing program's concrete types. Original
+    # The interface payload deliberately retains generic bodies: those must be
+    # instantiated for the importing program's concrete types. Original
     # non-generic definitions are suppressed by codegen and come from the normal
-    # or verification code section selected for this build.
+    # or verification code of the section for this build's target.
     interface = source.read_bytes()
-    code = build_plib_ir(clang, compiler, source, work, module, False)
-    verify_code = build_plib_ir(clang, compiler, source, work, module, True)
-    header = b"PRPLIB2\n" + struct.pack(
-        "<IQQQ", len(module_bytes), len(interface), len(code), len(verify_code))
+    sections = b""
+    for triple in ["", *targets]:
+        code = build_plib_ir(clang, compiler, source, work, module, False, triple)
+        verify_code = build_plib_ir(clang, compiler, source, work, module, True, triple)
+        name = triple.encode("utf-8")
+        sections += struct.pack("<IQQ", len(name), len(code), len(verify_code))
+        sections += name + code + verify_code
+    header = b"PRPLIB3\n" + struct.pack(
+        "<IQI", len(module_bytes), len(interface), 1 + len(targets))
     output = stdlib / f"{source.stem}.plib"
-    output.write_bytes(header + module_bytes + interface + code + verify_code)
+    output.write_bytes(header + module_bytes + interface + sections)
     print(f"  stdlib/{output.name:<22} {output.stat().st_size:>8} bytes")
 
 
@@ -213,7 +253,20 @@ def main() -> int:
     parser.add_argument("--compiler", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--repo")
+    parser.add_argument("--target", action="append", default=[],
+                        help="also package the runtime and stdlib for this triple")
+    parser.add_argument("--sysroot", action="append", default=[], metavar="TRIPLE=PATH",
+                        help="where this machine keeps the C headers for a --target")
     args = parser.parse_args()
+
+    sysroots = {}
+    for entry in args.sysroot:
+        triple, sep, path = entry.partition("=")
+        if not sep or triple not in args.target:
+            die(f"--sysroot {entry}: expected TRIPLE=PATH naming a --target")
+        sysroots[triple] = path
+    if len(set(args.target)) != len(args.target):
+        die("a --target was given twice")
 
     global REPO
     if args.repo:
@@ -243,6 +296,9 @@ def main() -> int:
     for stale in (*stdlib.glob("*.psm"), *stdlib.glob("*.plib"),
                   *runtime_bc.glob("*.bc")):
         stale.unlink()
+    for stale in runtime_bc.iterdir():
+        if stale.is_dir():
+            shutil.rmtree(stale)
     for stale_name in ("runtime.a", "runtime.lib"):
         stale = lib / stale_name
         if stale.exists():
@@ -254,6 +310,12 @@ def main() -> int:
     for source in RUNTIME_BITCODE:
         build_runtime_bitcode(clang, source, runtime_bc, False)
         build_runtime_bitcode(clang, source, runtime_bc, True)
+    for triple in args.target:
+        (runtime_bc / triple).mkdir()
+        for source in RUNTIME_BITCODE:
+            for verify in (False, True):
+                build_runtime_bitcode(clang, source, runtime_bc / triple, verify,
+                                      triple, sysroots.get(triple, ""))
 
     installed = bin_dir / ("prismio.exe" if WINDOWS else "prismio")
     shutil.copyfile(compiler, installed)
@@ -275,9 +337,10 @@ def main() -> int:
     print(f"  {'runtime.hash':<12} {value}")
 
     # One compiled artifact per importable standard module. The PLIB carries its
-    # frontend interface/generic templates and its non-generic LLVM bitcode.
+    # frontend interface/generic templates and its non-generic LLVM bitcode, once
+    # for the host and once for each --target.
     for module in sorted((REPO / "std").glob("*.psm")):
-        build_plib(clang, compiler, module, stdlib, work)
+        build_plib(clang, compiler, module, stdlib, work, args.target)
 
     shutil.rmtree(work)
 

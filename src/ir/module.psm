@@ -23,12 +23,14 @@ extern fn compiler_plib_module_registered(module: String borrow) -> Int
 // the entry file has no qualifier and imported dependencies do.
 //
 // **Except a function that asks about the target**, which belongs to the program
-// it is compiled into. A PLIB's bitcode is compiled once, for the host, and is
-// merged into every build that imports the module, cross builds included -- so a
-// `__builtin_target_os` folded into it would answer the host. Such a function is
-// left out of the PLIB and compiled from the interface source by each program,
-// for that program's target. The test runs only for a function a PLIB could
-// supply, so a build from source pays nothing for it.
+// it is compiled into. It was the whole defence while a PLIB carried one host
+// section merged into cross builds too; a PLIB now has a section per packaged
+// target and a build for any other target is refused, so what this still buys
+// is a program whose IR answers for its target before anything is merged --
+// `-o x.ll` for a foreign triple merges nothing. Such a function is left out of
+// the PLIB and compiled from the interface source by each program. The test runs
+// only for a function a PLIB could supply, so a build from source pays nothing
+// for it.
 private fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
     let qualifier = strClone(diag_file_module(func.file))
     let emissionModule = compiler_library_emission_module()

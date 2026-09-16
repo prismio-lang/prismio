@@ -2,6 +2,7 @@ import argparse
 import json
 import platform
 import re
+import struct
 import subprocess
 import sys
 import os
@@ -7299,6 +7300,120 @@ def run_curated_closure_test():
     return True
 
 
+def plib_sections(path):
+    """A PLIB v3's code sections as (triple, normal bitcode), or None.
+
+    The layout runtime/build_driver.c reads and tools/package.py writes: a 24-byte
+    header, the module name and interface, then per section a 20-byte header,
+    the triple, and the normal and verify bitcode.
+    """
+    data = path.read_bytes()
+    if data[:8] != b"PRPLIB3\n" or len(data) < 24:
+        return None
+    module_len, interface_len, count = struct.unpack_from("<IQI", data, 8)
+    at = 24 + module_len + interface_len
+    sections = []
+    for _ in range(count):
+        if at + 20 > len(data):
+            return None
+        triple_len, code_len, verify_len = struct.unpack_from("<IQQ", data, at)
+        at += 20
+        triple = data[at:at + triple_len].decode("utf-8", "replace")
+        at += triple_len
+        sections.append((triple, data[at:at + code_len]))
+        at += code_len + verify_len
+    return sections if at == len(data) else None
+
+
+def run_plib_triple_sections(compiler_source, work, env, llvm_dis, problems):
+    """A cross build takes `std` bitcode compiled for its own target.
+
+    A PLIB used to carry one code section, built for the host, and every build
+    merged it whatever `--target` said: an arm64 Mac building for
+    x86_64-apple-macos linked arm64 bitcode for every non-generic `std` function,
+    LLVM warned that the triples and data layouts differed, and the build
+    succeeded. Packaging a target now adds a section for it, and a triple with
+    runtime bitcode but no section is refused.
+
+    Needs a C SDK for the target, because packaging compiles the runtime for it;
+    only a macOS host with Xcode has one for a second architecture. The binary is
+    not run -- Rosetta may be absent -- so the assertion is on what the linker
+    said and what `file` reports.
+    """
+    target = "x86_64-apple-macos"
+    sdk = ""
+    if sys.platform == "darwin" and shutil.which("xcrun"):
+        probe = subprocess.run(["xcrun", "--show-sdk-path"], capture_output=True, text=True)
+        sdk = probe.stdout.strip() if probe.returncode == 0 else ""
+    if not sdk:
+        return "skipped: no second-architecture SDK on this host"
+
+    dist = work / "cross-dist"
+    packaged = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "tools" / "package.py"),
+         "--compiler", str(compiler_source), "--out", str(dist),
+         "--target", target, "--sysroot", f"{target}={sdk}"],
+        capture_output=True, text=True, cwd=str(PROJECT_ROOT), env=env)
+    if packaged.returncode != 0:
+        problems.append(f"packaging with --target {target} failed: "
+                        + (packaged.stderr or packaged.stdout).strip()[-300:])
+        return "failed"
+
+    for module in ("lang_runtime", "program_support"):
+        for variant in ("", ".verify"):
+            if not (dist / "lib" / "runtime" / target / f"{module}{variant}.bc").is_file():
+                problems.append(f"--target {target} did not package "
+                                f"lib/runtime/{target}/{module}{variant}.bc")
+    io_plib = dist / "stdlib" / "io.plib"
+    sections = plib_sections(io_plib) if io_plib.is_file() else None
+    if sections is None or [t for t, _ in sections] != ["", target]:
+        problems.append(f"io.plib from a --target {target} package has sections "
+                        f"{None if sections is None else [t for t, _ in sections]}, "
+                        f"expected ['', '{target}']")
+    elif llvm_dis:
+        bitcode = work / "io-cross.bc"
+        bitcode.write_bytes(sections[1][1])
+        shown = subprocess.run([str(llvm_dis), str(bitcode), "-o", "-"],
+                               capture_output=True, text=True)
+        if not re.search(r'^target triple = "x86_64-', shown.stdout, re.M):
+            problems.append(f"io.plib's {target} section is not x86_64 bitcode")
+
+    compiler = dist / "bin" / "prismio"
+    asker = work / "cross-asker.psm"
+    asker.write_text('import std.io\nimport std.string\nimport std.platform\n\n'
+                     'fn main() -> Int {\n'
+                     '    if (platform.isMacOS()) { println("macos".concat("!")) }\n'
+                     '    return 0\n}\n')
+    built = subprocess.run([str(compiler), "build", str(asker), "--target", target,
+                            "--sysroot", sdk, "-o", str(work / "cross-asker")],
+                           capture_output=True, text=True, cwd=str(work), env=env)
+    said = (built.stdout or "") + (built.stderr or "")
+    if built.returncode != 0:
+        problems.append(f"a {target} build against its packaged sections failed: "
+                        + said.strip()[-300:])
+    elif "different target triples" in said or "different data layouts" in said:
+        problems.append(f"a {target} build still merged bitcode for another target: "
+                        + said.strip()[-300:])
+    elif "x86_64" not in subprocess.run(["file", str(work / "cross-asker")],
+                                        capture_output=True, text=True).stdout:
+        problems.append(f"the {target} build did not produce an x86_64 binary")
+
+    # Runtime bitcode for a triple the PLIBs were not packaged for: the build
+    # must refuse rather than fall back to some other section.
+    unpackaged = "x86_64-apple-darwin"
+    shutil.copytree(dist / "lib" / "runtime" / target,
+                    dist / "lib" / "runtime" / unpackaged)
+    refused = subprocess.run([str(compiler), "build", str(asker), "--target", unpackaged,
+                              "--sysroot", sdk, "-o", str(work / "refused")],
+                             capture_output=True, text=True, cwd=str(work), env=env)
+    said = (refused.stdout or "") + (refused.stderr or "")
+    if refused.returncode == 0 or \
+            f"Missing standard-library bitcode for {unpackaged}" not in said:
+        problems.append(f"a build for {unpackaged}, whose PLIB section was never "
+                        "packaged, was not refused naming it: " + said.strip()[-300:])
+    return f"{target} sections packaged and linked"
+
+
 def run_module_artifact_test():
     """Installed std/runtime artifacts are sharded, mandatory, and executable."""
     print(f"\n{BLUE}--- Running module_artifacts ---{RESET}")
@@ -7337,8 +7452,12 @@ def run_module_artifact_test():
         if list((dist / "stdlib").glob("*.psm")):
             problems.append("standard-library source files were shipped")
         for plib in (dist / "stdlib").glob("*.plib"):
-            if plib.read_bytes()[:8] != b"PRPLIB2\n":
-                problems.append(f"{plib.name} is not a PLIB v2 artifact")
+            sections = plib_sections(plib)
+            if sections is None:
+                problems.append(f"{plib.name} is not a PLIB v3 artifact")
+            elif [triple for triple, _ in sections] != [""]:
+                problems.append(f"{plib.name} carries sections {[t for t, _ in sections]} "
+                                "from a package run that named no --target")
 
         compiler = dist / "bin" / ("prismio.exe" if os.name == "nt" else "prismio")
         source = wd / "probe.psm"
@@ -7555,6 +7674,9 @@ def run_module_artifact_test():
                             + (said.strip()[-300:] if crossed is None else
                                f"it printed {(crossed.stdout or '').strip()!r}"))
 
+        cross = run_plib_triple_sections(Path(PRISMIO_EXE).resolve(), wd, env,
+                                         llvm_dis, problems)
+
     if problems:
         print(f"{RED}[FAIL] module artifacts{RESET}")
         for problem in problems:
@@ -7562,7 +7684,7 @@ def run_module_artifact_test():
         return False
     print(f"{GREEN}[PASS] per-module PLIB/runtime bitcode, normal + verify, "
           f"strict reinstall diagnostics, `sort`, std.platform and a std.process "
-          f"struct from the installed stdlib{RESET}")
+          f"struct from the installed stdlib; per-triple sections: {cross}{RESET}")
     return True
 
 

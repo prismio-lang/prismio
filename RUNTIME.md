@@ -384,10 +384,12 @@ elsewhere.
 the same mechanism with no C name behind them at all. Each lowers to a constant
 read off the target triple -- the codes are in `src/common/target.psm` -- and
 `std.platform` maps the constants onto its `Platform`, `Architecture` and
-`Environment` enums. A function that calls one is never taken from a `.plib`:
-PLIB bitcode is built once, for the host, so a cross build would get the host's
-answer. `shouldEmitFunctionFromSource` in `src/ir/module.psm` compiles it into
-each program instead.
+`Environment` enums. A function that calls one is never taken from a `.plib`;
+`shouldEmitFunctionFromSource` in `src/ir/module.psm` compiles it into each
+program, so a program's IR answers for its target before any library is merged.
+A `.plib` carries a code section per packaged target (`tools/package.py
+--target`), and a cross build for a target it was not packaged for is refused
+rather than given the host's section.
 
 `prismio_rt_print_float` and `prismio_rt_println_float`, with their
 `prismio_rt_eprint_float` and `prismio_rt_eprintln_float` twins, are what is left

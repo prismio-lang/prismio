@@ -511,14 +511,26 @@ static const char* prismio_runtime_modules[] = {
     ((int)(sizeof(prismio_runtime_modules) / sizeof(prismio_runtime_modules[0])))
 
 #define PRISMIO_PLIB_MAX 128
+#define PRISMIO_PLIB_SECTIONS_MAX 16
+#define PRISMIO_PLIB_TRIPLE_MAX 127
 
+// One target's code in a PLIB: the module compiled for `triple`, normally and
+// under `--verify`. "" is the host the toolchain was packaged on, which is how an
+// implicit-target build asks for it -- the same split the runtime makes between
+// `lib/runtime/*.bc` and `lib/runtime/<triple>/*.bc`.
 typedef struct {
-    char* module;
-    char* path;
+    char triple[PRISMIO_PLIB_TRIPLE_MAX + 1];
     unsigned long long bitcode_offset;
     unsigned long long bitcode_size;
     unsigned long long verify_bitcode_offset;
     unsigned long long verify_bitcode_size;
+} PrismioPlibSection;
+
+typedef struct {
+    char* module;
+    char* path;
+    PrismioPlibSection* sections;
+    int section_count;
 } PrismioPlib;
 
 static PrismioPlib prismio_plibs[PRISMIO_PLIB_MAX];
@@ -542,10 +554,55 @@ static char* plib_empty(void) {
     return value;
 }
 
-// Read and register one module-level Prismio library. PLIB v2 is intentionally
-// simple and deterministic: magic, module/interface/normal/verify lengths, then
-// the four payloads. The interface remains compiler input; the matching
-// implementation is linked later as LLVM bitcode.
+// The section table: `count` entries, each a 20-byte header -- triple, normal and
+// verify lengths -- then those three payloads. Returns 0 and fills `out`, or 1
+// with prismio_plib_error set. `*end` is the offset just past the last payload,
+// which the caller compares against the file size.
+static int plib_read_sections(FILE* file, const char* path, unsigned long long offset,
+                              unsigned count, PrismioPlibSection* out,
+                              unsigned long long* end) {
+    for (unsigned i = 0; i < count; i++) {
+        unsigned char header[20];
+        if (fseek(file, (long)offset, SEEK_SET) != 0
+            || fread(header, 1, sizeof(header), file) != sizeof(header)) {
+            snprintf(prismio_plib_error, sizeof(prismio_plib_error),
+                     "%s is truncated in its section table", path);
+            return 1;
+        }
+        unsigned triple_len = read_u32_le(header);
+        unsigned long long code_len = read_u64_le(header + 4);
+        unsigned long long verify_len = read_u64_le(header + 12);
+        if (triple_len > PRISMIO_PLIB_TRIPLE_MAX
+            || code_len == 0 || code_len > 512ULL * 1024ULL * 1024ULL
+            || verify_len == 0 || verify_len > 512ULL * 1024ULL * 1024ULL
+            || fread(out[i].triple, 1, triple_len, file) != triple_len) {
+            snprintf(prismio_plib_error, sizeof(prismio_plib_error),
+                     "%s has an invalid section %u", path, i);
+            return 1;
+        }
+        out[i].triple[triple_len] = '\0';
+        for (unsigned j = 0; j < i; j++) {
+            if (strcmp(out[j].triple, out[i].triple) == 0) {
+                snprintf(prismio_plib_error, sizeof(prismio_plib_error),
+                         "%s has two sections for target \"%s\"", path, out[i].triple);
+                return 1;
+            }
+        }
+        out[i].bitcode_offset = offset + sizeof(header) + triple_len;
+        out[i].bitcode_size = code_len;
+        out[i].verify_bitcode_offset = out[i].bitcode_offset + code_len;
+        out[i].verify_bitcode_size = verify_len;
+        offset = out[i].verify_bitcode_offset + verify_len;
+    }
+    *end = offset;
+    return 0;
+}
+
+// Read and register one module-level Prismio library. PLIB v3 is: magic, module
+// and interface lengths, a section count, the module name, the interface, then
+// one code section per packaged target (plib_read_sections). The interface
+// remains compiler input; the section matching the build's target is linked
+// later as LLVM bitcode (plib_section_for_target).
 char* compiler_plib_interface(const char* path, const char* expected_module) {
     prismio_plib_error[0] = '\0';
     FILE* file = fopen(path, "rb");
@@ -555,24 +612,22 @@ char* compiler_plib_interface(const char* path, const char* expected_module) {
         return plib_empty();
     }
 
-    unsigned char header[36];
+    unsigned char header[24];
     if (fread(header, 1, sizeof(header), file) != sizeof(header)
-        || memcmp(header, "PRPLIB2\n", 8) != 0) {
+        || memcmp(header, "PRPLIB3\n", 8) != 0) {
         snprintf(prismio_plib_error, sizeof(prismio_plib_error),
-                 "%s is not a valid PLIB v2 artifact", path);
+                 "%s is not a valid PLIB v3 artifact", path);
         fclose(file);
         return plib_empty();
     }
 
     unsigned module_len = read_u32_le(header + 8);
     unsigned long long interface_len = read_u64_le(header + 12);
-    unsigned long long bitcode_len = read_u64_le(header + 20);
-    unsigned long long verify_bitcode_len = read_u64_le(header + 28);
+    unsigned section_count = read_u32_le(header + 20);
     if (module_len == 0 || module_len > 255 || interface_len > 64ULL * 1024ULL * 1024ULL
-        || bitcode_len == 0 || bitcode_len > 512ULL * 1024ULL * 1024ULL
-        || verify_bitcode_len == 0 || verify_bitcode_len > 512ULL * 1024ULL * 1024ULL) {
+        || section_count == 0 || section_count > PRISMIO_PLIB_SECTIONS_MAX) {
         snprintf(prismio_plib_error, sizeof(prismio_plib_error),
-                 "%s has invalid PLIB section lengths", path);
+                 "%s has an invalid PLIB header", path);
         fclose(file);
         return plib_empty();
     }
@@ -601,25 +656,40 @@ char* compiler_plib_interface(const char* path, const char* expected_module) {
         return interface ? interface : plib_empty();
     }
     interface[interface_len] = '\0';
-    unsigned long long bitcode_offset = 36ULL + module_len + interface_len;
-    unsigned long long verify_bitcode_offset = bitcode_offset + bitcode_len;
 
-    if (fseek(file, 0, SEEK_END) != 0
-        || (unsigned long long)ftell(file) != verify_bitcode_offset + verify_bitcode_len) {
+    PrismioPlibSection* sections =
+        (PrismioPlibSection*)calloc(section_count, sizeof(PrismioPlibSection));
+    unsigned long long end = 0;
+    int failed = !sections
+        || plib_read_sections(file, path, sizeof(header) + module_len + interface_len,
+                              section_count, sections, &end) != 0;
+    if (!sections) {
+        snprintf(prismio_plib_error, sizeof(prismio_plib_error),
+                 "out of memory reading %s", path);
+    }
+    if (!failed && (fseek(file, 0, SEEK_END) != 0
+                    || (unsigned long long)ftell(file) != end)) {
         snprintf(prismio_plib_error, sizeof(prismio_plib_error),
                  "%s is truncated or has trailing data", path);
-        interface[0] = '\0';
-        fclose(file);
-        return interface;
+        failed = 1;
     }
     fclose(file);
+    if (failed) {
+        free(sections);
+        interface[0] = '\0';
+        return interface;
+    }
 
     for (int i = 0; i < prismio_plib_count; i++) {
-        if (strcmp(prismio_plibs[i].module, module) == 0) return interface;
+        if (strcmp(prismio_plibs[i].module, module) == 0) {
+            free(sections);
+            return interface;
+        }
     }
     if (prismio_plib_count >= PRISMIO_PLIB_MAX) {
         snprintf(prismio_plib_error, sizeof(prismio_plib_error),
                  "more than %d compiled modules were imported", PRISMIO_PLIB_MAX);
+        free(sections);
         interface[0] = '\0';
         return interface;
     }
@@ -629,10 +699,8 @@ char* compiler_plib_interface(const char* path, const char* expected_module) {
     entry->path = (char*)malloc(strlen(path) + 1);
     strcpy(entry->module, module);
     strcpy(entry->path, path);
-    entry->bitcode_offset = bitcode_offset;
-    entry->bitcode_size = bitcode_len;
-    entry->verify_bitcode_offset = verify_bitcode_offset;
-    entry->verify_bitcode_size = verify_bitcode_len;
+    entry->sections = sections;
+    entry->section_count = (int)section_count;
     return interface;
 }
 
@@ -1458,13 +1526,39 @@ static int link_program_object(const char* program_obj, const char* exe_file) {
     return result;
 }
 
+// The section compiled for the target this build is producing, or NULL.
+//
+// **A PLIB section for another target is never a fallback.** Before sections were
+// per target, a `--target x86_64-apple-macos` build on an arm64 host merged the
+// arm64 bitcode of every non-generic `std` function: LLVM warned that the triples
+// and data layouts differed, adopted the arm64 triple for the merged module, and
+// the build went on. For a 32-bit target the pointer width differs as well. A
+// missing section is therefore an installation error, exactly as a missing
+// `lib/runtime/<triple>/` module is.
+static const PrismioPlibSection* plib_section_for_target(const PrismioPlib* plib) {
+    const char* triple = ir_target_is_explicit() ? ir_target_triple() : "";
+    for (int i = 0; i < plib->section_count; i++) {
+        if (strcmp(plib->sections[i].triple, triple) == 0) return &plib->sections[i];
+    }
+    return NULL;
+}
+
 static int extract_plib_bitcode(const PrismioPlib* plib, const char* output) {
+    const PrismioPlibSection* section = plib_section_for_target(plib);
+    if (!section) {
+        fprintf(stderr,
+                "ERROR: Prismio installation is incomplete or corrupted.\n"
+                "       Missing standard-library bitcode for %s in %s\n"
+                "       Reinstall Prismio and try again.\n",
+                ir_target_triple(), plib->path);
+        return 1;
+    }
     FILE* input = fopen(plib->path, "rb");
     FILE* out = NULL;
     unsigned long long offset = g_verify_mode
-        ? plib->verify_bitcode_offset : plib->bitcode_offset;
+        ? section->verify_bitcode_offset : section->bitcode_offset;
     unsigned long long size = g_verify_mode
-        ? plib->verify_bitcode_size : plib->bitcode_size;
+        ? section->verify_bitcode_size : section->bitcode_size;
     if (!input || fseek(input, (long)offset, SEEK_SET) != 0) goto failed;
     out = fopen(output, "wb");
     if (!out) goto failed;
@@ -2658,10 +2752,15 @@ static int emit_plib_section(const char* clang, const char* compiler,
     return failed;
 }
 
-// PLIB v2, written by the same file that reads it -- see compiler_plib_interface
+// PLIB v3, written by the same file that reads it -- see compiler_plib_interface
 // for the layout. The interface section is the module's source: generic bodies
 // have to be instantiated against the importing program's concrete types, so the
 // frontend still parses them.
+//
+// A project toolchain is built for its host, so this writes the one host section
+// (triple ""). tools/package.py writes the same bytes for the same inputs, plus a
+// section per `--target` it was asked to package -- `run_ums_test` compares the
+// host case byte for byte.
 static int emit_stdlib_plib(const char* clang, const char* compiler,
                             const char* std_dir, const char* out_dir,
                             const char* module, const char* log_path) {
@@ -2689,12 +2788,15 @@ static int emit_stdlib_plib(const char* clang, const char* compiler,
 
     if (!failed) {
         size_t module_len = strlen(logical);
-        unsigned char header[36];
-        memcpy(header, "PRPLIB2\n", 8);
+        unsigned char header[24];
+        memcpy(header, "PRPLIB3\n", 8);
         write_u32_le(header + 8, (unsigned)module_len);
         write_u64_le(header + 12, (unsigned long long)interface_size);
-        write_u64_le(header + 20, (unsigned long long)code_size);
-        write_u64_le(header + 28, (unsigned long long)verify_size);
+        write_u32_le(header + 20, 1);
+        unsigned char section[20];
+        write_u32_le(section, 0);
+        write_u64_le(section + 4, (unsigned long long)code_size);
+        write_u64_le(section + 12, (unsigned long long)verify_size);
 
         FILE* file = fopen(output, "wb");
         if (!file) {
@@ -2704,6 +2806,7 @@ static int emit_stdlib_plib(const char* clang, const char* compiler,
                      || fwrite(logical, 1, module_len, file) != module_len
                      || (interface_size
                          && fwrite(interface, 1, interface_size, file) != interface_size)
+                     || fwrite(section, 1, sizeof(section), file) != sizeof(section)
                      || fwrite(code, 1, code_size, file) != code_size
                      || fwrite(verify_code, 1, verify_size, file) != verify_size;
             if (fclose(file) != 0) failed = 1;

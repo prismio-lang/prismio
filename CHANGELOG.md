@@ -71,8 +71,35 @@
   that a hole rather than a gap, because `eprintln("count: ", n)` splits into an
   `eprint` of the text and an `eprintln` of the value. `prismio_rt_eprint_float`
   and `prismio_rt_eprintln_float` join the runtime pair for `%g`.
+- **Starting another program: `Process`, `Child` and `Stream` in `std.process`.**
+  `p.program` and `p.arguments` go to the child as an argument vector with no
+  shell in between; each of its three streams is inherited, piped or discarded;
+  `spawn` returns a `Child` to `wait`, `kill`, read and write, `run` is spawn and
+  wait, and `exec` replaces the process. `runCommand` and `quoteArg`, which
+  handed a string to `system`, are removed. Environment, working directory and
+  redirection to a file are not there yet, and the Windows half has not been
+  compiled on Windows -- KNOWN_ISSUES has both.
+- **A packaged toolchain can carry the standard library for more than one
+  target.** `tools/package.py --target <triple> --sysroot <triple>=<path>` adds
+  `lib/runtime/<triple>/` and a code section for that triple to every
+  `stdlib/*.plib` (PLIB v3). A cross build takes the section for its own target
+  and refuses to build when there is none, where it used to merge the host's
+  bitcode with a linker warning nobody read.
 
 ### Fixed
+
+- **A standard-library struct read its fields one slot late when it came from a
+  `.plib`.** A program that set `p.stdout` sent the mode to `stdin`: the layout
+  search ordered tied fields by the program's own access counts, and the library
+  had been laid out from its own. A `std` struct now keeps declaration order,
+  in a checkout too.
+- **A struct field that ever held a String literal could free it.** A literal in
+  a constructor function, an owned value stored into the same field anywhere
+  else, and the generated release handed `.rodata` to the deallocator. Such a
+  field now releases nothing -- a leak where there was an abort.
+- **A child's stdin pipe never reached end of file**, because the child
+  inherited the parent's write end of it; a child reading all its input hung, and
+  so did the parent reading its output.
 
 - **A String literal stored into a container was freed at teardown.**
   `list_push(names, "ab")` stored the literal's pair as it was -- an untagged
