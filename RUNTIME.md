@@ -418,16 +418,41 @@ formatter checks its own candidates against.
 | `read_file` `get_directory` `join_path` | `readFile` `directoryOf` `joinPath` | `produce(free)` |
 | `current_directory` `executable_directory` | `currentDirectory` `executableDirectory` | `produce(free)` |
 | `list_modules` | `listModules` → `List<String>` | `produce(free)` |
-| `command_quote_arg` | `quoteArg` | `produce(free)` |
-| `file_exists` `delete_file` `execute_command` | `fileExists` `deleteFile` `runCommand` | → `Bool` |
+| `file_exists` `delete_file` | `fileExists` `deleteFile` | → `Bool` |
 | `cli_arg_count` `cli_arg` | `process.args.count` `process.args[i]` | `alias` |
+| `proc_spawn_begin` `proc_spawn_arg` `proc_spawn_run` | `Process.spawn`, `Process.run` | `borrow`; `SpawnOut` written through its pointer |
+| `proc_exec` | `Process.exec` | returns only on failure, then -1 |
+| `proc_wait` `proc_kill` | `Child.wait` `Child.kill` | → `Int` |
+| `proc_read_all` | `Stream.readAll` | `produce(free)` |
+| `proc_write` `proc_close` | `Stream.write` `Stream.close` | `bytes`; → `Int` |
 
 The `Int` returns are normalised because the raw conventions disagree with each
-other: `file_exists` returns 1 for yes, while `delete_file` and `execute_command`
-return **0** for success. Two adjacent functions in one file where 0 means
-opposite things belongs behind a wrapper.
+other: `file_exists` returns 1 for yes, while `delete_file` returns **0** for
+success. Two adjacent functions in one file where 0 means opposite things
+belongs behind a wrapper.
+
+**The argument vector crosses one element at a time.** No `List<T>` crosses the
+FFI boundary, and joining argv with a separator is wrong because an argument may
+contain any byte, so `Process.spawn` calls `proc_spawn_begin`, then
+`proc_spawn_arg` per argument, then `proc_spawn_run` -- the shape
+`ir_call_begin` / `ir_call_arg` has in `src/ir/bridge.psm`, with the same limit:
+one spawn under construction at a time in a process. The three stream modes are
+a wire protocol (`0` inherit, `1` pipe, `2` discard) spelled once each in
+`std/process.psm` and `runtime/program_support.c`.
+
+**`SpawnOut` is a Prismio struct that C reads**, which nothing else on this
+surface is: every field is `I64` so no padding question arises, and it keeps
+declaration order because it is a standard-library type (`aif_layout_fix`). A
+program's own struct handed to C that reads its fields has no such guard -- see
+KNOWN_ISSUES, Toolchain layout.
 
 ### Superseded — still linked, no longer the supported way
+
+`execute_command` and `command_quote_arg`: a command line handed to `system`,
+and the quoting every caller had to apply to make that safe. `std.process`'s
+`runCommand` and `quoteArg` were deleted with the subprocess API; use `Process`,
+which takes an argument vector and involves no shell. The compiler's own `ums`
+shell steps still declare both, in `src/project/ums_cli.psm`.
 
 `str_char_at`, `str_equals`, `str_compare`, `str_concat`, `str_substring`,
 `str_from_char`, `str_trim`, `str_replace`, `str_contains`, `str_starts_with`,

@@ -71,8 +71,9 @@ public extern fn current_directory() -> String produce(free)
 public extern fn delete_file(path: String) -> Int
 public extern fn executable_directory() -> String produce(free)
 // A project command's `shell` step. `command_quote_arg` mallocs and hands the
-// buffer over; `execute_command` only reads. Both contracts are std/process.psm's,
-// which is where they were worked out.
+// buffer over; `execute_command` only reads. This is their only declaration:
+// std.process wrapped them until `Process` replaced a shell command line with an
+// argument vector.
 public extern fn execute_command(command: String borrow) -> Int
 public extern fn file_exists(path: String) -> Int
 public extern fn join_path(directory: String, filename: String) -> String

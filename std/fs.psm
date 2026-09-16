@@ -22,10 +22,10 @@
 // would carry over.
 //
 // **Int returns are normalised to `Bool`, and the raw conventions disagree with
-// each other.** `file_exists` returns 1 for yes; `delete_file` and
-// `execute_command` return **0** for success. Two adjacent functions in one C
-// file where 0 means opposite things is a trap that belongs behind a wrapper,
-// not in a doc comment nobody reads at the call site.
+// each other.** `file_exists` returns 1 for yes; `delete_file` returns **0** for
+// success. Two adjacent functions in one C file where 0 means opposite things is
+// a trap that belongs behind a wrapper, not in a doc comment nobody reads at the
+// call site.
 
 import std.option
 import std.string

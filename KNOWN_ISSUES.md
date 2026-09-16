@@ -643,55 +643,34 @@ display-width function, so a padded column of CJK still does not line up.
 
 **There is no string interpolation and no iterator protocol.**
 
-**`std.process` can run a shell command and nothing else.** `runCommand` takes a
-string, goes through the shell, and answers a `Bool`; `quoteArg` exists because
-of that. There is no argv-vector spawn, no exit code as a number, no way to read
-a child's stdout or stderr, no way to write its stdin, no kill, and no process
-replacement.
+**`std.process` starts a program with an argument vector, and that is all it
+does.** `Process` / `Child` / `Stream` landed with the capability in
+`runtime/program_support.c` (RUNTIME.md has the surface); `runCommand` and
+`quoteArg` are gone. What is left:
 
-The agreed shape is a configurable object rather than free functions, which is
-Foundation's `Process`:
-
-```
-let p = Process()
-p.program = "git"
-p.arguments = ["status", "--short"]
-p.stdout = StreamMode.Pipe
-
-let child = p.spawn()      // -> Child, running
-let status = p.run()       // spawn + wait, the exit status
-p.exec()                   // replace this process; does not return
-```
-
-with `Child` carrying `stdin`, `stdout`, `stderr`, `wait()` and `kill()`, and
-each of the three streams set to `inherit`, `pipe` or `discard` before the
-spawn.
-
-Everything the *language* needs for that spelling now exists, and each piece was
-the reason a piece of work landed: `p.arguments = ["a", "b"]` is the list literal
-(f3a6846), and a global of an empty type with methods is what `std.platform` and
-`process.args` already are (40aa65b, 22d0bd7). What is left is the capability,
-and it is C:
-
-- **POSIX**: `posix_spawn` or fork/execvp, `pipe`, `waitpid`, `kill`, `execvp`.
-- **Windows**: `CreateProcess`, `CreatePipe`, `WaitForSingleObject` +
-  `GetExitCodeProcess`, `TerminateProcess`. There is no `exec`; `_execvp` spawns
-  and exits, which is close but not the same, and the difference belongs in the
-  documentation rather than hidden.
-- **One abstraction across both**: an `int` file descriptor, which Windows
-  reaches through `_open_osfhandle` on the pipe handle. A `Child` then holds
-  three `Int` descriptors and the process as an **`I64`** -- not an `Int`, which
-  is `i32` and cannot hold a Windows `HANDLE`.
-- The argv vector crosses as a `List<String>`, so the runtime reads it with
-  `list_len` and `list_str_data`/`list_str_word` and must materialise a
-  NUL-terminated copy per element: an inline pair's field 0 is twelve bytes of
-  text rather than a pointer, and a view has no terminator. `str_own_pair` in
-  `lang_runtime.c` is the existing tool for exactly that.
-
-Every new `extern fn` needs its FFI contract in `std/`, its parameter entry in
-`src/aif/contracts.psm`, and the same entry in `aif/prototype/aif.py` -- an
-undescribed callee blocks bracketing for its whole caller, and the oracle is the
-half that fails silently while the suite stays green.
+- **No environment, working directory or pid.** A child inherits all three, and
+  a program cannot read its own pid or an environment variable.
+- **A stream is inherited, piped or discarded -- never a file.** Redirecting a
+  child's stdout to a path needs a fourth mode on both sides of the wire
+  protocol (`0` inherit, `1` pipe, `2` discard, in `std/process.psm` and
+  `program_support.c`).
+- **The Windows half has never been compiled.** There is no Windows SDK on the
+  machine it was written on, so the first Windows CI leg is its review.
+  `exec` there is `_execvp`, which starts a new process and ends this one, so a
+  parent waiting on the original does not get the replacement's status --
+  `test_153_subprocess` skips that one assertion on Windows. Descriptors are CRT
+  `int`s from `_open_osfhandle`, opened in text mode.
+- **One spawn under construction at a time.** The argument vector crosses one
+  element at a time into file-local C state, the `ir_call_begin` shape, so two
+  threads spawning at once interleave into one vector.
+- **A list literal needs `import std.list`.** `p.arguments = ["a"]` in a file
+  that imports only `std.process` fails with "`listOf$String` is declared in
+  `std.list`, which this file does not import" -- the spelling this API was
+  designed around, rejected for an import the program never named.
+- **Nothing reaps an unwaited `Child`.** A `Child` dropped without `wait` is a
+  zombie on POSIX and an open handle on Windows.
+- The ownership cost is in "Ownership": `Process.program` never frees an owned
+  name, and assigning `p.arguments` leaks the constructor's empty list.
 
 **A function that returns a view of its argument declines the caller's drop of
 that argument, and the fact does not survive one level of indirection.**
